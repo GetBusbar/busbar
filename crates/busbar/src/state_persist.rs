@@ -52,10 +52,32 @@ pub(crate) fn resolve_path(config_path: Option<&Path>) -> Option<PathBuf> {
 /// Write the snapshot atomically (temp + rename). Errors are RETURNED (the caller logs once and
 /// may disable the loop) — persistence must never take busbar down.
 pub(crate) fn write(path: &Path, state: &PersistedState) -> Result<(), String> {
+    use std::io::Write as _;
     let bytes = serde_json::to_vec(state).map_err(|e| format!("serialize state: {e}"))?;
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, &bytes).map_err(|e| format!("write {}: {e}", tmp.display()))?;
+    // Write + FLUSH + fsync the temp file's CONTENTS to disk BEFORE the rename, then fsync the
+    // parent directory AFTER it, mirroring `config::overlay::write`. `std::fs::write` alone leaves
+    // the data in the page cache: a power loss after the rename commits (directory metadata) but
+    // before the data blocks reach the device would surface a torn/zero-length `busbar-state.json`,
+    // contradicting this module's "never a torn read" claim. fsync closes that window for real.
+    {
+        let mut f = std::fs::File::create(&tmp)
+            .map_err(|e| format!("create {}: {e}", tmp.display()))?;
+        f.write_all(&bytes)
+            .map_err(|e| format!("write {}: {e}", tmp.display()))?;
+        f.flush().map_err(|e| format!("flush {}: {e}", tmp.display()))?;
+        f.sync_all()
+            .map_err(|e| format!("fsync {}: {e}", tmp.display()))?;
+    }
     std::fs::rename(&tmp, path).map_err(|e| format!("rename to {}: {e}", path.display()))?;
+    // fsync the parent directory so the rename (a directory-metadata change) is itself durable.
+    // Best-effort: not every platform/filesystem supports opening a directory for fsync, and the
+    // file contents are already durable, so a failure here does not fail the write.
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        if let Ok(dir) = std::fs::File::open(parent) {
+            let _ = dir.sync_all();
+        }
+    }
     Ok(())
 }
 

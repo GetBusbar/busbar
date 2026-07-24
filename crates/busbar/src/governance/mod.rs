@@ -397,6 +397,15 @@ pub(crate) struct GovState {
     /// state the otherwise-stateless verify path reads. Under an `RwLock` (read on the hot path,
     /// write only on revoke).
     denylist: RwLock<std::collections::HashSet<String>>,
+    /// Serializes `refresh` so a slow reader-load cannot clobber a newer swap (lost-update guard).
+    /// `refresh` loads the full key set from the store OUTSIDE the `caches` write lock (to keep that
+    /// critical section short), then swaps. Without serialization, two concurrent refreshes could
+    /// interleave load-A, load-B, swap-B, swap-A where load-A predates B's committed mutation — so
+    /// the final cache is missing B's key until the next mutation. Holding this mutex across the
+    /// ENTIRE load→swap means a later refresh's load begins only after the earlier refresh's swap
+    /// has committed, so it can never contain strictly-older store state. Guarded data is `()`;
+    /// a poisoned lock is recovered with `into_inner()` (serializing is strictly better than not).
+    refresh_lock: std::sync::Mutex<()>,
 }
 
 /// Parameters for minting a new virtual key (from the management API) - PURE AUTH (S1): identity,
