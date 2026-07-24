@@ -54,7 +54,7 @@ pub(crate) fn build(
         issuer: sa.client_email,
         token_uri: sa.token_uri,
         scope: scope_override.unwrap_or(DEFAULT_SCOPE).to_string(),
-        http: super::minter_client(),
+        http: super::minter_client()?,
     });
 
     let minter: Minter = Arc::new(move || {
