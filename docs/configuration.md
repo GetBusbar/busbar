@@ -879,11 +879,11 @@ A keyword stays bare; a reference is structured (the 1.5.0 `on_X` convention):
 
 | Value | Behavior |
 |---|---|
-| `reject` | Return `503 Service Unavailable` with a `Retry-After` header set to the soonest member cooldown expiry. This is the default when `on_exhausted` is omitted. |
-| `least_bad` | Route to the member whose cooldown expires soonest, even though it is Open. The request is likely to fail, but degraded service is preferred over a hard 503. This is logged as a degraded dispatch. |
+| `reject` | Return `503 Service Unavailable` with a `Retry-After` header set to the soonest member cooldown expiry. This is the default when `on_exhausted` is omitted. Accepted aliases: `status_503`, `status503`, `503`. |
+| `least_bad` | Route to the member whose cooldown expires soonest, even though it is Open. The request is likely to fail, but degraded service is preferred over a hard 503. This is logged as a degraded dispatch. Accepted aliases: `least-bad`, `leastbad`. |
 | `{ fallback_pool: <name> }` | Route the request to another named pool and run its full selection logic. Cycles (`primary` to `overflow` back to `primary`) and self-references are detected at startup and are errors. |
 
-**Unknown keywords or a malformed structure are a fatal startup error** (not a runtime 503).
+`reject` and `least_bad` each accept the alias spellings noted above (hyphen/underscore/joined and, for reject, the bare `503` status). **Unknown keywords or a malformed structure are a fatal startup error** (not a runtime 503).
 
 ---
 
