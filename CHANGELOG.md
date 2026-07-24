@@ -211,8 +211,9 @@ the release's security headline: 1.x keys never expired; 1.5.0 keys are signed t
   module can never silently open the door. `busbar --validate` catches it manifest-only ahead of
   boot, and `GET /api/v1/admin/plugins?type=auth` reports a loaded auth plugin. The bundled
   `oidc` module (`busbar-auth-oidc-plugin`, `auth.chain: [oidc]`) is the first such plugin.
-  **Hook plugins stay OUT-OF-PROCESS** (socket/webhook transports); they share the artifact,
-  trust, and inventory machinery but are not in-process `dlopen` consumers.
+  **Hook plugins are IN-PROCESS `dlopen` plugins too** (1.5.0 retired the out-of-process
+  socket/webhook hook transports): a hook is now a signed `kind: hook` plugin loaded in-process as a
+  routing policy, sharing the same artifact, trust, and inventory machinery as the store/auth plugins.
 - **Admin plugin API.** The admin surface manages the plugin catalog over its own versioned
   contract: list/inspect installed plugins (manifest, signature verdict, load status), install a
   signed tarball, and remove one - with the same trust pipeline as boot (an untrusted upload is
