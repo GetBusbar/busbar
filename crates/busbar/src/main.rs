@@ -1802,20 +1802,36 @@ fn resolve_signing_key(
 }
 
 /// Persist a generated signing key 0600 (owner read/write only) via a temp-file + rename so a
-/// concurrent reader never sees a torn key. On Unix the mode is set BEFORE the rename; on other
-/// platforms the OS default applies (best-effort). The bytes are hex-encoded (64 chars) so the file
-/// is a plain text secret an operator can also drop in via `auth.signing_key: { file: ... }`.
+/// concurrent reader never sees a torn key. On Unix the temp file is CREATED 0600 atomically (mode set
+/// at open, never briefly world-readable — L4); on other platforms the OS default applies (best-effort).
+/// The bytes are hex-encoded (64 chars) so the file is a plain text secret an operator can also drop in
+/// via `auth.signing_key: { file: ... }`.
 fn persist_signing_key(path: &std::path::Path, secret: &[u8; 32]) -> Result<(), String> {
+    use std::io::Write as _;
     let tmp = path.with_extension("key.tmp");
     let hex = hex::encode(secret);
-    std::fs::write(&tmp, hex.as_bytes())
-        .map_err(|e| format!("cannot write signing key '{}': {e}", tmp.display()))?;
+    // L4: create the temp file 0600 ATOMICALLY (O_CREAT | O_EXCL with the mode set at open) so the
+    // plaintext ed25519 signing key — the 1.5.0 key-minting root of trust — is NEVER briefly
+    // world-readable between `write` and a later `chmod`. Previously `fs::write` created it with the
+    // umask-default mode (~0644) and only chmod'd 0600 afterwards, a TOCTOU window in which another
+    // local user could read the key. `create_new(true)` also refuses to adopt a pre-planted file.
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))
-            .map_err(|e| format!("cannot chmod 0600 signing key '{}': {e}", tmp.display()))?;
+        use std::os::unix::fs::OpenOptionsExt as _;
+        opts.mode(0o600);
     }
+    let mut f = opts
+        .open(&tmp)
+        .map_err(|e| format!("cannot create signing key '{}': {e}", tmp.display()))?;
+    f.write_all(hex.as_bytes())
+        .and_then(|()| f.flush())
+        .and_then(|()| f.sync_all())
+        .map_err(|e| format!("cannot write signing key '{}': {e}", tmp.display()))?;
+    drop(f);
+    // Non-unix platforms cannot set the mode at open; the OS default applies (best-effort, matching
+    // the prior posture on those platforms — the sensitive-key concern is the multi-user unix host).
     std::fs::rename(&tmp, path)
         .map_err(|e| format!("cannot install signing key '{}': {e}", path.display()))?;
     Ok(())
