@@ -1,10 +1,10 @@
 # Plugins
 
-Busbar ships as one small static binary (~13 MB) with nothing compiled in that you did not
-ask for: no SQLite, no Postgres, no Redis. The default deploy needs no plugins at all. When you do
-need more, a durable store, a secret backend, auth or hook modules, you add
-exactly that capability as a signed plugin tarball dropped into a directory. Lightweight by
-default, extend when needed.
+Busbar ships as one small static binary (see the image-size badge on the repo) with nothing
+compiled in that you did not ask for: no SQLite built in — add it as a signed plugin — no Postgres,
+no Redis. The default deploy needs no plugins at all. When you do need more, a durable store, a
+secret backend, auth or hook modules, you add exactly that capability as a signed plugin tarball
+dropped into a directory. Lightweight by default, extend when needed.
 
 A plugin is a plugin: store, secret, auth, and hook plugins share ONE artifact format, ONE trust model, ONE
 loader, and ONE inventory (`busbar --list-plugins`). The manifest `kind` field is the only
@@ -18,11 +18,12 @@ the `plugin-*` crates, and the engine crate keeps `#![forbid(unsafe_code)]` with
 
 - [The artifact](#the-artifact)
 - [Enabling plugins](#enabling-plugins)
-- [Building a plugin](#building-a-plugin)
+- [Building a store plugin](#building-a-store-plugin)
 - [Secret plugins (`kind: secret`)](#secret-plugins-kind-secret)
 - [Auth plugins (`kind: auth`)](#auth-plugins-kind-auth)
 - [Hook plugins (`kind: hook`)](#hook-plugins-kind-hook)
 - [Signing and packaging](#signing-and-packaging)
+- [Fail-closed loading](#fail-closed-loading)
 - [How plugins are secured](#how-plugins-are-secured)
 - [Inspecting and validating](#inspecting-and-validating)
 
@@ -40,7 +41,7 @@ One plugin is one `.tar.gz` per (plugin, target) containing exactly two members:
   "kind": "store",
   "version": "1.5.0",
   "publisher": "busbar",
-  "abi_version": 1,
+  "abi_version": 4,
   "sha256": "<64-hex sha256 of the cdylib bytes>",
   "signature": "<128-hex ed25519 signature over the canonical manifest>",
   "description": "busbar redis store plugin",
@@ -56,8 +57,11 @@ you can name the tarball anything.
 
 `name` is the canonical identity (`[a-z0-9-]+`, e.g. `busbar-store-redis`); `alias` is the short
 config name (`redis`). `store.module:` accepts either. `kind` is `store`, `secret`, `auth`, or `hook`.
-`version` is strict semver. `abi_version` declares which Busbar C ABI generation the cdylib was
-built against (currently `1` for every kind).
+`version` is strict semver. `abi_version` declares which per-kind payload-schema generation the
+cdylib was built against — it is set **per kind** (`store` is at `4`; `secret`, `auth`, and `hook`
+are at `1`). The loader enforces a supported-version RANGE per kind, so a plugin built against an
+outdated (or too-new) ABI is refused at load rather than mis-called. See `busbar-plugin-abi` for the
+authoritative versions.
 
 ## Enabling plugins
 
@@ -85,9 +89,10 @@ With `enabled: false` (or the block absent) a tarball in the directory is inert:
 read it, and referencing a plugin store (`store.module: redis`) fails boot with an error naming
 `plugins.enabled`. See [configuration.md](configuration.md#plugins) for the field reference.
 
-## Building a plugin
+## Building a store plugin
 
-A store plugin in Rust is small. Implement the `busbar_api::Store` trait (or wrap an existing
+The kind-specific sections below carry the auth, secret, and hook build examples. A store plugin in
+Rust is small. Implement the `busbar_api::Store` trait (or wrap an existing
 implementation), adapt the JSON config Busbar passes at open, and let the SDK emit the C glue:
 
 ```rust
@@ -111,8 +116,9 @@ fn open(cfg: &str) -> Result<Box<dyn Store>, String> {
 busbar_plugin_sdk::export_store_plugin!(open);
 ```
 
-`export_store_plugin!` emits the five extern-C symbols of the store ABI (`busbar_store_abi_version`,
-`open`, `call`, `free`, `close`). Every store operation rides one `call` symbol as a
+`export_store_plugin!` emits the six kind-neutral extern-C symbols of the plugin ABI (`busbar_abi`,
+`busbar_plugin_kind`, `busbar_open`, `busbar_call`, `busbar_free`, `busbar_close`). Every store
+operation rides one `busbar_call` symbol as a
 JSON-serialized `StoreRequest`/`StoreResponse` pair, so the symbol set never grows as the trait
 does, and a plugin can equally be written in C, Go, or Zig against the same contract
 (`busbar-plugin-abi` is the source of truth). The store sits off the request hot path
@@ -162,8 +168,9 @@ providers:
 > references* (fetching key material from a backend). The built-in `keys` module in `auth.chain`
 > is data-plane **virtual-key auth** — it verifies the Busbar-signed caller tokens minted through
 > the Admin API. Different layers: one supplies secret VALUES to the config, the other
-> AUTHENTICATES callers. See [configuration.md](configuration.md#plugins) for the secret-reference
-> shape and [configuration.md → `auth`](configuration.md#auth) for the `keys` module.
+> AUTHENTICATES callers. See [configuration.md → environment interpolation](configuration.md#environment-interpolation)
+> for the secret-reference shape (`{ env: VAR }` / `{ file: /path }` / `{ module: <secret-plugin>, settings: {...} }`)
+> and [configuration.md → `auth`](configuration.md#auth) for the `keys` module.
 
 ## Auth plugins (`kind: auth`)
 
@@ -259,9 +266,8 @@ busbar_plugin_sdk::export_hook_plugin!(open);
 ```
 
 `export_hook_plugin!` emits the six extern-C hybrid ABI symbols. Every op rides the one `busbar_call`
-as an op-discriminated JSON envelope — the same `decide`/`transform`/`notify`/`configure`/`describe`/
-`status` payload contract as the socket/webhook wire, lifted verbatim, so a hook's semantics are
-identical whichever transport carries them. The engine translates each `HookHandler` method into a
+as an op-discriminated JSON envelope — the `decide`/`transform`/`notify`/`configure`/`describe`/
+`status` payload contract, one op per envelope. The engine translates each `HookHandler` method into a
 `busbar_call` and parses the reply through the ONE `hooks::wire` fail-closed normalizer, so the
 dlopen and out-of-process seams can never diverge on reject-precedence, the status clamp, or
 restrict/rewrite parsing. A hook never sees `prompt`/`user` content it was not granted: the engine
@@ -318,11 +324,11 @@ the grant-declaration flags `--needs-prompt <no|ro|rw>` and `--needs-user <no|ro
 signed manifest `needs` field — the core enforces the actual projection, so a plugin can never
 receive more than it declared.
 
-Busbar's own store plugins are built, signed (the `BUSBAR_SIGN_KEY` CI secret), and attached to
-each GitHub Release per target by the release workflow; release binaries embed the matching public
-key, so first-party plugins verify with zero configuration.
+Busbar's own plugins (store, auth, and hook) are built, signed (the `BUSBAR_SIGN_KEY` CI secret),
+and attached to each GitHub Release per target by the release workflow; release binaries embed the
+matching public key, so first-party plugins verify with zero configuration.
 
-### Fail-closed loading
+## Fail-closed loading
 
 The guarantee is uniform across every plugin kind: a configured plugin that cannot load — a
 missing or untrusted tarball, the wrong `kind`, a `dlopen`/ABI failure, or a reference to a plugin
