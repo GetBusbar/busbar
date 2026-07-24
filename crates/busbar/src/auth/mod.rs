@@ -913,6 +913,13 @@ pub(crate) async fn auth_middleware(
                 // A per-section overlay reset discards a whole section back to base config — a
                 // blast-radius revert (rebuilds the App), so it meters in the tight CONFIG class.
                 || rel.starts_with("/overlay/")
+                // The two PLUGIN SWAP endpoints do a full `rebuild_app_from_disk` + `handle.swap`
+                // (identical blast radius to `config/reload`), so they belong in the tight CONFIG
+                // class too — not the 6×-looser CRUD budget (M7). `/plugins/reload` and
+                // `/plugins/rollback` only; `/plugins` (install/list) and `/plugins/{file}` (delete)
+                // do NOT swap the App, so they stay CRUD.
+                || rel == "/plugins/reload"
+                || rel == "/plugins/rollback"
             {
                 crate::admin::rate::MutationClass::Config
             } else {
