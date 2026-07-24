@@ -1,17 +1,17 @@
 # Plugins
 
-Busbar ships as one small static binary (about 9.4 MB) with nothing compiled in that you did not
+Busbar ships as one small static binary (~13 MB) with nothing compiled in that you did not
 ask for: no SQLite, no Postgres, no Redis. The default deploy needs no plugins at all. When you do
 need more, a durable store, a secret backend, auth or hook modules, you add
 exactly that capability as a signed plugin tarball dropped into a directory. Lightweight by
 default, extend when needed.
 
-A plugin is a plugin: store, auth, and hook plugins share ONE artifact format, ONE trust model, ONE
+A plugin is a plugin: store, secret, auth, and hook plugins share ONE artifact format, ONE trust model, ONE
 loader, and ONE inventory (`busbar --list-plugins`). The manifest `kind` field is the only
 discriminator; it selects which C ABI the cdylib exports and which engine subsystem consumes it.
-The engine itself never sees any of this machinery. It receives a `dyn Store` (or, as those seams
-open, `dyn Auth` / `dyn Hook`) trait object through the `busbar-api` contract, exactly as if the
-backend had been compiled in. The engine cannot tell a dynamic plugin from a built-in, and the
+The engine itself never sees any of this machinery. It receives a `dyn Store` (or a `dyn Secret` /
+`dyn AuthModule` / `dyn HookHandler`) trait object through the `busbar-api` contract, exactly as if
+the backend had been compiled in. The engine cannot tell a dynamic plugin from a built-in, and the
 crate boundaries enforce it: all plugin discovery, unpacking, verification, and loading lives in
 the `plugin-*` crates, and the engine crate keeps `#![forbid(unsafe_code)]` with every FFI
 `unsafe` isolated in `busbar-plugin-loader`.
@@ -19,6 +19,9 @@ the `plugin-*` crates, and the engine crate keeps `#![forbid(unsafe_code)]` with
 - [The artifact](#the-artifact)
 - [Enabling plugins](#enabling-plugins)
 - [Building a plugin](#building-a-plugin)
+- [Secret plugins (`kind: secret`)](#secret-plugins-kind-secret)
+- [Auth plugins (`kind: auth`)](#auth-plugins-kind-auth)
+- [Hook plugins (`kind: hook`)](#hook-plugins-kind-hook)
 - [Signing and packaging](#signing-and-packaging)
 - [How plugins are secured](#how-plugins-are-secured)
 - [Inspecting and validating](#inspecting-and-validating)
@@ -122,6 +125,46 @@ cargo build --release -p my-store-plugin                      # host target
 cargo build --release -p my-store-plugin --target aarch64-unknown-linux-gnu
 ```
 
+## Secret plugins (`kind: secret`)
+
+Every secret value in the config — provider `api_key`, `auth.signing_key`, the admin token, each
+TLS `cert`/`key`/`client_ca` — is a secret **reference**, not a literal. The two built-in reference
+forms (`{ env: VAR }` and `{ file: /path }`) need no plugin. A `kind: secret` plugin adds a third
+form, `{ module: <secret-plugin>, settings: {...} }`, so a reference resolves from an external
+secrets backend (a vault, a cloud secret manager) through the same signed-plugin trust pipeline.
+This is the plugin you reach for when key material must never sit in an env var or an on-disk file.
+
+A secret plugin implements `busbar_api::Secret` (`resolve(key) -> SecretBytes`). Busbar resolves
+every reference **once at boot** (and on each hot config-apply), before the value crosses any other
+ABI, so a raw secret is never logged and never written back to the overlay — only the reference is
+persisted. An unresolvable reference is a fatal boot / config-apply error naming the reference.
+
+```rust
+// crate-type = ["cdylib"]; deps: busbar-api, busbar-plugin-sdk, serde_json
+use busbar_api::Secret;
+
+fn open(cfg: &str) -> Result<Box<dyn Secret>, String> {
+    // `cfg` is the secret module's own `settings:` map (e.g. the vault address + auth), verbatim JSON.
+    Ok(Box::new(MyVault::connect(cfg)?))
+}
+busbar_plugin_sdk::export_secret_plugin!(open);
+```
+
+Reference it from any secret field — for example a provider credential pulled from a vault:
+
+```yaml
+providers:
+  openai:
+    api_key: { module: acme-vault, settings: { path: "kv/data/openai#api_key" } }
+```
+
+> **Not the built-in `keys` auth module.** A `kind: secret` plugin resolves *config secret
+> references* (fetching key material from a backend). The built-in `keys` module in `auth.chain`
+> is data-plane **virtual-key auth** — it verifies the Busbar-signed caller tokens minted through
+> the Admin API. Different layers: one supplies secret VALUES to the config, the other
+> AUTHENTICATES callers. See [configuration.md](configuration.md#plugins) for the secret-reference
+> shape and [configuration.md → `auth`](configuration.md#auth) for the `keys` module.
+
 ## Auth plugins (`kind: auth`)
 
 A `kind: auth` plugin is a first-class **identity provider**: it implements the same
@@ -164,27 +207,24 @@ which group's limits, which admin scope) is resolved by Busbar from `auth.role_b
 module. Crucially, `<module>` is the value the plugin returns from **`name()`** — its runtime
 identity — NOT the config alias you write in `auth.chain`. Bind roles under that name.
 
-**Fail-closed, always:** a configured auth plugin that cannot load (missing/untrusted tarball, wrong
-kind, or a `dlopen`/ABI failure) is a **hard boot error** — the front door never silently opens
-because a module was dropped. `--validate` catches a missing/wrong-kind/untrusted auth plugin
-manifest-only, before boot; and referencing an auth plugin while `plugins.enabled: false` is refused,
-naming the flag.
+Like every configured plugin, an auth plugin that cannot load is a hard error and never silently
+degrades — see [Fail-closed loading](#fail-closed-loading), below.
 
 The bundled **`oidc`** module (`busbar-auth-oidc-plugin`) is exactly such a plugin — see
 [configuration.md](configuration.md#auth-plugins) for the `auth.chain: [oidc]` + `settings:` recipe
 (including an Entra ID example).
 
-Hook plugins (`kind: hook`) load over the same signed hybrid ABI as store, secret, and auth
-plugins. They are in-process dlopen consumers: the hook `cdylib` exports the six kind-neutral C
-symbols (`busbar_abi`, `busbar_plugin_kind`, `busbar_open`, `busbar_call`, `busbar_free`,
-`busbar_close`) and the engine loads and calls it directly. Trust is signature-based, not
-process-based: the manifest `kind` is cross-checked against `busbar_plugin_kind()` at load, and
-the signed `needs` field caps what grants the plugin may receive. For process isolation of
-out-of-process logic, the first-party `busbar-webrequest-hook` plugin forwards the decision to an
-HTTPS sidecar (1.5.0 retired the standalone built-in `socket`/`webhook` transports; a hook is now
-always a signed plugin).
-
 ## Hook plugins (`kind: hook`)
+
+Hook plugins load over the same signed hybrid ABI as store, secret, and auth plugins. They are
+in-process dlopen consumers: the hook `cdylib` exports the six kind-neutral C symbols
+(`busbar_abi`, `busbar_plugin_kind`, `busbar_open`, `busbar_call`, `busbar_free`, `busbar_close`)
+and the engine loads and calls it directly. Trust is signature-based, not process-based: the
+manifest `kind` is cross-checked against `busbar_plugin_kind()` at load, and the signed `needs`
+field caps what grants the plugin may receive. For process isolation of out-of-process logic, the
+first-party `busbar-webrequest-hook` plugin forwards the decision to an HTTPS sidecar (1.5.0
+retired the standalone built-in `socket`/`webhook` transports; a hook is now always a signed
+plugin).
 
 A hook plugin implements the SDK's `HookHandler` trait: one method per op, each receiving the op's
 payload as the opaque projection `serde_json::Value` the engine built and returning the reply object
@@ -228,22 +268,13 @@ restrict/rewrite parsing. A hook never sees `prompt`/`user` content it was not g
 projects those keys into `payload` only when BOTH the operator grant and the signed-manifest `needs`
 allow it.
 
-Pack with grant declarations (the core enforces the actual projection; the plugin cannot self-grant
-above what it declares):
+A hook is packed and signed like any other plugin (see [Signing and packaging](#signing-and-packaging)),
+with one hook-specific addition: `--needs-prompt` / `--needs-user` declare the plugin's grant intent
+in the signed manifest `needs` field. The core enforces the actual projection, so a plugin can never
+self-grant above what it declares.
 
-```sh
-BUSBAR_SIGN_KEY=9f2c... busbar-plugin-pack pack \
-    --lib target/release/libmy_gate.so \
-    --name acme-pii-hook --alias pii-guard --kind hook \
-    --version 1.0.0 --publisher acme \
-    --needs-prompt ro \          # declare: this plugin reads prompt text
-    --license Apache-2.0 \
-    --out acme-pii-hook-1.0.0-x86_64-linux.tar.gz
-```
-
-**Fail-closed, always:** a configured `kind: hook` module that cannot load (missing/untrusted
-tarball, wrong kind, ABI failure) is a hard error on the config-apply path — a dropped security
-gate never silently disappears. `busbar --validate` catches it manifest-only ahead of boot.
+As with every plugin kind, a configured `kind: hook` module that cannot load fails closed — see
+[Fail-closed loading](#fail-closed-loading), below.
 
 **Shipped first-party hook plugins (1.5.0):**
 
@@ -282,9 +313,23 @@ against the same structural validation Busbar runs at load, and writes the tarba
 development, `--allow-unsigned` (with no `BUSBAR_SIGN_KEY`) packages an unsigned tarball that
 Busbar loads only under `plugins.trust.allow_unsigned: true`.
 
+`--kind` selects the plugin kind (`store` / `secret` / `auth` / `hook`). A `kind: hook` pack adds
+the grant-declaration flags `--needs-prompt <no|ro|rw>` and `--needs-user <no|ro>`, which stamp the
+signed manifest `needs` field — the core enforces the actual projection, so a plugin can never
+receive more than it declared.
+
 Busbar's own store plugins are built, signed (the `BUSBAR_SIGN_KEY` CI secret), and attached to
 each GitHub Release per target by the release workflow; release binaries embed the matching public
 key, so first-party plugins verify with zero configuration.
+
+### Fail-closed loading
+
+The guarantee is uniform across every plugin kind: a configured plugin that cannot load — a
+missing or untrusted tarball, the wrong `kind`, a `dlopen`/ABI failure, or a reference to a plugin
+while `plugins.enabled: false` — is a **hard boot / config-apply error**, named at the flag or file.
+A dropped store, secret backend, auth module, or security gate never silently disappears or
+degrades to open. `busbar --validate` catches every one of these manifest-only, before boot, so a
+clean validate means a clean load.
 
 ## How plugins are secured
 
@@ -337,8 +382,7 @@ into the binary.
 
 ## Licensing a plugin
 
-Busbar itself is license-agnostic: the core never gates a plugin on a license — a license check is
-the plugin author's concern, not the gateway's. If a plugin needs one, put a `licenseKey` (or any
+A license check is the plugin author's concern, not the gateway's. If a plugin needs one, put a `licenseKey` (or any
 key it expects) in that plugin's `settings:`, and let the plugin validate it on `open`. The value
 may be a `SecretRef`, in which case the core resolves it against the secret backend **before** the
 settings cross the ABI, so a raw key never has to sit in plaintext config, is never logged, and is
