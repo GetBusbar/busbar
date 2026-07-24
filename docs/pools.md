@@ -66,27 +66,11 @@ A pool names at most one strategy (a bare name) plus any number of inline `kind:
 
 ## Config reference
 
-**Pool fields**
+The field-by-field reference — every pool and member field with its type, default, and validation rule — lives in one place: **[Configuration → `pools`](/docs/configuration/#pools)**. This guide stays conceptual so the two never drift.
 
-| Field | Type | Default | Notes |
-|---|---|---|---|
-| `members` | list | required | The lanes in this pool (see below). |
-| `hooks` | list | `[]` | This pool's ordering strategy (`weighted`/`cheapest`/`fastest`/`least_busy`/`usage`, at most one, a bare name) plus any gates as inline `kind: hook` plugin refs (`{ module: <hook-plugin>, settings: {...} }`; needs `plugins.enabled: true`). |
-| `affinity` | object | none | `mode: session` pins a session to a lane by `header_name` (default `x-session-id`). |
+In short: a pool takes a list of `members` (each a `model` lane with an optional `weight`, `context_max`, `tier`, and `tags`), an optional `hooks` list (one ordering strategy — `weighted`/`cheapest`/`fastest`/`least_busy`/`usage` — plus any gates as inline `kind: hook` plugin refs), and optional `affinity`, `breaker`, `failover`, and `on_exhausted` blocks.
 
-See the [Hooks guide](/docs/hooks/) for every selection strategy, the ordering-hook contract, and the full hook model, [Circuit breaker](/docs/circuit-breaker/#circuit-breaker-configuration) for the per-pool `breaker` block, and [In-flight failover](/docs/failover/) for `failover` and `on_exhausted`.
-
-**Member fields**
-
-| Field | Type | Default | Notes |
-|---|---|---|---|
-| `target` | string | required | A model name (a `models:` entry). |
-| `weight` | integer | `1` | Relative SWRR share over healthy members. Must be ≥ 1. |
-| `context_max` | integer | none | This lane's context window; requests larger than it fail over to a bigger lane. |
-| `tier` | string | none | Routing tier label (e.g. `primary`, `overflow`); read by policies. |
-| `tags` | list | `[]` | Free-form labels read by ordering/gate hooks. |
-
-`tier` and `tags` are consumed by the selection strategies and ordering hooks (each candidate's cost signal derives from the top-level `rate_card`); see [What a gate receives](hooks.md#what-a-gate-receives) for the full signal set each candidate carries.
+Each block with its own guide: [Hooks](/docs/hooks/) for the selection strategies, the ordering-hook contract, and [what a gate receives](hooks.md#what-a-gate-receives); [Circuit breaker](/docs/circuit-breaker/#circuit-breaker-configuration) for the per-pool `breaker` block; and [In-flight failover](/docs/failover/) for `failover` and `on_exhausted`.
 
 ## Multi-protocol pools
 
