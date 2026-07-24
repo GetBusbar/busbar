@@ -1168,16 +1168,21 @@ pub(crate) async fn delete_group(
         audit::AUDIT.record_by("group.delete", &resource, audit::OUTCOME_REJECTED, &actor);
         return err_json(&AdminError::NotFound(format!("group `{name}`")));
     }
-    if let Some(e) = stale_if_match(expected, current.config_version) {
-        audit::AUDIT.record_by("group.delete", &resource, audit::OUTCOME_REJECTED, &actor);
-        return err_json(&e);
-    }
+    // Base-config guard BEFORE the If-Match staleness check, matching the precedence `put_group`
+    // and `patch_group` establish on this resource: a base-config group can NEVER be deleted via
+    // the API, so that terminal `conflict` must win over the retryable `version_conflict`. The
+    // prior order returned `version_conflict` for a stale-ETag DELETE on a base group, trapping an
+    // auto-retry-on-conflict client in a re-read/retry loop that never sees the terminal error.
     if current.base_group_names.contains(&name) {
         audit::AUDIT.record_by("group.delete", &resource, audit::OUTCOME_REJECTED, &actor);
         return err_json(&AdminError::Conflict(format!(
             "group `{name}` is defined in the base config file; edit config.yaml (the API cannot \
              silently shadow operator file config)"
         )));
+    }
+    if let Some(e) = stale_if_match(expected, current.config_version) {
+        audit::AUDIT.record_by("group.delete", &resource, audit::OUTCOME_REJECTED, &actor);
+        return err_json(&e);
     }
     match build_without_group(&current, &name) {
         Ok(next) => {
@@ -3275,6 +3280,11 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             &[
                 ("enabled", "Filter by enabled state (`true`|`false`)", false),
                 ("prefix", "Filter by key-id prefix", false),
+                (
+                    "group",
+                    "Filter by bound group (a `user:<sub>` leaf's keys are one person's)",
+                    false,
+                ),
                 ("limit", "Page size (default 200, max 1000)", false),
                 (
                     "cursor",

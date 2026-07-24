@@ -496,7 +496,7 @@
         "type": "object"
       },
       "CreatedKeyView": {
-        "description": "`POST /keys` (mint) — the key metadata plus the ONCE-shown secret, and (when an AWS SigV4\ncredential was requested) the AccessKeyId + secret access key. The AWS fields are absent on a\nbearer-only mint.",
+        "description": "`POST /keys` (mint) — the key metadata plus the ONCE-shown signed token, and (when an AWS SigV4\ncredential was requested) the AccessKeyId + secret access key. The AWS fields are absent on a\nbearer-only mint.",
         "properties": {
           "allowed_pools": {
             "items": {
@@ -529,11 +529,21 @@
           "enabled": {
             "type": "boolean"
           },
+          "expires_at": {
+            "description": "Unix-seconds expiry of the signed token.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
           "group": {
             "type": [
               "string",
               "null"
             ]
+          },
+          "group_provisioned": {
+            "description": "Whether this mint AUTO-PROVISIONED its bound group leaf (self-service D2) — lets a portal\ndistinguish \"bound to an existing bucket\" from \"created your personal bucket + bound\".",
+            "type": "boolean"
           },
           "id": {
             "type": "string"
@@ -547,8 +557,8 @@
           "name": {
             "type": "string"
           },
-          "secret": {
-            "description": "The bearer secret — shown EXACTLY once, never returned by any read.",
+          "token": {
+            "description": "The busbar-SIGNED token — the key credential (1.5.0, S1), shown EXACTLY once and never\nreturned by any read. (This is the field a client must capture to authenticate.)",
             "type": "string"
           }
         },
@@ -560,7 +570,9 @@
           "enabled",
           "created_at",
           "labels",
-          "secret"
+          "token",
+          "expires_at",
+          "group_provisioned"
         ],
         "type": "object"
       },
@@ -4499,6 +4511,15 @@
             "description": "Filter by key-id prefix",
             "in": "query",
             "name": "prefix",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter by bound group (a `user:<sub>` leaf's keys are one person's)",
+            "in": "query",
+            "name": "group",
             "required": false,
             "schema": {
               "type": "string"
