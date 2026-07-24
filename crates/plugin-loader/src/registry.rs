@@ -585,6 +585,7 @@ mod tests {
         TrustPolicy {
             first_party_key: Some(first_party.verifying_key()),
             binary_version: "1.5.0".into(),
+            first_party_floors: Default::default(),
             publishers: Default::default(),
             allow_unsigned: false,
             allow_third_party: false,

@@ -44,6 +44,29 @@ pub use registry::{
 };
 pub use stage::sweep_dead_staging;
 
+/// INTERN a plugin name into a stable `&'static str`, reusing one allocation per unique name (L1).
+///
+/// `DlopenPolicy`/`DynAuth` carry `name: &'static str`, and a name string used to be `Box::leak`ed on
+/// EVERY open — but `open_hook`/`open_auth` run per config/plugin reload, per `push_configure`, per
+/// `fetch_status` (every Prometheus `/metrics/hooks` scrape refresh), per `fetch_schema`, and per
+/// `resolve_on_error_chain`, so the leak was per-CALL and unbounded over the process lifetime, driven
+/// by routine external scraping. Interning bounds it to ONE leak per DISTINCT plugin name for the life
+/// of the process: a repeated open of the same plugin reuses the interned `&'static str`.
+pub(crate) fn intern_name(name: &str) -> &'static str {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+    static INTERNED: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
+    let set = INTERNED.get_or_init(|| Mutex::new(HashSet::new()));
+    let mut guard = set.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(existing) = guard.get(name) {
+        return existing;
+    }
+    // First sighting of this name: leak it ONCE, then remember it so future opens reuse this alloc.
+    let leaked: &'static str = Box::leak(name.to_string().into_boxed_str());
+    guard.insert(leaked);
+    leaked
+}
+
 /// The resolved core C fn pointers + the opaque handle + the mapped library + staging backing, shared
 /// by every kind's typed wrapper. The KIND is bound at construction (cross-checked against the signed
 /// manifest) and then carried by the typed `DynStore`/`DynSecret`/`DynAuth`.
@@ -79,7 +102,13 @@ impl RawPlugin {
             serde_json::to_vec(req).map_err(|e| format!("plugin request encode failed: {e}"))?;
         let mut out: *mut u8 = std::ptr::null_mut();
         let mut out_len: usize = 0;
-        let status = unsafe {
+        // L6: catch any panic that unwinds across the `busbar_call` C-ABI boundary, for PARITY with the
+        // hook seam (`DlopenPolicy::call`). SDK-built plugins catch panics plugin-side, but a signed
+        // third-party (trust=signature, in-process) plugin NOT built with the busbar SDK that panics
+        // outside a caught region would otherwise unwind across the C-ABI boundary → process abort. All
+        // kinds (store/secret/auth) route their FFI call through here, so this is the single seam that
+        // fails such a plugin CLOSED instead of aborting the engine.
+        let status = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
             (self.call)(
                 self.handle,
                 payload.as_ptr(),
@@ -87,7 +116,13 @@ impl RawPlugin {
                 &mut out,
                 &mut out_len,
             )
-        };
+        }))
+        .map_err(|_| {
+            format!(
+                "plugin '{}' panicked across the ABI boundary (call aborted, treated as failure)",
+                self.path
+            )
+        })?;
         // Cap-reject BEFORE reading; still hand the buffer back to the plugin to free (it owns it).
         if let Err(msg) = response_len_ok(out_len, &self.path) {
             if !out.is_null() {
@@ -135,6 +170,33 @@ fn wire_up_raw(
     manifest_kind: &str,
     backing: Option<stage::Staged>,
 ) -> Result<RawPlugin, String> {
+    // L2: hold the mapped library + its staged backing in a guard whose fields drop in the CORRECT
+    // order — `lib` BEFORE `backing` — so that on ANY early `?`/error return below the library is
+    // UNLOADED before the staged file is removed (Windows refuses `remove_file` on a still-mapped DLL;
+    // the inverted order silently leaked the orphan). Function parameters otherwise drop in REVERSE
+    // declaration order (`backing` first), which is exactly the wrong order. On the success path we
+    // `.disarm()` the guard to move both out into the `RawPlugin` (which has the same field order).
+    struct LoadGuard {
+        lib: Option<Library>,
+        backing: Option<stage::Staged>,
+    }
+    impl LoadGuard {
+        fn disarm(mut self) -> (Library, Option<stage::Staged>) {
+            (self.lib.take().expect("lib present"), self.backing.take())
+        }
+    }
+    impl Drop for LoadGuard {
+        fn drop(&mut self) {
+            // Explicit UNLOAD-then-REMOVE: drop the library first, then the staged backing.
+            self.lib.take();
+            self.backing.take();
+        }
+    }
+    let guard = LoadGuard {
+        lib: Some(lib),
+        backing,
+    };
+    let lib = guard.lib.as_ref().expect("lib present");
     // ── 1. Transport handshake FIRST — refuse a non-matching transport before resolving open/call. ──
     let transport = unsafe {
         let f = lib
@@ -150,7 +212,7 @@ fn wire_up_raw(
 
     // ── 2. Kind bound at load — read the exported kind, cross-check it against the seam AND the
     //       signed manifest. Any disagreement is a hard fail-closed load error naming both. ──
-    let exported_kind = read_plugin_kind(&lib, &display)?;
+    let exported_kind = read_plugin_kind(lib, &display)?;
     if exported_kind != expected_kind {
         return Err(format!(
             "plugin '{display}' exports kind '{exported_kind}' but is being loaded as '{expected_kind}'"
@@ -205,6 +267,9 @@ fn wire_up_raw(
         return Err(format!("plugin '{display}' open failed: {msg}"));
     }
 
+    // Success: disarm the guard and move the library + backing into the RawPlugin (whose fields drop
+    // in the same lib-before-backing order).
+    let (lib, backing) = guard.disarm();
     Ok(RawPlugin {
         handle,
         call,
@@ -265,6 +330,14 @@ fn response_len_ok(out_len: usize, path: &str) -> Result<(), String> {
 /// The plugin returned a response variant that doesn't match the request — a contract violation.
 fn unexpected(resp: StoreResponse) -> StoreError {
     StoreError(format!("plugin returned an unexpected response: {resp:?}"))
+}
+
+/// Whether a store error is the OLD-SDK "this request variant is unknown" signal (L5) — a plugin built
+/// against an SDK that predates a request variant fails to DESERIALIZE it, which serde surfaces as an
+/// "unknown variant" decode error. Only this narrow case is a legitimate empty-fallback; every other
+/// error (transient I/O, pool exhaustion, timeout) is a real failure that must propagate fail-closed.
+fn is_unknown_variant_error(e: &StoreError) -> bool {
+    e.0.contains("unknown variant")
 }
 
 impl Store for DynStore {
@@ -429,12 +502,18 @@ impl Store for DynStore {
     }
 
     fn list_denylist(&self) -> StoreResult<Vec<String>> {
-        // A plugin built against an older SDK rejects the unknown variant; fall back to the trait
-        // default (empty) so an old durable plugin hydrates nothing rather than failing boot.
+        // L5: a plugin built against an OLDER SDK cannot deserialize the `ListDenylist` request
+        // variant, and serde surfaces that as an "unknown variant" decode error — for THAT case we
+        // fall back to the trait default (empty) so an old durable plugin hydrates nothing rather than
+        // failing boot. But a REAL store error (transient I/O, pool exhaustion, timeout) must NOT be
+        // swallowed: swallowing it hydrated an EMPTY denylist and accepted revoked tokens until the
+        // next healthy restart (a fail-OPEN of the revocation list). Propagate anything that is not the
+        // old-SDK unknown-variant signal so boot fails CLOSED on a genuine store error.
         match self.call_raw(StoreRequest::ListDenylist) {
             Ok(StoreResponse::Denylist(d)) => Ok(d),
             Ok(other) => Err(unexpected(other)),
-            Err(_) => Ok(Vec::new()),
+            Err(e) if is_unknown_variant_error(&e) => Ok(Vec::new()),
+            Err(e) => Err(e),
         }
     }
 }

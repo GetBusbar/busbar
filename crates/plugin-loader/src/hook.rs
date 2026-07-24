@@ -233,7 +233,9 @@ pub fn load_hook_from_bytes(
         manifest_kind,
         Some(staged),
     )?;
-    let name: &'static str = Box::leak(name.to_string().into_boxed_str());
+    // L1: intern the name to a `&'static str` reused across opens of the same plugin, rather than
+    // leaking a fresh allocation on every open (this runs per reload/configure/status/schema scrape).
+    let name: &'static str = crate::intern_name(name);
     Ok(Arc::new(DlopenPolicy {
         raw: Arc::new(raw),
         projectors,
