@@ -139,6 +139,25 @@ pub(crate) struct CacheFlushView {
     pub(crate) flushed: usize,
 }
 
+/// `POST /keys/{id}/revoke` — the revoked key's id (denylisted without deleting the binding). 1.5.0.
+#[derive(Serialize, JsonSchema)]
+pub(crate) struct RevokeView {
+    /// The id that was revoked (durably denylisted; the binding record remains).
+    pub(crate) revoked: String,
+}
+
+/// `POST /signing-key/rotate` — the current key-signing key id plus the REVOKE-ALL warning. 1.5.0 is
+/// single-key: the actual swap is an operator action, so this reports intent, not an in-process swap.
+#[derive(Serialize, JsonSchema)]
+pub(crate) struct SigningKeyRotateView {
+    /// The current signing-key id (`kid`) that tokens are minted under.
+    pub(crate) current_kid: String,
+    /// Always `true`: rotating the signing key revokes every outstanding key (all must be re-minted).
+    pub(crate) revoke_all: bool,
+    /// Human-readable guidance for the operator-driven lockstep rotation.
+    pub(crate) message: String,
+}
+
 /// `GET`/`PUT /config/settings` (1.5.0 full-config coverage) — the API-settable single-value config
 /// overlay (`root` section) and, on a PUT, the apply metadata. `settings` is the CURRENT effective
 /// root override (the merge of prior overlay + this request), overlay-persisted so it survives a
