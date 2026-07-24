@@ -40,7 +40,7 @@ pub(crate) fn build(
         client_secret: client_secret.to_string(),
         token_url: token_url.to_string(),
         scope: scope.to_string(),
-        http: super::minter_client(),
+        http: super::minter_client()?,
     });
     let minter: Minter = Arc::new(move || {
         let creds = creds.clone();

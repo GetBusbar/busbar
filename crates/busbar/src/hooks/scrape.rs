@@ -69,6 +69,21 @@ fn store(name: &str, metrics: Vec<HookMetric>, now: u64) {
     );
 }
 
+/// Evict cache entries for hooks no longer in the current registry (removed/renamed on a config
+/// reload). Without this, the process-global `CACHE` retains a dead `(name, Cached)` entry for the
+/// process lifetime for every hook name ever configured — an unbounded (operator-driven) retention
+/// under frequent hook churn, and dead series would keep rendering in `/metrics/hooks`. `keep` is the
+/// set of currently-configured hook names. Skips the lock entirely when nothing needs pruning.
+fn prune_absent<'a>(keep: impl Iterator<Item = &'a str>) {
+    let keep: std::collections::HashSet<&str> = keep.collect();
+    let mut guard = CACHE.write().unwrap_or_else(|e| e.into_inner());
+    if let Some(m) = guard.as_mut() {
+        if m.keys().any(|k| !keep.contains(k.as_str())) {
+            m.retain(|k, _| keep.contains(k.as_str()));
+        }
+    }
+}
+
 /// Snapshot the current cache as `(hook_name, metrics)` pairs for rendering. Clones the small parsed
 /// metric structs (≤64 per hook) so the render never holds the lock across formatting.
 fn snapshot() -> Vec<(String, Vec<HookMetric>)> {
@@ -111,6 +126,9 @@ async fn refresh(
 /// (the NEXT scrape sees it) and render the current cache now. The handler never awaits a hook.
 pub(crate) fn render(app: &Arc<crate::state::App>) -> String {
     let now = crate::store::now();
+    // Evict cache entries for hooks removed/renamed in a config reload so stale series stop
+    // rendering and the process-global cache can't grow unbounded across reloads.
+    prune_absent(app.hook_registry.keys().map(String::as_str));
     // Fire async refreshes for stale hooks; never block the scrape on them.
     for (name, hook) in app.hook_registry.iter() {
         if is_stale(name, now) {

@@ -32,13 +32,17 @@ pub(crate) mod oauth_client_credentials;
 ///   * bounded connect + overall timeouts — a stalled token endpoint must not hang the mint/refresh
 ///     future forever (the refresh loop only retries on `Err`, so a hang would silently freeze the
 ///     lane's token and serve an empty bearer → upstream 401).
-pub(crate) fn minter_client() -> reqwest::Client {
+pub(crate) fn minter_client() -> Result<reqwest::Client, String> {
+    // `build` errors only when TLS init fails (native-tls unavailable/broken). Return the error so a
+    // degraded-TLS environment disables just the OAuth egress lane with a diagnostic at boot/apply,
+    // rather than `expect`-panicking the whole process (which the callers already handle: both
+    // `build()` sites return `Result<_, String>`).
     reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(std::time::Duration::from_secs(10))
         .timeout(std::time::Duration::from_secs(30))
         .build()
-        .expect("build OAuth token-minter HTTP client")
+        .map_err(|e| format!("build OAuth token-minter HTTP client: {e}"))
 }
 
 /// Default token TTL when a token endpoint omits `expires_in` (RFC 6749 §5.1 makes it RECOMMENDED, not
