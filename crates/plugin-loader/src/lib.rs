@@ -24,7 +24,7 @@ use busbar_api::{
 };
 use busbar_plugin_abi::{
     kind as abi_kind, symbol, CallFn, CloseFn, FreeFn, PluginKindFn, StoreRequest, StoreResponse,
-    MAX_PLUGIN_RESPONSE_LEN, STATUS_OK, TRANSPORT_VERSION,
+    MAX_PLUGIN_RESPONSE_LEN, STATUS_OK, STATUS_PROTOCOL, TRANSPORT_VERSION,
 };
 use libloading::Library;
 use std::os::raw::c_void;
@@ -98,8 +98,23 @@ impl RawPlugin {
         &self,
         req: &Req,
     ) -> Result<Resp, String> {
-        let payload =
-            serde_json::to_vec(req).map_err(|e| format!("plugin request encode failed: {e}"))?;
+        // Every existing caller wants only the message; the numeric ABI status is an internal detail
+        // they discard. The status-aware variant below preserves it for the ONE caller (denylist
+        // hydrate) that must distinguish an OLD-SDK unsupported-variant signal from a real error.
+        self.transport_call_status(req).map_err(|e| e.message)
+    }
+
+    /// The status-preserving transport primitive. Identical wire behavior to [`transport_call`] but on
+    /// failure returns the numeric ABI `status` alongside the message, so a caller can key a decision
+    /// on the OUT-OF-BAND status (e.g. [`STATUS_PROTOCOL`] = "this plugin cannot decode this request
+    /// variant") rather than on the plugin-controlled body TEXT. On the OK path the numeric status is
+    /// irrelevant (the buffer is the decoded response) and never surfaced.
+    pub(crate) fn transport_call_status<Req: serde::Serialize, Resp: serde::de::DeserializeOwned>(
+        &self,
+        req: &Req,
+    ) -> Result<Resp, TransportError> {
+        let payload = serde_json::to_vec(req)
+            .map_err(|e| TransportError::engine(format!("plugin request encode failed: {e}")))?;
         let mut out: *mut u8 = std::ptr::null_mut();
         let mut out_len: usize = 0;
         // L6: catch any panic that unwinds across the `busbar_call` C-ABI boundary, for PARITY with the
@@ -118,17 +133,17 @@ impl RawPlugin {
             )
         }))
         .map_err(|_| {
-            format!(
+            TransportError::engine(format!(
                 "plugin '{}' panicked across the ABI boundary (call aborted, treated as failure)",
                 self.path
-            )
+            ))
         })?;
         // Cap-reject BEFORE reading; still hand the buffer back to the plugin to free (it owns it).
         if let Err(msg) = response_len_ok(out_len, &self.path) {
             if !out.is_null() {
                 unsafe { (self.free)(out, out_len) };
             }
-            return Err(msg);
+            return Err(TransportError::engine(msg));
         }
         let bytes = if out.is_null() || out_len == 0 {
             Vec::new()
@@ -139,16 +154,55 @@ impl RawPlugin {
             unsafe { (self.free)(out, out_len) };
         }
         if status == STATUS_OK {
-            serde_json::from_slice(&bytes)
-                .map_err(|e| format!("plugin response decode failed: {e}"))
+            serde_json::from_slice(&bytes).map_err(|e| {
+                TransportError::engine(format!("plugin response decode failed: {e}"))
+            })
         } else {
+            // Preserve the plugin-returned numeric `status` OUT OF BAND. The message is still the
+            // plugin's body (for diagnostics), but the fallback decision keys on `status`, NOT on this
+            // attacker/plugin-controlled text — closing the L5 revocation fail-open (a crafted error
+            // body containing "unknown variant" can no longer masquerade as the old-SDK signal).
             let msg = String::from_utf8_lossy(&bytes).into_owned();
-            Err(if msg.is_empty() {
+            let message = if msg.is_empty() {
                 format!("plugin '{}' call failed (status {status})", self.path)
             } else {
                 msg
-            })
+            };
+            Err(TransportError { status, message })
         }
+    }
+}
+
+/// A failed transport `call`, carrying the numeric ABI `status` alongside the human message. The status
+/// is the OUT-OF-BAND signal a caller keys on (never the plugin-controlled body text): [`STATUS_PROTOCOL`]
+/// means the plugin could not decode the request variant (an old-SDK / unsupported-variant signal),
+/// [`STATUS_ERR`](busbar_plugin_abi::STATUS_ERR) is a real backend failure, and engine-internal failures
+/// (encode/decode/panic/cap) carry a neutral non-protocol status so they never look like the old-SDK case.
+pub(crate) struct TransportError {
+    /// The ABI status the plugin returned, or an engine-internal neutral status (see [`Self::engine`]).
+    pub(crate) status: i32,
+    /// The human-readable failure message (plugin body on a plugin error, engine text otherwise).
+    pub(crate) message: String,
+}
+
+impl TransportError {
+    /// An ENGINE-side failure (encode/decode/panic/cap) — NOT a status the plugin chose. Tagged with a
+    /// neutral non-protocol status so it can never be mistaken for the old-SDK unsupported-variant
+    /// signal; only the plugin's own [`STATUS_PROTOCOL`] enables the empty-denylist fallback.
+    fn engine(message: String) -> Self {
+        // Any status that is neither OK nor PROTOCOL works; STATUS_ERR is the natural "real failure".
+        TransportError {
+            status: busbar_plugin_abi::STATUS_ERR,
+            message,
+        }
+    }
+
+    /// Whether this failure is the OLD-SDK "unsupported request variant" signal (L5): the plugin
+    /// returned [`STATUS_PROTOCOL`], which the SDK emits when it cannot DESERIALIZE the request enum
+    /// (an older plugin that predates a variant). This is an out-of-band signal that CANNOT be spoofed
+    /// by response-body text — unlike the former `contains("unknown variant")` substring match.
+    fn is_unsupported_variant(&self) -> bool {
+        self.status == STATUS_PROTOCOL
     }
 }
 
@@ -312,6 +366,14 @@ impl DynStore {
             .transport_call::<StoreRequest, StoreResponse>(&req)
             .map_err(StoreError)
     }
+
+    /// Like [`Self::call_raw`] but PRESERVES the numeric ABI status on failure, so a caller can tell an
+    /// old-SDK unsupported-variant signal ([`STATUS_PROTOCOL`]) from a real backend error out of band.
+    /// Used only by [`Store::list_denylist`], whose empty fallback must NOT key on plugin body text.
+    fn call_raw_status(&self, req: StoreRequest) -> Result<StoreResponse, TransportError> {
+        self.raw
+            .transport_call_status::<StoreRequest, StoreResponse>(&req)
+    }
 }
 
 /// Enforce [`MAX_PLUGIN_RESPONSE_LEN`] on a plugin-declared response length before the engine
@@ -330,14 +392,6 @@ fn response_len_ok(out_len: usize, path: &str) -> Result<(), String> {
 /// The plugin returned a response variant that doesn't match the request — a contract violation.
 fn unexpected(resp: StoreResponse) -> StoreError {
     StoreError(format!("plugin returned an unexpected response: {resp:?}"))
-}
-
-/// Whether a store error is the OLD-SDK "this request variant is unknown" signal (L5) — a plugin built
-/// against an SDK that predates a request variant fails to DESERIALIZE it, which serde surfaces as an
-/// "unknown variant" decode error. Only this narrow case is a legitimate empty-fallback; every other
-/// error (transient I/O, pool exhaustion, timeout) is a real failure that must propagate fail-closed.
-fn is_unknown_variant_error(e: &StoreError) -> bool {
-    e.0.contains("unknown variant")
 }
 
 impl Store for DynStore {
@@ -502,18 +556,24 @@ impl Store for DynStore {
     }
 
     fn list_denylist(&self) -> StoreResult<Vec<String>> {
-        // L5: a plugin built against an OLDER SDK cannot deserialize the `ListDenylist` request
-        // variant, and serde surfaces that as an "unknown variant" decode error — for THAT case we
+        // L5 (re-audit follow-up — revocation fail-open closure): a plugin built against an OLDER SDK
+        // cannot deserialize the `ListDenylist` request variant. The SDK surfaces THAT as a PROTOCOL
+        // status ([`STATUS_PROTOCOL`], its `malformed request JSON` decode path) — a signal carried
+        // OUT OF BAND in the ABI status, NOT in the plugin-controlled body text. For that case ONLY we
         // fall back to the trait default (empty) so an old durable plugin hydrates nothing rather than
-        // failing boot. But a REAL store error (transient I/O, pool exhaustion, timeout) must NOT be
-        // swallowed: swallowing it hydrated an EMPTY denylist and accepted revoked tokens until the
-        // next healthy restart (a fail-OPEN of the revocation list). Propagate anything that is not the
-        // old-SDK unknown-variant signal so boot fails CLOSED on a genuine store error.
-        match self.call_raw(StoreRequest::ListDenylist) {
+        // failing boot. Every OTHER failure — a real backend error (`STATUS_ERR`), an engine-side
+        // encode/decode/panic, or an unexpected response variant — PROPAGATES so boot fails CLOSED.
+        //
+        // The former substring match on `contains("unknown variant")` was itself a fail-open: a signed
+        // THIRD-PARTY store plugin (or a buggy first-party one) could return an ordinary `STATUS_ERR`
+        // whose body happened to contain "unknown variant", be MISCLASSIFIED as old-SDK, and silently
+        // hydrate an EMPTY revocation denylist — accepting previously-revoked signed tokens until a
+        // healthy restart. Keying on the numeric status (which the plugin body cannot forge) closes it.
+        match self.call_raw_status(StoreRequest::ListDenylist) {
             Ok(StoreResponse::Denylist(d)) => Ok(d),
             Ok(other) => Err(unexpected(other)),
-            Err(e) if is_unknown_variant_error(&e) => Ok(Vec::new()),
-            Err(e) => Err(e),
+            Err(e) if e.is_unsupported_variant() => Ok(Vec::new()),
+            Err(e) => Err(StoreError(e.message)),
         }
     }
 }
@@ -1289,5 +1349,134 @@ mod tests {
             before,
             "a Linux memfd load must not create any staging directory/file"
         );
+    }
+
+    // ── L5 re-audit follow-up: the denylist fallback keys on the OUT-OF-BAND ABI status, not on
+    //    plugin-controlled body text ─────────────────────────────────────────────────────────────
+    //
+    // The regression uses a FAKE `busbar_call` whose returned (status, body) is chosen per-test via a
+    // thread-local, wired into a genuine `RawPlugin` built on a real loaded `Library` (so the whole
+    // `list_denylist` → `transport_call_status` → classification path runs end to end). We swap ONLY the
+    // `call` fn pointer; the real `open`/`free`/`close`/handle from the loaded sqlite store stay valid.
+
+    use std::cell::Cell;
+    thread_local! {
+        /// (status, body) the fake `busbar_call` returns for the NEXT call on this thread.
+        static FAKE_CALL: Cell<(i32, &'static [u8])> = const { Cell::new((STATUS_OK, b"")) };
+    }
+
+    /// A fake `busbar_call`: allocate a buffer holding the thread-local body and return the
+    /// thread-local status. Mimics the plugin side (plugin allocates, engine frees via `busbar_free`).
+    unsafe extern "C" fn fake_call(
+        _handle: *mut c_void,
+        _req: *const u8,
+        _req_len: usize,
+        out: *mut *mut u8,
+        out_len: *mut usize,
+    ) -> i32 {
+        let (status, body) = FAKE_CALL.with(|c| c.get());
+        if body.is_empty() {
+            *out = std::ptr::null_mut();
+            *out_len = 0;
+        } else {
+            // Allocate with the SAME shape `fake_free` frees: a boxed slice leaked to a raw ptr.
+            let boxed: Box<[u8]> = body.to_vec().into_boxed_slice();
+            let len = boxed.len();
+            *out = Box::into_raw(boxed) as *mut u8;
+            *out_len = len;
+        }
+        status
+    }
+
+    /// Free a buffer `fake_call` allocated (reconstruct the boxed slice and drop it).
+    unsafe extern "C" fn fake_free(ptr: *mut u8, len: usize) {
+        if !ptr.is_null() && len != 0 {
+            drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, len)));
+        }
+    }
+
+    /// Build a `DynStore` whose `call` is `fake_call`, reusing a real loaded store's `Library`/handle/
+    /// `close` (so `RawPlugin` is genuinely valid) but our fake `free` to match `fake_call`'s allocator.
+    fn dyn_store_with_fake_call() -> Option<DynStore> {
+        let path = sqlite_plugin_path()?;
+        // Stage a genuine `RawPlugin` (real `Library` + handle + `close`), then splice in our fake
+        // `call`/`free` so the response's (status, body) is what the test chooses.
+        let bytes = std::fs::read(&path).expect("read sqlite cdylib");
+        let (lib, staged) = stage::load_library_from_bytes(&bytes, "fake-call-store").ok()?;
+        let mut raw = wire_up_raw(
+            lib,
+            r#"{"db_path": ":memory:"}"#,
+            "fake-call-store".to_string(),
+            abi_kind::STORE,
+            abi_kind::STORE,
+            Some(staged),
+        )
+        .expect("wire up raw");
+        // Override the call + free seam so responses come from `fake_call` (freed by `fake_free`).
+        raw.call = fake_call;
+        raw.free = fake_free;
+        Some(DynStore { raw })
+    }
+
+    /// (1) A GENUINE old-SDK unsupported-variant signal — the plugin returns `STATUS_PROTOCOL` (what the
+    /// SDK emits when it cannot deserialize the `ListDenylist` request enum) — falls back to an EMPTY
+    /// denylist so an old durable plugin still BOOTS. The body text is irrelevant to the decision.
+    #[test]
+    fn denylist_protocol_status_falls_back_empty() {
+        let Some(store) = dyn_store_with_fake_call() else {
+            eprintln!("skip: sqlite plugin cdylib not built (run under --workspace)");
+            return;
+        };
+        // Old-SDK path: the SDK returns STATUS_PROTOCOL with a "malformed request JSON" style message.
+        FAKE_CALL.with(|c| c.set((STATUS_PROTOCOL, b"malformed request JSON: unknown variant `ListDenylist`")));
+        let out = store.list_denylist();
+        assert_eq!(
+            out.expect("old-SDK unsupported variant must boot with an empty denylist"),
+            Vec::<String>::new(),
+        );
+    }
+
+    /// (2) THE CLOSED FAIL-OPEN: a real backend error (`STATUS_ERR`) whose BODY happens to contain the
+    /// string "unknown variant" must NOT be misclassified as old-SDK. Under the former substring match
+    /// this hydrated an empty denylist (accepting revoked tokens); now it PROPAGATES → boot fails CLOSED.
+    #[test]
+    fn denylist_backend_error_with_unknown_variant_text_propagates() {
+        let Some(store) = dyn_store_with_fake_call() else {
+            eprintln!("skip: sqlite plugin cdylib not built (run under --workspace)");
+            return;
+        };
+        // A crafted / coincidental backend error: STATUS_ERR, but the body contains "unknown variant".
+        FAKE_CALL.with(|c| {
+            c.set((
+                busbar_plugin_abi::STATUS_ERR,
+                b"backend read failed: table 'denylist' reported unknown variant of corruption",
+            ))
+        });
+        let err = store
+            .list_denylist()
+            .expect_err("a STATUS_ERR must fail CLOSED even when its text contains 'unknown variant'");
+        assert!(
+            err.0.contains("unknown variant"),
+            "the propagated error keeps the backend message: {}",
+            err.0
+        );
+    }
+
+    /// Direct classification proof (no FFI): only `STATUS_PROTOCOL` is the old-SDK signal; a
+    /// `STATUS_ERR` with "unknown variant" text is NOT, and an engine-internal error never is.
+    #[test]
+    fn transport_error_classification() {
+        assert!(TransportError {
+            status: STATUS_PROTOCOL,
+            message: "malformed request JSON: unknown variant".into(),
+        }
+        .is_unsupported_variant());
+        assert!(!TransportError {
+            status: busbar_plugin_abi::STATUS_ERR,
+            message: "unknown variant".into(),
+        }
+        .is_unsupported_variant());
+        assert!(!TransportError::engine("plugin response decode failed".into())
+            .is_unsupported_variant());
     }
 }
