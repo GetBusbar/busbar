@@ -1,7 +1,7 @@
 # Architecture
 
 This document traces a request end-to-end and explains the two seams that make
-busbar's thesis, *protocols, not providers*, work: the **superset IR** with its
+Busbar's thesis, *protocols, not providers*, work: the **superset IR** with its
 `ProtocolReader` / `ProtocolWriter` traits, and the **two-stage failure-disposition
 pipeline**.
 
@@ -156,7 +156,7 @@ Management/observability routes (`/stats`, `/healthz`, `/metrics`,
   `admin_tls.client_ca_file` (mTLS on the admin listener) or the explicit `admin_insecure`
   waiver (for operators fronting admin with their own mesh).
 - On the data plane, the caller's bearer token is threaded through the request. Whether
-  busbar signs the upstream call with its own lane key or forwards the caller's credential
+  Busbar signs the upstream call with its own lane key or forwards the caller's credential
   is a separate config knob, `upstream_credentials:` (`Own`, the default, vs `Passthrough`),
   independent of which auth module ran at the front door. Under governance the resolved
   virtual key is attached for downstream ACL and budget checks.
@@ -209,7 +209,7 @@ weight 1.
 
 ### 5. Cross-protocol translation (the IR seam)
 
-If the ingress protocol differs from the selected lane's protocol, busbar
+If the ingress protocol differs from the selected lane's protocol, Busbar
 translates the **request** through the superset IR:
 
 ```

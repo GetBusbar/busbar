@@ -1,6 +1,6 @@
 # Testing strategy
 
-How busbar is tested, and how to add a test. Companion to
+How Busbar is tested, and how to add a test. Companion to
 [development.md](development.md) (build/lint commands) and
 [internals.md](internals.md) (the systems under test). The disposition taxonomy
 is [ADR-0002](adr/0002-circuit-breaker.md).

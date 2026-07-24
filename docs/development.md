@@ -85,7 +85,7 @@ Full field reference: [configuration.md](configuration.md).
 
 ## Adding a new protocol
 
-A protocol is the unit of busbar's scope (the count to grow is **6**, not the
+A protocol is the unit of Busbar's scope (the count to grow is **6**, not the
 provider count). To add one:
 
 1. **Implement `ProtocolReader`** (`crates/busbar/src/proto/mod.rs` defines the trait):

@@ -261,7 +261,7 @@ pools:
         weight: 1
 ```
 
-Set the additional environment variables, restart busbar, and mint a caller key (shown once):
+Set the additional environment variables, restart Busbar, and mint a caller key (shown once):
 
 ```bash
 export ANTHROPIC_KEY=sk-ant-...
@@ -346,7 +346,7 @@ auth:
 
 The caller's own token (`Authorization: Bearer`, `x-api-key`, or `x-goog-api-key`) is forwarded directly to the upstream provider. Use this when each caller has their own provider key and you want Busbar purely for routing and protocol translation, not credential management.
 
-Note: with `passthrough` busbar forwards the caller's credential and holds no upstream keys; a caller with a bad key can hard-down a lane for everyone (30 minutes), so use it deliberately.
+Note: with `passthrough` Busbar forwards the caller's credential and holds no upstream keys; a caller with a bad key can hard-down a lane for everyone (30 minutes), so use it deliberately.
 
 ### Bedrock egress (Busbar signs requests with SigV4)
 
