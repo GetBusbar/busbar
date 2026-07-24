@@ -2478,6 +2478,67 @@ fn test_verify_bedrock_sigv4_disabled_key_rejected() {
 }
 
 #[test]
+fn test_verify_bedrock_sigv4_revoked_key_rejected() {
+    // REGRESSION (SigV4-revocation-bypass, 10-phase 1.5.0 audit): a dual-credential key minted with
+    // BOTH a busbar signed bearer token AND a SigV4 credential is bound to ONE subject id. `revoke`
+    // denylists that subject but DELIBERATELY leaves `enabled = true` (it preserves the binding for
+    // history). The signed-token path consults the denylist and rejects; before the fix the inbound
+    // SigV4 admit path resolved purely by AccessKeyId -> key and admitted on `key.enabled` alone,
+    // NEVER consulting the denylist — so the revoked key's SigV4 credential kept authenticating.
+    // The fix gates the SigV4 admit on `!gov.is_revoked(&key.id)`, mirroring the signed-token path.
+    crate::metrics::init();
+    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+    let store = std::sync::Arc::new(MemoryStore::new());
+    let gov = std::sync::Arc::new(GovState::new(store, None).unwrap());
+    // A DUAL-credential key: `create_key_with_aws` issues a signed bearer AND a SigV4 credential.
+    let (key, _bearer, akid, secret) = gov
+        .create_key_with_aws(
+            NewKeySpec {
+                name: "dual".to_string(),
+                allowed_pools: None,
+                group: None,
+                labels: Default::default(),
+            },
+            crate::store::now(),
+        )
+        .unwrap();
+
+    let amzdate = {
+        let (a, _d) = crate::sigv4::format_amz_time(crate::store::now());
+        a
+    };
+    let path = "/model/anthropic.claude/converse";
+
+    // Baseline: before revocation, the correctly-signed SigV4 request ADMITS.
+    let (auth, headers) =
+        sign_bedrock_request(&secret, &akid, "us-east-1", "bedrock", path, b"", &amzdate);
+    let req = bedrock_request(path, &auth, &headers);
+    let admitted = verify_bedrock_sigv4(&gov, &req, b"")
+        .expect("a non-revoked dual-credential key must admit via SigV4");
+    assert_eq!(admitted.name, "dual");
+
+    // Revoke by subject id. This denylists the subject WITHOUT flipping `enabled` (revoke preserves
+    // the binding), exactly as the admin `revoke_key` verb does.
+    gov.revoke(&key.id, "audit regression").unwrap();
+    assert!(gov.is_revoked(&key.id), "revoke must denylist the subject");
+
+    // Re-sign a fresh request (same secret/akid) and assert the SigV4 path now REJECTS — the revoked
+    // subject's SigV4 credential must be rejected exactly like its signed token would be.
+    let amzdate2 = {
+        let (a, _d) = crate::sigv4::format_amz_time(crate::store::now());
+        a
+    };
+    let (auth2, headers2) =
+        sign_bedrock_request(&secret, &akid, "us-east-1", "bedrock", path, b"", &amzdate2);
+    let req2 = bedrock_request(path, &auth2, &headers2);
+    assert_eq!(
+        verify_bedrock_sigv4(&gov, &req2, b""),
+        Err(()),
+        "a correctly-signed SigV4 request for a REVOKED (denylisted) key must be rejected"
+    );
+}
+
+#[test]
 fn test_verify_bedrock_sigv4_body_matches_signed_hash_admits() {
     // (a) A non-empty body whose bytes hash to the signed `x-amz-content-sha256` is accepted.
     // This exercises the body-integrity bind on a real payload (the roundtrip test signs an empty

@@ -1343,7 +1343,17 @@ fn verify_bedrock_sigv4(
     // rejects with the same opaque `Err(())`. An unknown AccessKeyId has `resolved == None`, so even a
     // (cryptographically impossible) signature match against the dummy secret cannot admit.
     match (verify, resolved) {
-        (Ok(()), Some(key)) if key.enabled => Ok(key),
+        // Admission requires: signature verified, a resolved+enabled binding, AND the subject not on
+        // the revocation denylist. The last clause mirrors the signed-token path (`verify_token`), which
+        // consults `denylist.contains(&claims.sub)` before resolving. A dual-credential key (signed token
+        // + SigV4) is bound to ONE subject id; `revoke` denylists that id but deliberately preserves
+        // `enabled` for history — so WITHOUT this check the SigV4 credential of a revoked key would keep
+        // authenticating even though its signed token is rejected. Gating here closes that bypass.
+        (Ok(()), Some(key)) if key.enabled && !gov.is_revoked(&key.id) => Ok(key),
+        (Ok(()), Some(key)) if key.enabled => {
+            tracing::debug!(id = %key.id, "inbound SigV4 rejected: subject is revoked");
+            Err(())
+        }
         (Ok(()), Some(_key)) => {
             tracing::debug!("inbound SigV4 rejected: virtual key disabled");
             Err(())
