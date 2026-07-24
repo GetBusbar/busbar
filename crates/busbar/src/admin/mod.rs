@@ -629,43 +629,23 @@ pub(crate) async fn create_key(
     }
     // ANTI-SPRAWL CAP (audit gap 7 / self-service §6a): `limits.max_keys_per_principal` bounds how
     // many keys may bind to ONE group. Since a `user:<sub>` leaf IS the principal (§5), this caps a
-    // self-issuing dev's key count. `0` = unlimited (skip). Counted here, BEFORE the mint, over the
-    // keys currently bound to this group; `>= cap` is a `409` (a retry can't fix it without deleting
-    // a key). An auto-provisioned leaf is brand-new (0 keys), so a group's FIRST self-mint always
-    // passes. Only meaningful for a bound key — a groupless key has no principal to cap.
-    if app.max_keys_per_principal > 0 {
-        if let Some(group) = req.group.as_deref() {
-            let gov = gov.clone();
-            let group_owned = group.to_string();
-            let count = tokio::task::spawn_blocking(move || {
-                gov.all_keys().map(|keys| {
-                    keys.iter()
-                        .filter(|k| k.group.as_deref() == Some(&group_owned))
-                        .count()
-                })
-            })
-            .await;
-            match count {
-                Ok(Ok(n)) if n >= app.max_keys_per_principal => {
-                    return error_response(
-                        StatusCode::CONFLICT,
-                        ERR_TYPE_CONFLICT,
-                        format!(
-                            "group '{group}' already has {n} key(s), at the \
-                             `limits.max_keys_per_principal` cap of {}; revoke or delete an existing \
-                             key before minting another",
-                            app.max_keys_per_principal
-                        ),
-                    );
-                }
-                Ok(Ok(_)) => {}
-                // A store failure counting keys must FAIL CLOSED — never mint past a cap we could
-                // not verify (the whole point of the cap is a hard ceiling).
-                Ok(Err(e)) => return internal_error("create_key", &e),
-                Err(e) => return join_error("create_key", &e),
-            }
-        }
-    }
+    // self-issuing dev's key count. `0` = unlimited (skip). Only meaningful for a bound key — a
+    // groupless key has no principal to cap. An auto-provisioned leaf is brand-new (0 keys), so a
+    // group's FIRST self-mint always passes.
+    //
+    // ATOMICITY (audit: TOCTOU on `max_keys_per_principal`): the count and the mint run TOGETHER
+    // inside ONE `spawn_blocking` under `EXISTENCE_GATE`, so N concurrent callers at the cap
+    // boundary are serialized — each sees the writes of those before it and only the first
+    // `cap - current` mints succeed. A prior version counted in a separate `spawn_blocking`,
+    // released the store lock, `.await`ed, then minted in a second task with no lock spanning the
+    // two — so concurrent callers all read `n < cap` and all minted, overshooting the cap by up to
+    // `N-1`. `>= cap` is a `409` (a retry can't fix it without deleting a key).
+    let cap_group = if app.max_keys_per_principal > 0 {
+        req.group.clone()
+    } else {
+        None
+    };
+    let cap = app.max_keys_per_principal;
     // Keys carry NO inline limits (S1); enforcement flows through the bound group.
     let spec = NewKeySpec {
         name: req.name,
@@ -677,13 +657,56 @@ pub(crate) async fn create_key(
     // discipline in governance::charge_within_budget_async / offload_store_write).
     let gov = gov.clone();
     let issue_aws = req.issue_aws_credential;
+    // Enforce the cap atomically with the mint under `EXISTENCE_GATE`, returning `AtCap` (with the
+    // observed count) when the ceiling is already reached. Shared by both mint variants below.
+    enum MintOutcome<T> {
+        Minted(T),
+        AtCap { group: String, n: usize },
+    }
+    fn check_cap(
+        gov: &crate::governance::GovState,
+        cap_group: &Option<String>,
+        cap: usize,
+    ) -> crate::governance::StoreResult<Option<(String, usize)>> {
+        // A store failure counting keys must FAIL CLOSED — never mint past a cap we could not
+        // verify (the whole point of the cap is a hard ceiling).
+        if let Some(group) = cap_group.as_deref() {
+            let n = gov
+                .all_keys()?
+                .iter()
+                .filter(|k| k.group.as_deref() == Some(group))
+                .count();
+            if n >= cap {
+                return Ok(Some((group.to_string(), n)));
+            }
+        }
+        Ok(None)
+    }
+    let at_cap_response = |group: &str, n: usize| {
+        error_response(
+            StatusCode::CONFLICT,
+            ERR_TYPE_CONFLICT,
+            format!(
+                "group '{group}' already has {n} key(s), at the \
+                 `limits.max_keys_per_principal` cap of {cap}; revoke or delete an existing \
+                 key before minting another",
+            ),
+        )
+    };
     // When AWS credentials are requested, mint via `create_key_with_aws` (issues the AccessKeyId +
     // secret access key alongside the bearer secret). Otherwise the unchanged bearer-only mint.
     if issue_aws {
-        let res =
-            tokio::task::spawn_blocking(move || gov.mint_signed_with_aws(spec, exp, now)).await;
+        let res = tokio::task::spawn_blocking(move || {
+            let _existence_guard = EXISTENCE_GATE.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some((group, n)) = check_cap(&gov, &cap_group, cap)? {
+                return Ok(MintOutcome::AtCap { group, n });
+            }
+            gov.mint_signed_with_aws(spec, exp, now).map(MintOutcome::Minted)
+        })
+        .await;
         match res {
-            Ok(Ok((key, token, access_key_id, secret_access_key))) => {
+            Ok(Ok(MintOutcome::AtCap { group, n })) => at_cap_response(&group, n),
+            Ok(Ok(MintOutcome::Minted((key, token, access_key_id, secret_access_key)))) => {
                 audit::AUDIT.record_by(
                     "key.create",
                     &format!("key:{}", key.id),
@@ -717,9 +740,17 @@ pub(crate) async fn create_key(
             Err(e) => join_error("create_key", &e),
         }
     } else {
-        let res = tokio::task::spawn_blocking(move || gov.mint_signed(spec, exp, now)).await;
+        let res = tokio::task::spawn_blocking(move || {
+            let _existence_guard = EXISTENCE_GATE.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some((group, n)) = check_cap(&gov, &cap_group, cap)? {
+                return Ok(MintOutcome::AtCap { group, n });
+            }
+            gov.mint_signed(spec, exp, now).map(MintOutcome::Minted)
+        })
+        .await;
         match res {
-            Ok(Ok((key, token))) => {
+            Ok(Ok(MintOutcome::AtCap { group, n })) => at_cap_response(&group, n),
+            Ok(Ok(MintOutcome::Minted((key, token)))) => {
                 audit::AUDIT.record_by(
                     "key.create",
                     &format!("key:{}", key.id),
@@ -1114,6 +1145,11 @@ pub(crate) async fn revoke_key(
     // The subject must name an existing binding (a revoke for a nonexistent key is a 404, not a
     // silent denylist entry for a typo'd id). Then denylist it durably.
     let res = tokio::task::spawn_blocking(move || -> crate::governance::StoreResult<bool> {
+        // Hold EXISTENCE_GATE across the existence check and the denylist write, matching
+        // update_key/rotate_key/delete_key. Without it, a concurrent `delete_key` can dispose of the
+        // key in the window between this check-then-act, producing a phantom `key.revoke APPLIED`
+        // audit record for a key another operation already fully disposed of (audit non-repudiation).
+        let _existence_guard = EXISTENCE_GATE.lock().unwrap_or_else(|e| e.into_inner());
         let exists = gov.all_keys()?.iter().any(|k| k.id == id_for_task);
         if !exists {
             return Ok(false);
