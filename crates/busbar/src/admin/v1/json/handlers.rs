@@ -2237,6 +2237,13 @@ pub(crate) async fn put_config_settings(
     )
     .and_then(|mut loaded| {
         merged_for_build.apply_to_deploy(&mut loaded.deploy);
+        // M2: apply the overlay's `plugin_versions` rollback pins onto the DeployCfg BEFORE resolve,
+        // exactly as boot/reload/reset/`--validate` do (`overlay::apply_root_to_deploy`). Without this
+        // the rebuild re-validates against the BASE floors and re-loads the newer artifact, silently
+        // reverting a live audited rollback until the next restart re-applies the persisted pin.
+        if let Some(doc) = loaded.overlay_doc.as_ref() {
+            crate::config::overlay::apply_plugin_versions_to_deploy(&mut loaded.deploy, doc);
+        }
         let mut cfg = crate::config::resolve(&loaded.deploy, &loaded.defs)
             .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
         let base_hook_names: std::collections::HashSet<String> =
@@ -2696,6 +2703,21 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         }),
     );
     paths.insert(
+        ap("/plugins/rollback"),
+        json!({
+            "post": {
+                "summary": "EXPLICIT, authenticated, audited rollback of a plugin to a PRIOR version (1.5.0). Validates the target artifact (structure + trust) with the anti-downgrade floor lowered to EXACTLY the target's own version — a lower or untrusted artifact still fails (a rollback authenticates the OPERATOR, never the bytes). Persists the version pin to the overlay (survives restart) and hot-swaps via the same rebuild-and-swap path as plugins/reload",
+                "security": [{"adminToken": []}],
+                "responses": {
+                    "200": {"description": "`{plugin, version, config_version, plugins}` — rolled back and hot-swapped"},
+                    "400": {"description": "Malformed body, or the target artifact fails structure/trust validation (error code `invalid_request`)"},
+                    "404": {"description": "No such plugin file in the plugins directory (error code `not_found`)"},
+                    "409": {"description": "Stale `If-Match`, or the target is not loadable even with the floor lowered to its own version (error code `version_conflict`/`conflict`)"}
+                }
+            }
+        }),
+    );
+    paths.insert(
         ap("/plugins/{file}"),
         json!({
             "delete": {
@@ -3051,9 +3073,9 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         ap("/overlay/{section}"),
         json!({
             "delete": {
-                "summary": "DISCARD a section's overlay mutations and revert it to base config.yaml (section ∈ groups|hooks). Per-section reset — the OTHER section's overlay survives. A NEW config version; an already-empty section is an idempotent no-op (changed:false)",
+                "summary": "DISCARD a section's overlay mutations and revert it to base config.yaml (section ∈ groups|hooks|root|plugin_versions). Per-section reset — the OTHER sections' overlay survives. A NEW config version; an already-empty section is an idempotent no-op (changed:false)",
                 "security": [{"adminToken": []}],
-                "parameters": [{"name": "section", "in": "path", "required": true, "schema": {"type": "string", "enum": ["groups", "hooks"]}}],
+                "parameters": [{"name": "section", "in": "path", "required": true, "schema": {"type": "string", "enum": ["groups", "hooks", "root", "plugin_versions"]}}],
                 "responses": {
                     "200": {"description": "`{reset, config_version, changed}` — changed:false when the section had no overlay state"},
                     "400": {"description": "Unknown section, or ephemeral busbar with no config files to revert to (error code `invalid_request`)"},
@@ -3163,6 +3185,33 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                     "200": {"description": "Rotated (body includes the once-shown new secret; an Idempotency-Key retry replays it verbatim)"},
                     "404": {"description": "Unknown key (error code `not_found`)"},
                     "409": {"description": "An Idempotency-Key request is already in flight (error code `conflict`)"}
+                }
+            }
+        }),
+    );
+    paths.insert(
+        ap("/keys/{id}/revoke"),
+        json!({
+            "post": {
+                "summary": "REVOKE a signed-token key: denylist it durably WITHOUT deleting the binding (GET /keys/{id} still shows the record; verify now fails). Idempotent — revoking an already-revoked key is 200. DELETE /keys/{id} is the revoke-AND-forget variant (1.5.0)",
+                "security": [{"adminToken": []}],
+                "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
+                "responses": {
+                    "200": {"description": "`{revoked}` — the id, now denylisted"},
+                    "404": {"description": "Unknown key (error code `not_found`)"}
+                }
+            }
+        }),
+    );
+    paths.insert(
+        ap("/signing-key/rotate"),
+        json!({
+            "post": {
+                "summary": "ROTATE the busbar key-signing key (S2). Rotation is REVOKE-ALL by design: a new signing key means every token minted under the OLD key stops verifying, so every outstanding key must be re-minted. 1.5.0 is single-key, so this reports the intent + current kid; the actual swap is an operator action (replace auth.signing_key / the persisted key file and restart/reload every node in lockstep) (1.5.0)",
+                "security": [{"adminToken": []}],
+                "responses": {
+                    "200": {"description": "`{current_kid, revoke_all, message}` — the rotation intent + revoke-all warning"},
+                    "409": {"description": "No signing key is configured; nothing to rotate (error code `conflict`)"}
                 }
             }
         }),
@@ -3328,6 +3377,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         ("/config/apply", "post"),
         ("/config/settings", "put"),
         ("/config/rollback", "post"),
+        ("/plugins/rollback", "post"),
         ("/overlay/{section}", "delete"),
         ("/keys/{id}", "patch"),
         ("/keys/{id}", "delete"),
@@ -3493,6 +3543,8 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     typed!("/keys/{id}", "patch", "200", sview::KeyView);
     typed!("/keys/{id}/usage", "get", "200", sview::KeyMeteringView);
     typed!("/keys/{id}/rotate", "post", "200", sview::RotatedKeyView);
+    typed!("/keys/{id}/revoke", "post", "200", sview::RevokeView);
+    typed!("/signing-key/rotate", "post", "200", sview::SigningKeyRotateView);
 
     // The discovery endpoint returns THIS very OpenAPI 3.1 document — an arbitrary object. There is
     // no named struct for "an OpenAPI document"; an inline permissive object schema is the honest

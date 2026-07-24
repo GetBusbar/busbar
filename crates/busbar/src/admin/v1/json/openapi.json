@@ -1912,6 +1912,19 @@
         ],
         "type": "object"
       },
+      "RevokeView": {
+        "description": "`POST /keys/{id}/revoke` — the revoked key's id (denylisted without deleting the binding). 1.5.0.",
+        "properties": {
+          "revoked": {
+            "description": "The id that was revoked (durably denylisted; the binding record remains).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "revoked"
+        ],
+        "type": "object"
+      },
       "RotatedKeyView": {
         "description": "`POST /keys/{id}/rotate` — the key metadata plus the ONCE-shown fresh bearer secret.",
         "properties": {
@@ -1964,6 +1977,29 @@
           "created_at",
           "labels",
           "secret"
+        ],
+        "type": "object"
+      },
+      "SigningKeyRotateView": {
+        "description": "`POST /signing-key/rotate` — the current key-signing key id plus the REVOKE-ALL warning. 1.5.0 is\nsingle-key: the actual swap is an operator action, so this reports intent, not an in-process swap.",
+        "properties": {
+          "current_kid": {
+            "description": "The current signing-key id (`kid`) that tokens are minted under.",
+            "type": "string"
+          },
+          "message": {
+            "description": "Human-readable guidance for the operator-driven lockstep rotation.",
+            "type": "string"
+          },
+          "revoke_all": {
+            "description": "Always `true`: rotating the signing key revokes every outstanding key (all must be re-minted).",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "current_kid",
+          "revoke_all",
+          "message"
         ],
         "type": "object"
       },
@@ -4880,6 +4916,82 @@
         "x-busbar-required-scope": "full"
       }
     },
+    "/api/v1/admin/keys/{id}/revoke": {
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RevokeView"
+                }
+              }
+            },
+            "description": "`{revoked}` — the id, now denylisted"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated but under-scoped: requires `full` (error code `forbidden`)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unknown key (error code `not_found`)"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "REVOKE a signed-token key: denylist it durably WITHOUT deleting the binding (GET /keys/{id} still shows the record; verify now fails). Idempotent — revoking an already-revoked key is 200. DELETE /keys/{id} is the revoke-AND-forget variant (1.5.0)",
+        "x-busbar-required-scope": "full"
+      }
+    },
     "/api/v1/admin/keys/{id}/rotate": {
       "post": {
         "parameters": [
@@ -5135,7 +5247,9 @@
             "schema": {
               "enum": [
                 "groups",
-                "hooks"
+                "hooks",
+                "root",
+                "plugin_versions"
               ],
               "type": "string"
             }
@@ -5220,7 +5334,7 @@
             "bearerAuth": []
           }
         ],
-        "summary": "DISCARD a section's overlay mutations and revert it to base config.yaml (section ∈ groups|hooks). Per-section reset — the OTHER section's overlay survives. A NEW config version; an already-empty section is an idempotent no-op (changed:false)",
+        "summary": "DISCARD a section's overlay mutations and revert it to base config.yaml (section ∈ groups|hooks|root|plugin_versions). Per-section reset — the OTHER sections' overlay survives. A NEW config version; an already-empty section is an idempotent no-op (changed:false)",
         "x-busbar-required-scope": "full"
       }
     },
@@ -5408,6 +5522,103 @@
           }
         ],
         "summary": "Re-scan the plugins directory and report the reconciled dynamic-library inventory (the sibling of config/reload). A store change takes effect on the next store (re)load",
+        "x-busbar-required-scope": "full"
+      }
+    },
+    "/api/v1/admin/plugins/rollback": {
+      "post": {
+        "parameters": [
+          {
+            "description": "Optimistic concurrency: the resource's ETag from a prior read (or the ETag returned by the previous mutation). Stale = 409 `version_conflict` (re-read and retry), nothing changes; absent or `*` = unconditional.",
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PluginRollbackView"
+                }
+              }
+            },
+            "description": "`{plugin, version, config_version, plugins}` — rolled back and hot-swapped"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Malformed body, or the target artifact fails structure/trust validation (error code `invalid_request`)"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated but under-scoped: requires `full` (error code `forbidden`)"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No such plugin file in the plugins directory (error code `not_found`)"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Stale `If-Match`, or the target is not loadable even with the floor lowered to its own version (error code `version_conflict`/`conflict`)"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "EXPLICIT, authenticated, audited rollback of a plugin to a PRIOR version (1.5.0). Validates the target artifact (structure + trust) with the anti-downgrade floor lowered to EXACTLY the target's own version — a lower or untrusted artifact still fails (a rollback authenticates the OPERATOR, never the bytes). Persists the version pin to the overlay (survives restart) and hot-swaps via the same rebuild-and-swap path as plugins/reload",
         "x-busbar-required-scope": "full"
       }
     },
@@ -5657,6 +5868,72 @@
         ],
         "summary": "Distinct providers + lane counts",
         "x-busbar-required-scope": "read-only"
+      }
+    },
+    "/api/v1/admin/signing-key/rotate": {
+      "post": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SigningKeyRotateView"
+                }
+              }
+            },
+            "description": "`{current_kid, revoke_all, message}` — the rotation intent + revoke-all warning"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated but under-scoped: requires `full` (error code `forbidden`)"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No signing key is configured; nothing to rotate (error code `conflict`)"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "ROTATE the busbar key-signing key (S2). Rotation is REVOKE-ALL by design: a new signing key means every token minted under the OLD key stops verifying, so every outstanding key must be re-minted. 1.5.0 is single-key, so this reports the intent + current kid; the actual swap is an operator action (replace auth.signing_key / the persisted key file and restart/reload every node in lockstep) (1.5.0)",
+        "x-busbar-required-scope": "full"
       }
     },
     "/api/v1/admin/usage": {
