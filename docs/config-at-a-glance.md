@@ -1,122 +1,160 @@
 # Config at a glance
 
-Every top-level key of `config.yaml` (Busbar 1.5.0), what it owns, and its shape: one page, no
-prose. The full reference with defaults, validation rules, and worked examples is
-[configuration.md](configuration.md); the canonical bootable example is
+One whole, realistic `config.yaml` (Busbar 1.5.0) on a single page. It is a **map, not a
+reference**: every section header links to the exhaustive per-field docs in
+[configuration.md](configuration.md), so you can see the shape of a complete deployment and click
+straight through to the detail for any part. For the per-field tables with defaults and validation
+rules use [configuration.md](configuration.md); for a bootable file use
 [`examples/clean-config-1.5.0.yaml`](../examples/clean-config-1.5.0.yaml).
 
-Design rules the whole surface follows: the object that OWNS a concept is the only place it is
+The whole surface follows a few rules: the object that OWNS a concept is the only place it is
 defined; every loadable unit is `module` + `settings`; every secret is a reference
-(`{ env: VAR }` / `{ file: /path }` / `{ module: <secret-plugin>, settings: {...} }`); an OMITTED
-list means "all", an explicit `[]` means "none"; windows are nouns
-(`minute|hour|day|month|total`); `on_X` handlers are a bare keyword or a structured ref; unknown
-keys fail boot.
+(`{ env: VAR }` / `{ file: /path }` / `{ module: <secret-plugin> }`); an omitted list means "all",
+an explicit `[]` means "none"; windows are nouns (`minute|hour|day|month|total`); unknown keys fail
+boot.
 
-## Transport — [docs](configuration.md#listen)
+## Transport — [`listen` / `tls`](configuration.md#listen)
 
-| Key | Owns | Shape / default |
-|---|---|---|
-| [`listen`](configuration.md#listen) | The data-plane bind | `"0.0.0.0:8080"` (default) |
-| [`admin_listen`](configuration.md#listen) | The admin-plane bind (always its own listener) | `"127.0.0.1:8081"` (default; loopback) |
-| [`admin_insecure`](configuration.md#listen) | Waive the exposed-admin-requires-mTLS boot guard | `false` (default; deliberate opt-in) |
-| [`tls`](configuration.md#tls) | Inbound TLS/mTLS for the data plane | `{ cert: <secret-ref>, key: <secret-ref>, client_ca?: <secret-ref> }`; absent = plain HTTP |
-| [`admin_tls`](configuration.md#tls) | TLS/mTLS for the admin listener | Same shape; `client_ca` present = admin mTLS. A non-loopback `admin_listen` without it refuses to boot (unless `admin_insecure`) |
+```yaml
+listen: "0.0.0.0:8080"          # data-plane bind
+admin_listen: "127.0.0.1:8081"  # admin-plane bind (always its own listener; loopback by default)
+admin_insecure: false           # waive the "exposed admin requires mTLS" boot guard (opt-in)
 
-## Identity: [`auth`](configuration.md#auth)
+tls:                            # absent = plain HTTP. Each field is a SECRET REFERENCE.  → #tls
+  cert: { file: /run/secrets/tls-cert.pem }
+  key:  { file: /run/secrets/tls-key.pem }
+  # client_ca: { file: /run/secrets/tls-ca.pem }   # present = mutual TLS required
+# admin_tls: { cert: {...}, key: {...}, client_ca: {...} }   # same shape; client_ca = admin mTLS
+```
 
-| Key | Owns | Shape / default |
-|---|---|---|
-| [`auth.signing_key`](configuration.md#auth) | The ed25519 key that signs virtual-key tokens (fleet-shared; rotate = revoke-all) | Secret ref; absent = generated 0600 on first boot |
-| [`auth.upstream_credentials`](configuration.md#auth) | Whose key hits the provider | `own` (default) \| `passthrough` |
-| [`auth.chain`](configuration.md#auth) | The ordered DATA-PLANE auth chain | List of module entries: `- keys` (bare, the built-in signed-key verifier) or `- <module>: { max_admin_scope?, settings? }`. Any non-`keys` name loads a `kind: auth` plugin (e.g. `oidc`); a configured-but-unloadable auth plugin fails boot closed. `[]` (default) = open front door (dev only) |
-| [`auth.admin_auth`](configuration.md#auth) | The chain gating `/api/v1/admin/*` | Default `[admin-tokens]`; the built-in carries `token: <secret-ref>`. `[]` = open admin (dev only) |
-| [`auth.role_bindings`](configuration.md#auth) | Role policy, NESTED BY MODULE (pure auth) | `<module>: { <role>: { allowed_pools?, group?, admin_scope? } }`. Omitted `allowed_pools` = all pools, `[]` = none; `admin_scope` = `read-only\|hooks-register\|full` |
+## Identity — [`auth`](configuration.md#auth)
 
-Keys themselves are minted over the admin API (`POST /api/v1/admin/keys`), not configured: a
-minted key is a signed expiring token bound to at most one group.
+```yaml
+auth:
+  chain: [keys]                 # ordered DATA-PLANE auth. `keys` = built-in signed-key verifier;
+                                # any other name loads a kind:auth plugin (e.g. oidc). [] = open (dev)
+  admin_auth:                   # chain gating /api/v1/admin/*
+    - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }   # the operator credential (secret ref)
+  upstream_credentials: own     # own (default) | passthrough (forward the caller's key upstream)
+  # signing_key: { file: /run/secrets/busbar-signing.key }   # signs virtual keys; absent = gen 0600
+  role_bindings:                # role → policy, NESTED BY MODULE (for kind:auth / IdP modules)
+    oidc:
+      platform: { group: acme, admin_scope: full }   # admin_scope: read-only|hooks-register|mint|full
+```
 
-## Limits: [`groups`](configuration.md#groups)
+Keys themselves are **minted over the admin API** (`POST /api/v1/admin/keys`), not configured — a
+minted key is a signed, expiring token bound to at most one group. See
+[Virtual keys and enforcement](configuration.md#virtual-keys-and-enforcement) and
+[admin-api.md](admin-api.md).
 
-The ONE limit tree ([full docs](configuration.md#groups)). Keys carry no limits; every cap lives here.
+## Limits — [`groups`](configuration.md#groups)
+
+The ONE limit tree; keys carry no limits, every cap lives here. Admission walks the `parent` chain
+and ANDs every limit (atomic, all-or-nothing); a rejection names the exact blocking bucket.
 
 ```yaml
 groups:
-  <name>:
-    parent: <group>          # optional (default: none); acyclic
-    enabled: true            # default: true, omit it; false = freeze this group (and every descendant's traffic)
-    limits:                  # default: [] (an inherit-only group, capped by its parent chain)
-      - { requests: 500, per: minute }   # requests|tokens|budget need a per: window
+  acme:                                    # an org/team/user are the same primitive (a user = a leaf)
+    limits:
+      - { requests: 500, per: minute }     # requests|tokens|budget need a `per:` window
       - { budget: 1000000, per: month }
-      - { budget: 5000, per: month, pool: frontier }   # optional pool: = per-(group, pool) accounting
-      - { budget: 5000, per: month, pool: value,
-          on_exhaust: downgrade, downgrade_to: frontier-lite }  # budget dry → reroute, don't refuse
-      - { concurrent: 5 }                # instantaneous in-flight cap: NO per:, NO pool:
-    child_default: { limits: [ { budget: 500, per: month } ] }  # optional template for auto-provisioned children (nearest ancestor wins)
+      - { concurrent: 20 }                 # instantaneous in-flight cap: no `per:`, no `pool:`
+  search-team:
+    parent: acme                           # acyclic; leaf limits are sub-capped by every ancestor
+    limits:
+      - { budget: 5000, per: month, pool: frontier }   # optional `pool:` = per-(group, pool) budget
+    child_default: { limits: [ { budget: 500, per: month } ] }   # template for auto-provisioned children
 ```
 
-Chain-AND enforced at admission (atomic, all-or-nothing); rejections name the exact blocking
-bucket (group + metric + window).
+## Pricing — [`rate_card` + `per_request_fee`](configuration.md#rate_card-and-per_request_fee)
 
-## Pricing: [`rate_card` + `per_request_fee`](configuration.md#rate_card-and-per_request_fee)
+```yaml
+rate_card:                      # the ONLY cost source: per-model token rates in abstract MICRO-units.
+  claude-sonnet-4-5:            # ALL-OR-NOTHING: present = must cover every configured model.
+    { input_utok: 3, output_utok: 15, cache_read_utok: 0, cache_write_utok: 4 }
+per_request_fee: 0              # flat abstract charge added per request at admission
+```
 
-| Key | Owns | Shape / default |
-|---|---|---|
-| [`rate_card`](configuration.md#rate_card-and-per_request_fee) | The ONLY cost source: per-model, per-tier token rates (abstract MICRO-units/token) | `<model>: { input_utok, output_utok, cache_read_utok, cache_write_utok }`. ALL-OR-NOTHING: absent = tokens price 0; present = must cover every configured model |
-| [`per_request_fee`](configuration.md#rate_card-and-per_request_fee) | Flat abstract cents charged per request at admission | `0` (default) |
+## Durability — [`store`](configuration.md#store)
 
-## Durability: [`store`](configuration.md#store)
+```yaml
+store:
+  module: memory                # default: compiled-in, EPHEMERAL. sqlite|postgres|redis = signed
+  # module: postgres            #   plugin tarballs (need plugins.enabled + the tarball in plugins.dir)
+  # settings: { url: "postgres://user:pass@host/busbar" }
+```
 
-| Key | Owns | Shape / default |
-|---|---|---|
-| [`store.module`](configuration.md#store) | The durable store plugin (keys, ledger, audit, denylist) | `memory` (default, compiled-in, ephemeral) \| `sqlite` \| `postgres` \| `redis` \| a third-party store plugin name |
-| [`store.settings`](configuration.md#store) | The store module's OWN opaque config | sqlite: `{ db_path, busy_timeout_ms? }`; postgres/redis: `{ url }` |
+## Routing surface — [`providers`](configuration.md#providers) · [`models`](configuration.md#models) · [`pools`](configuration.md#pools)
 
-## Routing surface: [`providers`](configuration.md#providers), [`models`](configuration.md#models), [`pools`](configuration.md#pools), [`global_hooks`](hooks.md)
+```yaml
+providers:
+  openai:
+    api_key: { env: OPENAI_KEY }          # a SECRET REFERENCE (no *_env fields)  → #providers
+    # protocol / base_url / error_map / auth / health … override the shipped catalog
 
-| Key | Owns | Shape / default |
-|---|---|---|
-| [`providers.<name>`](configuration.md#providers) | A deployment of a catalog provider | `{ api_key: <secret-ref>, protocol?, base_url?, error_map?, path?, path_base?, auth?, token_url?, scope?, health?, allow_metadata_hosts? }` |
-| [`models.<name>`](configuration.md#models) | One lane (model at a provider) | `{ provider, max_concurrent?, max_requests?, default_max_tokens?, upstream_model?, attempt_timeout_ms?, reasoning?, prompt_caching? }` |
-| [`pools.<name>.members`](configuration.md#members-and-weights) | Weighted lane membership | `[{ model, weight?, context_max?, tier?, tags?, attempt_timeout_ms?, reasoning? }]` (no cost fields: pricing lives on `rate_card`) |
-| [`pools.<name>.hooks`](configuration.md#pool-hooks-ordering-and-gates) | Ordering strategy + gates, inline, ordered | Bare strategy (`weighted\|cheapest\|fastest\|least_busy\|usage`, at most one) and/or `kind: hook` plugin refs `{ module: <hook-plugin>, settings: { ... }, kind?, timeout_ms?, on_error?, on_empty?, prompt?, user?, priority?, at? }` (needs `plugins.enabled: true`) |
-| [`pools.<name>.breaker`](configuration.md#breaker) | Per-(pool, lane) circuit breaking | `{ base_cooldown_secs, max_cooldown_secs, trip: { mode: error_rate\|consecutive, window_secs, threshold, min_requests, consecutive_n } }` |
-| [`pools.<name>.failover`](configuration.md#failover) | Per-request retry budget | `{ timeout_secs, max_hops, exclusions? }` |
-| [`pools.<name>.on_exhausted`](configuration.md#on_exhausted) | All-members-down behavior | `reject` (default) \| `least_bad` \| `{ fallback_pool: <pool> }` |
-| [`pools.<name>.affinity`](configuration.md#affinity) | Session pinning | `{ mode: session, header_name? }` (default header `x-session-id`) |
-| [`global_hooks`](hooks.md) | Hook instances firing on EVERY request, ordered | Module refs only (same shape as pool refs; default `kind: tap`) |
+models:                                    # a model is one LANE (a model at a provider)  → #models
+  gpt-4o:        { provider: openai, max_concurrent: 20 }
+  gpt-4o-mini:   { provider: openai }
 
-## Plugins: [`plugins`](configuration.md#plugins)
+pools:                                      # a pool is weighted lanes with shared reliability  → #pools
+  chat:
+    members:                                # no cost fields — pricing lives on rate_card
+      - { model: gpt-4o,      weight: 3, tier: primary }
+      - { model: gpt-4o-mini, weight: 1, tier: overflow }
+    hooks:                                  # one ordering strategy + inline kind:hook gate refs
+      - cheapest                            #   #pool-hooks-ordering-and-gates
+      - { module: busbar-webrequest-hook, settings: { url: "https://sidecar/pii" }, kind: gate, prompt: ro }
+    breaker:                                # per-(pool, lane) circuit breaking  → #breaker
+      trip: { mode: error_rate, window_secs: 30, threshold: 0.5, min_requests: 5 }
+    failover: { timeout_secs: 30, max_hops: 3 }   # per-request retry budget  → #failover
+    on_exhausted: { fallback_pool: overflow }     # reject | least_bad | fallback_pool  → #on_exhausted
+    affinity: { mode: session }                   # session pinning  → #affinity
 
-One signed artifact format + trust model + loader for **store**, **secret**, and **auth** plugins
-(all loaded in-process over the hybrid ABI); **hook** plugins share the machinery but run
-out-of-process (socket/webhook). An `auth` plugin is referenced from `auth.chain` (e.g. `oidc`).
+global_hooks:                               # hook instances firing on EVERY request, ordered  → hooks.md
+  - { module: busbar-headroom-hook, kind: gate, prompt: rw }
+```
 
-| Key | Owns | Shape / default |
-|---|---|---|
-| [`plugins.enabled`](configuration.md#plugins) | MASTER SWITCH | `false` (default): no plugin ever loads (store/secret/auth all inert) |
-| [`plugins.dir`](configuration.md#plugins) | Where signed tarballs live | `plugins` (default) |
-| [`plugins.trust`](configuration.md#plugins) | Signature policy | `{ publishers: [{name, public_key}], allow_unsigned: false, allow_third_party: false }` (Busbar's release key is embedded; untrusted plugins are never dlopened) |
-| [`plugins.min_versions`](configuration.md#plugins) | Anti-downgrade floors | `<plugin-name>: "<min version>"` (first-party auto-floored at the binary version) |
+## Plugins — [`plugins`](configuration.md#plugins)
 
-## Operational: [`security`](configuration.md#security), [`observability`](configuration.md#observability), [`limits`](configuration.md#limits), `metrics`, [`health`](configuration.md#health-probing), `routing`, [`advanced`](configuration.md#advanced)
+One signed artifact format, trust model, and loader for all four plugin kinds — **store**,
+**secret**, **auth**, and **hook** — every one loaded **in-process** over the hybrid ABI (see
+[plugins.md](plugins.md)). For out-of-process isolation, the first-party `busbar-webrequest-hook`
+plugin forwards to an HTTPS sidecar.
 
-| Key | Owns | Shape / default |
-|---|---|---|
-| [`security`](configuration.md#security) | SSRF metadata denylist tuning | `{ blocked_metadata_hosts: [], allow_metadata_hosts: [], allow_all_metadata: false }` |
-| [`observability`](configuration.md#observability) | Opt-in sinks | `{ otlp_url?, request_log_webhook_url?, max_inflight_webhook_deliveries: 64, webhook_delivery_timeout_secs: 2, emit_server_timing: false }` |
-| [`limits`](configuration.md#limits) | Global operational caps | `{ upstream_request_timeout_secs: 300, request_body_max_bytes: 33554432, pool_max_idle_per_host: 1024, pool_idle_timeout_secs: 300, max_inbound_concurrent: 8192, hard_down_cooldown_secs: 1800, upstream_error_body_max_bytes: 262144, tls_handshake_timeout_secs: 10, request_body_read_timeout_secs: 30, max_honored_retry_after_secs: 86400, default_max_tokens: 4096, max_keys_per_principal: 0, reasoning_effort_budgets: { minimal: 1024, low: 4096, medium: 8192, high: 16384 } }` |
-| `metrics` | Scrape tunables | `{ key_gauge_limit: 2000 }` |
-| [`health`](configuration.md#health-probing) | Process-wide probe fallbacks | `{ default_probe_interval_secs: 30, default_probe_timeout_secs: 5 }` |
-| `routing` | Global default gate deadline | `{ default_policy_timeout_ms: 1 }` |
-| [`advanced`](configuration.md#advanced) | Internal tuning (normally omitted) | `{ rate_sweep_interval: 256, usage_flush_interval_ms: 100 }` |
+```yaml
+plugins:
+  enabled: false                # MASTER SWITCH (default false): nothing loads while off
+  dir: plugins                  # where signed tarballs live
+  trust:                        # Busbar's release key is embedded; untrusted plugins never dlopen
+    publishers: [ { name: acme, public_key: "<64-hex ed25519>" } ]
+    allow_unsigned: false
+    allow_third_party: false
+  # min_versions: { acme-store-dynamo: "2.0.0" }   # anti-downgrade floors
+```
 
-## Not config (but adjacent)
+## Operational — [`security`](configuration.md#security) · [`observability`](configuration.md#observability) · [`limits`](configuration.md#limits) · [`health`](configuration.md#health-probing)
 
-- **[Minting keys](configuration.md#virtual-keys-and-enforcement)**: `POST /api/v1/admin/keys` with `{ name, group?, parent?, allowed_pools?, labels?,
-  expires_in|expires_at?, issue_aws_credential? }`; the signed token is shown once and expires
-  (default 90 days). When `group` names a non-existent leaf and `parent` is an existing group,
-  the leaf is auto-provisioned. Requires `mint` scope or `full`.
-- **[Migrating from 1.4.x](configuration.md#migrating-a-14x-config)**: `busbar --migrate-config old.yaml` prints the converted config with
-  TODO/WARNING comments; booting a 1.x config refuses with a named error.
-- **[Validation](configuration.md#startup-validation-summary)**: `busbar --validate` runs the exact boot pipeline (config + plugins) with zero
-  side effects; a clean validate means a clean boot.
+```yaml
+security:                       # SSRF metadata denylist tuning  → #security
+  { allow_metadata_hosts: [], allow_all_metadata: false }
+observability:                  # opt-in sinks  → #observability
+  { otlp_url: null, request_log_webhook_url: null, emit_server_timing: false }
+limits:                         # global operational caps  → #limits
+  { upstream_request_timeout_secs: 300, request_body_max_bytes: 33554432, max_inbound_concurrent: 8192 }
+health:                         # process-wide probe fallbacks  → #health-probing
+  { default_probe_interval_secs: 30, default_probe_timeout_secs: 5 }
+metrics: { key_gauge_limit: 2000 }
+routing: { default_policy_timeout_ms: 1 }
+advanced:                       # internal tuning (normally omitted)
+  { rate_sweep_interval: 256, usage_flush_interval_ms: 100 }
+```
+
+## Not config, but adjacent
+
+- **[Minting keys](admin-api.md)**: `POST /api/v1/admin/keys` — the signed token is shown once and
+  expires (default 90 days). Requires `mint` scope or `full`.
+- **[Migrating from 1.4.x](migration-1.5.md)**: `busbar --migrate-config old.yaml` prints the
+  converted config with TODO/WARNING comments; a 1.x config refuses to boot with a named error.
+- **[Validation](configuration.md#startup-validation-summary)**: `busbar --validate` runs the exact
+  boot pipeline (config + plugins) with zero side effects — a clean validate means a clean boot.
+```
