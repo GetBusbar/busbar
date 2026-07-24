@@ -118,7 +118,7 @@ The live endpoint requires a booted, authenticated instance. So that tooling can
 |---|---|
 | `GET /hooks` | The hook registry: each hook's `kind` (tap/gate), transport, access grants (`prompt`/`user`), `priority`, `at` (tap stage), `on_error`, `timeout_ms`, `settings`, and whether it's globally wired |
 | `GET /hooks/{name}` | One hook's definition |
-| `GET /hooks/{name}/health` | Best-effort transport reachability (a short-timeout socket connect probe; `reachable` is `null` for webhooks/non-unix, with a `detail` note). Never fires the hook |
+| `GET /hooks/{name}/health` | Best-effort reachability of a forwarding hook's sidecar (a short-timeout connect probe against its configured `settings.url`; `reachable` is `null` for an in-process `kind: hook` plugin with no external endpoint, with a `detail` note). Never fires the hook |
 | `GET /hooks/{name}/schema` | The hook's **self-described settings schema** (the `describe` wire message, proxied verbatim; `{"name", "schema": null}` when the hook doesn't answer) |
 | `GET /hooks/{name}/status` | The hook's **observed** state, live-queried over its transport: `{name, desired, reported, drift, metrics, as_of, source}`, the settings it is actually running + their version vs Busbar's desired copy, with a **`drift`** verdict (a differing settings version, or a desired key missing/changed in the observed settings; extra self-managed keys are not drift). Self-reported metrics are validated and bounded. `reported`/`drift` are `null` when the hook doesn't answer (fail-open: the desired view still serves) |
 | `GET /plugins?type=auth\|hooks\|store` | The plugin catalog for one type (required parameter). `auth`/`hooks`: compiled-in plugins (feature-gated, from the binary) and installed `kind:hook` plugin tarballs, each with manifest metadata and trust verdict (`trusted` / `unverified` / `rejected`). `store`: the compiled-in `memory` head plus every signed plugin tarball in `plugins.dir`, each with its manifest metadata (`name`, `version`, `publisher`, `interface_version`) and a re-evaluated trust verdict. MANIFEST-ONLY: listing never `dlopen`s anything, so an untrusted plugin's code cannot run from inspection |
@@ -255,17 +255,18 @@ Busbar's config plane is live: an authenticated write takes effect immediately, 
 
 | Endpoint | Does |
 |---|---|
-| `POST /hooks` | Register a hook at runtime. Body `{ "name": "...", "config": { "kind": "gate\|tap", "module": "webhook\|socket\|<kind:hook plugin name>", "settings": {...}, ... } }`. **`201` when the name is new; `200` when it replaces an existing overlay hook** (honest upsert). A `global: true` hook is live for the next request. Invalid definitions are `400` and change nothing; a base-config-defined name is a terminal `409` (the API never silently shadows file config) |
+| `POST /hooks` | Register a hook at runtime. Body `{ "name": "...", "config": { "kind": "gate\|tap", "module": "<kind: hook plugin name/alias>", "settings": {...}, ... } }`. `module` names a loaded `kind: hook` plugin (1.5.0 retired the built-in `socket`/`webhook` transports; for HTTPS-sidecar forwarding use the first-party `busbar-webrequest-hook` plugin, and note `plugins.enabled: true` is required). **`201` when the name is new; `200` when it replaces an existing overlay hook** (honest upsert). A `global: true` hook is live for the next request. Invalid definitions are `400` and change nothing; a base-config-defined name is a terminal `409` (the API never silently shadows file config) |
 | `PUT /hooks/{name}` | Replace an existing **overlay** hook, live. `404` for an unknown name (PUT replaces; POST creates); terminal `409` for a base-defined hook or a grant change: `kind`/`prompt`/`user` are immutable (delete and re-register to change them) |
 | `DELETE /hooks/{name}` | Remove an overlay hook, live. **`204`** (still carrying the new config ETag); `404` if unregistered; terminal `409` for a base-defined hook. The deletion is tombstoned in the overlay so it survives restart |
-| `PATCH /hooks/{name}/settings` | Push an opaque settings map to the **running** hook and **commit on ack**: Busbar sends the `configure` wire message (5s deadline) and only a version-echoing acknowledgment commits the change (audited, versioned, persisted). A nack/timeout commits nothing (`400` names the reason); if another mutation landed during the push, the commit is refused with `409`, retry. Socket hooks also receive committed settings as the first message on every (re)connection, so a restarted hook never runs blind |
+| `PATCH /hooks/{name}/settings` | Push an opaque settings map to the **running** hook and **commit on ack**: Busbar sends the `configure` op (5s deadline) and only a version-echoing acknowledgment commits the change (audited, versioned, persisted). A nack/timeout commits nothing (`400` names the reason); if another mutation landed during the push, the commit is refused with `409`, retry. A forwarding hook (e.g. `busbar-webrequest-hook`) relays committed settings to its sidecar, so a restarted sidecar never runs blind |
 
 All hook mutations honor `If-Match` against the config-plane ETag, are audited (including rejections: probing which names exist leaves a trail), recorded in version history, and overlay-persisted.
 
 ```bash
-# Register a global compression gate — live immediately (using the webhook module)
+# Register a global compression gate — live immediately (forwarding to an HTTPS sidecar via the
+# first-party busbar-webrequest-hook plugin; requires plugins.enabled: true)
 curl -s -X POST -H "x-admin-token: $TOK" -H 'content-type: application/json' \
-  --data '{"name":"compress","config":{"kind":"gate","module":"webhook","settings":{"url":"https://127.0.0.1:8900/"},"prompt":"rw","global":true}}' \
+  --data '{"name":"compress","config":{"kind":"gate","module":"busbar-webrequest-hook","settings":{"url":"https://127.0.0.1:8900/"},"prompt":"rw","global":true}}' \
   http://localhost:8081/api/v1/admin/hooks
 
 # Is it running what we pushed? (desired vs reported, with a drift verdict)

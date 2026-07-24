@@ -153,7 +153,7 @@ Management/observability routes (`/stats`, `/healthz`, `/metrics`,
   arrives as `Authorization: Bearer` or `X-Admin-Token`; no valid admin credential means
   a 401. Because the socket is separate, a caller on the data port can never reach the
   control plane. Exposing `admin_listen` off loopback is a boot error unless you set
-  `admin_tls.client_ca_file` (mTLS on the admin listener) or the explicit `admin_insecure`
+  `admin_tls.client_ca` (mTLS on the admin listener) or the explicit `admin_insecure`
   waiver (for operators fronting admin with their own mesh).
 - On the data plane, the caller's bearer token is threaded through the request. Whether
   Busbar signs the upstream call with its own lane key or forwards the caller's credential
