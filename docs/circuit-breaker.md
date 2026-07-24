@@ -211,6 +211,4 @@ Probe behavior:
 
 Choosing a mode: `none` is fine for pools with multiple members, one member going down will be detected on the first organic hit and failed over. Use `dead` when you care about prompt recovery without paying for constant probes. Use `active` when you operate a pool with few members and need pre-emptive trip-out of a dark backend.
 
-**Boot window for self-minting OAuth lanes.** A lane using `jwt-bearer` or `oauth-client-credentials` egress auth mints its first bearer token in the background at startup and on every config reload. For the brief window before that first mint completes the lane has no token, so requests routed to it fail auth (upstream 401) and a burst can trip its breaker. This self-heals in well under a second: the active health prober skips the lane until its token is ready (so probing never parks it), and the breaker recovers automatically once the token lands. If you route heavy traffic to a freshly-booted OAuth lane, expect a few 401s until the first token mints; static-key lanes (`bearer` / `api-key` / SigV4) have no such window.
-
 ---

@@ -371,7 +371,7 @@ Create-key fields (keys are PURE AUTH: every limit lives on the bound group):
 | `allowed_pools` | list<string> | omitted = all | Pools/models this key may target. OMITTED = all pools; an explicit `[]` = NO pools. Violations → `403`. |
 | `expires_in` / `expires_at` | duration / epoch | `90d` | Token lifetime (mutually exclusive). Keys EXPIRE: re-mint or rotate before expiry. |
 | `labels` | map | `{}` | Echoed onto the key's metric series (e.g. `sum by (team)`); never interpreted by enforcement. |
-| `issue_aws_credential` | bool | `false` | When `true`, also issues an AWS-style `aws_access_key_id` + `aws_secret_access_key` for inbound SigV4 auth (Bedrock SDK clients). Both fields are returned **once** in the 201 response alongside the signed token and never again. See [Bedrock ingress](protocols.md#bedrock). |
+| `issue_aws_credential` | bool | `false` | When `true`, also issues an AWS-style `aws_access_key_id` + `aws_secret_access_key` for inbound SigV4 auth (Bedrock SDK clients). Both fields are returned **once** in the 201 response alongside the signed token and never again. See [Bedrock ingress](protocols.md#bedrock-aws-bedrock-converse-api). |
 
 ### Enforcement model
 
@@ -402,6 +402,7 @@ Create-key fields (keys are PURE AUTH: every limit lives on the bound group):
 | `503` on every request | `/stats`, are all lanes `dead` or in cooldown? Check `dead_reason`. |
 | A lane stuck `dead` with `billing` reason | Upstream wallet/quota; the lane recovers on a successful probe once funded. Consider `health.mode: dead`. |
 | A lane stuck `dead` with `auth` reason | Wrong/expired credential behind the provider's `api_key` reference. |
+| A few `401`s from a Vertex AI or Azure (Entra ID) lane right after startup | The lane's first OAuth token is still minting. `jwt-bearer` / `oauth-client-credentials` lanes fetch an access token in the background at boot (and on every reload); for up to ~1s before it lands, the earliest calls return `401`. Clears itself within a second, no action needed. Static-key lanes (`bearer` / `api-key` / SigV4) never have this window. |
 | `429` from busbar itself | A group limit blocked. The body's `error.type` distinguishes the cause: `rate_limit_error` = requests/tokens/concurrent limit (the message names group + metric + window); `insufficient_quota` = a budget limit (Bedrock ingress signals over-budget as `400` instead). Check `GET /api/v1/admin/keys/{id}/usage`. |
 | `403` from busbar | The virtual key's `allowed_pools` doesn't include the target. |
 | Startup panic: "unset environment variable" | A `${VAR}` (possibly in a comment) isn't exported. |

@@ -286,38 +286,15 @@ plugins directory, then name the module in the chain. Its `settings:` map is pas
 verbatim as its config.
 
 Role policy is nested under the plugin's **runtime module name** — the value the plugin returns from
-`name()`, which for the bundled OIDC module is `oidc`. Bind roles under that name, not the config
-alias if they differ.
+`name()`, which may differ from the chain alias you gave it. Bind roles under that runtime name.
 
-The bundled **`oidc`** module (`busbar-auth-oidc-plugin`) verifies OIDC/JWT bearer tokens against an
-IdP's JWKS, mapping a token claim (default `groups`) to the principal's roles. Microsoft Entra ID
-(Azure AD) example — replace `<tenant-id>` and `<client-id>` with your own:
+A verified caller presents its IdP-issued token as `Authorization: Bearer <token>`; the auth plugin
+validates it and asserts the token's claims as roles, which busbar maps through `role_bindings.<module>`
+to pools, limits, and (optionally) an admin scope capped by the module's `max_admin_scope`.
 
-```yaml
-plugins:
-  enabled: true
-  dir: /etc/busbar/plugins            # the signed busbar-auth-oidc-plugin tarball lives here
-
-auth:
-  chain:
-    - keys                            # still accept busbar-minted virtual keys
-    - oidc:                           # then IdP-issued JWTs
-        settings:
-          issuer:    "https://login.microsoftonline.com/<tenant-id>/v2.0"
-          audience:  "api://<client-id>"
-          # jwks_url optional — discovered from the issuer when omitted:
-          jwks_url:  "https://login.microsoftonline.com/<tenant-id>/discovery/v2.0/keys"
-          role_claim: "groups"        # the JWT claim carrying the caller's groups
-  role_bindings:
-    oidc:                             # nested by the module's runtime name (`oidc`)
-      "<entra-group-object-id>":      # a group id from the `groups` claim
-        allowed_pools: [fast]
-        group: growth                 # charge through the `growth` limit bucket
-```
-
-A caller then presents the Entra-issued JWT as `Authorization: Bearer <jwt>`; `oidc` verifies it,
-asserts the token's groups as roles, and busbar maps them through `role_bindings.oidc` to pools,
-limits, and (optionally) an admin scope capped by `auth.chain.oidc.max_admin_scope`.
+Each auth plugin defines its own `settings:` (issuer, audience, claim mapping, and so on) and ships its
+own setup guide. For the first-party OIDC/SSO plugin — JWKS verification, claim-to-role mapping, and a
+full Microsoft Entra ID (Azure AD) example — see the **[OIDC auth plugin](/plugins/auth/oidc/)**.
 
 ---
 
