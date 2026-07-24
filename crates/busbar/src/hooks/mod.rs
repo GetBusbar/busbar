@@ -114,6 +114,65 @@ impl HookEnv {
         }
         Ok(())
     }
+
+    /// PRE-BUILD FAIL-CLOSED PASS for gate/rewrite OPEN() failures (the open-time variant of B1):
+    /// actually `open()` every referenced DECISION or REWRITE gate up front so an `open()`-time
+    /// failure (the plugin constructor rejecting its cfg_json, a staging/mmap failure, an
+    /// ABI/transport-version or exported-kind mismatch observable only on load) ABORTS boot/reload —
+    /// the SAME fail-closed discipline the store (`open_store`) and auth (`AuthMiddleware::new`)
+    /// paths use. Without this pass, `resolve_pool_gates`/`resolve_pool_rewrites`/
+    /// `resolve_rewrite_hooks`/`resolve_gate_hooks` all `filter_map`/`if let Some`-DROP a gate whose
+    /// plugin failed to `open()`, so a Reject/restrict/rewrite gate the operator configured would
+    /// silently vanish while boot/reload reports success — a fail-OPEN of an admission control.
+    /// `plugins_preflight` is manifest-only (no dlopen) and `preresolve_hook_secrets` only resolves
+    /// SecretRefs, so neither catches an `open()` failure.
+    ///
+    /// CRITICAL DISTINCTION (matching `preresolve_hook_secrets`): a plugin that is GENUINELY ABSENT
+    /// (`registry.resolve` = `None`) is the legitimate safety-net skip and stays fail-open (already
+    /// surfaced loudly by `plugins_preflight` for a *referenced* plugin) — we do NOT abort for it
+    /// here. But a plugin that IS present and resolvable yet fails `open()` MUST abort. Taps
+    /// (observation-only) legitimately fail-open and are excluded — only decision and rewrite gates,
+    /// whose absence changes an admission/redaction decision, are pre-opened.
+    ///
+    /// Opening here is consistent with the transport model (every `gate_transport_named` opens a
+    /// fresh instance; `fetch_status`/`push_configure` open per call), so this pre-open does not
+    /// leak a live instance — the constructed policy is dropped at the end of the iteration.
+    pub(crate) fn preopen_gate_hooks(
+        &self,
+        hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
+    ) -> Result<(), String> {
+        for (name, hook) in hooks {
+            // Only decision + rewrite GATES fail closed. Taps observe (fail-open by design); a
+            // non-gate kind never enforces an admission/redaction decision.
+            if hook.kind != crate::config::HookKind::Gate {
+                continue;
+            }
+            // Genuinely-absent plugin: the legitimate safety-net skip (fail-open). We only pre-open
+            // a plugin that actually resolves — `plugins_preflight` already loudly flags a
+            // referenced-but-unloadable plugin, and a truly missing plugin degrades to "gate absent"
+            // exactly as before. This is the DISTINCTION between absent (ok) and open()-failed (abort).
+            if self.registry.resolve(&hook.plugin).is_none() {
+                continue;
+            }
+            // The plugin IS present: resolve its (already-secret-substituted) settings and OPEN it.
+            // An open failure here is a hard boot/reload error — the gate would otherwise be silently
+            // dropped and its admission/rewrite decision lost.
+            let resolved = self
+                .resolve_hook_settings(&hook.settings)
+                .map_err(|e| format!("hook '{name}' settings: {e}"))?;
+            let cfg_json = serde_json::Value::Object(resolved).to_string();
+            self.registry
+                .open_hook(&hook.plugin, &cfg_json, name, self.projectors.clone())
+                .map_err(|e| {
+                    format!(
+                        "gate hook '{name}' (plugin '{}') failed to open; refusing to boot/reload \
+                         with a silently-absent admission gate (fail-closed): {e}",
+                        hook.plugin
+                    )
+                })?;
+        }
+        Ok(())
+    }
 }
 
 /// The per-pool routing policy resolved ONCE at config load. `None` is the zero-cost default
@@ -241,8 +300,11 @@ pub(crate) fn resolve_pool_ordering(
 /// Resolve a pool's GATES (`hook:` / the non-strategy names in `hooks: [...]`) into their transports,
 /// preserving CONFIG ORDER and carrying each hook's `priority` — the firing site merges these with
 /// the global decision gates into one priority-sorted phase-2 chain (stable: ties keep globals-first,
-/// then config order). Unresolvable / dangling / wrong-kind refs are skipped here (config_validate
-/// surfaces them loudly at boot); a skip degrades to "gate absent", never a stranded request.
+/// then config order). Wrong-kind / genuinely-absent-plugin refs are skipped here — a skip degrades
+/// to "gate absent", never a stranded request. An `open()`-time FAILURE of a present plugin does NOT
+/// silently vanish: `HookEnv::preopen_gate_hooks` (a fail-closed pre-build pass in
+/// `build_app_from_config`) opens every referenced gate and ABORTS boot/reload on failure, so by the
+/// time this runs a present gate either opens or the boot already failed.
 pub(crate) fn resolve_pool_gates(
     cfg: &crate::config::PoolCfg,
     hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
@@ -301,8 +363,9 @@ pub(crate) fn resolve_pool_rewrites(
 /// Resolve a GATE hook into a [`ResolvedPolicy`]. The prompt/identity projections are gated by BOTH
 /// the operator's `prompt:`/`user:` grant AND the plugin's signed-manifest declared intent (`needs:`)
 /// — the belt-and-suspenders projection rule: the core sends content ONLY when both agree
-/// ([`projection_grants`]). A missing/unresolvable plugin degrades to `None` — the plugin pre-flight
-/// surfaces it loudly at boot.
+/// ([`projection_grants`]). A GENUINELY-ABSENT plugin degrades to `None` (fail-open safety net); an
+/// `open()`-time FAILURE of a present plugin is caught earlier by `HookEnv::preopen_gate_hooks`,
+/// which aborts boot/reload — so a present gate never reaches here having silently failed to open.
 fn resolve_gate_transport(
     name: &str,
     hook: &crate::config::HookCfg,
@@ -551,8 +614,10 @@ fn gate_on_empty(hook: &crate::config::HookCfg) -> crate::config::PolicyOnError 
 /// chain order; `weighted`-tie-break by config order is preserved by the stable sort). Returns
 /// `(per-hook transform deadline, transport)` pairs. The `rw` GRANT IS ENFORCED HERE: a `ro`/`no`
 /// gate (or a tap, or a non-rewrite gate) is skipped, so it can never rewrite — the bidirectional
-/// grant holds by construction, independent of what a hook tries to return. Unresolvable transports
-/// (unresolvable plugin refs) are skipped; the plugin pre-flight surfaces those loudly at boot.
+/// grant holds by construction, independent of what a hook tries to return. A genuinely-absent
+/// plugin is skipped (fail-open safety net); an `open()`-time FAILURE of a present rewrite gate is
+/// caught by `HookEnv::preopen_gate_hooks`, which aborts boot/reload (so a redaction/rewrite gate
+/// can never silently vanish while boot succeeds).
 pub(crate) fn resolve_rewrite_hooks(
     hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
     global_hooks: &[String],
@@ -626,8 +691,10 @@ pub(crate) fn resolve_tap_hooks(
 /// `ResolvedPolicy` for each (carrying `on_error`/`on_empty`/grants) so the firing site can run it
 /// through the same `decide_policy_order` machinery as a pool gate, PLUS the hook's `priority` so
 /// the firing site can merge globals with a pool's own gates into one phase-2 chain. Sorted by
-/// ascending `priority` (the chain tie-break, e.g. which reject message surfaces). Unresolvable
-/// transports are skipped (config_validate surfaces them at boot).
+/// ascending `priority` (the chain tie-break, e.g. which reject message surfaces). A genuinely-absent
+/// plugin is skipped (fail-open safety net); an `open()`-time FAILURE of a present decision gate is
+/// caught by `HookEnv::preopen_gate_hooks`, which aborts boot/reload (so a Reject/restrict gate can
+/// never silently vanish while boot reports success).
 pub(crate) fn resolve_gate_hooks(
     hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
     global_hooks: &[String],

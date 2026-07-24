@@ -267,6 +267,14 @@ pub(crate) fn build_with_hook(current: &App, name: &str, cfg: HookCfg) -> Result
         // demotion. Mirrors `build_without_hook`'s DELETE cleanup.
         next.global_hooks.retain(|n| n != name);
     }
+    // FAIL-CLOSED (B1 open-time variant): before re-resolving, actually OPEN every referenced
+    // decision/rewrite gate so a plugin that fails to `open()` ABORTS this register instead of being
+    // silently `filter_map`-dropped by the resolvers below (which would return 200 OK while the gate
+    // vanished from the routing chain — a fail-open of an admission control on the live reload path).
+    // A genuinely-absent plugin stays the legitimate fail-open skip (distinguished inside).
+    if let Err(e) = next.hook_env.preopen_gate_hooks(&next.hook_registry) {
+        return Err(AdminError::Validation(e));
+    }
     // Re-resolve the FIRED transports from the new registry so a global hook is live after the swap.
     next.rewrite_hooks = crate::hooks::resolve_rewrite_hooks(
         &next.hook_registry,
@@ -493,6 +501,12 @@ pub(crate) fn build_with_registry(
     next.config_version = current.config_version.wrapping_add(1);
     next.hook_registry = registry;
     next.global_hooks = global_hooks;
+    // FAIL-CLOSED (B1 open-time variant): OPEN every referenced decision/rewrite gate before
+    // re-resolving so a plugin that fails to `open()` aborts this snapshot install instead of being
+    // silently dropped from the routing chain (fail-open). A genuinely-absent plugin stays a skip.
+    if let Err(e) = next.hook_env.preopen_gate_hooks(&next.hook_registry) {
+        return Err(AdminError::Validation(e));
+    }
     next.rewrite_hooks = crate::hooks::resolve_rewrite_hooks(
         &next.hook_registry,
         &next.global_hooks,
@@ -1052,15 +1066,37 @@ impl AdminService {
             .map_err(|e| AdminError::Validation(format!("cannot create plugins dir: {e}")))?;
         let stamp = format!("{}-{}", std::process::id(), crate::store::now());
         let tmp = dir.join(format!(".{file}.{stamp}.tmp"));
-        std::fs::write(&tmp, tarball).map_err(|e| {
-            AdminError::Validation(format!("cannot write plugin to plugins dir: {e}"))
-        })?;
+        // Write + FLUSH + fsync the temp file's CONTENTS before the rename so the published name can
+        // never point at torn/zero-length tarball data after a power loss (which the next boot's
+        // `scan_and_validate` would reject, blocking startup — worse in a rollback, where a fsynced
+        // version pin could reference an un-fsynced tarball). Mirrors `config::overlay::write` and
+        // the signing-key write. `std::fs::write` alone leaves the bytes in the page cache.
+        {
+            use std::io::Write as _;
+            let mut f = std::fs::File::create(&tmp).map_err(|e| {
+                AdminError::Validation(format!("cannot write plugin to plugins dir: {e}"))
+            })?;
+            f.write_all(tarball).map_err(|e| {
+                AdminError::Validation(format!("cannot write plugin to plugins dir: {e}"))
+            })?;
+            f.flush().map_err(|e| {
+                AdminError::Validation(format!("cannot write plugin to plugins dir: {e}"))
+            })?;
+            f.sync_all().map_err(|e| {
+                AdminError::Validation(format!("cannot fsync plugin in plugins dir: {e}"))
+            })?;
+        }
         let final_path = dir.join(&file);
         if let Err(e) = std::fs::rename(&tmp, &final_path) {
             let _ = std::fs::remove_file(&tmp);
             return Err(AdminError::Validation(format!(
                 "cannot publish plugin into plugins dir: {e}"
             )));
+        }
+        // fsync the plugins directory so the rename (directory metadata) is itself durable.
+        // Best-effort: the tarball bytes are already durable, so a failure here does not fail install.
+        if let Ok(dirf) = std::fs::File::open(dir) {
+            let _ = dirf.sync_all();
         }
 
         Ok(crate::admin::v1::contract::PluginInstallView {
