@@ -13,7 +13,7 @@ A hook instance is a **module ref** whose `module:` names a loaded `kind: hook` 
 | In-process `kind: hook` plugin | Loaded from a signed tarball at boot or on hot-reload. The hook is a `cdylib` exporting the frozen **hybrid ABI**: `busbar_abi`, `busbar_plugin_kind`, `busbar_open`, `busbar_call`, `busbar_free`, `busbar_close`. Operations ride `busbar_call` as op-discriminated JSON. | ed25519 signature over the signed manifest; kind cross-checked at load |
 | Out-of-process via `busbar-webrequest-hook` | The first-party forwarder plugin POSTs the projection to your HTTPS sidecar (any language) and returns its reply. The sidecar URL is `settings.url`, SSRF-guarded (loopback allowed; RFC-1918 / link-local / CGNAT / cloud-metadata rejected; remote must be `https://`). | The plugin is signed + auto-trusted; the sidecar runs in its own process |
 
-**In-process trust is signature-based, not process-based.** A `kind: hook` plugin loads inside busbar's address space, verified by ed25519 against the signed manifest. For fault isolation of untrusted logic, forward it out-of-process with `busbar-webrequest-hook` (see [Webrequest](#first-party-hook-plugins-150) below); the choice is performance and integration in-process vs. process isolation via the forwarder.
+**In-process trust is signature-based, not process-based.** A `kind: hook` plugin loads inside Busbar's address space, verified by ed25519 against the signed manifest. For fault isolation of untrusted logic, forward it out-of-process with `busbar-webrequest-hook` (see [Webrequest](#first-party-hook-plugins-150) below); the choice is performance and integration in-process vs. process isolation via the forwarder.
 
 **Admin opt-in required.** A `kind: hook` plugin cannot self-wire into a security-critical path. Wiring a hook with `prompt` above `no` or `global: true` requires `full` admin scope.
 
@@ -151,7 +151,7 @@ A `tap`, being fire-and-forget, has no `on_error` to speak of: its reply is disc
 
 ### The sidecar wire contract (`busbar-webrequest-hook`)
 
-When a hook forwards out-of-process through `busbar-webrequest-hook`, busbar exchanges the same
+When a hook forwards out-of-process through `busbar-webrequest-hook`, Busbar exchanges the same
 op-discriminated JSON with your HTTPS sidecar: one POST body per message. (The in-process
 `kind: hook` plugin ABI carries the identical payload over `busbar_call` — see [`kind: hook`
 plugin ABI](#kind-hook-plugin-abi) below.) The projection is **byte-identical** whichever path
@@ -262,7 +262,7 @@ Two `kind: hook` plugins ship signed by release CI and are auto-trusted by the e
 
 **Headroom** (`busbar-headroom-hook`) is a `kind: hook` prompt-compression rewrite gate. It compresses context before dispatch, saving tokens and latency. Deploy it as a `prompt: rw` gate; it fires before dispatch on the normalized IR, token accounting runs on the rewritten body (the savings are real and measured), and a malformed or slow rewrite proceeds with the original body untouched. It reports `chars_saved_total` and related metrics via the `status` op.
 
-**Webrequest** (`busbar-webrequest-hook`) is a `kind: hook` HTTP-forwarder plugin — the migration path for code you don't want in busbar's address space. It forwards the routing projection over HTTPS to an operator-run sidecar, so you get out-of-process isolation (the sidecar can be any language) without running an untrusted library in-process. The artifact itself is signed and auto-trusted; forwarding is SSRF-guarded; and the sidecar's reply rides the same op-discriminated JSON contract.
+**Webrequest** (`busbar-webrequest-hook`) is a `kind: hook` HTTP-forwarder plugin — the migration path for code you don't want in Busbar's address space. It forwards the routing projection over HTTPS to an operator-run sidecar, so you get out-of-process isolation (the sidecar can be any language) without running an untrusted library in-process. The artifact itself is signed and auto-trusted; forwarding is SSRF-guarded; and the sidecar's reply rides the same op-discriminated JSON contract.
 
 Both plugins are installed from the release tarball and enabled under `plugins:` in the normal way. See [plugins.md](./plugins.md) for the artifact and trust model.
 

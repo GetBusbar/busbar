@@ -112,7 +112,7 @@ A map of provider name → `ProviderDef`. The shipped catalog is a curated set o
 | `path` | string | no | Protocol's standard path | Overrides the upstream request path appended to `base_url`. Must begin with `/`. Static, ignores the per-request model. Use when the API version is in `base_url` and the endpoint path differs from the protocol default (e.g. `/chat/completions` without `/v1`). |
 | `path_base` | string | no | Protocol's default base | For URL-model protocols: overrides the hardcoded base segment while the per-request suffix is still appended. Must begin with `/`. On **Gemini** it replaces `/v1beta/models` (suffix `/{model}:verb`) to reach Google Vertex AI's `/v1/projects/{project}/locations/{location}/publishers/google/models` layout; on **Anthropic** it enables Claude-on-Vertex (the model moves into a `:rawPredict`/`:streamRawPredict` suffix and the body carries `anthropic_version` in place of `model`). Config-only, no code. |
 | `auth` | string | no | Protocol's native auth | The egress auth mechanism. `bearer` (sends `Authorization: Bearer <key>`) · `api-key` (sends `api-key: <key>`, for Azure OpenAI) · `jwt-bearer` (OAuth 2.0 JWT-bearer, RFC 7523: mints + auto-refreshes a bearer from a service-account key resolved via `api_key`; e.g. Google Vertex AI) · `oauth-client-credentials` (OAuth 2.0 client-credentials, RFC 6749 §4.4: the `api_key` reference resolves to `client_id:client_secret`, exchanged at `token_url` for a bearer; e.g. Azure OpenAI via Entra ID). When unset, each protocol uses its native scheme: bearer for anthropic/openai/responses/cohere, `x-goog-api-key` for gemini, AWS SigV4 for bedrock. |
-| `token_url` | string | no | none | OAuth token endpoint for `auth: oauth-client-credentials`, where busbar POSTs the client credentials for a bearer. Required for that auth; must be https for a public host. |
+| `token_url` | string | no | none | OAuth token endpoint for `auth: oauth-client-credentials`, where Busbar POSTs the client credentials for a bearer. Required for that auth; must be https for a public host. |
 | `scope` | string | no | none | OAuth scope for `auth: oauth-client-credentials`. Required for that auth. |
 | `health` | object | no | none | Active health-probe config. See [Health probing](#health-probing). |
 
@@ -217,7 +217,7 @@ the files and restarting. Full operational guide:
 
 Front-door identity for the data plane plus the admin chain and role policy. Data-plane callers
 authenticate through `auth.chain` (ordered module entries); the built-in `keys` module verifies
-busbar's own signed virtual keys, and identity-provider integrations load as `kind: auth`
+Busbar's own signed virtual keys, and identity-provider integrations load as `kind: auth`
 plugins. Static token allowlists are GONE in 1.5.0: every caller carries either a minted signed
 key or an IdP credential a chain module verifies.
 
@@ -238,8 +238,8 @@ auth:
 
 | Field | Type | Required | Default | Notes |
 |---|---|---|---|---|
-| `signing_key` | secret reference | no | generated on first boot | The ed25519 key busbar signs virtual-key tokens with. Fleet-shared (every node verifying the same tokens resolves the same key). Absent: busbar generates a keypair on first boot and persists it with mode 0600 (dev zero-config). Rotating it revokes every outstanding key. |
-| `upstream_credentials` | string | no | `own` | Whose key hits the provider: `own` (busbar's configured lane credential) or `passthrough` (forward the caller's own token upstream; busbar holds no keys). |
+| `signing_key` | secret reference | no | generated on first boot | The ed25519 key Busbar signs virtual-key tokens with. Fleet-shared (every node verifying the same tokens resolves the same key). Absent: Busbar generates a keypair on first boot and persists it with mode 0600 (dev zero-config). Rotating it revokes every outstanding key. |
+| `upstream_credentials` | string | no | `own` | Whose key hits the provider: `own` (Busbar's configured lane credential) or `passthrough` (forward the caller's own token upstream; Busbar holds no keys). |
 | `chain` | list of module entries | no | `[]` | The ordered DATA-PLANE authentication chain. Each entry is a bare module name (`- keys`) or a single-key map `- <module>: { max_admin_scope?, settings? }` where `settings` is the module's own opaque config. `keys` is the built-in signed-key verifier; **any other name loads a `kind: auth` plugin** from the plugins directory (see [auth plugins](#auth-plugins) below). `[]` (default) is the open front door: development only, loud startup warning. A configured auth plugin that cannot be loaded — missing/untrusted tarball, wrong kind, `plugins.enabled: false`, or an ABI failure — is a **hard startup error** (fail-closed: the front door never silently opens). |
 | `admin_auth` | list of module entries | no | `[admin-tokens]` | The chain gating `/api/v1/admin/*`. The built-in `admin-tokens` module carries the operator credential as a secret reference (`token:`). `[]` = OPEN admin (dev only; loud warning). |
 | `role_bindings` | map | no | `{}` | Role policy, NESTED BY MODULE: `role_bindings.<module>.<role> -> { allowed_pools?, group?, admin_scope? }`. See below. |
@@ -289,7 +289,7 @@ Role policy is nested under the plugin's **runtime module name** — the value t
 `name()`, which may differ from the chain alias you gave it. Bind roles under that runtime name.
 
 A verified caller presents its IdP-issued token as `Authorization: Bearer <token>`; the auth plugin
-validates it and asserts the token's claims as roles, which busbar maps through `role_bindings.<module>`
+validates it and asserts the token's claims as roles, which Busbar maps through `role_bindings.<module>`
 to pools, limits, and (optionally) an admin scope capped by the module's `max_admin_scope`.
 
 Each auth plugin defines its own `settings:` (issuer, audience, claim mapping, and so on) and ships its
@@ -427,7 +427,7 @@ per_request_fee: 0
 | `rate_card` | map | absent (token pricing = 0) | Per-model, per-tier token rates in MICRO-units (1e-6 abstract cost unit) per token; an omitted tier prices 0. ALL-OR-NOTHING: absent = every model's tokens price at 0 (budgets count only the flat fee); present = AUTHORITATIVE and COMPLETE: every configured model must have an entry or boot/`--validate` fail with a paste-ready stub of exactly the missing models. With a card present, a request for an arbitrary passthrough model with no rate is rejected pre-forward. |
 | `per_request_fee` | integer | `0` | Flat charge per request in abstract cents, charged at admission into every chain bucket's request count (refunded on a non-2xx outcome). |
 
-The rate numbers are **abstract cost units**: busbar does pure integer math and never knows what
+The rate numbers are **abstract cost units**: Busbar does pure integer math and never knows what
 currency they represent. Currency, symbols, and FX are display concerns owned by your dashboard.
 Routing's `cheapest` strategy derives its per-member scalar from the card as
 `(input_utok + output_utok) / 2`; pool members carry no cost fields.
@@ -455,9 +455,9 @@ store:
 
 `settings` is the store module's OWN opaque configuration, passed through verbatim; a third-party
 store plugin documents its own keys. A non-`memory` store requires `plugins.enabled: true` and the
-store's tarball in `plugins.dir`, or busbar refuses to boot naming the flag/plugin.
+store's tarball in `plugins.dir`, or Busbar refuses to boot naming the flag/plugin.
 
-**Fleet semantics (honest):** with a cluster-shared store (postgres/redis) behind N busbar nodes,
+**Fleet semantics (honest):** with a cluster-shared store (postgres/redis) behind N Busbar nodes,
 virtual keys, accumulated usage, the audit log, and the revocation denylist are genuinely shared.
 The limit hard caps are enforced PER NODE from each node's in-memory counters and reconciled
 durably through ADDITIVE flushes, so the shared store converges on the true fleet total, but
@@ -469,7 +469,7 @@ multi-key cascades (MULTI/EXEC), and scrubs the URL password from error strings;
 TTLs (usage/metering/audit grow unboundedly by design: apply your own retention). The Postgres
 store currently connects `NoTls` and without automatic reconnect: run it over a trusted network
 segment (or a TLS-terminating proxy such as pgbouncer/stunnel) and let your supervisor restart
-busbar on a persistent connection loss.
+Busbar on a persistent connection loss.
 
 ---
 
@@ -584,7 +584,7 @@ pools:
         weight: 1                          # cross-provider failover lane
 ```
 
-Clients always address `sonnet`; when Anthropic rate-limits or trips its breaker, busbar fails over in-flight to the **same model** on Bedrock. Health probes use `upstream_model` too, so a lane can't report healthy on the alias while real traffic fails on the wrong upstream id. Models without a collision (e.g. `gpt-4o`) need no `upstream_model`: the key already is the wire id.
+Clients always address `sonnet`; when Anthropic rate-limits or trips its breaker, Busbar fails over in-flight to the **same model** on Bedrock. Health probes use `upstream_model` too, so a lane can't report healthy on the alias while real traffic fails on the wrong upstream id. Models without a collision (e.g. `gpt-4o`) need no `upstream_model`: the key already is the wire id.
 
 ---
 
@@ -925,7 +925,7 @@ pools:
         context_max: 1000000
 ```
 
-When a member returns a context-length error, busbar:
+When a member returns a context-length error, Busbar:
 1. Excludes from the **current request** any candidate whose known `context_max` is ≤ the failed lane's.
 2. Fails over to a member with a larger (or unknown) `context_max`.
 3. Records no breaker penalty against the smaller lane.
@@ -1048,7 +1048,7 @@ full admin contract (which carries its own version, independent of the binary's 
 
 ### `plugins`
 
-The dynamic plugin subsystem: signed plugin tarballs (store, secret, auth, and hook plugins share the same machinery) that busbar verifies and loads at boot. **Off by default**: with `plugins.enabled: false` (or the whole block absent) no plugin is ever discovered or loaded, and a tarball dropped into the directory is inert. See [plugins.md](plugins.md) for the plugin author guide, the artifact format, and the full trust model.
+The dynamic plugin subsystem: signed plugin tarballs (store, secret, auth, and hook plugins share the same machinery) that Busbar verifies and loads at boot. **Off by default**: with `plugins.enabled: false` (or the whole block absent) no plugin is ever discovered or loaded, and a tarball dropped into the directory is inert. See [plugins.md](plugins.md) for the plugin author guide, the artifact format, and the full trust model.
 
 ```yaml
 plugins:
@@ -1308,7 +1308,7 @@ Busbar validates the merged config before accepting any traffic. Fatal errors ab
 | `error_map` value unknown | A value in `error_map` is not one of the nine canonical disposition classes |
 | `auth` value unknown | `auth` field value not `bearer`, `api-key`, `jwt-bearer`, or `oauth-client-credentials` |
 | `affinity.mode` value unknown | `affinity.mode` not `session` (the only supported value) |
-| 1.x config detected | A 1.x structural marker is present (a `governance:` block, `auth.group_map:`, `auth.mode:`, a top-level `hooks:` block, `api_key_env`, `target:` in a pool member): boot refuses with "this looks like a busbar 1.x config; run `busbar --migrate-config`" |
+| 1.x config detected | A 1.x structural marker is present (a `governance:` block, `auth.group_map:`, `auth.mode:`, a top-level `hooks:` block, `api_key_env`, `target:` in a pool member): boot refuses with "this looks like a Busbar 1.x config; run `busbar --migrate-config`" |
 | `path` malformed | `path` does not begin with `/` |
 | Model name reserved | Model named `admin` |
 | `provider` reference missing | `models.<name>.provider` does not name a configured provider |

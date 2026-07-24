@@ -1,6 +1,6 @@
 # Plugins
 
-busbar ships as one small static binary (about 9.4 MB) with nothing compiled in that you did not
+Busbar ships as one small static binary (about 9.4 MB) with nothing compiled in that you did not
 ask for: no SQLite, no Postgres, no Redis. The default deploy needs no plugins at all. When you do
 need more, a durable store, a secret backend, auth or hook modules, you add
 exactly that capability as a signed plugin tarball dropped into a directory. Lightweight by
@@ -53,7 +53,7 @@ you can name the tarball anything.
 
 `name` is the canonical identity (`[a-z0-9-]+`, e.g. `busbar-store-redis`); `alias` is the short
 config name (`redis`). `store.module:` accepts either. `kind` is `store`, `secret`, `auth`, or `hook`.
-`version` is strict semver. `abi_version` declares which busbar C ABI generation the cdylib was
+`version` is strict semver. `abi_version` declares which Busbar C ABI generation the cdylib was
 built against (currently `1` for every kind).
 
 ## Enabling plugins
@@ -78,14 +78,14 @@ store:
   settings: { url: "rediss://:password@redis.internal:6380/0" }
 ```
 
-With `enabled: false` (or the block absent) a tarball in the directory is inert: busbar does not
+With `enabled: false` (or the block absent) a tarball in the directory is inert: Busbar does not
 read it, and referencing a plugin store (`store.module: redis`) fails boot with an error naming
 `plugins.enabled`. See [configuration.md](configuration.md#plugins) for the field reference.
 
 ## Building a plugin
 
 A store plugin in Rust is small. Implement the `busbar_api::Store` trait (or wrap an existing
-implementation), adapt the JSON config busbar passes at open, and let the SDK emit the C glue:
+implementation), adapt the JSON config Busbar passes at open, and let the SDK emit the C glue:
 
 ```rust
 // Cargo.toml:
@@ -159,7 +159,7 @@ busbar_plugin_sdk::export_auth_plugin!(open);
 ```
 
 An auth module returns **identity only** — who the caller is (`id` + `roles`). Policy (which pools,
-which group's limits, which admin scope) is resolved by busbar from `auth.role_bindings.<module>`
+which group's limits, which admin scope) is resolved by Busbar from `auth.role_bindings.<module>`
 (nested by module) and capped by `auth.chain.<module>.max_admin_scope`, never asserted by the
 module. Crucially, `<module>` is the value the plugin returns from **`name()`** — its runtime
 identity — NOT the config alias you write in `auth.chain`. Bind roles under that name.
@@ -278,11 +278,11 @@ BUSBAR_SIGN_KEY=9f2c... busbar-plugin-pack pack \
 ```
 
 The tool computes the `sha256` binding, signs the canonical manifest, self-checks the result
-against the same structural validation busbar runs at load, and writes the tarball. For local
+against the same structural validation Busbar runs at load, and writes the tarball. For local
 development, `--allow-unsigned` (with no `BUSBAR_SIGN_KEY`) packages an unsigned tarball that
-busbar loads only under `plugins.trust.allow_unsigned: true`.
+Busbar loads only under `plugins.trust.allow_unsigned: true`.
 
-busbar's own store plugins are built, signed (the `BUSBAR_SIGN_KEY` CI secret), and attached to
+Busbar's own store plugins are built, signed (the `BUSBAR_SIGN_KEY` CI secret), and attached to
 each GitHub Release per target by the release workflow; release binaries embed the matching public
 key, so first-party plugins verify with zero configuration.
 
@@ -296,7 +296,7 @@ get code executed, and a compromised or replayed plugin must not load.
 1. **Off by default.** `plugins.enabled` defaults to `false`. Nothing in the directory is read,
    let alone executed. Dropping a file somewhere is never enough.
 2. **Signature trust, not location trust.** A plugin loads because its manifest signature verifies,
-   not because of where the file sits. busbar's release public key is embedded in the binary, so
+   not because of where the file sits. Busbar's release public key is embedded in the binary, so
    busbar-signed plugins are trusted with zero configuration. Third-party publishers must be
    explicitly allowlisted by key. Unsigned or unknown-publisher plugins are logged and skipped
    unless the operator sets the matching explicit opt-in (`allow_unsigned` / `allow_third_party`),
@@ -330,14 +330,14 @@ get code executed, and a compromised or replayed plugin must not load.
    consistency-policy-scan-resolution pipeline boot runs, so it cannot drift: if `--validate`
    passes, the plugin half of boot succeeds; if it fails, it names exactly what is wrong.
 
-What signing does NOT do: a trusted plugin still runs with busbar's privileges, exactly like a
+What signing does NOT do: a trusted plugin still runs with Busbar's privileges, exactly like a
 compiled-in backend would. Signing answers "is this the artifact its publisher shipped, unmodified,
 and current"; it does not sandbox the publisher. Allowlist publishers you would be willing to link
 into the binary.
 
 ## Licensing a plugin
 
-busbar itself is license-agnostic: the core never gates a plugin on a license — a license check is
+Busbar itself is license-agnostic: the core never gates a plugin on a license — a license check is
 the plugin author's concern, not the gateway's. If a plugin needs one, put a `licenseKey` (or any
 key it expects) in that plugin's `settings:`, and let the plugin validate it on `open`. The value
 may be a `SecretRef`, in which case the core resolves it against the secret backend **before** the

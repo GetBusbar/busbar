@@ -1,6 +1,6 @@
 # Operations
 
-Running busbar in production: process configuration, health/readiness, the metrics
+Running Busbar in production: process configuration, health/readiness, the metrics
 to watch, circuit-breaker and health-probe behavior, failover/exhaustion outcomes,
 governance/admin usage, and troubleshooting.
 
@@ -305,14 +305,14 @@ config) adds a background prober:
 
 Each probing lane gets one background task. `interval_secs` (default 30) and
 `timeout_secs` (default 5) are honored (floored at 1s). The first tick is skipped so
-busbar doesn't probe before any traffic establishes health. A lane with no key is
+Busbar doesn't probe before any traffic establishes health. A lane with no key is
 skipped (a guaranteed 401 would only thrash the breaker). A 2xx probe recovers a
 tripped lane to Closed and increments the lane's `ok` counter by one; a failed probe records a
 transient (which, on a Closed lane in `active` mode, can trip it out).
 
 ## Failover & exhaustion
 
-For a single request, busbar will retry across pool members up to the failover
+For a single request, Busbar will retry across pool members up to the failover
 `max_hops` (default 3) and within the `timeout_secs` budget (default 120). Failover is
 allowed **only before the first upstream byte reaches the client**: once streaming
 has started, a failure cannot fail over (the client holds a partial response); the
@@ -403,8 +403,8 @@ Create-key fields (keys are PURE AUTH: every limit lives on the bound group):
 | A lane stuck `dead` with `billing` reason | Upstream wallet/quota; the lane recovers on a successful probe once funded. Consider `health.mode: dead`. |
 | A lane stuck `dead` with `auth` reason | Wrong/expired credential behind the provider's `api_key` reference. |
 | A few `401`s from a Vertex AI or Azure (Entra ID) lane right after startup | The lane's first OAuth token is still minting. `jwt-bearer` / `oauth-client-credentials` lanes fetch an access token in the background at boot (and on every reload); for up to ~1s before it lands, the earliest calls return `401`. Clears itself within a second, no action needed. Static-key lanes (`bearer` / `api-key` / SigV4) never have this window. |
-| `429` from busbar itself | A group limit blocked. The body's `error.type` distinguishes the cause: `rate_limit_error` = requests/tokens/concurrent limit (the message names group + metric + window); `insufficient_quota` = a budget limit (Bedrock ingress signals over-budget as `400` instead). Check `GET /api/v1/admin/keys/{id}/usage`. |
-| `403` from busbar | The virtual key's `allowed_pools` doesn't include the target. |
+| `429` from Busbar itself | A group limit blocked. The body's `error.type` distinguishes the cause: `rate_limit_error` = requests/tokens/concurrent limit (the message names group + metric + window); `insufficient_quota` = a budget limit (Bedrock ingress signals over-budget as `400` instead). Check `GET /api/v1/admin/keys/{id}/usage`. |
+| `403` from Busbar | The virtual key's `allowed_pools` doesn't include the target. |
 | Startup panic: "unset environment variable" | A `${VAR}` (possibly in a comment) isn't exported. |
 | Startup panic: "not found in providers.yaml" | A `config.yaml` provider name isn't in the catalog. |
 | Cross-protocol responses missing fields | Expected, only the modeled IR subset survives a cross-protocol hop; same-protocol routes are lossless. |

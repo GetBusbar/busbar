@@ -140,6 +140,6 @@ curl -s -X POST http://localhost:8081/api/v1/admin/keys \
       }'
 ```
 
-Admission now walks the `search-team` group's chain (300 requests/min AND 500k tokens/min AND $20k/mo, and any ancestor group's limits too); the request passes only when every limit is under cap, and the rejection names exactly which bucket blocked (group + metric + window). The `labels` ride onto the key's metric series so Grafana can `sum by (team)` without busbar knowing what a team is.
+Admission now walks the `search-team` group's chain (300 requests/min AND 500k tokens/min AND $20k/mo, and any ancestor group's limits too); the request passes only when every limit is under cap, and the rejection names exactly which bucket blocked (group + metric + window). The `labels` ride onto the key's metric series so Grafana can `sum by (team)` without Busbar knowing what a team is.
 
 The response's signed token (shown once, expires in 90 days) is what the team uses as their API key pointed at busbar. They set it wherever they previously set their Anthropic/OpenAI key. Busbar handles the rest.

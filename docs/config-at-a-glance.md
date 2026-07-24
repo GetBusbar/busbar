@@ -1,6 +1,6 @@
 # Config at a glance
 
-Every top-level key of `config.yaml` (busbar 1.5.0), what it owns, and its shape: one page, no
+Every top-level key of `config.yaml` (Busbar 1.5.0), what it owns, and its shape: one page, no
 prose. The full reference with defaults, validation rules, and worked examples is
 [configuration.md](configuration.md); the canonical bootable example is
 [`examples/clean-config-1.5.0.yaml`](../examples/clean-config-1.5.0.yaml).
@@ -95,7 +95,7 @@ out-of-process (socket/webhook). An `auth` plugin is referenced from `auth.chain
 |---|---|---|
 | [`plugins.enabled`](configuration.md#plugins) | MASTER SWITCH | `false` (default): no plugin ever loads (store/secret/auth all inert) |
 | [`plugins.dir`](configuration.md#plugins) | Where signed tarballs live | `plugins` (default) |
-| [`plugins.trust`](configuration.md#plugins) | Signature policy | `{ publishers: [{name, public_key}], allow_unsigned: false, allow_third_party: false }` (busbar's release key is embedded; untrusted plugins are never dlopened) |
+| [`plugins.trust`](configuration.md#plugins) | Signature policy | `{ publishers: [{name, public_key}], allow_unsigned: false, allow_third_party: false }` (Busbar's release key is embedded; untrusted plugins are never dlopened) |
 | [`plugins.min_versions`](configuration.md#plugins) | Anti-downgrade floors | `<plugin-name>: "<min version>"` (first-party auto-floored at the binary version) |
 
 ## Operational: [`security`](configuration.md#security), [`observability`](configuration.md#observability), [`limits`](configuration.md#limits), `metrics`, [`health`](configuration.md#health-probing), `routing`, [`advanced`](configuration.md#advanced)
