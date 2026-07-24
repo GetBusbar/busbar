@@ -60,7 +60,7 @@ Name a **selection strategy** in the pool's `hooks:` list and it decides the ord
 | `fastest` | the lowest measured latency (rolling EWMA). |
 | `least_busy` | the most free concurrency. |
 | `usage` | the most rate-limit headroom. |
-| an **ordering gate hook** | the order your own `kind: hook` plugin (or the `busbar-webrequest-hook` sidecar forwarder) returns (a `kind: gate` replying with the `order` arm). |
+| an **ordering hook** | the order your own hook returns — a `kind: hook` plugin whose gate replies with the `order` arm, run in-process or via the `busbar-webrequest-hook` sidecar. |
 
 A pool names at most one strategy (a bare name) plus any number of inline `kind: hook` plugin refs in one `hooks: [...]` list, e.g. `hooks: [cheapest, { module: busbar-pii-hook }]` (a `module:` names a loaded `kind: hook` plugin; requires `plugins.enabled: true`). External ordering logic is a hook instance named inline, not a pool key: the pre-1.3 `route:` / `policy:` keys and the 1.4.x top-level `hooks:` registry were **removed** and are hard startup errors. Every strategy and the ordering-hook contract live in the [Hooks guide](hooks.md) and the pool-hooks reference in [Configuration](configuration.md#pool-hooks-ordering-and-gates). The rest of this page is about pool *structure*: members, weights, failover, and affinity.
 
