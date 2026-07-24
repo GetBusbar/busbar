@@ -69,14 +69,19 @@ no sidecar required.
 ```yaml
 listen: "0.0.0.0:8443"
 tls:
-  cert_file: /etc/busbar/tls/fullchain.pem  # PEM cert chain, leaf first
-  key_file:  /etc/busbar/tls/privkey.pem    # PEM private key (PKCS#8 / PKCS#1 / SEC1)
-  # client_ca_file: /etc/busbar/tls/ca.pem  # OPTIONAL: see "Mutual TLS" below
+  cert: { file: /etc/busbar/tls/fullchain.pem }  # PEM cert chain, leaf first (secret reference)
+  key:  { file: /etc/busbar/tls/privkey.pem }    # PEM private key (PKCS#8 / PKCS#1 / SEC1)
+  # client_ca: { file: /etc/busbar/tls/ca.pem }  # OPTIONAL: see "Mutual TLS" below
 ```
 
-**Certificate & key formats.** `cert_file` is a PEM certificate chain with the leaf
+Each of `cert`, `key`, and `client_ca` is a **secret reference**, not a bare path: the
+`{ file: /path }` form above reads PEM bytes from disk, and `{ env: VAR }` reads them from an
+environment variable (or `{ module: <secret-plugin>, settings: {…} }` from a secret backend). The
+plaintext `cert_file`/`key_file`/`client_ca_file` path keys of earlier releases are gone in 1.5.0.
+
+**Certificate & key formats.** `cert` resolves to a PEM certificate chain with the leaf
 (server) certificate first, followed by any intermediates: exactly what most CAs
-ship as `fullchain.pem`. `key_file` is the matching PEM private key in PKCS#8
+ship as `fullchain.pem`. `key` resolves to the matching PEM private key in PKCS#8
 (`BEGIN PRIVATE KEY`), PKCS#1 (`BEGIN RSA PRIVATE KEY`), or SEC1
 (`BEGIN EC PRIVATE KEY`) encoding. Busbar advertises **http/1.1** over ALPN.
 
@@ -87,7 +92,7 @@ never logged.
 
 ### Mutual TLS (client-cert auth)
 
-Set `client_ca_file` to a PEM CA bundle to require **mutual TLS**: every client must
+Set `client_ca` (a secret reference resolving to a PEM CA bundle) to require **mutual TLS**: every client must
 present a certificate that chains to that CA, or the TLS handshake is rejected before
 any request is processed. This is transport-level zero-trust: only holders of a
 cert your CA signed can establish a connection at all, with no service mesh or

@@ -185,7 +185,7 @@ The value is passed directly to `tokio::net::TcpListener::bind`. An invalid or a
 ### `tls`
 
 Optional. When present, Busbar terminates inbound TLS natively (and, with
-`client_ca_file`, requires mutual TLS). When **absent**, Busbar serves plain HTTP,
+`client_ca`, requires mutual TLS). When **absent**, Busbar serves plain HTTP,
 the historical default, unchanged.
 
 ```yaml
@@ -248,7 +248,7 @@ auth:
 
 | Field | Default | Notes |
 |---|---|---|
-| `max_admin_scope` | `read-only` | Ceiling on the admin scope obtainable through this module, regardless of what `role_bindings` grants: `read-only` \| `hooks-register` \| `full`. `full` from an external module is an explicit opt-in. The built-in `admin-tokens` operator credential is exempt (it is the root credential). |
+| `max_admin_scope` | `read-only` | Ceiling on the admin scope obtainable through this module, regardless of what `role_bindings` grants: `read-only` \| `hooks-register` \| `mint` \| `full`. `hooks-register` and `mint` are incomparable siblings (see [admin-api.md](admin-api.md#authentication--scopes)); `full` from an external module is an explicit opt-in. The built-in `admin-tokens` operator credential is exempt (it is the root credential). |
 | `token` | none | The operator admin credential, for the built-in `admin-tokens` module only (a secret reference). |
 | `settings` | `{}` | The module's own opaque configuration, passed to the auth plugin verbatim. |
 
@@ -270,7 +270,7 @@ another module's binding. An unbound role grants nothing (fail closed).
 |---|---|
 | `allowed_pools` | DATA-PLANE grant: pools this role may target. OMITTED = ALL pools; an explicit `[]` = NO pools (an empty list is the empty set, everywhere in the 1.5.0 config). Pool lists union across a principal's granting roles; any omitted grant widens the union to all pools. |
 | `group` | The `groups:` bucket this role's principals charge through. Absent = no group (authed + unlimited). With several bound groups the first in role order wins. |
-| `admin_scope` | The admin authority this role grants: `read-only` \| `hooks-register` \| `full`. Absent = none. The most permissive of a principal's bound roles wins, then the asserting module's `max_admin_scope` ceiling applies. |
+| `admin_scope` | The admin authority this role grants: `read-only` \| `hooks-register` \| `mint` \| `full` (`hooks-register` and `mint` are incomparable siblings — the delegated `mint` scope lets a self-service portal mint keys without hook authority; see [admin-api.md](admin-api.md#authentication--scopes)). Absent = none. The most permissive of a principal's bound roles wins, then the asserting module's `max_admin_scope` ceiling applies. |
 
 Admin access is therefore EITHER a role's `admin_scope` (through an IdP module in `admin_auth`)
 OR the `admin-tokens` operator token. The admin chain is live-mutable over the API
