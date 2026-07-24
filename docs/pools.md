@@ -60,9 +60,9 @@ Name a **selection strategy** in the pool's `hooks:` list and it decides the ord
 | `fastest` | the lowest measured latency (rolling EWMA). |
 | `least_busy` | the most free concurrency. |
 | `usage` | the most rate-limit headroom. |
-| an **ordering gate hook** | the order your own compiled socket hook or HTTPS webhook returns (a `kind: gate` replying with the `order` arm). |
+| an **ordering gate hook** | the order your own `kind: hook` plugin (or the `busbar-webrequest-hook` sidecar forwarder) returns (a `kind: gate` replying with the `order` arm). |
 
-A pool names at most one strategy (a bare name) plus any number of inline hook module refs in one `hooks: [...]` list, e.g. `hooks: [cheapest, { module: socket, settings: { path: /run/pii.sock } }]`. External ordering logic is a hook instance named inline, not a pool key: the pre-1.3 `route:` / `policy:` keys and the 1.4.x top-level `hooks:` registry were **removed** and are hard startup errors. Every strategy and the ordering-hook contract live in the [Hooks guide](hooks.md) and the pool-hooks reference in [Configuration](configuration.md#pool-hooks-ordering-and-gates). The rest of this page is about pool *structure*: members, weights, failover, and affinity.
+A pool names at most one strategy (a bare name) plus any number of inline `kind: hook` plugin refs in one `hooks: [...]` list, e.g. `hooks: [cheapest, { module: busbar-pii-hook }]` (a `module:` names a loaded `kind: hook` plugin; requires `plugins.enabled: true`). External ordering logic is a hook instance named inline, not a pool key: the pre-1.3 `route:` / `policy:` keys and the 1.4.x top-level `hooks:` registry were **removed** and are hard startup errors. Every strategy and the ordering-hook contract live in the [Hooks guide](hooks.md) and the pool-hooks reference in [Configuration](configuration.md#pool-hooks-ordering-and-gates). The rest of this page is about pool *structure*: members, weights, failover, and affinity.
 
 ## Config reference
 
@@ -71,7 +71,7 @@ A pool names at most one strategy (a bare name) plus any number of inline hook m
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `members` | list | required | The lanes in this pool (see below). |
-| `hooks` | list | `[]` | This pool's ordering strategy (`weighted`/`cheapest`/`fastest`/`least_busy`/`usage`, at most one, a bare name) plus any gates as inline module refs (`{ module: webhook\|socket\|<plugin>, settings: {...} }`). |
+| `hooks` | list | `[]` | This pool's ordering strategy (`weighted`/`cheapest`/`fastest`/`least_busy`/`usage`, at most one, a bare name) plus any gates as inline `kind: hook` plugin refs (`{ module: <hook-plugin>, settings: {...} }`; needs `plugins.enabled: true`). |
 | `affinity` | object | none | `mode: session` pins a session to a lane by `header_name` (default `x-session-id`). |
 
 See the [Hooks guide](/docs/hooks/) for every selection strategy, the ordering-hook contract, and the full hook model, [Circuit breaker](/docs/circuit-breaker/#circuit-breaker-configuration) for the per-pool `breaker` block, and [In-flight failover](/docs/failover/) for `failover` and `on_exhausted`.
@@ -145,6 +145,6 @@ pools:
 
 ### Cost-, latency-, and custom-based routing
 
-Choosing *which* member serves a request (cheapest, fastest, least busy, or your own webhook/socket gate hook returning an `order`) is a routing concern, not a pool-shape one: a pool names its selection strategy plus any gates in one `hooks: [...]` list. Those recipes, with a worked pool example, live in the [Hooks guide](hooks.md) and the [pool-hooks reference](configuration.md#pool-hooks-ordering-and-gates).
+Choosing *which* member serves a request (cheapest, fastest, least busy, or your own `kind: hook` gate plugin returning an `order`) is a routing concern, not a pool-shape one: a pool names its selection strategy plus any gates in one `hooks: [...]` list. Those recipes, with a worked pool example, live in the [Hooks guide](hooks.md) and the [pool-hooks reference](configuration.md#pool-hooks-ordering-and-gates).
 
 See the [Hooks guide](hooks.md) for the full ordering-hook contract and the signals each strategy and gate hook receives, and [Circuit breaker](/docs/circuit-breaker/) / [In-flight failover](/docs/failover/) for how the breaker and failover behave once a strategy or gate hook has chosen an order.

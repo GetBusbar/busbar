@@ -179,8 +179,10 @@ plugins. They are in-process dlopen consumers: the hook `cdylib` exports the six
 symbols (`busbar_abi`, `busbar_plugin_kind`, `busbar_open`, `busbar_call`, `busbar_free`,
 `busbar_close`) and the engine loads and calls it directly. Trust is signature-based, not
 process-based: the manifest `kind` is cross-checked against `busbar_plugin_kind()` at load, and
-the signed `needs` field caps what grants the plugin may receive. The socket and webhook transport
-modules remain as out-of-process hook options for operators who want process isolation.
+the signed `needs` field caps what grants the plugin may receive. For process isolation of
+out-of-process logic, the first-party `busbar-webrequest-hook` plugin forwards the decision to an
+HTTPS sidecar (1.5.0 retired the standalone built-in `socket`/`webhook` transports; a hook is now
+always a signed plugin).
 
 ## Hook plugins (`kind: hook`)
 

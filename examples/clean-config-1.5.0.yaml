@@ -100,8 +100,8 @@ pools:
     affinity: { mode: session }
 
 # ── HOOKS: inline refs, no registry block ──
-# global_hooks:
-#   - { module: webhook, settings: { url: "https://sidecar.internal/pii" },
+# global_hooks:                                 # requires plugins.enabled: true + the signed tarball
+#   - { module: busbar-webrequest-hook, settings: { url: "https://sidecar.internal/pii" },
 #       kind: gate, timeout_ms: 5, on_error: reject, prompt: no, user: no }
 
 # ── PLUGINS (loader) ──

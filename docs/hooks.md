@@ -2,19 +2,18 @@
 
 Busbar owns the request path. Hooks are the sanctioned attachment points on it: the places where your own code sees what Busbar sees and steers what Busbar does. Every hook follows one design rule, enforced structurally rather than by convention: **a hook can steer, observe, or rewrite, but a hook can never break the request path.** A slow, crashed, or wrong hook degrades to a safe default; it never blocks, hangs, or fails a request on its own.
 
-In 1.5.0, a hook is a **`kind: hook` dlopen plugin** — the same signed-tarball, hybrid-ABI, in-process model that store, secret, and auth plugins use. Out-of-process hooks remain fully supported through the built-in `socket` and `webhook` transport modules. Write a hook once and it runs against all six protocols and every provider, with failover and circuit breaking underneath it, in one hop.
+In 1.5.0, a hook is a **`kind: hook` dlopen plugin** — the same signed-tarball, hybrid-ABI, in-process model that store, secret, and auth plugins use. The 1.5.0 release **retired the built-in out-of-process `socket` and `webhook` transports**: a hook is now always a signed plugin. Out-of-process isolation is still available through the first-party **`busbar-webrequest-hook`** plugin, which forwards the decision to an HTTPS sidecar. Write a hook once and it runs against all six protocols and every provider, with failover and circuit breaking underneath it, in one hop.
 
-## Transport options
+## How a hook attaches
 
-Two ways to attach your code to the hook path:
+A hook instance is a **module ref** whose `module:` names a loaded `kind: hook` plugin (by its signed-manifest name/alias); `settings:` is the plugin's opaque config. Loading any hook plugin requires `plugins.enabled: true` and the signed tarball in the plugins directory — a `module:` that does not resolve to an installed plugin is a fail-closed boot error.
 
-| Transport | How it runs | Trust anchor |
+| Posture | How it runs | Trust anchor |
 |---|---|---|
-| `kind: hook` plugin (dlopen) | In-process, loaded from a signed tarball at boot or on hot-reload. The hook is a `cdylib` exporting the frozen **hybrid ABI**: `busbar_abi`, `busbar_plugin_kind`, `busbar_open`, `busbar_call`, `busbar_free`, `busbar_close`. Operations ride `busbar_call` as op-discriminated JSON. | ed25519 signature over the signed manifest; kind cross-checked at load |
-| `module: socket` | Out-of-process Unix domain socket binary (~8 µs per call). Busbar sends NDJSON (one line per message). | Socket path access (process isolation) |
-| `module: webhook` | Out-of-process HTTPS sidecar in any language. Busbar POSTs one JSON body per message. URL validated at boot against the SSRF blocklist: loopback sidecars allowed; RFC-1918 / link-local / CGNAT / cloud-metadata rejected. | TLS + HTTPS URL (process isolation) |
+| In-process `kind: hook` plugin | Loaded from a signed tarball at boot or on hot-reload. The hook is a `cdylib` exporting the frozen **hybrid ABI**: `busbar_abi`, `busbar_plugin_kind`, `busbar_open`, `busbar_call`, `busbar_free`, `busbar_close`. Operations ride `busbar_call` as op-discriminated JSON. | ed25519 signature over the signed manifest; kind cross-checked at load |
+| Out-of-process via `busbar-webrequest-hook` | The first-party forwarder plugin POSTs the projection to your HTTPS sidecar (any language) and returns its reply. The sidecar URL is `settings.url`, SSRF-guarded (loopback allowed; RFC-1918 / link-local / CGNAT / cloud-metadata rejected; remote must be `https://`). | The plugin is signed + auto-trusted; the sidecar runs in its own process |
 
-**In-process trust is signature-based, not process-based.** A `kind: hook` plugin loads inside busbar's address space, verified by ed25519 against the signed manifest. The socket and webhook transports achieve isolation by running in a separate process. Both postures are legitimate — the right choice depends on whether you want the performance and integration of in-process or the fault isolation of out-of-process. (For out-of-process isolation with a signed, busbar-managed artifact, see [Webrequest](#first-party-hook-plugins-150) below.)
+**In-process trust is signature-based, not process-based.** A `kind: hook` plugin loads inside busbar's address space, verified by ed25519 against the signed manifest. For fault isolation of untrusted logic, forward it out-of-process with `busbar-webrequest-hook` (see [Webrequest](#first-party-hook-plugins-150) below); the choice is performance and integration in-process vs. process isolation via the forwarder.
 
 **Admin opt-in required.** A `kind: hook` plugin cannot self-wire into a security-critical path. Wiring a hook with `prompt` above `no` or `global: true` requires `full` admin scope.
 
@@ -38,29 +37,32 @@ top-level `global_hooks: [...]` list (there is no separate registry block; a hoo
 its instance is a module ref at its point of use):
 
 ```yaml
+plugins:
+  enabled: true
+  dir: /etc/busbar/plugins                 # the signed kind:hook tarballs live here
+
 global_hooks:                              # attach to EVERY request, ordered
-  - { module: socket, settings: { path: /run/busbar/log.sock }, kind: tap, prompt: ro }
-  - { module: socket, settings: { path: /run/busbar/pii.sock },
-      kind: gate, prompt: ro, on_error: reject }
+  - { module: busbar-audit-hook, kind: tap, prompt: ro }     # your signed audit tap
+  - { module: busbar-pii-hook,   kind: gate, prompt: ro, on_error: reject }
 
 pools:
   my-pool:
     hooks:
       - cheapest                           # this pool's base ordering strategy (a bare name)
-      - { module: socket, settings: { path: /run/busbar/router.sock } }    # socket gate
-      - { module: webhook, settings: { url: "https://hooks.internal/rtr" } } # webhook gate
-      - { module: busbar-headroom-hook }   # kind: hook dlopen plugin (in-process)
+      - { module: busbar-webrequest-hook,  # out-of-process forwarder to a sidecar
+          settings: { url: "https://hooks.internal/rtr" } }
+      - { module: busbar-headroom-hook }   # first-party kind: hook plugin (in-process)
     members:
       - model: claude-opus
       - model: claude-opus-bedrock
         tags: ["baa"]
 ```
 
-The `module` names the transport: the built-in `socket` (`settings.path`, an absolute Unix-socket
-path; lazy-connect, so the hook may start after Busbar) or `webhook` (`settings.url`, an
-`https://` URL, validated at boot against the SSRF blocklist: loopback sidecars allowed,
-RFC-1918 / link-local / CGNAT / cloud-metadata rejected), or the name of a loaded `kind: hook`
-plugin tarball (e.g. `busbar-headroom-hook`).
+The `module` names a loaded `kind: hook` plugin by its signed-manifest name/alias (e.g. the
+first-party `busbar-headroom-hook` and `busbar-webrequest-hook`, or your own). `settings:` is the
+plugin's opaque config — for `busbar-webrequest-hook` that includes the SSRF-guarded sidecar
+`url`. Loading any of these requires `plugins.enabled: true` and the tarball installed in
+`plugins.dir`; an unresolved `module:` refuses to boot.
 
 **Attach a hook** two ways: an inline ref in a pool's `hooks:` list (fires for that pool) or in
 `global_hooks:` (fires on every request). A pool's `hooks:` list carries its ordering strategy
@@ -147,11 +149,13 @@ A `tap`, being fire-and-forget, has no `on_error` to speak of: its reply is disc
 
 ## The wire, precisely
 
-### Socket and webhook transports
+### The sidecar wire contract (`busbar-webrequest-hook`)
 
-One JSON message per line on a socket; one POST body per message on a webhook. The projection is
-**byte-identical across both transports**, so a hook graduates webhook → socket without logic
-changes. The rules a hook author must know:
+When a hook forwards out-of-process through `busbar-webrequest-hook`, busbar exchanges the same
+op-discriminated JSON with your HTTPS sidecar: one POST body per message. (The in-process
+`kind: hook` plugin ABI carries the identical payload over `busbar_call` — see [`kind: hook`
+plugin ABI](#kind-hook-plugin-abi) below.) The projection is **byte-identical** whichever path
+carries it, so sidecar logic and plugin logic are the same. The rules a sidecar author must know:
 
 - **Message discrimination.** A message with a top-level `configure`, `describe`, or `status` key
   is a **management** message. Everything else is a **per-request** message and its `op` field says
