@@ -51,18 +51,7 @@ Pools are optional: you can route directly to a single model. But the moment you
 
 By default a pool uses **smooth weighted round-robin (SWRR)** over the healthy members: each request goes to the next member by weight, and a tripped, dead, or capacity-exhausted member is skipped with its share redistributed to the rest. If the chosen lane fails before the client has seen a byte, Busbar fails over to the next member, even mid-stream. That is the whole reliability story: weighting for the happy path, automatic failover for the bad one.
 
-Name a **selection strategy** in the pool's `hooks:` list and it decides the order instead. The strategy runs once per request, before the failover loop:
-
-| Strategy (named in `hooks:`) | Picks the member with... |
-|---|---|
-| `weighted` (default) | the next weighted turn (SWRR). Zero overhead, identical to naming no strategy. |
-| `cheapest` | the lowest cost, derived from the model's `rate_card` entry as `(input_utok + output_utok) / 2`. |
-| `fastest` | the lowest measured latency (rolling EWMA). |
-| `least_busy` | the most free concurrency. |
-| `usage` | the most rate-limit headroom. |
-| an **ordering hook** | the order your own hook returns — a `kind: hook` plugin whose gate replies with the `order` arm, run in-process or via the `busbar-webrequest-hook` sidecar. |
-
-A pool names at most one strategy (a bare name) plus any number of inline `kind: hook` plugin refs in one `hooks: [...]` list, e.g. `hooks: [cheapest, { module: busbar-pii-hook }]` (a `module:` names a loaded `kind: hook` plugin; requires `plugins.enabled: true`). External ordering logic is a hook instance named inline, not a pool key: the pre-1.3 `route:` / `policy:` keys and the 1.4.x top-level `hooks:` registry were **removed** and are hard startup errors. Every strategy and the ordering-hook contract live in the [Hooks guide](hooks.md) and the pool-hooks reference in [Configuration](configuration.md#pool-hooks-ordering-and-gates). The rest of this page is about pool *structure*: members, weights, failover, and affinity.
+Want a different order than weighted? Name a **selection strategy** — `cheapest`, `fastest`, `least_busy`, `usage`, or your own ordering hook — as one entry in the pool's `hooks:` list. That is all of **[Routing](/docs/routing/)**, which owns every strategy, the routing signals, and the ordering-hook contract, with worked examples. The rest of *this* page is pool **structure**: members, weights, failover, and affinity.
 
 ## Config reference
 
