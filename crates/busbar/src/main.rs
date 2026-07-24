@@ -2311,6 +2311,13 @@ pub(crate) fn build_app_from_config(
     // onto `App` (for the control-plane reads + scrape).
     let hook_env = hooks::HookEnv::new(plugin_registry.clone(), secret_resolver.clone());
 
+    // B1 FAIL-CLOSED: resolve every hook's SecretRef settings ONCE, up front, so an unresolvable
+    // hook secret aborts boot/reload here — matching the store path (above) and the auth chain
+    // (`AuthMiddleware::new`). Without this, a gate whose SecretRef fails to resolve would be
+    // silently dropped from the routing chain by `resolve_pool_gates`/`resolve_on_error_chain`
+    // (fail-OPEN), letting traffic the gate was configured to restrict/reject flow unfiltered.
+    hook_env.preresolve_hook_secrets(&cfg.hooks)?;
+
     // Per-pool runtime config (failover/exclusions), keyed by pool name.
     let mut pool_runtime = std::collections::HashMap::new();
     for (pool_name, pool_cfg) in &cfg.pools {

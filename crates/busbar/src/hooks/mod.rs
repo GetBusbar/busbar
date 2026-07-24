@@ -91,6 +91,29 @@ impl HookEnv {
     ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
         crate::config::secret::resolve_settings(settings, &self.secret_resolver)
     }
+
+    /// PRE-BUILD FAIL-CLOSED PASS (B1): resolve every configured hook's SecretRef settings ONCE, up
+    /// front, so that an unresolvable secret aborts boot/reload the SAME way the store path
+    /// (`build_app_from_config`) and the auth chain (`AuthMiddleware::new`) do. Without this pass a
+    /// gate whose SecretRef fails to resolve would be silently `filter_map`-dropped from the routing
+    /// chain by `resolve_pool_gates`/`resolve_on_error_chain` (fail-OPEN), so traffic the gate was
+    /// configured to restrict/reject would flow unfiltered. This is the CRITICAL DISTINCTION: a
+    /// *genuinely absent / unloadable* plugin still degrades to "gate absent" (the legitimate
+    /// safety-net `None`, already gated loud by `plugins_preflight`), but a *secret that failed to
+    /// resolve* must fail the boot/reload CLOSED — never quietly disable the gate.
+    ///
+    /// Returns `Err` naming the offending hook on the first unresolvable secret. Called once from
+    /// `build_app_from_config` before any `resolve_*` consumes the hooks.
+    pub(crate) fn preresolve_hook_secrets(
+        &self,
+        hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
+    ) -> Result<(), String> {
+        for (name, hook) in hooks {
+            self.resolve_hook_settings(&hook.settings)
+                .map_err(|e| format!("hook '{name}' settings: {e}"))?;
+        }
+        Ok(())
+    }
 }
 
 /// The per-pool routing policy resolved ONCE at config load. `None` is the zero-cost default
@@ -350,7 +373,9 @@ fn projection_grants(name: &str, hook: &crate::config::HookCfg, env: &HookEnv) -
 /// map is its `open` config (verbatim JSON). `name` + `settings_version` are carried for diagnostics
 /// and the configure ack. `None` when the reference doesn't resolve to a loadable `kind: hook`
 /// plugin (the plugin pre-flight already fails boot on that, so a `None` here is a safety net that
-/// degrades to "gate absent", never a stranded request).
+/// degrades to "gate absent", never a stranded request). A SecretRef in `settings` that fails to
+/// resolve is a DIFFERENT case: it is caught up front by `HookEnv::preresolve_hook_secrets` (which
+/// aborts boot/reload CLOSED), so it never reaches this `None`-on-error path in practice.
 fn gate_transport_named(
     name: &str,
     hook: &crate::config::HookCfg,
@@ -358,16 +383,20 @@ fn gate_transport_named(
     _settings_version: u64,
 ) -> Option<Arc<dyn RoutingPolicy>> {
     // Resolve any SecretRef-typed setting (e.g. a `licenseKey`) against the secret store BEFORE the
-    // settings cross the ABI (ADR-0010). A resolution failure is treated exactly like a failed load:
-    // the gate degrades to absent (the existing fail-open-to-the-request posture of this runtime
-    // safety net). The FAIL-CLOSED guarantee lives in the plugin pre-flight, which refuses boot/reload
-    // on an unresolvable hook secret before this path is ever taken.
+    // settings cross the ABI (ADR-0010). The FAIL-CLOSED guarantee lives in
+    // `HookEnv::preresolve_hook_secrets`, called once from `build_app_from_config` BEFORE any gate is
+    // resolved: an unresolvable hook secret aborts boot/reload there (matching the store/auth paths),
+    // so this path is never reached with a dangling secret. This site therefore cannot silently drop
+    // a gate whose secret failed to resolve — by the time we get here the secret has ALREADY resolved.
+    // A residual `Err` here (e.g. a race where the secret was rotated away after the pre-resolve pass)
+    // is still treated conservatively as absent, but the pre-resolve pass is the real gate.
     let resolved = match env.resolve_hook_settings(&hook.settings) {
         Ok(r) => r,
         Err(e) => {
             tracing::warn!(
                 hook = %name, plugin = %hook.plugin, error = %e,
-                "hook settings did not resolve; gate treated as absent (fail-open to the request)"
+                "hook settings did not resolve; gate treated as absent (should have been caught by \
+                 the pre-resolve pass at boot/reload)"
             );
             return None;
         }
