@@ -89,6 +89,41 @@ fn empty_env() -> HookEnv {
     )
 }
 
+/// B1 (fail-closed): a hook whose SecretRef setting cannot resolve must make `preresolve_hook_secrets`
+/// return `Err` (aborting boot/reload CLOSED), matching the store/auth paths — NOT be silently dropped
+/// from the routing chain. A hook whose settings all resolve returns `Ok`.
+#[test]
+fn preresolve_hook_secrets_fails_closed_on_unresolvable_secret() {
+    let env = empty_env();
+    // A hook carrying a SecretRef (`{ env: <unset var> }`) — the resolver (`builtins_only`) cannot
+    // resolve an unset env var, so this MUST fail the pre-resolve pass.
+    let mut settings = serde_json::Map::new();
+    settings.insert(
+        "licenseKey".to_string(),
+        serde_json::json!({ "env": "BUSBAR_TEST_DEFINITELY_UNSET_SECRET_B1" }),
+    );
+    let mut hook = base_gate();
+    hook.settings = settings;
+    let mut hooks = HashMap::new();
+    hooks.insert("compliance-gate".to_string(), hook);
+    let err = env
+        .preresolve_hook_secrets(&hooks)
+        .expect_err("an unresolvable hook secret must fail the pre-resolve pass CLOSED");
+    assert!(
+        err.contains("compliance-gate"),
+        "the error names the offending hook: {err}"
+    );
+
+    // A hook with NO secret refs (plain settings) resolves cleanly — the pass is Ok.
+    let mut plain = base_gate();
+    plain
+        .settings
+        .insert("mode".to_string(), serde_json::json!("strict"));
+    let mut ok_hooks = HashMap::new();
+    ok_hooks.insert("plain-gate".to_string(), plain);
+    assert!(env.preresolve_hook_secrets(&ok_hooks).is_ok());
+}
+
 /// A pool with a native ranking strategy and no gate.
 fn pool_policy(policy: PoolPolicy) -> crate::config::PoolCfg {
     crate::config::PoolCfg {
