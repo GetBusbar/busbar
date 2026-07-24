@@ -91,7 +91,7 @@ pub struct Manifest {
     /// Short config alias, e.g. `redis` - what `governance.store:` may reference. Lowercase
     /// `[a-z0-9-]+`. May equal `name`.
     pub alias: String,
-    /// Plugin category: `store` | `auth` | `hook`. Selects the C ABI the cdylib exports and the
+    /// Plugin category: `store` | `secret` | `auth` | `hook`. Selects the C ABI the cdylib exports and the
     /// engine subsystem that consumes it; everything else about the plugin machinery is shared.
     pub kind: String,
     /// The plugin's release version (semver, e.g. `1.5.0`).
