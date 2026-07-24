@@ -2209,6 +2209,106 @@ async fn test_governance_rejects_empty_token_even_if_empty_secret_key_exists() {
     server.shutdown().await;
 }
 
+/// REGRESSION (10-phase 1.5.0 audit: legacy Bearer key ignores revocation): a pre-1.5.0 hashed-
+/// secret key — one resolved on the data plane via `gov.lookup(secret)` (a `by_hash` hit, hydrated
+/// by `GovState::load` on a 1.4.x→1.5.0 in-place upgrade) — must STOP authenticating after
+/// `revoke`, exactly like the signed-token and SigV4 paths. `revoke` denylists the subject but
+/// DELIBERATELY leaves `enabled = true` (it preserves the binding for history), so the enabled
+/// check alone is not enough. Before the fix the token middleware's `.or_else(|| gov.lookup(tok))`
+/// legacy branch admitted on `key.enabled` WITHOUT consulting `is_revoked`, so the Bearer secret of
+/// a "revoked" key kept authenticating indefinitely. The fix filters the lookup hit on
+/// `!gov.is_revoked(&key.id)`.
+#[tokio::test]
+async fn test_governance_revoked_legacy_hashed_secret_key_rejected() {
+    use crate::governance::{GovState, MemoryStore, Store, VirtualKey};
+    use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
+    use serde_json::json;
+    use std::sync::Arc;
+
+    crate::metrics::init();
+
+    let state = Arc::new(MockServerState::new());
+    let server = MockServer::new(state).await;
+
+    // A legacy hashed-secret key: the credential is the raw secret; the store row holds its sha256.
+    // This is the shape `GovState::load` hydrates into `by_hash` for a pre-1.5.0 upgraded store.
+    let secret = "legacy-bearer-secret-abc123";
+    let store = Arc::new(MemoryStore::new());
+    store
+        .put_key(&VirtualKey {
+            id: "legacy".to_string(),
+            key_hash: crate::sigv4::sha256_hex(secret.as_bytes()),
+            name: "legacy".to_string(),
+            allowed_pools: Some(vec!["pa".to_string()]),
+            enabled: true,
+            created_at: 0,
+            group: None,
+            labels: Default::default(),
+        })
+        .unwrap();
+    let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
+
+    let app = TestApp::new()
+        .lane(
+            LaneSpec::new(
+                "test-model",
+                crate::proto::Protocol::anthropic(),
+                &server.base_url(),
+            )
+            .api_key("busbar-upstream-key"),
+        )
+        .pool("pa", &[(0, 1)])
+        .governance(gov.clone())
+        .build();
+
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    let url = format!("http://{addr}/pa/v1/messages");
+    let body =
+        json!({"model": "pa", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 16})
+            .to_string();
+
+    // Baseline: the legacy Bearer secret authenticates via `gov.lookup` (200, proxied upstream).
+    let ok = client
+        .post(&url)
+        .header("x-api-key", secret)
+        .body(body.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        ok.status().as_u16(),
+        200,
+        "a live legacy hashed-secret Bearer key must authenticate (got {})",
+        ok.status()
+    );
+
+    // Revoke the subject (denylists it WITHOUT flipping `enabled`, exactly as `revoke_key` does).
+    gov.revoke("legacy", "audit regression").unwrap();
+    assert!(gov.is_revoked("legacy"), "revoke must denylist the subject");
+
+    // The same Bearer secret must now be REJECTED 401 — a revoked key's legacy secret is dead.
+    let denied = client
+        .post(&url)
+        .header("x-api-key", secret)
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        denied.status().as_u16(),
+        401,
+        "a REVOKED legacy hashed-secret key's Bearer secret must be rejected (got {})",
+        denied.status()
+    );
+
+    handle.abort();
+    server.shutdown().await;
+}
+
 #[test]
 fn test_auth_middleware_debug_redacts_tokens() {
     // Regression (SECURITY LOW #22): `AuthMiddleware`'s manual `Debug` must expose only shape

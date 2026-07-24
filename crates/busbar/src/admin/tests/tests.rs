@@ -5883,6 +5883,91 @@ async fn test_max_keys_per_principal_cap_trips() {
     handle.abort();
 }
 
+/// REGRESSION (10-phase 1.5.0 audit: TOCTOU on `max_keys_per_principal`): N concurrent mints into a
+/// group sitting one below the cap must NOT all pass. Before the fix the count and the mint ran in
+/// two separate `spawn_blocking` tasks with an `.await` between and no lock spanning them, so
+/// concurrent callers all read `n < cap` and all minted, overshooting the cap by up to `N-1`. The
+/// fix folds the count and the mint into ONE `spawn_blocking` under `EXISTENCE_GATE`, serializing
+/// callers at the boundary. Here: cap = 3, seed the group with 2 keys, fire 6 concurrent mints ⇒
+/// EXACTLY one succeeds (fills the last slot) and the rest 409, and the group ends at EXACTLY the cap.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_max_keys_per_principal_atomic_under_concurrent_mint() {
+    crate::metrics::init();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let groups = std::collections::BTreeMap::from([(
+        "capped".to_string(),
+        crate::config::GroupCfg {
+            limits: vec![budget_limit(1_000_000)],
+            ..Default::default()
+        },
+    )]);
+    let mut app = TestApp::new().governance(gov.clone()).groups_tree(groups).build();
+    {
+        let inner = Arc::get_mut(&mut app).expect("sole owner");
+        inner.max_keys_per_principal = 3;
+    }
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    let url = format!("http://{addr}/api/v1/admin/keys");
+    let mint = |name: String| {
+        let client = client.clone();
+        let url = url.clone();
+        async move {
+            client
+                .post(&url)
+                .header("x-admin-token", "admintok")
+                .json(&serde_json::json!({"name": name, "group": "capped"}))
+                .send()
+                .await
+                .unwrap()
+                .status()
+                .as_u16()
+        }
+    };
+
+    // Seed the group to cap-1 (2 of 3) sequentially so exactly one slot remains.
+    assert_eq!(mint("seed-a".to_string()).await, 201);
+    assert_eq!(mint("seed-b".to_string()).await, 201);
+
+    // Fire 6 mints CONCURRENTLY at the boundary. Only ONE may fill the last slot; the rest 409.
+    let mut set = tokio::task::JoinSet::new();
+    for i in 0..6 {
+        set.spawn(mint(format!("race-{i}")));
+    }
+    let mut statuses = Vec::new();
+    while let Some(res) = set.join_next().await {
+        statuses.push(res.unwrap());
+    }
+    let created = statuses.iter().filter(|s| **s == 201).count();
+    let conflicts = statuses.iter().filter(|s| **s == 409).count();
+    assert_eq!(
+        created, 1,
+        "exactly ONE concurrent mint may fill the last cap slot (got {created} 201s): {statuses:?}"
+    );
+    assert_eq!(
+        conflicts, 5,
+        "the other five concurrent mints must 409 at the cap: {statuses:?}"
+    );
+
+    // The store must hold EXACTLY the cap (3) keys bound to `capped` — never more.
+    let n = gov
+        .all_keys()
+        .unwrap()
+        .iter()
+        .filter(|k| k.group.as_deref() == Some("capped"))
+        .count();
+    assert_eq!(
+        n, 3,
+        "the group must end at EXACTLY the cap under concurrency, never over it (got {n})"
+    );
+
+    handle.abort();
+}
+
 // ── 1.5.0 signed-token key coverage (P3) ─────────────────────────────────────────────────────────
 
 /// The MINT returns a busbar-SIGNED `token` (prefix `bbk_`) + an `expires_at`, and that token is

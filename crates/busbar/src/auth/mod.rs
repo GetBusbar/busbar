@@ -1094,7 +1094,16 @@ pub(crate) async fn auth_middleware(
         // token). A tampered/expired/revoked token, or one for a deleted key, is `None` = 401.
         let resolved_key = gov
             .verify_token(client_token, crate::store::now())
-            .or_else(|| gov.lookup(client_token));
+            // LEGACY hashed-secret path: `lookup` is a `by_hash` hit for pre-1.5.0 keys hydrated
+            // by `GovState::load`. Unlike `verify_token` (which consults the denylist internally)
+            // this path admits on the raw binding, so a `revoke`d hashed-secret key would keep
+            // authenticating. Gate it on `!is_revoked` here, mirroring the SigV4 admit path — a
+            // revoked subject's Bearer secret is treated as no match (opaque 401). `revoke`
+            // deliberately preserves `enabled` for history, so the enabled check is not enough.
+            .or_else(|| {
+                gov.lookup(client_token)
+                    .filter(|key| !gov.is_revoked(&key.id))
+            });
         match resolved_key {
             Some(key) if key.enabled => {
                 // The governance principal: id = the virtual-key id (stable), name = its label.
