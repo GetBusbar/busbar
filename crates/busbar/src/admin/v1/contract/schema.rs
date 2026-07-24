@@ -35,7 +35,7 @@ pub(crate) struct KeyView {
     pub(crate) labels: std::collections::BTreeMap<String, String>,
 }
 
-/// `POST /keys` (mint) — the key metadata plus the ONCE-shown secret, and (when an AWS SigV4
+/// `POST /keys` (mint) — the key metadata plus the ONCE-shown signed token, and (when an AWS SigV4
 /// credential was requested) the AccessKeyId + secret access key. The AWS fields are absent on a
 /// bearer-only mint.
 #[derive(Serialize, JsonSchema)]
@@ -47,8 +47,14 @@ pub(crate) struct CreatedKeyView {
     pub(crate) enabled: bool,
     pub(crate) created_at: u64,
     pub(crate) labels: std::collections::BTreeMap<String, String>,
-    /// The bearer secret — shown EXACTLY once, never returned by any read.
-    pub(crate) secret: String,
+    /// The busbar-SIGNED token — the key credential (1.5.0, S1), shown EXACTLY once and never
+    /// returned by any read. (This is the field a client must capture to authenticate.)
+    pub(crate) token: String,
+    /// Unix-seconds expiry of the signed token.
+    pub(crate) expires_at: u64,
+    /// Whether this mint AUTO-PROVISIONED its bound group leaf (self-service D2) — lets a portal
+    /// distinguish "bound to an existing bucket" from "created your personal bucket + bound".
+    pub(crate) group_provisioned: bool,
     /// AWS AccessKeyId (present only when `issue_aws_credential` was set). Not secret.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) aws_access_key_id: Option<String>,
