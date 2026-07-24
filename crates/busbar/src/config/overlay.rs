@@ -487,13 +487,34 @@ pub(crate) fn read_state(path: &Path) -> OverlayReadState {
     }
 }
 
-/// Atomically write the overlay: serialize to a sibling `.tmp` then rename over `path`, so a reader
-/// (or a crash) never observes a half-written file.
+/// Atomically write the overlay: serialize to a sibling `.tmp`, fsync its CONTENTS, rename over
+/// `path`, then fsync the parent DIRECTORY, so a reader (or a crash) never observes a half-written
+/// file AND a power loss cannot surface a torn/zero-length overlay after the rename (L3). Rename is
+/// atomic for a concurrent reader; the fsyncs make it durable for CONTENTS under power loss too.
 pub(crate) fn write(path: &Path, doc: &OverlayDoc) -> std::io::Result<()> {
+    use std::io::Write as _;
     let json = serde_json::to_vec_pretty(doc).map_err(std::io::Error::other)?;
     let tmp = path.with_extension("overlay.tmp");
-    std::fs::write(&tmp, json)?;
-    std::fs::rename(&tmp, path)
+    // Write + FLUSH + fsync the temp file's contents to disk BEFORE the rename, so the rename can never
+    // publish a name pointing at unwritten (torn/zero-length) data after a crash.
+    {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(&json)?;
+        f.flush()?;
+        f.sync_all()?;
+    }
+    std::fs::rename(&tmp, path)?;
+    // fsync the parent directory so the rename (a directory metadata change) is itself durable — a
+    // power loss right after the rename would otherwise be free to lose the directory entry update.
+    if let Some(parent) = path.parent() {
+        // Best-effort: not every platform/filesystem supports opening a directory for fsync; a failure
+        // here does not corrupt anything (the file contents are already durable), so don't fail the
+        // write over it.
+        if let Ok(dir) = std::fs::File::open(parent) {
+            let _ = dir.sync_all();
+        }
+    }
+    Ok(())
 }
 
 /// Build an overlay from a hook state (registry + global-hook names), no tombstones — a test helper
@@ -529,38 +550,29 @@ pub(crate) fn apply_root_to_deploy(deploy: &mut DeployCfg, doc: &OverlayDoc) {
 /// ever exists because a human took an explicit, authenticated, audited rollback action; the automatic
 /// boot/reload path merely honors the persisted decision. A pin for a plugin the base config never
 /// floored simply adds a (low) floor entry — harmless, since a floor at/below the artifact's version
-/// is a no-op. NOTE: this covers the CONFIGURED (third-party) floor only; the AUTOMATIC first-party
-/// `binary_version` floor inside `busbar_plugin_sign::evaluate` is NOT relaxed here (that would let a
-/// replayed old first-party artifact load on the automatic path) — an explicit first-party rollback
-/// lowers `binary_version` only on the dedicated, audited rollback swap path.
+/// is a no-op.
+///
+/// M1 FIX: the FIRST-PARTY floor override is now PER-PLUGIN, not a single global floor. Each pin adds
+/// BOTH a `min_versions` entry (the third-party floor path) AND a `first_party_floors[name]` entry (the
+/// first-party floor path in `busbar_plugin_sign::evaluate`). `evaluate` applies the per-name
+/// first-party floor ONLY to a plugin whose manifest is actually first-party, so pinning a third-party
+/// name is a harmless no-op on the first-party path (its `min_versions` entry does the work). The
+/// earlier single global `first_party_floor` set to the LOWEST pin across all pins lowered the floor for
+/// EVERY first-party plugin — so a rollback of plugin A could silently admit an unpinned old first-party
+/// plugin B. Scoping the override to the pinned name closes that.
 pub(crate) fn apply_plugin_versions_to_deploy(deploy: &mut DeployCfg, doc: &OverlayDoc) {
     for (name, pinned) in &doc.plugin_versions {
         deploy
             .plugins
             .min_versions
             .insert(name.clone(), pinned.clone());
+        // Scope the first-party floor override to THIS name alone (M1). Harmless for a third-party
+        // pin: `evaluate` only consults `first_party_floors` for a verified first-party manifest.
+        deploy
+            .plugins
+            .first_party_floors
+            .insert(name.clone(), pinned.clone());
     }
-    // FIRST-PARTY floor: `busbar_plugin_sign::evaluate` gates a first-party artifact on the single
-    // `binary_version` (checked BEFORE any `min_versions` entry), so a first-party rollback cannot be
-    // expressed by a per-name `min_versions` pin alone — it must LOWER `binary_version`. We lower it to
-    // the LOWEST pinned version across all pins; this is the runtime-only `first_party_floor` override.
-    // SCOPE NOTE (surfaced for review): because `evaluate` has ONE first-party floor, lowering it for a
-    // pinned first-party plugin also lowers it for any OTHER first-party plugin present — an unpinned
-    // first-party artifact below `CARGO_PKG_VERSION` but at/above the lowest pin could then load on a
-    // rebuild. A per-plugin first-party floor would need a per-plugin scan-time policy (a scan API
-    // change). In practice the first-party set is small and the operator's rollback is an explicit,
-    // audited fleet decision; the caveat is documented rather than silently assumed.
-    deploy.plugins.first_party_floor = doc
-        .plugin_versions
-        .values()
-        .min_by(|a, b| {
-            if busbar_plugin_sign::version_at_least(a, b) {
-                std::cmp::Ordering::Greater
-            } else {
-                std::cmp::Ordering::Less
-            }
-        })
-        .cloned();
 }
 
 /// Merge an overlay into the RESOLVED config (the boot-merge, run AFTER `config::resolve` - the
@@ -1135,18 +1147,18 @@ mod tests {
     }
 
     /// PLUGIN VERSION PINS (1.5.0 rollback-friendly versioning): a `plugin_versions` pin lowers BOTH
-    /// the per-name `min_versions` floor (third-party path) AND the runtime-only `first_party_floor`
-    /// override (first-party path) when applied to a base `DeployCfg`. The lowest pin wins the
-    /// first-party floor; a plugin the base never floored simply gains a low `min_versions` entry.
+    /// the per-name `min_versions` floor (third-party path) AND a PER-NAME `first_party_floors` entry
+    /// (first-party path) when applied to a base `DeployCfg` (M1). Each pin scopes its first-party
+    /// override to its own name — there is no single global floor lowered for every first-party plugin.
     #[test]
     fn plugin_versions_pins_lower_the_floors() {
         let mut deploy = minimal_deploy();
-        // Base has a higher floor and no first_party_floor override (the automatic default).
+        // Base has a higher floor and no first-party floor override (the automatic default).
         deploy
             .plugins
             .min_versions
             .insert("acme-store-x".to_string(), "2.0.0".to_string());
-        assert!(deploy.plugins.first_party_floor.is_none());
+        assert!(deploy.plugins.first_party_floors.is_empty());
 
         let doc = OverlayDoc {
             plugin_versions: BTreeMap::from([
@@ -1166,22 +1178,27 @@ mod tests {
             Some("1.4.0"),
             "the third-party floor is LOWERED to the pinned version"
         );
+        // PER-NAME first-party floor overrides: each pinned name gets exactly its pinned version;
+        // there is no global floor, so an unpinned first-party plugin is unaffected (M1).
         assert_eq!(
-            deploy.plugins.first_party_floor.as_deref(),
+            deploy.plugins.first_party_floors.get("acme-store-x").map(String::as_str),
             Some("1.4.0"),
-            "the first-party floor override is the LOWEST pin (1.4.0 < 1.5.0)"
+        );
+        assert_eq!(
+            deploy.plugins.first_party_floors.get("busbar-store-redis").map(String::as_str),
+            Some("1.5.0"),
         );
     }
 
-    /// No pins ⇒ no floor override (the automatic posture is untouched): `apply_root_to_deploy` (which
-    /// also applies pins) leaves `first_party_floor` as `None` when the overlay carries no pins, so the
-    /// automatic path keeps the binary's own version as the first-party floor.
+    /// No pins ⇒ no per-name floor overrides (the automatic posture is untouched): `apply_root_to_deploy`
+    /// (which also applies pins) leaves `first_party_floors` EMPTY when the overlay carries no pins, so
+    /// every first-party plugin keeps the binary's own version as its floor.
     #[test]
     fn no_pins_leaves_first_party_floor_none() {
         let mut deploy = minimal_deploy();
         apply_root_to_deploy(&mut deploy, &OverlayDoc::default());
         assert!(
-            deploy.plugins.first_party_floor.is_none(),
+            deploy.plugins.first_party_floors.is_empty(),
             "with no pins the automatic first-party floor stands"
         );
     }

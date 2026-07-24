@@ -1677,17 +1677,17 @@ pub(crate) struct PluginsCfg {
     /// meets the floor; nothing else loads it. Sibling of `trust` (a version axis, not a trust axis).
     #[serde(default)]
     pub(crate) min_versions: std::collections::BTreeMap<String, String>,
-    /// RUNTIME-ONLY (never in config, `#[serde(skip)]`): the FIRST-PARTY anti-downgrade floor OVERRIDE
-    /// for an EXPLICIT operator rollback (1.5.0). `None` (the default, and the ONLY value the automatic
-    /// boot/reload path ever sees) = the running binary's own version — the full automatic floor. An
-    /// explicit, audited `POST /plugins/rollback` of a FIRST-PARTY plugin sets this to the pinned
-    /// target version so `busbar_plugin_sign::evaluate`'s first-party check (which gates on
-    /// `binary_version`) admits the prior first-party artifact. Derived from the persisted
+    /// RUNTIME-ONLY (never in config, `#[serde(skip)]`): PER-PLUGIN FIRST-PARTY anti-downgrade floor
+    /// OVERRIDES for EXPLICIT operator rollbacks (1.5.0; M1). Empty (the default, and the ONLY value the
+    /// automatic boot/reload path ever sees) = every first-party plugin uses the running binary's own
+    /// version — the full automatic floor. An explicit, audited `POST /plugins/rollback` of a
+    /// FIRST-PARTY plugin adds a `name -> pinned target version` entry so `busbar_plugin_sign::evaluate`
+    /// admits the prior artifact for THAT NAME ONLY (an unpinned first-party plugin still faces the full
+    /// floor — the M1 fix, replacing the earlier single global floor). Derived from the persisted
     /// `plugin_versions` pins during a rebuild (`overlay::apply_plugin_versions_to_deploy`); it is
-    /// never deserialized, so config parsing + `deny_unknown_fields` are unchanged. See
-    /// `to_policy_with_floor`'s doc for the automatic-vs-explicit contract.
+    /// never deserialized, so config parsing + `deny_unknown_fields` are unchanged.
     #[serde(skip)]
-    pub(crate) first_party_floor: Option<String>,
+    pub(crate) first_party_floors: std::collections::BTreeMap<String, String>,
 }
 
 impl Default for PluginsCfg {
@@ -1697,7 +1697,7 @@ impl Default for PluginsCfg {
             dir: default_plugins_dir(),
             trust: PluginsTrustCfg::default(),
             min_versions: std::collections::BTreeMap::new(),
-            first_party_floor: None,
+            first_party_floors: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -1745,13 +1745,11 @@ impl PluginsCfg {
         // (boot / config reload / config apply / admin plugin reload) uses — UNLESS an explicit,
         // audited rollback has set `first_party_floor` (a runtime-only, serde-skip field derived from
         // the persisted `plugin_versions` pins), in which case the operator's pinned floor stands.
-        // `first_party_floor` is `None` on every path except a rebuild carrying a persisted rollback
-        // pin, so the automatic guarantee is unchanged by default.
-        let floor = self
-            .first_party_floor
-            .as_deref()
-            .unwrap_or(env!("CARGO_PKG_VERSION"));
-        self.to_policy_with_floor(floor)
+        // `first_party_floors` is EMPTY on every path except a rebuild carrying persisted rollback
+        // pins, so the automatic guarantee is unchanged by default. Each entry lowers the floor for
+        // ONE named first-party plugin only (M1); every other first-party plugin still faces the
+        // running binary's version.
+        self.to_policy_with_floor(env!("CARGO_PKG_VERSION"))
     }
 
     /// Build the trust policy with an EXPLICIT first-party anti-downgrade floor OVERRIDE — the seam
@@ -1790,6 +1788,7 @@ impl PluginsCfg {
         Ok(busbar_plugin_sign::TrustPolicy {
             first_party_key: busbar_plugin_sign::embedded_release_pubkey(),
             binary_version: binary_version.to_string(),
+            first_party_floors: self.first_party_floors.clone(),
             publishers,
             allow_unsigned: self.trust.allow_unsigned,
             allow_third_party: self.trust.allow_third_party,

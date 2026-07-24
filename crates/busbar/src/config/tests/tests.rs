@@ -2080,20 +2080,24 @@ fn to_policy_floor_distinguishes_automatic_from_explicit_downgrade() {
     );
 }
 
-/// A runtime-set `first_party_floor` on `PluginsCfg` is honored by `to_policy` (the seam the persisted
-/// rollback pin drives), while the default `None` keeps the binary's own version — so the automatic
-/// posture is unchanged unless a pin explicitly lowered it.
+/// A runtime-set PER-PLUGIN `first_party_floors` override on `PluginsCfg` is honored by `to_policy`
+/// (the seam the persisted rollback pin drives) for that name ONLY, while the global `binary_version`
+/// stays the binary's own version — so an UNPINNED first-party plugin still faces the full floor (M1).
 #[test]
 fn to_policy_honors_runtime_first_party_floor_override() {
     let mut cfg = PluginsCfg {
         enabled: true,
         ..Default::default()
     };
-    // Default: the automatic floor equals the binary version.
+    // Default: the automatic floor equals the binary version and there are no per-name overrides.
     let auto = cfg.to_policy().expect("policy");
     assert_eq!(auto.binary_version, env!("CARGO_PKG_VERSION"));
-    // With an explicit override (as a persisted rollback pin sets): the lowered floor is used.
-    cfg.first_party_floor = Some("0.9.0".to_string());
+    assert!(auto.first_party_floors.is_empty());
+    // With an explicit per-name override (as a persisted rollback pin sets): only that name is lowered;
+    // the global binary_version floor (what every OTHER first-party plugin uses) is untouched.
+    cfg.first_party_floors
+        .insert("acme-hook".to_string(), "0.9.0".to_string());
     let pinned = cfg.to_policy().expect("policy");
-    assert_eq!(pinned.binary_version, "0.9.0");
+    assert_eq!(pinned.binary_version, env!("CARGO_PKG_VERSION"));
+    assert_eq!(pinned.first_party_floors.get("acme-hook").map(String::as_str), Some("0.9.0"));
 }
