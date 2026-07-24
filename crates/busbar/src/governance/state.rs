@@ -115,8 +115,9 @@ impl GovState {
         Ok(())
     }
 
-    /// Whether `sub` is currently revoked (for the admin read / tests).
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Whether `sub` is currently revoked. Consulted by BOTH auth paths: the signed-token path
+    /// (`verify_token`) and the inbound SigV4 admit path (`verify_inbound_sigv4_and_resolve`), so a
+    /// revoked subject's credentials are rejected identically regardless of which credential is presented.
     pub(crate) fn is_revoked(&self, sub: &str) -> bool {
         self.denylist
             .read()
