@@ -158,56 +158,33 @@ After an auth or billing hard-down, `/stats` shows the lane with `usable: false`
 
 ## Circuit breaker configuration
 
-Full reference: all fields optional, values shown are defaults:
+The breaker is configured per pool with a `breaker:` block: a trip condition (`trip.mode`
+`error_rate` or `consecutive`, with its threshold/window/streak knobs) and the cooldown bounds
+(`base_cooldown_secs`, `max_cooldown_secs`) that shape the exponential backoff described above.
+Every field is optional; omitting the block is equivalent to accepting all defaults, and there is
+no inheritance between pools — each pool's breaker is independent.
 
-```yaml
-pools:
-  my-pool:
-    members:
-      - model: my-model
-    breaker:
-      base_cooldown_secs: 15    # first cooldown after a trip
-      max_cooldown_secs: 120    # ceiling for exponential backoff
-      trip:
-        mode: error_rate        # or: consecutive
-        window_secs: 30         # sliding window for error_rate
-        threshold: 0.5          # error fraction to trip (error_rate)
-        min_requests: 5         # never trip below this many in-window outcomes
-        consecutive_n: 3        # consecutive failures to trip (consecutive mode)
-```
-
-Omitting the `breaker:` block entirely is equivalent to specifying all the above defaults. There is no inheritance between pools; each pool's breaker is independent.
+The field-by-field reference — every `breaker` key with its type, default, and validation rule —
+lives in one place: **[Configuration → `breaker`](/docs/configuration/#breaker)**. This guide stays
+conceptual so the two never drift.
 
 ---
 
 ## Active health probing
 
-By default, Busbar learns a lane is healthy or sick entirely from real traffic outcomes (passive health). Active probing adds a background task that sends periodic probe requests to check lanes independently of organic traffic.
+By default, Busbar learns a lane is healthy or sick entirely from real traffic outcomes (passive health). Active probing adds a background task, configured per provider under `health:`, that sends periodic probe requests to check lanes independently of organic traffic. There are three modes:
 
-Configure per provider in `config.yaml`:
+- **`none`** (default) — no probing; pure passive health from organic traffic.
+- **`dead`** — re-probe only tripped or hard-down lanes, to recover a lane promptly once a backend restores without paying to probe healthy ones.
+- **`active`** — probe every lane, including healthy ones, so a silently-dark backend is tripped out before organic traffic hits it. Sends a tiny billable one-token request per interval.
 
-```yaml
-providers:
-  anthropic:
-    api_key: { env: ANTHROPIC_KEY }
-    health:
-      mode: dead           # or: active, none
-      interval_secs: 30    # default
-      timeout_secs: 5      # default
-```
-
-| Mode | What it does |
-|---|---|
-| `none` | No probing. Pure passive health. (Default.) |
-| `dead` | Periodically re-probe only tripped or hard-down lanes. Use this to recover a lane promptly after a backend restores, without probing healthy lanes. |
-| `active` | Periodically probe every lane, including healthy ones. Trips a lane before organic traffic hits it, if the backend goes silently dark. Sends a tiny billable one-token request per interval. |
+The field reference (`mode`, `interval_secs`, `timeout_secs`, their defaults and the 1-second floors) lives in **[Configuration → Health probing](/docs/configuration/#health-probing)**.
 
 Probe behavior:
 
 - A 2xx probe recovers a tripped lane to Closed and clears all per-pool breaker cells for that lane. It bumps the lane's `ok` stat counter exactly once.
 - A failed probe records a failure against the per-pool breaker configuration (using the same disposition pipeline as organic traffic). This can trip a healthy-but-sick lane in `active` mode.
 - A lane with no configured key is skipped (probing it would only produce 401s and thrash the breaker).
-- `interval_secs` and `timeout_secs` floor at 1 second regardless of the configured value.
 
 Choosing a mode: `none` is fine for pools with multiple members, one member going down will be detected on the first organic hit and failed over. Use `dead` when you care about prompt recovery without paying for constant probes. Use `active` when you operate a pool with few members and need pre-emptive trip-out of a dark backend.
 

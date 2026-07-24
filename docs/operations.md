@@ -344,39 +344,14 @@ guarded by `auth.admin_auth` (the built-in `admin-tokens` operator credential, s
 `Authorization: Bearer <admin_token>` or `X-Admin-Token: <admin_token>`, or an IdP role with
 `admin_scope`).
 
-| Method · Route | Purpose |
-|---|---|
-| `POST /api/v1/admin/keys` | Mint a key. The signed token is returned **once**. Pass `"issue_aws_credential": true` to also mint an AWS credential pair for Bedrock-SDK clients (see below). |
-| `GET /api/v1/admin/keys` | List key metadata: `{id, name, allowed_pools, group, enabled, created_at, labels}` (never secrets). |
-| `GET /api/v1/admin/keys/{id}/usage` | All-time attribution counters: `spend_cents`, `tokens`, `requests`, plus chain-derived `rate_headroom`. |
-| `PATCH /api/v1/admin/keys/{id}` | `{enabled?, group??}`: freeze/unfreeze, or rebind/unbind the group. Three-state group: absent = unchanged, `null` = unbind, value = rebind. |
-| `DELETE /api/v1/admin/keys/{id}` | Revoke: the key's subject joins the durable denylist (immediate, survives restart). |
-
-### Creating a key
-
-```bash
-curl -s -X POST http://localhost:8081/api/v1/admin/keys \
-  -H "Authorization: Bearer $BUSBAR_ADMIN_TOKEN" \
-  -H "content-type: application/json" \
-  -d '{
-        "name": "team-search",
-        "group": "search-team",
-        "allowed_pools": ["fast", "overflow"],
-        "expires_in": "90d",
-        "labels": {"team": "search"}
-      }'
-```
-
-Create-key fields (keys are PURE AUTH: every limit lives on the bound group):
-
-| Field | Type | Default | Notes |
-|---|---|---|---|
-| `name` | string | n/a | Required label. |
-| `group` | string | none | The `groups:` entry this key charges through (must exist; 400 otherwise). Omitted = authed + unlimited. |
-| `allowed_pools` | list<string> | omitted = all | Pools/models this key may target. OMITTED = all pools; an explicit `[]` = NO pools. Violations → `403`. |
-| `expires_in` / `expires_at` | duration / epoch | `90d` | Token lifetime (mutually exclusive). Keys EXPIRE: re-mint or rotate before expiry. |
-| `labels` | map | `{}` | Echoed onto the key's metric series (e.g. `sum by (team)`); never interpreted by enforcement. |
-| `issue_aws_credential` | bool | `false` | When `true`, also issues an AWS-style `aws_access_key_id` + `aws_secret_access_key` for inbound SigV4 auth (Bedrock SDK clients). Both fields are returned **once** in the 201 response alongside the signed token and never again. See [Bedrock ingress](protocols.md#bedrock-aws-bedrock-converse-api). |
+Minting, listing, rotating, and revoking keys — the routes, request/response shapes, the mint-body
+field reference, and the scope lattice — are owned by the **[Admin API reference](/docs/admin-api/)**.
+The limit/group model those keys charge through is owned by
+**[Configuration → Virtual keys and enforcement](/docs/configuration/#virtual-keys-and-enforcement)**.
+This guide stays on the operational picture. In brief: `POST /api/v1/admin/keys` mints a key and
+returns the signed token **once**; a key is pure auth (every limit lives on the bound `group`), it
+EXPIRES (default 90 days — re-mint or rotate before then), and `DELETE` puts its subject on the
+durable revocation denylist immediately.
 
 ### Enforcement model
 
