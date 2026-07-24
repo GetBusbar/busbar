@@ -345,6 +345,11 @@ struct GovCaches {
     /// and threaded read-only through governance/routing, so sharing it via `Arc` is exact.
     by_hash: HashMap<String, Arc<VirtualKey>>,
     by_access_key_id: HashMap<String, AwsKeyEntry>,
+    /// Subject id (the key id / token `sub`) → key. The O(1) index behind `lookup_by_sub` (the
+    /// signed-token verify hot path, M6) — replacing an O(n) linear scan of `by_hash.values()` under
+    /// the read lock. Shares the same `Arc<VirtualKey>` rows as `by_hash`, rebuilt from the SAME
+    /// snapshot by `refresh`, so it can never drift from the other indices.
+    by_id: HashMap<String, Arc<VirtualKey>>,
 }
 
 /// Per-instance governance runtime: the durable `Store` plus an in-memory key cache (hashed-secret

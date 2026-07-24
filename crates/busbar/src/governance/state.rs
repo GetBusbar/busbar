@@ -17,6 +17,7 @@ impl GovState {
     ) -> StoreResult<Self> {
         let by_hash = Self::load(store.as_ref())?;
         let by_access_key_id = Self::load_by_access_key_id(store.as_ref(), &by_hash)?;
+        let by_id = Self::index_by_id(&by_hash);
         let verifier = signer
             .as_ref()
             .map(|s| crate::governance::signing::TokenVerifier::single(s.kid(), s.verifying_key()));
@@ -29,6 +30,7 @@ impl GovState {
             caches: RwLock::new(GovCaches {
                 by_hash,
                 by_access_key_id,
+                by_id,
             }),
             concurrent: RwLock::new(HashMap::new()),
             admin_token_hash: admin_token
@@ -81,13 +83,23 @@ impl GovState {
         }
     }
 
-    /// Resolve a policy binding by its subject id (the key id / token `sub`). O(1) index read.
+    /// Resolve a policy binding by its subject id (the key id / token `sub`). O(1) index read — the
+    /// `by_id` secondary index (M6), rebuilt in lockstep with `by_hash` by `refresh`, so every signed-
+    /// token verify is a single hash lookup rather than a linear scan of `by_hash.values()`.
     pub(crate) fn lookup_by_sub(&self, sub: &str) -> Option<Arc<VirtualKey>> {
-        self.caches_read()
-            .by_hash
+        self.caches_read().by_id.get(sub).cloned()
+    }
+
+    /// Build the `by_id` (subject id → key) index from a `by_hash` snapshot, sharing the same `Arc`
+    /// rows. Called wherever `by_hash` is (re)built so the two indices are always derived from the
+    /// SAME snapshot and can never drift (M6).
+    fn index_by_id(
+        by_hash: &HashMap<String, Arc<VirtualKey>>,
+    ) -> HashMap<String, Arc<VirtualKey>> {
+        by_hash
             .values()
-            .find(|k| k.id == sub)
-            .cloned()
+            .map(|k| (k.id.clone(), k.clone()))
+            .collect()
     }
 
     /// REVOKE a signed-token key by subject id: persist to the store denylist AND update the
@@ -691,8 +703,11 @@ impl GovState {
     }
 
     /// The DERIVED current-window usage of one bucket (key or group): cell-authoritative, durable
-    /// fallback, spend recomputed from tokens x current rates. `include_request_fee` is true for a
-    /// KEY bucket only (the flat per-request fee counts against the innermost bucket alone).
+    /// fallback, spend recomputed from tokens x current rates. `include_request_fee` controls whether
+    /// the flat per-request fee is folded into `spend_cents`. ENFORCEMENT (`try_admit`) counts the fee
+    /// for EVERY chain bucket — key AND group — so a read that wants to match what the enforcer sees
+    /// must pass `true` for both (N2/M5). The parameter exists only for callers that deliberately want
+    /// the fee-excluded figure; the usage dashboards pass `true` so they never overstate headroom.
     pub(crate) fn derived_bucket_usage(
         &self,
         cost: &crate::cost::CostModel,
@@ -1312,9 +1327,11 @@ impl GovState {
         // section — a concurrent reader holding `caches_read` sees either the entire old pair or the
         // entire new pair, never a new `by_hash` against a stale `by_access_key_id` (or vice versa).
         // There is no longer a transient cross-index inconsistency window.
+        let fresh_by_id = Self::index_by_id(&fresh);
         let mut c = self.caches_write();
         c.by_hash = fresh;
         c.by_access_key_id = fresh_akid;
+        c.by_id = fresh_by_id;
         Ok(())
     }
 }
