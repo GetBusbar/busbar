@@ -40,6 +40,7 @@ impl GovState {
             signer,
             verifier,
             denylist: RwLock::new(denylist),
+            refresh_lock: std::sync::Mutex::new(()),
         })
     }
 
@@ -1322,6 +1323,10 @@ impl GovState {
     /// after a management-API mutation. Rebuild `by_access_key_id` from the SAME fresh snapshot so the
     /// two indices can never drift (a key disabled/deleted/re-minted is reflected in both).
     pub(crate) fn refresh(&self) -> StoreResult<()> {
+        // Serialize the whole load→swap so a slow refresh can't clobber a newer one's cache with
+        // strictly-older store state (lost-update guard; see `refresh_lock`). A later refresh's
+        // `load` cannot begin until an earlier refresh has swapped, so its snapshot is never older.
+        let _refresh_guard = self.refresh_lock.lock().unwrap_or_else(|e| e.into_inner());
         let fresh = Self::load(self.store.as_ref())?;
         let fresh_akid = Self::load_by_access_key_id(self.store.as_ref(), &fresh)?;
         // Both indices live under the single `caches` lock, so the swap below is ONE atomic critical
