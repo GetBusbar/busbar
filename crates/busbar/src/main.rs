@@ -2334,6 +2334,17 @@ pub(crate) fn build_app_from_config(
     // (fail-OPEN), letting traffic the gate was configured to restrict/reject flow unfiltered.
     hook_env.preresolve_hook_secrets(&cfg.hooks)?;
 
+    // B1 (open-time variant) FAIL-CLOSED: actually OPEN every referenced decision/rewrite gate up
+    // front so an `open()`-time failure of a PRESENT plugin aborts boot/reload here — matching the
+    // store (`open_store`) and auth (`AuthMiddleware::new`) paths. Without this, a gate whose plugin
+    // fails to `open()` (constructor rejecting cfg_json, staging/mmap failure, ABI/kind mismatch
+    // observable only on load) is silently `filter_map`-dropped by the resolvers below (fail-OPEN),
+    // letting traffic a Reject/restrict/rewrite gate was configured to filter flow unfiltered while
+    // boot reports success. A GENUINELY-ABSENT plugin stays the legitimate fail-open skip.
+    // `plugins_preflight` is manifest-only (no dlopen) and `preresolve_hook_secrets` only resolves
+    // SecretRefs, so neither catches an `open()` failure — this pass does.
+    hook_env.preopen_gate_hooks(&cfg.hooks)?;
+
     // Per-pool runtime config (failover/exclusions), keyed by pool name.
     let mut pool_runtime = std::collections::HashMap::new();
     for (pool_name, pool_cfg) in &cfg.pools {
