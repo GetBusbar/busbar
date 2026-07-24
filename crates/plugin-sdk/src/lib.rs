@@ -6,7 +6,8 @@
 //! Writing a plugin is: implement [`busbar_api::Store`] for your backend, write a constructor
 //! `fn(&str) -> Result<Box<dyn Store>, String>` (the `&str` is the JSON config the operator set),
 //! call [`export_store_plugin!`] with it, and build the crate as a `cdylib`. The macro emits the
-//! five `extern "C"` symbols the engine's loader resolves ([`busbar_plugin_abi`]); everything unsafe
+//! six `extern "C"` symbols the engine's loader resolves (`busbar_abi`, `busbar_plugin_kind`,
+//! `busbar_open`, `busbar_call`, `busbar_free`, `busbar_close`); everything unsafe
 //! lives here in [`open_impl`]/[`call_impl`]/[`free_impl`]/[`close_impl`], which are ordinary,
 //! unit-tested functions — the macro is a thin, per-plugin wrapper.
 //!
