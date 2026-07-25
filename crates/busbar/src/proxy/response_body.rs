@@ -568,14 +568,10 @@ where
                             .is_some()
                             || translate_aborted;
                         if !billing_failed {
-                            // Ledger the TIER SPLIT (uncached input / output / cache-read /
-                            // cache-write - each prices differently under the rate card) against
-                            // the SERVING lane's resolved upstream model (post-`upstream_model`,
-                            // the rate card's key space). Attributed to the SAME window the flat
-                            // per-request fee was charged in (`sink.charged_at`, the header-arrival
-                            // epoch), not the stream-end clock (#29). Readers normalize
-                            // `input_tokens` to UNCACHED and keep the cache fields ADDITIVE, so the
-                            // four tiers are correct provider-agnostically.
+                            // Ledger + meter the SERVING lane (`lane_idx` is the lane that
+                            // actually answered, post-failover) through the one accrual seam.
+                            // Readers normalize `input_tokens` to UNCACHED and keep the cache
+                            // fields ADDITIVE, so the four tiers are correct provider-agnostically.
                             let tier = ir_usage
                                 .as_ref()
                                 .map(crate::proxy::usage::tier_tokens)
@@ -583,24 +579,11 @@ where
                             if let Some(lane) =
                                 this.app.as_ref().and_then(|a| a.lanes.get(this.lane_idx))
                             {
-                                sink.gov.record_usage(
-                                    &sink.cost,
-                                    &sink.key,
-                                    &sink.pool,
-                                    lane.wire_model(),
-                                    &tier,
-                                    sink.charged_at,
-                                );
-                                // Metering (raw per-model consumption series, token SPLIT
-                                // preserved): attribute to the SERVING lane - `lane_idx` is the
-                                // lane that actually answered, post-failover. Same pinned epoch as
-                                // the budget charges (#29).
-                                sink.gov.record_metering(
-                                    &sink.key.id,
-                                    &lane.model,
-                                    &lane.provider,
+                                crate::proxy::usage::ledger_and_meter(
+                                    &sink,
+                                    lane,
                                     ir_usage.as_ref(),
-                                    sink.charged_at,
+                                    &tier,
                                 );
                             }
                         }
@@ -652,25 +635,9 @@ impl<S, P> Drop for FirstByteBody<S, P> {
             .unwrap_or_default();
         if !tier.is_zero() {
             if let Some(lane) = self.app.as_ref().and_then(|a| a.lanes.get(self.lane_idx)) {
-                // Ledger the partial tier split against the serving lane's resolved upstream model
-                // (the tokens were really generated + delivered before the drop).
-                sink.gov.record_usage(
-                    &sink.cost,
-                    &sink.key,
-                    &sink.pool,
-                    lane.wire_model(),
-                    &tier,
-                    sink.charged_at,
-                );
-                // Meter the delivered-then-dropped partial too (same serving-lane attribution as
-                // the natural-end site).
-                sink.gov.record_metering(
-                    &sink.key.id,
-                    &lane.model,
-                    &lane.provider,
-                    usage.as_ref(),
-                    sink.charged_at,
-                );
+                // Ledger + meter the partial through the one accrual seam (the tokens were
+                // really generated + delivered before the drop).
+                crate::proxy::usage::ledger_and_meter(&sink, lane, usage.as_ref(), &tier);
             }
         }
     }
