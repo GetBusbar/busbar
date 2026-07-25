@@ -646,7 +646,15 @@ impl GovState {
     /// Delete a key by id and refresh the cache.
     pub(crate) fn delete_key(&self, id: &str) -> StoreResult<()> {
         self.store.delete_key(id)?;
-        self.refresh()
+        let refreshed = self.refresh();
+        // AFTER `refresh()`, which is what stops the credential resolving — dropping the cell before
+        // it lets a request admitted in the gap re-insert. The key bucket is uncapped
+        // (`cost::chain_for`), so this reclaims attribution state only and can never reset a cap.
+        //
+        // A still-dirty cell would also be flushed after the store cascade-deleted the key's
+        // ledger rows; whether that re-creates a durable row depends on the delta being non-zero.
+        self.budget.write(id).remove(id);
+        refreshed
     }
 
     /// ROTATE a key's CREDENTIAL in place. The key `id` stays STABLE — budgets, rate windows, usage
