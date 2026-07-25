@@ -901,6 +901,7 @@ impl TestApp {
             overlay_path: self.overlay_path,
             config_version: 0,
             max_keys_per_principal: 0,
+            max_auto_provisioned_groups: 0,
             failover_cfg: self.failover_cfg,
             pool_runtime: self.pool_runtime,
             fallback_pools: self.fallback_pools,

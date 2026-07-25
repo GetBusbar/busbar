@@ -181,3 +181,45 @@ async fn mint_failure_after_the_provision_commit_still_records_the_committed_gro
         "a retry against the now-existing group does not re-provision"
     );
 }
+
+/// #20: auto-provision-on-mint had NO ceiling on the NUMBER of groups, so a `mint`-scope credential
+/// could grow the limit tree without bound — every leaf is a new enforcement bucket, version-log
+/// entry and persisted overlay row. `limits.max_auto_provisioned_groups` caps it; explicitly
+/// configured groups and mints that bind to an EXISTING group are unaffected.
+#[tokio::test]
+async fn auto_provision_stops_at_the_group_ceiling() {
+    crate::metrics::init();
+    let mut app = TestApp::new()
+        .governance(gov(Arc::new(MemoryStore::new())))
+        .groups_tree(tree(&["team"]))
+        .build();
+    {
+        let inner = Arc::get_mut(&mut app).expect("sole owner");
+        // Ceiling of 2: the base `team` group plus exactly ONE auto-provisioned leaf.
+        inner.max_auto_provisioned_groups = 2;
+    }
+    let handle = Arc::new(AppHandle::new(app));
+
+    assert_eq!(
+        mint_with_parent(&handle, "k1", "user:alice", "team").await,
+        StatusCode::CREATED,
+        "the first self-mint provisions its leaf"
+    );
+    let status = mint_with_parent(&handle, "k2", "user:bob", "team").await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "the ceiling refuses the next auto-provision"
+    );
+    assert!(
+        !handle.load().groups_registry.contains_key("user:bob"),
+        "and nothing was provisioned"
+    );
+
+    // Binding to an EXISTING group still works at the ceiling — only auto-provisioning is gated.
+    assert_eq!(
+        mint_with_parent(&handle, "k3", "user:alice", "team").await,
+        StatusCode::CREATED,
+        "a mint that provisions nothing is unaffected by the ceiling"
+    );
+}

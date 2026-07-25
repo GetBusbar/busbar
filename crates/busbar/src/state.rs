@@ -334,6 +334,12 @@ pub(crate) struct App {
     /// `0` = unlimited (default). Enforced at `POST /keys`; carried on the snapshot so a config apply
     /// can change it (survives `App::clone`).
     pub(crate) max_keys_per_principal: usize,
+    /// Anti-sprawl cap on the NUMBER of groups a mint may AUTO-PROVISION
+    /// (`limits.max_auto_provisioned_groups`). The key cap bounds a group's contents; this bounds
+    /// the tree's SHAPE, which a `mint`-scope credential could otherwise grow without bound
+    /// (round-5 #20). `0` = unlimited (default). Carried on the snapshot for the same reason as
+    /// `max_keys_per_principal`.
+    pub(crate) max_auto_provisioned_groups: usize,
     /// Default failover config (deadline_s and max_failover cap) when a pool has no override.
     pub(crate) failover_cfg: Option<crate::config::FailoverCfg>,
     /// Per-pool runtime config (failover/exclusions today; breaker/affinity as they're wired).

@@ -2069,6 +2069,10 @@ fn default_max_inbound_concurrent() -> usize {
 fn default_max_keys_per_principal() -> usize {
     0
 }
+/// `0` = unlimited auto-provisioned groups (today's behavior — an absent knob changes nothing).
+fn default_max_auto_provisioned_groups() -> usize {
+    0
+}
 fn default_hard_down_cooldown_secs() -> u64 {
     DEFAULT_HARD_DOWN_COOLDOWN_SECS
 }
@@ -2141,6 +2145,15 @@ pub(crate) struct LimitsCfg {
     /// nothing). Enforced at `POST /keys` only; keys already present are never retroactively revoked.
     #[serde(default = "default_max_keys_per_principal")]
     pub(crate) max_keys_per_principal: usize,
+    /// Cap on how many groups `POST /keys` may AUTO-PROVISION (`parent:` self-service, §6a). The
+    /// key-count cap bounds keys per group but says nothing about the number of GROUPS, so a
+    /// `mint`-scope credential could grow the limit tree without bound — every new `user:<sub>`
+    /// leaf is a new bucket in the enforcement chain, the version log and the persisted overlay
+    /// (audit round-5 #20). Counted over the WHOLE runtime (overlay) group set, since that is what
+    /// auto-provisioning grows. `0` (default) = UNLIMITED (an absent knob changes nothing).
+    /// Explicitly configured groups are unaffected: the ceiling gates auto-provisioning only.
+    #[serde(default = "default_max_auto_provisioned_groups")]
+    pub(crate) max_auto_provisioned_groups: usize,
     #[serde(default = "default_hard_down_cooldown_secs")]
     pub(crate) hard_down_cooldown_secs: u64,
     #[serde(default = "default_upstream_error_body_max_bytes")]
@@ -2213,6 +2226,7 @@ impl Default for LimitsCfg {
             pool_idle_timeout_secs: default_pool_idle_timeout_secs(),
             max_inbound_concurrent: default_max_inbound_concurrent(),
             max_keys_per_principal: default_max_keys_per_principal(),
+            max_auto_provisioned_groups: default_max_auto_provisioned_groups(),
             hard_down_cooldown_secs: default_hard_down_cooldown_secs(),
             upstream_error_body_max_bytes: default_upstream_error_body_max_bytes(),
             tls_handshake_timeout_secs: default_tls_handshake_timeout_secs(),
@@ -2288,6 +2302,9 @@ pub(crate) struct LimitsResolved {
     pub(crate) max_inbound_concurrent: usize,
     /// Max keys bound to one group (0 = unlimited) — the self-service mint anti-sprawl cap (§6a).
     pub(crate) max_keys_per_principal: usize,
+    /// Max groups a mint may AUTO-PROVISION (0 = unlimited) — the sibling anti-sprawl cap on the
+    /// SHAPE of the limit tree, not just its contents (round-5 #20).
+    pub(crate) max_auto_provisioned_groups: usize,
     pub(crate) hard_down_cooldown_secs: u64,
     pub(crate) upstream_error_body_max_bytes: usize,
     pub(crate) tls_handshake_timeout_secs: u64,
@@ -2334,6 +2351,7 @@ impl LimitsResolved {
             pool_idle_timeout_secs: limits.pool_idle_timeout_secs,
             max_inbound_concurrent: limits.max_inbound_concurrent,
             max_keys_per_principal: limits.max_keys_per_principal,
+            max_auto_provisioned_groups: limits.max_auto_provisioned_groups,
             hard_down_cooldown_secs: limits.hard_down_cooldown_secs,
             upstream_error_body_max_bytes: limits.upstream_error_body_max_bytes,
             tls_handshake_timeout_secs: limits.tls_handshake_timeout_secs,

@@ -951,7 +951,8 @@ limits:
   upstream_error_body_max_bytes: 262144  # 256 KiB
   max_honored_retry_after_secs: 86400 # 24 h
   default_max_tokens: 4096
-  max_keys_per_principal: 0       # 0 = unlimited; >0 caps keys bound to one group (per-user anti-sprawl)
+  max_keys_per_principal: 0       # 0 = unlimited; >0 caps LIVE keys bound to one group (per-user anti-sprawl)
+  max_auto_provisioned_groups: 0  # 0 = unlimited; >0 caps how many groups a mint may auto-provision
 ```
 
 | Field | Type | Default | Notes |
@@ -967,7 +968,8 @@ limits:
 | `upstream_error_body_max_bytes` | integer | `262144` | Maximum bytes buffered from a non-2xx upstream response body for error classification. |
 | `max_honored_retry_after_secs` | integer | `86400` | Maximum value honored from an upstream `Retry-After` header (to prevent overflow). |
 | `default_max_tokens` | integer | `4096` | Gateway-wide default injected on cross-protocol hops to Anthropic when the caller omitted `max_tokens`. Overridden by a per-model `default_max_tokens` when set. |
-| `max_keys_per_principal` | integer | `0` | Anti-sprawl cap: the maximum number of keys that may be bound to one group (a group = one principal in the self-service model). `0` = unlimited. An over-cap `POST /keys` is a terminal `409 conflict`. Absent = unlimited. |
+| `max_keys_per_principal` | integer | `0` | Anti-sprawl cap: the maximum number of **live** keys (enabled and not revoked) that may be bound to one group — the unbound bucket included. `0` = unlimited. Enforced on `POST /keys` **and** on a `PATCH /keys/{id}` rebind; over cap is a terminal `409 conflict`. |
+| `max_auto_provisioned_groups` | integer | `0` | Anti-sprawl cap on the SHAPE of the limit tree: the maximum size of the runtime group set that `POST /keys` may grow by auto-provisioning (`parent:`). `0` = unlimited. Over ceiling is a terminal `409 conflict`; binding to an existing group is unaffected. |
 
 ---
 
