@@ -15,6 +15,278 @@ fail=0
 note() { printf '  %s\n' "$1"; }
 hdr()  { printf '\n== %s ==\n' "$1"; }
 
+# ══ THE ONE ANSWER TO "IS THIS LINE TEST CODE?" ══════════════════════════════════════════════════
+#
+# Both scanners below (the choke-point registry and the REGRESSION parity ratchet) must agree on
+# which lines are `#[cfg(test)]`-gated, because a line wrongly called "test" is a line EXEMPT from
+# every bypass rule and mis-attributed on the parity side. So the answer lives here ONCE, as an awk
+# prelude both scanners prepend; there is no second copy to drift.
+#
+# It sets two variables per input line:
+#   is_comment — the line is a whole-line `//` / `///` / `//!` comment (prose, never code).
+#   gated      — the line is `#[cfg(test)]` machinery or lies inside a `#[cfg(test)]` item body.
+#
+# What the OLD version got wrong (both bugs were provably exploitable, see --selftest):
+#   1. It armed on a BARE regex match anywhere on the line, and skipped whole-line comments only
+#      AFTERWARDS — so a doc comment merely MENTIONING `#[cfg(test)]` armed the state machine and
+#      shadowed the production item that followed it.
+#   2. Once armed it stayed armed until the next line containing `{` ANYWHERE, at arbitrary distance
+#      — so `#[cfg(test)]` on a BRACE-LESS item (`mod tests;`, `use ...;`, a `const`) latched onto
+#      the NEXT braced item, which is production code, and skipped all of it.
+# Both are fixed by (a) reading the attribute only off a line that IS the attribute, and (b)
+# resolving the attribute against the item it actually applies to, brace-less items included.
+TEST_SCOPE_AWK='
+  # The code content of a line: empty for a whole-line comment, and with a trailing `//` comment
+  # stripped when the line holds no string literal (so `// }` in a trailer cannot skew brace depth).
+  function _codeof(s,   c) {
+    if (s ~ /^[[:space:]]*\/\//) return ""
+    c = s
+    if (index(c, "\"") == 0) sub(/\/\/.*$/, "", c)
+    return c
+  }
+  # Net brace delta of a line (`s` is a by-value copy, so gsub may chew it up).
+  function _braces(s,   o, c) { o = gsub(/\{/, "{", s); c = gsub(/\}/, "}", s); return o - c }
+
+  FNR==1 { in_test=0; pending=0; pend_age=0; depth=0 }   # per-file reset (one awk pass, many files)
+  {
+    is_comment = ($0 ~ /^[[:space:]]*\/\//)
+    code = _codeof($0)
+    gated = 0
+
+    if (in_test) {                                   # inside a braced #[cfg(test)] item body
+      gated = 1
+      depth += _braces(code)
+      if (depth <= 0) { in_test = 0; depth = 0 }
+    } else if (pending) {                            # attribute seen; find the item it applies to
+      gated = 1
+      if (code ~ /^[[:space:]]*$/ || code ~ /^[[:space:]]*#\[/) {
+        pend_age++                                   # blank / comment / stacked attribute
+      } else if (index(code, "{") > 0) {
+        pending = 0                                  # braced item: enter its body
+        depth = _braces(code)
+        if (depth > 0) in_test = 1; else depth = 0
+      } else if (code ~ /;[[:space:]]*$/) {
+        pending = 0                                  # BRACE-LESS item: gates this line and no more
+      } else {
+        pend_age++                                   # multi-line signature, keep looking
+      }
+      # An attribute never applies across arbitrary distance. If the item cannot be resolved in a
+      # handful of lines the file is shaped in a way this scanner does not model, so fail CLOSED:
+      # drop the arm and go back to scanning as production rather than shadowing the rest of the file.
+      if (pending && pend_age > 10) { pending = 0; pend_age = 0 }
+    }
+
+    # Arm only on a line that IS the attribute: anchored at the start of a CODE line, with `test` as
+    # a cfg predicate (`#[cfg(test)]`, `#[cfg(all(test, ...))]`) — never `#[cfg(not(test))]` (that is
+    # production-only code) and never `#[cfg(feature = "test-utils")]` (that is not a test gate).
+    if (!in_test && !pending && code ~ /^[[:space:]]*#\[cfg\(/ \
+        && code ~ /[(,][[:space:]]*test[[:space:]]*[,)]/ \
+        && code !~ /not[[:space:]]*\([[:space:]]*test[[:space:]]*\)/) {
+      gated = 1
+      rest = code
+      sub(/^[[:space:]]*#\[cfg\(.*\)\][[:space:]]*/, "", rest)
+      if (rest ~ /^[[:space:]]*$/)      { pending = 1; pend_age = 0 }   # item is on a later line
+      else if (index(rest, "{") > 0)    { depth = _braces(rest); if (depth > 0) in_test = 1; else depth = 0 }
+      else if (rest ~ /;[[:space:]]*$/) { }                             # `#[cfg(test)] use x;`
+      else                              { pending = 1; pend_age = 0 }
+    }
+  }
+'
+
+# ── The single generic scanner. One awk pass per rule over every candidate file. ─────────────────
+# Skips `#[cfg(test)]`-gated lines (TEST_SCOPE_AWK above) and whole-line comments, then flags the
+# rule's pattern in the remaining production code. The pattern is handed over via the environment
+# (NOT -v) so awk performs no escape processing on it and the ERE arrives verbatim.
+scan_rule() { awk "$TEST_SCOPE_AWK"'
+  gated || is_comment { next }
+  # FNR (not NR): one awk pass spans many files, so the report must carry the PER-FILE line number.
+  $0 ~ ENVIRON["LINT_PAT"] { printf "%s:%d: %s\n", FILENAME, FNR, ENVIRON["LINT_WHAT"] }
+' "$@"; }
+
+marker_scan() { awk -v force="$1" "$TEST_SCOPE_AWK"'
+  {
+    side = (force == "test" || gated) ? "test" : "impl"
+    if ($0 ~ /^[[:space:]]*\/\/[\/!]?[[:space:]]*[Rr][Ee][Gg][Rr][Ee][Ss][Ss][Ii][Oo][Nn][[:space:]]*\(/)
+      printf "%s\t%s:%d\t%s\n", side, FILENAME, FNR, $0
+  }
+' "${@:2}"; }
+
+# ══ SELF-TEST: the scanner that guards the tree is itself guarded ════════════════════════════════
+#
+# `scripts/structure-lint.sh --selftest` runs the REAL `scan_rule` / `marker_scan` above (not a copy)
+# over a fixture corpus of Rust files whose every shape is a known way to LIE about being test code.
+# A scanner with a bypass is worse than no scanner: it reports "ok, no bypass" while the bypass sits
+# in production. So each fixture plants a bypass (`std::fs::rename(`) and a `REGRESSION (...)` marker
+# and declares the verdict both must get. RED-before/GREEN-after for the shadow bugs lives here.
+#
+# Fixture format: a Rust source with one probe line per hazard. `//= HIT` / `//= MISS` trailing a
+# probe line declares whether the registry scanner MUST flag it; `//= IMPL` / `//= TEST` on a marker
+# line declares which parity side it MUST land on.
+selftest_case() {   # $1 = name, stdin = fixture source
+  local name="$1" src want_hit got_hit want_side got_side n=0
+  src="$SELFTEST_DIR/$name.rs"
+  cat > "$src"
+  # Registry side: which lines does scan_rule flag?
+  LINT_PAT='std::fs::rename\(' LINT_WHAT='probe' export LINT_PAT LINT_WHAT
+  got_hit=$(scan_rule "$src" | cut -d: -f2 | sort -n | tr '\n' ' ')
+  want_hit=$({ grep -n '//= HIT' "$src" || true; } | cut -d: -f1 | sort -n | tr '\n' ' ')
+  if [ "$got_hit" != "$want_hit" ]; then
+    note "SELFTEST FAIL [$name] registry: flagged lines {${got_hit}} but expected {${want_hit}}"
+    selftest_fail=1
+  else n=$((n+1)); fi
+  # Parity side: which side does each marker land on?
+  got_side=$(marker_scan impl "$src" | awk -F'\t' '{split($2,a,":"); print a[2] "=" toupper($1)}' | sort -n | tr '\n' ' ')
+  want_side=$({ grep -nE '//= (IMPL|TEST)' "$src" || true; } | sed 's/:.*\/\/= /=/' | sort -n | tr '\n' ' ')
+  if [ "$got_side" != "$want_side" ]; then
+    note "SELFTEST FAIL [$name] parity: sides {${got_side}} but expected {${want_side}}"
+    selftest_fail=1
+  else n=$((n+1)); fi
+  [ "$n" -eq 2 ] && selftest_pass=$((selftest_pass+1))
+  return 0
+}
+
+run_selftest() {
+  hdr "structure-lint SELF-TEST (the test-scope scanner cannot be lied to)"
+  SELFTEST_DIR=$(mktemp -d); trap 'rm -rf "$SELFTEST_DIR"' EXIT
+  selftest_fail=0; selftest_pass=0
+
+  # ① The shadow bug that was PROVEN exploitable: a doc comment that merely NAMES the attribute.
+  selftest_case doc_comment_mentions_attr <<'RS'
+/// The wire bytes are identical - the tag is `#[cfg(test)]`.
+pub(crate) fn prod() {
+    // REGRESSION (doc shadow)                                       //= IMPL
+    let _ = std::fs::rename("a", "b");                               //= HIT
+}
+RS
+
+  # ② The other proven shadow: the attribute on a BRACE-LESS item. It must gate that item ONLY, and
+  #    must NOT latch onto the next braced item at arbitrary distance.
+  selftest_case braceless_items <<'RS'
+#[cfg(test)]
+#[path = "tests/unit.rs"]
+mod unit;
+
+#[cfg(test)]
+use std::fs::rename;
+
+#[cfg(test)]
+const FIXTURE: &str = "x";
+
+pub fn prod() {
+    // REGRESSION (braceless shadow)                                 //= IMPL
+    let _ = std::fs::rename("a", "b");                               //= HIT
+}
+RS
+
+  # ③ A genuine inline test body is still exempt, nesting and all — and the production item AFTER it
+  #    is scanned again (the region must CLOSE).
+  selftest_case real_test_body <<'RS'
+#[cfg(test)]
+mod tests {
+    use super::*;
+    // REGRESSION (inside a real test body)                          //= TEST
+    #[test]
+    fn t() {
+        if true {
+            let _ = std::fs::rename("a", "b");
+        }
+    }
+}
+
+pub fn prod_after() {
+    let _ = std::fs::rename("a", "b");                               //= HIT
+}
+RS
+
+  # ④ `#[cfg(test)]` on a method INSIDE a production impl block gates only that method.
+  selftest_case gated_method_in_impl <<'RS'
+impl Foo {
+    #[cfg(test)]
+    fn helper(&self) -> u32 {
+        let _ = std::fs::rename("a", "b");
+        1
+    }
+
+    #[cfg(test)]
+    fn oneliner(&self) -> u32 { let _ = std::fs::rename("a", "b"); 1 }
+
+    pub fn prod(&self) {
+        let _ = std::fs::rename("a", "b");                           //= HIT
+    }
+}
+RS
+
+  # ⑤ cfg predicates that are NOT a test gate must not exempt anything; `all(test, ...)` must.
+  selftest_case cfg_predicate_shapes <<'RS'
+#[cfg(not(test))]
+pub fn prod_only() {
+    let _ = std::fs::rename("a", "b");                               //= HIT
+}
+
+#[cfg(feature = "test-utils")]
+pub fn feature_gated() {
+    let _ = std::fs::rename("a", "b");                               //= HIT
+}
+
+#[cfg(all(test, feature = "x"))]
+mod t {
+    fn f() { let _ = std::fs::rename("a", "b"); }
+}
+RS
+
+  # ⑥ A multi-line signature still resolves to its brace; an UNRESOLVABLE arm must fail CLOSED
+  #    (drop the arm) rather than shadow the rest of the file forever.
+  selftest_case unresolvable_arm_fails_closed <<'RS'
+#[cfg(test)]
+fn wrapped(
+    a: u32,
+    b: u32,
+) -> u32 {
+    let _ = std::fs::rename("a", "b");
+    a + b
+}
+
+#[cfg(test)]
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+pub fn far_away() {
+    let _ = std::fs::rename("a", "b");                               //= HIT
+}
+RS
+
+  note "self-test: ${selftest_pass} fixture(s) passed"
+  if [ "$selftest_fail" -ne 0 ]; then
+    note "structure-lint SELF-TEST FAILED — the scanner would let a bypass through"
+    return 1
+  fi
+  note "ok"
+  return 0
+}
+
+if [ "${1:-}" = "--selftest" ]; then run_selftest; exit $?; fi
+
 # ── Invariant 1: no hybrids — a module is a file OR a folder, never both (`admin.rs` + `admin/`). ──
 hdr "no hybrid modules (foo.rs beside foo/)"
 while IFS= read -r d; do
@@ -117,25 +389,6 @@ CHOKE_POINTS=(
   'D-openapi-taxonomy|TAXONOMY-BYPASS|crates/busbar/src/admin/v1/contract/taxonomy.rs (declared_errors)|crates/busbar/src/admin/tests/tests.rs::declared_error_set_is_exactly_what_the_handlers_emit|declare the ErrKind in contract::taxonomy::declared_errors|-|openapi.json must be a PROJECTION of one declaration, never a hand-maintained parallel list'
 )
 
-# ── The single generic scanner. One awk pass per rule over every candidate file. ─────────────────
-# Skips #[cfg(test)] regions by brace depth (state reset per file at FNR==1) and whole-line comments,
-# then flags the rule's pattern in the remaining production code. The pattern is handed over via the
-# environment (NOT -v) so awk performs no escape processing on it and the ERE arrives verbatim.
-scan_rule() { awk '
-  FNR==1 { in_test=0; pending_test=0; depth=0 }     # per-file reset (one awk pass, many files)
-  /#\[cfg\(test\)\]/ { pending_test=1 }
-  {
-    line=$0
-    # Count braces to know when a test region ends (`close` is an awk builtin — use `nclose`).
-    nopen=gsub(/\{/, "{", line); nclose=gsub(/\}/, "}", line)
-    if (pending_test && nopen>0) { in_test=1; pending_test=0 }
-    if (in_test) { depth += nopen - nclose; if (depth<=0) { in_test=0; depth=0 }; next }
-  }
-  /^[[:space:]]*\/\// { next }                       # skip whole-line comments (incl doc comments)
-  # FNR (not NR): one awk pass spans many files, so the report must carry the PER-FILE line number.
-  $0 ~ ENVIRON["LINT_PAT"] { printf "%s:%d: %s\n", FILENAME, FNR, ENVIRON["LINT_WHAT"] }
-' "$@"; }
-
 # Candidate set, computed once: every crate .rs outside a tests/ dir. (Built with a read loop rather
 # than `mapfile` so the script still runs on the bash 3.2 that ships with macOS.)
 CANDIDATES=()
@@ -202,22 +455,10 @@ baseline=0
 [ -f "$PARITY_BASELINE_FILE" ] && baseline=$(tr -dc '0-9' < "$PARITY_BASELINE_FILE")
 : "${baseline:=0}"
 
-# Emit `<side>\t<file>:<line>\t<raw>` for every anchored marker. `side` is impl for production code
-# and test for a tests/ file or a #[cfg(test)] region — the same brace-tracked scoping the registry
-# scanner uses, so "is this a test?" has ONE answer in this file.
-marker_scan() { awk -v force="$1" '
-  FNR==1 { in_test=0; pending_test=0; depth=0 }
-  /#\[cfg\(test\)\]/ { pending_test=1 }
-  {
-    line=$0; keep=$0
-    nopen=gsub(/\{/, "{", line); nclose=gsub(/\}/, "}", line)
-    if (pending_test && nopen>0) { in_test=1; pending_test=0 }
-    side = (force == "test" || in_test) ? "test" : "impl"
-    if (in_test) { depth += nopen - nclose; if (depth<=0) { in_test=0; depth=0 } }
-    if (keep ~ /^[[:space:]]*\/\/[\/!]?[[:space:]]*[Rr][Ee][Gg][Rr][Ee][Ss][Ss][Ii][Oo][Nn][[:space:]]*\(/)
-      printf "%s\t%s:%d\t%s\n", side, FILENAME, FNR, keep
-  }
-' "${@:2}"; }
+# `marker_scan` (top of this file) emits `<side>\t<file>:<line>\t<raw>` for every anchored marker.
+# `side` is impl for production code and test for a tests/ file or a `#[cfg(test)]` region, decided
+# by the SAME `TEST_SCOPE_AWK` prelude the registry scanner uses — "is this a test?" has exactly one
+# answer in this file, and `--selftest` proves that answer cannot be spoofed.
 
 label_key() {   # stdin: raw marker line → stdout: normalized label key
   tr 'A-Z' 'a-z' \
