@@ -297,6 +297,10 @@ pub(crate) fn init() {
 /// without rendering. Idempotent and safe to call at any time (a no-op before the recorder is
 /// installed, and when nothing is buffered).
 pub(crate) fn drain_pending() {
+    // Test-only: keep `run_upkeep`'s bucket frees on the same thread as the drain that fed them —
+    // see `telemetry::drain_serial`. Re-entrant, so the nested `flush_to_recorder` is free.
+    #[cfg(test)]
+    let _serial = crate::telemetry::drain_serial::lock();
     // Outer `None` = `init()` has not run; inner `None` = install failed. Both mean there is no
     // recorder to drain into, and the bank's own emit helpers are no-ops in that state.
     let Some(Some(handle)) = HANDLE.get() else {
@@ -524,6 +528,9 @@ pub(crate) fn record_request_duration(ingress_protocol: &str, pool: &str, second
 /// first, so every scrape — and every test that reads the exposition — observes up-to-date totals
 /// for the banked hot-path counters/histograms alongside the macro-emitted ones.
 pub(crate) fn render() -> String {
+    // Test-only: a scrape is a drain too — see `telemetry::drain_serial`.
+    #[cfg(test)]
+    let _serial = crate::telemetry::drain_serial::lock();
     // Outer `None` = `init()` not yet run; inner `None` = recorder install failed. Both render an
     // empty exposition rather than panicking.
     match HANDLE.get() {
