@@ -242,3 +242,48 @@ fn only_one_refresh_per_hook_can_be_in_flight() {
         "a refresh that panicked must not wedge its hook out of ever refreshing again"
     );
 }
+
+/// A hook label may not shadow a label the renderer emits. Charset validity is not uniqueness:
+/// `hook`, `le` and `quantile` all pass the wire's name check, and a duplicate label name is a
+/// PARSE error, so one careless plugin would cost the whole `/metrics/hooks` exposition rather
+/// than just its own sample. Both the histogram (`le`) and summary (`quantile`) arms are covered,
+/// since they pass different `extra` sets.
+#[test]
+fn hook_labels_cannot_shadow_renderer_labels() {
+    let shadowing = labels(&[("hook", "inner"), ("le", "oops"), ("quantile", "0.5")]);
+
+    let mut hist = metric("chars_saved_total", "histogram", 3.0);
+    hist.buckets = Some(BTreeMap::from([
+        ("1".to_string(), 1.0),
+        ("+Inf".to_string(), 3.0),
+    ]));
+    hist.labels = shadowing.clone();
+
+    let mut summ = metric("latency_seconds", "summary", 2.0);
+    summ.quantiles = Some(BTreeMap::from([("0.5".to_string(), 0.25)]));
+    summ.labels = shadowing;
+
+    let text = render_text(&[("compress".to_string(), vec![hist, summ])]);
+    for line in text.lines().filter(|l| !l.starts_with('#')) {
+        for name in ["hook", "le", "quantile"] {
+            // Count label-NAME occurrences, not substrings: `quantile=` contains `le=`.
+            let n = line.matches(&format!("{{{name}=\"")).count()
+                + line.matches(&format!(",{name}=\"")).count();
+            assert!(
+                n <= 1,
+                "duplicate `{name}` makes the exposition unparseable: {line}"
+            );
+        }
+    }
+    // The renderer's own labels survive; the hook's shadowing copies are the ones dropped.
+    assert!(text.contains(r#"hook="compress""#), "auto hook label kept");
+    assert!(
+        !text.contains(r#"hook="inner""#),
+        "shadowing hook label dropped"
+    );
+    assert!(text.contains(r#"le="+Inf""#), "histogram bucket label kept");
+    assert!(
+        text.contains(r#"quantile="0.5""#),
+        "summary quantile label kept"
+    );
+}
