@@ -293,34 +293,13 @@ fn validate_config_command() -> i32 {
     // consistency (plugins.enabled vs store.module), trust-policy resolution, the three-phase
     // scan of every tarball (structural -> trust -> conflict), and store resolution. Manifest-only:
     // nothing is `dlopen`ed, no store is opened — zero side effects.
-    let registry = match plugins_preflight(
-        loaded.deploy.store.as_ref(),
-        cfg.auth.as_ref(),
-        &cfg.hooks,
-        &loaded.deploy.plugins,
-    ) {
+    let registry = match preflight_plugins_and_secrets(&loaded.deploy, &cfg) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("[error] {e}");
             return 1;
         }
     };
-    // Every `secrets:` block entry must resolve to a registered `kind: secret` plugin (audit MEDIUM):
-    // catch a mistyped/aliased/wrong-kind module HERE, at --validate time, rather than as a silent
-    // `{}` open (or a fail-closed error) on the first secret resolution after boot. Mirrors the boot
-    // check in `build_secret_resolver`.
-    if let Err(e) = validate_secret_modules(&registry, &cfg.secrets) {
-        eprintln!("[error] {e}");
-        return 1;
-    }
-    // Every SECRET REFERENCE (provider api_key, TLS cert/key, auth.signing_key, admin token) whose
-    // module is not a built-in must resolve to a loaded `kind: secret` plugin. This is the deferred
-    // half of the C2 check `config_validate` cannot do pre-registry; it lets the documented vault
-    // `api_key: { module: acme-vault }` example pass --validate while a genuine typo still fails.
-    if let Err(e) = validate_secret_refs(&registry, &cfg) {
-        eprintln!("[error] {e}");
-        return 1;
-    }
     println!(
         "ok: config valid — {} provider(s), {} model(s), {} pool(s)\n  config:    {}\n  providers: {}",
         cfg.providers.len(),
@@ -1908,6 +1887,32 @@ fn validate_secret_module(
              loaded — see --list-plugins)"
         )),
     }
+}
+
+/// THE POST-RESOLVE HALF OF `--validate`, in one place.
+///
+/// `config_validate::validate` is only part of what makes a config valid: the plugin pre-flight
+/// (consistency, trust resolution, the three-phase tarball scan, store resolution) and the two
+/// secret-reference checks are the rest, and they cannot run until the registry exists. Every caller
+/// that asks "is this config valid?" must run ALL of it -- `--validate` assembled the steps by hand
+/// and `POST /api/v1/admin/config/validate` ran only the first, so the admin dry-run answered
+/// `ok: true` for configs the CLI rejects and an operator could ship one straight into a failed boot.
+///
+/// Manifest-only, like the pre-flight it wraps: nothing is `dlopen`ed and no store is opened, so it
+/// is safe on the admin read path.
+pub(crate) fn preflight_plugins_and_secrets(
+    deploy: &config::DeployCfg,
+    cfg: &config::RootCfg,
+) -> Result<busbar_plugin_loader::PluginRegistry, String> {
+    let registry = plugins_preflight(
+        deploy.store.as_ref(),
+        cfg.auth.as_ref(),
+        &cfg.hooks,
+        &deploy.plugins,
+    )?;
+    validate_secret_modules(&registry, &cfg.secrets)?;
+    validate_secret_refs(&registry, cfg)?;
+    Ok(registry)
 }
 
 /// Validate EVERY `secrets:` block entry against the registry (the `--validate` counterpart of the

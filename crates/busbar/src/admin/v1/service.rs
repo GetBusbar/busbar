@@ -1287,16 +1287,28 @@ impl AdminService {
     ) -> Result<ConfigValidateView, AdminError> {
         // Resolve first (cross-references config.yaml providers against providers.yaml defs); if that
         // fails there is no RootCfg to hand to the semantic validator, so return the resolve errors.
-        match crate::config::resolve(&deploy, &defs) {
-            Err(errors) => Ok(ConfigValidateView { ok: false, errors }),
-            Ok(root) => match crate::config_validate::validate(&root) {
-                Ok(()) => Ok(ConfigValidateView {
-                    ok: true,
-                    errors: Vec::new(),
-                }),
-                Err(errors) => Ok(ConfigValidateView { ok: false, errors }),
-            },
+        let root = match crate::config::resolve(&deploy, &defs) {
+            Ok(root) => root,
+            Err(errors) => return Ok(ConfigValidateView { ok: false, errors }),
+        };
+        if let Err(errors) = crate::config_validate::validate(&root) {
+            return Ok(ConfigValidateView { ok: false, errors });
         }
+        // The SAME post-resolve pre-flight `--validate` runs. Without it this endpoint answered
+        // `ok: true` for configs the CLI rejects -- a plugin whose trust posture or store reference
+        // does not resolve, a `secrets:` entry naming no `kind: secret` plugin, a secret REFERENCE
+        // whose module is neither built-in nor installed -- so an operator could dry-run a config
+        // green here and then watch boot fail on it. Manifest-only: nothing is `dlopen`ed.
+        if let Err(e) = crate::preflight_plugins_and_secrets(&deploy, &root) {
+            return Ok(ConfigValidateView {
+                ok: false,
+                errors: vec![e],
+            });
+        }
+        Ok(ConfigValidateView {
+            ok: true,
+            errors: Vec::new(),
+        })
     }
 
     /// `GET /api/v1/admin/admin-auth` — the ADMIN-plane auth config (distinct from the ingress chain).

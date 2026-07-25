@@ -3389,6 +3389,44 @@ async fn test_admin_v1_config_validate_dry_run() {
         "the dangling provider is named in an error: {errors:?}"
     );
 
+    // THE CLI-PARITY CASE. A config the `--validate` CLI REJECTS must not come back `ok: true`
+    // here. This one resolves and passes `config_validate` cleanly -- the defect is only reachable
+    // in the post-resolve pre-flight: a `secrets:` entry naming a module that resolves to no
+    // installed `kind: secret` plugin. The endpoint used to stop after
+    // `config_validate` and answer `ok: true`, so an operator could dry-run a config green and then
+    // watch boot fail on exactly this.
+    let proposed = serde_json::json!({
+        "config": {
+            "secrets": { "acme-vault": { "settings": {} } },
+            "providers": {},
+            "models": {}
+        },
+        "providers": {}
+    });
+    let resp = client
+        .post(&url)
+        .header("x-admin-token", "admintok")
+        .header("content-type", "application/json")
+        .body(proposed.to_string())
+        .send()
+        .await
+        .unwrap();
+    let st = resp.status().as_u16();
+    let v: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(st, 200, "{v}");
+    assert_eq!(
+        v["ok"], false,
+        "a secret module the CLI cannot resolve must not validate green here: {v}"
+    );
+    assert!(
+        v["errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e.as_str().unwrap_or("").contains("acme-vault")),
+        "the unresolvable secret module is named: {v}"
+    );
+
     handle.abort();
 }
 
