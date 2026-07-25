@@ -65,9 +65,20 @@ impl Store for MemoryStore {
     fn delete_key(&self, id: &str) -> StoreResult<()> {
         // Cascade, mirroring SqliteStore::delete_key: the key, its usage counters, and its AWS
         // credentials go together — a revoked key's credential must not outlive it.
-        self.keys().remove(id);
-        self.usage().retain(|(k, _), _| k != id);
-        self.creds().retain(|_, c| c.key_id != id);
+        //
+        // ATOMICITY (audit LOW): hold ALL THREE write guards for the WHOLE cascade rather than taking
+        // them one-at-a-time. The prior sequential form released the `keys` guard before touching
+        // `usage`, so a concurrent write-behind `add_usage` (flush_budgets) could re-insert a usage row
+        // for the just-deleted key in the gap — resurrecting a ledger the delete was meant to remove.
+        // Under a single held set the delete is atomic across the maps. Acquire in a FIXED order
+        // (keys → usage → creds); `delete_key` is the only method taking more than one lock, so this
+        // order cannot deadlock against any other method.
+        let mut keys = self.keys();
+        let mut usage = self.usage();
+        let mut creds = self.creds();
+        keys.remove(id);
+        usage.retain(|(k, _), _| k != id);
+        creds.retain(|_, c| c.key_id != id);
         Ok(())
     }
 
