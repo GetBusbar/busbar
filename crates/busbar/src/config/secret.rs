@@ -32,6 +32,12 @@ pub(crate) const SECRET_MODULE_FILE: &str = "file";
 pub(crate) const SECRET_ENV_SETTING_KEY: &str = "key";
 /// The `file` module's settings key naming the file path.
 pub(crate) const SECRET_FILE_SETTING_PATH: &str = "path";
+/// The reserved wrapper key that OPTS A PLUGIN SETTING OUT of secret-reference interpretation:
+/// `{ literal: <value> }` delivers `<value>` to the plugin verbatim. The escape hatch for the
+/// genuinely ambiguous case where a plugin's own config happens to be shaped like a reference (a
+/// `{ file: … }` path, an `{ env: … }` variable name the plugin reads itself) — see
+/// [`resolve_settings`].
+pub(crate) const SETTING_LITERAL_KEY: &str = "literal";
 
 /// A reference to a secret, resolved through a secret MODULE. See the module docs for the accepted
 /// YAML spellings. `settings` is the module's own (opaque) config - busbar passes it through
@@ -354,8 +360,30 @@ pub(crate) fn resolve_settings(
     let mut out = serde_json::Map::with_capacity(settings.len());
     for (field, value) in settings {
         // A ref is always a JSON object; skip scalars/arrays without an allocating round-trip.
-        if let serde_json::Value::Object(_) = value {
+        if let serde_json::Value::Object(obj) = value {
+            // THE LITERAL ESCAPE HATCH (audit round-5 #40). Ref-shape is a HEURISTIC: a plugin whose
+            // own settings legitimately contain `{ file: /var/lib/db }` or `{ env: HOME }` — a path
+            // or a variable NAME the plugin means to read itself — was silently swapped for the
+            // CONTENTS of that file / the value of that variable, with no diagnostic anywhere. The
+            // shapes are genuinely ambiguous and always will be, so give the operator a way to say
+            // "this object is data, not a reference": `{ literal: <anything> }` passes the inner
+            // value through verbatim, untouched and un-resolved.
+            if obj.len() == 1 {
+                if let Some(inner) = obj.get(SETTING_LITERAL_KEY) {
+                    out.insert(field.clone(), inner.clone());
+                    continue;
+                }
+            }
             if let Ok(secret) = serde_json::from_value::<SecretRef>(value.clone()) {
+                // NEVER silent: say which setting was interpreted as a reference and where it
+                // points (never its value), so a coercion the operator did not intend is visible in
+                // the boot log instead of surfacing as a corrupt setting inside the plugin.
+                tracing::info!(
+                    setting = field.as_str(),
+                    reference = %secret.describe(),
+                    "plugin setting resolved as a SECRET REFERENCE; if this object was meant as \
+                     literal plugin config, wrap it as `{{ literal: … }}` to pass it through verbatim"
+                );
                 let resolved = resolver.resolve_string(&secret).map_err(|e| {
                     format!(
                         "plugin setting '{field}' is a secret reference that did not resolve: {e}"
@@ -729,5 +757,49 @@ mod settings_resolution_tests {
             err.contains("licenseKey") && err.contains("fail-closed"),
             "unknown module fails closed: {err}"
         );
+    }
+
+    /// #40: a plugin setting shaped like a reference is AMBIGUOUS by nature, and the coercion used
+    /// to be silent — a plugin whose own config is `{ file: /var/lib/db }` (a PATH it opens) or
+    /// `{ env: HOME }` (a variable NAME it reads) had the value swapped for the file's contents /
+    /// the variable's value, with no diagnostic. `{ literal: … }` is the escape hatch: the inner
+    /// value is delivered verbatim and never resolved.
+    #[test]
+    fn literal_wrapper_opts_a_setting_out_of_secret_coercion() {
+        let path = std::env::temp_dir().join(format!("busbar-lit-{}.txt", std::process::id()));
+        std::fs::write(&path, b"THE-SECRET").unwrap();
+        let resolver = SecretResolver::builtins_only();
+
+        // Un-wrapped, the ref shape IS coerced (the documented ADR-0010 behaviour).
+        let mut settings = serde_json::Map::new();
+        settings.insert(
+            "licenseKey".to_string(),
+            serde_json::json!({ "file": path.to_string_lossy() }),
+        );
+        let out = resolve_settings(&settings, &resolver).expect("resolves");
+        assert_eq!(out["licenseKey"], serde_json::json!("THE-SECRET"));
+
+        // WRAPPED, the very same object is delivered verbatim — the plugin sees its own config.
+        let mut settings = serde_json::Map::new();
+        settings.insert(
+            "db".to_string(),
+            serde_json::json!({ "literal": { "file": path.to_string_lossy() } }),
+        );
+        let out = resolve_settings(&settings, &resolver).expect("resolves");
+        assert_eq!(
+            out["db"],
+            serde_json::json!({ "file": path.to_string_lossy() }),
+            "a `literal:`-wrapped object is passed through untouched, never dereferenced"
+        );
+
+        // The wrapper is not limited to ref-shaped objects, and it is exactly one level deep.
+        let mut settings = serde_json::Map::new();
+        settings.insert("n".to_string(), serde_json::json!({ "literal": 42 }));
+        settings.insert("plain".to_string(), serde_json::json!({ "db_path": "x" }));
+        let out = resolve_settings(&settings, &resolver).expect("resolves");
+        assert_eq!(out["n"], serde_json::json!(42));
+        assert_eq!(out["plain"], serde_json::json!({ "db_path": "x" }));
+
+        let _ = std::fs::remove_file(&path);
     }
 }

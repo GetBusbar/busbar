@@ -1325,17 +1325,14 @@ fn validate_limits(limits: &crate::config::LimitsResolved, errors: &mut Vec<Stri
     // unlimited default) is valid.
 }
 
-/// Validate the optional governance block (read separately from the resolved `RootCfg`, so it
-/// cannot ride along in `validate(&RootCfg)`). Called from `config::resolve`, whose `Err(Vec<String>)`
-/// is surfaced as a fail-loud boot error — the same channel `validate` uses.
-///
-/// A blank/whitespace-only `admin_token` leaves `GovState::admin_token_hash()` returning `None`, so
-/// the `/admin` auth branch's `authorized` is permanently `false`: the admin API is SILENTLY locked
-/// (every admin call 401s) with no startup diagnostic. An operator who set an (expanded-to-blank)
-/// token to manage virtual keys discovers this only at runtime. Mirror the `token` mode with no
-/// `client_tokens` fail-loud pattern and reject it at boot. An unset `admin_token` carries no
-/// requirement (governance is always available but inert, the admin surface off).
-///
+// NOTE (audit round-5 #37): a long doc comment used to sit here describing a BLANK-ADMIN-TOKEN boot
+// guard validated at this layer. The function it documented is gone — the admin token became a
+// SecretRef, so its VALUE is not visible to this (pre-resolution) validation pass at all. The guard
+// itself now lives where the value exists: `main::resolve_admin_token`, which refuses an
+// empty/whitespace-only resolved token on boot AND on every apply/reload. It is also stricter than
+// the old prose: a blank token does not merely lock the admin API, it computes the digest over the
+// blank string, so an empty presented credential would authenticate as the operator.
+
 /// Validate the COST + GROUPS + STORE + SECRETS surface of the resolved config (S3/S5/S6/C2):
 /// rate_card completeness/wellformedness, the `groups:` limit tree (parents exist, chain acyclic —
 /// any depth, the cycle check is the bound; limit values sane), `per_request_fee` sanity, the store
