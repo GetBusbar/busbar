@@ -4331,6 +4331,9 @@ fn test_create_key_warns_on_unconfigured_allowed_pool() {
             let r1 = super::create_key(
                 axum::extract::State(handle.clone()),
                 axum::Extension(crate::auth::AuthPrincipal(None)),
+                axum::Extension(crate::auth::AdminScope(Some(
+                    crate::admin::v1::contract::Scope::Full,
+                ))),
                 axum::http::HeaderMap::new(),
                 body1,
             )
@@ -4348,6 +4351,9 @@ fn test_create_key_warns_on_unconfigured_allowed_pool() {
             let r2 = super::create_key(
                 axum::extract::State(handle),
                 axum::Extension(crate::auth::AuthPrincipal(None)),
+                axum::Extension(crate::auth::AdminScope(Some(
+                    crate::admin::v1::contract::Scope::Full,
+                ))),
                 axum::http::HeaderMap::new(),
                 body2,
             )
