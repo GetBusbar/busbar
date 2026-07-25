@@ -1740,6 +1740,40 @@ pub(crate) fn plugins_preflight(
 /// desired) - in practice a signer is always produced so mint works out of the box.
 ///
 /// FAIL-CLOSED: a configured-but-unresolvable / malformed signing key refuses boot.
+/// Resolve the operator ADMIN credential — the `admin-tokens` chain entry's `token:` secret ref —
+/// with the BLANK-TOKEN guard. Shared by boot and the apply/reload path so the two cannot drift.
+///
+/// FAIL-CLOSED twice over:
+///   * an unresolvable ref refuses boot/apply (a silently-absent token would lock the admin API
+///     while the operator believes it is guarded);
+///   * a ref that resolves to EMPTY or ALL-WHITESPACE is refused too (audit round-5 #37). The
+///     documented boot guard for this had been lost in the move to secret refs, and the consequence
+///     is worse than the docs described: the digest is computed over the blank string, so
+///     `admin_token_hash` is `Some(sha256(""))` — a REAL credential that an `Authorization: Bearer `
+///     with an empty value satisfies. An env var that expanded to nothing would silently hand the
+///     whole admin surface to an unauthenticated caller.
+fn resolve_admin_token(
+    auth: Option<&config::AuthCfg>,
+    resolver: &config::secret::SecretResolver,
+) -> Result<Option<String>, String> {
+    let Some(r) = auth.and_then(|a| a.admin_token_ref()) else {
+        return Ok(None);
+    };
+    let token = resolver
+        .resolve_string(r)
+        .map_err(|e| format!("auth.admin_auth admin-tokens token did not resolve: {e}"))?;
+    if token.trim().is_empty() {
+        return Err(
+            "auth.admin_auth admin-tokens `token:` resolved to an EMPTY/whitespace-only value. \
+             Refusing to start: the digest would be taken over the blank string, so an empty \
+             credential would authenticate as the operator. Check the referenced env var / file \
+             actually holds the token, or remove the `token:` to disable the admin API deliberately."
+                .to_string(),
+        );
+    }
+    Ok(Some(token))
+}
+
 fn resolve_signing_key(
     auth: Option<&config::AuthCfg>,
     resolver: &config::secret::SecretResolver,
@@ -1964,12 +1998,29 @@ fn build_secret_resolver(
     // shared `validate_secret_module`/`validate_secret_modules` helpers.
     let mut open_config: std::collections::BTreeMap<String, String> =
         std::collections::BTreeMap::new();
+    // Which `secrets:` block key produced each canonical entry, so an ALIAS/CANONICAL collision can
+    // be named precisely (audit round-5 #39).
+    let mut claimed_by: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
     for (module, mcfg) in secret_modules {
         // Validate + canonicalize the block key against the registry (shared with --validate). A
         // reserved built-in name, an unknown module, or a non-secret plugin is a hard error here.
         let canonical = validate_secret_module(&registry, module)?;
+        // TWO SPELLINGS, ONE MODULE: a `secrets:` block written under BOTH a plugin's alias and its
+        // canonical name canonicalizes to the same key, and the second insert silently DROPPED the
+        // first entry's open() config — one of the two blocks (address, token, CA) just vanished,
+        // with the module still loading happily on the survivor. Ambiguous by construction: there is
+        // no defensible rule for which one wins. Fail LOUD and name both spellings.
+        if let Some(previous) = claimed_by.get(&canonical) {
+            return Err(format!(
+                "secrets: the module '{canonical}' is configured TWICE — once as '{previous}' and \
+                 once as '{module}' (an alias and its canonical name resolve to the same plugin). \
+                 One of the two blocks would be silently dropped; keep exactly one."
+            ));
+        }
         let resolved = config::secret::resolve_settings(&mcfg.settings, &builtins)
             .map_err(|e| format!("secrets.{module} settings: {e}"))?;
+        claimed_by.insert(canonical.clone(), module.clone());
         open_config.insert(canonical, serde_json::Value::Object(resolved).to_string());
     }
     Ok(config::secret::SecretResolver::with_plugin(Box::new(
@@ -2607,17 +2658,12 @@ pub(crate) fn build_app_from_config(
             // FAIL-CLOSED: a declared ref that no longer resolves ABORTS the apply. The alternative
             // — carry on serving with the old credential — is exactly the defect being fixed.
             let admin_token: Option<Option<String>> = if declares_admin_tokens {
-                Some(match auth.and_then(|a| a.admin_token_ref()) {
-                    Some(r) => Some(secret_resolver.resolve_string(r).map_err(|e| {
-                        format!(
-                            "auth.admin_auth admin-tokens token did not re-resolve on this \
-                             apply/reload: {e}; nothing was changed"
-                        )
-                    })?),
-                    // Declared with no token ref: the admin API is credential-less BY
-                    // CONFIGURATION. Fail closed — disable it rather than keep the old secret.
-                    None => None,
-                })
+                // Declared with no token ref resolves to `None`: the admin API is credential-less
+                // BY CONFIGURATION, so fail closed and disable it rather than keep the old secret.
+                Some(
+                    resolve_admin_token(auth, &secret_resolver)
+                        .map_err(|e| format!("{e} (nothing was changed)"))?,
+                )
             } else {
                 None
             };
@@ -2669,13 +2715,7 @@ pub(crate) fn build_app_from_config(
         // The operator ADMIN credential: the `admin-tokens` chain entry's `token:` secret ref.
         // FAIL-CLOSED: a configured-but-unresolvable admin token refuses boot (a silently-absent
         // token would lock the admin API while the operator believes it is guarded).
-        let admin_token: Option<String> =
-            match cfg.auth.as_ref().and_then(|a| a.admin_token_ref()) {
-                Some(r) => Some(secret_resolver.resolve_string(r).map_err(|e| {
-                    format!("auth.admin_auth admin-tokens token did not resolve: {e}")
-                })?),
-                None => None,
-            };
+        let admin_token: Option<String> = resolve_admin_token(cfg.auth.as_ref(), &secret_resolver)?;
         // The KEY-SIGNING key (S2): resolve `auth.signing_key` (a secret ref) to 32 ed25519 secret
         // bytes; ABSENT => GENERATE a keypair on first boot and persist it 0600 (dev zero-config).
         // Fleet deployments provide it (shared) so every node verifies the same tokens.

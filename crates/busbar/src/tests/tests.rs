@@ -1266,3 +1266,97 @@ fn signing_key_secret_ref_re_resolves_on_apply_and_fails_closed() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// #37: a `token:` secret ref that resolves to EMPTY or WHITESPACE must refuse to start. The
+/// documented boot guard for this was lost when the admin token became a SecretRef, and the
+/// consequence is worse than "the admin API is silently locked": the digest is taken over the blank
+/// string, so `admin_token_hash` becomes `Some(sha256(""))` — a real credential that an empty
+/// presented token satisfies. An env var expanding to nothing would hand over the admin surface.
+#[test]
+fn blank_admin_token_refuses_to_start() {
+    crate::metrics::init();
+    let dir = std::env::temp_dir().join(format!("busbar-blank-admin-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let key_path = dir.join("signing.key");
+    std::fs::write(&key_path, hex::encode([7u8; 32])).unwrap();
+
+    for blank in ["", "   ", "\n\t "] {
+        let token_path = dir.join("admin.token");
+        std::fs::write(&token_path, blank).unwrap();
+        let err = match build_once(cfg_with_credentials(&token_path, &key_path), None) {
+            Err(e) => e,
+            Ok(_) => panic!("a blank admin token ({blank:?}) must refuse to start"),
+        };
+        assert!(
+            err.contains("admin-tokens"),
+            "the refusal names the admin credential: {err}"
+        );
+        if !blank.is_empty() {
+            // A WHITESPACE-only value passes the resolver's own non-empty check (the bytes are
+            // there) — this is exactly the case only the trim guard catches.
+            assert!(
+                err.contains("EMPTY/whitespace-only"),
+                "a whitespace-only token must hit the trim guard: {err}"
+            );
+        }
+    }
+
+    // A real token still boots, and the digest is of the real value (not of the blank string).
+    let token_path = dir.join("admin.token");
+    std::fs::write(&token_path, "real-token").unwrap();
+    let app = build_once(cfg_with_credentials(&token_path, &key_path), None).expect("boot");
+    let gov = app.governance.clone().expect("governance");
+    assert_eq!(
+        gov.admin_token_hash().as_deref(),
+        Some(crate::sigv4::sha256_hex(b"real-token").as_str())
+    );
+    assert_ne!(
+        gov.admin_token_hash().as_deref(),
+        Some(crate::sigv4::sha256_hex(b"").as_str()),
+        "the blank-string digest must never be a live admin credential"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// #39: a `secrets:` block written under BOTH a plugin's ALIAS and its CANONICAL name resolves to
+/// one module, and the second entry used to silently overwrite the first — one block's configured
+/// address/token/CA just vanished while the module loaded happily on the survivor. Ambiguous by
+/// construction (there is no defensible winner), so it is a loud boot error naming both spellings.
+#[test]
+fn secrets_block_rejects_alias_and_canonical_for_one_module() {
+    let (dir, reg) = secret_registry("secrets-alias-collision");
+    let reg = std::sync::Arc::new(reg);
+    let mut secrets = std::collections::BTreeMap::new();
+    for spelling in ["vault", "acme-secret-vault"] {
+        secrets.insert(
+            spelling.to_string(),
+            crate::config::SecretModuleCfg {
+                settings: serde_json::Map::new(),
+            },
+        );
+    }
+    let err = match crate::build_secret_resolver(reg.clone(), &secrets) {
+        Err(e) => e,
+        Ok(_) => panic!("two spellings of one secret module must be a loud error"),
+    };
+    assert!(
+        err.contains("acme-secret-vault") && err.contains("vault") && err.contains("TWICE"),
+        "the error names the module and both spellings: {err}"
+    );
+
+    // Either spelling ALONE is fine (the canonicalization itself is unchanged).
+    for spelling in ["vault", "acme-secret-vault"] {
+        let mut one = std::collections::BTreeMap::new();
+        one.insert(
+            spelling.to_string(),
+            crate::config::SecretModuleCfg {
+                settings: serde_json::Map::new(),
+            },
+        );
+        assert!(
+            crate::build_secret_resolver(reg.clone(), &one).is_ok(),
+            "a single '{spelling}' block still configures the module"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
