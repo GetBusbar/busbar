@@ -118,10 +118,17 @@ pub fn dispatch(store: &dyn Store, req: StoreRequest) -> Result<StoreResponse, S
 unsafe fn write_buf(bytes: Vec<u8>, out: *mut *mut u8, out_len: *mut usize) {
     let boxed = bytes.into_boxed_slice();
     let len = boxed.len();
-    let ptr = Box::into_raw(boxed) as *mut u8;
-    if !out.is_null() {
-        *out = ptr;
+    // Only leak the buffer (`into_raw`) once we know we can hand the pointer back through `out`. A
+    // prior version leaked BEFORE the null-check, so a null `out` (a misbehaving/aborting caller)
+    // permanently leaked the buffer — the pointer was never written anywhere and could never be
+    // freed. If `out` is null there is nowhere to return the pointer, so drop the box instead. Same
+    // pattern as the open_impl null-out fix.
+    if out.is_null() {
+        drop(boxed);
+        return;
     }
+    let ptr = Box::into_raw(boxed) as *mut u8;
+    *out = ptr;
     if !out_len.is_null() {
         *out_len = len;
     }
@@ -220,13 +227,21 @@ pub unsafe fn call_impl(
         } else {
             std::slice::from_raw_parts(req, req_len)
         };
+        // A REQUEST-decode failure is the ONLY genuine `STATUS_PROTOCOL` case from here: it is how an
+        // older plugin (that predates a request variant) signals "I cannot understand this variant",
+        // which the loader keys on to fall back (e.g. an empty denylist / a full-list audit tail). A
+        // RESPONSE-encode failure below is NOT that — it is a real backend/serialization fault and must
+        // surface as `STATUS_ERR`, or the loader would misread it as unsupported-variant and silently
+        // swallow the failure (hydrating an empty denylist, masking the fault). `protocol` = true only
+        // for a request the plugin could not decode.
         let request: StoreRequest = match serde_json::from_slice(bytes) {
             Ok(r) => r,
             Err(e) => return Err((format!("malformed request JSON: {e}"), true)),
         };
         match dispatch(store.as_ref(), request) {
+            // A response-encode failure is a real fault, NOT an unsupported-variant signal → STATUS_ERR.
             Ok(resp) => serde_json::to_vec(&resp)
-                .map_err(|e| (format!("response encode failed: {e}"), true)),
+                .map_err(|e| (format!("response encode failed: {e}"), false)),
             Err(e) => Err((e.0, false)),
         }
     }));
@@ -243,7 +258,10 @@ pub unsafe fn call_impl(
                 STATUS_ERR
             }
         }
-        Err(_) => STATUS_PROTOCOL,
+        // A PANIC inside the backend is a real out-of-band failure, NOT an unsupported-variant signal.
+        // Mapping it to STATUS_PROTOCOL would let the loader misclassify it as "old SDK" and silently
+        // swallow it (e.g. hydrate an empty denylist). Report STATUS_ERR so the real failure propagates.
+        Err(_) => STATUS_ERR,
     }
 }
 
@@ -1204,6 +1222,35 @@ mod tests {
             let msg = std::str::from_utf8(std::slice::from_raw_parts(err, err_len)).unwrap();
             assert!(msg.contains("out_handle"), "unexpected message: {msg}");
             free_impl(err, err_len);
+        }
+    }
+
+    /// `write_buf` with a null `out` must DROP the buffer, not leak it. Before the fix `into_raw`
+    /// ran before the null-check, so a null `out` leaked the boxed slice forever (never written back,
+    /// never freeable). We can't observe the leak directly in a unit test, but we can prove the
+    /// fixed contract: a null `out` writes nothing (neither `out` nor `out_len`) and does not crash,
+    /// while a non-null `out` still returns a freeable (ptr, len) pair. Run under Miri/ASan this also
+    /// flags the leak the fix removes.
+    #[test]
+    fn write_buf_null_out_drops_without_leaking_or_writing() {
+        unsafe {
+            // Null `out`: nothing is written, `out_len` is left untouched, no crash (buffer dropped).
+            let mut len_slot: usize = 0xDEAD;
+            write_buf(vec![1u8, 2, 3], ptr::null_mut(), &mut len_slot);
+            assert_eq!(
+                len_slot, 0xDEAD,
+                "out_len must be untouched when out is null"
+            );
+
+            // Non-null `out`: the (ptr, len) pair is returned and is freeable (round-trip through
+            // free_impl proves the allocation is intact and owned by the same allocator).
+            let mut ptr_slot: *mut u8 = ptr::null_mut();
+            let mut len2: usize = 0;
+            write_buf(vec![7u8, 8, 9, 10], &mut ptr_slot, &mut len2);
+            assert!(!ptr_slot.is_null());
+            assert_eq!(len2, 4);
+            assert_eq!(std::slice::from_raw_parts(ptr_slot, len2), &[7, 8, 9, 10]);
+            free_impl(ptr_slot, len2);
         }
     }
 

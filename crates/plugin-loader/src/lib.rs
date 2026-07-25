@@ -575,13 +575,20 @@ impl Store for DynStore {
     }
 
     fn append_audit(&self, entry: &AuditRecord) -> StoreResult<()> {
-        // A plugin built against an OLDER SDK never learned this request variant and will reject it
-        // (a protocol error). The engine's audit write-through is best-effort, so that error simply
-        // means "this store has no durable audit" — the RAM ring still holds the entry; we never fail
-        // an admin mutation on it. New plugins (durable stores) handle it and return `Unit`.
-        match self.call_raw(StoreRequest::AppendAudit(entry.clone()))? {
-            StoreResponse::Unit => Ok(()),
-            other => Err(unexpected(other)),
+        // A plugin built against an OLDER SDK (a v1 store) never learned this request variant and
+        // signals THAT out of band as a PROTOCOL status ([`STATUS_PROTOCOL`]) — "this store has no
+        // durable audit". Audit write-through is best-effort (the RAM ring still holds the entry), so
+        // for THAT case ONLY we return `Ok(())` silently. Keying on the numeric status (like the
+        // `list_denylist`/`list_audit_tail` siblings) means a REAL backend error (`STATUS_ERR` I/O/DB
+        // failure, an engine-side encode/decode/panic) still PROPAGATES instead of being swallowed —
+        // and the old code's `call_raw` + `?` turned the unsupported-variant case into a hard error
+        // too, so every mutation against a v1 store logged a repeated write-through warning. New
+        // plugins (durable stores) handle the variant and return `Unit`.
+        match self.call_raw_status(StoreRequest::AppendAudit(entry.clone())) {
+            Ok(StoreResponse::Unit) => Ok(()),
+            Ok(other) => Err(unexpected(other)),
+            Err(e) if e.is_unsupported_variant() => Ok(()),
+            Err(e) => Err(StoreError(e.message)),
         }
     }
 
