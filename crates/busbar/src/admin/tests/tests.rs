@@ -4137,9 +4137,13 @@ async fn test_patch_key_three_state_group_and_enabled() {
             ..Default::default()
         },
     )]);
+    // Seed BOTH the cost model and the groups_registry from one tree (the production invariant): the
+    // rebind existence check now reads `groups_registry` — the authoritative registry the group
+    // DELETE guard also uses — so cost and registry must AGREE, exactly as every real config apply
+    // keeps them (`groups_tree` does this; a bare `.cost(...)` left the registry empty).
     let app = crate::test_support::TestApp::new()
         .governance(gov)
-        .cost(crate::cost::CostModel::resolve_parts(None, 0, &groups))
+        .groups_tree(groups)
         .build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

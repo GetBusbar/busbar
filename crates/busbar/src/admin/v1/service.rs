@@ -431,6 +431,29 @@ pub(crate) fn build_without_group(current: &App, name: &str) -> Result<App, Admi
     if !current.groups_registry.contains_key(name) {
         return Err(AdminError::NotFound(format!("group `{name}`")));
     }
+    // BOUND-KEY GUARD: refuse to delete a group that virtual keys still charge through — an orphaned
+    // `key.group` would fail that key CLOSED at every admission (a dangling budget-group reference),
+    // and a shared durable store means the binding can outlive this node's config. Reject as a state
+    // CONFLICT naming the count (re-bind or delete those keys first) rather than silently orphaning
+    // them. Mirrors the dangling-parent guard below.
+    if let Some(gov) = &current.governance {
+        let bound = gov
+            .all_keys()
+            .map_err(|e| {
+                tracing::error!(group = %name, error = %e, "group delete: cannot read keys to check bindings");
+                AdminError::Internal
+            })?
+            .into_iter()
+            .filter(|k| k.group.as_deref() == Some(name))
+            .count();
+        if bound > 0 {
+            return Err(AdminError::Conflict(format!(
+                "cannot delete group `{name}`: {bound} key(s) are still bound to it; rebind those \
+                 keys to another group (PATCH /api/v1/admin/keys/{{id}} with `group`) or delete \
+                 them first"
+            )));
+        }
+    }
     let mut groups = current.groups_registry.clone();
     groups.remove(name);
     // A dangling `parent` after the removal is the only new error a delete can introduce; surface it
@@ -2391,6 +2414,46 @@ mod tests {
             panic!("unknown group must be not_found");
         };
         assert!(matches!(&err, AdminError::NotFound(m) if m.contains("ghost")));
+    }
+
+    /// AUDIT (LOW): deleting a group that virtual keys still charge through is a 409 conflict — an
+    /// orphaned `key.group` would fail that key CLOSED at every admission, so the delete is blocked
+    /// (re-bind or delete the keys first) rather than silently orphaning them.
+    #[test]
+    fn build_without_group_conflict_when_keys_still_bound() {
+        use crate::governance::{GovState, MemoryStore};
+        use busbar_api::Store as _;
+        let store = std::sync::Arc::new(MemoryStore::new());
+        store
+            .put_key(&crate::governance::VirtualKey {
+                id: "vk_bound".to_string(),
+                key_hash: "h:vk_bound".to_string(),
+                name: "bound".to_string(),
+                allowed_pools: None,
+                enabled: true,
+                created_at: 0,
+                group: Some("team".to_string()),
+                labels: Default::default(),
+            })
+            .unwrap();
+        let gov = Arc::new(GovState::new(store, None).unwrap());
+        let app = TestApp::new()
+            .group(
+                "team",
+                GroupCfg {
+                    limits: vec![budget(20_000, LimitWindow::Month)],
+                    ..Default::default()
+                },
+            )
+            .governance(gov)
+            .build();
+        let Err(err) = build_without_group(&app, "team") else {
+            panic!("deleting a group with bound keys must conflict");
+        };
+        assert!(
+            matches!(&err, AdminError::Conflict(m) if m.contains("team") && m.contains("bound")),
+            "bound-key delete is a conflict naming the count: {err:?}"
+        );
     }
 
     // ---- group usage read (§6d, `GET /groups/{name}/usage`) ----

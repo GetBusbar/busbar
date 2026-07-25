@@ -360,7 +360,7 @@ fn key_meta(k: &VirtualKey) -> Value {
 ///   governance off the keyspace is truthfully empty, and a 404 on a collection reads as a
 ///   mount/path error to every REST client;
 /// - single-resource READS keep 404 `not_found` (also truthful — no such key exists);
-/// - WRITES (create/patch/delete/rotate) answer 409 `conflict` (`disabled_write`): the request
+/// - WRITES (create/patch/delete/rotate/revoke) answer 409 `conflict` (`disabled_write`): the request
 ///   conflicts with the server's configured state, with an actionable message. Previously every
 ///   handler returned 404 — making `not_found` mean two different things forever.
 fn disabled_write() -> Response {
@@ -806,16 +806,18 @@ struct UpdateKeyReq {
 /// target is validated to EXIST (mint parity): otherwise PATCH would be a back door minting a
 /// dangling binding that fails every request closed. 404 if the key is absent.
 pub(crate) async fn update_key(
-    crate::state::CurrentApp(app): crate::state::CurrentApp,
+    axum::extract::State(handle): axum::extract::State<std::sync::Arc<crate::state::AppHandle>>,
     axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
     Path(id): Path<String>,
     headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();
-    let Some(gov) = &app.governance else {
+    // Fast-fail BEFORE parsing the body if governance is off (the authoritative re-check happens under
+    // the config-mutation lock below, against the live App).
+    if handle.load().governance.is_none() {
         return disabled_write();
-    };
+    }
     if let Some(resp) = reject_overlong_id(&id) {
         return resp;
     }
@@ -846,8 +848,21 @@ pub(crate) async fn update_key(
     // dangling binding would fail every request on this key closed at admission. Only a present
     // VALUE is checked (`Some(Some(name))`); a present `null` (unbind) and an absent field need no
     // check.
+    //
+    // TOCTOU (audit MEDIUM): a bare check-then-write let a group be DELETED between validating it here
+    // and persisting the binding — a deleted group could be durably written as a key binding. Group
+    // create/DELETE run under CONFIG_MUTATION_LOCK (and DELETE refuses while keys are still bound), so
+    // hold that SAME lock across BOTH the existence check and the store write, and re-read the LIVE App
+    // under it (the extractor snapshot may predate a concurrent swap). Serialized this way, a rebind and
+    // a group delete cannot interleave: either the rebind lands first (then DELETE sees the bound key →
+    // 409) or the delete lands first (then this check sees the group gone → 400).
+    let _config_guard = crate::admin::v1::json::config_mutation_guard().await;
+    let app = handle.load();
+    let Some(gov) = &app.governance else {
+        return disabled_write();
+    };
     if let Some(Some(group)) = req.group.as_ref() {
-        if app.cost.group_named(group).is_none() {
+        if !app.groups_registry.contains_key(group.as_str()) {
             return error_response(
                 StatusCode::BAD_REQUEST,
                 ERR_TYPE_INVALID_REQUEST,
