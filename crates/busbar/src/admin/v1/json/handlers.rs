@@ -2814,6 +2814,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 }],
                 "responses": {
                     "204": {"description": "Removed"},
+                    "400": {"description": "Malformed `If-Match` header (error code `invalid_request`)"},
                     "403": {"description": "A `hooks-register` principal may not delete a content-seeing (`prompt`/`user`) or `global` hook (error code `forbidden`, §6.3)"},
                     "404": {"description": "Unknown hook (error code `not_found`)"},
                     "409": {"description": "Base-defined hook — read-only via the API; edit config.yaml (error code `conflict`)"}
@@ -2873,8 +2874,9 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 }],
                 "responses": {
                     "204": {"description": "Removed"},
+                    "400": {"description": "Malformed `If-Match` header (error code `invalid_request`)"},
                     "404": {"description": "Unknown group (error code `not_found`)"},
-                    "409": {"description": "Base-defined group, or another group still names it as parent (error code `conflict`)"}
+                    "409": {"description": "Base-defined group, another group still names it as parent, or one or more keys are still bound to it (rebind/delete them first) (error code `conflict`); or a stale `If-Match` (error code `version_conflict`)"}
                 }
             }
         }),
@@ -3420,6 +3422,9 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         ("/hooks/{name}", "put"),
         ("/hooks/{name}", "delete"),
         ("/hooks/{name}/settings", "patch"),
+        ("/groups/{name}", "put"),
+        ("/groups/{name}", "patch"),
+        ("/groups/{name}", "delete"),
         (PATH_ADMIN_AUTH, "put"),
         ("/config/apply", "post"),
         ("/config/settings", "put"),
