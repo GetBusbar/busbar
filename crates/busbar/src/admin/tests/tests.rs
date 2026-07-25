@@ -1952,10 +1952,10 @@ async fn test_admin_v1_key_rotate_and_pagination() {
         "invalid_request"
     );
 
-    // Rotate the first key: the legacy rotate path mints a FRESH BEARER secret in place (distinct
-    // from the signed-token mint above), keeping the id stable. The new secret resolves via the
-    // hash lookup. (The signed-token binding carried no bearer secret to compare against - rotate is
-    // the legacy-secret escape hatch, still returning `secret`, not a token.)
+    // Rotate the first key: these are SIGNED-TOKEN bindings, so rotation re-mints the TOKEN at a
+    // fresh binding generation (every prior token for the subject is now rejected) and keeps the id
+    // stable. It must NOT hand back a legacy bearer secret — arming the hashed-secret path on a key
+    // minted without one would add a second, weaker, non-expiring credential (audit round-5 HIGH-6).
     let id = ids[0].clone();
     let rotated: serde_json::Value =
         admin(client.post(format!("http://{addr}/api/v1/admin/keys/{id}/rotate")))
@@ -1966,8 +1966,16 @@ async fn test_admin_v1_key_rotate_and_pagination() {
             .await
             .unwrap();
     assert_eq!(rotated["id"], id.as_str(), "id is stable across rotation");
-    let new_secret = rotated["secret"].as_str().unwrap().to_string();
-    assert!(gov.lookup(&new_secret).is_some(), "new secret resolves");
+    let new_token = rotated["token"].as_str().unwrap().to_string();
+    assert!(new_token.starts_with("bbk_"), "a re-minted signed token");
+    assert!(
+        rotated["secret"].is_null(),
+        "rotation must not arm a legacy bearer secret on a signed-token key"
+    );
+    assert!(
+        gov.verify_token(&new_token, crate::store::now()).is_some(),
+        "the re-minted token authenticates"
+    );
 
     // Unknown id → 404.
     let missing = admin(client.post(format!("http://{addr}/api/v1/admin/keys/vk_nope/rotate")))

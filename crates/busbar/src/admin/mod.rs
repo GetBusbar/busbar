@@ -1061,10 +1061,17 @@ pub(crate) async fn list_keys(
     }
 }
 
-/// POST /api/v1/admin/keys/{id}/rotate — mint a FRESH bearer secret for an existing key, in place: the
-/// id (and with it budgets, rate windows, usage, audit attribution) is unchanged; the old secret
-/// stops resolving immediately; the new secret is returned exactly once, exactly like mint. 404
-/// for an unknown id. An attached AWS SigV4 credential is not touched (separate lifecycle).
+/// POST /api/v1/admin/keys/{id}/rotate — re-issue an existing key's CREDENTIAL in place: the id (and
+/// with it budgets, rate windows, usage, audit attribution) is unchanged, the PREVIOUS credential
+/// stops authenticating immediately and fleet-wide, and the new one is returned exactly once,
+/// exactly like mint. 404 for an unknown id. An attached AWS SigV4 credential is not touched
+/// (separate lifecycle).
+///
+/// A 1.5.0 signed-token key answers with `{token, expires_at}` (a fresh token at a new binding
+/// generation — every previously-issued token for the subject is now rejected); a legacy
+/// hashed-secret key answers with `{secret}`. Rotation NEVER converts the former into the latter:
+/// arming a hashed bearer secret on a signed-token key would add a second, weaker, non-expiring
+/// credential to a key deliberately minted without one (audit round-5 HIGH-6).
 pub(crate) async fn rotate_key(
     crate::state::CurrentApp(app): crate::state::CurrentApp,
     axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
@@ -1123,19 +1130,32 @@ pub(crate) async fn rotate_key(
     // a revoked key with a fresh secret. Gate acquired INSIDE the closure for cancellation safety
     // (a scheduled spawn_blocking runs to completion even if the handler future is dropped).
     // (found: audit c1r6 — rotate was the one key-mutator missing the gate.)
+    // The re-minted signed token gets the SAME default lifetime a mint with no `expires_in` /
+    // `expires_at` would receive (rotate takes no body today).
+    let exp = crate::store::now().saturating_add(DEFAULT_KEY_TTL_SECS);
     let res = tokio::task::spawn_blocking(move || {
         let _existence_guard = EXISTENCE_GATE.lock().unwrap_or_else(|e| e.into_inner());
-        gov.rotate_key(&gid)
+        gov.rotate_key(&gid, exp)
     })
     .await;
     let resource = format!("key:{id}");
     match res {
-        Ok(Ok(Some((key, secret)))) => {
+        Ok(Ok(Some(rotated))) => {
             audit::AUDIT.record_by("key.rotate", &resource, audit::OUTCOME_APPLIED, &actor);
-            let mut body = key_meta(&key);
-            body["secret"] = json!(secret); // shown exactly once, exactly like mint
-                                            // COMMIT the idempotency slot with the real response (replaces the reservation) and
-                                            // disarm the drop-guard — a retry inside the window replays THIS body verbatim.
+            let mut body = key_meta(rotated.key());
+            // Shown exactly once, exactly like mint — the field names the credential the key
+            // actually carries (a signed-token binding is never handed a legacy bearer secret).
+            match rotated {
+                crate::governance::RotatedCredential::Token { token, exp, .. } => {
+                    body["token"] = json!(token);
+                    body["expires_at"] = json!(exp);
+                }
+                crate::governance::RotatedCredential::Secret { secret, .. } => {
+                    body["secret"] = json!(secret);
+                }
+            }
+            // COMMIT the idempotency slot with the real response (replaces the reservation) and
+            // disarm the drop-guard — a retry inside the window replays THIS body verbatim.
             if let Some(ref ck) = idem_ckey {
                 let mut cache = app
                     .idempotency_cache

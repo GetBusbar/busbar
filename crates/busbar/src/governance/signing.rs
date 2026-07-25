@@ -43,6 +43,15 @@ pub(crate) struct TokenClaims {
     pub(crate) exp: u64,
     /// Signing-key id (selects the verifying key; single-key `k1` for 1.5.0).
     pub(crate) kid: String,
+    /// The BINDING GENERATION this token was minted against (wire name `g`), mirrored in the
+    /// binding row's `key_hash` marker (`binding:<id>:<generation>`). `POST /keys/{id}/rotate`
+    /// stamps a FRESH generation into the durable binding, so every token carrying the previous one
+    /// stops verifying immediately and fleet-wide — the subject id (and with it the ledger bucket,
+    /// budgets and usage history) stays stable. `None` = a token minted before generations existed;
+    /// it verifies only against a binding that likewise carries none (see
+    /// `GovState::binding_generation_matches`), never against a rotated one.
+    #[serde(default, rename = "g", skip_serializing_if = "Option::is_none")]
+    pub(crate) generation: Option<String>,
 }
 
 /// A verify failure. Every arm rejects fail-closed; the distinctions exist for the AUDIT log /
@@ -126,13 +135,15 @@ impl TokenSigner {
         self.key.verifying_key()
     }
 
-    /// Mint a signed token for `sub` expiring at `exp` (Unix seconds). Returns the full token
+    /// Mint a signed token for `sub` expiring at `exp` (Unix seconds), stamped with the binding
+    /// GENERATION it is issued against (see [`TokenClaims::generation`]). Returns the full token
     /// string, shown to the caller ONCE.
-    pub(crate) fn mint(&self, sub: &str, exp: u64) -> String {
+    pub(crate) fn mint(&self, sub: &str, exp: u64, generation: Option<&str>) -> String {
         let claims = TokenClaims {
             sub: sub.to_string(),
             exp,
             kid: self.kid.clone(),
+            generation: generation.map(str::to_string),
         };
         let payload = serde_json::to_vec(&claims).expect("TokenClaims serializes");
         let sig: Signature = self.key.sign(&payload);
@@ -219,7 +230,7 @@ mod tests {
     fn mint_then_verify_roundtrips() {
         let s = signer();
         let v = verifier(&s);
-        let tok = s.mint("vk_abc", 2000);
+        let tok = s.mint("vk_abc", 2000, None);
         assert!(tok.starts_with(TOKEN_PREFIX));
         let claims = v.verify(&tok, 1000).expect("valid");
         assert_eq!(claims.sub, "vk_abc");
@@ -232,7 +243,7 @@ mod tests {
     fn expired_token_rejected() {
         let s = signer();
         let v = verifier(&s);
-        let tok = s.mint("vk_abc", 1000);
+        let tok = s.mint("vk_abc", 1000, None);
         assert_eq!(v.verify(&tok, 1000), Err(VerifyError::Expired));
         assert_eq!(v.verify(&tok, 1001), Err(VerifyError::Expired));
         assert!(v.verify(&tok, 999).is_ok());
@@ -243,7 +254,7 @@ mod tests {
     fn tampered_token_rejected() {
         let s = signer();
         let v = verifier(&s);
-        let tok = s.mint("vk_abc", 2000);
+        let tok = s.mint("vk_abc", 2000, None);
         // Flip a char in the payload segment.
         let body = tok.strip_prefix(TOKEN_PREFIX).unwrap();
         let (payload, sig) = body.split_once('.').unwrap();
@@ -262,7 +273,7 @@ mod tests {
     #[test]
     fn token_fails_after_rotation() {
         let key_a = TokenSigner::from_secret_bytes(&[1u8; 32], DEFAULT_KID);
-        let tok = key_a.mint("vk_abc", 2000);
+        let tok = key_a.mint("vk_abc", 2000, None);
 
         // Same kid, different key material -> BadSignature.
         let key_b_same_kid = TokenSigner::from_secret_bytes(&[2u8; 32], DEFAULT_KID);
@@ -302,7 +313,7 @@ mod tests {
         let s = TokenSigner::generate(DEFAULT_KID).unwrap();
         let bytes = s.secret_bytes();
         let reloaded = TokenSigner::from_secret_bytes(&bytes, DEFAULT_KID);
-        let tok = s.mint("vk_x", 2000);
+        let tok = s.mint("vk_x", 2000, None);
         // The reloaded key is the SAME key: it mints/verifies interchangeably.
         let v = TokenVerifier::single(DEFAULT_KID, reloaded.verifying_key());
         assert!(v.verify(&tok, 1000).is_ok());
