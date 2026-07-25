@@ -39,11 +39,17 @@
 //! ever taken INSIDE a `spawn_blocking` closure and is never held across an await. There is thus a
 //! single global acquisition order (config lock, then existence gate) and no cycle.
 //!
-//! **Lock hold time.** Routing store reads through `spawn_blocking` means the async lock is now held
-//! across a `spawn_blocking().await`. That await does not block the reactor (the entire point), but
-//! it does extend how long other mutations queue behind a slow store. That is the correct trade:
-//! before, the same read held the lock AND parked a worker thread, stalling every request the
-//! runtime was serving, not just the other mutations. Config mutations are rare admin operations.
+//! **Lock hold time.** The apply phase (persist, swap, and every deferred store/disk step) runs on a
+//! blocking thread that OWNS the guard, so the lock is held for as long as that work takes. It never
+//! parks the reactor (the entire point), but it does extend how long other mutations queue behind a
+//! slow store. That is the correct trade: before, the same read held the lock AND parked a worker
+//! thread, stalling every request the runtime was serving, not just the other mutations. Config
+//! mutations are rare admin operations.
+//!
+//! **Cancellation.** The guard is moved into that blocking task rather than held by the caller's
+//! future, because admin handler futures are DROPPED on a client reset or timeout. See
+//! [`config_transaction`] for why a borrowed guard let an abandoned section keep mutating the
+//! plugins directory with its lock already released.
 
 use std::sync::Arc;
 
@@ -60,7 +66,11 @@ use crate::state::{App, AppHandle};
 /// cannot be written anywhere else in the tree because no other module can name this symbol —
 /// [`config_transaction`] is the only door. `scripts/structure-lint.sh` Invariant 6 fails the build
 /// on a second `tokio::sync::Mutex` config lock appearing outside this file.
-static CONFIG_MUTATION_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+///
+/// Held as an `Arc` so the guard can be `lock_owned()` and MOVED off the caller's future — see
+/// [`config_transaction`] on why a borrowed guard made the critical section cancellation-unsafe.
+static CONFIG_MUTATION_LOCK: std::sync::LazyLock<Arc<tokio::sync::Mutex<()>>> =
+    std::sync::LazyLock::new(|| Arc::new(tokio::sync::Mutex::new(())));
 
 /// A durable-persist step, run by `commit_and_swap` BEFORE the swap. It returns the FINAL
 /// operator-facing message on failure (each site keeps its own wording), which
@@ -212,10 +222,30 @@ impl<'a> Txn<'a> {
 }
 
 /// **The one door.** Acquire the config-plane mutation lock, hand `body` a FRESH post-lock snapshot,
-/// run its (synchronous) decision, drain any deferred blocking work on `spawn_blocking`, and apply
-/// the resulting plan through `commit_and_swap` — all inside the same critical section.
+/// run its (synchronous) decision, then hand the guard AND the whole apply phase to one blocking
+/// task that runs `commit_and_swap` plus every deferred step to completion.
 ///
 /// The four numbered steps below are the four guarantees in the module docs.
+///
+/// **Why the apply phase is one blocking task and not an `await` loop.** Admin handlers ARE
+/// cancellable: each connection is served by its own task (`serve_connection_with_upgrades`), so a
+/// client reset, disconnect, or timeout DROPS the service future wherever it is suspended. A guard
+/// borrowed from a `static` and held across `spawn_blocking(f).await` dies with that future —
+/// while the blocking task keeps running, because dropping a `JoinHandle` does NOT cancel a blocking
+/// task. The critical section would then be executing with its lock RELEASED: a concurrent
+/// `rollback_plugin` / `reload_plugins` could take the domain and `rebuild_app_from_disk` over a
+/// plugins directory that the abandoned `install_plugin` was still writing into — exactly the hazard
+/// this choke point exists to make impossible.
+///
+/// Moving the guard into the blocking task closes it BY CONSTRUCTION: the task OWNS the guard
+/// (`lock_owned`), nothing can cancel it, and the domain is released only when the last deferred
+/// step returns. Cancelling the caller now abandons only the RESULT, never the section. There is no
+/// await between taking the lock and handing it over, so cancellation can only strike before any
+/// mutation has begun (harmless) or after the section is already self-driving.
+///
+/// It also takes `commit_and_swap` off the reactor. Its persist step is real disk work — an overlay
+/// read-modify-write plus two fsyncs — which the previous shape ran inline on a Tokio worker while
+/// the lock was held, the same class of stall §3 defers store reads to avoid.
 pub(crate) async fn config_transaction<F, T>(
     handle: &Arc<AppHandle>,
     body: F,
@@ -226,13 +256,28 @@ where
     F: FnOnce(&Txn<'_>) -> Result<Outcome<T>, AdminError>,
     T: Send + 'static,
 {
-    let _guard = CONFIG_MUTATION_LOCK.lock().await; // (1) the ONLY lock site in the tree
+    // (1) the ONLY lock site in the tree. Owned, so the guard can outlive this future.
+    let guard = Arc::clone(&CONFIG_MUTATION_LOCK).lock_owned().await;
     let snapshot = handle.load(); // (2) FRESH post-lock read — the body's only config
-    let mut outcome = body(&Txn { app: &snapshot })?; // (3) synchronous decision → a plan
+    let outcome = body(&Txn { app: &snapshot })?; // (3) synchronous decision → a plan
+    let handle = Arc::clone(handle);
+    // (4) apply the plan — atomic mutate → persist → swap, then any deferred steps — on ONE blocking
+    // thread that owns the guard. A panic in the section is a JoinError, mapped fail-closed.
+    tokio::task::spawn_blocking(move || {
+        let _guard = guard; // dropped here, and ONLY here: when the section is genuinely over
+        apply(&handle, outcome)
+    })
+    .await
+    .map_err(|_| AdminError::Internal)?
+}
+
+/// Drive a plan to a value. Entirely synchronous: `commit_and_swap` and every deferred step are
+/// blocking calls, and this runs on the blocking thread `config_transaction` hands the guard to, so
+/// the whole section is one uninterruptible unit of work.
+fn apply<T>(handle: &Arc<AppHandle>, mut outcome: Outcome<T>) -> Result<T, AdminError> {
     loop {
         match outcome {
             Outcome::Value(value) => return Ok(value),
-            // (4) atomic mutate → persist → swap, fail-closed, still under `_guard`.
             Outcome::Commit {
                 next,
                 persist,
@@ -243,18 +288,12 @@ where
                     .map_err(AdminError::Validation)?;
                 match then {
                     Then::Value(value) => return Ok(value),
-                    // Still under `_guard`: the follow-on store write cannot interleave with any
+                    // Same guard, same thread: the follow-on store write cannot interleave with any
                     // other config mutation.
                     Then::Blocking(f) => outcome = Outcome::Blocking(f),
                 }
             }
-            // Blocking store/disk work runs on its OWN thread — the reactor keeps scheduling while
-            // the guard is held. A panic in the closure is a JoinError, mapped fail-closed.
-            Outcome::Blocking(f) => {
-                outcome = tokio::task::spawn_blocking(f)
-                    .await
-                    .map_err(|_| AdminError::Internal)??;
-            }
+            Outcome::Blocking(f) => outcome = f()?,
         }
     }
 }

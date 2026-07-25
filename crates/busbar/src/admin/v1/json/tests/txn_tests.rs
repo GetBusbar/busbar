@@ -561,3 +561,83 @@ async fn concurrent_transactions_never_lose_a_swap() {
         "every transaction's build read the previous one's swap — no lost update"
     );
 }
+
+// ── §5.6 the mutation domain survives handler-future cancellation ────────────────────────────────
+
+/// CANCELLATION SAFETY. Admin handlers are cancellable: hyper serves each connection on its own task
+/// (`serve_connection_with_upgrades`), so a client reset, disconnect, or timeout DROPS the service
+/// future wherever it is suspended. This asserts the property that has to hold for the whole choke
+/// point when that happens: **a transaction whose caller is cancelled still owns the mutation domain
+/// until its deferred work is genuinely finished.**
+///
+/// RED before the fix: the guard was a borrowed `MutexGuard` held across `spawn_blocking(f).await`.
+/// Dropping a `JoinHandle` does not cancel a blocking task, but dropping the ENCLOSING future drops
+/// the guard — so the abandoned section kept running with its lock RELEASED, and a concurrent
+/// `rollback_plugin`/`reload_plugins` could take the domain and `rebuild_app_from_disk` over a
+/// plugins directory the abandoned `install_plugin` was still writing into. Under the old shape the
+/// second transaction below acquires immediately and the timeout assertion fails.
+///
+/// GREEN after: the guard is `lock_owned()` and MOVED into the blocking task, which nothing can
+/// cancel, so the domain is released only when the last deferred step returns.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancelling_a_handler_future_does_not_release_the_mutation_domain() {
+    let handle = handle_for(TestApp::new().build());
+
+    // The deferred step announces it started, then parks until the test lets it go.
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel::<()>();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let finished = Arc::new(AtomicBool::new(false));
+
+    let victim = {
+        let (handle, finished) = (handle.clone(), finished.clone());
+        tokio::spawn(async move {
+            config_transaction(&handle, move |txn| {
+                Ok(txn.store_write(move || {
+                    entered_tx.send(()).expect("test still listening");
+                    release_rx.recv().expect("test releases the deferred step");
+                    finished.store(true, Ordering::SeqCst);
+                    Ok(Outcome::Value(()))
+                }))
+            })
+            .await
+        })
+    };
+
+    // Wait until the section is genuinely mid-flight, then CANCEL the caller: aborting the task
+    // drops the `config_transaction` future exactly as a dropped connection would.
+    entered_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the deferred step must start");
+    victim.abort();
+    assert!(victim.await.is_err(), "the caller's future was cancelled");
+
+    // THE ASSERTION: the domain is still held. A second mutation must NOT be able to acquire it
+    // while the abandoned section's deferred work is still running.
+    let contender = config_transaction(&handle, |txn| Ok(txn.done(())));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(500), contender)
+            .await
+            .is_err(),
+        "a cancelled handler must not hand the mutation domain to a concurrent op while its \
+         deferred work is still writing"
+    );
+    assert!(
+        !finished.load(Ordering::SeqCst),
+        "the deferred step is still in flight - the timeout above was a real lock wait"
+    );
+
+    // Let the abandoned section finish; the domain must then be free, and the work must have run to
+    // COMPLETION rather than being torn down half-applied.
+    release_tx.send(()).expect("deferred step still parked");
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        config_transaction(&handle, |txn| Ok(txn.done(()))),
+    )
+    .await
+    .expect("the domain is released once the deferred work finishes")
+    .expect("txn ok");
+    assert!(
+        finished.load(Ordering::SeqCst),
+        "cancellation abandons the RESULT, never the critical section"
+    );
+}
