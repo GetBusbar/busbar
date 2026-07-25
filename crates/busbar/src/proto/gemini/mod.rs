@@ -67,6 +67,11 @@ const FIELD_PROMPT_TOKEN_COUNT: &str = "promptTokenCount";
 const FIELD_CANDIDATES_TOKEN_COUNT: &str = "candidatesTokenCount";
 /// JSON key for the total token count inside `usageMetadata`.
 const FIELD_TOTAL_TOKEN_COUNT: &str = "totalTokenCount";
+/// JSON key for the THINKING (reasoning) token count inside `usageMetadata`. Reported by the
+/// 2.5-series models and, unlike OpenAI's `reasoning_tokens`, it is NOT a subset of the visible
+/// output count — Google reports it as a separate ADDITIVE term
+/// (`totalTokenCount = promptTokenCount + candidatesTokenCount + thoughtsTokenCount`).
+const FIELD_THOUGHTS_TOKEN_COUNT: &str = "thoughtsTokenCount";
 /// JSON key for the context-cache token count inside `usageMetadata`.
 const FIELD_CACHED_CONTENT_TOKEN_COUNT: &str = "cachedContentTokenCount";
 
@@ -650,12 +655,28 @@ const GEMINI_SCHEMA_REJECTED_KEYS: &[&str] = &[
     "$comment",
 ];
 
+/// The JSON-Schema keywords whose VALUE is a map from a USER-CHOSEN NAME to a subschema, rather than
+/// a subschema itself. Inside these maps the keys are field names the caller invented, not keywords,
+/// so [`GEMINI_SCHEMA_REJECTED_KEYS`] must not be applied to them — see [`sanitize_gemini_schema`].
+/// (`$defs`, `definitions` and `patternProperties` are name-keyed too, but they are stripped whole,
+/// so they never reach the descent.)
+const GEMINI_SCHEMA_NAME_KEYED_MAPS: &[&str] = &["properties", "dependentSchemas"];
+
 /// Recursively strip the JSON-Schema keywords Gemini rejects (`GEMINI_SCHEMA_REJECTED_KEYS`) from a
 /// schema value so a cross-protocol tool / `responseSchema` definition does not hard-fail with a 400
-/// (L3). Walks objects and arrays; non-container values are returned unchanged. Returns a cleaned
-/// clone — the source IR value is left intact (only the egress wire copy is sanitized), so the
-/// stripped keys still round-trip same-protocol via the preserved raw object in `extra` where
-/// applicable.
+/// (L3). Returns a cleaned clone — the source IR value is left intact (only the egress wire copy is
+/// sanitized), so the stripped keys still round-trip same-protocol via the preserved raw object in
+/// `extra` where applicable.
+///
+/// THE FILTER IS POSITIONAL, and has to be. It used to match on the key at EVERY object level with
+/// no notion of where in the schema it was, so it also fired inside a `properties` map — where the
+/// keys are FIELD NAMES THE CALLER CHOSE, not keywords. A perfectly ordinary tool schema with a
+/// property named `examples`, `const`, `definitions` or `$ref` had that property silently deleted
+/// from `properties` while `required` — an array of strings the walker never inspects — went on
+/// naming it. Gemini then 400s the request for a `required` entry with no property (a hard failure
+/// the translation layer exists to prevent); if the field was optional it merely became invisible to
+/// the model, so the tool call came back without it. Descending into the name-keyed maps through
+/// [`sanitize_gemini_schema_names`] keeps the keyword filter where keywords actually live.
 fn sanitize_gemini_schema(schema: &serde_json::Value) -> serde_json::Value {
     match schema {
         serde_json::Value::Object(map) => {
@@ -664,7 +685,12 @@ fn sanitize_gemini_schema(schema: &serde_json::Value) -> serde_json::Value {
                 if GEMINI_SCHEMA_REJECTED_KEYS.contains(&k.as_str()) {
                     continue;
                 }
-                cleaned.insert(k.clone(), sanitize_gemini_schema(v));
+                let sanitized = if GEMINI_SCHEMA_NAME_KEYED_MAPS.contains(&k.as_str()) {
+                    sanitize_gemini_schema_names(v)
+                } else {
+                    sanitize_gemini_schema(v)
+                };
+                cleaned.insert(k.clone(), sanitized);
             }
             serde_json::Value::Object(cleaned)
         }
@@ -672,6 +698,20 @@ fn sanitize_gemini_schema(schema: &serde_json::Value) -> serde_json::Value {
             serde_json::Value::Array(arr.iter().map(sanitize_gemini_schema).collect())
         }
         other => other.clone(),
+    }
+}
+
+/// The NAME-KEYED half of [`sanitize_gemini_schema`]: every key is kept verbatim (it is a caller's
+/// field name, not a keyword) and every VALUE is sanitized as a schema object. A non-object here is
+/// malformed schema, so it falls back to the keyword walker rather than being invented into one.
+fn sanitize_gemini_schema_names(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => serde_json::Value::Object(
+            map.iter()
+                .map(|(k, v)| (k.clone(), sanitize_gemini_schema(v)))
+                .collect(),
+        ),
+        other => sanitize_gemini_schema(other),
     }
 }
 
@@ -698,10 +738,35 @@ fn gemini_usage(data: &serde_json::Value) -> crate::ir::IrUsage {
         // already INCLUDES `cachedContentTokenCount`, so subtract the cached tokens to leave only
         // the uncached input. `saturating_sub` guards an odd upstream where cached > prompt.
         input_tokens: prompt.saturating_sub(cached.unwrap_or(0)),
+        // THINKING TOKENS ARE OUTPUT TOKENS. `candidatesTokenCount` counts only the VISIBLE answer;
+        // the 2.5-series models' reasoning tokens arrive in the separate, ADDITIVE
+        // `thoughtsTokenCount` (Google's own `totalTokenCount` is prompt + candidates + thoughts).
+        // Reading only `candidatesTokenCount` ledgered every thinking token as ZERO while Google
+        // billed it at the output rate — and 2.5 Flash/Pro think BY DEFAULT with no `thinkingConfig`
+        // in the request, so this was ordinary traffic, not a reasoning opt-in, and the undercount
+        // is unbounded (a large thinking budget dwarfs the visible answer). Summing them here is
+        // what makes `IrUsage.output_tokens` mean the same thing it means for every other provider:
+        // all tokens GENERATED, billed at the output rate. Anthropic already counts its thinking
+        // tokens inside `output_tokens` upstream, and OpenAI's `reasoning_tokens` is a SUBSET of
+        // `completion_tokens` — Gemini is the only family that splits the term out, so it is the
+        // only one that needs the add.
+        //
+        // WIRE CONSEQUENCE (deliberate): the Gemini WRITER reconstructs `candidatesTokenCount` from
+        // `output_tokens`, so a CROSS-PROTOCOL egress into the Gemini dialect now reports the
+        // thinking tokens inside `candidatesTokenCount` rather than as their own field. The
+        // `totalTokenCount` it synthesizes becomes RIGHT (it was short by the thinking tokens
+        // before), which is the number clients reconcile against a bill. Same-protocol Gemini
+        // traffic passes through byte-for-byte and never reaches the writer, so no native client
+        // sees a reshaped `usageMetadata`.
         output_tokens: u
             .and_then(|u| u.get(FIELD_CANDIDATES_TOKEN_COUNT))
             .and_then(|v| v.as_u64())
-            .unwrap_or(0),
+            .unwrap_or(0)
+            .saturating_add(
+                u.and_then(|u| u.get(FIELD_THOUGHTS_TOKEN_COUNT))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+            ),
         cache_creation_input_tokens: None,
         cache_read_input_tokens: cached,
     }
