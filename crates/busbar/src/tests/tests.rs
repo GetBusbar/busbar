@@ -888,3 +888,95 @@ fn alias_conflict_fails_boot_naming_both() {
     assert!(err.contains("alias conflict"), "got {err}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ── secrets: block validation + alias/name canonicalization (audit MEDIUM) ─────────────────────
+
+/// A `kind: secret` manifest with the correct secret ABI (the store default from `plugin_manifest`
+/// carries the store ABI, which the secret kind would reject).
+fn secret_manifest(name: &str, alias: &str) -> busbar_plugin_sign::Manifest {
+    let mut m = plugin_manifest(name, alias, "acme");
+    m.kind = "secret".into();
+    m.abi_version = *busbar_plugin_loader::supported_abi("secret")
+        .iter()
+        .max()
+        .expect("secret abi");
+    m
+}
+
+/// A registry loaded from an unsigned `kind: secret` tarball (name `acme-secret-vault`, alias
+/// `vault`), for exercising the `secrets:` block resolution.
+fn secret_registry(tag: &str) -> (std::path::PathBuf, busbar_plugin_loader::PluginRegistry) {
+    let dir = tmp_plugin_dir(tag);
+    let mut cfg = plugins_cfg(&dir, true);
+    cfg.trust.allow_unsigned = true;
+    let tarball = unsigned_tarball(secret_manifest("acme-secret-vault", "vault"), b"lib");
+    std::fs::write(dir.join("vault.tar.gz"), tarball).unwrap();
+    let reg = crate::plugins_preflight(None, None, &Default::default(), &cfg)
+        .expect("allow_unsigned permits the unsigned secret plugin");
+    (dir, reg)
+}
+
+/// AUDIT (NIT #17): a `secrets:` entry naming a reserved BUILT-IN resolver (`env` / `file`) as a
+/// module is rejected — the built-ins take no module-level open() config, so such an entry is an
+/// operator error, not a silent no-op.
+#[test]
+fn secrets_block_rejects_builtin_resolver_names() {
+    let reg = busbar_plugin_loader::PluginRegistry::empty();
+    for reserved in ["env", "file"] {
+        let err = validate_secret_module(&reg, reserved).unwrap_err();
+        assert!(
+            err.contains("built-in secret resolver"),
+            "reserved '{reserved}' rejected as a module: {err}"
+        );
+    }
+}
+
+/// A `secrets:` entry that resolves to NO loadable plugin is a hard error (not a silent `{}` open) —
+/// this is the failure that pairs with the alias/name mismatch below.
+#[test]
+fn secrets_block_rejects_unknown_module() {
+    let reg = busbar_plugin_loader::PluginRegistry::empty();
+    let err = validate_secret_module(&reg, "typo-vault").unwrap_err();
+    assert!(
+        err.contains("no loadable") && err.contains("typo-vault"),
+        "unknown module named in the error: {err}"
+    );
+}
+
+/// AUDIT (MEDIUM #8): the `secrets:` block key canonicalizes through the SAME by_name/by_alias
+/// resolution the registry uses — a block keyed on the ALIAS and a block keyed on the CANONICAL name
+/// both resolve to the plugin's canonical name, so a later `SecretRef` written under either spelling
+/// finds the configured open() config (no silent `{}`).
+#[test]
+fn secrets_block_canonicalizes_alias_and_name_to_the_same_key() {
+    let (dir, reg) = secret_registry("secrets-canon");
+    // Both the alias and the canonical name resolve to the SAME canonical name.
+    assert_eq!(
+        validate_secret_module(&reg, "vault").unwrap(),
+        "acme-secret-vault"
+    );
+    assert_eq!(
+        validate_secret_module(&reg, "acme-secret-vault").unwrap(),
+        "acme-secret-vault"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A `secrets:` entry naming a plugin whose kind is NOT `secret` is rejected (only a kind: secret
+/// plugin can back a `secrets:` block entry).
+#[test]
+fn secrets_block_rejects_non_secret_kind() {
+    let dir = tmp_plugin_dir("secrets-wrong-kind");
+    let mut cfg = plugins_cfg(&dir, true);
+    cfg.trust.allow_unsigned = true;
+    // A STORE-kind plugin (default from plugin_manifest) — wrong kind for a secrets: entry.
+    let tarball = unsigned_tarball(plugin_manifest("acme-store-x", "x", "acme"), b"lib");
+    std::fs::write(dir.join("x.tar.gz"), tarball).unwrap();
+    let reg = crate::plugins_preflight(None, None, &Default::default(), &cfg).unwrap();
+    let err = validate_secret_module(&reg, "x").unwrap_err();
+    assert!(
+        err.contains("not 'secret'"),
+        "wrong-kind rejection names the mismatch: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
