@@ -318,8 +318,12 @@ fn render_summary(out: &mut String, name: &str, hook: &str, m: &HookMetric) {
 
 /// Build the `{hook="...",k="v",...,extra="..."}` label set: the automatic `hook` label first, then
 /// the hook's own labels (sorted for determinism), then any renderer-added labels (e.g. `quantile`).
-/// Values are Prometheus-escaped. The wire already charset-restricts names/keys, so escaping here is
-/// belt-and-suspenders on the values.
+/// Values are Prometheus-escaped.
+///
+/// A hook label that would SHADOW one this renderer emits is dropped: charset validity (all the
+/// wire checks) is not uniqueness, and a duplicate label name is a parse error that costs the whole
+/// scrape, not just the sample. The forbidden set is derived from `extra` rather than listed, so it
+/// cannot drift from what the renderer actually emits.
 fn render_labels(
     hook: &str,
     labels: Option<&std::collections::BTreeMap<String, String>>,
@@ -329,6 +333,9 @@ fn render_labels(
     parts.push(format!("hook=\"{}\"", escape_label(hook)));
     if let Some(m) = labels {
         for (k, v) in m {
+            if k == "hook" || extra.iter().any(|(ek, _)| ek == k) {
+                continue; // would duplicate a label this renderer emits; keep ours, drop theirs
+            }
             parts.push(format!("{k}=\"{}\"", escape_label(v)));
         }
     }
