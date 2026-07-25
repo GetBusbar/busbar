@@ -324,8 +324,8 @@ pub fn discover(dir: &Path) -> Result<Vec<PathBuf>, String> {
     // a configured/named plugin tarball vanish from the scan while boot still SUCCEEDS with a smaller
     // loadable set. Propagate it so the whole scan fails rather than serving with a plugin missing.
     for entry in entries {
-        let entry = entry
-            .map_err(|e| format!("error reading plugins dir {}: {e}", dir.display()))?;
+        let entry =
+            entry.map_err(|e| format!("error reading plugins dir {}: {e}", dir.display()))?;
         let path = entry.path();
         let Some(file) = path.file_name().and_then(|f| f.to_str()) else {
             continue;
