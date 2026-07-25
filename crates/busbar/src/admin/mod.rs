@@ -14,9 +14,9 @@ use serde::{Deserialize, Deserializer};
 use serde_json::{json, Value};
 
 /// Deserialize a field as a "double option" so the three JSON intents stay distinguishable:
-///   - field ABSENT: the `#[serde(default)]` on the field supplies the OUTER `None`.
-///   - field present `null`: this fn is invoked and yields `Some(None)` (an explicit clear).
-///   - field present value: this fn is invoked and yields `Some(Some(v))` (an explicit set).
+/// - field ABSENT: the `#[serde(default)]` on the field supplies the OUTER `None`.
+/// - field present `null`: this fn is invoked and yields `Some(None)` (an explicit clear).
+/// - field present value: this fn is invoked and yields `Some(Some(v))` (an explicit set).
 ///
 /// Serde calls a field's deserializer ONLY when the key is present, so the absent case never reaches
 /// here (it is covered by the field default). This is the standard `double_option` pattern; it lets
@@ -41,12 +41,12 @@ use crate::governance::{NewKeySpec, VirtualKey};
 /// `put_key` UPSERT) BOTH read existence and then write, with no rows-affected signal from the store
 /// to make either atomic. Two hazards follow, and BOTH are closed by serializing every such section
 /// behind this one async mutex:
-///   - Two concurrent DELETEs of one id would otherwise both observe `Some` and both return 200 (the
-///     second SQL delete no-ops) — a misleading audit trail of two revocations of one row.
-///   - A PATCH interleaved with a DELETE would otherwise RESURRECT the revoked key: the PATCH reads
-///     the row (exists), the DELETE removes it, then the PATCH's `put_key` UPSERT re-inserts it. Under
-///     this gate the PATCH's lookup→put runs to completion before any DELETE (so the row is gone
-///     afterward), or after it (so the PATCH's `get_key` returns `None` → 404 and never re-puts).
+/// - Two concurrent DELETEs of one id would otherwise both observe `Some` and both return 200 (the
+/// second SQL delete no-ops) — a misleading audit trail of two revocations of one row.
+/// - A PATCH interleaved with a DELETE would otherwise RESURRECT the revoked key: the PATCH reads
+/// the row (exists), the DELETE removes it, then the PATCH's `put_key` UPSERT re-inserts it. Under
+/// this gate the PATCH's lookup→put runs to completion before any DELETE (so the row is gone
+/// afterward), or after it (so the PATCH's `get_key` returns `None` → 404 and never re-puts).
 ///
 /// The proper store-layer fix is an UPDATE-ONLY `put`/`update` (`UPDATE … WHERE id=?` that affects 0
 /// rows when absent, never an upsert) used by `update_key`, which would need no lock at all — but that
@@ -160,12 +160,12 @@ const MAX_KEY_ID_LEN: usize = 64;
 
 // M6/F2 (scrape break): mint-time `labels` are echoed VERBATIM as Prometheus label names on every
 // key metric series (metrics.rs `base_labels`). An unvalidated map is a scrape-integrity hole:
-//   - a label named `key`/`bucket`/`model`/`tier` (the RESERVED names busbar itself attaches)
-//     duplicates a label on the series, which breaks the WHOLE /metrics exposition (a duplicate
-//     label name is invalid Prometheus text -> every scrape fails, not just this key);
-//   - a name that is not a valid Prometheus label name (`^[a-zA-Z_][a-zA-Z0-9_]*$`) is rejected by
-//     the exposition encoder for the same all-or-nothing effect;
-//   - an unbounded count / length bloats every scrape and the store row.
+// - a label named `key`/`bucket`/`model`/`tier` (the RESERVED names busbar itself attaches)
+// duplicates a label on the series, which breaks the WHOLE /metrics exposition (a duplicate
+// label name is invalid Prometheus text -> every scrape fails, not just this key);
+// - a name that is not a valid Prometheus label name (`^[a-zA-Z_][a-zA-Z0-9_]*$`) is rejected by
+// the exposition encoder for the same all-or-nothing effect;
+// - an unbounded count / length bloats every scrape and the store row.
 // So validate at the mint ingress (the one write path) and 400 anything unsafe.
 /// Label names busbar itself attaches to key metric series - an operator label may not shadow them.
 const RESERVED_METRIC_LABELS: &[&str] = &["key", "bucket", "model", "tier"];
@@ -242,7 +242,7 @@ fn json_response(status: StatusCode, body: Value) -> Response {
 /// here is what makes each keys emission observable to `contract::taxonomy` (design D route 2).
 /// WHO IS REFUSING, so the ONE error door can also be the ONE audit door.
 ///
-/// Round-6 finding: `POST /keys` wrote `key.create`/`applied` on success and NOTHING on any refusal
+/// `POST /keys` wrote `key.create`/`applied` on success and NOTHING on any refusal
 /// — including the anti-sprawl cap 409 the two prior rounds added — while `key.patch`/`key.delete`/
 /// `key.rotate`/`key.revoke` each wrote `rejected` by hand at the arms someone remembered. A refused
 /// mint is precisely the event a reviewer needs (someone tried to issue a credential and was
@@ -344,7 +344,7 @@ fn key_etag(k: &VirtualKey) -> String {
 /// stripped. `*` (RFC 7232: "any current representation") matches any existing key, i.e. no guard —
 /// `Ok(None)`. Anything that cannot be a key ETag is a 400 `invalid_request` — the SAME terminal
 /// the config-plane parser gives a malformed guard, never a retriable-looking 409 that a client
-/// with a header bug would re-read and retry forever (re-audit M4). Shared by PATCH and DELETE so
+/// with a header bug would re-read and retry forever. Shared by PATCH and DELETE so
 /// the two verbs can never diverge on grammar.
 #[allow(clippy::result_large_err)] // Err = the ready-to-return 400 Response (callers just return it)
 fn parse_key_if_match(
@@ -387,15 +387,15 @@ fn key_meta(k: &VirtualKey) -> Value {
     })
 }
 
-/// Governance-off semantics (re-audit HIGH-2): ONE rule across the keys surface, chosen so no
+/// Governance-off semantics: ONE rule across the keys surface, chosen so no
 /// status is ambiguous —
 /// - collection READS (`GET /keys`) answer 200 with an EMPTY page (`disabled_empty_list`): with
-///   governance off the keyspace is truthfully empty, and a 404 on a collection reads as a
-///   mount/path error to every REST client;
+/// governance off the keyspace is truthfully empty, and a 404 on a collection reads as a
+/// mount/path error to every REST client;
 /// - single-resource READS keep 404 `not_found` (also truthful — no such key exists);
 /// - WRITES (create/patch/delete/rotate/revoke) answer 409 `conflict` (`disabled_write`): the request
-///   conflicts with the server's configured state, with an actionable message. Previously every
-///   handler returned 404 — making `not_found` mean two different things forever.
+/// conflicts with the server's configured state, with an actionable message. Previously every
+/// handler returned 404 — making `not_found` mean two different things forever.
 fn disabled_write(who: KeyAudit<'_>) -> Response {
     key_err(
         who,
@@ -500,12 +500,12 @@ const UNBOUND_BUCKET_LABEL: &str = "(no group)";
 ///
 /// Two round-5 defects die here rather than at N call sites:
 ///
-///   * #18 — the count is of LIVE keys only: a disabled or revoked key holds no usable credential,
-///     so counting it forever made the cap a ONE-WAY RATCHET (a principal that revoked ten keys
-///     could never mint again, and the documented remedy "revoke or delete an existing key" was
-///     simply false for `revoke`). Enabled + not-denylisted is exactly "can still authenticate".
-///   * #19 — the UNBOUND bucket is counted. A groupless key escapes the whole limit tree, so
-///     exempting it from the key-count cap as well made the ceiling evadable by omitting one field.
+/// * #18 — the count is of LIVE keys only: a disabled or revoked key holds no usable credential,
+/// so counting it forever made the cap a ONE-WAY RATCHET (a principal that revoked ten keys
+/// could never mint again, and the documented remedy "revoke or delete an existing key" was
+/// simply false for `revoke`). Enabled + not-denylisted is exactly "can still authenticate".
+/// * #19 — the UNBOUND bucket is counted. A groupless key escapes the whole limit tree, so
+/// exempting it from the key-count cap as well made the ceiling evadable by omitting one field.
 fn check_key_cap(
     gov: &crate::governance::GovState,
     cap: usize,
@@ -691,22 +691,22 @@ pub(crate) async fn create_key(
     // Group resolution, the auto-provision swap, the anti-sprawl cap and the key's store write are
     // ONE `config_transaction` section. Three defect classes die here by construction:
     //
-    //  * The bound group's existence check and the key's store write share ONE continuous lock hold.
-    //    The old shape resolved the group under the mutation lock, RELEASED it on return, then
-    //    re-acquired the lock and re-verified the group BY HAND — a copied prose contract a third
-    //    bind path would have had to copy again. There is nothing left to re-verify: the lock is
-    //    never released between the check and the bind, so a concurrent group DELETE either lands
-    //    first (this body sees the group gone → fail closed) or is blocked until the key is bound
-    //    (then DELETE's bound-key guard sees it → 409).
-    //  * `max_keys_per_principal` is read from `txn.app()` — the FRESH post-lock snapshot — not from
-    //    the pre-lock extractor `app`. A settings apply landing between the request's snapshot and
-    //    this enforcement can no longer make the mint enforce a stale ceiling: there is no older
-    //    snapshot in scope to read.
-    //  * The cap COUNT and the mint run together in ONE `spawn_blocking` closure under
-    //    `EXISTENCE_GATE`, so N concurrent callers at the boundary are serialized — each sees the
-    //    writes of those before it and only the first `cap - current` mints succeed. `>= cap` is a
-    //    `409` (a retry can't fix it without deleting a key), and a store failure counting keys
-    //    FAILS CLOSED — never mint past a ceiling we could not verify.
+    // * The bound group's existence check and the key's store write share ONE continuous lock hold.
+    // The old shape resolved the group under the mutation lock, RELEASED it on return, then
+    // re-acquired the lock and re-verified the group BY HAND — a copied prose contract a third
+    // bind path would have had to copy again. There is nothing left to re-verify: the lock is
+    // never released between the check and the bind, so a concurrent group DELETE either lands
+    // first (this body sees the group gone → fail closed) or is blocked until the key is bound
+    // (then DELETE's bound-key guard sees it → 409).
+    // * `max_keys_per_principal` is read from `txn.app()` — the FRESH post-lock snapshot — not from
+    // the pre-lock extractor `app`. A settings apply landing between the request's snapshot and
+    // this enforcement can no longer make the mint enforce a stale ceiling: there is no older
+    // snapshot in scope to read.
+    // * The cap COUNT and the mint run together in ONE `spawn_blocking` closure under
+    // `EXISTENCE_GATE`, so N concurrent callers at the boundary are serialized — each sees the
+    // writes of those before it and only the first `cap - current` mints succeed. `>= cap` is a
+    // `409` (a retry can't fix it without deleting a key), and a store failure counting keys
+    // FAILS CLOSED — never mint past a ceiling we could not verify.
     //
     // LOCK ORDER: `config_transaction` holds the async config lock across the whole section and
     // takes `EXISTENCE_GATE` (a std Mutex) only INSIDE the blocking closure, never across an await —
@@ -723,7 +723,7 @@ pub(crate) async fn create_key(
             Cond::ParentWithoutGroup,
         );
     }
-    // DELEGATED MINTS MUST BIND (audit round-5 #19, §6.3 body-derived refinement). A key with no
+    // DELEGATED MINTS MUST BIND. A key with no
     // `group` is authed + UNLIMITED: its enforcement chain is a single uncapped bucket, so it
     // escapes the whole limit tree. That is a legitimate operator act (`full` scope — the operator
     // owns the tree), but it must not be reachable from a DELEGATED `mint` credential, whose entire
@@ -949,9 +949,9 @@ pub(crate) async fn create_key(
 /// allowed-pools, and labels are immutable here (rotate/recreate for those).
 ///
 /// `group` is THREE-STATE via serde double-option (`Option<Option<String>>`):
-///   - absent (`#[serde(default)]` -> outer `None`): leave the binding unchanged.
-///   - JSON `null` (`Some(None)`): UNBIND to no group (authed + unlimited).
-///   - a value (`Some(Some(name))`): REBIND to that group (must exist; mint-parity check).
+/// - absent (`#[serde(default)]` -> outer `None`): leave the binding unchanged.
+/// - JSON `null` (`Some(None)`): UNBIND to no group (authed + unlimited).
+/// - a value (`Some(Some(name))`): REBIND to that group (must exist; mint-parity check).
 ///
 /// A single `Option<T>` could not tell absent from present-null, so a binding could never be
 /// cleared once set. `enabled` is a plain `Option<bool>` (a bool has no clear state). The 1.4.x
@@ -1178,7 +1178,7 @@ pub(crate) async fn list_keys(
     crate::state::CurrentApp(app): crate::state::CurrentApp,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    // Strict query parsing FIRST (re-audit L6): a malformed filter/cursor is a loud 400 on every
+    // Strict query parsing FIRST: a malformed filter/cursor is a loud 400 on every
     // server — governance-off must not fork the validation behavior (200-empty only for a VALID
     // query).
     // An unparseable filter value is a loud 400, never a silently-dropped filter (which would
@@ -1288,7 +1288,7 @@ pub(crate) async fn list_keys(
 /// generation — every previously-issued token for the subject is now rejected); a legacy
 /// hashed-secret key answers with `{secret}`. Rotation NEVER converts the former into the latter:
 /// arming a hashed bearer secret on a signed-token key would add a second, weaker, non-expiring
-/// credential to a key deliberately minted without one (audit round-5 HIGH-6).
+/// credential to a key deliberately minted without one.
 pub(crate) async fn rotate_key(
     crate::state::CurrentApp(app): crate::state::CurrentApp,
     axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
@@ -1585,7 +1585,7 @@ pub(crate) async fn key_usage(
             let headroom = key
                 .as_ref()
                 .and_then(|k| gov.rate_headroom(&app.cost, k, None, now));
-            // Label the numbers (re-audit L): a key's attribution bucket accrues in the ALL-TIME
+            // Label the numbers: a key's attribution bucket accrues in the ALL-TIME
             // window (its limits, if any, live on the bound group's own windows), plus when the
             // read was taken, so a consumer can cache, align, and reset-detect without guessing.
             json_response(
@@ -1723,7 +1723,7 @@ pub(crate) async fn delete_key(
     }
 }
 
-/// THE KEY-CAP CHOKE POINT, class-level (audit round-5 HIGH-9 / #18 / #19). Every path that can add
+/// THE KEY-CAP CHOKE POINT, class-level. Every path that can add
 /// a key to a principal's bucket — the mint and the rebind — asks `check_key_cap`, so these cases
 /// pin the shared predicate rather than one call site.
 #[cfg(test)]
@@ -1855,7 +1855,7 @@ mod key_cap_tests {
 #[path = "tests/tests.rs"]
 mod tests;
 
-// The auto-provision POST-COMMIT FAILURE branch (round-5 #13/#28/#33/#41 + #14). Drives the
+// The auto-provision POST-COMMIT FAILURE branch. Drives the
 // handler directly (no HTTP), so it needs no admin-token module.
 #[cfg(test)]
 #[path = "tests/provision_tests.rs"]

@@ -1114,7 +1114,7 @@ fn secret_ref_wrong_kind_plugin_fails_at_preflight() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ── CREDENTIAL SecretRefs RE-RESOLVE ON APPLY/RELOAD (audit round-5 HIGH-7) ──────────────────────
+// ── CREDENTIAL SecretRefs RE-RESOLVE ON APPLY/RELOAD ──────────────────────
 //
 // `GovState` is process-lifetime and REUSED across every config apply/reload (the key cache,
 // ledgers and rate windows must survive one). Its admin-token digest and signing key were resolved

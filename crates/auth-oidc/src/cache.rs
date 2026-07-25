@@ -12,14 +12,14 @@
 //! happen under this cache's lock, and the whole shape of this file is that constraint:
 //!
 //! * **The HTTPS fetch must not run under the lock.** It is `reqwest::blocking` with a 10s timeout,
-//!   so a slow IdP would otherwise park one worker for 10s *and* every other request behind a
-//!   `std::sync::Mutex::lock()` — which, unlike an `.await`, cannot yield. `/healthz` is exempt from
-//!   the auth chain but still needs a worker thread to be polled, so the node fails its liveness
-//!   probe and gets killed. A slow identity provider must not take down traffic that never presented
-//!   an OIDC token.
+//! so a slow IdP would otherwise park one worker for 10s *and* every other request behind a
+//! `std::sync::Mutex::lock()` — which, unlike an `.await`, cannot yield. `/healthz` is exempt from
+//! the auth chain but still needs a worker thread to be polled, so the node fails its liveness
+//! probe and gets killed. A slow identity provider must not take down traffic that never presented
+//! an OIDC token.
 //! * **Signature verification must not run under the lock.** `f` is RSA/ECDSA verification, pure
-//!   CPU. Holding the cache lock across it caps OIDC auth throughput at one signature at a time
-//!   PROCESS-WIDE, on reactor threads.
+//! CPU. Holding the cache lock across it caps OIDC auth throughput at one signature at a time
+//! PROCESS-WIDE, on reactor threads.
 //!
 //! So the mutex protects only the cached *data*, held for the microseconds it takes to clone an
 //! `Arc` or write one back. The key set is an `Arc<JwkSet>` precisely so a caller can take a
@@ -303,7 +303,7 @@ mod tests {
         (c, calls)
     }
 
-    /// THE CLASS TEST, half 1 (audit round-6 HIGH-B): signature verification must not be serialised.
+    /// THE CLASS TEST, half 1: signature verification must not be serialised.
     ///
     /// `f` is RSA/ECDSA verification, and it used to run WITH the cache mutex held — so every OIDC
     /// request in the process verified one at a time, on Tokio worker threads. The property is

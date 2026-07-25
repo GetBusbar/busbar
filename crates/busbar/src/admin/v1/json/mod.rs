@@ -135,7 +135,7 @@ impl AdminTransport for JsonV1 {
             // path (404 `not_found`) and a matched path with the wrong method (405
             // `method_not_allowed`). Without these, axum's nest semantics leak an empty-body 405
             // from the inner MethodRouter and fall unmatched paths through to the data plane's
-            // vendor-native shaping (re-audit HIGH-1).
+            // vendor-native shaping.
             .fallback(|| async { err_json(&AdminError::not_found("resource")) })
             .method_not_allowed_fallback(|| async { err_json(&AdminError::MethodNotAllowed) });
         // TEST-ONLY: the taxonomy recording layer. `Router::layer` runs AFTER routing, so it sees

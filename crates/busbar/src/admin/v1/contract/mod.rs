@@ -175,7 +175,7 @@ pub(crate) fn required_scope(method: &axum::http::Method, path: &str) -> Scope {
     let rel = path.strip_prefix(ADMIN_PREFIX).unwrap_or(path);
     // `POST /config/validate` is a STATELESS DRY-RUN — a read in POST clothing (the body is the
     // config to lint, far past URL length limits). A read-only CI token must be able to lint
-    // configs (re-audit M3; the service doc always said "Read scope" — now the matrix agrees).
+    // configs.
     if rel == PATH_CONFIG_VALIDATE {
         return Scope::ReadOnly;
     }

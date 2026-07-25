@@ -9,17 +9,17 @@
 // Routing — all SIX ingress protocols are first-class; a native SDK can point its base URL at
 // busbar unmodified (clients append the protocol path themselves). Mirrors the `--help` ENDPOINTS
 // block and the README routing table:
-//   POST /<model>/v1/messages              Anthropic-format ingress (single model)
-//   POST /<pool>/v1/messages               a config-defined pool (weighted selection + failover)
-//   POST /<provider>/<model>/v1/messages   ad-hoc: a specific configured provider+model
-//   POST /v1/chat/completions              OpenAI-format ingress (model from the body)
-//   POST /v2/chat                          Cohere-format ingress (model from the body)
-//   POST /v1/responses                     OpenAI Responses-API ingress (model from the body)
-//   POST /v1/models/<model>:<action>       Gemini-format ingress (stable v1 alias)
-//   POST /v1beta/models/<model>:<action>   Gemini-format ingress (v1beta)
-//   POST /model/<modelId>/converse[-stream] Bedrock Converse / ConverseStream ingress
-//   GET  /v1/models  /v1beta/models        list models (dialect by protocol fingerprint)
-//   GET  /stats  /healthz  /metrics
+// POST /<model>/v1/messages              Anthropic-format ingress (single model)
+// POST /<pool>/v1/messages               a config-defined pool (weighted selection + failover)
+// POST /<provider>/<model>/v1/messages   ad-hoc: a specific configured provider+model
+// POST /v1/chat/completions              OpenAI-format ingress (model from the body)
+// POST /v2/chat                          Cohere-format ingress (model from the body)
+// POST /v1/responses                     OpenAI Responses-API ingress (model from the body)
+// POST /v1/models/<model>:<action>       Gemini-format ingress (stable v1 alias)
+// POST /v1beta/models/<model>:<action>   Gemini-format ingress (v1beta)
+// POST /model/<modelId>/converse[-stream] Bedrock Converse / ConverseStream ingress
+// GET  /v1/models  /v1beta/models        list models (dialect by protocol fingerprint)
+// GET  /stats  /healthz  /metrics
 //
 // Each model is a "lane" with its own concurrency semaphore, optional lifetime request budget, and
 // per-(pool,lane) circuit-breaker health. A pool stacks its members' concurrency into one aggregate
@@ -1029,7 +1029,7 @@ pub(crate) fn fallback_error_response(
     use axum::response::IntoResponse;
     // The NATIVE-API root speaks the frozen admin envelope for EVERY response — including unmatched
     // paths and wrong methods, which previously fell through to the vendor-native shaping below and
-    // leaked `{error:{type}}` bodies onto a surface that promises `{error:{code}}` (re-audit HIGH-1).
+    // leaked `{error:{type}}` bodies onto a surface that promises `{error:{code}}`.
     // Boundary-safe: exact root or root + '/'.
     {
         use crate::admin::v1::contract::{AdminError, API_ROOT};
@@ -1497,15 +1497,15 @@ pub(crate) fn load_config_from_disk(
 /// boot behavior. Fail-closed at every step:
 ///
 /// 1. CONSISTENCY: a non-`memory` `store.module` with `plugins.enabled: false` (or the block
-///    absent) is an error NAMING THE FLAG — a dropped-in tarball is inert until the switch is on.
+/// absent) is an error NAMING THE FLAG — a dropped-in tarball is inert until the switch is on.
 /// 2. POLICY: `plugins.trust` resolves (embedded first-party key + third-party publishers + the
-///    explicit opt-ins + anti-downgrade floors); a malformed key is an error.
+/// explicit opt-ins + anti-downgrade floors); a malformed key is an error.
 /// 3. SCAN: when enabled, every tarball in `plugins.dir` runs the three-phase pipeline
-///    (structural -> trust -> conflict) via [`busbar_plugin_loader::scan_and_validate`]. ANY
-///    invalid tarball/manifest or ANY name/alias conflict aborts with every problem named; an
-///    untrusted plugin is SKIPPED (warn-logged, never `dlopen`ed).
+/// (structural -> trust -> conflict) via [`busbar_plugin_loader::scan_and_validate`]. ANY
+/// invalid tarball/manifest or ANY name/alias conflict aborts with every problem named; an
+/// untrusted plugin is SKIPPED (warn-logged, never `dlopen`ed).
 /// 4. RESOLUTION: the configured `store.module` (alias OR canonical name, resolved against the
-///    manifest registry — never a filename) must resolve to a loadable `kind: store` plugin.
+/// manifest registry — never a filename) must resolve to a loadable `kind: store` plugin.
 ///
 /// Returns the validated registry (empty when plugins are disabled and no plugin is referenced).
 /// NO plugin code runs in this function (manifest-only; `dlopen` happens later, at store open).
@@ -1751,14 +1751,14 @@ pub(crate) fn plugins_preflight(
 /// with the BLANK-TOKEN guard. Shared by boot and the apply/reload path so the two cannot drift.
 ///
 /// FAIL-CLOSED twice over:
-///   * an unresolvable ref refuses boot/apply (a silently-absent token would lock the admin API
-///     while the operator believes it is guarded);
-///   * a ref that resolves to EMPTY or ALL-WHITESPACE is refused too (audit round-5 #37). The
-///     documented boot guard for this had been lost in the move to secret refs, and the consequence
-///     is worse than the docs described: the digest is computed over the blank string, so
-///     `admin_token_hash` is `Some(sha256(""))` — a REAL credential that an `Authorization: Bearer `
-///     with an empty value satisfies. An env var that expanded to nothing would silently hand the
-///     whole admin surface to an unauthenticated caller.
+/// * an unresolvable ref refuses boot/apply (a silently-absent token would lock the admin API
+/// while the operator believes it is guarded);
+/// * a ref that resolves to EMPTY or ALL-WHITESPACE is refused too. The
+/// documented boot guard for this had been lost in the move to secret refs, and the consequence
+/// is worse than the docs described: the digest is computed over the blank string, so
+/// `admin_token_hash` is `Some(sha256(""))` — a REAL credential that an `Authorization: Bearer `
+/// with an empty value satisfies. An env var that expanded to nothing would silently hand the
+/// whole admin surface to an unauthenticated caller.
 fn resolve_admin_token(
     auth: Option<&config::AuthCfg>,
     resolver: &config::secret::SecretResolver,
@@ -1868,15 +1868,15 @@ fn persist_signing_key(path: &std::path::Path, secret: &[u8; 32]) -> Result<(), 
     let hex = hex::encode(secret);
     // Publish via the crate's ONE durable-write choke point ([`crate::durable::write_with`]) with the
     // signing-key posture carried in `DurableOpts`:
-    //   * `mode: Some(0o600)` — L4: the temp (and therefore the published key) is created 0600 AT
-    //     OPEN, so the plaintext ed25519 key — the 1.5.0 key-minting root of trust — is NEVER briefly
-    //     world-readable between write and a later chmod (the old TOCTOU window). On non-unix the OS
-    //     default applies (the sensitive-key concern is the multi-user unix host).
-    //   * `exclusive: true` — anti-pre-plant (O_EXCL refuses to adopt a temp we did not just create)
-    //     AND anti-wedge (the primitive pre-removes a stale temp of its own name first, so a leftover
-    //     from a crashed first-boot run never permanently wedges retry). The parent-dir fsync (so the
-    //     rename's directory entry survives power loss — a lost entry silently invalidates every minted
-    //     key) is done by the primitive too. No bespoke code here: the posture is entirely in the opts.
+    // * `mode: Some(0o600)` — L4: the temp (and therefore the published key) is created 0600 AT
+    // OPEN, so the plaintext ed25519 key — the 1.5.0 key-minting root of trust — is NEVER briefly
+    // world-readable between write and a later chmod (the old TOCTOU window). On non-unix the OS
+    // default applies (the sensitive-key concern is the multi-user unix host).
+    // * `exclusive: true` — anti-pre-plant (O_EXCL refuses to adopt a temp we did not just create)
+    // AND anti-wedge (the primitive pre-removes a stale temp of its own name first, so a leftover
+    // from a crashed first-boot run never permanently wedges retry). The parent-dir fsync (so the
+    // rename's directory entry survives power loss — a lost entry silently invalidates every minted
+    // key) is done by the primitive too. No bespoke code here: the posture is entirely in the opts.
     let opts = crate::durable::DurableOpts {
         mode: Some(0o600),
         exclusive: true,
@@ -2032,7 +2032,7 @@ fn build_secret_resolver(
     let mut open_config: std::collections::BTreeMap<String, String> =
         std::collections::BTreeMap::new();
     // Which `secrets:` block key produced each canonical entry, so an ALIAS/CANONICAL collision can
-    // be named precisely (audit round-5 #39).
+    // be named precisely.
     let mut claimed_by: std::collections::BTreeMap<String, String> =
         std::collections::BTreeMap::new();
     for (module, mcfg) in secret_modules {
@@ -2675,7 +2675,7 @@ pub(crate) fn build_app_from_config(
         // CREDENTIALS on it are config, not state: `GovState` used to freeze the admin-token digest
         // and the signing key at construction, so rotating either SecretRef and reloading had no
         // effect whatsoever — the process kept accepting the boot-time credential for its entire
-        // life (audit round-5 HIGH-7). Re-resolve both refs against the fresh resolver and swap them
+        // life. Re-resolve both refs against the fresh resolver and swap them
         // into the reused instance.
         //
         // SCOPE: a credential is re-resolved exactly when THIS config DECLARES it — an

@@ -226,10 +226,10 @@ pub(crate) struct TlsCfg {
 ///
 /// ```yaml
 /// chain:
-///   - keys
-///   - ad: { max_admin_scope: full, settings: { server: "ldaps://corp" } }
+/// - keys
+/// - ad: { max_admin_scope: full, settings: { server: "ldaps://corp" } }
 /// admin_auth:
-///   - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }
+/// - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct AuthChainEntry {
@@ -601,8 +601,8 @@ fn neg1() -> i64 {
 ///
 /// ```yaml
 /// hooks:
-///   - cheapest                                    # bare BUILT-IN (an ordering strategy)
-///   - { module: my-hook-plugin, settings: { url: "https://sidecar/hook" }, on_error: reject }
+/// - cheapest                                    # bare BUILT-IN (an ordering strategy)
+/// - { module: my-hook-plugin, settings: { url: "https://sidecar/hook" }, on_error: reject }
 /// ```
 ///
 /// A bare name is ONLY a built-in (weighted | cheapest | fastest | least_busy | usage); everything
@@ -1034,11 +1034,11 @@ pub(crate) fn on_error_terminal(name: &str) -> Option<PolicyOnError> {
 /// Names a hook may NOT take, enforced on EVERY hook-write path (boot validation, config apply, and
 /// the runtime register/PUT API). Two reasons, one rule:
 /// - REGISTRY UNIQUENESS: the native ranking strategies + built-in auth modules already answer to
-///   their names — two things can't answer to one name.
+/// their names — two things can't answer to one name.
 /// - UNION DISAMBIGUATION (3rd-party audit #8): `on_error` is a string union of "reserved terminal"
-///   vs "fallback hook name". Reserving EVERY terminal word (`weighted`/`reject`/`first`/`nothing`)
-///   as an illegal hook name makes the union closed and unambiguous for machine consumers: a value
-///   in this set is a terminal; anything else is a hook reference — no hook can ever collide.
+/// vs "fallback hook name". Reserving EVERY terminal word (`weighted`/`reject`/`first`/`nothing`)
+/// as an illegal hook name makes the union closed and unambiguous for machine consumers: a value
+/// in this set is a terminal; anything else is a hook reference — no hook can ever collide.
 pub(crate) const RESERVED_HOOK_NAMES: &[&str] = &[
     // on_error terminals (see ON_ERROR_*) — includes `weighted`, which is ALSO the native floor.
     ON_ERROR_WEIGHTED,
@@ -1769,15 +1769,15 @@ impl PluginsCfg {
     /// `publisher: busbar` artifact below it is a hard reject no opt-in can relax.
     ///
     /// - AUTOMATIC paths call [`to_policy`], which passes the running binary's own version — the full
-    ///   floor. A replayed old first-party artifact hitting any automatic path still faces it and is
-    ///   refused. Anti-downgrade holds.
+    /// floor. A replayed old first-party artifact hitting any automatic path still faces it and is
+    /// refused. Anti-downgrade holds.
     /// - An EXPLICIT operator ROLLBACK (Full-scope, If-Match, audited) passes the operator's pinned
-    ///   TARGET version here, LOWERING the floor to exactly that version, so the prior artifact — and
-    ///   nothing older — re-loads. The distinction is not in the frozen `evaluate`/`Manifest` (both
-    ///   untouched): it is WHICH floor the engine feeds the policy, and that choice is gated by an
-    ///   authenticated, audited human action. `plugins.min_versions` (the configured third-party
-    ///   floor) is carried as-is here; the rollback lowers the relevant `min_versions` entry via the
-    ///   persisted overlay `plugin_versions` pin (see `overlay::apply_plugin_versions_to_deploy`).
+    /// TARGET version here, LOWERING the floor to exactly that version, so the prior artifact — and
+    /// nothing older — re-loads. The distinction is not in the frozen `evaluate`/`Manifest` (both
+    /// untouched): it is WHICH floor the engine feeds the policy, and that choice is gated by an
+    /// authenticated, audited human action. `plugins.min_versions` (the configured third-party
+    /// floor) is carried as-is here; the rollback lowers the relevant `min_versions` entry via the
+    /// persisted overlay `plugin_versions` pin (see `overlay::apply_plugin_versions_to_deploy`).
     pub(crate) fn to_policy_with_floor(
         &self,
         binary_version: &str,
@@ -2151,7 +2151,7 @@ pub(crate) struct LimitsCfg {
     /// key-count cap bounds keys per group but says nothing about the number of GROUPS, so a
     /// `mint`-scope credential could grow the limit tree without bound — every new `user:<sub>`
     /// leaf is a new bucket in the enforcement chain, the version log and the persisted overlay
-    /// (audit round-5 #20). Counted over the WHOLE runtime (overlay) group set, since that is what
+    /// Counted over the WHOLE runtime (overlay) group set, since that is what
     /// auto-provisioning grows. `0` (default) = UNLIMITED (an absent knob changes nothing).
     /// Explicitly configured groups are unaffected: the ceiling gates auto-provisioning only.
     #[serde(default = "default_max_auto_provisioned_groups")]
@@ -2316,7 +2316,7 @@ pub(crate) struct LimitsResolved {
     /// Max keys bound to one group (0 = unlimited) — the self-service mint anti-sprawl cap (§6a).
     pub(crate) max_keys_per_principal: usize,
     /// Max groups a mint may AUTO-PROVISION (0 = unlimited) — the sibling anti-sprawl cap on the
-    /// SHAPE of the limit tree, not just its contents (round-5 #20).
+    /// SHAPE of the limit tree, not just its contents.
     pub(crate) max_auto_provisioned_groups: usize,
     pub(crate) hard_down_cooldown_secs: u64,
     pub(crate) upstream_error_body_max_bytes: usize,
