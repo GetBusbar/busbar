@@ -22,6 +22,7 @@ fn make_root_cfg(
         rate_card: None,
         per_request_fee: 0,
         store: None,
+        secrets: std::collections::BTreeMap::new(),
         global_hooks: Vec::new(),
         blocked_metadata_hosts: Vec::new(),
         allow_metadata_hosts: Vec::new(),

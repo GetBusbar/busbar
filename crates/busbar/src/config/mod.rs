@@ -166,6 +166,10 @@ pub(crate) struct RootCfg {
     /// The `store:` block as configured; `None` = the block was ABSENT (ephemeral RAM store,
     /// presence-driven governance stays off unless another governance signal is present).
     pub(crate) store: Option<StoreCfg>,
+    /// Module-level `open()` config for `kind: secret` plugins, keyed by module name (the top-level
+    /// `secrets:` block). Empty = every secret plugin opens with `{}` (the prior behavior). The
+    /// built-in `env` / `file` modules take no config and must not appear here.
+    pub(crate) secrets: std::collections::BTreeMap<String, SecretModuleCfg>,
     /// Names of hooks that fire on EVERY request - the registry names synthesized from the
     /// `global_hooks:` inline refs, in order.
     pub(crate) global_hooks: Vec<String>,
@@ -1595,6 +1599,11 @@ pub(crate) struct DeployCfg {
     /// The durable store as `{ module, settings }` (S6). Absent = the ephemeral RAM store.
     #[serde(default)]
     pub(crate) store: Option<StoreCfg>,
+    /// Module-level `open()` config for `kind: secret` plugins, keyed by module name — the delivery
+    /// path a Vault-style secret plugin needs (address / namespace / auth token / CA). Absent = every
+    /// secret plugin opens with `{}`. Mirrors `store.settings` for the store plugin.
+    #[serde(default)]
+    pub(crate) secrets: std::collections::BTreeMap<String, SecretModuleCfg>,
     /// Internal tuning knobs (the `advanced:` block).
     #[serde(default)]
     pub(crate) advanced: AdvancedCfg,
@@ -1831,6 +1840,27 @@ impl Default for StoreCfg {
 
 fn default_governance_store() -> String {
     GOVERNANCE_STORE_MEMORY.to_string()
+}
+
+/// A top-level `secrets:` entry — MODULE-LEVEL initialization config for a `kind: secret` plugin,
+/// keyed by the module NAME (alias or canonical). This is the delivery path for the config a secret
+/// plugin needs in its `open()` (a Vault plugin's address / namespace / auth token / TLS CA), exactly
+/// as `store.settings` carries a store plugin's `open()` config. WITHOUT this block a `kind: secret`
+/// plugin's `open()` receives `{}`, forcing operators to repeat every piece of module config in EVERY
+/// individual `SecretRef.settings` (multiplying exposure of the Vault address/token). The built-in
+/// `env` / `file` modules take no module config and MUST NOT appear here (validated).
+///
+/// The `settings` are resolved against the BUILT-IN `env` / `file` secret resolvers ONLY (so
+/// `{ token: { env: VAULT_TOKEN } }` works) — NEVER against another secret plugin, which would be a
+/// bootstrap cycle (a secret module cannot resolve its OWN config through itself).
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SecretModuleCfg {
+    /// The module's own opaque module-level settings, delivered to the plugin's `open()` as its config
+    /// JSON. Any `SecretRef`-typed value (e.g. `token: { env: VAULT_TOKEN }`) is resolved via the
+    /// built-in env/file modules before it crosses the ABI.
+    #[serde(default)]
+    pub(crate) settings: serde_json::Map<String, serde_json::Value>,
 }
 
 /// The `advanced:` block - INTERNAL tuning knobs (formerly under `governance:`). Every field
@@ -2553,6 +2583,7 @@ pub(crate) fn resolve(
             rate_card: deploy.rate_card.clone(),
             per_request_fee: deploy.per_request_fee,
             store: deploy.store.clone(),
+            secrets: deploy.secrets.clone(),
             global_hooks: global_hook_names,
             blocked_metadata_hosts: deploy
                 .security
