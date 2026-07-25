@@ -1389,6 +1389,15 @@ pub(crate) async fn reset_overlay_section(
     match outcome {
         Ok(next) => {
             let installed = Arc::new(next);
+            // PERSIST-THEN-SWAP (fail-closed), matching plugins/rollback's durability ordering: write
+            // the section-cleared overlay to disk BEFORE swapping the live App. A prior version swapped
+            // first and persisted after, so a crash in that window left the LIVE engine reverted while
+            // disk still carried the un-cleared overlay — a restart would silently re-apply the section
+            // the operator just reset (e.g. re-pin the plugin_versions they cleared). Persisting first
+            // means a crash before the swap comes up already reset (the safe direction). The installed
+            // App preserves `current.overlay_path`, so it names the same overlay file. (The sibling
+            // section is preserved verbatim by the read-modify-write inside `clear_section`.)
+            crate::config::overlay::clear_section(installed.overlay_path.as_deref(), section);
             handle.swap(installed.clone());
             audit::AUDIT.record_by("overlay.reset", &resource, audit::OUTCOME_APPLIED, &actor);
             let cur = handle.load();
@@ -1397,9 +1406,6 @@ pub(crate) async fn reset_overlay_section(
                 &actor,
                 &format!("overlay.reset {} (revert to config.yaml)", section.as_str()),
             );
-            // Persist the section-cleared overlay so the revert survives a restart (the sibling
-            // section is preserved verbatim by the read-modify-write).
-            crate::config::overlay::clear_section(cur.overlay_path.as_deref(), section);
             with_config_etag(
                 ok_json(
                     StatusCode::OK,
@@ -2985,6 +2991,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 }],
                 "responses": {
                     "200": {"description": "The version (metadata + hooks + global_hooks)"},
+                    "400": {"description": "Non-numeric version path segment (error code `invalid_request`)"},
                     "404": {"description": "Pruned or never recorded (error code `not_found`)"}
                 }
             }
@@ -3005,7 +3012,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                     "400": {"description": "Hook did not acknowledge (error code `invalid_request`); nothing committed"},
                     "403": {"description": "A `hooks-register` principal may not push settings to a content-seeing (`prompt`/`user`) or `global` hook (error code `forbidden`, §6.3)"},
                     "404": {"description": "Unknown hook (error code `not_found`)"},
-                    "409": {"description": "Base-defined hook (`conflict`) or stale `If-Match` (`version_conflict`)"}
+                    "409": {"description": "Base-defined hook (`conflict`), a config change landed during the settings push — retry (`conflict`), or stale `If-Match` (`version_conflict`)"}
                 }
             }
         }),
@@ -3181,8 +3188,8 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "security": [{"adminToken": []}],
                 "responses": {
                     "201": {"description": "Created (body includes the once-shown secret)"},
-                    "400": {"description": "Malformed body / invalid budget or rate (error code `invalid_request`)"},
-                    "409": {"description": "An Idempotency-Key request is already in flight (error code `conflict`)"}
+                    "400": {"description": "Malformed body / unknown field / bad `expires_in`|`expires_at` / `parent` without `group` (error code `invalid_request`)"},
+                    "409": {"description": "One of (error code `conflict`): an Idempotency-Key request is already in flight; governance is not enabled; no signing key is configured for signed-token minting; the bound group was deleted concurrently with the mint; or the group is at the `limits.max_keys_per_principal` cap"}
                 }
             }
         }),
@@ -3200,14 +3207,14 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 }
             },
             "patch": {
-                "summary": "Update budget / rate / enabled. Optional `If-Match` for optimistic concurrency",
+                "summary": "Update a key's binding (group / allowed_pools / labels / enabled). Optional `If-Match` for optimistic concurrency",
                 "security": [{"adminToken": []}],
                 "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
                 "responses": {
                     "200": {"description": "Updated metadata"},
-                    "400": {"description": "Invalid budget/rate (error code `invalid_request`)"},
+                    "400": {"description": "Malformed body / unknown field (error code `invalid_request`)"},
                     "404": {"description": "Unknown key (error code `not_found`)"},
-                    "409": {"description": "Stale `If-Match` ETag (error code `version_conflict` — re-read and retry)"}
+                    "409": {"description": "Governance is not enabled on this server, or a stale `If-Match` ETag (error codes `conflict` / `version_conflict` — re-read and retry the latter)"}
                 }
             },
             "delete": {
@@ -3218,7 +3225,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                     "204": {"description": "Revoked — No Content"},
                     "400": {"description": "Malformed `If-Match` (error code `invalid_request`)"},
                     "404": {"description": "Unknown key (error code `not_found`)"},
-                    "409": {"description": "Stale `If-Match` ETag (error code `version_conflict` — re-read and retry)"}
+                    "409": {"description": "Governance is not enabled on this server, or a stale `If-Match` ETag (error codes `conflict` / `version_conflict` — re-read and retry the latter)"}
                 }
             }
         }),
@@ -3247,7 +3254,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "responses": {
                     "200": {"description": "Rotated (body includes the once-shown new secret; an Idempotency-Key retry replays it verbatim)"},
                     "404": {"description": "Unknown key (error code `not_found`)"},
-                    "409": {"description": "An Idempotency-Key request is already in flight (error code `conflict`)"}
+                    "409": {"description": "Governance is not enabled on this server, or an Idempotency-Key request is already in flight (error code `conflict`)"}
                 }
             }
         }),
@@ -3429,6 +3436,47 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                     op.insert("parameters".to_string(), json!(list));
                 }
             }
+        }
+    }
+
+    // 400 causes on the GET list endpoints whose query params can be rejected at the door. The shared
+    // GET template above only declares `{200, 401}`, but each handler DOES emit a `400 invalid_request`
+    // for a bad value of the named param, so document it (verified against the handlers, not phantom):
+    //   /plugins         — `type` is required and must be auth|hooks|store (service.rs)
+    //   /pools           — `detail` must be true|false (handlers.rs)
+    //   /usage           — `window` must parse as a UTC-day bucket epoch (handlers.rs)
+    //   /audit           — `cursor` must be a valid, own opaque cursor (json/mod.rs cursor_offset)
+    //   /config/versions — same opaque-cursor validation
+    const GET_400: &[(&str, &str)] = &[
+        (
+            "/plugins",
+            "Missing or unknown `type` (must be `auth` | `hooks` | `store`) (error code `invalid_request`)",
+        ),
+        (
+            "/pools",
+            "Invalid `detail` (must be `true` | `false`) (error code `invalid_request`)",
+        ),
+        (
+            "/usage",
+            "Non-parseable `window` (expected a UTC-day bucket start epoch) (error code `invalid_request`)",
+        ),
+        (
+            "/audit",
+            "Malformed or foreign pagination `cursor` (error code `invalid_request`)",
+        ),
+        (
+            "/config/versions",
+            "Malformed or foreign pagination `cursor` (error code `invalid_request`)",
+        ),
+    ];
+    for (path, desc) in GET_400 {
+        if let Some(responses) = paths
+            .get_mut(&ap(path))
+            .and_then(|p| p.get_mut("get"))
+            .and_then(|op| op.get_mut("responses"))
+            .and_then(|r| r.as_object_mut())
+        {
+            responses.insert("400".to_string(), json!({ "description": desc }));
         }
     }
 

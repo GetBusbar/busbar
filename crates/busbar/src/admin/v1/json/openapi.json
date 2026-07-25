@@ -2369,6 +2369,16 @@
             },
             "description": "OK"
           },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Malformed or foreign pagination `cursor` (error code `invalid_request`)"
+          },
           "401": {
             "content": {
               "application/json": {
@@ -3124,6 +3134,16 @@
             },
             "description": "OK"
           },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Malformed or foreign pagination `cursor` (error code `invalid_request`)"
+          },
           "401": {
             "content": {
               "application/json": {
@@ -3179,6 +3199,16 @@
               }
             },
             "description": "The version (metadata + hooks + global_hooks)"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Non-numeric version path segment (error code `invalid_request`)"
           },
           "401": {
             "content": {
@@ -4416,7 +4446,7 @@
                 }
               }
             },
-            "description": "Base-defined hook (`conflict`) or stale `If-Match` (`version_conflict`)"
+            "description": "Base-defined hook (`conflict`), a config change landed during the settings push — retry (`conflict`), or stale `If-Match` (`version_conflict`)"
           },
           "429": {
             "content": {
@@ -4675,7 +4705,7 @@
                 }
               }
             },
-            "description": "Malformed body / invalid budget or rate (error code `invalid_request`)"
+            "description": "Malformed body / unknown field / bad `expires_in`|`expires_at` / `parent` without `group` (error code `invalid_request`)"
           },
           "401": {
             "content": {
@@ -4705,7 +4735,7 @@
                 }
               }
             },
-            "description": "An Idempotency-Key request is already in flight (error code `conflict`)"
+            "description": "One of (error code `conflict`): an Idempotency-Key request is already in flight; governance is not enabled; no signing key is configured for signed-token minting; the bound group was deleted concurrently with the mint; or the group is at the `limits.max_keys_per_principal` cap"
           },
           "429": {
             "content": {
@@ -4803,7 +4833,7 @@
                 }
               }
             },
-            "description": "Stale `If-Match` ETag (error code `version_conflict` — re-read and retry)"
+            "description": "Governance is not enabled on this server, or a stale `If-Match` ETag (error codes `conflict` / `version_conflict` — re-read and retry the latter)"
           },
           "429": {
             "content": {
@@ -4930,7 +4960,7 @@
                 }
               }
             },
-            "description": "Invalid budget/rate (error code `invalid_request`)"
+            "description": "Malformed body / unknown field (error code `invalid_request`)"
           },
           "401": {
             "content": {
@@ -4970,7 +5000,7 @@
                 }
               }
             },
-            "description": "Stale `If-Match` ETag (error code `version_conflict` — re-read and retry)"
+            "description": "Governance is not enabled on this server, or a stale `If-Match` ETag (error codes `conflict` / `version_conflict` — re-read and retry the latter)"
           },
           "429": {
             "content": {
@@ -4991,7 +5021,7 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Update budget / rate / enabled. Optional `If-Match` for optimistic concurrency",
+        "summary": "Update a key's binding (group / allowed_pools / labels / enabled). Optional `If-Match` for optimistic concurrency",
         "x-busbar-required-scope": "full"
       }
     },
@@ -5152,7 +5182,7 @@
                 }
               }
             },
-            "description": "An Idempotency-Key request is already in flight (error code `conflict`)"
+            "description": "Governance is not enabled on this server, or an Idempotency-Key request is already in flight (error code `conflict`)"
           },
           "429": {
             "content": {
@@ -5460,6 +5490,16 @@
               }
             },
             "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing or unknown `type` (must be `auth` | `hooks` | `store`) (error code `invalid_request`)"
           },
           "401": {
             "content": {
@@ -5824,6 +5864,16 @@
             },
             "description": "OK"
           },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid `detail` (must be `true` | `false`) (error code `invalid_request`)"
+          },
           "401": {
             "content": {
               "application/json": {
@@ -6058,6 +6108,16 @@
               }
             },
             "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Non-parseable `window` (expected a UTC-day bucket start epoch) (error code `invalid_request`)"
           },
           "401": {
             "content": {
