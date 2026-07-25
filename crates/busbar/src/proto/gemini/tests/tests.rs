@@ -185,7 +185,7 @@ fn test_stream_text_and_tool_indices_stable_and_closed() {
     );
 }
 
-/// Regression (verification of the R20 #6 fix): a functionCall part BEFORE the first text part
+/// A functionCall part BEFORE the first text part
 /// must NOT collide on IR index 0. The fix keyed the tool base on the live `text_block_open` flag,
 /// which is false at tool time in this ordering, so the tool took 0 AND text later took 0 — two
 /// BlockStart frames at index 0 (a protocol violation a strict Anthropic SDK rejects). Index-by-
@@ -800,7 +800,7 @@ fn test_extract_error_single_parse_fields() {
     assert_eq!(raw.retry_after_secs, None);
 }
 
-/// Regression (R5): an integer `error.code` (the real Gemini shape) must be stringified into
+/// An integer `error.code` (the real Gemini shape) must be stringified into
 /// `provider_code` — NOT silently dropped to the gRPC status name. Previously `code` was read
 /// via `.as_str()`, which returns None on a number, so a real 429 surfaced as
 /// "RESOURCE_EXHAUSTED" and broke breaker/metrics comparisons against numeric strings.
@@ -836,7 +836,7 @@ fn test_extract_error_status_fallback() {
     assert_eq!(raw.structured_type.as_deref(), Some(GRPC_PERMISSION_DENIED));
 }
 
-/// Regression (R21 #17, ContextLength reachability): a real Gemini oversized-context error is a
+/// A real Gemini oversized-context error is a
 /// 400 `INVALID_ARGUMENT` whose MESSAGE carries the token-overflow text — there is no distinct
 /// google.rpc.Code for it. `extract_error` (the PRODUCTION path; `classify` is `#[cfg(test)]`
 /// only) must synthesize the canonical `context_length_exceeded` provider code so the breaker
@@ -888,7 +888,7 @@ fn test_extract_error_unrelated_invalid_argument_keeps_status_code() {
     );
 }
 
-/// Regression (R24 MED #3, dead-credential failover): a Gemini bad EGRESS key surfaces as an
+/// A Gemini bad EGRESS key surfaces as an
 /// HTTP 400 `INVALID_ARGUMENT` carrying `reason: API_KEY_INVALID` (google.rpc.ErrorInfo) plus an
 /// "API key not valid" message. A bare 400 normalizes to ClientFault — records nothing, never
 /// benches/fails over the lane — so a lane wired to a dead key keeps serving guaranteed
@@ -1055,7 +1055,7 @@ fn test_write_error_unknown_kind_falls_back_to_http_status() {
     assert_eq!(v["error"]["status"], serde_json::json!("INTERNAL")); // golden wire-contract literal (kept bare on purpose)
 }
 
-/// Regression (R15): the emitted `code`/`status` pair must always be an INTERNALLY CONSISTENT
+/// The emitted `code`/`status` pair must always be an INTERNALLY CONSISTENT
 /// google.rpc.Status pairing — the real Generative Language API never emits `code:503` with
 /// `status:INTERNAL`. On a cross-protocol upstream 503 the relay collapses the subtype onto a
 /// generic 5xx `kind` (`api_error`→INTERNAL); when that kind-derived name's canonical HTTP status
@@ -1401,7 +1401,7 @@ fn test_native_request_without_stream_stays_streamless() {
     );
 }
 
-/// Regression (R25 LOW #10, REFINE the R24 bad-key heuristic): an `INVALID_ARGUMENT` 400 whose
+/// An `INVALID_ARGUMENT` 400 whose
 /// prose contains the bare word "invalid" AND names an "api key" but is NOT a bad-key error
 /// (a field-validation message that references an api-key-shaped field) must stay a lane-healthy
 /// ClientFault. The earlier heuristic accepted a bare "invalid" token, so it would have benched a
@@ -1451,7 +1451,7 @@ fn test_extract_error_expired_api_key_prose_is_auth() {
     assert_eq!(raw.provider_code.as_deref(), Some("auth"));
 }
 
-/// Regression (R25 MED #2, updated for H2): a thinking-only assistant turn must NOT vanish from
+/// A thinking-only assistant turn must NOT vanish from
 /// `contents` — dropping it would collapse user/model alternation (two user turns adjacent) and
 /// 400 the real Gemini API. Post-H2 the Thinking block is now emitted as a native `thought:true`
 /// part (reasoning is no longer dropped), so the model turn survives by carrying that thought part
@@ -1549,7 +1549,7 @@ fn test_write_request_thinking_only_turn_survives_with_placeholder() {
     );
 }
 
-/// Regression (R25 LOW #11): a tool result that parses to JSON `null` (the upstream omitted the
+/// A tool result that parses to JSON `null` (the upstream omitted the
 /// response object) must NOT be emitted as `functionResponse.response: null`. Gemini's
 /// `response` is a protobuf Struct and requires a JSON OBJECT; a null is rejected (400). The
 /// writer must coerce a null parse result to an empty Struct `{}`.
@@ -2114,7 +2114,7 @@ fn test_read_response_functioncall_gets_nonempty_id() {
     );
 }
 
-/// Regression (MEDIUM/correctness): a SAFETY-filtered Gemini candidate carries only
+/// A SAFETY-filtered Gemini candidate carries only
 /// `finishReason` + `safetyRatings` and NO `content` field. `read_response` must decode it as an
 /// empty-content response with the mapped stop reason, NOT hard-fail (which proxy engine turned into
 /// a spurious 500). Mirrors the streaming reader's `if let Some(content)` tolerance.
@@ -2142,7 +2142,7 @@ fn test_read_response_safety_filtered_candidate_no_content_is_ok() {
     );
 }
 
-/// Regression (MED, completeness): a PROMPT-blocked Gemini stream chunk carries a top-level
+/// A PROMPT-blocked Gemini stream chunk carries a top-level
 /// `promptFeedback.blockReason`, NO `candidates`, and NO `error`. The reader must surface it as a
 /// PROPER TERMINAL SEQUENCE — MessageStart, then a `safety` MessageDelta + MessageStop — not a
 /// bare MessageStart followed by EOF (which left the downstream client on a hung, non-terminated
@@ -2204,7 +2204,7 @@ fn test_stream_prompt_block_recitation_maps_to_safety() {
     );
 }
 
-/// Regression (LOW #10, bug): a MID-STREAM prompt-block arm must close any blocks opened by
+/// A MID-STREAM prompt-block arm must close any blocks opened by
 /// earlier chunks before emitting its terminal MessageDelta/MessageStop. A normal text chunk
 /// opens a content block (BlockStart{0}); a following `promptFeedback.blockReason` SAFETY chunk
 /// (NO candidates) previously emitted the terminal MessageDelta/MessageStop WITHOUT closing that
@@ -2273,7 +2273,7 @@ fn test_stream_mid_stream_prompt_block_closes_open_text_block() {
     );
 }
 
-/// Regression (MED, completeness): a PROMPT-blocked NON-STREAMING Gemini body (top-level
+/// A PROMPT-blocked NON-STREAMING Gemini body (top-level
 /// `promptFeedback.blockReason`, NO `candidates`, NO `error`) must decode to an empty-content
 /// response with a `safety` stop reason, NOT hard-fail with `ir_parse` (which the old
 /// absent-candidates arm did → a spurious client error with no surfaced reason).
@@ -2315,7 +2315,7 @@ fn test_read_response_candidates_absent_without_block_still_errors() {
     );
 }
 
-/// Regression (LOW, bug): a STREAMING zero-arg `functionCall` (no `args` field) must emit an
+/// A STREAMING zero-arg `functionCall` (no `args` field) must emit an
 /// empty JSON OBJECT `{}` as its InputJsonDelta, NOT `null`. Serializing `null` produced an
 /// invalid tool-input shape on cross-protocol egress.
 #[test]
@@ -2340,7 +2340,7 @@ fn test_stream_zero_arg_function_call_emits_empty_object_not_null() {
     );
 }
 
-/// Regression (LOW, bug): a NON-STREAMING zero-arg `functionCall` (no `args` field) must decode
+/// A NON-STREAMING zero-arg `functionCall` (no `args` field) must decode
 /// to an empty-object `input` (`{}`), NOT `null`.
 #[test]
 fn test_read_response_zero_arg_function_call_input_is_empty_object_not_null() {
@@ -2447,7 +2447,7 @@ fn test_read_request_native_no_stream_stays_absent() {
     );
 }
 
-/// Regression (R6, class D — integer-overflow on a cast): a `maxOutputTokens` above `u32::MAX`
+/// A `maxOutputTokens` above `u32::MAX`
 /// must NOT silently truncate (wrap) into a tiny token cap. The bounds-checked `u32::try_from`
 /// drops an out-of-range value to `None`, so the request carries no cap and the backend applies
 /// its default — never a mangled one. A bare `as u32` would have wrapped `5_000_000_000` to
@@ -2509,7 +2509,7 @@ fn test_read_request_native_tool_config_round_trips_via_extra() {
     );
 }
 
-/// Regression (R15): unmodeled `generationConfig` sub-fields (`responseMimeType` for JSON mode,
+/// Unmodeled `generationConfig` sub-fields (`responseMimeType` for JSON mode,
 /// `thinkingConfig` for extended thinking, `candidateCount`, `seed`, …) MUST survive read→write
 /// instead of being silently dropped. The reader keeps the raw `generationConfig` in `extra`; the
 /// writer overlays the 5 typed fields onto it. Both the typed fields AND every unmodeled sub-field
@@ -2572,7 +2572,7 @@ fn test_generation_config_unmodeled_subfields_survive_roundtrip() {
     );
 }
 
-/// Regression (R15): the typed IR fields OVERLAY the raw extra copy — if the IR's typed
+/// The typed IR fields OVERLAY the raw extra copy — if the IR's typed
 /// `max_tokens` differs from the raw `generationConfig.maxOutputTokens` (e.g. a cross-protocol
 /// edit), the typed value wins, mirroring BedrockWriter's inferenceConfig overlay.
 #[test]
@@ -2691,7 +2691,7 @@ fn test_stream_message_delta_total_token_count_saturates() {
     );
 }
 
-/// Regression (R5): on the CROSS-protocol egress path (signalled by a populated `created` — the
+/// On the CROSS-protocol egress path (signalled by a populated `created` — the
 /// boundary marker a non-Gemini backend reader leaves, since Gemini bodies carry no timestamp)
 /// the whole-body `write_response` usageMetadata MUST include `totalTokenCount` (= prompt +
 /// candidates). A native Gemini `generateContent` body always carries the sum, and the value is a
@@ -2806,7 +2806,7 @@ fn test_write_response_total_token_count_saturates() {
 //     (not just `created`), so Anthropic/Cohere backends — whose readers return `created: None`
 //     but DO populate `model` — no longer drop the total for a Gemini client. ---
 
-/// Regression (R9): a cross-protocol response from a backend whose reader sets `created: None`
+/// A cross-protocol response from a backend whose reader sets `created: None`
 /// but `model: Some(..)` (the Anthropic and Cohere shape) MUST still carry
 /// `usageMetadata.totalTokenCount`. Before R9 the gate keyed on `created` alone, so these three-
 /// of-five backends produced a usageMetadata block lacking the total, leaving the google-genai
@@ -2884,7 +2884,7 @@ fn test_write_response_model_only_total_token_count_saturates() {
 
 // --- Round 9 fix (performance): modeled_keys is hoisted to a process-global OnceLock. ---
 
-/// Regression (R9): the modeled-key set is a stable process-global — repeated calls return the
+/// The modeled-key set is a stable process-global — repeated calls return the
 /// SAME backing allocation (proving it is built once, not per request) and the set's membership
 /// is exactly the modeled top-level keys, so unmodeled keys still flow to `extra`.
 #[test]
@@ -2914,7 +2914,7 @@ fn test_modeled_request_keys_is_stable_singleton() {
     );
 }
 
-/// Regression (R9): hoisting the set must not change read behavior — an unmodeled top-level key
+/// Hoisting the set must not change read behavior — an unmodeled top-level key
 /// still round-trips through `extra`, and the modeled `model` key is preserved exactly once.
 #[test]
 fn test_read_request_unmodeled_key_still_flows_to_extra_after_hoist() {
@@ -3149,7 +3149,7 @@ fn test_file_data_image_round_trips_via_url() {
 
 // --- Round 14 fix: synth_response_id is an opaque CSPRNG token of native Gemini shape ---
 
-/// Regression (HIGH/conformance): a synthesized `responseId` must be a native-shaped opaque
+/// A synthesized `responseId` must be a native-shaped opaque
 /// token — mixed-case alphanumeric base62 of native length, with NO hyphen separator and NO
 /// lowercase-hex-only restriction. The old `format!("{:x}-{:x}", unix_now_secs(), seq)` form was
 /// structurally distinguishable (the `-` plus `[0-9a-f]`-only class is a shape no native id has)
@@ -3217,7 +3217,7 @@ fn test_synth_response_id_distinct_consecutive() {
     assert_ne!(a, b, "consecutive synthesized ids must differ: {a} vs {b}");
 }
 
-/// Regression (LOW/quality, R18): the base62 reduction must be UNBIASED. The old body mapped each
+/// The base62 reduction must be UNBIASED. The old body mapped each
 /// random byte with a bare `byte % 62`; because `256 % 62 != 0`, the 8 symbols reachable from the
 /// partial final block (bytes `248..=255` → residues `0..=7`) were drawn at 5/256 while the other
 /// 54 symbols were drawn at 4/256 — a ~25% over-representation of those 8 symbols. Rejection
@@ -3286,7 +3286,7 @@ fn test_synth_response_id_uniqueness_burst() {
     }
 }
 
-/// Regression (HIGH/performance): `state.open_tools` is only drained on a `finishReason` chunk,
+/// `state.open_tools` is only drained on a `finishReason` chunk,
 /// so an upstream that streams an unbounded run of `functionCall` parts WITHOUT a finishReason
 /// must not grow it without bound. Past `MAX_GEMINI_TOOL_FRAMES` new tool frames stop being
 /// recorded (and their events suppressed), keeping the set capped while every realistic stream
@@ -3500,7 +3500,7 @@ fn test_assistant_tool_use_stays_model_role() {
     );
 }
 
-/// Regression (MEDIUM/correctness): an inline `{"error":{...}}` google.rpc.Status object
+/// An inline `{"error":{...}}` google.rpc.Status object
 /// delivered as a 200-status SSE data chunk mid-stream MUST surface as a single
 /// `IrStreamEvent::Error` (mapped from `error.status`) rather than being silently swallowed.
 /// Before the fix the reader emitted a bare MessageStart and then nothing — a hung,
@@ -3598,7 +3598,7 @@ fn test_gemini_error_status_class_mapping() {
     );
 }
 
-/// Regression (MEDIUM/conformance): the Gemini bad-key auth-failure envelope MUST carry the
+/// The Gemini bad-key auth-failure envelope MUST carry the
 /// canonical `error.details[]` array with a google.rpc.ErrorInfo whose `reason` is
 /// `API_KEY_INVALID`. The `google-genai` SDK keys auth handling off `details[].reason`, so the
 /// real Generative Language API always populates it on the bad-key 400. The triple of (status
@@ -3872,7 +3872,7 @@ fn test_read_response_empty_candidates_array_without_block_still_errors() {
     );
 }
 
-/// Regression (MED #2): Gemini has no TOOL_USE finishReason — a tool-call turn ends with STOP.
+/// Gemini has no TOOL_USE finishReason — a tool-call turn ends with STOP.
 /// `read_response` mapped STOP → `end_turn` unconditionally, so the IR carried `end_turn` next to
 /// a `ToolUse` block, which leaked on cross-protocol egress (Anthropic relays `end_turn`; OpenAI
 /// maps it to `"stop"`). When a `ToolUse` block is present, the buffered reader MUST promote
@@ -3925,7 +3925,7 @@ fn test_read_response_plain_stop_stays_end_turn() {
     );
 }
 
-/// Regression (MED #2, streaming sibling): the streaming reader mapped STOP → `end_turn` on the
+/// The streaming reader mapped STOP → `end_turn` on the
 /// terminal MessageDelta unconditionally, leaking `end_turn` for a tool-call turn on the streamed
 /// cross-protocol path. When tool blocks were opened this run (`state.open_tools` non-empty at the
 /// finishReason handler), the terminal stop_reason MUST be `tool_use`. Fails against old code.
@@ -3972,7 +3972,7 @@ fn test_stream_plain_stop_terminal_stays_end_turn() {
     );
 }
 
-/// Regression (LOW #10): a `ToolUse.input` that is a JSON ARRAY must be coerced to a valid Gemini
+/// A `ToolUse.input` that is a JSON ARRAY must be coerced to a valid Gemini
 /// `functionCall.args` OBJECT (Gemini `args` is a protobuf Struct). The old code passed an array
 /// through verbatim (`input.is_array()` branch), producing a backend-rejected request. After the
 /// fix the array is wrapped under `{"args": <value>}`. Asserts BOTH writers (request + response).
@@ -4799,7 +4799,7 @@ fn test_sanitize_gemini_schema_preserves_clean_and_walks_arrays() {
     );
 }
 
-/// REGRESSION (round-6 audit): the keyword filter is POSITIONAL. Inside a `properties` map the keys
+/// The keyword filter is POSITIONAL. Inside a `properties` map the keys
 /// are FIELD NAMES THE CALLER CHOSE, not JSON-Schema keywords, so a tool schema with a property
 /// named `examples` / `const` / `definitions` / `$ref` must survive intact. Before the fix the
 /// walker matched keys at every object level, deleted those properties, and left `required` — which
@@ -4859,7 +4859,7 @@ fn test_sanitize_gemini_schema_keeps_user_properties_named_like_keywords() {
     );
 }
 
-/// REGRESSION (round-6 audit): Gemini's THINKING tokens are billed and must be ledgered.
+/// Gemini's THINKING tokens are billed and must be ledgered.
 /// `usageMetadata.thoughtsTokenCount` is a separate ADDITIVE term (Google's own `totalTokenCount` is
 /// prompt + candidates + thoughts), and the reader used to read only `candidatesTokenCount` — so
 /// every reasoning token the 2.5-series models generate (which they do BY DEFAULT, with no

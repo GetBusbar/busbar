@@ -38,8 +38,7 @@ const ST_HALF_OPEN: u64 = 2;
 /// it and no probe outcome (`cell_open`/`cell_closed`) ever runs against it, benching that (pool, lane)
 /// until an out-of-band `recover_lane` touches it (indefinitely when health probing is disabled).
 /// Restoring `ST_OPEN` instead lets the restored (already-expired) cooldown drive a fresh probe
-/// acquisition on the cell's first request. (found: audit c1r6 — restore lacked the sibling-create
-/// path's existing normalization.)
+/// acquisition on the cell's first request.
 fn restored_breaker_state(state: u64) -> u64 {
     if state == ST_HALF_OPEN {
         ST_OPEN

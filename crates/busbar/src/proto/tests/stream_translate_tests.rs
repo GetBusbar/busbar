@@ -797,7 +797,7 @@ fn test_gemini_json_array_surfaces_upstream_translate_abort() {
     );
 }
 
-/// Regression (`StreamTranslate::feed` egress eventstream path): a MALFORMED Bedrock EGRESS
+/// A MALFORMED Bedrock EGRESS
 /// prelude (an out-of-range `total_len`) must ABORT the stream — surfacing the ingress protocol's
 /// native terminal error from `finish()` — not be silently swallowed. Before the wiring `feed`
 /// used the discarding `drain_frames` wrapper, which cleared the buffer on a malformed prelude with
@@ -840,7 +840,7 @@ fn test_egress_eventstream_malformed_prelude_aborts_and_surfaces_error() {
     );
 }
 
-/// Regression (same-proto verbatim emit): on a SAME-PROTOCOL
+/// On a SAME-PROTOCOL
 /// bedrock→bedrock stream, a malformed prelude must NOT splice the cleared garbage tail into the
 /// client stream ahead of the synthesized exception frame. The verbatim emit uses
 /// `drain_frames_checked`'s `consumed_sink` (which collects exactly the complete valid frame

@@ -75,7 +75,7 @@ fn synthesize_principal_key_union_semantics() {
     assert!(synthesize_principal_key(&p, None).is_none());
 }
 
-/// REGRESSION (audit cost-1.5.0, bucket-namespace hardening): a principal whose id literally
+/// A principal whose id literally
 /// starts with `group:` must NEVER get a synthetic key. The synthetic key's `id` is its ledger
 /// bucket id, and budget-group buckets share that namespace as `group:<name>` - an IdP-supplied
 /// id like `group:acme` would otherwise charge/read/alias the `acme` budget group's cell.
@@ -110,7 +110,7 @@ fn group_prefixed_principal_id_cannot_alias_a_budget_group_bucket() {
     assert!(synthesize_principal_key(&bare, Some(&table)).is_none());
 }
 
-/// REGRESSION (vk_ alias hardening): a principal whose id starts with `vk_` must NEVER get a
+/// A principal whose id starts with `vk_` must NEVER get a
 /// synthetic key. A real virtual key's id is `vk_<16 hex>` and IS its ledger/rate bucket id, so an
 /// IdP-supplied subject shaped `vk_<...>` would alias a real virtual key's ledger + rate bucket
 /// (charging/reading it, or riding its rate window). Fail closed like the `group:` guard.
@@ -1733,7 +1733,7 @@ impl Store for RecordingBarrierStore {
     }
 }
 
-/// Regression (write-behind overlap): the periodic flusher must never let two `flush_budgets`
+/// The periodic flusher must never let two `flush_budgets`
 /// runs overlap - overlapping snapshots could race baseline advancement and double- or
 /// under-count deltas. We hold the first flush's `add_usage` paused, accrue NEWER requests, and
 /// let the flusher fire (and SKIP) overlapping ticks; after release + shutdown the durable ledger
@@ -1917,7 +1917,7 @@ fn test_group_token_spend_blocks_chain_admission() {
     }
 }
 
-/// REGRESSION (audit cost-1.5.0 #1): a boundary-STRADDLING admission - pinned `charged_at` in the
+/// A boundary-STRADDLING admission - pinned `charged_at` in the
 /// OLD window, arriving after a concurrent admission already rolled the live cell to the NEW
 /// window - must charge the live cell IN PLACE. The pre-fix charge arm rewound the live cell to
 /// the straddler's older window (`BudgetCell::fresh(old_window)`), wiping the new window's

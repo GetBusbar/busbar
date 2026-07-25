@@ -979,7 +979,7 @@ mod tests {
         }
     }
 
-    /// REGRESSION (P2 finding 4): the request-log webhook DELIVERY-FAILURE warn must mask any
+    /// The request-log webhook DELIVERY-FAILURE warn must mask any
     /// embedded userinfo in BOTH the `webhook_url` field AND the reqwest error's Display (`error_kind`).
     /// The OTLP path was hardened; this one was not - a webhook URL with `user:pass@` was logged
     /// verbatim on every delivery failure. This drives a real delivery against an unroutable userinfo
@@ -1285,7 +1285,7 @@ mod tests {
 
     #[test]
     fn test_validate_webhook_url_rejects_localhost_dns_name() {
-        // Regression (SSRF): `localhost` is a DNS name, not an IP literal, but RFC 6761 reserves it
+        // `localhost` is a DNS name, not an IP literal, but RFC 6761 reserves it
         // (and its subdomains) to loopback. An operator-set `https://localhost:<port>/path` would
         // POST request logs to a co-located process, so it must be blocked case-insensitively.
         for bad in [
@@ -1312,7 +1312,7 @@ mod tests {
 
     #[test]
     fn test_validate_webhook_url_rejects_ipv4_mapped_ipv6_internal() {
-        // Regression (SSRF): an IPv4-mapped IPv6 literal (`::ffff:a.b.c.d`) parses as IpAddr::V6 and
+        // An IPv4-mapped IPv6 literal (`::ffff:a.b.c.d`) parses as IpAddr::V6 and
         // matches none of the plain V6 predicates, so without canonicalization it would reach the
         // same internal targets (loopback / cloud-metadata / RFC1918) the V4 arm rejects.
         for bad in [
@@ -1340,7 +1340,7 @@ mod tests {
 
     #[test]
     fn test_validate_webhook_url_rejects_cgnat_v4() {
-        // Regression (SSRF, parity with config_validate::ssrf_blocked_host): RFC 6598 CGNAT
+        // RFC 6598 CGNAT
         // 100.64.0.0/10 is NOT is_private(), yet routable inside cloud VPCs / k8s clusters where it
         // fronts internal services. The V4 arm previously checked only loopback/link-local/private/
         // unspecified/broadcast, so https://100.64.0.5/ slipped through.
@@ -1376,7 +1376,7 @@ mod tests {
 
     #[test]
     fn test_validate_webhook_url_rejects_alternate_ipv4_encodings() {
-        // Regression (SSRF, parity with config_validate): non-canonical IPv4 encodings are rejected
+        // Non-canonical IPv4 encodings are rejected
         // by IpAddr::from_str but the OS resolver still maps them to internal addresses. Previously
         // they fell into the Err(_) DNS branch (which only blocked the localhost family) and passed.
         for bad in [
@@ -1440,7 +1440,7 @@ mod tests {
 
     #[test]
     fn test_validate_webhook_url_rejects_cloud_metadata_dns_names() {
-        // Regression (SSRF, parity with config_validate::METADATA_HOSTS): the well-known cloud
+        // The well-known cloud
         // metadata DNS names resolve to internal/IMDS targets. They are not IP literals, so the
         // Err(_) DNS branch (localhost-only) let them through previously.
         for bad in [
@@ -1458,7 +1458,7 @@ mod tests {
 
     #[test]
     fn test_validate_webhook_url_rejects_trailing_dot_internal_hosts() {
-        // Regression (SSRF): a trailing FQDN-root dot made the IP-literal parse
+        // A trailing FQDN-root dot made the IP-literal parse
         // fail (slipping into the allow-by-default DNS arm) and the METADATA_HOSTS exact-compare miss,
         // so a trailing-dot internal target bypassed BOTH guards. getaddrinfo resolves these to the
         // same internal targets as the bare spelling, so they MUST be rejected.
@@ -1600,7 +1600,7 @@ mod tests {
 
     #[test]
     fn test_validate_otlp_endpoint_rejects_cloud_metadata_and_internal() {
-        // Regression (SSRF): span data carries key_ids, pool names, and governance
+        // Span data carries key_ids, pool names, and governance
         // decisions, so the OTLP sink must block cloud-metadata / RFC1918 / CGNAT / link-local
         // targets exactly like the webhook guard (only loopback is the intentional exception).
         for bad in [
@@ -1660,7 +1660,7 @@ mod tests {
 
     #[test]
     fn test_validate_otlp_endpoint_accepts_uppercase_scheme() {
-        // Regression (sibling of the webhook scheme bug): the OTLP scheme check is also
+        // The OTLP scheme check is also
         // case-insensitive, so `HTTP://localhost:4318` / `HTTPS://collector...` are valid and must
         // be accepted. The old literal lowercase `starts_with` rejected them.
         for ok in [

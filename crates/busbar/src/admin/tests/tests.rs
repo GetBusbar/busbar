@@ -1365,7 +1365,7 @@ async fn drive_hook_escalation_errors() {
         .unwrap();
     assert_eq!(r.status().as_u16(), 201, "full scope registers anything");
 
-    // REGRESSION (audit c1r6): a hooks-register token may not RETUNE (PATCH settings) a
+    // A hooks-register token may not RETUNE (PATCH settings) a
     // content-seeing / global hook it can neither create nor replace — PATCH must enforce the
     // same §6.3 ceiling, keyed on the EXISTING hook's grants.
     let patch = client
@@ -1386,7 +1386,7 @@ async fn drive_hook_escalation_errors() {
         "forbidden"
     );
 
-    // REGRESSION (audit c1r13): a hooks-register token may not DELETE a content-seeing / global
+    // A hooks-register token may not DELETE a content-seeing / global
     // gate a full admin installed — tearing down that security gate is the same §6.3 escalation
     // register/put/patch forbid.
     let del = client
@@ -2460,7 +2460,7 @@ async fn test_admin_v1_audit_records_mutations() {
     handle.abort();
 }
 
-/// REGRESSION (audit c1r9): the UNKNOWN-NAME 404 on `PUT /hooks/{name}` and
+/// The UNKNOWN-NAME 404 on `PUT /hooks/{name}` and
 /// `PATCH /hooks/{name}/settings` must be AUDITED (like DELETE's 404) — an unaudited 404 lets a
 /// principal probe which hook names exist by response code alone, with no trail.
 #[tokio::test]
@@ -2911,7 +2911,7 @@ async fn test_admin_v1_audit_records_key_mutations() {
     handle.abort();
 }
 
-/// REGRESSION (audit c1r5): base-config hooks are READ-ONLY across every mutation verb — a
+/// Base-config hooks are READ-ONLY across every mutation verb — a
 /// narrow hooks-register token must not be able to shadow/redirect (POST) or remove (DELETE) an
 /// operator's file-defined hook (e.g. a `pii-guard` gate). PUT/PATCH already guarded; this pins
 /// POST + DELETE to the same 409, matching the guard other verbs enforce.
@@ -4320,7 +4320,7 @@ async fn test_patch_key_three_state_group_and_enabled() {
 }
 #[test]
 fn test_create_key_warns_on_unconfigured_allowed_pool() {
-    // Regression (LOW #13, completeness): create_key accepted `allowed_pools` with NO ingress
+    // Create_key accepted `allowed_pools` with NO ingress
     // diagnostic, unlike its sibling validations. An entry naming no configured pool must NOT be
     // a 400 (minting a key before its pool exists is a supported forward-reference workflow), but
     // it MUST surface a NON-FATAL `tracing::warn!` so a typo (`"smrt"` for `"smart"`) is visible.
@@ -4532,7 +4532,7 @@ async fn test_delete_key_is_not_idempotent_204() {
 
 #[tokio::test]
 async fn test_concurrent_delete_returns_exactly_one_204() {
-    // Regression (MEDIUM/correctness, TOCTOU): two concurrent DELETEs of the SAME id must not
+    // Two concurrent DELETEs of the SAME id must not
     // both observe the key and both return 204 (which would imply two revocations of one row in
     // an audit trail). The delete handler serializes its lookup→delete critical section, so the
     // winner returns 204 and every loser returns 404. Fire a burst and assert exactly one 204.
@@ -4591,7 +4591,7 @@ async fn test_concurrent_delete_returns_exactly_one_204() {
 
 #[tokio::test]
 async fn test_patch_after_delete_404s_and_does_not_recreate_key() {
-    // Regression (MEDIUM #7, SECURITY): a PATCH must never RESURRECT a key a DELETE removed. The
+    // A PATCH must never RESURRECT a key a DELETE removed. The
     // store's `update_key` is a check-then-act (`get_key` → `put_key`, where `put_key` UPSERTs and
     // so re-INSERTs a missing row). Serializing `update_key`'s lookup→put behind the same gate as
     // DELETE closes the window. This sequential case (DELETE fully precedes PATCH) proves the base
@@ -4745,19 +4745,12 @@ impl crate::governance::Store for BarrierStore {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_patch_interleaved_with_delete_never_resurrects_key() {
-    // Regression (MEDIUM #7, SECURITY — the precise interleaving the gate exists to stop): a PATCH
+    // A PATCH
     // that has already read an extant key, then is overtaken by a DELETE that revokes it, must NOT
-    // have its `put_key` re-INSERT (resurrect) the row. We force the interleaving deterministically
-    // with `BarrierStore`: the PATCH's `put_key` pauses between the existence check and the write
-    // while the DELETE runs.
-    //
-    // Old code (PATCH not under the gate): the DELETE proceeds while the PATCH is paused, removes
-    // the row, returns 200; then the PATCH's UPSERT re-inserts it -> key PRESENT -> this test's
-    // final "key absent" assertion FAILS.
-    //
-    // Fixed code (PATCH holds the same `EXISTENCE_GATE` across lookup→put): the DELETE blocks on
-    // the gate until the PATCH releases it, so it runs strictly AFTER the PATCH's put -> the row is
-    // removed last -> key ABSENT -> this test PASSES.
+    // have its `put_key` re-INSERT (resurrect) the row. `BarrierStore` forces the interleaving
+    // deterministically: the PATCH's `put_key` pauses between the existence check and the write
+    // while the DELETE runs. Holding `EXISTENCE_GATE` across lookup→put is what makes the DELETE
+    // run strictly after the PATCH's put, so the row is removed last and ends up ABSENT.
     crate::metrics::init();
     let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel::<()>(1);
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
@@ -4844,7 +4837,7 @@ async fn test_patch_interleaved_with_delete_never_resurrects_key() {
     handle.abort();
 }
 
-/// REGRESSION (audit c1r6, SECURITY): `rotate_key` is a check-then-act (get_key → mint →
+/// `rotate_key` is a check-then-act (get_key → mint →
 /// put_key over the UPSERT), so — exactly like update_key/delete_key — it must hold
 /// EXISTENCE_GATE across lookup→write. Without it a DELETE that revokes the key between rotate's
 /// read and its `put_key` is clobbered by the put, RESURRECTING the revoked key with a fresh
@@ -4932,7 +4925,7 @@ async fn test_rotate_interleaved_with_delete_never_resurrects_key() {
 
 #[test]
 fn test_existence_gate_is_std_sync_mutex_lockable_without_runtime() {
-    // Regression (MEDIUM #6, R26 — CONTINUES the R25 existence-race fix): the gate MUST be a
+    // The gate MUST be a
     // `std::sync::Mutex<()>`, not a `tokio::sync::Mutex<()>`. The fix binds the gate's lifetime to
     // the SYNCHRONOUS store mutation by locking it INSIDE the `spawn_blocking` closure (which has no
     // async runtime in scope); a `tokio::sync::Mutex` cannot be locked there — its `.lock()` returns
@@ -4950,7 +4943,7 @@ fn test_existence_gate_is_std_sync_mutex_lockable_without_runtime() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_cancelled_patch_keeps_gate_held_for_full_store_mutation() {
-    // Regression (MEDIUM #6, R26 — request-cancellation voids the existence gate): the R25 fix held
+    // The R25 fix held
     // the gate across the cancellable outer `.await`. If the client dropped the request, the async
     // guard dropped — but the already-scheduled (uncancellable) `spawn_blocking` closure kept
     // running its lookup→write with the gate NO LONGER held, re-opening the resurrection /
@@ -6184,7 +6177,7 @@ async fn key_cap_and_delegation_refusals_are_reachable_declared_and_audited() {
     drive_key_cap_and_delegation_errors().await;
 }
 
-/// REGRESSION (10-phase 1.5.0 audit: TOCTOU on `max_keys_per_principal`): N concurrent mints into a
+/// N concurrent mints into a
 /// group sitting one below the cap must NOT all pass. Before the fix the count and the mint ran in
 /// two separate `spawn_blocking` tasks with an `.await` between and no lock spanning them, so
 /// concurrent callers all read `n < cap` and all minted, overshooting the cap by up to `N-1`. The

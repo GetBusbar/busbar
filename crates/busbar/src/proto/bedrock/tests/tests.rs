@@ -888,7 +888,7 @@ fn test_error_kind_to_bedrock_type_mapping() {
         error_kind_to_bedrock_type(ERR_TYPE_OVERLOADED),
         "ServiceUnavailableException"
     );
-    // Regression (R9 HIGH): the forward layer emits the BARE kind `"overloaded"` for every
+    // The forward layer emits the BARE kind `"overloaded"` for every
     // operational 503 path (lane exhaustion, deadline exceeded, no usable lane). It must map to
     // ServiceUnavailableException — NOT fall through to the ValidationException catch-all, which
     // would pair an HTTP 503 with a 400-class `__type` AWS never produces, making an AWS SDK
@@ -988,7 +988,7 @@ fn test_synth_response_id_unique_and_nonempty() {
 
 // --- Round 2 regression tests --------------------------------------------------------------
 
-/// Regression (writer): a stream MessageDelta with `stop_reason = None` (the usage-only trailing
+/// A stream MessageDelta with `stop_reason = None` (the usage-only trailing
 /// delta the reader emits from the Bedrock `metadata` event, or a cross-protocol egress's usage
 /// frame) must be reframed as a native `metadata` frame carrying the real token usage — NOT a
 /// second `messageStop` (the old behavior, which both discarded usage and produced two
@@ -1057,7 +1057,7 @@ fn test_write_response_event_usage_delta_is_metadata_frame() {
     );
 }
 
-/// Regression (writer): a text BlockStart must emit a native `contentBlockStart` frame with an
+/// A text BlockStart must emit a native `contentBlockStart` frame with an
 /// empty `start` struct (AWS emits one for every block, text included) so a native SDK can
 /// initialize its block decoder and the following deltas are not orphaned.
 #[test]
@@ -1085,7 +1085,7 @@ fn test_write_response_event_text_block_start_emits_frame() {
     );
 }
 
-/// Regression (reader): a mid-stream Bedrock exception event (`internalServerException` etc.)
+/// A mid-stream Bedrock exception event (`internalServerException` etc.)
 /// must surface as an `IrStreamEvent::Error` rather than being silently swallowed by a catch-all,
 /// so a client whose stream hits an upstream model error receives a protocol-shaped error frame
 /// instead of a hanging / EOF-without-terminator stream.
@@ -1141,7 +1141,7 @@ fn test_stream_decode_surfaces_midstream_exception() {
         "unknown event types must be skipped; got {unknown:?}"
     );
 
-    // Regression (R9 MEDIUM): `modelTimeoutException` is a REQUEST-level Converse exception, NOT
+    // `modelTimeoutException` is a REQUEST-level Converse exception, NOT
     // a member of the `ConverseStream.responseStream` output union (which has exactly five
     // members), so a real AWS endpoint never emits it mid-stream. It must be treated as an
     // unrecognized event (silent no-op) — NOT accepted as a stream exception and re-emitted as
@@ -1159,7 +1159,7 @@ fn test_stream_decode_surfaces_midstream_exception() {
     );
 }
 
-/// Regression (R9 HIGH): `bedrock_image_block` must never emit `format: ""`. An exact `"image/"`
+/// `bedrock_image_block` must never emit `format: ""`. An exact `"image/"`
 /// media_type (empty subtype) once slipped past the `strip_prefix(...).unwrap_or("png")` fallback
 /// — `strip_prefix` returns `Some("")`, not `None` — producing a `format: ""` block outside
 /// Bedrock's `ImageFormat` union that the SDK rejects with a ValidationException. It must fall
@@ -1214,7 +1214,7 @@ fn test_bedrock_image_block_empty_subtype_falls_back_to_png() {
     );
 }
 
-/// Regression (reader): the injected `stream` flag on a Bedrock-INGRESS converse-stream request
+/// The injected `stream` flag on a Bedrock-INGRESS converse-stream request
 /// must be read into the IR so a cross-protocol egress writer produces a streaming body. A body
 /// without the flag (native Bedrock egress, where streaming is endpoint-selected) defaults false.
 #[test]
@@ -1241,7 +1241,7 @@ fn test_read_request_honors_injected_stream_flag() {
     );
 }
 
-/// Regression (writer): a System-role message that escapes the caller's system extraction is
+/// A System-role message that escapes the caller's system extraction is
 /// SKIPPED, not silently emitted as a `user` turn (which would inject system text as a user
 /// message). A Tool-role message is still emitted as a `user` turn (the native shape for a
 /// `toolResult` block).
@@ -1318,7 +1318,7 @@ fn test_write_request_skips_system_role_message() {
     );
 }
 
-/// Regression (writer): a non-Text block inside a ToolResult must be re-encoded faithfully
+/// A non-Text block inside a ToolResult must be re-encoded faithfully
 /// (Image → Bedrock `{"image":...}`, ToolUse/ToolResult → `{"json":...}`), never collapsed to
 /// the constant string `"{}"` placeholder the old catch-all produced.
 #[test]
@@ -1386,7 +1386,7 @@ fn test_write_request_tool_result_preserves_non_text_content() {
     );
 }
 
-/// Regression (writer): a stream Error event names a REAL Converse exception (mapped from the IR
+/// A stream Error event names a REAL Converse exception (mapped from the IR
 /// error class) as its event-type token instead of the non-native literal `"error"`. (The
 /// `:message-type: exception` framing itself is the encoder's job — see the production
 /// mid-stream-error path in proxy engine — and is out of this unit's scope.)
@@ -1430,7 +1430,7 @@ fn test_write_response_event_error_names_real_exception() {
 
 // --- Round 3 regression tests --------------------------------------------------------------
 
-/// Regression (reader): unmodeled top-level request fields must be collected into `extra` so a
+/// Unmodeled top-level request fields must be collected into `extra` so a
 /// same-protocol Bedrock->Bedrock passthrough re-emits them faithfully (via `write_request`'s
 /// extra-merge). Previously `extra` was built empty and every native Converse field this reader
 /// does not explicitly model — `topP`, `topK`, `stopSequences`, `guardrailConfig`,
@@ -1507,7 +1507,7 @@ fn test_read_request_collects_unmodeled_fields_into_extra() {
     );
 }
 
-/// Regression (reader + writer): a full passthrough — read a native Converse request carrying
+/// A full passthrough — read a native Converse request carrying
 /// unmodeled fields, then write it back — must re-emit `topP`/`stopSequences`/`guardrailConfig`
 /// onto the wire, never strip them. Uses the existing rich fixture (which carries `top_p`).
 #[test]
@@ -1524,7 +1524,7 @@ fn test_request_passthrough_preserves_unmodeled_fields() {
     );
 }
 
-/// Regression (R15 toolChoice): `toolConfig.toolChoice` (the force-tool-use control:
+/// `toolConfig.toolChoice` (the force-tool-use control:
 /// `{auto:{}}` / `{any:{}}` / `{tool:{name:...}}`) is an UNMODELED sub-field of `toolConfig` —
 /// only `toolConfig.tools` is typed into `ir.tools`. The old code listed `toolConfig` in
 /// `MODELED_KEYS`, so the raw object never reached `extra` and the writer rebuilt `toolConfig`
@@ -1583,7 +1583,7 @@ fn test_request_passthrough_preserves_tool_choice() {
     );
 }
 
-/// Regression (R15 toolChoice): on the CROSS-protocol seam `extra` is cleared, so a writer driven
+/// On the CROSS-protocol seam `extra` is cleared, so a writer driven
 /// by an IR with `ir.tools` but no `extra.toolConfig` must still emit a valid `toolConfig` built
 /// purely from the typed tools (no `toolChoice`, since the IR has no field for it). And a degenerate
 /// IR with neither typed tools nor a raw `toolConfig` must NOT emit a bare/empty `toolConfig` (AWS
@@ -1670,7 +1670,7 @@ fn test_write_request_tool_config_cross_protocol_and_empty() {
     );
 }
 
-/// Regression (reader): a text block that opens at index > 0 (after a preceding tool-use block,
+/// A text block that opens at index > 0 (after a preceding tool-use block,
 /// reachable via cross-protocol ingress) must have its `text_block_open` flag cleared on its
 /// contentBlockStop, so a LATER text block still emits a fresh BlockStart. The old `idx == 0`
 /// guard left the flag set for a text block at index N>0, suppressing all subsequent text
@@ -1741,7 +1741,7 @@ fn test_stream_text_block_after_tool_not_dropped() {
     assert_eq!(deltas, vec!["first".to_string(), "second".to_string()]);
 }
 
-/// Regression (reader): a `contentBlockStart` whose `start` object carries an UNRECOGNIZED key
+/// A `contentBlockStart` whose `start` object carries an UNRECOGNIZED key
 /// (not `toolUse`, and not the empty `{}` text shape — e.g. a future `image`/`reasoningContent`
 /// block) must NOT be mis-opened as a Text block. Only an empty `start: {}` (or an absent
 /// `start`) opens text. Forward-compatibility / defensive parsing.
@@ -1799,7 +1799,7 @@ fn test_stream_unrecognized_start_does_not_open_text() {
     );
 }
 
-/// Regression (writer): a session (STS) token containing a byte `HeaderValue` rejects (control
+/// A session (STS) token containing a byte `HeaderValue` rejects (control
 /// char / >= 0x80) must NOT produce a request signed over `x-amz-security-token` with the header
 /// absent (which AWS rejects with SignatureDoesNotMatch). The signed set and the wire set are
 /// gated by the same up-front validation, so an un-encodable token bails to the graceful
@@ -1849,7 +1849,7 @@ fn test_bedrock_sigv4_unencodable_session_token_bails_gracefully() {
     );
 }
 
-/// Regression (writer): a usage-only delta's `metadata` frame carries the real `usage` but does
+/// A usage-only delta's `metadata` frame carries the real `usage` but does
 /// NOT fabricate a `metrics` object at the writer layer. The native ConverseStream `metrics`
 /// object reports the stream's REAL `latencyMs`, which the writer cannot know — so it is injected
 /// (with the elapsed wall-clock) by `StreamTranslate::emit_ir_event` on the Bedrock-ingress path,
@@ -1887,7 +1887,7 @@ fn test_write_response_event_metadata_no_fabricated_metrics() {
     );
 }
 
-/// Regression (writer, streaming `metadata` frame): `totalTokens` is computed with a saturating
+/// `totalTokens` is computed with a saturating
 /// add, so a pathological/hostile upstream sending token counts near `u64::MAX` clamps to
 /// `u64::MAX` instead of panicking under overflow-checks (debug / opt-in release) or silently
 /// wrapping to a near-zero nonsense total in plain release. Mirrors the Gemini writer's
@@ -1932,7 +1932,7 @@ fn test_write_response_event_total_tokens_saturates() {
     );
 }
 
-/// REGRESSION (audit c2r2): `bedrock_response_to_eventstream` (buffered 2xx → synthesized
+/// `bedrock_response_to_eventstream` (buffered 2xx → synthesized
 /// ConverseStream, used when a Bedrock-streaming client gets a non-streaming cross-protocol 2xx)
 /// must NOT drop a `Thinking` (reasoningContent) block. The old arm skipped it, silently losing
 /// upstream reasoning; it now synthesizes the `reasoningContent` start/delta/stop frames.
@@ -1983,7 +1983,7 @@ fn eventstream_emits_reasoning_content_for_thinking_block() {
     );
 }
 
-/// Regression (writer, non-stream `write_response` body): the buffered Converse `totalTokens`
+/// The buffered Converse `totalTokens`
 /// uses the same saturating add as the streaming frame, so an upstream response carrying token
 /// counts near `u64::MAX` does not panic (overflow-checks) or wrap (release).
 #[test]
@@ -2033,7 +2033,7 @@ fn test_write_response_total_tokens_saturates() {
     );
 }
 
-/// Regression (R24 LOW#7 — writer, non-stream `write_response`): an assistant response carrying
+/// An assistant response carrying
 /// an `IrBlock::Image` must be PROJECTED as a native Bedrock `{"image": ...}` content block, not
 /// silently dropped by the old combined `ToolResult | Image => {}` no-op arm. A base64 image
 /// uses the `bytes` source and the subtype-derived `format`.
@@ -2095,7 +2095,7 @@ fn test_write_response_projects_image_block() {
     );
 }
 
-/// Regression (R24 LOW#8 — writer, non-stream `write_response`): a response whose blocks are ALL
+/// A response whose blocks are ALL
 /// non-representable in an assistant Converse message (here a lone `ToolResult`, which belongs to
 /// a user turn) must NOT emit an empty `content: []` array — Bedrock rejects that with a
 /// ValidationException. `write_request` already guards every turn; this mirrors that guard with a
@@ -2152,7 +2152,7 @@ fn test_write_response_empty_content_emits_placeholder() {
 
 // --- Round 5 regression tests --------------------------------------------------------------
 
-/// Regression (finding 2 — reader+writer): an `inferenceConfig` carrying sub-fields this reader
+/// An `inferenceConfig` carrying sub-fields this reader
 /// does NOT type (`stopSequences`, `topP`, `topK`, future AWS additions) must survive a
 /// same-protocol Bedrock->Bedrock passthrough, NOT be silently dropped. Previously
 /// `inferenceConfig` was modeled-out wholesale and only `maxTokens`/`temperature` were
@@ -2365,7 +2365,7 @@ fn test_clamp_temperature_for_bedrock_signals_on_change() {
     assert_eq!(clamp_temperature_for_bedrock(1.0), (1.0, false));
 }
 
-/// Regression (finding 2): the typed IR fields WIN over a same-named raw `inferenceConfig` entry
+/// The typed IR fields WIN over a same-named raw `inferenceConfig` entry
 /// (the structured IR is the source of truth for the values it models), and a cross-protocol
 /// egress (no `inferenceConfig` in `extra`) still emits a config built purely from the typed IR.
 #[test]
@@ -2470,7 +2470,7 @@ fn test_inference_config_typed_fields_override_raw_and_cross_protocol() {
     assert!(out2.pointer("/inferenceConfig/topP").is_none());
 }
 
-/// Regression (finding 3): a mid-stream `IrError` mapped for the ConverseStream output union must
+/// A mid-stream `IrError` mapped for the ConverseStream output union must
 /// only ever name one of the FIVE legal stream-event exceptions. Request-level shapes
 /// (`ModelTimeoutException`, `AccessDeniedException`, `ServiceQuotaExceededException`) are NOT
 /// members of the stream union and would be treated as unknown/unmodeled by a native AWS SDK
@@ -2565,7 +2565,7 @@ fn test_stream_exception_only_emits_converse_stream_union_members() {
     }
 }
 
-/// Regression (class sweep — image `"image_url"` sentinel): a cross-protocol ingress
+/// A cross-protocol ingress
 /// (OpenAI/Responses) parses an `https://…` image into the IR as
 /// `Image{media_type: "image_url", data: <url>}`. The Bedrock Converse `image` block has no
 /// arbitrary-URL source (only base64 `bytes` / `s3Location`), so the URL must NOT be stuffed into
@@ -2659,7 +2659,7 @@ fn test_write_request_url_sentinel_image_not_emitted_as_base64() {
     );
 }
 
-/// Regression (R19 #16): a user/assistant turn whose blocks are ALL non-representable on the
+/// A user/assistant turn whose blocks are ALL non-representable on the
 /// Bedrock wire (here a user message holding only a URL-sentinel image) must NOT be silently
 /// dropped. Dropping it loses turn structure and can break the strict user/assistant alternation
 /// Bedrock Converse enforces. The writer mirrors the Anthropic writer by emitting a minimal
@@ -2776,7 +2776,7 @@ fn test_write_request_all_nonrepresentable_turn_kept_with_placeholder() {
 
 // --- Round 6 regression tests --------------------------------------------------------------
 
-/// Regression (findings 1+2 — SigV4 region derivation): the region is parsed robustly from the
+/// The region is parsed robustly from the
 /// endpoint host across every real Bedrock shape (vanilla, FIPS, VPC-interface front,
 /// control-plane label), not just `bedrock-runtime.<region>.`. A host that yields no derivable
 /// region returns `None` (the caller warns and falls back to us-east-1) rather than silently
@@ -2863,7 +2863,7 @@ fn test_derive_sigv4_region_shapes() {
     );
 }
 
-/// Regression (findings 1+2): a FIPS host in a non-us-east-1 region signs for THAT region's
+/// A FIPS host in a non-us-east-1 region signs for THAT region's
 /// scope, not the silent `us-east-1` default the old prefix-only parser produced (which AWS
 /// rejects with SignatureDoesNotMatch). The signing crypto itself is covered by sigv4::tests;
 /// here we assert the derived scope region in the Authorization header.
@@ -2892,7 +2892,7 @@ fn test_bedrock_sigv4_fips_host_derives_correct_region() {
     );
 }
 
-/// Regression (findings 1+2): a non-derivable host falls back to us-east-1 (signing still
+/// A non-derivable host falls back to us-east-1 (signing still
 /// proceeds, so a genuinely region-less endpoint is not failed closed) — the WARN is the
 /// operator-visible signal, asserted indirectly via the resulting scope.
 #[test]
@@ -2916,7 +2916,7 @@ fn test_bedrock_sigv4_undecodable_host_falls_back_to_us_east_1() {
     );
 }
 
-/// Regression (finding 3 — metadata WITHOUT usage): a `metadata` frame that lacks a `usage` key
+/// A `metadata` frame that lacks a `usage` key
 /// (a mock / Bedrock-compatible backend) must STILL emit the combined `MessageDelta` (consuming
 /// the stop_reason buffered from the preceding `messageStop`) BEFORE the terminal `MessageStop`,
 /// so a Bedrock→Anthropic translation keeps the native `message_delta`-before-`message_stop`
@@ -2989,7 +2989,7 @@ fn test_stream_metadata_without_usage_still_emits_delta_with_stop_reason() {
     );
 }
 
-/// Regression (class sweep — image sentinel inside a toolResult): the same URL-sentinel guard
+/// The same URL-sentinel guard
 /// applies to an `Image` nested in a `ToolResult`'s content — it must be dropped, not mangled
 /// into a base64 `image` block, while a base64 image inside a toolResult is still emitted.
 #[test]
@@ -3060,7 +3060,7 @@ fn test_write_request_tool_result_url_sentinel_image_dropped() {
     );
 }
 
-/// Regression (class sweep — maxTokens overflow): a `maxTokens` value above u32::MAX must be
+/// A `maxTokens` value above u32::MAX must be
 /// dropped to None (backend applies its default) rather than silently TRUNCATED (wrapped) into
 /// an arbitrary smaller cap by a bare `as u32`. Mirrors the hardened Gemini reader; an in-range
 /// value and the `> 0` filter are still honored.
@@ -3097,7 +3097,7 @@ fn test_read_request_max_tokens_overflow_dropped_not_truncated() {
     assert_eq!(ir.max_tokens, None);
 }
 
-/// Regression (reader, S3 image source): a message-level `image` block whose source is
+/// A message-level `image` block whose source is
 /// `s3Location` (not `bytes`) must be captured under the `image_s3` sentinel — not dropped with
 /// `data = ""` — so a same-protocol passthrough re-emits `source.s3Location` faithfully.
 #[test]
@@ -3149,7 +3149,7 @@ fn test_read_request_image_s3_location_captured() {
     }
 }
 
-/// Regression (round-trip, S3 image source): a Bedrock body carrying an S3-sourced image must
+/// A Bedrock body carrying an S3-sourced image must
 /// survive a reader→writer round-trip with its `source.s3Location` (uri + bucketOwner) and
 /// `format` intact — the old reader dropped the source, so the writer emitted nothing.
 #[test]
@@ -3207,7 +3207,7 @@ fn test_image_s3_location_round_trip() {
     );
 }
 
-/// Regression (reader, toolResult image): an `image` block inside a `toolResult.content` array
+/// An `image` block inside a `toolResult.content` array
 /// must be decoded into an IR Image — symmetric with the writer's toolResult-image emission.
 /// The old reader skipped any non-text/json inner block, silently dropping image tool results.
 #[test]
@@ -3251,7 +3251,7 @@ fn test_read_request_tool_result_decodes_image() {
     }
 }
 
-/// Regression (round-trip, toolResult image): an S3-sourced image inside a toolResult survives
+/// An S3-sourced image inside a toolResult survives
 /// reader→writer with its `source.s3Location` intact (the writer already emits `image` inside a
 /// toolResult; the reader must now decode it symmetrically).
 #[test]
@@ -3290,7 +3290,7 @@ fn test_tool_result_image_s3_round_trip() {
     );
 }
 
-/// Regression (writer): `bedrock_image_block` re-emits `source.s3Location` for a Bedrock-produced
+/// `bedrock_image_block` re-emits `source.s3Location` for a Bedrock-produced
 /// vendor reference (`{format, s3Location}`), and DROPS a vendor reference from another protocol
 /// (no Bedrock projection) rather than corrupting the source.
 #[test]
@@ -3332,7 +3332,7 @@ fn test_bedrock_image_block_s3_vendor() {
 
 // --- Round 18 regression tests: prompt-cache token plumbing -------------------------------
 
-/// Regression (reader, non-streaming): a Converse response `usage` carrying
+/// A Converse response `usage` carrying
 /// `cacheReadInputTokens` / `cacheWriteInputTokens` must surface them on the IR usage as
 /// `cache_read_input_tokens` / `cache_creation_input_tokens`. The old reader hardcoded both
 /// to `None`, silently dropping real prompt-cache accounting — this asserts the real values
@@ -3364,7 +3364,7 @@ fn test_read_response_plumbs_cache_tokens() {
     );
 }
 
-/// Regression (reader): an absent cache field stays `None` (not `Some(0)`), so a no-cache
+/// An absent cache field stays `None` (not `Some(0)`), so a no-cache
 /// response is distinguishable from a zero-token cache hit.
 #[test]
 fn test_read_response_absent_cache_tokens_are_none() {
@@ -3379,7 +3379,7 @@ fn test_read_response_absent_cache_tokens_are_none() {
     assert_eq!(resp.usage.cache_creation_input_tokens, None);
 }
 
-/// Regression (reader, streaming): the `metadata` event's `usage` cache fields must surface on
+/// The `metadata` event's `usage` cache fields must surface on
 /// the combined MessageDelta's IR usage (old code hardcoded both to `None`).
 #[test]
 fn test_read_stream_metadata_plumbs_cache_tokens() {
@@ -3413,7 +3413,7 @@ fn test_read_stream_metadata_plumbs_cache_tokens() {
     assert_eq!(usage.cache_creation_input_tokens, Some(17));
 }
 
-/// Regression (writer, non-streaming): IR usage cache fields must be emitted as
+/// IR usage cache fields must be emitted as
 /// `cacheReadInputTokens` / `cacheWriteInputTokens` on the native body (old writer omitted
 /// them entirely), and a full read→write round-trip of a cache-bearing usage is byte-identical.
 #[test]
@@ -3453,7 +3453,7 @@ fn test_write_response_emits_cache_tokens_roundtrip() {
     );
 }
 
-/// Regression (writer): a `None` cache field is OMITTED, not serialized as `0` — so a no-cache
+/// A `None` cache field is OMITTED, not serialized as `0` — so a no-cache
 /// response stays byte-identical to native AWS (which omits the fields when caching was idle).
 #[test]
 fn test_write_response_omits_absent_cache_tokens() {
@@ -3486,7 +3486,7 @@ fn test_write_response_omits_absent_cache_tokens() {
     );
 }
 
-/// Regression (writer, streaming): a usage-only MessageDelta carrying cache fields must emit
+/// A usage-only MessageDelta carrying cache fields must emit
 /// them on the `metadata` frame's `usage` (old writer dropped them).
 #[test]
 fn test_write_stream_metadata_emits_cache_tokens() {
@@ -3532,7 +3532,7 @@ fn test_write_stream_metadata_emits_cache_tokens() {
     );
 }
 
-/// Regression (R20 MED #7): native Converse `cachePoint` blocks (the prompt-cache markers) that
+/// Native Converse `cachePoint` blocks (the prompt-cache markers) that
 /// appear inside the `system` array and inside a message's `content` array were SILENTLY DROPPED
 /// by `read_request` (no IR `IrBlock` counterpart), so a same-protocol Bedrock->Bedrock
 /// passthrough re-emitted a body with prompt caching disabled — a real cost regression (a cache
@@ -3582,7 +3582,7 @@ fn test_cache_point_round_trip() {
     );
 }
 
-/// Regression (R20 MED #7): a message whose ONLY content block is a `cachePoint` (no
+/// A message whose ONLY content block is a `cachePoint` (no
 /// representable text/tool block) must re-emit the marker rather than the empty-content `""`
 /// placeholder — the splice runs BEFORE the placeholder substitution, so the cachePoint keeps
 /// the turn non-empty and the prompt-cache boundary intact.
@@ -3678,7 +3678,7 @@ fn test_splice_cache_points_out_of_range_does_not_panic() {
 
 // --- Round 21 regression tests: audit findings --------------------------------------------
 
-/// Regression (R21 #1, ContextLength reachability): `extract_error` must synthesize the canonical
+/// `extract_error` must synthesize the canonical
 /// `context_length_exceeded` provider_code for a real Bedrock oversized-context error body.
 /// Bedrock returns a generic `ValidationException` whose `message` carries the signal; the
 /// PRODUCTION `extract_error` (not just the `#[cfg(test)]` classify helper) must detect it so the
@@ -3717,7 +3717,7 @@ fn test_extract_error_synthesizes_context_length_exceeded() {
     );
 }
 
-/// Regression (R21 #2, ordering invariant): the `contentBlockStart` toolUse arm must honor the
+/// The `contentBlockStart` toolUse arm must honor the
 /// same `state.started` guard the text branch enforces — a tool BlockStart must NEVER precede the
 /// MessageStart it belongs to. A `contentBlockStart` carrying a `toolUse` that arrives BEFORE
 /// `messageStart` (reordered/malformed stream) must emit NO BlockStart.
@@ -3775,7 +3775,7 @@ fn test_stream_tool_block_start_before_message_start_is_dropped() {
     );
 }
 
-/// Regression (R21 #3, json tool-result fidelity): a native Converse `{"json": <value>}` block
+/// A native Converse `{"json": <value>}` block
 /// inside a `toolResult.content` array must survive a same-protocol reader→writer round-trip as a
 /// `json` block — NOT be collapsed to a `text` block (the old behaviour, which lost the json/text
 /// distinction). Mirrors the image-sentinel round-trip.
@@ -3815,7 +3815,7 @@ fn test_tool_result_json_block_round_trip() {
     );
 }
 
-/// Regression (R22 LOW #24, index clamp): the upstream-controlled `contentBlockIndex` is
+/// The upstream-controlled `contentBlockIndex` is
 /// attacker-controllable and was forwarded UNCLAMPED into IR block indices at all three stream
 /// read sites (`contentBlockStart` / `contentBlockDelta` / `contentBlockStop`). A malicious huge
 /// index must now be clamped to `MAX_CONTENT_BLOCK_INDEX` before it reaches the IR, so a
@@ -3897,7 +3897,7 @@ fn test_stream_huge_content_block_index_is_clamped() {
     );
 }
 
-/// Regression (R22 LOW #12, classify/extract_error lockstep): the `#[cfg(test)]` `classify`
+/// The `#[cfg(test)]` `classify`
 /// helper must recognize EVERY context-length phrasing the production `extract_error` does. R21
 /// #17 added a third pattern (`exceeds the maximum` + token/context) to `extract_error` but not
 /// to `classify`, so the two drifted. The classifier must now map that third phrasing to
@@ -3942,7 +3942,7 @@ fn test_classify_third_context_length_pattern_matches_extract_error() {
 
 // --- Round 23 regression tests: audit findings --------------------------------------------
 
-/// Regression (R23 LOW #14, context-length body-scan gate): the `extract_error` context-length
+/// The `extract_error` context-length
 /// override must be GATED on a `400` — Bedrock only emits an oversized-context error as a `400
 /// ValidationException`. A 5xx whose body merely echoes context-length phrasing (an upstream
 /// server-error envelope quoting the request) must NOT be reclassified as
@@ -3985,7 +3985,7 @@ fn test_extract_error_5xx_context_phrasing_not_reclassified() {
     );
 }
 
-/// Regression (R23 LOW #15, response image completeness): the `read_response` content loop must
+/// The `read_response` content loop must
 /// carry an `image` block from a Converse response into the IR — the request-side readers
 /// already decode `image` via `read_bedrock_image_block`, but the response loop silently DROPPED
 /// it. A base64 `source.bytes` image in the assistant message must surface as an
@@ -4057,7 +4057,7 @@ fn test_read_response_carries_image_block() {
     );
 }
 
-/// Regression (R25 MED #3): a native Converse `reasoningContent` (extended-thinking) block in a
+/// A native Converse `reasoningContent` (extended-thinking) block in a
 /// REQUEST message's `content[]` was SILENTLY DROPPED by `read_request` (no arm matched it), so a
 /// same-protocol Bedrock->Bedrock passthrough lost the signed reasoning Bedrock requires echoed
 /// back on a follow-up turn. It must now round-trip: reader carries it into IR `Thinking`, writer
@@ -4111,7 +4111,7 @@ fn test_request_reasoning_content_round_trips() {
     );
 }
 
-/// Regression (R25 MED #3): a `reasoningContent` block in a RESPONSE message's `content[]` was
+/// A `reasoningContent` block in a RESPONSE message's `content[]` was
 /// silently dropped by `read_response`. It must now round-trip through read->write. Also covers
 /// the `redactedContent` member (carried via the redacted-signature sentinel) so a redacted
 /// reasoning block re-emits as `redactedContent`, not a plaintext `reasoningText`.
@@ -4187,7 +4187,7 @@ fn test_response_reasoning_content_round_trips() {
     );
 }
 
-/// Regression (R26 MED #3/#4): STREAMING extended-thinking (`reasoningContent` deltas on the
+/// STREAMING extended-thinking (`reasoningContent` deltas on the
 /// ConverseStream wire) was SILENTLY DROPPED — `read_response_events` had no reasoning arm and
 /// `write_response_event` returned `None` for ThinkingDelta/SignatureDelta — even though the
 /// BUFFERED path (R25) preserved it. The streaming path must now mirror the buffered logic: the
@@ -4328,7 +4328,7 @@ fn test_stream_reasoning_content_round_trips() {
     );
 }
 
-/// Regression (R26 MED #3/#4): the STREAMING redacted-reasoning case. A `reasoningContent`
+/// The STREAMING redacted-reasoning case. A `reasoningContent`
 /// delta carrying `redactedContent` (opaque encrypted bytes) must survive read->IR->write on the
 /// streaming path, re-emitting as `redactedContent` — never leaking as a plaintext `text` or a
 /// `signature`. The reader maps it to a typed `RedactedReasoningDelta(bytes)` (one IR delta → one
@@ -4424,7 +4424,7 @@ fn test_stream_reasoning_redacted_round_trips() {
     );
 }
 
-/// Regression (R25 MED #4): native Converse `guardContent` (inline Guardrails) blocks that appear
+/// Native Converse `guardContent` (inline Guardrails) blocks that appear
 /// inside the `system` array and inside a message's `content` array were SILENTLY DROPPED by
 /// `read_request` (no IR `IrBlock` counterpart), so a same-protocol Bedrock->Bedrock passthrough
 /// re-emitted a body with the guardrail spans the caller marked stripped — disabling the inline
@@ -4467,7 +4467,7 @@ fn test_guard_content_round_trips() {
     );
 }
 
-/// Regression (R25 MED #4): when BOTH `cachePoint` and `guardContent` markers occupy DISTINCT
+/// When BOTH `cachePoint` and `guardContent` markers occupy DISTINCT
 /// positions in the SAME content array, they must be re-spliced together so neither shifts the
 /// other off its recorded index. This guards the single-batch merge (`merge_marker_entries`)
 /// against the naive two-pass splice that would mis-order them.
@@ -5296,7 +5296,7 @@ fn bedrock_stream_framing_emits_one_metadata_delta_then_guards_duplicate() {
         );
 }
 
-/// REGRESSION (audit c2r4): a CACHE-ONLY stop-delta (`input_tokens == 0 && output_tokens == 0`
+/// A CACHE-ONLY stop-delta (`input_tokens == 0 && output_tokens == 0`
 /// but non-zero cache tokens — a full cache hit) must emit its `metadata` frame INLINE with the
 /// real cache tokens, not defer it and later flush a zero-usage frame. `has_usage` now includes
 /// the cache fields.

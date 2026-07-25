@@ -858,7 +858,7 @@ fn rate_limited_response() -> Response {
 /// path-inferred protocol. The tap's `status` MUST be the client-visible HTTP status, which is
 /// PROTOCOL-NATIVE for an auth failure — 401 for anthropic/openai/responses/cohere, 403 for Bedrock
 /// (SigV4 → AccessDenied), 400 for Gemini (INVALID_ARGUMENT). Hardcoding 401 made a tap watching a
-/// gemini/bedrock ingress denial contradict the response the client actually got (found: audit c1r6).
+/// gemini/bedrock ingress denial contradict the response the client actually got.
 fn unauthorized_with_completion_taps(app: &crate::state::App, path: &str) -> Response {
     let proto = proto_for_path(path);
     if !app.tap_hooks_completion.is_empty() {

@@ -1512,7 +1512,7 @@ async fn test_disabled_virtual_key_is_rejected_401() {
     server.shutdown().await;
 }
 
-/// Regression (MEDIUM/correctness): `auth.mode=none` is an open relay, but governance supersedes
+/// `auth.mode=none` is an open relay, but governance supersedes
 /// it. With governance enabled AND auth.mode explicitly None, a request that presents NO token
 /// must still be rejected 401 — none-mode's accept-every-request semantics are NOT honoured. This
 /// pins the documented override (and the parallel one-shot operator warning the override emits)
@@ -1609,7 +1609,7 @@ async fn test_none_mode_with_governance_still_requires_virtual_key() {
     server.shutdown().await;
 }
 
-/// Regression (LOW/test-coverage): `upstream_credentials: passthrough` + governance enabled is a
+/// `upstream_credentials: passthrough` + governance enabled is a
 /// documented UNSUPPORTED deployment. Passthrough's contract is "accept any caller credential and
 /// forward it upstream", but governance supersedes it: every request must resolve to a valid
 /// ENABLED virtual key. The middleware emits a one-shot operator warning (`WARN_ONCE` at the top
@@ -1731,7 +1731,7 @@ async fn test_passthrough_mode_with_governance_still_requires_virtual_key() {
 
 #[test]
 fn test_extract_admin_header_token_empty_filtered() {
-    // Regression (LOW/security-hardening): a present-but-blank `x-admin-token` must be treated as
+    // A present-but-blank `x-admin-token` must be treated as
     // ABSENT, mirroring the empty-filter `extract_client_token` applies to the vendor carriers.
     // The OLD code mapped a blank header to `Some("")` (no `.filter(|t| !t.is_empty())`), so this
     // unit test fails against it; the filtered helper now yields `None`.
@@ -1760,7 +1760,7 @@ fn test_extract_admin_header_token_empty_filtered() {
     assert_eq!(extract_admin_header_token(&absent), None);
 }
 
-/// Regression (LOW/security-hardening): a present-but-blank `x-admin-token` must be rejected on
+/// A present-but-blank `x-admin-token` must be rejected on
 /// the admin surface. Driven end-to-end through the real router + `auth_middleware` so the
 /// extraction + constant-time compare are exercised together. A correct token via the same header
 /// authorizes, proving the 401 is the empty-filter and not a blanket reject.
@@ -2209,7 +2209,7 @@ async fn test_governance_rejects_empty_token_even_if_empty_secret_key_exists() {
     server.shutdown().await;
 }
 
-/// REGRESSION (10-phase 1.5.0 audit: legacy Bearer key ignores revocation): a pre-1.5.0 hashed-
+/// A pre-1.5.0 hashed-
 /// secret key — one resolved on the data plane via `gov.lookup(secret)` (a `by_hash` hit, hydrated
 /// by `GovState::load` on a 1.4.x→1.5.0 in-place upgrade) — must STOP authenticating after
 /// `revoke`, exactly like the signed-token and SigV4 paths. `revoke` denylists the subject but
@@ -2311,7 +2311,7 @@ async fn test_governance_revoked_legacy_hashed_secret_key_rejected() {
 
 #[test]
 fn test_auth_middleware_debug_redacts_tokens() {
-    // Regression (SECURITY LOW #22): `AuthMiddleware`'s manual `Debug` must expose only shape
+    // `AuthMiddleware`'s manual `Debug` must expose only shape
     // (chain length, keys flag, upstream mode), never any credential material. There are no
     // static client tokens anymore; the invariant is that ONLY the whitelisted shape fields
     // appear, so a future field holding a secret cannot leak through a derived Debug.
@@ -2579,7 +2579,7 @@ fn test_verify_bedrock_sigv4_disabled_key_rejected() {
 
 #[test]
 fn test_verify_bedrock_sigv4_revoked_key_rejected() {
-    // REGRESSION (SigV4-revocation-bypass, 10-phase 1.5.0 audit): a dual-credential key minted with
+    // A dual-credential key minted with
     // BOTH a busbar signed bearer token AND a SigV4 credential is bound to ONE subject id. `revoke`
     // denylists that subject but DELIBERATELY leaves `enabled = true` (it preserves the binding for
     // history). The signed-token path consults the denylist and rejects; before the fix the inbound

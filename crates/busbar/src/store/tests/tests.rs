@@ -102,7 +102,7 @@ fn test_hard_down_follows_identity_across_rebuild() {
     assert_eq!(restored.dead_reason, "auth rejected (HTTP 401)");
 }
 
-/// REGRESSION (audit c1r6): a snapshot captured while a lane's single-flight probe was in flight
+/// A snapshot captured while a lane's single-flight probe was in flight
 /// carries `ST_HALF_OPEN`. Restoring it verbatim WEDGES the cell (HalfOpen is rejected by both
 /// `cell_ready_breaker`/`cell_acquire_breaker` and no probe outcome ever runs against a restored
 /// cell whose `probe_in_flight` is false), benching the lane forever when health probing is off.
@@ -132,7 +132,7 @@ fn restored_halfopen_state_normalizes_to_open() {
     );
 }
 
-/// REGRESSION (audit c1r7): `restore_health_impl` must not overwrite a newly-LIMITED lane's cap
+/// `restore_health_impl` must not overwrite a newly-LIMITED lane's cap
 /// with the unlimited sentinel (-1) a prior UNLIMITED snapshot carries. `export_health` writes -1
 /// for an unlimited lane; if the operator later adds `max_requests` to that lane, blindly storing
 /// -1 over the fresh cap makes `lane_admissible` (`limited && budget <= 0`) reject EVERY dispatch
@@ -189,7 +189,7 @@ fn restore_does_not_clobber_new_limit_with_unlimited_sentinel() {
         "limited→limited must carry the remaining budget, not reset to the full cap"
     );
 
-    // REGRESSION (audit c1r8): a LOWERED cap must CLAMP the carried remaining budget — carrying a
+    // A LOWERED cap must CLAMP the carried remaining budget — carrying a
     // larger old remaining over a smaller new cap would over-serve past the operator's new hard
     // ceiling. old cap 500, 100 served → snap remaining 400; new cap 300 → must clamp to 300.
     let mut over = snaps.clone();
@@ -253,7 +253,7 @@ fn test_trip_on_error_rate() {
     );
 }
 
-/// REGRESSION (#29): `cell_record_failure` (via `record_transient`/`record_rate_limit`) must
+/// `cell_record_failure` (via `record_transient`/`record_rate_limit`) must
 /// RETURN `true` exactly on a logical Closed→Open trip, so the proxy engine call sites emit
 /// `BREAKER_TRIPS_TOTAL` once per trip. Sub-threshold failures return `false`; the failure that
 /// breaches the threshold returns `true`; further failures on the already-Open cell return `false`
@@ -295,7 +295,7 @@ fn test_record_failure_returns_true_only_on_threshold_trip() {
     assert!(matches!(store.breaker_state(0), BreakerState::Open { .. }));
 }
 
-/// REGRESSION (R27 LOW #12): the consecutive-failure streak bump in `cell_record_failure` must
+/// The consecutive-failure streak bump in `cell_record_failure` must
 /// happen UNDER the per-cell `transition_lock`, serialized with the should_trip/compute_cooldown
 /// read — NOT as an unconditional `fetch_add` BEFORE the lock. The old pre-lock bump let
 /// concurrent failures over-count the streak before the first trip read the value, inflating the
@@ -306,7 +306,7 @@ fn test_record_failure_returns_true_only_on_threshold_trip() {
 /// and the streak CANNOT advance while we hold it (stays 0). The OLD code bumped the streak before
 /// taking the lock, so the streak would advance to 1 even while the lock is held — this assertion
 /// fails against the old code and passes after the fix.
-/// REGRESSION (audit c2r1): with `base_cooldown_secs = 1` (the minimum config_validate permits),
+/// With `base_cooldown_secs = 1` (the minimum config_validate permits),
 /// the ±10% jitter can draw −1, and the clamp floor `duration / 2 = 1/2` truncates to 0 — so a
 /// tripped cell got a ZERO cooldown and re-admitted instantly (`now >= cooldown_until`), the exact
 /// zero-backoff the validator rejects a static `base = 0` to prevent. The floor is now
@@ -340,7 +340,7 @@ fn cooldown_never_zero_for_base_one() {
     }
 }
 
-/// REGRESSION (audit c2r3): the exponential backoff `base * 2^streak` must SATURATE, never wrap.
+/// The exponential backoff `base * 2^streak` must SATURATE, never wrap.
 /// `checked_shl` guards only the shift COUNT (>= 64), not value overflow — `10u64.checked_shl(63)`
 /// is `Some(0)` — so an EVEN `base_cooldown_secs` at a high streak wrapped to a ZERO cooldown
 /// (tripped cell re-admits instantly) exactly when the lane is failing hardest.
@@ -471,7 +471,7 @@ fn test_streak_bump_is_serialized_under_transition_lock() {
     );
 }
 
-/// REGRESSION (#21): the spend/refund contract the forward path's over-refund guard relies on.
+/// The spend/refund contract the forward path's over-refund guard relies on.
 /// `spend_budget` is a NO-OP returning `false` when the budget is already 0 (never driven
 /// negative), while `refund_budget` UNCONDITIONALLY fetch_adds. So an UNGUARDED refund paired with
 /// a no-op spend raises the budget ABOVE its cap — which the forward path now prevents by refunding
@@ -541,7 +541,7 @@ fn test_spend_refund_budget_contract() {
     );
 }
 
-/// REGRESSION (#12): `is_ready_any_cell` (which `/healthz` uses) must report NOT-ready when the
+/// `is_ready_any_cell` (which `/healthz` uses) must report NOT-ready when the
 /// lane is circuit-broken in EVERY cell — the default `""` cell AND every per-pool cell. Under
 /// sustained pool-routed failures the per-pool cells trip Open while the default cell (touched only
 /// by direct/adhoc routes) may also trip via hard-down/all-cells; once nothing can serve, healthz
@@ -568,7 +568,7 @@ fn test_is_ready_any_cell_false_when_every_cell_open() {
     );
 }
 
-/// REGRESSION (#18, R20 redo of R19): `lane_usable_any_cell` must NOT short-circuit on the
+/// `lane_usable_any_cell` must NOT short-circuit on the
 /// lane-default (`""`) cell when the lane has per-pool cells. The default cell IS the `LaneState`,
 /// starts `ST_CLOSED`/`cooldown=0`, and is written ONLY by direct/ad-hoc routes — pool-routed
 /// traffic NEVER touches it, so in production it stays "ready" forever. The R19 fix iterated all
@@ -601,7 +601,7 @@ fn test_is_ready_any_cell_false_when_pool_cells_open_default_untouched() {
     );
 }
 
-/// REGRESSION (#18, positive/fallback case): a lane with NO per-pool cells (direct/ad-hoc-only)
+/// A lane with NO per-pool cells (direct/ad-hoc-only)
 /// must fall back to the lane-default cell. With the default cell Open and no pool cells present,
 /// `is_ready_any_cell` must report NOT-ready; recovering the default cell flips it back to ready.
 #[test]
@@ -621,7 +621,7 @@ fn test_is_ready_any_cell_falls_back_to_default_when_no_pool_cells() {
     );
 }
 
-/// REGRESSION (LOW #16, TOCTOU): `recover_lane`'s close must re-validate suppression UNDER the
+/// `recover_lane`'s close must re-validate suppression UNDER the
 /// transition lock against the cooldown the probe OBSERVED, so a concurrent hard-down that re-arms
 /// a STRICTER sticky cooldown after the snapshot is NOT clobbered. Here a probe observed a tripped
 /// cell with cooldown `now+600`; before the close runs, a hard-down parks the SAME cell with the
@@ -653,7 +653,7 @@ fn test_recover_close_does_not_clobber_concurrent_harddown() {
     );
 }
 
-/// REGRESSION (LOW #16, positive case): the under-lock re-validation must STILL recover a
+/// The under-lock re-validation must STILL recover a
 /// legitimately tripped cell — i.e. the fix must not over-correct. A probe observes an Open cell
 /// with a future cooldown and nothing re-arms it; the recovery close (observed == live cooldown)
 /// must close the cell and clear the cooldown.
@@ -680,7 +680,7 @@ fn test_recover_close_recovers_tripped_cell_when_unraced() {
     );
 }
 
-/// REGRESSION (A4): a CLOSED cell carrying an EXPIRED (past) nonzero `cooldown_until` must NOT be
+/// A CLOSED cell carrying an EXPIRED (past) nonzero `cooldown_until` must NOT be
 /// treated as suppressed. The under-lock check used `cooldown_until > 0`, so any lapsed cooldown
 /// looked "still suppressed" → a spurious `cell_closed_locked` + SWRR reset on an already-recovered
 /// lane. The fix threads the caller's `now` and checks `cooldown_until > now`. Here a Closed cell
@@ -706,7 +706,7 @@ fn test_recover_close_ignores_expired_past_cooldown_on_closed_cell() {
         );
 }
 
-/// REGRESSION (#12, positive case): with the default cell Open BUT one per-pool cell Closed,
+/// With the default cell Open BUT one per-pool cell Closed,
 /// `is_ready_any_cell` must report ready (a pool lane CAN still serve) even though the
 /// default-cell-only `is_ready` reads not-ready.
 #[test]
@@ -1691,7 +1691,7 @@ fn test_named_pool_failure_bumps_lane_global_err() {
     );
 }
 
-/// Regression (store.rs:record_failure_for): a failure recorded via the BARE/default-cell path
+/// A failure recorded via the BARE/default-cell path
 /// (`pool == ""`, used by the degraded forward and direct/ad-hoc routes) must count the
 /// lane-global `err` EXACTLY once, not twice. For `pool == ""`, `cell("", lane)` IS the LaneState
 /// itself, so `cell_record_failure` already bumps `LaneState.err`; the previous unconditional
@@ -2815,7 +2815,7 @@ fn test_retry_after_not_honored_ignores_server_value() {
     assert_ne!(until, 80001, "must not use the 1s server Retry-After value");
 }
 
-/// Regression (CRITICAL): a FAILED half-open probe must NOT bench a lane forever. cell_open must
+/// A FAILED half-open probe must NOT bench a lane forever. cell_open must
 /// reset probe_in_flight; otherwise the next cooldown expiry transitions Open→HalfOpen but the
 /// stale probe flag makes the CAS fail for every request, so no one can ever probe again.
 #[test]
@@ -2867,7 +2867,7 @@ fn test_failed_probe_does_not_permanently_lock_lane() {
     );
 }
 
-/// Regression (HIGH): a lane that hard-downs WHILE a half-open probe is in flight must not be
+/// A lane that hard-downs WHILE a half-open probe is in flight must not be
 /// benched forever. `record_hard_down_for` transitions the cell to Open with the long sticky
 /// cooldown; if it failed to clear `probe_in_flight` (the same bug class fixed in `cell_open`),
 /// the next cooldown expiry would enter HalfOpen but the probe CAS would fail for every request,
@@ -2920,7 +2920,7 @@ fn test_hard_down_while_probing_does_not_wedge_lane() {
     );
 }
 
-/// Regression (HIGH): selection must NOT transition non-selected candidates Open→HalfOpen or
+/// Selection must NOT transition non-selected candidates Open→HalfOpen or
 /// steal their single-flight probes. The filter is side-effect-free; only the one lane a caller
 /// dispatches acquires the probe (via acquire_for_dispatch_in / usable). Here two lanes are Open
 /// with expired cooldowns; running selection many times must leave the UNSELECTED lanes in Open
@@ -3280,7 +3280,7 @@ fn test_swrr_all_down_returns_none() {
     );
 }
 
-/// REGRESSION (A2): out-of-band probe failures against an ALREADY-Open cell must NOT advance the
+/// Out-of-band probe failures against an ALREADY-Open cell must NOT advance the
 /// consecutive streak. The streak `fetch_add` used to run unconditionally before the state match,
 /// so the ST_OPEN no-op arm still inflated the streak → a later HalfOpen re-trip computed an
 /// over-long cooldown (`base << inflated_streak`, pinned at max). Here we batter an Open cell with
@@ -3352,7 +3352,7 @@ fn test_open_cell_probe_failures_do_not_inflate_streak() {
     );
 }
 
-/// REGRESSION (A3): jitter must apply on the `streak == 0` base path too (first-trip /
+/// Jitter must apply on the `streak == 0` base path too (first-trip /
 /// sub-threshold cooldown), not only `streak > 0`. Two distinct cells with streak==0 and the SAME
 /// base must get DIFFERENT cooldowns (desync via the per-cell FNV seed), each within [base/2, max].
 #[test]

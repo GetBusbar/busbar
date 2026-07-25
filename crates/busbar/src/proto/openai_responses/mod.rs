@@ -425,7 +425,7 @@ fn is_code_like_signal(signal: &str) -> bool {
 /// cross-protocol and transport-abort paths where `provider_signal` is a HUMAN sentence, not an enum
 /// — the code is DERIVED from the error class so the wire ALWAYS carries a valid enum an SDK can
 /// switch on, never a free-form string. Exhaustive over `StatusClass` (no `_`) per the no-catch-all
-/// rule. (found: audit c2r2.)
+/// rule.
 fn responses_error_code(err: &crate::proto::IrError) -> String {
     if let Some(s) = err.provider_signal.as_deref() {
         if is_code_like_signal(s) {

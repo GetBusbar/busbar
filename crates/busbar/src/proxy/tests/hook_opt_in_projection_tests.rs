@@ -90,7 +90,7 @@ fn system_text_chars_counts_block_arrays() {
     assert_eq!(system_text_chars(&Value::Null, "anthropic"), 0);
 }
 
-/// REGRESSION (audit c1r4): the projection read-path was blind to GEMINI ingress — it read
+/// The projection read-path was blind to GEMINI ingress — it read
 /// only `messages`/`system`, so a gemini body (`contents`/`systemInstruction`/`parts`)
 /// projected EMPTY: a rewrite gate saw `message_count: 0` with no prompt and silently
 /// no-oped. The read side must mirror the dialects `apply_rewrite_to_body` writes.
@@ -129,7 +129,7 @@ fn prompt_projection_reads_gemini_contents() {
     assert_eq!(req.prompt.as_ref().unwrap().messages.len(), 2);
 }
 
-/// REGRESSION (audit c1r4), Responses-API half: `input` (list OR bare string) and
+/// Responses-API half: `input` (list OR bare string) and
 /// `instructions` must project — the old read-path saw neither.
 #[test]
 fn prompt_projection_reads_responses_input() {
@@ -167,7 +167,7 @@ fn prompt_projection_reads_responses_input() {
     assert_eq!(req.message_count, 1);
     assert_eq!(req.total_chars, 15);
 
-    // REGRESSION (audit c1r9): TOP-LEVEL typed items in `input[]` carry text at the item ROOT
+    // TOP-LEVEL typed items in `input[]` carry text at the item ROOT
     // (`{type:"input_text", text}`), not under `content`. They must project (not blank) and
     // count toward the SIZE signal, with role inferred from `type`.
     let v: Value = serde_json::json!({
@@ -195,7 +195,7 @@ fn prompt_projection_reads_responses_input() {
     assert_eq!(req.total_chars, 12);
 }
 
-/// REGRESSION (audit c1r7): the `max_tokens` routing SIZE signal must be dialect-aware. The
+/// The `max_tokens` routing SIZE signal must be dialect-aware. The
 /// Responses API names it `max_output_tokens`, so reading `max_tokens` unconditionally projected
 /// `None` for every responses-ingress request — silently blinding any routing policy/tap that
 /// keys on the size signal. Non-responses dialects still read `max_tokens`.

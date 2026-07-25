@@ -626,7 +626,6 @@ impl InMemoryStore {
             // an even `base_cooldown_secs` at `streak >= 63` WRAPPED TO 0, giving a zero cooldown
             // (tripped cell re-admits instantly) exactly when the lane is failing hardest. Compute in
             // u128 (base < 2^64, shift <= 63 → product < 2^127, no overflow) then saturate to u64.
-            // (found: audit c2r3.)
             let shift = streak.min(63);
             let shifted = (cfg.base_cooldown_secs as u128) << shift;
             u64::try_from(shifted)
@@ -694,7 +693,7 @@ impl InMemoryStore {
                 // minimum config_validate permits) the integer floor `1/2` truncates to 0, and a
                 // −1 jitter draw (~1/3 of trips) then produced a ZERO cooldown — the tripped cell
                 // re-admits instantly (`now >= cooldown_until`), the exact zero-backoff outcome the
-                // validator rejects a static `base_cooldown_secs = 0` to prevent. (found: audit c2r1.)
+                // validator rejects a static `base_cooldown_secs = 0` to prevent.
                 (duration / 2).max(1),
                 cfg.max_cooldown_secs,
             );

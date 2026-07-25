@@ -521,7 +521,7 @@ fn test_cache_control_preserved() {
     }
 }
 
-/// REGRESSION (found live, Claude Code → Nova on Bedrock): an Anthropic `cache_control`
+/// An Anthropic `cache_control`
 /// breakpoint translated to a Bedrock `cachePoint` marker, which Amazon Nova hard-rejects
 /// (400 "extraneous key [cachePoint] is not permitted"). Bedrock's marker is MODEL-gated, so
 /// the seam must clear the cache ask unless the lane asserts `prompt_caching` — mirroring the

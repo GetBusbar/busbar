@@ -790,34 +790,21 @@ pub(crate) async fn create_key(
             }
             None => None,
         };
-        // ANTI-SPRAWL CAP (audit gap 7 / self-service §6a): `limits.max_keys_per_principal` bounds
-        // how many keys may bind to ONE group. Since a `user:<sub>` leaf IS the principal (§5), this
-        // caps a self-issuing dev's key count. `0` = unlimited (skip). Only meaningful for a bound
-        // key. An auto-provisioned leaf is brand-new (0 keys), so a group's FIRST self-mint always
-        // passes. READ FROM THE FRESH SNAPSHOT — this is the stale-cap fix.
+        // ANTI-SPRAWL CAP — see `check_key_cap` for what counts. Read from the FRESH snapshot, so a
+        // concurrent apply cannot leave this mint enforcing a stale cap.
         let cap = current.max_keys_per_principal;
-        // The BUCKET this mint lands in. `None` is the UNBOUND bucket, and it is capped too: a
-        // groupless key escapes the limit tree entirely, so leaving it uncapped made
-        // `max_keys_per_principal` trivially evadable by simply omitting `group` (audit round-5
-        // #19). `check_key_cap` is a no-op when `cap == 0` (unlimited).
+        // The BUCKET this mint lands in. `None` is the UNBOUND bucket, capped too — a groupless key
+        // escapes the limit tree entirely, so leaving it uncapped makes the cap evadable by simply
+        // omitting `group`.
         let cap_group = spec.group.clone();
         let did_provision = provisioned.is_some();
-        // WHAT THE AUTO-PROVISION COMMITTED, carried INTO the post-commit step (audit round-5
-        // #13/#28/#33/#41 + #14). Two things were wrong with recording this after the transaction:
-        //
-        //   * the `group.provision` audit row and the version-log entry were written only on the
-        //     SUCCESS path, so a mint that failed AFTER the group's persist-and-swap had already
-        //     committed left the group live, durable and version-bumped with NO audit row, NO
-        //     version entry and no key bound — a config change that happened and that nothing in
-        //     the trail admits to. There is no honest compensation available here (the swap is
-        //     already visible to every in-flight request, and un-persisting is itself fallible), so
-        //     the semantics are the honest ones: the provision is COMMITTED at commit time and is
-        //     RECORDED at commit time. A failed mint leaves an empty group — exactly the state an
-        //     explicit `POST /groups` followed by a failed `POST /keys` leaves — and the retry is
-        //     idempotent, because the group now exists and the retry simply binds to it.
-        //   * the version was read from a POST-lock-release `handle.load()`, so a concurrent
-        //     mutation's `config_version` could be attributed to this provision (#14). It now comes
-        //     from the very snapshot that was committed.
+        // WHAT THE AUTO-PROVISION COMMITTED, carried INTO the post-commit step. The provision is
+        // recorded at COMMIT time, not after the whole transaction succeeds: once the swap is
+        // visible to in-flight requests there is no honest compensation (un-persisting is itself
+        // fallible), so a mint that fails downstream must still leave an audited, version-bumped
+        // group — the same state an explicit `POST /groups` + failed `POST /keys` leaves, and the
+        // retry then simply binds to it. `config_version` comes from the committed snapshot itself,
+        // not a post-lock-release `handle.load()` that a concurrent mutation could have moved.
         let provision_record = provisioned.as_ref().map(|installed| {
             (
                 installed.clone(),
@@ -1368,7 +1355,6 @@ pub(crate) async fn rotate_key(
     // delete that lands between rotate's read and write is clobbered by rotate's put — RESURRECTING
     // a revoked key with a fresh secret. Gate acquired INSIDE the closure for cancellation safety
     // (a scheduled spawn_blocking runs to completion even if the handler future is dropped).
-    // (found: audit c1r6 — rotate was the one key-mutator missing the gate.)
     // The re-minted signed token gets the SAME default lifetime a mint with no `expires_in` /
     // `expires_at` would receive (rotate takes no body today).
     let exp = crate::store::now().saturating_add(DEFAULT_KEY_TTL_SECS);

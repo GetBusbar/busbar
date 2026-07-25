@@ -879,7 +879,7 @@ impl ProtocolWriter for ResponsesWriter {
                 // `code` MUST be a valid Responses enum, never the free-form human `provider_signal`
                 // (a cross-protocol / transport-abort path carries a sentence like "The response
                 // stream was interrupted." there). A recognized code round-trips; otherwise it is
-                // derived from the error class. `message` keeps the human text. (found: audit c2r2.)
+                // derived from the error class. `message` keeps the human text.
                 let code = responses_error_code(err);
                 // Replay the stream's captured `response.id` so `response.failed` correlates with
                 // the opening `response.created` (the SDK reads `event.response.id` on the failure

@@ -2094,7 +2094,7 @@ async fn test_role_bound_principal_governed_like_a_virtual_key() {
 /// plus a measured batch through the REAL router against an instant in-process mock upstream
 /// and gates the measured p50/p99 full-request latency under DELIBERATELY GENEROUS bounds —
 /// busbar's real added overhead is microseconds, so these only trip on a GROSS hot-path
-/// regression (accidental sync I/O, a stray sleep, an O(n²) body walk), never on runner noise.
+/// Body walk), never on runner noise.
 /// Fine-grained overhead numbers stay the latency bench's job (the external
 /// GetBusbar/benchmarking harness).
 #[tokio::test]
@@ -3133,7 +3133,7 @@ async fn test_governance_guard_passes_when_allowed() {
     );
 }
 
-/// REGRESSION (audit c2r1): a request ADMITTED WITHOUT a charge (store-error fail-open) that then
+/// A request ADMITTED WITHOUT a charge (store-error fail-open) that then
 /// gets a non-2xx must NOT refund — `refund_request` is a blind decrement that would erode a
 /// DIFFERENT, legitimately-charged request's spend/count in the same window. `finish_admitted`
 /// gates the refund on the `charged` flag from `governance_guard`.
@@ -4783,7 +4783,7 @@ async fn test_governance_pool_acl_403_bedrock_native_envelope() {
 // the fallback chain reachable from the requested pool and re-runs the SAME `pool_authorized`
 // 403 gate against every fallback pool name BEFORE any dispatch.
 
-/// REGRESSION (SECURITY MED #3): a key restricted to pool A must be DENIED (403, the same
+/// A key restricted to pool A must be DENIED (403, the same
 /// protocol-native permission envelope as the initial-pool denial) when A is configured to fail
 /// over to a fallback pool B the key is NOT allowed on — even though the key passes A's own ACL
 /// and A's backend would itself answer 200. Against the pre-fix code this request reached A and

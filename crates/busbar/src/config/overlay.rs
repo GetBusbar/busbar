@@ -76,7 +76,7 @@ pub(crate) fn persist(
     // explicit `deleted_remove` above covers the register-a-name case; this reconciliation also
     // covers the WHOLESALE-registry writes (config ROLLBACK, which passes both args `None`):
     // rollback restores a registry that may contain a name still tombstoned from an earlier
-    // API delete, and without this the rollback would not survive a restart (found: audit c1r5).
+    // API delete, and without this the rollback would not survive a restart.
     doc.deleted.retain(|name| !hooks.contains_key(name));
     doc.version = OVERLAY_VERSION;
     write(p, &doc).map_err(|e| format!("overlay write to '{}' failed: {e}", p.display()))
@@ -771,7 +771,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// REGRESSION (audit c1r5): a WHOLESALE registry write (config rollback passes both tombstone
+    /// A WHOLESALE registry write (config rollback passes both tombstone
     /// args `None`) must reconcile away any tombstone for a name that the restored registry
     /// contains — otherwise the boot-merge inserts the hook then subtracts it, and the rollback
     /// silently vanishes on the next restart. `persist` retains only tombstones whose name is

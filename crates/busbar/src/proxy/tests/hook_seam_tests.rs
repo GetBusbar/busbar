@@ -328,7 +328,7 @@ fn pool_runtime_with(
     }
 }
 
-/// REGRESSION (audit c1r13, compliance): a `Restrict` gate on the primary pool must persist onto
+/// A `Restrict` gate on the primary pool must persist onto
 /// a `fallback_pool` hop, re-applied against the FALLBACK pool's own member tags. A required
 /// (`on_empty: reject`) restrict fails CLOSED when no fallback lane carries the tag; a `weighted`
 /// restrict is an advisory escape (skip).
@@ -420,7 +420,7 @@ fn enforce_restricts_reapplies_compliance_tags_across_pools() {
     );
 }
 
-/// REGRESSION (audit c1r14), END-TO-END: a BASE routing-policy (`route:` hook) `Restrict` must
+/// END-TO-END: a BASE routing-policy (`route:` hook) `Restrict` must
 /// persist across a `fallback_pool` spill exactly like a gate restrict. Primary pool's only
 /// baa-eligible lane is dead → the request exhausts and spills to a fallback pool whose lane is
 /// NOT baa-tagged; the compliance restrict must FAIL CLOSED there, not serve the ineligible lane.
@@ -647,7 +647,7 @@ async fn completion_tap_fires_synthetic_rejected_by_auth() {
     serve.abort();
 }
 
-/// REGRESSION (audit c1r6): the completion-tap `status` must be the PROTOCOL-NATIVE auth-failure
+/// The completion-tap `status` must be the PROTOCOL-NATIVE auth-failure
 /// status the client actually receives — not a hardcoded 401. A Gemini ingress bad-key denial is
 /// HTTP 400 (INVALID_ARGUMENT), so a tap watching it must see 400, matching the served response.
 #[tokio::test]
@@ -821,7 +821,7 @@ impl RoutingPolicy for RewritingGate {
     }
 }
 
-/// REGRESSION (Headroom e2e finding): a committed GLOBAL REWRITE must reach the upstream on a
+/// A committed GLOBAL REWRITE must reach the upstream on a
 /// SAME-PROTOCOL passthrough. The pristine-bytes short-circuit re-emits the retained request
 /// bytes verbatim; before the fix those were the PRE-rewrite bytes, so a global compressor's
 /// output was silently discarded exactly on the fast path.
@@ -863,7 +863,7 @@ async fn same_protocol_passthrough_carries_global_rewrite() {
     );
 }
 
-/// REGRESSION (Headroom e2e finding): a POOL-scoped `prompt: rw` gate joins the phase-1
+/// A POOL-scoped `prompt: rw` gate joins the phase-1
 /// transform pass — its rewrite reaches the upstream (before the fix it fired as a decision
 /// gate, its rewrite reply normalized to Abstain, and the request paid its deadline for
 /// nothing).
@@ -1393,7 +1393,7 @@ async fn send_user_projects_governance_key_identity() {
     assert_ne!(key_name.as_deref(), Some(secret.as_str()));
 }
 
-/// REGRESSION (audit c1r10): a GROUP/SSO principal's token is not a virtual-key secret, so the
+/// A GROUP/SSO principal's token is not a virtual-key secret, so the
 /// `decide_policy_order` token `lookup` MISSES — but the auth layer already synthesized a key
 /// for it (`GovCtx.key`, threaded as `resolved_gov_key`). The identity projection must fall back
 /// to that synthesized key so `send_user` policies see the caller, instead of silently `None`.
@@ -1464,7 +1464,7 @@ async fn send_user_falls_back_to_synthesized_group_key_identity() {
     assert_eq!(key_name.as_deref(), Some("eng-oncall"));
 }
 
-/// REGRESSION (audit c1r11): the named / ad-hoc anthropic routes go through `forward_with_pool`,
+/// The named / ad-hoc anthropic routes go through `forward_with_pool`,
 /// which carries NO resolved key — so the c1r10 fallback never fired there and a group principal
 /// on `/{pool}/v1/messages` was still routing-signal-blind. `forward_with_pool_keyed` threads
 /// `GovCtx.key` down; this exercises that path end-to-end via a pool's `send_user` policy.

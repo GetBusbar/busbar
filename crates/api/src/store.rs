@@ -572,7 +572,7 @@ mod tests {
         );
     }
 
-    /// REGRESSION (P2): the redacting `Debug` - the guard for the structured-logging surface, since
+    /// The redacting `Debug` - the guard for the structured-logging surface, since
     /// `tracing` records fields via `Debug`/`Display`, never serde - must NEVER emit the secret-
     /// equivalent `key_hash` / `secret_access_key`. This is the leak the finding is about: any place a
     /// record reaches a log must show presence only.

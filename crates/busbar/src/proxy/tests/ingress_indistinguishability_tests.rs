@@ -8,7 +8,7 @@ use reqwest::StatusCode;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-/// REGRESSION (R15 MEDIUM, conformance): every egress request must carry a native-SDK `Accept`
+/// Every egress request must carry a native-SDK `Accept`
 /// header — a native SDK always sends one, so its absence is a backend-side proxy fingerprint.
 /// The headline bedrock egress must mirror botocore: `application/vnd.amazon.eventstream` for a
 /// ConverseStream (stream) call, `application/json` for the unary Converse call.
@@ -30,7 +30,7 @@ fn test_egress_accept_matches_native_sdk() {
     assert_eq!(egress_accept("mystery", false), "application/json");
 }
 
-/// REGRESSION (R17 MEDIUM/technique): every egress request must carry a native-SDK `User-Agent`
+/// Every egress request must carry a native-SDK `User-Agent`
 /// (a UA-less request is the most distinctive backend-side proxy fingerprint), and each per-protocol
 /// UA embeds a PINNED SDK version that silently drifts from the real SDK over time. This test pins
 /// each protocol to its `EGRESS_UA_*` constant so the version strings cannot be edited or drift
@@ -86,7 +86,7 @@ fn test_egress_ua_versions_are_pinned_and_present() {
 }
 
 /// CANONICAL status→kind mapping shared by the main and degraded cross-protocol error shaping.
-/// REGRESSION (R7 MEDIUM, forward_once): a 401/403 must map to authentication_error/
+/// A 401/403 must map to authentication_error/
 /// permission_error, NOT invalid_request_error (the degraded-path bug). Exhaustive over the
 /// status arms the mapping distinguishes.
 #[test]
@@ -111,7 +111,7 @@ fn test_cross_protocol_error_kind_mapping() {
         cross_protocol_error_kind(StatusCode::BAD_GATEWAY),
         "api_error" // golden wire-contract literal (kept bare on purpose)
     );
-    // REGRESSION (R15 MEDIUM): a genuine upstream 503 must map to `overloaded`, NOT `api_error`.
+    // A genuine upstream 503 must map to `overloaded`, NOT `api_error`.
     // Collapsing it into `api_error` would emit, on a bedrock ingress, the
     // 503/InternalServerException pairing the real AWS runtime never produces (503 pairs with
     // ServiceUnavailableException). `overloaded` is the kind busbar already uses for its own 503s.
@@ -162,7 +162,7 @@ async fn test_shape_cross_protocol_error_auth_kinds() {
     }
 }
 
-/// REGRESSION (R7 HIGH, proxy engine ingress_error): a Bedrock-ingress forward-layer error must
+/// A Bedrock-ingress forward-layer error must
 /// carry BOTH `x-amzn-RequestId` and `x-amzn-errortype` (mirroring the body `__type`), exactly
 /// like a real AWS Bedrock runtime error and like ingress/auth.rs. Non-bedrock ingress must NOT
 /// carry them.
@@ -400,7 +400,7 @@ async fn test_cross_protocol_response_carries_ingress_ct_and_native_id() {
     server.shutdown().await;
 }
 
-/// REGRESSION (MED #2, forward_with_pool): a cross-protocol non-stream 2xx whose `usage` block
+/// A cross-protocol non-stream 2xx whose `usage` block
 /// PARSES but whose content shape is UNMODELED (here an empty `choices` array, on which the OpenAI
 /// reader's `read_response` returns `Err`) must NOT charge the virtual key's token budget. The body
 /// is untranslatable, so the client receives a 500 with NO completion; billing it (the old code
@@ -509,7 +509,7 @@ async fn test_untranslatable_2xx_does_not_charge_tokens() {
     server.shutdown().await;
 }
 
-/// REGRESSION (MED #1, proxy engine `FirstByteBody`): a SAME-PROTOCOL NON-STREAM 2xx
+/// A SAME-PROTOCOL NON-STREAM 2xx
 /// `application/json` body whose top-level object splits across transport frames BEFORE its
 /// trailing `usage` must STILL be token-counted. The streaming per-poll `tap.feed` scanner keeps
 /// no cross-chunk state — it only parses complete JSON objects within a single chunk — so the old
@@ -887,7 +887,7 @@ async fn test_mid_stream_transport_error_does_not_bill_partial_usage() {
     );
 }
 
-/// REGRESSION (LOW #15 SECURITY, proxy engine key selection): in `Passthrough` mode, a caller that
+/// In `Passthrough` mode, a caller that
 /// presents NO credential must fall back to an EMPTY credential, NOT the lane operator's
 /// `api_key`. Borrowing the operator key would let an unauthenticated caller silently spend on the
 /// operator's upstream account. With the empty-credential fallback the upstream returns its own
@@ -1142,7 +1142,7 @@ async fn test_bedrock_ingress_success_carries_amzn_request_id() {
     );
     // UUID-v4 shaped: 36 chars, 8-4-4-4-12.
     assert_eq!(amzn.len(), 36, "x-amzn-RequestId is a UUID; got {amzn}");
-    // Regression (duplicate-header): the header must appear EXACTLY ONCE. The collapsed
+    // The header must appear EXACTLY ONCE. The collapsed
     // maybe_attach_response_request_id was briefly called twice at this cross-protocol site,
     // appending two distinct x-amzn-RequestId values (axum `header()` appends). `.get()` masks it;
     // count all values.
@@ -1217,7 +1217,7 @@ async fn test_anthropic_ingress_success_carries_request_id_header() {
         "anthropic-ingress 2xx MUST carry a synthesized `request-id` header in the native req_ \
              shape; got {rid:?}"
     );
-    // Regression (duplicate-header): exactly ONE `request-id` (no duplicate from a double attach).
+    // Exactly ONE `request-id` (no duplicate from a double attach).
     assert_eq!(
         resp.headers().get_all("request-id").iter().count(),
         1,
@@ -1519,7 +1519,7 @@ async fn test_forward_once_cross_protocol_strips_source_only_extra_keys() {
     server.shutdown().await;
 }
 
-/// Regression (MEDIUM, conformance): the `forward_once` degraded
+/// The `forward_once` degraded
 /// (LeastBad/FallbackPool) cross-protocol path must apply the SAME tool-id native remap the main
 /// forward path does. Before the fix it stripped identity + stamped `created` but omitted
 /// `ToolIdRemap::remap_response`, so a tool-call response emitted the egress backend's RAW native
@@ -1618,7 +1618,7 @@ async fn test_forward_once_cross_protocol_remaps_tool_call_id() {
     server.shutdown().await;
 }
 
-/// Regression (indistinguishability): the `forward_once` degraded
+/// The `forward_once` degraded
 /// (LeastBad/FallbackPool) SAME-protocol Bedrock error relay must forward BOTH `x-amzn-requestid`
 /// and `x-amzn-errortype` verbatim, mirroring the main path. Before the fix it captured neither on
 /// this path — a native AWS SDK's `request_id()` would return None and typed-exception dispatch
@@ -2254,7 +2254,7 @@ async fn test_cross_protocol_nonstream_over_cap_body_returns_500_uncharged() {
     server.shutdown().await;
 }
 
-/// REGRESSION (R18 LOW, perf): `read_capped` now pre-reserves a bounded initial buffer capacity
+/// `read_capped` now pre-reserves a bounded initial buffer capacity
 /// to cut the per-chunk reallocation churn as the buffer grows toward `cap`. The pre-reserve must
 /// NOT change cap ENFORCEMENT: a body that exceeds `cap` is still rejected — the returned buffer
 /// holds exactly `cap` bytes (the admitted prefix) and the end reason is `ReadEnd::Truncated`,
@@ -2293,7 +2293,7 @@ async fn test_read_capped_enforces_cap_exactly_and_reports_truncated() {
     server.shutdown().await;
 }
 
-/// REGRESSION (R18 LOW, public-scrub): the client-facing 400 body for an unparseable JSON request
+/// The client-facing 400 body for an unparseable JSON request
 /// must carry ONLY the generic, vendor-plausible message — never serde_json's Display detail
 /// (line/column/expectation), which is a busbar-internal tell and can echo fragments of the
 /// malformed body. Sends a body that is valid UTF-8 but invalid JSON containing a recognizable
@@ -2354,7 +2354,7 @@ async fn test_unparseable_json_400_carries_no_serde_internals() {
     }
 }
 
-/// REGRESSION (R20 MED #3, budget symmetry): on the STREAMING (`is_sse`) path the 2xx headers
+/// On the STREAMING (`is_sse`) path the 2xx headers
 /// already spent one `max_requests` budget unit, but a PRE-FIRST-BYTE upstream body transport
 /// failure delivers no usable response. The buffered `ReadEnd::TransportError` paths refund that
 /// unit (#21); the streaming path previously refunded NOTHING — every streaming transport failure
@@ -2464,7 +2464,7 @@ async fn test_streaming_pre_first_byte_transport_error_refunds_budget() {
     );
 }
 
-/// REGRESSION (P2 #2): a lane whose upstream connects and returns 2xx headers but then dies BEFORE
+/// A lane whose upstream connects and returns 2xx headers but then dies BEFORE
 /// the first streamed byte on EVERY attempt must still trip its circuit breaker. Each pre-first-byte
 /// transport failure now records a breaker transient (no longer gated on `had_first`), so REPEATED
 /// pre-first-byte failures accumulate toward the trip threshold instead of silently recording
@@ -2547,7 +2547,7 @@ async fn test_repeated_pre_first_byte_failures_trip_breaker() {
     }
 }
 
-/// REGRESSION (R25 MED #1, breaker symmetry): on a NON-SSE same-protocol passthrough (e.g.
+/// On a NON-SSE same-protocol passthrough (e.g.
 /// OpenAI→OpenAI `/chat/completions`, content-type `application/json`) the 2xx headers recorded
 /// an optimistic breaker SUCCESS, but a mid-BODY transport failure AFTER the first byte delivers
 /// an incomplete response. `FirstByteBody`'s non-SSE `else` arm previously refunded budget but
@@ -2656,7 +2656,7 @@ async fn test_streaming_nonsse_mid_body_transport_error_records_transient() {
     );
 }
 
-/// REGRESSION (R26 MED #1 + LOW #7, CLASS-COMPLETION of the R25 forward fix): a CROSS-PROTOCOL
+/// A CROSS-PROTOCOL
 /// stream whose `StreamTranslate` ABORTS after the first byte — its reassembly buffer overran
 /// `MAX_BUF` (>16MiB without a frame terminator) or it hit a malformed egress prelude — sets NO
 /// `tap.terminal_error` (no in-band `{"type":"error"}` frame was ever scanned). R25 made the
@@ -2803,7 +2803,7 @@ async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
     );
 }
 
-/// Regression (cancel-Drop billing): a client that disconnects MID-STREAM (drops the body before
+/// A client that disconnects MID-STREAM (drops the body before
 /// the natural `Poll::Ready(None)` end) must still have the tokens generated+delivered so far
 /// billed — via `impl Drop for FirstByteBody`. Drives a CLEAN cross-protocol stream (no abort, no
 /// terminal error), polls it ONCE so the usage chunk is consumed (usage tapped, `usage_sink` still

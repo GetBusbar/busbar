@@ -412,7 +412,7 @@ fn test_shipped_example_config_resolves() {
         return;
     }
 
-    // Regression (#23): booting the shipped default config must NOT require BUSBAR_ADMIN_TOKEN to
+    // Booting the shipped default config must NOT require BUSBAR_ADMIN_TOKEN to
     // be set: no brace-form interpolation of it may appear anywhere (comments included, since
     // interpolate_env scans the whole file).
     assert!(
@@ -462,7 +462,7 @@ fn braced_env_vars(raw: &str) -> Vec<String> {
     out
 }
 
-/// Regression (#20): tests sharing a process-global env var use a set -> interpolate -> remove
+/// Tests sharing a process-global env var use a set -> interpolate -> remove
 /// sequence. Under the default parallel test runner, an unguarded sibling could `remove_var`
 /// between this test's `set_var` and `interpolate_env`, making interpolation fail with an "unset
 /// variable" error. This test reproduces that race deterministically by hammering the exact
@@ -783,7 +783,7 @@ fn test_interpolate_env_no_vars() {
     assert_eq!(result, "plain-text-no-vars");
 }
 
-/// Regression (YAML-structure injection): an env value containing a NEWLINE (the structural
+/// An env value containing a NEWLINE (the structural
 /// break that closes a quoted YAML scalar) must be rejected, not spliced into the raw config
 /// text. The exploit shape: a value that ends a quoted list entry and injects an extra item must
 /// fail loudly at interpolation time. Uses a unique per-test var name (process-global env,
@@ -1116,7 +1116,7 @@ fn breaker_cfg_default_matches_serde_default_fns() {
     );
 }
 
-/// REGRESSION (adapted for 1.5.0): the config surface carries NO raw secret material anywhere:
+/// The config surface carries NO raw secret material anywhere:
 /// every credential is a SecretRef (module + settings), so debug-logging a whole DeployCfg can
 /// never leak a resolved secret VALUE. This sets a distinctive value in the environment, builds a
 /// config full of refs to it, and asserts the Debug dump shows the reference (the env var NAME)

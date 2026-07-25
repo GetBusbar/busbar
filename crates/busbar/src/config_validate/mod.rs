@@ -302,7 +302,7 @@ pub(crate) fn validate_with_unset(
             .unwrap_or(false);
         // Case-INSENSITIVE scheme check (RFC 3986 §3.1) — a raw `starts_with("https://")` rejected
         // the valid uppercase spelling reqwest would accept, and diverged from the webhook guard's
-        // `scheme_is`. (found: audit c2r5.)
+        // `scheme_is`.
         let scheme_ok = is_env_placeholder(base_url)
             || scheme_is(base_url, "https")
             || (host_is_local && scheme_is(base_url, "http"));
@@ -753,7 +753,7 @@ pub(crate) fn validate_with_unset(
                 // ASCII + length checks (`"".is_ascii()` is true, `0 > 64` is false) yet silently
                 // disables affinity at runtime (`headers.get("")` is always None) — the exact
                 // "silently disable affinity" failure this validator's own comment promises to
-                // catch. (found: audit c2r3.)
+                // catch.
                 if header_name.is_empty() {
                     errors.push(format!(
                         "pool '{}' affinity.header_name must not be empty (an empty HTTP header field-name silently disables session affinity)",

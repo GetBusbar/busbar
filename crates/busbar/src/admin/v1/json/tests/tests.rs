@@ -180,7 +180,7 @@ fn openapi_error_enum_matches_admin_error_codes() {
     );
 }
 
-/// REGRESSION (audit c1r12): the §6.3 escalation 403 fires on PUT `/hooks/{name}` and PATCH
+/// The §6.3 escalation 403 fires on PUT `/hooks/{name}` and PATCH
 /// `/hooks/{name}/settings` (a `hooks-register` principal touching a content-seeing / global
 /// hook), exactly as it does on POST `/hooks` — so all three must DOCUMENT the 403.
 #[cfg(feature = "openapi-schema")]

@@ -1,15 +1,10 @@
-//! THE POST-COMMIT FAILURE BRANCH of `POST /keys` with auto-provisioning (audit round-5
-//! #13/#28/#33/#41 + #14).
+//! THE POST-COMMIT FAILURE BRANCH of `POST /keys` with auto-provisioning.
 //!
 //! `Outcome::commit_then` runs a config PERSIST-and-SWAP and then a store write, under one guard.
 //! The two halves cannot be atomic with each other: once the swap has happened it is visible to
 //! every in-flight request and un-persisting is itself fallible. So the honest semantics are not
-//! "compensate" but "the provision is committed, and it is RECORDED at commit time".
-//!
-//! The branch that was untested is the one where the config half COMMITS and the store half then
-//! FAILS. It used to leave the group live, durable and version-bumped with no audit row, no version
-//! entry and no key bound — a config change that happened and that nothing in the trail admitted
-//! to, because both records were written after the whole transaction succeeded.
+//! "compensate" but "the provision is committed, and it is RECORDED at commit time" — which is what
+//! these tests pin, on the branch where the config half commits and the store half then fails.
 
 use std::sync::Arc;
 

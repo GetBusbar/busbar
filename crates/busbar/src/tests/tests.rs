@@ -1025,7 +1025,7 @@ fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::config
     }
 }
 
-/// REGRESSION (audit round-4 #3/#4): the marquee 1.5.0 "secrets are plugins" feature — a provider
+/// The marquee 1.5.0 "secrets are plugins" feature — a provider
 /// `api_key: { module: acme-vault, … }` (TLS cert/key, `auth.signing_key`, and the admin token are
 /// the same shape) — must PASS validation when the `kind: secret` plugin is loaded + trusted. The
 /// module-existence check is DEFERRED past `config_validate::validate` (which runs before the plugin
@@ -1053,7 +1053,7 @@ fn secret_ref_plugin_backed_module_passes_when_plugin_present() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// REGRESSION (audit round-4 #3/#4): a GENUINE typo — a secret module that is neither a built-in
+/// A GENUINE typo — a secret module that is neither a built-in
 /// (`env`/`file`) nor a loaded plugin — must still FAIL, so the deferral does not weaken the check.
 #[test]
 fn secret_ref_typo_module_still_fails_at_preflight() {
@@ -1079,7 +1079,7 @@ fn secret_ref_typo_module_still_fails_at_preflight() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// REGRESSION (audit round-4 #3/#4): the built-in `env`/`file` modules always pass the registry
+/// The built-in `env`/`file` modules always pass the registry
 /// pre-flight (they are resolved inline, never through a plugin), even with an EMPTY registry.
 #[test]
 fn secret_ref_builtin_modules_pass_with_empty_registry() {
@@ -1091,7 +1091,7 @@ fn secret_ref_builtin_modules_pass_with_empty_registry() {
     );
 }
 
-/// REGRESSION (audit round-4 #3/#4): a secret ref naming a plugin of the WRONG kind (a store plugin,
+/// A secret ref naming a plugin of the WRONG kind (a store plugin,
 /// not `kind: secret`) fails the pre-flight — the same wrong-kind guard the `secrets:` block gets.
 #[test]
 fn secret_ref_wrong_kind_plugin_fails_at_preflight() {
@@ -1361,7 +1361,7 @@ fn secrets_block_rejects_alias_and_canonical_for_one_module() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// REGRESSION (round-6 audit): A REJECTED CONFIG MUST NOT LEAVE ITS LIMITS INSTALLED.
+/// A REJECTED CONFIG MUST NOT LEAVE ITS LIMITS INSTALLED.
 ///
 /// `build_app_from_config` installs the candidate `limits` process-wide as its FIRST act — it has
 /// to, because the build itself reads them through the deep-call-stack accessors. But every step
@@ -1408,7 +1408,7 @@ fn a_rejected_config_leaves_no_limits_behind() {
     );
 }
 
-/// REGRESSION (round-6 audit): THE 413 RESHAPE MUST FIRE ON A REAL OVERSIZED REQUEST.
+/// THE 413 RESHAPE MUST FIRE ON A REAL OVERSIZED REQUEST.
 ///
 /// Every existing test of this path hand-constructs the sentinel body and calls the pure
 /// `reshape_oversized_413` directly, so all four passed while the layer was dead in production:
