@@ -1083,52 +1083,22 @@ impl AdminService {
             }
         }
 
-        // ── 5. atomic publish: write a temp name in the SAME directory, rename into place ──
+        // ── 5. atomic publish via the crate's ONE durable-write choke point ──
+        // `create_dir_all` stays here (dir provisioning is the caller's concern, not the primitive's);
+        // the temp-in-same-dir → write → flush → fsync(file) → rename → fsync(dir) dance is the
+        // primitive's. Collapsing onto it FIXES the former leaked-`.tmp`-on-pre-rename-error class for
+        // free: the old `{ }` block returned early on a create/write/flush/fsync failure WITHOUT
+        // removing the temp (only the rename path cleaned up), so a full disk / I/O error orphaned a
+        // `.<file>.<stamp>.tmp` to accumulate across retries. The primitive's RAII guard removes the
+        // temp on EVERY error path. The pid+seq temp naming supersedes the bespoke pid+now stamp with
+        // the same per-call-uniqueness property.
         let dir = &self.app.plugins_dir;
         std::fs::create_dir_all(dir)
             .map_err(|e| AdminError::Validation(format!("cannot create plugins dir: {e}")))?;
-        let stamp = format!("{}-{}", std::process::id(), crate::store::now());
-        let tmp = dir.join(format!(".{file}.{stamp}.tmp"));
-        // Write + FLUSH + fsync the temp file's CONTENTS before the rename so the published name can
-        // never point at torn/zero-length tarball data after a power loss (which the next boot's
-        // `scan_and_validate` would reject, blocking startup — worse in a rollback, where a fsynced
-        // version pin could reference an un-fsynced tarball). Mirrors `config::overlay::write` and
-        // the signing-key write. `std::fs::write` alone leaves the bytes in the page cache.
-        // On ANY failure writing/flushing/fsyncing the temp file, remove the orphaned .tmp — a prior
-        // version only cleaned it up on rename failure, so a write/flush/fsync error (a full disk, an
-        // I/O error) left a stale `.<file>.<stamp>.tmp` behind to accumulate across retries.
-        let write_result = (|| -> Result<(), AdminError> {
-            use std::io::Write as _;
-            let mut f = std::fs::File::create(&tmp).map_err(|e| {
-                AdminError::Validation(format!("cannot write plugin to plugins dir: {e}"))
-            })?;
-            f.write_all(tarball).map_err(|e| {
-                AdminError::Validation(format!("cannot write plugin to plugins dir: {e}"))
-            })?;
-            f.flush().map_err(|e| {
-                AdminError::Validation(format!("cannot write plugin to plugins dir: {e}"))
-            })?;
-            f.sync_all().map_err(|e| {
-                AdminError::Validation(format!("cannot fsync plugin in plugins dir: {e}"))
-            })?;
-            Ok(())
-        })();
-        if let Err(e) = write_result {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(e);
-        }
         let final_path = dir.join(&file);
-        if let Err(e) = std::fs::rename(&tmp, &final_path) {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(AdminError::Validation(format!(
-                "cannot publish plugin into plugins dir: {e}"
-            )));
-        }
-        // fsync the plugins directory so the rename (directory metadata) is itself durable.
-        // Best-effort: the tarball bytes are already durable, so a failure here does not fail install.
-        if let Ok(dirf) = std::fs::File::open(dir) {
-            let _ = dirf.sync_all();
-        }
+        crate::durable::write(&final_path, tarball).map_err(|e| {
+            AdminError::Validation(format!("cannot publish plugin into plugins dir: {e}"))
+        })?;
 
         Ok(crate::admin::v1::contract::PluginInstallView {
             file,

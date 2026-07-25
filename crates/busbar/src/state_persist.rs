@@ -49,53 +49,17 @@ pub(crate) fn resolve_path(config_path: Option<&Path>) -> Option<PathBuf> {
     }
 }
 
-/// Write the snapshot atomically (temp + rename). Errors are RETURNED (the caller logs once and
-/// may disable the loop) — persistence must never take busbar down.
+/// Write the snapshot atomically + durably via the crate's ONE durable-write choke point
+/// ([`crate::durable::write`]): temp → write → flush → fsync(file) → rename → fsync(parent). Errors
+/// are RETURNED (the caller logs once and may disable the loop) — persistence must never take busbar
+/// down. Collapsing onto the primitive FIXES the former relative-path parent-fsync skip for free: the
+/// primitive resolves an empty parent (a relative state-file path) to "." unconditionally and fsyncs
+/// it, so the rename is durable even for a relative path (the old `filter(non-empty)` silently
+/// dropped it). No other behavior changes.
 pub(crate) fn write(path: &Path, state: &PersistedState) -> Result<(), String> {
-    use std::io::Write as _;
     let bytes = serde_json::to_vec(state).map_err(|e| format!("serialize state: {e}"))?;
-    let tmp = path.with_extension("json.tmp");
-    // Write + FLUSH + fsync the temp file's CONTENTS to disk BEFORE the rename, then fsync the
-    // parent directory AFTER it, mirroring `config::overlay::write`. `std::fs::write` alone leaves
-    // the data in the page cache: a power loss after the rename commits (directory metadata) but
-    // before the data blocks reach the device would surface a torn/zero-length `busbar-state.json`,
-    // contradicting this module's "never a torn read" claim. fsync closes that window for real.
-    // On ANY failure writing the temp OR renaming it into place, remove the orphaned temp so a failed
-    // write never leaves a stale `busbar-state.json.tmp` behind to accumulate. `File::create`
-    // truncates+overwrites (not `create_new`), so a leftover from a prior crash never wedges a retry.
-    let write_result = (|| -> Result<(), String> {
-        let mut f =
-            std::fs::File::create(&tmp).map_err(|e| format!("create {}: {e}", tmp.display()))?;
-        f.write_all(&bytes)
-            .map_err(|e| format!("write {}: {e}", tmp.display()))?;
-        f.flush()
-            .map_err(|e| format!("flush {}: {e}", tmp.display()))?;
-        f.sync_all()
-            .map_err(|e| format!("fsync {}: {e}", tmp.display()))?;
-        drop(f);
-        std::fs::rename(&tmp, path).map_err(|e| format!("rename to {}: {e}", path.display()))
-    })();
-    if let Err(e) = write_result {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(e);
-    }
-    // fsync the parent directory so the rename (a directory-metadata change) is itself durable.
-    // For a RELATIVE state-file path `path.parent()` is `Some("")` (an empty path that cannot be
-    // opened), which the prior `filter(non-empty)` silently SKIPPED — so a relative path never got
-    // its parent-dir fsync and the rename could be lost on power loss. Resolve an empty parent to
-    // "." (the current directory, where the file lives), matching `config::overlay::write`.
-    // Best-effort: not every platform/filesystem supports opening a directory for fsync, and the
-    // file contents are already durable, so a failure here does not fail the write.
-    let parent = path.parent().unwrap_or_else(|| Path::new(""));
-    let parent = if parent.as_os_str().is_empty() {
-        Path::new(".")
-    } else {
-        parent
-    };
-    if let Ok(dir) = std::fs::File::open(parent) {
-        let _ = dir.sync_all();
-    }
-    Ok(())
+    crate::durable::write(path, &bytes)
+        .map_err(|e| format!("persist state {}: {e}", path.display()))
 }
 
 /// Read + staleness-gate a snapshot. `None` = no file / unreadable / corrupt / too old — every
@@ -177,17 +141,23 @@ mod tests {
         write(&path, &state).expect("write");
         let got = read(&path, 1_000_100).expect("fresh snapshot restores");
         assert_eq!(got.written_at, 1_000_000);
-        // The atomic temp must not linger after a successful write (rename consumed it, and the
-        // cleanup path never leaves a stale `.json.tmp` to accumulate or wedge a later create).
-        assert!(
-            !path.with_extension("json.tmp").exists(),
-            "no .json.tmp should remain after a successful write"
-        );
-        // A pre-planted stale temp from a prior crashed run must NOT wedge the next write (File::create
-        // truncates+overwrites; the cleanup keeps it gone).
+        // No durable temp (`.busbar-state.json.<pid>-<seq>.tmp`, the primitive's unique naming) must
+        // linger after a successful write — the rename consumed it and the RAII guard leaves nothing.
+        let no_durable_temp = |dir: &std::path::Path| {
+            !std::fs::read_dir(dir).unwrap().any(|e| {
+                let n = e.unwrap().file_name();
+                let n = n.to_string_lossy();
+                n.starts_with(".busbar-state.json.") && n.ends_with(".tmp")
+            })
+        };
+        assert!(no_durable_temp(&dir), "no durable temp should remain");
+        // A pre-planted stale temp from a prior crashed run must NOT wedge the next write. Under the
+        // primitive's per-call-unique naming a foreign leftover has a different name and is simply
+        // ignored; the write still succeeds and leaves no durable temp of its own.
         std::fs::write(path.with_extension("json.tmp"), b"stale leftover").unwrap();
-        write(&path, &state).expect("write over a pre-existing .json.tmp");
-        assert!(!path.with_extension("json.tmp").exists());
+        write(&path, &state).expect("write despite a pre-existing stale temp");
+        assert!(no_durable_temp(&dir), "no durable temp should remain");
+        let _ = std::fs::remove_file(path.with_extension("json.tmp"));
 
         // Too old: dropped whole.
         assert!(
