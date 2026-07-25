@@ -205,8 +205,15 @@ pub(crate) fn required_scope(method: &axum::http::Method, path: &str) -> Scope {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub(crate) enum AdminError {
-    /// The named resource does not exist. `code = not_found`.
-    NotFound(String),
+    /// The named resource does not exist. `code = not_found`. `what` NAMES the missing thing (the
+    /// message is `"<what> not found"`), and the optional `note` appends a parenthetical reason for
+    /// the cases where "missing" has a cause worth stating — e.g. a single-key read on a server with
+    /// governance disabled, where no key CAN exist. Build one with [`AdminError::not_found`] /
+    /// [`AdminError::not_found_because`] rather than the variant, so the phrasing stays in one place.
+    NotFound {
+        what: String,
+        note: Option<&'static str>,
+    },
     /// No/invalid admin credential (the auth middleware could not authenticate the caller).
     /// `code = unauthorized`. Distinct from `forbidden` (authenticated but under-scoped).
     Unauthorized,
@@ -235,10 +242,27 @@ pub(crate) enum AdminError {
 }
 
 impl AdminError {
+    /// The plain "no such thing" — message `"<what> not found"`.
+    pub(crate) fn not_found(what: impl Into<String>) -> Self {
+        AdminError::NotFound {
+            what: what.into(),
+            note: None,
+        }
+    }
+
+    /// A not-found WITH a reason — message `"<what> not found (<why>)"`. For the cases where the
+    /// absence is a property of the server's configuration rather than of the request.
+    pub(crate) fn not_found_because(what: impl Into<String>, why: &'static str) -> Self {
+        AdminError::NotFound {
+            what: what.into(),
+            note: Some(why),
+        }
+    }
+
     /// The FROZEN stable code. Tooling branches on this string; it never changes for a shipped variant.
     pub(crate) fn code(&self) -> &'static str {
         match self {
-            AdminError::NotFound(_) => "not_found",
+            AdminError::NotFound { .. } => "not_found",
             AdminError::Unauthorized => "unauthorized",
             AdminError::MethodNotAllowed => "method_not_allowed",
             AdminError::Forbidden { .. } => "forbidden",
@@ -253,7 +277,7 @@ impl AdminError {
     /// The HTTP status the JSON-REST adapter returns for this error. A non-HTTP transport ignores it.
     pub(crate) fn http_status(&self) -> u16 {
         match self {
-            AdminError::NotFound(_) => 404,
+            AdminError::NotFound { .. } => 404,
             AdminError::Unauthorized => 401,
             AdminError::MethodNotAllowed => 405,
             AdminError::Forbidden { .. } => 403,
@@ -268,7 +292,11 @@ impl AdminError {
     /// The human-facing message. Caller-safe only — internal store/plugin detail never lands here.
     pub(crate) fn message(&self) -> String {
         match self {
-            AdminError::NotFound(what) => format!("{what} not found"),
+            AdminError::NotFound {
+                what,
+                note: Some(why),
+            } => format!("{what} not found ({why})"),
+            AdminError::NotFound { what, note: None } => format!("{what} not found"),
             AdminError::Unauthorized => {
                 "missing or invalid admin credential (Bearer or x-admin-token)".to_string()
             }

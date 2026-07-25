@@ -147,7 +147,7 @@ fn scope_lattice_allows() {
 #[test]
 fn admin_error_codes_and_statuses_are_frozen() {
     let cases = [
-        (AdminError::NotFound("key".into()), "not_found", 404u16),
+        (AdminError::not_found("key"), "not_found", 404u16),
         (AdminError::Unauthorized, "unauthorized", 401),
         (AdminError::MethodNotAllowed, "method_not_allowed", 405),
         (

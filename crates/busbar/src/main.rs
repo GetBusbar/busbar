@@ -1051,7 +1051,7 @@ pub(crate) fn fallback_error_response(
             let e = if status == axum::http::StatusCode::METHOD_NOT_ALLOWED {
                 AdminError::MethodNotAllowed
             } else {
-                AdminError::NotFound("resource".into())
+                AdminError::not_found("resource")
             };
             return crate::admin::v1::json::err_json(&e);
         }

@@ -5035,7 +5035,7 @@
                 }
               }
             },
-            "description": "`invalid_request`: malformed body / unknown field, bad `expires_in` / `expires_at`, `parent` was given without `group`, invalid tree — dangling/cyclic parent or depth"
+            "description": "`invalid_request`: malformed body / unknown field, an id or name exceeds its length cap, invalid mint-time `labels` — a reserved or non-Prometheus label name, or too many/too long, bad `expires_in` / `expires_at`, `parent` was given without `group`, invalid tree — dangling/cyclic parent or depth"
           },
           "401": {
             "content": {
@@ -5065,7 +5065,7 @@
                 }
               }
             },
-            "description": "`conflict`: governance is not enabled on this server, no signing key is configured for signed-token minting, an `Idempotency-Key` request is already in flight, the group is at the `limits.max_keys_per_principal` cap, base-defined (edit config.yaml)"
+            "description": "`conflict`: governance is not enabled on this server, no signing key is configured for signed-token minting, an `Idempotency-Key` request is already in flight, the group is at the `limits.max_keys_per_principal` cap, the bound group was deleted concurrently with the mint; retry against an existing group, base-defined (edit config.yaml)"
           },
           "429": {
             "content": {
@@ -5133,7 +5133,7 @@
                 }
               }
             },
-            "description": "`invalid_request`: malformed `If-Match` header, overlong identifier"
+            "description": "`invalid_request`: malformed `If-Match` header, an id or name exceeds its length cap"
           },
           "401": {
             "content": {
@@ -5237,7 +5237,7 @@
                 }
               }
             },
-            "description": "`invalid_request`: overlong identifier"
+            "description": "`invalid_request`: an id or name exceeds its length cap"
           },
           "401": {
             "content": {
@@ -5267,7 +5267,7 @@
                 }
               }
             },
-            "description": "`not_found`: unknown resource"
+            "description": "`not_found`: unknown resource, governance is not enabled on this server"
           },
           "500": {
             "content": {
@@ -5330,7 +5330,7 @@
                 }
               }
             },
-            "description": "`invalid_request`: malformed body / unknown field, malformed `If-Match` header, overlong identifier, the rebind target group does not exist"
+            "description": "`invalid_request`: malformed body / unknown field, malformed `If-Match` header, an id or name exceeds its length cap, the rebind target group does not exist"
           },
           "401": {
             "content": {
@@ -5436,7 +5436,7 @@
                 }
               }
             },
-            "description": "`invalid_request`: overlong identifier"
+            "description": "`invalid_request`: an id or name exceeds its length cap"
           },
           "401": {
             "content": {
@@ -5638,7 +5638,7 @@
                 }
               }
             },
-            "description": "`invalid_request`: overlong identifier"
+            "description": "`invalid_request`: an id or name exceeds its length cap"
           },
           "401": {
             "content": {
@@ -5668,7 +5668,7 @@
                 }
               }
             },
-            "description": "`not_found`: unknown resource"
+            "description": "`not_found`: unknown resource, governance is not enabled on this server"
           },
           "500": {
             "content": {

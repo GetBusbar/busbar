@@ -322,7 +322,7 @@ pub(crate) struct ErrorDetail {
 #[allow(unused)]
 fn _error_taxonomy_is_referenced(e: &AdminError) {
     match e {
-        AdminError::NotFound(_)
+        AdminError::NotFound { .. }
         | AdminError::Unauthorized
         | AdminError::MethodNotAllowed
         | AdminError::Forbidden { .. }

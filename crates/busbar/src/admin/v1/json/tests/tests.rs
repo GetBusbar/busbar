@@ -20,7 +20,7 @@ async fn parts(resp: Response) -> (StatusCode, String, serde_json::Value) {
 /// shape v1 tooling parses — served as application/json.
 #[tokio::test]
 async fn err_json_uses_stable_envelope() {
-    let (status, ct, body) = parts(err_json(&AdminError::NotFound("hook".into()))).await;
+    let (status, ct, body) = parts(err_json(&AdminError::not_found("hook"))).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(ct, crate::proxy::APPLICATION_JSON);
     assert_eq!(body["error"]["code"], "not_found");
@@ -159,7 +159,7 @@ fn openapi_error_enum_matches_admin_error_codes() {
         .collect();
     // The exhaustive set of AdminError codes — kept in lock-step with `AdminError::code`.
     let actual_codes: BTreeSet<String> = [
-        AdminError::NotFound(String::new()),
+        AdminError::not_found(""),
         AdminError::Unauthorized,
         AdminError::Forbidden {
             needed: crate::admin::v1::contract::Scope::Full,

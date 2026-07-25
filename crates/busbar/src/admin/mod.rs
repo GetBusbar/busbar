@@ -30,6 +30,8 @@ where
     Option::<T>::deserialize(de).map(Some)
 }
 
+use crate::admin::v1::contract::taxonomy::Cond;
+use crate::admin::v1::contract::AdminError;
 use crate::governance::{NewKeySpec, VirtualKey};
 
 /// Process-wide gate serializing the existence-sensitive critical sections of the key store.
@@ -138,17 +140,17 @@ fn parse_duration_secs(s: &str) -> Result<u64, String> {
         .ok_or_else(|| "duration is too large (max 10 years)".to_string())
 }
 
-/// Error-type taxonomy strings used by the admin API and by `main.rs` (which references them via
-/// `crate::admin::ERR_TYPE_*`). The two values shared with the forward/OpenAI-family vocabulary
-/// alias their canonical home in `proto::openai_family` so the banks cannot drift.
+/// Error-type taxonomy strings shared with the forward/OpenAI-family DATA-plane vocabulary, aliased
+/// from their canonical home in `proto::openai_family` so the banks cannot drift. `main.rs`
+/// references them via `crate::admin::ERR_TYPE_*`.
+///
+/// The admin API itself no longer has an error vocabulary of its own: every admin error — keys
+/// included — is an [`AdminError`] projected by `key_err`/`err_json` (design D route 2). The
+/// `internal_error`/`conflict_error`/`version_conflict_error` tokens that used to be re-mapped onto
+/// the frozen `code` enum in a second place are gone with it.
 pub(crate) const ERR_TYPE_NOT_FOUND: &str = crate::proto::openai_family::ERR_TYPE_NOT_FOUND;
 pub(crate) const ERR_TYPE_INVALID_REQUEST: &str =
     crate::proto::openai_family::ERR_TYPE_INVALID_REQUEST;
-const ERR_TYPE_INTERNAL: &str = "internal_error";
-const ERR_TYPE_CONFLICT: &str = "conflict_error";
-/// RETRYABLE optimistic-concurrency staleness — maps to the frozen `version_conflict` code
-/// (re-read + retry), split from terminal `conflict` (external review R3).
-const ERR_TYPE_VERSION_CONFLICT: &str = "version_conflict_error";
 
 /// Maximum byte lengths for admin-API path / body fields (defense-in-depth DB/log-bloat guards).
 /// A real minted key id is `vk_` + 16 hex chars (19 chars); 64 is generous headroom.
@@ -229,44 +231,17 @@ fn json_response(status: StatusCode, body: Value) -> Response {
         .into_response()
 }
 
-/// Admin error envelope — the FROZEN v1 shape `{"error":{"code":...,"message":...}}` with the
-/// canonical `code` enum (`not_found`/`invalid_request`/`conflict`/`internal`/…), IDENTICAL to every
-/// other `/api/v1/admin` resource (see `admin::v1::contract::AdminError::code`). These legacy key
-/// handlers previously spoke a DIFFERENT envelope (`{message,type}` with `*_error` values); that
-/// split forced a client/Terraform provider to branch on `error.code` for config/hooks/auth but on
-/// `error.type` for keys, with different values. Since `/api/v1/admin` freezes at 1.3, keys must speak
-/// the one contract (audit: admin contract H1). `message` carries only caller-safe text — store/DB
-/// details are logged server-side (see `internal_error`) and never reach this body.
-fn error_response(status: StatusCode, error_type: &str, message: impl Into<String>) -> Response {
-    // Map the legacy `*_error` type onto the frozen v1 `code` enum, byte-for-byte matching
-    // `AdminError::code()` so keys and non-keys emit the SAME code for the same condition.
-    let code = match error_type {
-        ERR_TYPE_NOT_FOUND => "not_found",
-        ERR_TYPE_INVALID_REQUEST => "invalid_request",
-        ERR_TYPE_CONFLICT => "conflict",
-        ERR_TYPE_VERSION_CONFLICT => "version_conflict",
-        ERR_TYPE_INTERNAL => "internal",
-        // Every caller passes one of the four above; fall back safely to the generic 4xx/5xx code
-        // rather than leaking an unmapped token onto the frozen wire.
-        _ if status.is_server_error() => "internal",
-        _ => "invalid_request",
-    };
-    json_response(
-        status,
-        json!({"error": {"code": code, "message": message.into()}}),
-    )
-}
-
-/// Project an `AdminError` (from the shared group/auto-provision path) onto the SAME frozen
-/// `{"error":{"code","message"}}` envelope the keys handlers emit — so a mint's auto-provision
-/// failure (400 dangling parent, 409 parent-mismatch / base-shadow) carries the identical stable
-/// `code` + HTTP status a `POST /groups` would for the same condition. One taxonomy, two doors.
-fn err_to_key_response(e: &crate::admin::v1::contract::AdminError) -> Response {
-    let status = StatusCode::from_u16(e.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-    json_response(
-        status,
-        json!({"error": {"code": e.code(), "message": e.message()}}),
-    )
+/// Project an [`AdminError`] onto the frozen v1 wire, NAMING the taxonomy CONDITION it came from.
+/// This is the keys surface's ONLY error door, and it is the SAME `err_json` every other v1 handler
+/// funnels through — so keys and non-keys emit the identical envelope, the identical `code` for the
+/// same condition, and are seen by the identical drift machinery.
+///
+/// It replaces a SECOND vocabulary (`error_response(status, ERR_TYPE_*, msg)`), which re-derived the
+/// frozen `code` enum from `*_error` tokens in a second place. That split made the keys responses
+/// invisible to the OpenAPI projection (design D §1.2) and let the two banks drift; naming a `Cond`
+/// here is what makes each keys emission observable to `contract::taxonomy` (design D route 2).
+fn key_err(e: &AdminError, cond: Cond) -> Response {
+    crate::admin::v1::json::err_json_cond(e, cond)
 }
 
 /// 500 for an internal store/DB failure. The detailed error (which may embed raw SQL fragments,
@@ -275,11 +250,7 @@ fn err_to_key_response(e: &crate::admin::v1::contract::AdminError) -> Response {
 /// the client (even an authenticated admin). `op` names the operation for log correlation.
 fn internal_error(op: &str, e: &crate::governance::StoreError) -> Response {
     tracing::error!(operation = op, error = %e, "admin store operation failed");
-    error_response(
-        StatusCode::INTERNAL_SERVER_ERROR,
-        ERR_TYPE_INTERNAL,
-        "internal error",
-    )
+    crate::admin::v1::json::err_json(&AdminError::Internal)
 }
 
 // ── Admin API (the FROZEN surface — /api/v1/admin/*) ─────────────────────────────────────────────────
@@ -331,10 +302,11 @@ fn parse_key_if_match(headers: &axum::http::HeaderMap) -> Result<Option<String>,
     if bare.len() == 16 && bare.bytes().all(|b| b.is_ascii_hexdigit()) {
         Ok(Some(bare.to_string()))
     } else {
-        Err(error_response(
-            StatusCode::BAD_REQUEST,
-            ERR_TYPE_INVALID_REQUEST,
-            "malformed If-Match: expected the key's ETag (16 hex chars, quoted) or *",
+        Err(key_err(
+            &AdminError::Validation(
+                "malformed If-Match: expected the key's ETag (16 hex chars, quoted) or *".into(),
+            ),
+            Cond::MalformedIfMatch,
         ))
     }
 }
@@ -364,11 +336,13 @@ fn key_meta(k: &VirtualKey) -> Value {
 ///   conflicts with the server's configured state, with an actionable message. Previously every
 ///   handler returned 404 — making `not_found` mean two different things forever.
 fn disabled_write() -> Response {
-    error_response(
-        StatusCode::CONFLICT,
-        ERR_TYPE_CONFLICT,
-        "governance is not enabled on this server; enable `governance:` in config.yaml to manage \
-         virtual keys",
+    key_err(
+        &AdminError::Conflict(
+            "governance is not enabled on this server; enable `governance:` in config.yaml to \
+             manage virtual keys"
+                .into(),
+        ),
+        Cond::GovernanceOff,
     )
 }
 
@@ -382,10 +356,9 @@ fn disabled_empty_list() -> Response {
 
 /// Single-resource read with governance off: no key can exist, so `not_found` is truthful.
 fn disabled_read() -> Response {
-    error_response(
-        StatusCode::NOT_FOUND,
-        ERR_TYPE_NOT_FOUND,
-        "key not found (governance is not enabled on this server)",
+    key_err(
+        &AdminError::not_found_because("key", "governance is not enabled on this server"),
+        Cond::GovernanceOff,
     )
 }
 
@@ -395,10 +368,9 @@ fn disabled_read() -> Response {
 /// a 400 response when too long, `None` when acceptable.
 fn reject_overlong_id(id: &str) -> Option<Response> {
     if id.len() > MAX_KEY_ID_LEN {
-        Some(error_response(
-            StatusCode::BAD_REQUEST,
-            ERR_TYPE_INVALID_REQUEST,
-            "id must be <= 64 characters",
+        Some(key_err(
+            &AdminError::Validation("id must be <= 64 characters".into()),
+            Cond::Overlong,
         ))
     } else {
         None
@@ -410,11 +382,7 @@ fn reject_overlong_id(id: &str) -> Option<Response> {
 /// propagate as an `unwrap()` on the request path — map it to a generic 500 (details logged).
 fn join_error(op: &str, e: &tokio::task::JoinError) -> Response {
     tracing::error!(operation = op, error = %e, "admin store task failed to join");
-    error_response(
-        StatusCode::INTERNAL_SERVER_ERROR,
-        ERR_TYPE_INTERNAL,
-        "internal error",
-    )
+    crate::admin::v1::json::err_json(&AdminError::Internal)
 }
 
 /// The request header carrying a client-chosen idempotency token on the two replayable admin
@@ -492,10 +460,11 @@ pub(crate) async fn create_key(
             // allowed); the client's retry succeeds once the first completes or the reservation
             // expires.
             Some(_) => {
-                return error_response(
-                    StatusCode::CONFLICT,
-                    ERR_TYPE_CONFLICT,
-                    "a request with this Idempotency-Key is already in flight",
+                return key_err(
+                    &AdminError::Conflict(
+                        "a request with this Idempotency-Key is already in flight".into(),
+                    ),
+                    Cond::IdempotencyInFlight,
                 );
             }
             // First time: RESERVE under this SAME lock hold, so a concurrent request observes the
@@ -524,10 +493,9 @@ pub(crate) async fn create_key(
         Ok(req) => req,
         Err(_) => {
             tracing::warn!("create_key: {}", crate::json::parse_err_log(body.len()));
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                ERR_TYPE_INVALID_REQUEST,
-                "invalid JSON",
+            return key_err(
+                &AdminError::Validation("invalid JSON".into()),
+                Cond::MalformedBody,
             );
         }
     };
@@ -535,50 +503,49 @@ pub(crate) async fn create_key(
     // store (DB-bloat / log-line-bloat vector) — cap it as defense-in-depth. MAX_KEY_NAME_LEN chars
     // is far past any reasonable label.
     if req.name.len() > MAX_KEY_NAME_LEN {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            ERR_TYPE_INVALID_REQUEST,
-            "name must be <= 256 characters",
+        return key_err(
+            &AdminError::Validation("name must be <= 256 characters".into()),
+            Cond::Overlong,
         );
     }
     // M6/F2: labels are echoed verbatim as Prometheus label NAMES on this key's metric series; an
     // unsafe name (reserved, or not a valid label name) or an oversized map breaks the WHOLE scrape.
     // Reject at the mint ingress (see `validate_mint_labels`).
     if let Err(msg) = validate_mint_labels(&req.labels) {
-        return error_response(StatusCode::BAD_REQUEST, ERR_TYPE_INVALID_REQUEST, msg);
+        return key_err(&AdminError::Validation(msg), Cond::InvalidLabels);
     }
     // SIGNED-TOKEN keys require a signing key (S2). Without one, mint cannot issue a token - fail
     // loud rather than persist a binding no token can be issued for.
     if !gov.signing_enabled() {
-        return error_response(
-            StatusCode::CONFLICT,
-            ERR_TYPE_CONFLICT,
-            "signed-token minting is unavailable: no signing key is configured (set \
-             auth.signing_key, or let busbar generate one on first boot)",
+        return key_err(
+            &AdminError::Conflict(
+                "signed-token minting is unavailable: no signing key is configured (set \
+             auth.signing_key, or let busbar generate one on first boot)"
+                    .into(),
+            ),
+            Cond::NoSigningKey,
         );
     }
     // `expires_in` and `expires_at` are mutually exclusive; resolve the token expiry (Unix secs).
     let now = crate::store::now();
     let exp = match (req.expires_in.as_deref(), req.expires_at) {
         (Some(_), Some(_)) => {
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                ERR_TYPE_INVALID_REQUEST,
-                "expires_in and expires_at are mutually exclusive; set at most one",
+            return key_err(
+                &AdminError::Validation(
+                    "expires_in and expires_at are mutually exclusive; set at most one".into(),
+                ),
+                Cond::KeyExpiryFields,
             );
         }
         (Some(dur), None) => match parse_duration_secs(dur) {
             Ok(secs) => now.saturating_add(secs),
-            Err(msg) => {
-                return error_response(StatusCode::BAD_REQUEST, ERR_TYPE_INVALID_REQUEST, msg)
-            }
+            Err(msg) => return key_err(&AdminError::Validation(msg), Cond::KeyExpiryFields),
         },
         (None, Some(at)) => {
             if at <= now {
-                return error_response(
-                    StatusCode::BAD_REQUEST,
-                    ERR_TYPE_INVALID_REQUEST,
-                    "expires_at is in the past",
+                return key_err(
+                    &AdminError::Validation("expires_at is in the past".into()),
+                    Cond::KeyExpiryFields,
                 );
             }
             at
@@ -627,7 +594,7 @@ pub(crate) async fn create_key(
         .await
         {
             Ok(provisioned) => provisioned_group = provisioned,
-            Err(e) => return err_to_key_response(&e),
+            Err(e) => return crate::admin::v1::json::err_json(&e),
         }
         // Acquire the mutation lock AFTER resolution (which takes it internally) and re-read the LIVE
         // App under it: the group must STILL exist right before we bind it. `cost.group_named` is the
@@ -635,23 +602,24 @@ pub(crate) async fn create_key(
         // across the mint below so a DELETE cannot slip in between this check and the store write.
         let guard = crate::admin::v1::json::config_mutation_guard().await;
         if handle.load().cost.group_named(group).is_none() {
-            return error_response(
-                StatusCode::CONFLICT,
-                ERR_TYPE_CONFLICT,
-                format!(
+            return key_err(
+                &AdminError::Conflict(format!(
                     "group '{group}' was deleted concurrently with this mint; retry against an \
                      existing group",
-                ),
+                )),
+                Cond::GroupRaceOnMint,
             );
         }
         _config_guard = Some(guard);
     } else if req.parent.is_some() {
         // `parent` without `group` has nothing to root — a loud 400 beats silently ignoring it.
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            ERR_TYPE_INVALID_REQUEST,
-            "`parent` was given without `group`; `parent` names the group to auto-provision \
-             `group` under, so `group` is required with it",
+        return key_err(
+            &AdminError::Validation(
+                "`parent` was given without `group`; `parent` names the group to auto-provision \
+             `group` under, so `group` is required with it"
+                    .into(),
+            ),
+            Cond::ParentWithoutGroup,
         );
     }
     // ANTI-SPRAWL CAP (audit gap 7 / self-service §6a): `limits.max_keys_per_principal` bounds how
@@ -713,14 +681,13 @@ pub(crate) async fn create_key(
         Ok(None)
     }
     let at_cap_response = |group: &str, n: usize| {
-        error_response(
-            StatusCode::CONFLICT,
-            ERR_TYPE_CONFLICT,
-            format!(
+        key_err(
+            &AdminError::Conflict(format!(
                 "group '{group}' already has {n} key(s), at the \
                  `limits.max_keys_per_principal` cap of {cap}; revoke or delete an existing \
                  key before minting another",
-            ),
+            )),
+            Cond::AtKeyCap,
         )
     };
     // When AWS credentials are requested, mint via `create_key_with_aws` (issues the AccessKeyId +
@@ -868,10 +835,9 @@ pub(crate) async fn update_key(
         Ok(req) => req,
         Err(_) => {
             tracing::warn!("update_key: {}", crate::json::parse_err_log(body.len()));
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                ERR_TYPE_INVALID_REQUEST,
-                "invalid JSON",
+            return key_err(
+                &AdminError::Validation("invalid JSON".into()),
+                Cond::MalformedBody,
             );
         }
     };
@@ -894,13 +860,12 @@ pub(crate) async fn update_key(
     };
     if let Some(Some(group)) = req.group.as_ref() {
         if !app.groups_registry.contains_key(group.as_str()) {
-            return error_response(
-                StatusCode::BAD_REQUEST,
-                ERR_TYPE_INVALID_REQUEST,
-                format!(
+            return key_err(
+                &AdminError::Validation(format!(
                     "group '{group}' does not exist in the top-level groups block; configure it \
                      first (e.g. {group}: {{ limits: [ {{ budget: 0, per: month }} ] }})"
-                ),
+                )),
+                Cond::RebindTargetMissing,
             );
         }
     }
@@ -951,15 +916,17 @@ pub(crate) async fn update_key(
         }
         Ok(Ok(UpdateOutcome::EtagStale)) => {
             audit::AUDIT.record_by("key.patch", &resource, audit::OUTCOME_REJECTED, &actor);
-            error_response(
-                StatusCode::CONFLICT,
-                ERR_TYPE_VERSION_CONFLICT,
-                "If-Match ETag is stale: the key changed since you read it (re-read and retry)",
+            key_err(
+                &AdminError::VersionConflict(
+                    "If-Match ETag is stale: the key changed since you read it (re-read and retry)"
+                        .into(),
+                ),
+                Cond::StaleIfMatch,
             )
         }
         Ok(Ok(UpdateOutcome::NotFound)) => {
             audit::AUDIT.record_by("key.patch", &resource, audit::OUTCOME_REJECTED, &actor);
-            error_response(StatusCode::NOT_FOUND, ERR_TYPE_NOT_FOUND, "key not found")
+            key_err(&AdminError::not_found("key"), Cond::UnknownResource)
         }
         Ok(Err(e)) => internal_error("update_key", &e),
         Err(e) => join_error("update_key", &e),
@@ -984,10 +951,9 @@ pub(crate) async fn list_keys(
         Some(v) => match v.parse::<bool>() {
             Ok(b) => Some(b),
             Err(_) => {
-                return error_response(
-                    StatusCode::BAD_REQUEST,
-                    ERR_TYPE_INVALID_REQUEST,
-                    "invalid `enabled` filter: expected true|false",
+                return key_err(
+                    &AdminError::Validation("invalid `enabled` filter: expected true|false".into()),
+                    Cond::InvalidQueryValue,
                 )
             }
         },
@@ -1009,13 +975,12 @@ pub(crate) async fn list_keys(
         Some(v) => match v.parse::<usize>() {
             Ok(n) => n.min(crate::admin::v1::contract::LIST_LIMIT_MAX),
             Err(_) => {
-                return error_response(
-                    StatusCode::BAD_REQUEST,
-                    ERR_TYPE_INVALID_REQUEST,
-                    format!(
+                return key_err(
+                    &AdminError::Validation(format!(
                         "invalid `limit`: expected an integer (max {})",
                         crate::admin::v1::contract::LIST_LIMIT_MAX
-                    ),
+                    )),
+                    Cond::InvalidQueryValue,
                 )
             }
         },
@@ -1024,10 +989,9 @@ pub(crate) async fn list_keys(
         Some(c) => match crate::admin::v1::contract::decode_offset_cursor(c) {
             Some(n) => n,
             None => {
-                return error_response(
-                    StatusCode::BAD_REQUEST,
-                    ERR_TYPE_INVALID_REQUEST,
-                    "invalid or foreign pagination cursor",
+                return key_err(
+                    &AdminError::Validation("invalid or foreign pagination cursor".into()),
+                    Cond::MalformedCursor,
                 )
             }
         },
@@ -1108,10 +1072,11 @@ pub(crate) async fn rotate_key(
                 return json_response(StatusCode::OK, cached.clone());
             }
             Some(_) => {
-                return error_response(
-                    StatusCode::CONFLICT,
-                    ERR_TYPE_CONFLICT,
-                    "a request with this Idempotency-Key is already in flight",
+                return key_err(
+                    &AdminError::Conflict(
+                        "a request with this Idempotency-Key is already in flight".into(),
+                    ),
+                    Cond::IdempotencyInFlight,
                 );
             }
             None => {
@@ -1162,7 +1127,7 @@ pub(crate) async fn rotate_key(
         }
         Ok(Ok(None)) => {
             audit::AUDIT.record_by("key.rotate", &resource, audit::OUTCOME_REJECTED, &actor);
-            error_response(StatusCode::NOT_FOUND, ERR_TYPE_NOT_FOUND, "key not found")
+            key_err(&AdminError::not_found("key"), Cond::UnknownResource)
         }
         Ok(Err(e)) => internal_error("rotate_key", &e),
         Err(e) => join_error("rotate_key", &e),
@@ -1212,7 +1177,7 @@ pub(crate) async fn revoke_key(
         }
         Ok(Ok(false)) => {
             audit::AUDIT.record_by("key.revoke", &resource, audit::OUTCOME_REJECTED, &actor);
-            error_response(StatusCode::NOT_FOUND, ERR_TYPE_NOT_FOUND, "key not found")
+            key_err(&AdminError::not_found("key"), Cond::UnknownResource)
         }
         Ok(Err(e)) => internal_error("revoke_key", &e),
         Err(e) => join_error("revoke_key", &e),
@@ -1235,10 +1200,9 @@ pub(crate) async fn rotate_signing_key(
         return disabled_write();
     };
     let Some(kid) = gov.signing_kid() else {
-        return error_response(
-            StatusCode::CONFLICT,
-            ERR_TYPE_CONFLICT,
-            "no signing key is configured; nothing to rotate",
+        return key_err(
+            &AdminError::Conflict("no signing key is configured; nothing to rotate".into()),
+            Cond::NothingToRotate,
         );
     };
     audit::AUDIT.record_by(
@@ -1296,7 +1260,7 @@ pub(crate) async fn get_key(
             }
             resp
         }
-        Ok(Ok(None)) => error_response(StatusCode::NOT_FOUND, ERR_TYPE_NOT_FOUND, "key not found"),
+        Ok(Ok(None)) => key_err(&AdminError::not_found("key"), Cond::UnknownResource),
         Ok(Err(e)) => internal_error("get_key", &e),
         Err(e) => join_error("get_key", &e),
     }
@@ -1359,7 +1323,7 @@ pub(crate) async fn key_usage(
                 }),
             )
         }
-        Ok(Ok(None)) => error_response(StatusCode::NOT_FOUND, ERR_TYPE_NOT_FOUND, "key not found"),
+        Ok(Ok(None)) => key_err(&AdminError::not_found("key"), Cond::UnknownResource),
         Ok(Err(e)) => internal_error("key_usage", &e),
         Err(e) => join_error("key_usage", &e),
     }
@@ -1454,14 +1418,16 @@ pub(crate) async fn delete_key(
         }
         Ok(Ok(DeleteOutcome::NotFound)) => {
             audit::AUDIT.record_by("key.delete", &resource, audit::OUTCOME_REJECTED, &actor);
-            error_response(StatusCode::NOT_FOUND, ERR_TYPE_NOT_FOUND, "key not found")
+            key_err(&AdminError::not_found("key"), Cond::UnknownResource)
         }
         Ok(Ok(DeleteOutcome::EtagStale)) => {
             audit::AUDIT.record_by("key.delete", &resource, audit::OUTCOME_REJECTED, &actor);
-            error_response(
-                StatusCode::CONFLICT,
-                ERR_TYPE_VERSION_CONFLICT,
-                "If-Match ETag is stale: the key changed since you read it (re-read and retry)",
+            key_err(
+                &AdminError::VersionConflict(
+                    "If-Match ETag is stale: the key changed since you read it (re-read and retry)"
+                        .into(),
+                ),
+                Cond::StaleIfMatch,
             )
         }
         Ok(Err(e)) => internal_error("delete_key", &e),
