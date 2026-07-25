@@ -138,6 +138,49 @@ while IFS= read -r f; do
 done < <(find crates -name '*.rs')
 [ "$exp" -eq 0 ] && note "ok"
 
+# ── Invariant 6: ONE config-mutation choke point. Every admin config mutation runs inside
+#    `config_transaction` (crates/busbar/src/admin/v1/json/txn.rs), which owns the file-private
+#    `CONFIG_MUTATION_LOCK`, hands the body a FRESH post-lock snapshot, forces store/disk work onto
+#    spawn_blocking, and applies the plan through `AppHandle::commit_and_swap`. Two bypasses are
+#    build failures outside txn.rs: naming a `CONFIG_MUTATION_LOCK` (a second config lock re-opens
+#    lock-then-arbitrary-code, which visibility already forbids for THIS one), and calling
+#    `handle.swap(` / `.commit_and_swap(` directly (a swap outside the section is the lost-update the
+#    lock exists to prevent). `state.rs` defines both methods, so it is allowed alongside txn.rs.
+#    #[cfg(test)] regions and test files are exempt (name-navigated; they drive the primitives
+#    directly). See crates/busbar/src/admin/v1/json/txn.rs. ──────────────────────────────────────
+hdr "one config-mutation choke point (no raw config lock / swap outside txn.rs)"
+# txn.rs is the choke point; state.rs DEFINES swap/commit_and_swap (and calls swap from within
+# commit_and_swap), so both may name them.
+ALLOW_TXN='crates/busbar/src/admin/v1/json/txn.rs'
+ALLOW_SWAP='crates/busbar/src/state.rs'
+txnfail=0
+scan_txn() { awk -v allow_swap="$2" '
+  /#\[cfg\(test\)\]/ { pending_test=1 }
+  {
+    line=$0
+    nopen=gsub(/\{/, "{", line); nclose=gsub(/\}/, "}", line)
+    if (pending_test && nopen>0) { in_test=1; pending_test=0 }
+    if (in_test) { depth += nopen - nclose; if (depth<=0) { in_test=0; depth=0 }; next }
+  }
+  /^[[:space:]]*\/\// { next }                       # skip whole-line comments (incl doc comments)
+  /CONFIG_MUTATION_LOCK/ { printf "%s:%d: names the config mutation lock\n", FILENAME, NR }
+  allow_swap == "1" { next }
+  /\.commit_and_swap\(/ { printf "%s:%d: direct commit_and_swap outside a transaction\n", FILENAME, NR }
+  /handle\.swap\(/      { printf "%s:%d: direct handle.swap outside a transaction\n", FILENAME, NR }
+' "$1"; }
+while IFS= read -r f; do
+  case "$f" in */tests/*) continue ;; esac          # test files are exempt (name-navigated)
+  [ "$f" = "$ALLOW_TXN" ] && continue                # the choke point itself
+  allow_swap=0
+  [ "$f" = "$ALLOW_SWAP" ] && allow_swap=1           # the file that DEFINES swap/commit_and_swap
+  hits=$(scan_txn "$f" "$allow_swap")
+  if [ -n "$hits" ]; then
+    while IFS= read -r h; do note "MUTATION-BYPASS: $h — route through json::txn::config_transaction"; done <<<"$hits"
+    fail=1; txnfail=1
+  fi
+done < <(find crates -name '*.rs')
+[ "$txnfail" -eq 0 ] && note "ok"
+
 hdr "result"
 if [ "$fail" -ne 0 ]; then note "structure-lint FAILED — see docs/code-layout.md"; exit 1; fi
 note "structure-lint passed"
