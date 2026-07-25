@@ -45,7 +45,27 @@ See [docs/configuration.md](docs/configuration.md) for the full config reference
 5. **No `_ =>` catch-all arms** in disposition/breaker `match` statements — the
    exhaustive match is how the compiler enforces that every failure mode is
    handled. This is a project invariant.
-6. Update documentation when you change behavior or config.
+6. **`scripts/structure-lint.sh`** — green. Beyond code layout it enforces the
+   remediation contract: the choke-point registry and REGRESSION-marker parity.
+7. Update documentation when you change behavior or config.
+
+## Fixing a defect: the remediation contract
+
+Read [docs/testing.md § The remediation contract](docs/testing.md#the-remediation-contract)
+before fixing a bug. In short:
+
+- **A finding with a sibling is not a bug — it is a missing choke point.** If the
+  same mistake is possible at a second call site, fix the class, not the instance.
+- **The fix is the choke point + ONE class-level test**, not N patched instances
+  with N tests.
+- **A later-round sibling is a process failure**: it means the previous
+  remediation patched an instance instead of the class.
+- A defect test must be **contract-derived**, **RED-demonstrated**, or
+  **cross-checked by an independent oracle** — a `assert_eq!(actual, <inline
+  constant>)` that restates the implementation guards nothing.
+
+Your changeset should name the choke point it attaches to, its one class-level
+test, and the RED-before note (`RED at <sha>: <failure line>`).
 
 ## Commit & PR conventions
 
