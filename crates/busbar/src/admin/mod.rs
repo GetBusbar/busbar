@@ -240,7 +240,57 @@ fn json_response(status: StatusCode, body: Value) -> Response {
 /// frozen `code` enum from `*_error` tokens in a second place. That split made the keys responses
 /// invisible to the OpenAPI projection (design D §1.2) and let the two banks drift; naming a `Cond`
 /// here is what makes each keys emission observable to `contract::taxonomy` (design D route 2).
-fn key_err(e: &AdminError, cond: Cond) -> Response {
+/// WHO IS REFUSING, so the ONE error door can also be the ONE audit door.
+///
+/// Round-6 finding: `POST /keys` wrote `key.create`/`applied` on success and NOTHING on any refusal
+/// — including the anti-sprawl cap 409 the two prior rounds added — while `key.patch`/`key.delete`/
+/// `key.rotate`/`key.revoke` each wrote `rejected` by hand at the arms someone remembered. A refused
+/// mint is precisely the event a reviewer needs (someone tried to issue a credential and was
+/// stopped), and it was the one event with no row.
+///
+/// The fix is not "add the missing calls": it is to make the refusal seam UNABLE to emit without a
+/// decision. `key_err` now takes this, so every present and future refusal on the keys surface must
+/// say whether it is a mutation (→ a `rejected` row, written here, once) or a read (→ nothing, since
+/// a refused GET changed nothing). There is no third option and no way to skip the question.
+#[derive(Clone, Copy)]
+pub(crate) enum KeyAudit<'a> {
+    /// A READ refusal. Nothing was mutated, so nothing is recorded.
+    Read,
+    /// A MUTATION refusal: records `(verb, resource)`/`rejected` for `actor`. `resource` is
+    /// `key:<id>` where an id exists and [`KEY_RESOURCE_NONE`] on a mint that never got one.
+    Mutation {
+        verb: &'static str,
+        resource: &'a str,
+        actor: &'a str,
+    },
+}
+
+/// The `resource` for a MINT that was refused before any key existed — there is no id to name, and
+/// inventing one would put a row in the log for a key that never was.
+pub(crate) const KEY_RESOURCE_NONE: &str = "key:-";
+
+/// Project an [`AdminError`] onto the frozen v1 wire, NAMING the taxonomy CONDITION it came from,
+/// and — for a mutating operation — writing that operation's `rejected` audit row.
+/// This is the keys surface's ONLY error door, and it is the SAME `err_json` every other v1 handler
+/// funnels through — so keys and non-keys emit the identical envelope, the identical `code` for the
+/// same condition, and are seen by the identical drift machinery.
+///
+/// It replaces a SECOND vocabulary (`error_response(status, ERR_TYPE_*, msg)`), which re-derived the
+/// frozen `code` enum from `*_error` tokens in a second place. That split made the keys responses
+/// invisible to the OpenAPI projection (design D §1.2) and let the two banks drift; naming a `Cond`
+/// here is what makes each keys emission observable to `contract::taxonomy` (design D route 2).
+///
+/// Folding the audit row in here is the same move for the same reason: one door, one row, no
+/// per-arm remembering. See [`KeyAudit`].
+fn key_err(who: KeyAudit<'_>, e: &AdminError, cond: Cond) -> Response {
+    if let KeyAudit::Mutation {
+        verb,
+        resource,
+        actor,
+    } = who
+    {
+        audit::AUDIT.record_by(verb, resource, audit::OUTCOME_REJECTED, actor);
+    }
     crate::admin::v1::json::err_json_cond(e, cond)
 }
 
@@ -290,7 +340,10 @@ fn key_etag(k: &VirtualKey) -> String {
 /// with a header bug would re-read and retry forever (re-audit M4). Shared by PATCH and DELETE so
 /// the two verbs can never diverge on grammar.
 #[allow(clippy::result_large_err)] // Err = the ready-to-return 400 Response (callers just return it)
-fn parse_key_if_match(headers: &axum::http::HeaderMap) -> Result<Option<String>, Response> {
+fn parse_key_if_match(
+    who: KeyAudit<'_>,
+    headers: &axum::http::HeaderMap,
+) -> Result<Option<String>, Response> {
     let Some(raw) = headers.get(axum::http::header::IF_MATCH) else {
         return Ok(None);
     };
@@ -303,6 +356,7 @@ fn parse_key_if_match(headers: &axum::http::HeaderMap) -> Result<Option<String>,
         Ok(Some(bare.to_string()))
     } else {
         Err(key_err(
+            who,
             &AdminError::Validation(
                 "malformed If-Match: expected the key's ETag (16 hex chars, quoted) or *".into(),
             ),
@@ -335,8 +389,9 @@ fn key_meta(k: &VirtualKey) -> Value {
 /// - WRITES (create/patch/delete/rotate/revoke) answer 409 `conflict` (`disabled_write`): the request
 ///   conflicts with the server's configured state, with an actionable message. Previously every
 ///   handler returned 404 — making `not_found` mean two different things forever.
-fn disabled_write() -> Response {
+fn disabled_write(who: KeyAudit<'_>) -> Response {
     key_err(
+        who,
         &AdminError::Conflict(
             "governance is not enabled on this server; enable `governance:` in config.yaml to \
              manage virtual keys"
@@ -357,6 +412,7 @@ fn disabled_empty_list() -> Response {
 /// Single-resource read with governance off: no key can exist, so `not_found` is truthful.
 fn disabled_read() -> Response {
     key_err(
+        KeyAudit::Read,
         &AdminError::not_found_because("key", "governance is not enabled on this server"),
         Cond::GovernanceOff,
     )
@@ -366,9 +422,10 @@ fn disabled_read() -> Response {
 /// flows into a store lookup / log lines — cap it as defense-in-depth (DB/log-bloat guard). A real
 /// minted id is `vk_` + 16 hex chars (19 chars), so [`MAX_KEY_ID_LEN`] is generous headroom. Returns
 /// a 400 response when too long, `None` when acceptable.
-fn reject_overlong_id(id: &str) -> Option<Response> {
+fn reject_overlong_id(who: KeyAudit<'_>, id: &str) -> Option<Response> {
     if id.len() > MAX_KEY_ID_LEN {
         Some(key_err(
+            who,
             &AdminError::Validation("id must be <= 64 characters".into()),
             Cond::Overlong,
         ))
@@ -476,6 +533,13 @@ pub(crate) async fn create_key(
     // through `handle` and re-loads inside its own lock, so binding always sees the provisioned leaf.
     let app = handle.load();
     let actor = principal.actor_id().to_string();
+    // The ONE audit identity for this operation: `key_err` writes the `rejected` row from it, so a
+    // refusal cannot be shaped without being recorded. See `KeyAudit`.
+    let who = KeyAudit::Mutation {
+        verb: "key.create",
+        resource: KEY_RESOURCE_NONE,
+        actor: &actor,
+    };
     // IDEMPOTENT MINT (optional `Idempotency-Key`): a retried POST with the same key inside the
     // ~10min window returns the FIRST response verbatim (including the once-shown secret — the
     // standard idempotency contract: a retry is the same request, not a second mint) instead of
@@ -506,6 +570,7 @@ pub(crate) async fn create_key(
             // expires.
             Some(_) => {
                 return key_err(
+                    who,
                     &AdminError::Conflict(
                         "a request with this Idempotency-Key is already in flight".into(),
                     ),
@@ -527,7 +592,7 @@ pub(crate) async fn create_key(
         committed: false,
     });
     let Some(gov) = &app.governance else {
-        return disabled_write();
+        return disabled_write(who);
     };
     // Parse the body via the depth-guarded `crate::json` seam, NOT axum's stock `Json<T>` extractor,
     // whose `JsonRejection` body echoes the raw serde `Display` — a fragment of the offending input.
@@ -539,6 +604,7 @@ pub(crate) async fn create_key(
         Err(_) => {
             tracing::warn!("create_key: {}", crate::json::parse_err_log(body.len()));
             return key_err(
+                who,
                 &AdminError::Validation("invalid JSON".into()),
                 Cond::MalformedBody,
             );
@@ -549,6 +615,7 @@ pub(crate) async fn create_key(
     // is far past any reasonable label.
     if req.name.len() > MAX_KEY_NAME_LEN {
         return key_err(
+            who,
             &AdminError::Validation("name must be <= 256 characters".into()),
             Cond::Overlong,
         );
@@ -557,12 +624,13 @@ pub(crate) async fn create_key(
     // unsafe name (reserved, or not a valid label name) or an oversized map breaks the WHOLE scrape.
     // Reject at the mint ingress (see `validate_mint_labels`).
     if let Err(msg) = validate_mint_labels(&req.labels) {
-        return key_err(&AdminError::Validation(msg), Cond::InvalidLabels);
+        return key_err(who, &AdminError::Validation(msg), Cond::InvalidLabels);
     }
     // SIGNED-TOKEN keys require a signing key (S2). Without one, mint cannot issue a token - fail
     // loud rather than persist a binding no token can be issued for.
     if !gov.signing_enabled() {
         return key_err(
+            who,
             &AdminError::Conflict(
                 "signed-token minting is unavailable: no signing key is configured (set \
              auth.signing_key, or let busbar generate one on first boot)"
@@ -576,6 +644,7 @@ pub(crate) async fn create_key(
     let exp = match (req.expires_in.as_deref(), req.expires_at) {
         (Some(_), Some(_)) => {
             return key_err(
+                who,
                 &AdminError::Validation(
                     "expires_in and expires_at are mutually exclusive; set at most one".into(),
                 ),
@@ -584,11 +653,12 @@ pub(crate) async fn create_key(
         }
         (Some(dur), None) => match parse_duration_secs(dur) {
             Ok(secs) => now.saturating_add(secs),
-            Err(msg) => return key_err(&AdminError::Validation(msg), Cond::KeyExpiryFields),
+            Err(msg) => return key_err(who, &AdminError::Validation(msg), Cond::KeyExpiryFields),
         },
         (None, Some(at)) => {
             if at <= now {
                 return key_err(
+                    who,
                     &AdminError::Validation("expires_at is in the past".into()),
                     Cond::KeyExpiryFields,
                 );
@@ -637,6 +707,7 @@ pub(crate) async fn create_key(
     if req.group.is_none() && req.parent.is_some() {
         // `parent` without `group` has nothing to root — a loud 400 beats silently ignoring it.
         return key_err(
+            who,
             &AdminError::Validation(
                 "`parent` was given without `group`; `parent` names the group to auto-provision \
              `group` under, so `group` is required with it"
@@ -658,14 +729,19 @@ pub(crate) async fn create_key(
             Some(crate::admin::v1::contract::Scope::Full) | None
         )
     {
-        return key_err(
+        return key_err(who,
             &AdminError::Validation(
                 "`group` is required: a delegated `mint` credential may only issue keys BOUND to a \
                  group (an unbound key carries no limits at all). Name an existing group, or pass \
                  `parent:` to auto-provision one under it"
                     .into(),
             ),
-            Cond::RebindTargetMissing,
+            // Its OWN condition. This used to reuse `RebindTargetMissing`, whose canonical phrase
+            // ("the rebind target group does not exist") describes a DIFFERENT refusal on a
+            // different operation — so `openapi.json` documented this 400 as a dangling-rebind
+            // error, and the cond-granular under-claim guard could not see that `POST /keys` never
+            // declared `RebindTargetMissing` at all.
+            Cond::DelegatedMintUnbound,
         );
     }
     /// What the mint's blocking half produced: the key (bearer-only or with AWS credentials), or the
@@ -819,6 +895,7 @@ pub(crate) async fn create_key(
     let (key, token, aws) = match minted {
         MintOutcome::AtCap { group, n, cap } => {
             return key_err(
+                who,
                 &AdminError::Conflict(format!(
                     "group '{group}' already has {n} live key(s), at the \
                      `limits.max_keys_per_principal` cap of {cap}; revoke or delete an existing \
@@ -901,12 +978,20 @@ pub(crate) async fn update_key(
     body: Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();
+    // The ONE audit identity for this operation: `key_err` writes the `rejected` row from it, so a
+    // refusal cannot be shaped without being recorded. See `KeyAudit`.
+    let resource = format!("key:{id}");
+    let who = KeyAudit::Mutation {
+        verb: "key.patch",
+        resource: &resource,
+        actor: &actor,
+    };
     // Fast-fail BEFORE parsing the body if governance is off (the authoritative re-check happens under
     // the config-mutation lock below, against the live App).
     if handle.load().governance.is_none() {
-        return disabled_write();
+        return disabled_write(who);
     }
-    if let Some(resp) = reject_overlong_id(&id) {
+    if let Some(resp) = reject_overlong_id(who, &id) {
         return resp;
     }
     // OPTIMISTIC CONCURRENCY (optional `If-Match`): the caller's ETag is compared against the
@@ -914,7 +999,7 @@ pub(crate) async fn update_key(
     // the write, so it is deferred INTO the gated write closure below (a separate pre-read here
     // would leave a window in which a concurrent PATCH mutates the row between the check and this
     // write, defeating the guard). Absent header = the transitional unguarded path.
-    let if_match = match parse_key_if_match(&headers) {
+    let if_match = match parse_key_if_match(who, &headers) {
         Ok(v) => v,
         Err(resp) => return resp,
     };
@@ -926,6 +1011,7 @@ pub(crate) async fn update_key(
         Err(_) => {
             tracing::warn!("update_key: {}", crate::json::parse_err_log(body.len()));
             return key_err(
+                who,
                 &AdminError::Validation("invalid JSON".into()),
                 Cond::MalformedBody,
             );
@@ -960,14 +1046,14 @@ pub(crate) async fn update_key(
         Updated(Box<crate::governance::VirtualKey>),
         NotFound,
         EtagStale,
-        /// The REBIND target bucket is already at `limits.max_keys_per_principal`.
+        /// The destination bucket (rebind target, or the key's own group on a re-enable) is
+        /// already at `limits.max_keys_per_principal`.
         AtCap {
             group: String,
             n: usize,
             cap: usize,
         },
     }
-    let resource = format!("key:{id}");
     let res = crate::admin::v1::json::config_transaction(&handle, move |txn| {
         let current = txn.app();
         let Some(gov) = current.governance.clone() else {
@@ -993,22 +1079,45 @@ pub(crate) async fn update_key(
         Ok(txn.store_write(move || {
             let _existence_guard = EXISTENCE_GATE.lock().unwrap_or_else(|e| e.into_inner());
             let outcome = (|| -> crate::governance::StoreResult<UpdateOutcome> {
+                // ONE read of the pre-image, inside the gate: it answers If-Match staleness,
+                // existence, AND the cap guard below, so the three cannot disagree about which
+                // record they are talking about.
+                let Some(before) = gov.all_keys()?.into_iter().find(|k| k.id == id) else {
+                    return Ok(UpdateOutcome::NotFound);
+                };
                 if let Some(tag) = &if_match {
-                    match gov.all_keys()?.into_iter().find(|k| k.id == id) {
-                        Some(k) if key_etag(&k) != *tag => return Ok(UpdateOutcome::EtagStale),
-                        None => return Ok(UpdateOutcome::NotFound),
-                        Some(_) => {}
+                    if key_etag(&before) != *tag {
+                        return Ok(UpdateOutcome::EtagStale);
                     }
                 }
-                // ANTI-SPRAWL CAP ON REBIND (audit round-5 HIGH-9). `max_keys_per_principal` was
-                // enforced only at MINT, so a PATCH could walk a principal past its own ceiling one
-                // rebind at a time — mint N keys under an empty group, then rebind them all onto the
-                // capped one. Same choke point, same fresh snapshot, same gated critical section as
-                // the mint; the key being MOVED is excluded from the count so a no-op rebind of an
-                // at-cap bucket onto itself is not spuriously refused.
-                if let Some(target) = group.as_ref() {
+                // ANTI-SPRAWL CAP ON EVERY PATCH THAT ADDS A LIVE KEY TO A BUCKET (audit round-5
+                // HIGH-9, tightened round-6). `max_keys_per_principal` was enforced only at MINT,
+                // so a PATCH could walk a principal past its own ceiling one rebind at a time —
+                // mint N keys under an empty group, then rebind them all onto the capped one.
+                //
+                // Guarding only the REBIND left the same ratchet hole open on the OTHER field:
+                // `check_key_cap` counts LIVE keys (enabled + not denylisted, by design so a
+                // revoke frees a slot), so `PATCH {"enabled": false}` × N followed by N fresh mints
+                // and then `PATCH {"enabled": true}` × N walks the bucket to 2N with every
+                // individual request passing the guard. RE-ENABLING is an admission, exactly like a
+                // rebind, and is gated here as one.
+                //
+                // The predicate is the general one both cases are instances of: check the cap iff
+                // this PATCH would ADD a live key to its destination bucket — i.e. the key is live
+                // afterwards AND was not already counted in that bucket (it was dead, or it was
+                // live in a different bucket). A no-op re-save, a disable, and a rebind of an
+                // already-dead key are all untouched, so an at-cap bucket stays editable. The mover
+                // is excluded from the count for the same reason.
+                let revoked = gov.is_revoked(&before.id);
+                let dest_group = match group.as_ref() {
+                    Some(g) => g.clone(),
+                    None => before.group.clone(),
+                };
+                let was_counted = before.enabled && !revoked;
+                let will_be_counted = enabled.unwrap_or(before.enabled) && !revoked;
+                if will_be_counted && (!was_counted || dest_group != before.group) {
                     if let Some((g, n)) =
-                        check_key_cap(&gov, cap, target.as_deref(), Some(id.as_str()))?
+                        check_key_cap(&gov, cap, dest_group.as_deref(), Some(id.as_str()))?
                     {
                         return Ok(UpdateOutcome::AtCap { group: g, n, cap });
                     }
@@ -1032,8 +1141,7 @@ pub(crate) async fn update_key(
             json_response(StatusCode::OK, key_meta(&key))
         }
         Ok(UpdateOutcome::EtagStale) => {
-            audit::AUDIT.record_by("key.patch", &resource, audit::OUTCOME_REJECTED, &actor);
-            key_err(
+            key_err(who,
                 &AdminError::VersionConflict(
                     "If-Match ETag is stale: the key changed since you read it (re-read and retry)"
                         .into(),
@@ -1042,24 +1150,22 @@ pub(crate) async fn update_key(
             )
         }
         Ok(UpdateOutcome::NotFound) => {
-            audit::AUDIT.record_by("key.patch", &resource, audit::OUTCOME_REJECTED, &actor);
-            key_err(&AdminError::not_found("key"), Cond::UnknownResource)
+            key_err(who, &AdminError::not_found("key"), Cond::UnknownResource)
         }
         Ok(UpdateOutcome::AtCap { group, n, cap }) => {
-            audit::AUDIT.record_by("key.patch", &resource, audit::OUTCOME_REJECTED, &actor);
-            key_err(
+            key_err(who,
                 &AdminError::Conflict(format!(
                     "group '{group}' already has {n} live key(s), at the \
                      `limits.max_keys_per_principal` cap of {cap}; revoke or delete one of its keys \
-                     before rebinding another onto it",
+                     before rebinding or re-enabling another into it",
                 )),
                 Cond::AtKeyCap,
             )
         }
         // The only 400 this body can raise is the dangling rebind target; anything else is the
         // generic store failure, which carries no condition of its own.
-        Err(e @ AdminError::Validation(_)) => key_err(&e, Cond::RebindTargetMissing),
-        Err(e @ AdminError::Conflict(_)) => key_err(&e, Cond::GovernanceOff),
+        Err(e @ AdminError::Validation(_)) => key_err(who, &e, Cond::RebindTargetMissing),
+        Err(e @ AdminError::Conflict(_)) => key_err(who, &e, Cond::GovernanceOff),
         Err(e) => crate::admin::v1::json::err_json(&e),
     }
 }
@@ -1083,6 +1189,7 @@ pub(crate) async fn list_keys(
             Ok(b) => Some(b),
             Err(_) => {
                 return key_err(
+                    KeyAudit::Read,
                     &AdminError::Validation("invalid `enabled` filter: expected true|false".into()),
                     Cond::InvalidQueryValue,
                 )
@@ -1107,6 +1214,7 @@ pub(crate) async fn list_keys(
             Ok(n) => n.min(crate::admin::v1::contract::LIST_LIMIT_MAX),
             Err(_) => {
                 return key_err(
+                    KeyAudit::Read,
                     &AdminError::Validation(format!(
                         "invalid `limit`: expected an integer (max {})",
                         crate::admin::v1::contract::LIST_LIMIT_MAX
@@ -1121,6 +1229,7 @@ pub(crate) async fn list_keys(
             Some(n) => n,
             None => {
                 return key_err(
+                    KeyAudit::Read,
                     &AdminError::Validation("invalid or foreign pagination cursor".into()),
                     Cond::MalformedCursor,
                 )
@@ -1187,6 +1296,14 @@ pub(crate) async fn rotate_key(
     headers: axum::http::HeaderMap,
 ) -> Response {
     let actor = principal.actor_id().to_string();
+    // The ONE audit identity for this operation: `key_err` writes the `rejected` row from it, so a
+    // refusal cannot be shaped without being recorded. See `KeyAudit`.
+    let resource = format!("key:{id}");
+    let who = KeyAudit::Mutation {
+        verb: "key.rotate",
+        resource: &resource,
+        actor: &actor,
+    };
     // IDEMPOTENT ROTATE (optional `Idempotency-Key`, re-audit M10): rotate is the one other
     // destructive, secret-bearing POST — a network-level retry without this mints TWICE and the
     // first (lost) response's secret is silently dead. Same mechanics as create's idempotent mint
@@ -1211,6 +1328,7 @@ pub(crate) async fn rotate_key(
             }
             Some(_) => {
                 return key_err(
+                    who,
                     &AdminError::Conflict(
                         "a request with this Idempotency-Key is already in flight".into(),
                     ),
@@ -1228,7 +1346,7 @@ pub(crate) async fn rotate_key(
         committed: false,
     });
     let Some(gov) = &app.governance else {
-        return disabled_write();
+        return disabled_write(who);
     };
     let gov = gov.clone();
     let gid = id.clone();
@@ -1246,7 +1364,6 @@ pub(crate) async fn rotate_key(
         gov.rotate_key(&gid, exp)
     })
     .await;
-    let resource = format!("key:{id}");
     match res {
         Ok(Ok(Some(rotated))) => {
             audit::AUDIT.record_by("key.rotate", &resource, audit::OUTCOME_APPLIED, &actor);
@@ -1276,10 +1393,7 @@ pub(crate) async fn rotate_key(
             }
             json_response(StatusCode::OK, body)
         }
-        Ok(Ok(None)) => {
-            audit::AUDIT.record_by("key.rotate", &resource, audit::OUTCOME_REJECTED, &actor);
-            key_err(&AdminError::not_found("key"), Cond::UnknownResource)
-        }
+        Ok(Ok(None)) => key_err(who, &AdminError::not_found("key"), Cond::UnknownResource),
         Ok(Err(e)) => internal_error("rotate_key", &e),
         Err(e) => join_error("rotate_key", &e),
     }
@@ -1296,10 +1410,18 @@ pub(crate) async fn revoke_key(
     Path(id): Path<String>,
 ) -> Response {
     let actor = principal.actor_id().to_string();
-    let Some(gov) = &app.governance else {
-        return disabled_write();
+    // The ONE audit identity for this operation: `key_err` writes the `rejected` row from it, so a
+    // refusal cannot be shaped without being recorded. See `KeyAudit`.
+    let resource = format!("key:{id}");
+    let who = KeyAudit::Mutation {
+        verb: "key.revoke",
+        resource: &resource,
+        actor: &actor,
     };
-    if let Some(resp) = reject_overlong_id(&id) {
+    let Some(gov) = &app.governance else {
+        return disabled_write(who);
+    };
+    if let Some(resp) = reject_overlong_id(who, &id) {
         return resp;
     }
     let gov = gov.clone();
@@ -1320,16 +1442,12 @@ pub(crate) async fn revoke_key(
         Ok(true)
     })
     .await;
-    let resource = format!("key:{id}");
     match res {
         Ok(Ok(true)) => {
             audit::AUDIT.record_by("key.revoke", &resource, audit::OUTCOME_APPLIED, &actor);
             json_response(StatusCode::OK, json!({ "revoked": id }))
         }
-        Ok(Ok(false)) => {
-            audit::AUDIT.record_by("key.revoke", &resource, audit::OUTCOME_REJECTED, &actor);
-            key_err(&AdminError::not_found("key"), Cond::UnknownResource)
-        }
+        Ok(Ok(false)) => key_err(who, &AdminError::not_found("key"), Cond::UnknownResource),
         Ok(Err(e)) => internal_error("revoke_key", &e),
         Err(e) => join_error("revoke_key", &e),
     }
@@ -1347,11 +1465,19 @@ pub(crate) async fn rotate_signing_key(
     axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
 ) -> Response {
     let actor = principal.actor_id().to_string();
+    // The ONE audit identity for this operation: `key_err` writes the `rejected` row from it, so a
+    // refusal cannot be shaped without being recorded. See `KeyAudit`.
+    let who = KeyAudit::Mutation {
+        verb: "signing_key.rotate",
+        resource: "signing-key",
+        actor: &actor,
+    };
     let Some(gov) = &app.governance else {
-        return disabled_write();
+        return disabled_write(who);
     };
     let Some(kid) = gov.signing_kid() else {
         return key_err(
+            who,
             &AdminError::Conflict("no signing key is configured; nothing to rotate".into()),
             Cond::NothingToRotate,
         );
@@ -1386,7 +1512,7 @@ pub(crate) async fn get_key(
     let Some(gov) = &app.governance else {
         return disabled_read();
     };
-    if let Some(resp) = reject_overlong_id(&id) {
+    if let Some(resp) = reject_overlong_id(KeyAudit::Read, &id) {
         return resp;
     }
     let gov = gov.clone();
@@ -1411,7 +1537,11 @@ pub(crate) async fn get_key(
             }
             resp
         }
-        Ok(Ok(None)) => key_err(&AdminError::not_found("key"), Cond::UnknownResource),
+        Ok(Ok(None)) => key_err(
+            KeyAudit::Read,
+            &AdminError::not_found("key"),
+            Cond::UnknownResource,
+        ),
         Ok(Err(e)) => internal_error("get_key", &e),
         Err(e) => join_error("get_key", &e),
     }
@@ -1430,7 +1560,7 @@ pub(crate) async fn key_usage(
     let Some(gov) = &app.governance else {
         return disabled_read();
     };
-    if let Some(resp) = reject_overlong_id(&id) {
+    if let Some(resp) = reject_overlong_id(KeyAudit::Read, &id) {
         return resp;
     }
     let now = crate::store::now();
@@ -1474,7 +1604,11 @@ pub(crate) async fn key_usage(
                 }),
             )
         }
-        Ok(Ok(None)) => key_err(&AdminError::not_found("key"), Cond::UnknownResource),
+        Ok(Ok(None)) => key_err(
+            KeyAudit::Read,
+            &AdminError::not_found("key"),
+            Cond::UnknownResource,
+        ),
         Ok(Err(e)) => internal_error("key_usage", &e),
         Err(e) => join_error("key_usage", &e),
     }
@@ -1490,16 +1624,24 @@ pub(crate) async fn delete_key(
     headers: axum::http::HeaderMap,
 ) -> Response {
     let actor = principal.actor_id().to_string();
-    let Some(gov) = &app.governance else {
-        return disabled_write();
+    // The ONE audit identity for this operation: `key_err` writes the `rejected` row from it, so a
+    // refusal cannot be shaped without being recorded. See `KeyAudit`.
+    let resource = format!("key:{id}");
+    let who = KeyAudit::Mutation {
+        verb: "key.delete",
+        resource: &resource,
+        actor: &actor,
     };
-    if let Some(resp) = reject_overlong_id(&id) {
+    let Some(gov) = &app.governance else {
+        return disabled_write(who);
+    };
+    if let Some(resp) = reject_overlong_id(who, &id) {
         return resp;
     }
     // Optimistic concurrency (optional `If-Match`, H3 — every mutation verb on the surface honors
     // it): the caller's ETag is compared against the CURRENT record inside the gated critical
     // section below, so the delete only lands on the exact record state the caller last read.
-    let if_match = match parse_key_if_match(&headers) {
+    let if_match = match parse_key_if_match(who, &headers) {
         Ok(v) => v,
         Err(resp) => return resp,
     };
@@ -1559,7 +1701,6 @@ pub(crate) async fn delete_key(
         }
     })
     .await;
-    let resource = format!("key:{id}");
     match res {
         Ok(Ok(DeleteOutcome::Deleted)) => {
             audit::AUDIT.record_by("key.delete", &resource, audit::OUTCOME_APPLIED, &actor);
@@ -1568,19 +1709,16 @@ pub(crate) async fn delete_key(
             StatusCode::NO_CONTENT.into_response()
         }
         Ok(Ok(DeleteOutcome::NotFound)) => {
-            audit::AUDIT.record_by("key.delete", &resource, audit::OUTCOME_REJECTED, &actor);
-            key_err(&AdminError::not_found("key"), Cond::UnknownResource)
+            key_err(who, &AdminError::not_found("key"), Cond::UnknownResource)
         }
-        Ok(Ok(DeleteOutcome::EtagStale)) => {
-            audit::AUDIT.record_by("key.delete", &resource, audit::OUTCOME_REJECTED, &actor);
-            key_err(
-                &AdminError::VersionConflict(
-                    "If-Match ETag is stale: the key changed since you read it (re-read and retry)"
-                        .into(),
-                ),
-                Cond::StaleIfMatch,
-            )
-        }
+        Ok(Ok(DeleteOutcome::EtagStale)) => key_err(
+            who,
+            &AdminError::VersionConflict(
+                "If-Match ETag is stale: the key changed since you read it (re-read and retry)"
+                    .into(),
+            ),
+            Cond::StaleIfMatch,
+        ),
         Ok(Err(e)) => internal_error("delete_key", &e),
         Err(e) => join_error("delete_key", &e),
     }

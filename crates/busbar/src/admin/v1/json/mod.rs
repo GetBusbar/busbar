@@ -149,9 +149,19 @@ impl AdminTransport for JsonV1 {
 }
 
 /// TEST-ONLY recording layer (see `JsonV1::router`). For every response carrying a taxonomy tag it
-/// (a) PANICS when the endpoint's `declared_errors` does not list that `ErrKind` — an UNDER-CLAIM,
+/// (a) PANICS when the endpoint's `declared_errors` does not list that emission — an UNDER-CLAIM,
 /// failing the very test that triggered it, with no test-ordering dependency — and (b) witnesses the
 /// emission so the class test can prove no declared entry is an OVER-CLAIM.
+///
+/// The under-claim comparison runs at the SAME `(operation, ErrKind, Cond)` granularity the
+/// over-claim direction does, whenever the emission names its condition (`err_json_cond`). It used
+/// to compare `ErrKind` alone, which made the guard blind to the exact defect it exists to catch: a
+/// handler emitting a NEW condition under an ALREADY-DECLARED kind sailed through, because a
+/// sibling condition on the same operation kept `.any(|d| d.kind == tag.kind)` true. Two such
+/// emissions shipped undocumented in 1.5.0 behind that hole — the `AtKeyCap` 409 on
+/// `PATCH /keys/{id}` (declared nowhere, but Conflict was declared for `GovernanceOff`) and the
+/// delegated-mint 400 on `POST /keys` (which additionally reused the wrong `Cond`, so its
+/// openapi.json prose described the rebind target instead). Both now fail the build at emission.
 #[cfg(test)]
 async fn record_declared_error(
     req: axum::extract::Request,
@@ -171,20 +181,35 @@ async fn record_declared_error(
         let rel = path
             .strip_prefix(crate::admin::v1::contract::ADMIN_PREFIX)
             .unwrap_or(&path);
-        // UNDER-CLAIM IS FATAL, HERE, NOW. If a handler emitted a declarable kind the endpoint's
+        // UNDER-CLAIM IS FATAL, HERE, NOW. If a handler emitted something the endpoint's
         // declaration does not list, `openapi.json` would under-document the surface — so fail the
         // test that produced it rather than accumulating a report someone has to read. Every test in
         // the suite is a driver for this direction; there is no ordering dependency and no way to
         // add an undocumented error response without turning the build red.
-        assert!(
-            taxonomy::declared_errors(method, rel)
+        //
+        // GRANULARITY. A `err_json_cond` emission names its condition, so it is matched on the FULL
+        // `(kind, cond)` pair — matching on `kind` alone would let a new condition hide behind a
+        // declared sibling of the same kind, which is exactly the hole this guard is for. An
+        // untagged emission (`err_json`) can only be matched on `kind`; that residual weakness is
+        // what `COND_WITNESS_DEBT` ledgers and shrinks from the over-claim side.
+        let declared = taxonomy::declared_errors(method, rel);
+        let matched_decl = match tag.cond {
+            Some(cond) => declared
                 .iter()
-                .any(|d| d.kind == tag.kind),
-            "OpenAPI UNDER-CLAIM: {} {rel} emitted {:?} ({}), which contract::taxonomy::\
-             declared_errors does not declare — openapi.json would omit the {} response. Declare it \
-             (with its Cond) or stop emitting it.",
+                .any(|d| d.kind == tag.kind && d.cond == cond),
+            None => declared.iter().any(|d| d.kind == tag.kind),
+        };
+        assert!(
+            matched_decl,
+            "OpenAPI UNDER-CLAIM: {} {rel} emitted {:?}/{} ({}), which contract::taxonomy::\
+             declared_errors does not declare — openapi.json would omit or mis-describe the {} \
+             response. Declare it (with its Cond) or stop emitting it.",
             method.as_str().to_uppercase(),
             tag.kind,
+            match tag.cond {
+                Some(c) => format!("{c:?}"),
+                None => "<untagged>".to_string(),
+            },
             tag.kind.code(),
             tag.kind.status(),
         );

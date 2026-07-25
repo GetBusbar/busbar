@@ -5053,7 +5053,7 @@
                 }
               }
             },
-            "description": "`invalid_request`: malformed body / unknown field, an id or name exceeds its length cap, invalid mint-time `labels` — a reserved or non-Prometheus label name, or too many/too long, bad `expires_in` / `expires_at`, `parent` was given without `group`, invalid tree — dangling/cyclic parent or depth"
+            "description": "`invalid_request`: malformed body / unknown field, an id or name exceeds its length cap, invalid mint-time `labels` — a reserved or non-Prometheus label name, or too many/too long, bad `expires_in` / `expires_at`, `parent` was given without `group`, a delegated `mint` credential may only issue keys BOUND to a group (`group` is required), invalid tree — dangling/cyclic parent or depth"
           },
           "401": {
             "content": {
@@ -5388,7 +5388,7 @@
                 }
               }
             },
-            "description": "`conflict`: governance is not enabled on this server | `version_conflict`: stale `If-Match` (re-read and retry)"
+            "description": "`conflict`: governance is not enabled on this server, the group is at the `limits.max_keys_per_principal` cap | `version_conflict`: stale `If-Match` (re-read and retry)"
           },
           "429": {
             "content": {

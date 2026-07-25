@@ -5963,6 +5963,227 @@ async fn test_max_keys_per_principal_cap_trips() {
     handle.abort();
 }
 
+/// The three refusals the 1.5.0 anti-sprawl work SHIPPED WITHOUT A DRIVER, and what their absence
+/// hid (round-6 audit). Split out of the `#[tokio::test]` so the class-level drift test can run it.
+///
+/// 1. **`PATCH /keys/{id}` rebind into an at-cap group** — the round-5 HIGH-9 fix. Only its pure
+///    predicate (`check_key_cap`) was tested; the HANDLER arm that turns it into a 409 had no test
+///    at all, so `contract::taxonomy` never declared `Conflict/AtKeyCap` for that operation and
+///    `openapi.json` documented a `409` that named only `GovernanceOff`. The under-claim guard could
+///    not catch it either: it compared `ErrKind` alone, and `Conflict` WAS declared.
+/// 2. **RE-ENABLE past the cap** — the same ratchet HIGH-9 claimed to close, through the other
+///    field. `check_key_cap` counts LIVE keys, so `disable → mint → re-enable` walks a bucket past
+///    its ceiling with every single request passing the guard. Now gated by the same 409.
+/// 3. **`POST /keys` delegated-mint-must-bind 400** (round-5 #19) — never exercised, and its
+///    emission reused `Cond::RebindTargetMissing`, whose canonical phrase describes a DIFFERENT
+///    refusal. `openapi.json` therefore described this 400 as a dangling-rebind error.
+///
+/// It also asserts the audit consequence: every one of these refusals writes a `rejected` row.
+/// `POST /keys` wrote NOTHING on any refusal before round-6 — the one verb whose refusals a
+/// reviewer most needs and the one verb that had no row.
+async fn drive_key_cap_and_delegation_errors() {
+    crate::metrics::init();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let groups = std::collections::BTreeMap::from([
+        (
+            "capped".to_string(),
+            crate::config::GroupCfg {
+                limits: vec![budget_limit(1_000_000)],
+                ..Default::default()
+            },
+        ),
+        (
+            "roomy".to_string(),
+            crate::config::GroupCfg {
+                limits: vec![budget_limit(1_000_000)],
+                ..Default::default()
+            },
+        ),
+    ]);
+    let mut app = TestApp::new().governance(gov).groups_tree(groups).build();
+    {
+        let inner = Arc::get_mut(&mut app).expect("sole owner");
+        inner.max_keys_per_principal = 2;
+        // A DELEGATED `mint` principal (case 3): the refusal is body-derived authorization, so it
+        // is only reachable from a non-`Full` scope. Ceiling `full` so `mint` resolves un-capped.
+        inner.admin_chain = vec!["test-scope-module".to_string(), "admin-tokens".to_string()];
+        let mut table = std::collections::BTreeMap::new();
+        table.insert(
+            "minters".to_string(),
+            crate::config::RoleBindingCfg {
+                admin_scope: Some("mint".to_string()),
+                ..Default::default()
+            },
+        );
+        inner
+            .role_bindings
+            .insert("test-scope-module".to_string(), table);
+        inner
+            .auth_scope_caps
+            .insert("test-scope-module".to_string(), "full".to_string());
+    }
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    let keys_url = format!("http://{addr}/api/v1/admin/keys");
+
+    let mint = |name: &'static str, group: &'static str| {
+        let (c, u) = (client.clone(), keys_url.clone());
+        async move {
+            let r = c
+                .post(&u)
+                .header("x-admin-token", "admintok")
+                .json(&serde_json::json!({"name": name, "group": group}))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(r.status().as_u16(), 201, "mint {name}/{group}");
+            let b: serde_json::Value = r.json().await.unwrap();
+            b["id"].as_str().unwrap().to_string()
+        }
+    };
+    let patch = |id: String, body: serde_json::Value| {
+        let (c, u) = (client.clone(), keys_url.clone());
+        async move {
+            c.patch(format!("{u}/{id}"))
+                .header("x-admin-token", "admintok")
+                .json(&body)
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+
+    // Fill `capped` to its ceiling of 2, and park one key in `roomy` to rebind with.
+    let cap_a = mint("a", "capped").await;
+    let _cap_b = mint("b", "capped").await;
+    let roamer = mint("roamer", "roomy").await;
+
+    // ── 1. REBIND into an at-cap bucket → 409 `conflict` naming the cap ───────────────────────
+    let r = patch(roamer.clone(), serde_json::json!({"group": "capped"})).await;
+    assert_eq!(r.status().as_u16(), 409, "rebind into an at-cap group");
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "conflict");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("max_keys_per_principal"),
+        "the rebind 409 names the cap: {body}"
+    );
+
+    // ── 2. RE-ENABLE past the cap → the SAME 409 ──────────────────────────────────────────────
+    // Disable one of `capped`'s keys: the bucket now counts 1 live, so a fresh mint is admitted.
+    assert_eq!(
+        patch(cap_a.clone(), serde_json::json!({"enabled": false}))
+            .await
+            .status()
+            .as_u16(),
+        200,
+        "disabling is always allowed — it can only free a slot"
+    );
+    let _cap_c = mint("c", "capped").await;
+    // …and NOW re-enabling the parked key would make 3 live keys in a bucket capped at 2.
+    let r = patch(cap_a.clone(), serde_json::json!({"enabled": true})).await;
+    assert_eq!(
+        r.status().as_u16(),
+        409,
+        "re-enabling past the cap is the same admission as a rebind past the cap"
+    );
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "conflict");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("max_keys_per_principal"),
+        "the re-enable 409 names the cap: {body}"
+    );
+    // A DISABLED key can still be edited in every other way — the guard fires on admission, not on
+    // touching an at-cap bucket (otherwise an at-cap bucket would freeze).
+    assert_eq!(
+        patch(cap_a.clone(), serde_json::json!({"enabled": false}))
+            .await
+            .status()
+            .as_u16(),
+        200,
+        "a no-op disable of a key in an at-cap bucket is not an admission"
+    );
+
+    // ── 3. DELEGATED MINT with no `group` → 400 `invalid_request` ─────────────────────────────
+    let r = client
+        .post(&keys_url)
+        .header("x-admin-token", "grp:minters")
+        .json(&serde_json::json!({"name": "unbound"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status().as_u16(),
+        400,
+        "a delegated mint credential may not issue an unbound (uncapped) key"
+    );
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "invalid_request");
+    // The SAME request from the operator (`full`) is allowed — the refusal is body-derived
+    // authorization, not a body validation rule, and must not become one.
+    let r = client
+        .post(&keys_url)
+        .header("x-admin-token", "admintok")
+        .json(&serde_json::json!({"name": "unbound-by-operator"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status().as_u16(),
+        201,
+        "the operator owns the tree and may still mint an unbound key"
+    );
+
+    // ── THE AUDIT CONSEQUENCE ─────────────────────────────────────────────────────────────────
+    // Every refusal above wrote a `rejected` row. `key.create` had none of these before round-6:
+    // it recorded `applied` on success and nothing at all on any refusal, so a refused mint — an
+    // attempt to issue a credential that was stopped — left no trace. The rows are asserted through
+    // the live `GET /audit` surface, and only for EXISTENCE (the log is a process-global other
+    // tests append to, so "at least one" is the only stable predicate).
+    let audit_rows = |action: &'static str| {
+        let (c, a) = (client.clone(), addr);
+        async move {
+            let r = c
+                .get(format!("http://{a}/api/v1/admin/audit?action={action}"))
+                .header("x-admin-token", "admintok")
+                .send()
+                .await
+                .unwrap();
+            let b: serde_json::Value = r.json().await.unwrap();
+            b["items"].as_array().cloned().unwrap_or_default()
+        }
+    };
+    for action in ["key.create", "key.patch"] {
+        let rejected = audit_rows(action)
+            .await
+            .iter()
+            .filter(|e| e["outcome"] == "rejected")
+            .count();
+        assert!(
+            rejected > 0,
+            "no `{action}` audit row with outcome=rejected — a refusal that leaves no trail is \
+             the gap `KeyAudit` exists to make unrepresentable"
+        );
+    }
+
+    server.abort();
+}
+
+/// The `#[tokio::test]` wrapper for [`drive_key_cap_and_delegation_errors`].
+#[tokio::test]
+async fn key_cap_and_delegation_refusals_are_reachable_declared_and_audited() {
+    drive_key_cap_and_delegation_errors().await;
+}
+
 /// REGRESSION (10-phase 1.5.0 audit: TOCTOU on `max_keys_per_principal`): N concurrent mints into a
 /// group sitting one below the cap must NOT all pass. Before the fix the count and the mint ran in
 /// two separate `spawn_blocking` tasks with an `.await` between and no lock spanning them, so
@@ -8904,6 +9125,7 @@ async fn declared_error_set_is_exactly_what_the_handlers_emit() {
     drive_plugin_rollback_errors().await;
     drive_plugin_reload_errors().await;
     drive_hook_escalation_errors().await;
+    drive_key_cap_and_delegation_errors().await;
 
     let witnessed = crate::admin::v1::contract::taxonomy::observed::snapshot();
     // Every (operation, ErrKind) the suite has actually produced, and every (operation, ErrKind,

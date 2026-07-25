@@ -121,6 +121,7 @@ pub(crate) enum Cond {
     NoSigningKey,
     IdempotencyInFlight,
     AtKeyCap,
+    DelegatedMintUnbound,
     ParentWithoutGroup,
     KeyExpiryFields,
     RebindTargetMissing,
@@ -163,6 +164,10 @@ impl Cond {
             Cond::NoSigningKey => "no signing key is configured for signed-token minting",
             Cond::IdempotencyInFlight => "an `Idempotency-Key` request is already in flight",
             Cond::AtKeyCap => "the group is at the `limits.max_keys_per_principal` cap",
+            Cond::DelegatedMintUnbound => {
+                "a delegated `mint` credential may only issue keys BOUND to a group (`group` is \
+                 required)"
+            }
             Cond::ParentWithoutGroup => "`parent` was given without `group`",
             Cond::KeyExpiryFields => "bad `expires_in` / `expires_at`",
             Cond::RebindTargetMissing => "the rebind target group does not exist",
@@ -436,6 +441,7 @@ pub(crate) fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr]
             Validation / InvalidLabels,
             Validation / KeyExpiryFields,
             Validation / ParentWithoutGroup,
+            Validation / DelegatedMintUnbound,
             Validation / InvalidTree,
             Conflict / GovernanceOff,
             Conflict / NoSigningKey,
@@ -455,6 +461,7 @@ pub(crate) fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr]
             Validation / RebindTargetMissing,
             NotFound / UnknownResource,
             Conflict / GovernanceOff,
+            Conflict / AtKeyCap,
             VersionConflict / StaleIfMatch,
         ],
         (Delete, "/keys/{id}") => de![
