@@ -1467,7 +1467,7 @@ pub(crate) async fn rotate_signing_key(
     // The ONE audit identity for this operation: `key_err` writes the `rejected` row from it, so a
     // refusal cannot be shaped without being recorded. See `KeyAudit`.
     let who = KeyAudit::Mutation {
-        verb: "signing_key.rotate",
+        verb: "signing_key.report",
         resource: "signing-key",
         actor: &actor,
     };
@@ -1481,8 +1481,16 @@ pub(crate) async fn rotate_signing_key(
             Cond::NothingToRotate,
         );
     };
+    // `signing_key.report`, not `signing_key.rotate`: this endpoint rotates NOTHING. It reads the
+    // current kid and returns the operator instructions below. Recording it as `rotate`/`applied`
+    // told anyone reading the log that every outstanding token had been revoked.
+    //
+    // The row stays, rather than being dropped as a non-mutation, because the log exists so a
+    // credential probing the surface leaves a trail — and a valid admin token calling this
+    // repeatedly is exactly that. Dropping it would also make this the only `KeyAudit::Mutation`
+    // verb in the file that audits its refusals but not its successes.
     audit::AUDIT.record_by(
-        "signing_key.rotate",
+        "signing_key.report",
         "signing-key",
         audit::OUTCOME_APPLIED,
         &actor,
