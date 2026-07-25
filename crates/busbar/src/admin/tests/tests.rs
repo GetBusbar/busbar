@@ -5956,24 +5956,22 @@ async fn test_max_keys_per_principal_cap_trips() {
     handle.abort();
 }
 
-/// The three refusals the 1.5.0 anti-sprawl work SHIPPED WITHOUT A DRIVER, and what their absence
-/// hid. Split out of the `#[tokio::test]` so the class-level drift test can run it.
+/// The three anti-sprawl refusals, driven end-to-end. Split out of the `#[tokio::test]` so the
+/// class-level drift test can run it too.
 ///
 /// 1. **`PATCH /keys/{id}` rebind into an at-cap group**. Only its pure
-/// predicate (`check_key_cap`) was tested; the HANDLER arm that turns it into a 409 had no test
-/// at all, so `contract::taxonomy` never declared `Conflict/AtKeyCap` for that operation and
-/// `openapi.json` documented a `409` that named only `GovernanceOff`. The under-claim guard could
-/// not catch it either: it compared `ErrKind` alone, and `Conflict` WAS declared.
-/// 2. **RE-ENABLE past the cap** — the same ratchet HIGH-9 claimed to close, through the other
-/// field. `check_key_cap` counts LIVE keys, so `disable → mint → re-enable` walks a bucket past
-/// its ceiling with every single request passing the guard. Now gated by the same 409.
+///    predicate (`check_key_cap`) was tested; the HANDLER arm that turns it into a 409 had no test
+///    at all, so `contract::taxonomy` never declared `Conflict/AtKeyCap` for that operation and
+///    `openapi.json` documented a `409` that named only `GovernanceOff`. The under-claim guard could
+///    not catch it either: it compared `ErrKind` alone, and `Conflict` WAS declared.
+/// 2. **RE-ENABLE past the cap** — the same ratchet, reached through the other field. `check_key_cap` counts LIVE keys, so `disable → mint → re-enable` walks a bucket past
+///    its ceiling with every single request passing the guard. Now gated by the same 409.
 /// 3. **`POST /keys` delegated-mint-must-bind 400** — never exercised, and its
-/// emission reused `Cond::RebindTargetMissing`, whose canonical phrase describes a DIFFERENT
-/// refusal. `openapi.json` therefore described this 400 as a dangling-rebind error.
+///    emission reused `Cond::RebindTargetMissing`, whose canonical phrase describes a DIFFERENT
+///    refusal. `openapi.json` therefore described this 400 as a dangling-rebind error.
 ///
-/// It also asserts the audit consequence: every one of these refusals writes a `rejected` row.
-/// `POST /keys` wrote NOTHING on any refusal before round-6 — the one verb whose refusals a
-/// reviewer most needs and the one verb that had no row.
+/// It also asserts the audit consequence: every one of these refusals writes a `rejected` row —
+/// a refused mint is an attempt to issue a credential, and it must leave a trace.
 async fn drive_key_cap_and_delegation_errors() {
     crate::metrics::init();
     let store = Arc::new(MemoryStore::new());
@@ -6137,9 +6135,8 @@ async fn drive_key_cap_and_delegation_errors() {
     );
 
     // ── THE AUDIT CONSEQUENCE ─────────────────────────────────────────────────────────────────
-    // Every refusal above wrote a `rejected` row. `key.create` had none of these before round-6:
-    // it recorded `applied` on success and nothing at all on any refusal, so a refused mint — an
-    // attempt to issue a credential that was stopped — left no trace. The rows are asserted through
+    // Every refusal above wrote a `rejected` row: a refused mint is a stopped attempt to issue a
+    // credential, and must leave a trace. The rows are asserted through
     // the live `GET /audit` surface, and only for EXISTENCE (the log is a process-global other
     // tests append to, so "at least one" is the only stable predicate).
     let audit_rows = |action: &'static str| {

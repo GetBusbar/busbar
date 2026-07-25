@@ -24,20 +24,20 @@
 //! ## The three properties that make the offload safe
 //!
 //! 1. **Off the reactor.** The read runs on the blocking pool via `spawn_blocking`. With no Tokio
-//! runtime in scope (unit tests, `--validate`, boot) there is no reactor to protect, so it runs
-//! inline — the behaviour callers without a runtime already expect.
+//!    runtime in scope (unit tests, `--validate`, boot) there is no reactor to protect, so it runs
+//!    inline — the behaviour callers without a runtime already expect.
 //! 2. **Bounded.** `spawn_blocking` alone is not a fix: a hung store would accumulate one parked
-//! pool thread per window until the shared 512-thread pool is exhausted and every other
-//! `spawn_blocking` in the process (budget flush, audit, config transactions) stalls behind it.
-//! `inflight` admits AT MOST ONE outstanding refresh process-wide, so a hung store costs exactly
-//! one pool thread, forever, and nothing else.
+//!    pool thread per window until the shared 512-thread pool is exhausted and every other
+//!    `spawn_blocking` in the process (budget flush, audit, config transactions) stalls behind it.
+//!    `inflight` admits AT MOST ONE outstanding refresh process-wide, so a hung store costs exactly
+//!    one pool thread, forever, and nothing else.
 //! 3. **Attempt-stamped separately from success.** The previous implementation advanced the single
-//! staleness stamp to `now` BEFORE the read, so a read that failed — or never returned — still
-//! "closed" the window: every subsequent window looked fresh and the denylist could stay stale
-//! indefinitely while nothing ever reported a problem. Here `attempted_at` (the rate-limit
-//! anchor, advanced before the read) and `synced_at` (advanced ONLY on a successful read) are
-//! distinct, so staleness is measured against reality and a persistently failing store is
-//! visible in `synced_age_secs` on the warning it emits once per window.
+//!    staleness stamp to `now` BEFORE the read, so a read that failed — or never returned — still
+//!    "closed" the window: every subsequent window looked fresh and the denylist could stay stale
+//!    indefinitely while nothing ever reported a problem. Here `attempted_at` (the rate-limit
+//!    anchor, advanced before the read) and `synced_at` (advanced ONLY on a successful read) are
+//!    distinct, so staleness is measured against reality and a persistently failing store is
+//!    visible in `synced_age_secs` on the warning it emits once per window.
 //!
 //! ## What the offload costs, honestly
 //!

@@ -1034,11 +1034,11 @@ pub(crate) fn on_error_terminal(name: &str) -> Option<PolicyOnError> {
 /// Names a hook may NOT take, enforced on EVERY hook-write path (boot validation, config apply, and
 /// the runtime register/PUT API). Two reasons, one rule:
 /// - REGISTRY UNIQUENESS: the native ranking strategies + built-in auth modules already answer to
-/// their names — two things can't answer to one name.
+///   their names — two things can't answer to one name.
 /// - UNION DISAMBIGUATION (3rd-party audit #8): `on_error` is a string union of "reserved terminal"
-/// vs "fallback hook name". Reserving EVERY terminal word (`weighted`/`reject`/`first`/`nothing`)
-/// as an illegal hook name makes the union closed and unambiguous for machine consumers: a value
-/// in this set is a terminal; anything else is a hook reference — no hook can ever collide.
+///   vs "fallback hook name". Reserving EVERY terminal word (`weighted`/`reject`/`first`/`nothing`)
+///   as an illegal hook name makes the union closed and unambiguous for machine consumers: a value
+///   in this set is a terminal; anything else is a hook reference — no hook can ever collide.
 pub(crate) const RESERVED_HOOK_NAMES: &[&str] = &[
     // on_error terminals (see ON_ERROR_*) — includes `weighted`, which is ALSO the native floor.
     ON_ERROR_WEIGHTED,
@@ -1769,15 +1769,15 @@ impl PluginsCfg {
     /// `publisher: busbar` artifact below it is a hard reject no opt-in can relax.
     ///
     /// - AUTOMATIC paths call [`to_policy`], which passes the running binary's own version — the full
-    /// floor. A replayed old first-party artifact hitting any automatic path still faces it and is
-    /// refused. Anti-downgrade holds.
+    ///   floor. A replayed old first-party artifact hitting any automatic path still faces it and is
+    ///   refused. Anti-downgrade holds.
     /// - An EXPLICIT operator ROLLBACK (Full-scope, If-Match, audited) passes the operator's pinned
-    /// TARGET version here, LOWERING the floor to exactly that version, so the prior artifact — and
-    /// nothing older — re-loads. The distinction is not in the frozen `evaluate`/`Manifest` (both
-    /// untouched): it is WHICH floor the engine feeds the policy, and that choice is gated by an
-    /// authenticated, audited human action. `plugins.min_versions` (the configured third-party
-    /// floor) is carried as-is here; the rollback lowers the relevant `min_versions` entry via the
-    /// persisted overlay `plugin_versions` pin (see `overlay::apply_plugin_versions_to_deploy`).
+    ///   TARGET version here, LOWERING the floor to exactly that version, so the prior artifact — and
+    ///   nothing older — re-loads. The distinction is not in the frozen `evaluate`/`Manifest` (both
+    ///   untouched): it is WHICH floor the engine feeds the policy, and that choice is gated by an
+    ///   authenticated, audited human action. `plugins.min_versions` (the configured third-party
+    ///   floor) is carried as-is here; the rollback lowers the relevant `min_versions` entry via the
+    ///   persisted overlay `plugin_versions` pin (see `overlay::apply_plugin_versions_to_deploy`).
     pub(crate) fn to_policy_with_floor(
         &self,
         binary_version: &str,

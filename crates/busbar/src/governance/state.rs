@@ -300,11 +300,11 @@ impl GovState {
     /// STRADDLE CASE (mirrors `add_rate_tokens`): `now` is the request's pinned `charged_at` (the
     /// window the request STARTED in), NOT a fresh clock. Per bucket:
     /// - `window > cell.window_start` → the cell is genuinely stale: reset it to `window`
-    /// (zeroed), then add.
+    ///   (zeroed), then add.
     /// - `window <= cell.window_start` → same window OR the straddle: credit IN PLACE on the
-    /// live cell (never rewind/zero a newer window's counters). A straddling request's tokens
-    /// attribute to the live window rather than being dropped - bounded to one in-flight
-    /// request, never lost.
+    ///   live cell (never rewind/zero a newer window's counters). A straddling request's tokens
+    ///   attribute to the live window rather than being dropped - bounded to one in-flight
+    ///   request, never lost.
     /// - no cell → insert fresh (defensive; post-admission the cell exists).
     pub(crate) fn record_usage(
         &self,
@@ -657,14 +657,14 @@ impl GovState {
     /// The rotation is credential-shaped, i.e. it rotates whatever credential the key actually has:
     ///
     /// * a 1.5.0 SIGNED-TOKEN binding (`key_hash` is a `binding:` marker) gets a fresh binding
-    /// GENERATION stamped into the durable row plus a newly-minted token carrying it. Every
-    /// token minted before the rotation names the OLD generation and is rejected by
-    /// `verify_token` on every node reading the store. (rotation used to
-    /// leave the outstanding signed token fully valid — it minted a bearer secret the token path
-    /// never consults — so "rotate" revoked nothing at all.)
+    ///   GENERATION stamped into the durable row plus a newly-minted token carrying it. Every
+    ///   token minted before the rotation names the OLD generation and is rejected by
+    ///   `verify_token` on every node reading the store. (rotation used to
+    ///   leave the outstanding signed token fully valid — it minted a bearer secret the token path
+    ///   never consults — so "rotate" revoked nothing at all.)
     /// * a LEGACY hashed-secret key gets a fresh bearer secret whose hash replaces `key_hash`, so
-    /// the old secret stops resolving on the next cache refresh. That is the only credential
-    /// such a key has.
+    ///   the old secret stops resolving on the next cache refresh. That is the only credential
+    ///   such a key has.
     ///
     /// A signed-token binding is NEVER downgraded into a hashed-secret key by rotation (the old
     /// behaviour did exactly that: it ARMED the weaker legacy path on a key that had deliberately
@@ -971,26 +971,26 @@ impl GovState {
     /// Order of enforcement:
     /// 1. `enabled: false` anywhere in the chain FREEZES it - rejected before anything is charged.
     /// 2. `concurrent` gauges (instantaneous): each capped group's gauge is compare-and-incremented
-    /// innermost-first; on any full gauge the already-taken holds are released and the request
-    /// is rejected naming that group. The holds ride the returned [`AdmitGrant`] (RAII release).
+    ///    innermost-first; on any full gauge the already-taken holds are released and the request
+    ///    is rejected naming that group. The holds ride the returned [`AdmitGrant`] (RAII release).
     /// 3. Windowed limits (`requests` / `tokens` / `budget`): every involved shard lock is
-    /// acquired in ASCENDING shard-index order (canonical = deadlock-free), every bucket is
-    /// CHECKED against each of its caps for its OWN current window, and only if all pass is
-    /// every bucket CHARGED one request in the SAME critical section - all-or-nothing. On any
-    /// blocked bucket NOTHING is charged, the concurrent holds are released, and the exact
-    /// blocking (group, metric, window) is named with a `Retry-After` for rolling windows.
+    ///    acquired in ASCENDING shard-index order (canonical = deadlock-free), every bucket is
+    ///    CHECKED against each of its caps for its OWN current window, and only if all pass is
+    ///    every bucket CHARGED one request in the SAME critical section - all-or-nothing. On any
+    ///    blocked bucket NOTHING is charged, the concurrent holds are released, and the exact
+    ///    blocking (group, metric, window) is named with a `Retry-After` for rolling windows.
     ///
     /// Metric semantics per bucket:
     /// - `requests`: precise - the +1 charge is synchronous with the check.
     /// - `tokens`: BEST-EFFORT (the old TPM posture) - tokens land post-response, so the cap
-    /// blocks the NEXT request once the ledgered total has crossed it; in-flight requests'
-    /// tokens are invisible to admissions racing them.
+    ///   blocks the NEXT request once the ledgered total has crossed it; in-flight requests'
+    ///   tokens are invisible to admissions racing them.
     /// - `budget`: derived at check time from the cell's token ledger x the current rate card,
-    /// PLUS the flat per-request fee x its request count; the prospective post-charge spend
-    /// (one more fee) must stay within the cap, and a bucket already at/over cap blocks. The
-    /// fee component is hard; token overshoot past a cap is bounded by the tokens of every
-    /// in-flight admitted request (as with TPM, a hard token cap would need admit-time
-    /// reservation - out of scope).
+    ///   PLUS the flat per-request fee x its request count; the prospective post-charge spend
+    ///   (one more fee) must stay within the cap, and a bucket already at/over cap blocks. The
+    ///   fee component is hard; token overshoot past a cap is bounded by the tokens of every
+    ///   in-flight admitted request (as with TPM, a hard token cap would need admit-time
+    ///   reservation - out of scope).
     ///
     /// SYNCHRONOUS and INFALLIBLE (in-memory cells; no store round-trip, no await). The flat fee
     /// is charged HERE (as +1 request per bucket; spend derives), so the caller must NOT re-charge

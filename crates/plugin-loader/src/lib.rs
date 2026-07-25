@@ -847,15 +847,15 @@ pub fn load_store(lib_path: &Path, cfg_json: &str) -> Result<Box<dyn Store>, Str
 /// gap: the caller verifies the bytes ONCE and passes them here; the loader maps EXACTLY those bytes.
 ///
 /// - **Linux**: `memfd_create` + `dlopen("/proc/self/fd/N")` — ZERO disk files, no path an attacker
-/// could ever race.
+///   could ever race.
 /// - **macOS / Windows**: the verified bytes are written to a fresh `create_new` file inside a
-/// per-process PRIVATE `0700` staging directory (`busbar-plugins-<pid>-<random>`) and loaded from
-/// there. The staged file is throwaway output regenerated from the verified bytes on every load —
-/// a pre-existing on-disk file is NEVER loaded. On clean shutdown the library is unloaded FIRST,
-/// then the staged file removed; a crash's leftovers are removed by [`sweep_dead_staging`] at the
-/// next boot. Residual (do not overstate): on these platforms the load is by PATH inside the
-/// owner-created private dir, so only an attacker who already owns that dir (i.e. the same user)
-/// could interfere; a hostile `TMPDIR` base remains the operator's responsibility.
+///   per-process PRIVATE `0700` staging directory (`busbar-plugins-<pid>-<random>`) and loaded from
+///   there. The staged file is throwaway output regenerated from the verified bytes on every load —
+///   a pre-existing on-disk file is NEVER loaded. On clean shutdown the library is unloaded FIRST,
+///   then the staged file removed; a crash's leftovers are removed by [`sweep_dead_staging`] at the
+///   next boot. Residual (do not overstate): on these platforms the load is by PATH inside the
+///   owner-created private dir, so only an attacker who already owns that dir (i.e. the same user)
+///   could interfere; a hostile `TMPDIR` base remains the operator's responsibility.
 ///
 /// `display` is a human label for diagnostics (typically the plugin's canonical name); `manifest_kind`
 /// is the trust-verified signed-manifest `kind`, cross-checked against `busbar_plugin_kind()`.

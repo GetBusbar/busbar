@@ -70,9 +70,9 @@ pub(crate) struct HookStageProjection<'a> {
 /// most **two access-gated SECURITY fields** ride the projection, each opted in per hook by an
 /// explicit grant:
 /// - `prompt` grant (`no|ro|rw`): `system` + `messages` (flattened text) — present when the grant
-/// is `ro` OR `rw`. The REQUEST wire is IDENTICAL for `ro` and `rw` (a hook must SEE the prompt to
-/// screen it or to rewrite it); the extra power of `rw` is on the REPLY only — a `rw` hook's
-/// `rewrite` arm is applied, a `ro` hook's is dropped (enforced at the rewrite seam by the grant).
+///   is `ro` OR `rw`. The REQUEST wire is IDENTICAL for `ro` and `rw` (a hook must SEE the prompt to
+///   screen it or to rewrite it); the extra power of `rw` is on the REPLY only — a `rw` hook's
+///   `rewrite` arm is applied, a `ro` hook's is dropped (enforced at the rewrite seam by the grant).
 /// - `user` grant (`no|ro`): caller identity — present when `ro`.
 ///
 /// A grant of `no` OMITS the field from the JSON entirely AND is fail-closed the other direction too
