@@ -719,8 +719,49 @@ pub(crate) async fn create_key(
         // #19). `check_key_cap` is a no-op when `cap == 0` (unlimited).
         let cap_group = spec.group.clone();
         let did_provision = provisioned.is_some();
+        // WHAT THE AUTO-PROVISION COMMITTED, carried INTO the post-commit step (audit round-5
+        // #13/#28/#33/#41 + #14). Two things were wrong with recording this after the transaction:
+        //
+        //   * the `group.provision` audit row and the version-log entry were written only on the
+        //     SUCCESS path, so a mint that failed AFTER the group's persist-and-swap had already
+        //     committed left the group live, durable and version-bumped with NO audit row, NO
+        //     version entry and no key bound — a config change that happened and that nothing in
+        //     the trail admits to. There is no honest compensation available here (the swap is
+        //     already visible to every in-flight request, and un-persisting is itself fallible), so
+        //     the semantics are the honest ones: the provision is COMMITTED at commit time and is
+        //     RECORDED at commit time. A failed mint leaves an empty group — exactly the state an
+        //     explicit `POST /groups` followed by a failed `POST /keys` leaves — and the retry is
+        //     idempotent, because the group now exists and the retry simply binds to it.
+        //   * the version was read from a POST-lock-release `handle.load()`, so a concurrent
+        //     mutation's `config_version` could be attributed to this provision (#14). It now comes
+        //     from the very snapshot that was committed.
+        let provision_record = provisioned.as_ref().map(|installed| {
+            (
+                installed.clone(),
+                want_group.clone().unwrap_or_default(),
+                want_parent.clone().unwrap_or_default(),
+                txn_actor.clone(),
+            )
+        });
         // The blocking half: cap count + mint, one `spawn_blocking`, one `EXISTENCE_GATE` hold.
         let mint = move || {
+            // RUNS AFTER the commit-and-swap (it is `commit_then`'s follow-on step) and BEFORE the
+            // fallible mint below, so the record exists whatever the mint does.
+            if let Some((installed, group, parent, actor)) = provision_record {
+                audit::AUDIT.record_by(
+                    "group.provision",
+                    &format!("group:{group}"),
+                    audit::OUTCOME_APPLIED,
+                    &actor,
+                );
+                installed.versions.record(
+                    installed.config_version,
+                    &actor,
+                    &format!("group.provision group:{group} (auto, parent {parent})"),
+                    &installed.hook_registry,
+                    &installed.global_hooks,
+                );
+            }
             let _existence_guard = EXISTENCE_GATE.lock().unwrap_or_else(|e| e.into_inner());
             let minted = (|| -> crate::governance::StoreResult<MintOutcome> {
                 if let Some((group, n)) = check_key_cap(&gov, cap, cap_group.as_deref(), None)? {
@@ -771,28 +812,10 @@ pub(crate) async fn create_key(
         // audit trail is byte-for-byte what the hand-rolled path produced.
         Err(e) => return crate::admin::v1::json::err_json(&e),
     };
-    if provisioned_group {
-        // The leaf was created + persisted inside the transaction — audited + versioned exactly like
-        // an explicit `POST /groups`.
-        let group = req.group.clone().unwrap_or_default();
-        audit::AUDIT.record_by(
-            "group.provision",
-            &format!("group:{group}"),
-            audit::OUTCOME_APPLIED,
-            &actor,
-        );
-        let live = handle.load();
-        live.versions.record(
-            live.config_version,
-            &actor,
-            &format!(
-                "group.provision group:{group} (auto, parent {})",
-                req.parent.clone().unwrap_or_default()
-            ),
-            &live.hook_registry,
-            &live.global_hooks,
-        );
-    }
+    // NOTE: the `group.provision` audit + version records are written INSIDE the transaction, at
+    // commit time (see `provision_record` above) — not here. Writing them here made them
+    // conditional on the mint that follows the commit ALSO succeeding, which is exactly how a
+    // committed config change ended up with no trail.
     let (key, token, aws) = match minted {
         MintOutcome::AtCap { group, n, cap } => {
             return key_err(
@@ -1694,3 +1717,9 @@ mod key_cap_tests {
 #[cfg(all(test, feature = "auth-admin-tokens"))]
 #[path = "tests/tests.rs"]
 mod tests;
+
+// The auto-provision POST-COMMIT FAILURE branch (round-5 #13/#28/#33/#41 + #14). Drives the
+// handler directly (no HTTP), so it needs no admin-token module.
+#[cfg(test)]
+#[path = "tests/provision_tests.rs"]
+mod provision_tests;
