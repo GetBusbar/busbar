@@ -207,8 +207,8 @@ Patterns this enables:
 # The remediation contract
 
 This is the part of the strategy that decides **what a fix looks like**. It is
-enforced by `scripts/structure-lint.sh` (the choke-point registry + the
-REGRESSION-marker ratchet), not by review discipline alone.
+enforced by `scripts/structure-lint.sh` (the choke-point registry), not by
+review discipline alone.
 
 ## The three rules
 
@@ -257,31 +257,6 @@ Use `-` for the rules field when the choke point is enforced by the compiler or
 at runtime rather than by grep (row D). Then plant a violation, confirm the lint
 fails with your `TAG`, and remove it — a rule nobody has seen fire is a rule
 that may not work.
-
-## REGRESSION-marker parity
-
-Fixed defects are tagged `REGRESSION (<label>)` at the head of a comment. Those
-markers are the family ledger: grep a label and you get every sibling the
-finding touched. The lint asserts the parity the contract implies — **for every
-marker on production code, at least one marker in a test carries the same
-label.** A source fix tagged as a regression with no test carrying its label is
-precisely rule 2's failure mode: an instance patched, no class test written.
-
-- Labels are matched on a normalized key (text inside the first `(...)`, cut at
-  the first comma, lowercased, punctuation collapsed), so `REGRESSION (R22 LOW
-  #23, symmetric probe accounting)` and `Regression (r22 low #23)` are the same
-  label.
-- "Test" means a file under a `tests/` dir **or** a `#[cfg(test)]` region.
-- A deliberate no-test fix is declared inline:
-  `REGRESSION-WAIVED(<reason>)` on the marker line.
-- `scripts/regression-parity.baseline` holds the count of known gaps. More gaps
-  than the baseline fails the build; fewer prints the ratchet-down instruction.
-  It is a ratchet, not a cliff: existing debt cannot grow, and nobody has to
-  clear it in one go before the check can be switched on. **Do not raise the
-  baseline to make a build pass.**
-
-Current state: 384 markers, all of them on tests, **0 on production code, 0
-unguarded, baseline 0**.
 
 ## Checker rigor — R1 / R2 / R3
 
