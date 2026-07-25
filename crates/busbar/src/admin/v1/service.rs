@@ -1012,7 +1012,7 @@ impl AdminService {
             Err(rejected) => {
                 return Err(AdminError::Conflict(format!(
                     "plugin rejected by the trust policy: {}",
-                    rejected.0
+                    rejected.reason
                 )));
             }
         };
@@ -1220,7 +1220,7 @@ impl AdminService {
                     "rollback target `{file}` is not loadable under the trust policy even with the \
                      floor lowered to its own version {}: {}. A rollback lowers the anti-downgrade \
                      floor for an explicit operator action; it cannot load an untrusted artifact.",
-                    manifest.version, rejected.0
+                    manifest.version, rejected.reason
                 )));
             }
         }

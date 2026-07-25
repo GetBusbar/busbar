@@ -77,6 +77,9 @@ pub struct SkippedPlugin {
     pub file: String,
     pub manifest: Manifest,
     pub reason: String,
+    /// STRUCTURED rejection category from the trust evaluator — the authority for any label/column.
+    /// Never derive a trust label by substring-matching `reason` (it embeds plugin-controlled bytes).
+    pub kind: busbar_plugin_sign::RejectKind,
 }
 
 /// The registry of validated, loadable plugins, addressable by canonical name OR alias. Built only
@@ -316,7 +319,13 @@ pub fn discover(dir: &Path) -> Result<Vec<PathBuf>, String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(out),
         Err(e) => return Err(format!("cannot read plugins dir {}: {e}", dir.display())),
     };
-    for entry in entries.flatten() {
+    // FAIL CLOSED on a DirEntry iteration error: a per-entry `io::Error` (corrupted inode, bad NFS
+    // mount, concurrent unlink-during-readdir) must NOT be silently dropped — swallowing it could make
+    // a configured/named plugin tarball vanish from the scan while boot still SUCCEEDS with a smaller
+    // loadable set. Propagate it so the whole scan fails rather than serving with a plugin missing.
+    for entry in entries {
+        let entry = entry
+            .map_err(|e| format!("error reading plugins dir {}: {e}", dir.display()))?;
         let path = entry.path();
         let Some(file) = path.file_name().and_then(|f| f.to_str()) else {
             continue;
@@ -374,7 +383,8 @@ fn examine(path: &Path, policy: &TrustPolicy) -> FileOutcome {
         Err(rejected) => FileOutcome::Skipped(SkippedPlugin {
             file,
             manifest: unpacked.manifest,
-            reason: rejected.0,
+            reason: rejected.reason,
+            kind: rejected.kind,
         }),
     }
 }
@@ -511,19 +521,21 @@ pub fn inventory(dir: &Path, policy: &TrustPolicy) -> Vec<InventoryEntry> {
                 loadable.push(p);
             }
             FileOutcome::Skipped(s) => {
-                let signature = if s.reason.contains("anti-downgrade") {
-                    "trusted (below floor)".to_string()
-                } else if s.reason.contains("not in the allowlist") {
-                    "unknown-publisher".to_string()
-                } else if s.reason.contains("signature") && s.reason.contains("failed") {
-                    "tampered".to_string()
-                } else {
-                    "unsigned".to_string()
-                };
-                let status = if s.reason.contains("anti-downgrade") {
-                    format!("REJECTED: {}", s.reason)
-                } else {
-                    format!("SKIPPED: {}", s.reason)
+                // Derive the signature label from the STRUCTURED verdict (`s.kind`), NEVER by
+                // substring-matching `s.reason` — the reason embeds plugin-author-controlled bytes
+                // (`manifest.publisher`), so a crafted publisher like "anti-downgrade-bypass" could
+                // otherwise mislabel an unknown-publisher reject as "trusted (below floor)".
+                use busbar_plugin_sign::RejectKind;
+                let signature = match s.kind {
+                    RejectKind::AntiDowngrade => "trusted (below floor)",
+                    RejectKind::UnknownPublisher => "unknown-publisher",
+                    RejectKind::Tampered => "tampered",
+                    RejectKind::Unsigned => "unsigned",
+                }
+                .to_string();
+                let status = match s.kind {
+                    RejectKind::AntiDowngrade => format!("REJECTED: {}", s.reason),
+                    _ => format!("SKIPPED: {}", s.reason),
                 };
                 rows.push(InventoryEntry {
                     file: s.file,
@@ -963,6 +975,47 @@ mod tests {
         assert!(
             rows[0].status.starts_with("REJECTED:"),
             "got {}",
+            rows[0].status
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// AUDIT REGRESSION (LOW): the `--list-plugins` signature label is derived from the STRUCTURED
+    /// reject verdict (`SkippedPlugin.kind`), NOT a substring of the plugin-controlled reason. A
+    /// third-party plugin whose author crafts `publisher: "anti-downgrade-bypass"` (so the rejection
+    /// reason text contains "anti-downgrade") must still be labeled `unknown-publisher`, never
+    /// mislabeled `trusted (below floor)`. Load decisions never used this text; the fix is the label.
+    #[test]
+    fn crafted_publisher_cannot_forge_signature_label() {
+        let release = key(1);
+        let attacker = key(9);
+        let dir = tmpdir("label-forge");
+        // Validly signed by the attacker, but the publisher is NOT allowlisted → unknown-publisher.
+        // The crafted publisher name is chosen so the reason string contains "anti-downgrade".
+        let m = sign(
+            &attacker,
+            manifest("acme-store-x", "acme", "anti-downgrade-bypass"),
+            b"lib",
+        );
+        write_tarball(&dir, "acme.tar.gz", &m, b"lib");
+
+        // Default posture (no allow_third_party) → skipped as unknown-publisher.
+        let reg = scan_and_validate(&dir, &policy(&release)).expect("scan");
+        assert!(reg.resolve("acme").is_none());
+        assert_eq!(
+            reg.skipped()[0].kind,
+            busbar_plugin_sign::RejectKind::UnknownPublisher
+        );
+
+        let rows = inventory(&dir, &policy(&release));
+        assert_eq!(
+            rows[0].signature, "unknown-publisher",
+            "the crafted publisher must NOT forge a 'trusted (below floor)' label; got {}",
+            rows[0].signature
+        );
+        assert!(
+            rows[0].status.starts_with("SKIPPED:"),
+            "an unknown-publisher reject is a SKIP, not a REJECTED row: {}",
             rows[0].status
         );
         let _ = std::fs::remove_dir_all(&dir);
