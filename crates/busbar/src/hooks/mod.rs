@@ -321,12 +321,8 @@ pub(crate) fn resolve_pool_gates(
             // A `prompt: rw` gate is a phase-1 REWRITE (resolved by `resolve_pool_rewrites`), not
             // a phase-2 decision gate — including it here would fire it for a decision it never
             // returns (its rewrite reply normalizes to Abstain), paying its deadline for nothing.
-            // Keyed on the OPERATOR grant deliberately: `rw` is the operator's declared ROLE for
-            // this hook. When the signed manifest declines the rewrite need the hook is refused
-            // admission to the rewrite chain too (`admits_rewrite`) and so goes inert with a loud
-            // warn — the same "grant is inert" outcome the read half has always had. Silently
-            // PROMOTING it into an admission-control decision gate instead would be a role change
-            // the operator never asked for.
+            // Keyed on the OPERATOR grant, not `admits_rewrite`: a manifest-denied `rw` hook goes
+            // inert with a warn rather than being promoted into a decision gate it never asked for.
             if hook.prompt.can_rewrite() {
                 return None;
             }
@@ -396,17 +392,13 @@ fn resolve_gate_transport(
     })
 }
 
-/// THE SINGLE CHOKE POINT for the BELT-AND-SUSPENDERS rule: a hook's EFFECTIVE access is the
-/// operator's config grant MEETed with the plugin's signed-manifest declared intent (`needs:`) on
-/// the SAME monotonic ladder (`no ⊂ ro ⊂ rw`). Nothing downstream may consult `hook.prompt` /
-/// `hook.user` directly — read, rewrite and identity admission all derive from this one value, so
-/// the manifest gate cannot be bypassed by adding a new consumer (which is exactly how the rewrite
-/// path bypassed it: it re-derived admission from the operator grant alone).
+/// THE choke point for the belt-and-suspenders rule: effective access is the operator's grant MEET
+/// the plugin's signed-manifest `needs:`, on the ladder `no ⊂ ro ⊂ rw`. Read, rewrite and identity
+/// admission must all derive from here — a consumer that re-derives from `hook.prompt` bypasses the
+/// manifest gate.
 ///
-/// A fat-fingered grant to a plugin that never asked for content is a no-op (advisory warn); a
-/// plugin that asks can still be denied by the operator. When the plugin manifest can't be resolved
-/// (validated elsewhere) we fall back to the operator grant alone — the pre-flight already fails
-/// boot on an unresolvable ref, so this branch is a safety net, never the live path.
+/// An unresolvable manifest falls back to the operator grant alone; pre-flight already fails boot
+/// on an unresolvable ref, so that branch is a safety net, never the live path.
 fn effective_access(
     name: &str,
     hook: &crate::config::HookCfg,
@@ -440,10 +432,8 @@ fn effective_access(
              content will be sent (grant is inert)"
         );
     }
-    // The WRITE half of the same rule. A `prompt: rw` grant is the rewrite-chain admission ticket,
-    // so a manifest that declared at most `ro` must NOT be admitted as a rewrite hook: it would
-    // receive the full prompt projection AND be allowed to splice a `RewriteReply` into the
-    // upstream body, both of which it cryptographically attested it does not do.
+    // The WRITE half: a manifest declaring at most `ro` must not be admitted to a rewrite chain —
+    // it attested it does not rewrite.
     if grant_prompt.can_rewrite() && !needs.prompt.wants_rewrite() {
         tracing::warn!(
             hook = %name, plugin = %hook.plugin,
@@ -705,10 +695,8 @@ pub(crate) fn resolve_rewrite_hooks(
         let Some(hook) = hooks.get(name) else {
             continue;
         };
-        // ONLY a gate whose EFFECTIVE prompt access is rw is a rewrite hook — the enforcement
-        // point for BOTH halves of the belt-and-suspenders rule. Keying this on the operator grant
-        // alone is what let a plugin whose signed manifest declared `needs: { prompt: no }` receive
-        // the full prompt projection AND splice a `RewriteReply` into the upstream body.
+        // EFFECTIVE rw, not the operator grant: the grant alone would admit a plugin whose manifest
+        // declared `needs: { prompt: no }` to both read the prompt and rewrite the body.
         if hook.kind != crate::config::HookKind::Gate || !admits_rewrite(name, hook, env) {
             continue;
         }
