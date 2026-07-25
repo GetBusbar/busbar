@@ -159,8 +159,8 @@ impl<T> Outcome<T> {
 /// The body's ONLY handle to config inside the critical section.
 ///
 /// It deliberately exposes no `AppHandle` (so a body cannot swap out of band, above), no
-/// `&dyn Store` and no `&GovState` (so a body cannot run a blocking round-trip on the async thread,
-/// ), and no second snapshot (so a body cannot read a stale pre-lock config).
+/// `&dyn Store` and no `&GovState` (so a body cannot run a blocking round-trip on the async
+/// thread), and no second snapshot (so a body cannot read a stale pre-lock config).
 pub(crate) struct Txn<'a> {
     /// The FRESH, post-lock snapshot. The only config the body can read.
     app: &'a Arc<App>,

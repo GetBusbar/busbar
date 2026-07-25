@@ -38,8 +38,8 @@ impl Principal {
     }
 }
 
-/// The verdict of one auth module. The PAM-style trichotomy the 1.3 auth-plugin layer is built on
-///: `Identify` = this module authenticated the caller and this is WHO —
+/// The verdict of one auth module. The PAM-style trichotomy the 1.3 auth-plugin layer is built on:
+/// `Identify` = this module authenticated the caller and this is WHO —
 /// carries the [`Principal`]; `Reject` = a credential was presented but is invalid (fail-closed,
 /// stop the chain); `Pass` = "not mine" — no usable credential for this module, defer to the next
 /// module / the mode default.
