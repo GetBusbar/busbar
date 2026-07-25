@@ -63,7 +63,10 @@ impl AuditEntry {
 pub(crate) const OUTCOME_APPLIED: &str = "applied";
 pub(crate) const OUTCOME_REJECTED: &str = "rejected";
 
-const MAX_AUDIT_ENTRIES: usize = 1000;
+/// How many entries the in-memory ring retains. Bounds RAM, not history — a durable sink keeps the
+/// full log. `pub(crate)` so a test asking for "every matching row that can exist" names this rather
+/// than a hand-picked page size that silently truncates once a filter matches more rows.
+pub(crate) const MAX_AUDIT_ENTRIES: usize = 1000;
 
 /// Convert an in-memory [`AuditEntry`] to the store-seam [`busbar_api::AuditRecord`] (same fields).
 /// The store persists records verbatim — the hash chain is computed here, in the engine.

@@ -90,9 +90,29 @@ async fn mint_with_parent(
     group: &str,
     parent: &str,
 ) -> StatusCode {
+    mint_as(
+        handle,
+        crate::auth::AuthPrincipal(None),
+        name,
+        group,
+        parent,
+    )
+    .await
+}
+
+/// `mint_with_parent`, but naming the CALLER. Audit rows carry `actor_id()`, so a test that asserts
+/// on the process-global audit log can filter to rows only IT could have written — the same reason
+/// each test provisions its own group name.
+async fn mint_as(
+    handle: &Arc<AppHandle>,
+    principal: crate::auth::AuthPrincipal,
+    name: &str,
+    group: &str,
+    parent: &str,
+) -> StatusCode {
     crate::admin::create_key(
         State(handle.clone()),
-        axum::Extension(crate::auth::AuthPrincipal(None)),
+        axum::Extension(principal),
         axum::Extension(crate::auth::AdminScope(Some(
             crate::admin::v1::contract::Scope::Full,
         ))),
@@ -105,6 +125,16 @@ async fn mint_with_parent(
     .status()
 }
 
+/// The group THIS test provisions. Unique to it on purpose: the audit log is process-global and the
+/// assertions below filter it by `(action, resource)`, so any other test provisioning the same name
+/// lands a row inside this test's filter. Three of them used to share `user:alice`, and one foreign
+/// row is enough to break the count-equality assertion on the retry (observed 1→2).
+const PROVISION_FAIL_GROUP: &str = "user:alice-mint-fail";
+/// The audit `resource` for [`PROVISION_FAIL_GROUP`] — `record_by` writes `group:<name>`.
+const PROVISION_FAIL_RESOURCE: &str = "group:user:alice-mint-fail";
+/// The version-log summary fragment naming that provision.
+const PROVISION_FAIL_VERSION_SUMMARY: &str = "group.provision group:user:alice-mint-fail";
+
 /// A mint that fails AFTER the auto-provision has committed leaves the group live — and says so.
 /// The group.provision audit row and the version-log entry are written at COMMIT time, so the
 /// committed config change is never invisible, and the retry is idempotent (the group now exists).
@@ -116,9 +146,13 @@ async fn mint_failure_after_the_provision_commit_still_records_the_committed_gro
         .groups_tree(tree(&["team"]))
         .build();
     let handle = Arc::new(AppHandle::new(app));
-    let versions_before = handle.load().versions.list(0, 1000).len();
+    let versions_before = handle
+        .load()
+        .versions
+        .list(0, crate::admin::v1::contract::LIST_LIMIT_MAX)
+        .len();
 
-    let status = mint_with_parent(&handle, "k", "user:alice", "team").await;
+    let status = mint_with_parent(&handle, "k", PROVISION_FAIL_GROUP, "team").await;
     assert_eq!(
         status,
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -128,34 +162,41 @@ async fn mint_failure_after_the_provision_commit_still_records_the_committed_gro
     // THE COMMITTED HALF IS LIVE: the leaf was persisted and swapped before the mint ran.
     let live = handle.load();
     assert!(
-        live.groups_registry.contains_key("user:alice"),
+        live.groups_registry.contains_key(PROVISION_FAIL_GROUP),
         "the auto-provisioned leaf is committed and live"
     );
     assert!(
-        live.cost.group_named("user:alice").is_some(),
+        live.cost.group_named(PROVISION_FAIL_GROUP).is_some(),
         "and it is in the enforcement model, so a retry can bind to it"
     );
 
-    // AND IT IS RECORDED. Before the fix both of these were written only after the whole
-    // transaction succeeded, so this exact branch produced a silent config change.
+    // AND IT IS RECORDED — at COMMIT time, so a mint that fails afterwards cannot erase the fact
+    // that the config changed.
     assert!(
         crate::admin::audit::AUDIT
-            .list_filtered(0, 100, Some("group.provision"), Some("group:user:alice"))
+            .list_filtered(
+                0,
+                crate::admin::audit::MAX_AUDIT_ENTRIES,
+                Some("group.provision"),
+                Some(PROVISION_FAIL_RESOURCE)
+            )
             .iter()
             .any(|e| e.outcome == crate::admin::audit::OUTCOME_APPLIED),
         "the committed provision is in the audit trail"
     );
-    let versions = live.versions.list(0, 1000);
+    let versions = live
+        .versions
+        .list(0, crate::admin::v1::contract::LIST_LIMIT_MAX);
     assert!(
         versions.len() > versions_before,
         "the committed provision is in the version log"
     );
     let entry = versions
         .iter()
-        .find(|v| v.summary.contains("group.provision group:user:alice"))
+        .find(|v| v.summary.contains(PROVISION_FAIL_VERSION_SUMMARY))
         .expect("the version entry names the provisioned group");
-    // #14: the recorded version is the COMMITTED snapshot's own version, taken inside the
-    // transaction — not whatever a post-lock-release `handle.load()` happened to observe.
+    // The recorded version is the COMMITTED snapshot's own, read inside the transaction — not
+    // whatever a post-lock-release `handle.load()` happened to observe.
     assert_eq!(
         entry.version, live.config_version,
         "the version entry is attributed to the snapshot that was actually committed"
@@ -164,17 +205,47 @@ async fn mint_failure_after_the_provision_commit_still_records_the_committed_gro
     // THE RETRY IS IDEMPOTENT: the group exists now, so a second attempt takes the no-provision
     // path (it still fails on the store, but it does not re-provision or double-record).
     let audit_rows_before = crate::admin::audit::AUDIT
-        .list_filtered(0, 100, Some("group.provision"), Some("group:user:alice"))
+        .list_filtered(
+            0,
+            crate::admin::audit::MAX_AUDIT_ENTRIES,
+            Some("group.provision"),
+            Some(PROVISION_FAIL_RESOURCE),
+        )
         .len();
-    let status = mint_with_parent(&handle, "k", "user:alice", "team").await;
+    let status = mint_with_parent(&handle, "k", PROVISION_FAIL_GROUP, "team").await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(
         crate::admin::audit::AUDIT
-            .list_filtered(0, 100, Some("group.provision"), Some("group:user:alice"))
+            .list_filtered(
+                0,
+                crate::admin::audit::MAX_AUDIT_ENTRIES,
+                Some("group.provision"),
+                Some(PROVISION_FAIL_RESOURCE)
+            )
             .len(),
         audit_rows_before,
         "a retry against the now-existing group does not re-provision"
     );
+}
+
+/// The principal this test mints as, so its audit rows are distinguishable from every other
+/// refused mint in the binary (they all share the `key:-` resource).
+const CEILING_ACTOR: &str = "test:ceiling-audit";
+
+/// `key.create`/rejected rows written by [`CEILING_ACTOR`] — this test's refusals and no others.
+fn ceiling_refusal_rows() -> usize {
+    crate::admin::audit::AUDIT
+        .list_filtered(
+            0,
+            crate::admin::audit::MAX_AUDIT_ENTRIES,
+            Some("key.create"),
+            Some(crate::admin::KEY_RESOURCE_NONE),
+        )
+        .iter()
+        .filter(|e| {
+            e.outcome == crate::admin::audit::OUTCOME_REJECTED && e.principal == CEILING_ACTOR
+        })
+        .count()
 }
 
 /// #20: auto-provision-on-mint had NO ceiling on the NUMBER of groups, so a `mint`-scope credential
@@ -200,20 +271,13 @@ async fn auto_provision_stops_at_the_group_ceiling() {
         StatusCode::CREATED,
         "the first self-mint provisions its leaf"
     );
-    // Counted before/after, not asserted absolutely: the ring is process-global, so a concurrent
-    // test can evict older rows. Eviction only shrinks the `before` side, so a strict increase
-    // survives it.
-    let rejected_before = crate::admin::audit::AUDIT
-        .list_filtered(
-            0,
-            1000,
-            Some("key.create"),
-            Some(crate::admin::KEY_RESOURCE_NONE),
-        )
-        .iter()
-        .filter(|e| e.outcome == crate::admin::audit::OUTCOME_REJECTED)
-        .count();
-    let status = mint_with_parent(&handle, "k2", "user:bob", "team").await;
+    // A refused mint records `key.create`/rejected against `key:-` — a resource EVERY refused mint
+    // in the binary shares, so this filters to rows written by THIS test's principal. Without that
+    // a concurrent test's refusal satisfies the assertion and it passes with the fix reverted.
+    let ceiling_actor =
+        crate::auth::AuthPrincipal(Some(busbar_api::Principal::from_id(CEILING_ACTOR)));
+    let rejected_before = ceiling_refusal_rows();
+    let status = mint_as(&handle, ceiling_actor, "k2", "user:bob", "team").await;
     assert_eq!(
         status,
         StatusCode::CONFLICT,
@@ -223,16 +287,7 @@ async fn auto_provision_stops_at_the_group_ceiling() {
         !handle.load().groups_registry.contains_key("user:bob"),
         "and nothing was provisioned"
     );
-    let rejected_after = crate::admin::audit::AUDIT
-        .list_filtered(
-            0,
-            1000,
-            Some("key.create"),
-            Some(crate::admin::KEY_RESOURCE_NONE),
-        )
-        .iter()
-        .filter(|e| e.outcome == crate::admin::audit::OUTCOME_REJECTED)
-        .count();
+    let rejected_after = ceiling_refusal_rows();
     assert!(
         rejected_after > rejected_before,
         "the ceiling refusal must write a `key.create`/rejected audit row \
