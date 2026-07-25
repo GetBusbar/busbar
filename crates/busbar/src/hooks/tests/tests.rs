@@ -513,6 +513,75 @@ fn resolve_rewrite_hooks_admits_only_prompt_rw_gates() {
     );
 }
 
+/// CLASS INVARIANT (round-6 #04): REWRITE admission goes through the SAME belt-and-suspenders meet
+/// as the read projections — `hooks::effective_access`. A `prompt: rw` OPERATOR grant is not
+/// sufficient on its own; the plugin's SIGNED manifest must also declare `needs: { prompt: rw }`.
+///
+/// One assertion covers BOTH halves of the bypass, because admission is what carries them:
+///  * CONFIDENTIALITY — a hook admitted to a rewrite chain is handed the FULL flattened prompt
+///    projection (`proxy::hooks::apply_global_rewrites` passes `with_prompt = true`
+///    unconditionally, which is sound ONLY because of this gate);
+///  * INTEGRITY — an admitted hook may return a `RewriteReply` that is spliced into the upstream
+///    request body (messages replaced, `tools` appended).
+///
+/// The matrix is {manifest need} × {both rewrite resolvers}, with the operator grant pinned at `rw`
+/// throughout, so the signed intent is the only variable. Pre-fix, both resolvers keyed admission
+/// on `hook.prompt.can_rewrite()` alone and every row admitted.
+#[test]
+fn rewrite_admission_requires_the_signed_manifest_rewrite_need() {
+    use busbar_plugin_sign::{HookNeeds, NeedLevel};
+
+    for (need, admitted) in [
+        (NeedLevel::No, false),
+        (NeedLevel::Ro, false),
+        (NeedLevel::Rw, true),
+    ] {
+        let needs = HookNeeds {
+            prompt: need,
+            user: NeedLevel::No,
+        };
+        let Some(env) = test_env_needs("test-hook", needs) else {
+            eprintln!("skip: hook cdylib not built (run under --workspace)");
+            return;
+        };
+        // The operator's grant is the MAXIMUM rung on every row — only the manifest varies.
+        let mut rw = base_gate();
+        rw.prompt = PromptAccess::Rw;
+        rw.global = true;
+        let hooks = registry("rw", rw);
+
+        let global = resolve_rewrite_hooks(&hooks, &["rw".to_string()], &env, 0);
+        assert_eq!(
+            !global.is_empty(),
+            admitted,
+            "global rewrite chain: `prompt: rw` + manifest `needs.prompt: {need:?}` must \
+             {} admit — the operator grant alone is not the ticket",
+            if admitted { "" } else { "NOT " }
+        );
+        let pool = resolve_pool_rewrites(&pool_with_hook("rw"), &hooks, &env, 0);
+        assert_eq!(
+            !pool.is_empty(),
+            admitted,
+            "pool rewrite chain: `prompt: rw` + manifest `needs.prompt: {need:?}` must {} admit \
+             — the per-pool resolver is a SIBLING of the global one and must not diverge",
+            if admitted { "" } else { "NOT " }
+        );
+
+        // The read half is derived from the SAME meet, so admission and projection can never
+        // disagree: anything admitted to a rewrite chain is, by the ladder, allowed to read.
+        let (send_prompt, _) = projection_grants("rw", hooks.get("rw").unwrap(), &env);
+        assert!(
+            !admitted || send_prompt,
+            "an admitted rewrite hook must also be cleared to READ the prompt it rewrites"
+        );
+        assert_eq!(
+            send_prompt,
+            need.wants_read(),
+            "the read half stays the meet of grant and manifest, unchanged by this fix"
+        );
+    }
+}
+
 /// `resolve_gate_hooks` admits the GLOBAL DECISION gates: `kind: gate` that is NOT a rewrite
 /// (`prompt: rw`) gate. A rewrite gate fires in the phase-1 transform pass (excluded here); a tap
 /// never decides (excluded). So from {rw-gate, ro-gate, no-gate, rw-tap} exactly the ro + no gates
