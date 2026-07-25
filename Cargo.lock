@@ -233,6 +233,7 @@ dependencies = [
  "hyper",
  "hyper-rustls",
  "hyper-util",
+ "loom",
  "metrics",
  "metrics-exporter-prometheus",
  "opentelemetry",

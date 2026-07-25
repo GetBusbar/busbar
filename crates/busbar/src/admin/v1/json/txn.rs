@@ -262,3 +262,16 @@ where
 #[cfg(test)]
 #[path = "tests/txn_tests.rs"]
 mod txn_tests;
+
+// §5.3.4: THE COMPILE FENCE — a module that must NOT type-check. Behind the `txn-fence-red`
+// feature; `scripts/txn-fence.sh` compiles it and asserts the compiler rejects it. See the file
+// header for why this is an in-crate negative build rather than a `trybuild` ui case.
+#[cfg(feature = "txn-fence-red")]
+#[path = "tests/txn_fence.rs"]
+mod txn_fence;
+
+// §5.5: the targeted loom model of the swap lost-update invariant. Behind the OPTIONAL `loom-model`
+// feature, so it is compiled ONLY by `scripts/loom.sh`, never by a normal build or CI test run.
+#[cfg(all(test, feature = "loom-model"))]
+#[path = "tests/txn_loom.rs"]
+mod txn_loom;

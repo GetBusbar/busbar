@@ -60,6 +60,12 @@ serde_json = "1"
 # `cargo build -p busbar --release` and from the runtime dependency graph. `optional = true` +
 # `dep:schemars` keep it out of the default build entirely.
 schemars = { version = "1", optional = true }
+# Exhaustive thread-interleaving model checker, used ONLY by the targeted model of the
+# config-mutation swap invariant (`admin/v1/json/tests/txn_loom.rs`, feature `loom-model`,
+# `scripts/loom.sh`). OPTIONAL, so a normal build/test never compiles it — and deliberately gated by
+# a cargo FEATURE rather than loom's usual `--cfg loom`, because RUSTFLAGS is global and
+# `--cfg loom` makes tokio compile out `tokio::net` (which the server needs).
+loom = { version = "0.7", optional = true }
 # RS256 JWT signing for the `jwt-bearer` egress auth (OAuth 2.0 JWT-bearer grant, RFC 7523 — Vertex et
 # al.). Both crates are ALREADY in the graph (ring is reqwest's rustls crypto backend; base64 rides in
 # transitively), so promoting them to direct deps adds NO new external crate to the tree. `ring` does
@@ -203,6 +209,14 @@ hooks-ranking = ["dep:busbar-hooks-ranking"]
 # test. NOT in `default` — a normal or `--release` build never pulls schemars, and the runtime
 # `GET /openapi.json` handler serves the committed static file regardless of this feature.
 openapi-schema = ["dep:schemars"]
+# §5.5: compile + run the targeted loom model of the config-mutation swap ordering. Not in
+# `default`; `scripts/loom.sh` is the front door. Loom explores interleavings exhaustively, so this
+# is minutes of CPU and stays out of `cargo test --workspace`.
+loom-model = ["dep:loom"]
+# §5.3.4: compile the NEGATIVE compile-fence module (`admin/v1/json/tests/txn_fence.rs`), which must
+# FAIL to type-check. `scripts/txn-fence.sh` enables this and asserts the build is rejected — a
+# successful build under this feature is the test failing. Never in `default`.
+txn-fence-red = []
 
 [dev-dependencies]
 # The durable-audit (#17) tests exercise the REAL SQLite store's append_audit/list_audit over a
@@ -219,9 +233,3 @@ bytes = "1"
 # tests exercise a real rustls handshake without checked-in key material.
 rcgen = "0.14"
 
-[lints.rust]
-# `cfg(loom)` gates the targeted loom model of the config-mutation swap ordering
-# (admin/v1/json/tests/txn_loom.rs). It is a deliberate opt-in cfg run by `scripts/loom.sh`
-# (`RUSTFLAGS="--cfg loom"`), never by the normal build, so declare it rather than let
-# `unexpected_cfgs` fire.
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
