@@ -167,6 +167,21 @@ fn test_removed_auth_keys_are_rejected_at_parse() {
 }
 
 /// M8 (deny_unknown_fields gap): `TlsCfg` is `#[serde(deny_unknown_fields)]`, so a TYPO under
+/// `health:` was the ONE top-level section without `deny_unknown_fields`, so a typo'd probe knob
+/// parsed clean and was silently ignored — the operator believes probing is retuned while it keeps
+/// the defaults. Every sibling section rejects at parse; this one now does too.
+#[test]
+fn test_health_typo_rejected_at_parse() {
+    let bad = "default_probe_interval_sec: 5"; // missing the trailing `s`
+    let err = serde_yaml::from_str::<crate::config::HealthDefaultsCfg>(bad)
+        .expect_err("a typo under health: must be rejected at parse (deny_unknown_fields)");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("unknown field") && msg.contains("default_probe_interval_sec"),
+        "the error names the offending key: {msg}"
+    );
+}
+
 /// `tls:` (e.g. `client_c:` for `client_ca:`) is REJECTED AT PARSE rather than silently ignored
 /// (which would leave mTLS DISABLED while the operator believes it is on). The 1.4.x spellings
 /// `cert_file`/`key_file`/`client_ca_file` are REMOVED and rejected too; the fields are now
