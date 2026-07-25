@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Gemini `RequestHandler` + cells. Embeddings via `models/{id}:embedContent`.
-#![allow(dead_code)]
 
 use crate::handlers::{
     CodecError, EgressCtx, IngressReject, OperationHandler, RequestHandler, WireBody,

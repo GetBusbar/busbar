@@ -7,7 +7,6 @@
 //!
 //! First cell: moderation (openai-only, K=1). More openai cells (embeddings/images/audio/chat) are
 //! added here as they're built.
-#![allow(dead_code)]
 
 use crate::handlers::{
     CodecError, EgressCtx, IngressReject, OperationHandler, RequestHandler, WireBody,

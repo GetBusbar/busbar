@@ -5,7 +5,6 @@
 //! cross-provider superset needed — no other provider ships a moderations endpoint — so this models
 //! OpenAI's shape exactly. Split request/response per. Flat-fee: no `Billing` on the response
 //! (`IrResp::usage()` returns `Billing::Flat` for moderation).
-#![allow(dead_code)]
 
 use crate::lossless::SourceScopedExtra;
 use std::collections::BTreeMap;

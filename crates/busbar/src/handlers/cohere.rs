@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Cohere `RequestHandler` + cells. Embeddings via `/v2/embed`.
-#![allow(dead_code)]
 
 use crate::handlers::{
     CodecError, EgressCtx, IngressReject, OperationHandler, RequestHandler, WireBody,

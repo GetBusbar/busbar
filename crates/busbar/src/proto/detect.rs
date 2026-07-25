@@ -11,7 +11,6 @@
 //! `OperationHandler` cells. Nothing else.
 //!
 //! NB: this is `router` (protocol identification), distinct from `routing` (load-balancing policy).
-#![allow(dead_code)]
 
 use axum::http::HeaderMap;
 

@@ -13,7 +13,6 @@
 //! module is compiled ONLY under `openapi-schema` (a CI-only feature), so it adds nothing to the
 //! shipped binary. `#[allow(dead_code)]` because the fields are read by schemars' derive, not by
 //! Rust code.
-#![allow(dead_code)]
 
 use schemars::JsonSchema;
 use serde::Serialize;
