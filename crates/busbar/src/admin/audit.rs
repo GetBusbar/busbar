@@ -283,13 +283,22 @@ impl AuditLog {
             };
             let Some(record) = record else {
                 // `seq` has already been pruned from the ring (a gap older than the ring bound); it
-                // cannot be backfilled in-process. Skip it and keep going so newer entries still land;
-                // do NOT advance `durable_high` past a hole we couldn't fill.
+                // can NEVER be backfilled in-process. STOP the catch-up here and leave `durable_high`
+                // BELOW the hole. A prior version `continue`d past the gap, but the very next
+                // successful append then `fetch_max`ed `durable_high` PAST the unpersisted seq —
+                // permanently claiming a durable chain that actually has a hole at `seq`. Restore's
+                // strict contiguity check would still reject that durable chain, but `durable_high`
+                // would lie about it, and the gap would never be re-attempted. The durable chain is
+                // genuinely broken at this seq and cannot be repaired from the ring, so advancing
+                // over it only manufactures a false-contiguous tail. Only genuinely-persisted seqs
+                // (the `fetch_max` after a successful `append_audit` below) may advance `durable_high`.
                 tracing::warn!(
                     seq,
-                    "durable audit backfill: seq no longer in the RAM ring; cannot catch up this entry"
+                    durable_high = self.durable_high.load(std::sync::atomic::Ordering::Relaxed),
+                    "durable audit backfill: seq no longer in the RAM ring; the durable chain has an \
+                     unrepairable gap here — stopping catch-up and holding durable_high below the hole"
                 );
-                continue;
+                return;
             };
             if let Err(e) = store.append_audit(&record) {
                 tracing::warn!(
@@ -830,5 +839,60 @@ mod tests {
             "the restored ring is bounded"
         );
         assert!(log2.verify(), "the restored bounded tail's chain verifies");
+    }
+
+    /// AUDIT (round-4 #12): a PRUNED, unpersisted seq must HALT durable catch-up — `durable_high`
+    /// must never advance PAST an unrepairable hole. We permanently fail seq 2's write-through, then
+    /// record far past the RAM-ring cap so seq 2 is pruned from the ring (no longer backfillable).
+    /// The prior code `continue`d over the pruned gap, and the very next successful append then
+    /// `fetch_max`ed `durable_high` PAST seq 2 — falsely claiming a contiguous durable tail that
+    /// actually has a hole at seq 2 (which restore's strict linkage check would reject). With the
+    /// fix, `durable_write_through` returns at the pruned gap and `durable_high` stays at seq 1, and
+    /// nothing past the hole is persisted (the durable chain would otherwise be silently corrupt).
+    #[test]
+    fn pruned_gap_halts_durable_catch_up_and_does_not_advance_past_the_hole() {
+        let store = std::sync::Arc::new(FlakyAuditStore {
+            inner: busbar_store_sqlite::SqliteStore::open_in_memory().unwrap(),
+            fail_seqs: std::sync::Mutex::new([2u64].into_iter().collect()), // seq 2 fails forever
+        });
+        let log = AuditLog::new();
+        log.set_sink(store.clone());
+
+        // Record well past the ring cap so seq 2 is eventually pruned from the RAM ring.
+        let total = MAX_AUDIT_ENTRIES + 5;
+        for i in 0..total {
+            log.record_by(
+                "hook.register",
+                &format!("hook:{i}"),
+                OUTCOME_APPLIED,
+                "admin",
+            );
+        }
+
+        // seq 2 was pruned from the RAM ring (only the recent tail remains), so it can never be
+        // backfilled — the pre-condition for the bug.
+        let ring = log.list(usize::MAX);
+        assert_eq!(ring.len(), MAX_AUDIT_ENTRIES, "the ring is bounded");
+        assert!(
+            !ring.iter().any(|e| e.seq == 2),
+            "seq 2 must have been pruned from the ring"
+        );
+
+        // durable_high must stay at 1 — the catch-up halts AT the pruned hole and never advances past
+        // it (the bug was: a later successful append bumped durable_high past seq 2).
+        assert_eq!(
+            log.durable_high.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "durable_high must not advance past the unpersisted, pruned seq-2 gap"
+        );
+
+        // And nothing PAST the hole is persisted: the durable store holds only seq 1 (persisting seq
+        // 3+ over a missing seq 2 would manufacture the very gap the strict restore check rejects).
+        let persisted = store.list_audit().unwrap();
+        assert_eq!(
+            persisted.iter().map(|r| r.seq).collect::<Vec<_>>(),
+            vec![1],
+            "only seq 1 is durable; no entry past the hole leaked into the store"
+        );
     }
 }
