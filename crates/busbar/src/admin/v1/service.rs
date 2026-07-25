@@ -1094,7 +1094,10 @@ impl AdminService {
         // `scan_and_validate` would reject, blocking startup — worse in a rollback, where a fsynced
         // version pin could reference an un-fsynced tarball). Mirrors `config::overlay::write` and
         // the signing-key write. `std::fs::write` alone leaves the bytes in the page cache.
-        {
+        // On ANY failure writing/flushing/fsyncing the temp file, remove the orphaned .tmp — a prior
+        // version only cleaned it up on rename failure, so a write/flush/fsync error (a full disk, an
+        // I/O error) left a stale `.<file>.<stamp>.tmp` behind to accumulate across retries.
+        let write_result = (|| -> Result<(), AdminError> {
             use std::io::Write as _;
             let mut f = std::fs::File::create(&tmp).map_err(|e| {
                 AdminError::Validation(format!("cannot write plugin to plugins dir: {e}"))
@@ -1108,6 +1111,11 @@ impl AdminService {
             f.sync_all().map_err(|e| {
                 AdminError::Validation(format!("cannot fsync plugin in plugins dir: {e}"))
             })?;
+            Ok(())
+        })();
+        if let Err(e) = write_result {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e);
         }
         let final_path = dir.join(&file);
         if let Err(e) = std::fs::rename(&tmp, &final_path) {
