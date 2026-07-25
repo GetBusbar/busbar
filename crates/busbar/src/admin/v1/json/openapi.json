@@ -1428,7 +1428,7 @@
             "type": "integer"
           },
           "reset": {
-            "description": "The section that was reset (`groups` | `hooks`).",
+            "description": "The section that was reset (`groups` | `hooks` | `root` | `plugin_versions`).",
             "type": "string"
           }
         },
@@ -3269,6 +3269,17 @@
         "x-busbar-required-scope": "read-only"
       },
       "post": {
+        "parameters": [
+          {
+            "description": "Optimistic concurrency: the resource's ETag from a prior read (or the ETag returned by the previous mutation). Stale = 409 `version_conflict` (re-read and retry), nothing changes; absent or `*` = unconditional.",
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -4960,6 +4971,16 @@
             },
             "description": "`{revoked}` — the id, now denylisted"
           },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Overlong key id (> 64 chars) (error code `invalid_request`)"
+          },
           "401": {
             "content": {
               "application/json": {
@@ -4989,6 +5010,16 @@
               }
             },
             "description": "Unknown key (error code `not_found`)"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Governance is not enabled on this server (error code `conflict`)"
           },
           "429": {
             "content": {
