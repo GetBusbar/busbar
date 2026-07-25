@@ -154,7 +154,7 @@ impl RawPlugin {
         // plain `extern "C"` would force). All kinds (store/secret/auth) route their FFI call through
         // here, so this is the single seam that fails such a plugin CLOSED instead of aborting the
         // engine. (Non-Rust C/Go/Zig plugins don't unwind, so they still abort — unchanged.)
-        let status = ffi_guard(&self.path, "call", || unsafe {
+        let status = match ffi_guard(&self.path, "call", || unsafe {
             (self.call)(
                 self.handle,
                 payload.as_ptr(),
@@ -162,8 +162,17 @@ impl RawPlugin {
                 &mut out,
                 &mut out_len,
             )
-        })
-        .map_err(TransportError::engine)?;
+        }) {
+            Ok(s) => s,
+            Err(e) => {
+                // The plugin may have written a non-null `*out` BEFORE it panicked (a partial write is
+                // undefined by the ABI but a misbehaving plugin can do it). The `?` here would skip the
+                // `free_guarded` below and leak that buffer; free it on the caught-panic path so the
+                // fail-closed seam does not also leak. `free_guarded` is null-safe.
+                free_guarded(self.free, &self.path, out, out_len);
+                return Err(TransportError::engine(e));
+            }
+        };
         // Cap-reject BEFORE reading; still hand the buffer back to the plugin to free (it owns it).
         if let Err(msg) = response_len_ok(out_len, &self.path) {
             free_guarded(self.free, &self.path, out, out_len);
@@ -338,7 +347,7 @@ fn wire_up_raw(
     let mut handle: *mut c_void = std::ptr::null_mut();
     let mut err: *mut u8 = std::ptr::null_mut();
     let mut err_len: usize = 0;
-    let status = ffi_guard(&display, "open", || unsafe {
+    let status = match ffi_guard(&display, "open", || unsafe {
         open(
             cfg_json.as_ptr(),
             cfg_json.len(),
@@ -346,9 +355,24 @@ fn wire_up_raw(
             &mut err,
             &mut err_len,
         )
-    })?;
+    }) {
+        Ok(s) => s,
+        Err(e) => {
+            // A plugin constructor that panics may have already written a non-null `*err` (or `*handle`
+            // — but a leaked handle can only be reclaimed by `close`, and a plugin that panicked mid-open
+            // has no valid instance to close, so we deliberately drop it). Free any err buffer it wrote
+            // so the caught-panic fail-closed path does not leak. `free_guarded` is null-safe.
+            free_guarded(free, &display, err, err_len);
+            return Err(e);
+        }
+    };
     if status != STATUS_OK || handle.is_null() {
-        let msg = if err.is_null() || err_len == 0 {
+        let msg = if err.is_null() {
+            format!("status {status}")
+        } else if err_len == 0 {
+            // LOW (audit): a non-null `err` with `err_len == 0` carries no message but is still an
+            // allocation the plugin owns — free it (the old `err_len == 0` short-circuit leaked it).
+            free_guarded(free, &display, err, err_len);
             format!("status {status}")
         } else {
             let m = String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(err, err_len) })

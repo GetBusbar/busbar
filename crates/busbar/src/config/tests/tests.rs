@@ -2036,7 +2036,7 @@ fn to_policy_floor_distinguishes_automatic_from_explicit_downgrade() {
     // reject that no opt-in can relax.
     let err = evaluate(artifact, &old, &automatic).unwrap_err();
     assert!(
-        err.0.contains("anti-downgrade"),
+        err.reason.contains("anti-downgrade"),
         "automatic policy must refuse the old first-party artifact, got {err:?}"
     );
 

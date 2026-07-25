@@ -243,8 +243,17 @@ pub enum Verdict {
 /// contain `"anti-downgrade"` and mislabel an unknown-publisher reject as "trusted (below floor)".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RejectKind {
-    /// A pinned anti-downgrade floor (first-party automatic OR configured `min_versions`) was not met.
+    /// A pinned anti-downgrade floor (first-party automatic OR configured `min_versions`) was not met
+    /// by an artifact that DID prove trust (labeled "trusted (below floor)"). Reserved for trusted
+    /// artifacts: an UNTRUSTED artifact carrying a floored name is [`RejectKind::UntrustedFloored`], so
+    /// this never mislabels an unsigned/unknown-publisher artifact as trusted.
     AntiDowngrade,
+    /// A floored (`min_versions`) name whose artifact could NOT prove trust (unsigned/tampered/unknown
+    /// publisher). Still a HARD reject the floor forbids relaxing — the floor requires trusted proof, so
+    /// a stripped-signature copy cannot launder a downgrade past it even with `allow_unsigned`/
+    /// `allow_third_party` set. Distinct from [`RejectKind::AntiDowngrade`] SOLELY so the display label
+    /// reflects the real (untrusted) trust state instead of "trusted (below floor)".
+    UntrustedFloored,
     /// No signature at all (or a first-party manifest in a build with no embedded key) and
     /// `allow_unsigned` is off.
     Unsigned,
@@ -326,7 +335,11 @@ pub fn public_key_from_hex(s: &str) -> Result<VerifyingKey, String> {
 /// the manifest's `sha256` (binding), and the signature must verify over the canonical manifest
 /// (authenticity + integrity).
 fn signature_ok(manifest: &Manifest, bytes: &[u8], key: &VerifyingKey) -> Result<(), String> {
-    if sha256_hex(bytes) != manifest.sha256 {
+    // Normalize the manifest digest to lowercase before comparing, consistently with
+    // `validate_structure` (which compares against `m.sha256.to_ascii_lowercase()`). `sha256_hex`
+    // always emits lowercase hex; without this an uppercase-hex manifest digest would pass the
+    // structural integrity check yet fail here, an inconsistency between the two verifiers.
+    if sha256_hex(bytes) != manifest.sha256.to_ascii_lowercase() {
         return Err("library hash does not match the manifest".to_string());
     }
     let sig_bytes =
@@ -565,7 +578,12 @@ pub fn evaluate(
 
     // CONFIGURED anti-downgrade floor (hard reject, BEFORE any opt-in relaxation), keyed by the
     // manifest name. A floored name must be TRUSTED and its (now-verified) version must clear the
-    // floor; anything else is a hard reject no opt-in flag can relax.
+    // floor; anything else is a hard reject no opt-in flag can relax. The reject KIND is split by trust
+    // state so the display label is honest: a TRUSTED artifact below the floor is `AntiDowngrade`
+    // ("trusted (below floor)"); an UNTRUSTED artifact carrying a floored name is `UntrustedFloored`
+    // (labeled by its real untrusted state). Both are still hard rejects — the floor requires trusted
+    // proof, so a stripped-signature copy cannot launder a downgrade past it — but the untrusted case is
+    // NO LONGER mislabeled "trusted (below floor)" in `--list-plugins` (the round-1 regression).
     if let Some(floor) = policy.min_versions.get(&manifest.name) {
         match &trusted_or_untrusted {
             Ok(_) if version_at_least(&manifest.version, floor) => {}
@@ -580,7 +598,7 @@ pub fn evaluate(
             }
             Err(_) => {
                 return Err(Rejected::new(
-                    RejectKind::AntiDowngrade,
+                    RejectKind::UntrustedFloored,
                     format!(
                         "plugin '{}' has a pinned minimum version {floor} but the load could not \
                          prove it meets the floor (not signed by a trusted key); a trusted manifest \

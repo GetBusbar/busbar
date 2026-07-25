@@ -83,6 +83,13 @@ impl DlopenPolicy {
     async fn call(&self, op: HookRequest) -> Result<HookReply, PolicyError> {
         let raw = self.raw.clone();
         let joined = tokio::task::spawn_blocking(move || {
+            // Defense-in-depth `catch_unwind`: since the `extern "C-unwind"` ABI landed, the ACTUAL FFI
+            // boundary is guarded inside `transport_call` (via `ffi_guard`), which converts a plugin
+            // panic into a `TransportError` — so the C-unwind path this method documents is now caught
+            // there and never reaches here. This outer guard is retained as a belt-and-braces net for
+            // any panic that could arise in the engine-side (de)serialization wrapper around that call
+            // (`transport_call`'s encode/decode), which runs on this blocking thread OUTSIDE the FFI
+            // guard; catching it here fails the hook CLOSED rather than aborting the blocking-pool worker.
             catch_unwind(AssertUnwindSafe(|| {
                 raw.transport_call::<HookRequest, HookReply>(&op)
             }))
@@ -91,7 +98,8 @@ impl DlopenPolicy {
         match joined {
             Ok(Ok(Ok(reply))) => Ok(reply),
             Ok(Ok(Err(e))) => Err(e.into()),
-            // A panic caught at the FFI boundary is a protocol violation — fail-closed to on_error.
+            // A panic caught here is a protocol violation — fail-closed to on_error. (The FFI-boundary
+            // unwind itself is already caught inside `transport_call`; see the comment above.)
             Ok(Err(_)) => Err("hook plugin panicked across the ABI boundary".into()),
             // The blocking task was cancelled/aborted (runtime shutdown) — treat as a hook failure.
             Err(e) => Err(format!("hook plugin call task failed: {e}").into()),

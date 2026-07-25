@@ -528,12 +528,17 @@ pub fn inventory(dir: &Path, policy: &TrustPolicy) -> Vec<InventoryEntry> {
                 use busbar_plugin_sign::RejectKind;
                 let signature = match s.kind {
                     RejectKind::AntiDowngrade => "trusted (below floor)",
+                    // A floored artifact that could NOT prove trust: labeled as the UNTRUSTED artifact
+                    // it is, never mislabeled "trusted (below floor)" (the round-1 regression).
+                    RejectKind::UntrustedFloored => "untrusted (below floor)",
                     RejectKind::UnknownPublisher => "unknown-publisher",
                     RejectKind::Tampered => "tampered",
                     RejectKind::Unsigned => "unsigned",
                 }
                 .to_string();
                 let status = match s.kind {
+                    // Only a TRUSTED-but-below-floor artifact is a hard REJECTED row; every untrusted
+                    // reject (including a floored untrusted one) is a SKIP.
                     RejectKind::AntiDowngrade => format!("REJECTED: {}", s.reason),
                     _ => format!("SKIPPED: {}", s.reason),
                 };
@@ -1018,6 +1023,36 @@ mod tests {
             "an unknown-publisher reject is a SKIP, not a REJECTED row: {}",
             rows[0].status
         );
+
+        // AUDIT REGRESSION (round 2): the SAME untrusted artifact but with a configured `min_versions`
+        // floor on its name must NEVER be labeled `trusted (below floor)`. The floor is trust-relative:
+        // `AntiDowngrade` is reserved for artifacts that proved trust. An untrusted+floored artifact is
+        // categorized as `UntrustedFloored` and labeled `untrusted (below floor)` — a hard SKIP, never
+        // a "trusted" surface. (Regression: the floor check fired BEFORE trust resolution and returned
+        // `AntiDowngrade` for this case, mislabeling it "trusted (below floor)".)
+        let mut floored = policy(&release);
+        floored
+            .min_versions
+            .insert("acme-store-x".to_string(), "2.0.0".to_string());
+        let reg = scan_and_validate(&dir, &floored).expect("scan");
+        assert!(reg.resolve("acme").is_none());
+        assert_eq!(
+            reg.skipped()[0].kind,
+            busbar_plugin_sign::RejectKind::UntrustedFloored,
+            "a floored untrusted artifact must resolve to UntrustedFloored, not AntiDowngrade"
+        );
+        let rows = inventory(&dir, &floored);
+        assert_eq!(
+            rows[0].signature, "untrusted (below floor)",
+            "a floored untrusted artifact must NOT be mislabeled 'trusted (below floor)'; got {}",
+            rows[0].signature
+        );
+        assert!(
+            rows[0].status.starts_with("SKIPPED:"),
+            "a floored untrusted reject is a SKIP, not REJECTED: {}",
+            rows[0].status
+        );
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
