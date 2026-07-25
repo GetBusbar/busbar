@@ -227,6 +227,24 @@ pub(crate) struct DerivedUsage {
     pub(crate) requests: u64,
 }
 
+/// THE REVOCATION STALENESS WINDOW (seconds). The in-memory denylist is a CACHE of the durable
+/// store's revocation set, not the truth: every auth path re-reads the store denylist when its copy
+/// is older than this, so a revoke performed on ANOTHER NODE of a fleet sharing one store — or
+/// written out-of-band directly against the store — is honoured here within at most this many
+/// seconds. A revoke performed on THIS node is applied to the in-memory set synchronously by
+/// [`GovState::revoke`] and takes effect on the very next check (zero window).
+///
+/// WHY 5s: the re-read costs ONE small store query per node per window regardless of request rate
+/// (single-flighted by a CAS on `denylist_synced_at`), so at 5s even a 50k-RPS node adds 0.2
+/// queries/sec — negligible — while bounding the worst case that matters (a compromised credential
+/// still authenticating after the operator revoked it) to seconds rather than the lifetime of the
+/// process. Shorter windows buy little (a revoke is an operator action measured in seconds anyway)
+/// and start to matter for a network-backed store plugin; longer windows re-open the hole this
+/// closes. It is deliberately a CONSTANT, not a knob: an operator cannot accidentally widen a
+/// security window, and there is no deployment for which "revocation lands within 5 seconds" is
+/// wrong.
+pub(crate) const REVOCATION_SYNC_TTL_SECS: u64 = 5;
+
 /// Number of shards for the per-key enforcement maps (`rate`, `budget`, `token_spend_carry`). A
 /// power of two so `hash & (N-1)` selects the shard with a mask (no modulo). 64 keeps lock
 /// contention low well past typical core counts while adding trivial fixed memory (64 small empty
@@ -406,11 +424,19 @@ pub(crate) struct GovState {
     /// The STATELESS token VERIFIER (public keyset). Verifies a presented token's signature + expiry
     /// before any store read; policy is then resolved by `sub`. `Some` iff `signer` is.
     verifier: Option<crate::governance::signing::TokenVerifier>,
-    /// The revocation DENYLIST as an in-memory set of subject ids, hydrated from the store at boot
-    /// and updated live on revoke. A verified token whose `sub` is present is rejected - the ONLY
-    /// state the otherwise-stateless verify path reads. Under an `RwLock` (read on the hot path,
-    /// write only on revoke).
+    /// The revocation DENYLIST as an in-memory set of subject ids, hydrated from the store at boot,
+    /// updated live on revoke, and RE-HYDRATED from the store on a bounded TTL by
+    /// [`GovState::sync_revocations_if_stale`] (see [`REVOCATION_SYNC_TTL_SECS`]). A verified token
+    /// whose `sub` is present is rejected - the ONLY state the otherwise-stateless verify path
+    /// reads. Under an `RwLock` (read on the hot path, write only on revoke / a TTL re-sync).
     denylist: RwLock<std::collections::HashSet<String>>,
+    /// Unix-seconds epoch at which `denylist` was last (re-)read from the STORE. The check-time
+    /// staleness guard on every auth path: once it is older than [`REVOCATION_SYNC_TTL_SECS`] the
+    /// next credential check re-reads the store denylist, so a revocation performed by ANOTHER NODE
+    /// (or out-of-band against the shared store) takes effect on this node within that window
+    /// instead of never. Single-flight: the thread that wins the CAS does the read, everyone else
+    /// proceeds on the current set.
+    denylist_synced_at: std::sync::atomic::AtomicU64,
     /// Serializes `refresh` so a slow reader-load cannot clobber a newer swap (lost-update guard).
     /// `refresh` loads the full key set from the store OUTSIDE the `caches` write lock (to keep that
     /// critical section short), then swaps. Without serialization, two concurrent refreshes could
