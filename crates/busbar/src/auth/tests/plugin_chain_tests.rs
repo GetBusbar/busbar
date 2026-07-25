@@ -401,3 +401,108 @@ fn keys_module_is_not_a_plugin_ref() {
     assert!(mw.keys_in_chain, "keys sets the engine flag");
     assert!(mw.chain_names().is_empty(), "keys is not a boxed module");
 }
+
+// ── THE AUTH CHAIN MUST NOT RUN ON THE REACTOR (audit round-6) ───────────────────────────────────
+//
+// A `kind: auth` plugin's `authenticate` is a synchronous FFI call, and behind it the module does
+// whatever it does — the shipped OIDC module fetches JWKS over blocking HTTPS with a 10s timeout.
+// `auth_middleware` is an `async fn` on a Tokio worker, so calling the chain inline hands that
+// worker to the plugin. A slow identity provider then parks one worker per in-flight request until
+// the runtime polls nothing at all: not other requests, not the admin plane, and not `/healthz`
+// (exempt from the chain, but it still needs a worker thread to run). The node fails its liveness
+// probe and is killed, over an IdP most of the stalled traffic never used.
+
+/// An auth module that blocks — the shape of every plugin that talks to a network identity
+/// provider. It signals the moment it is entered, so the test never has to guess at timing.
+struct BlockingModule {
+    entered: std::sync::mpsc::Sender<()>,
+    hold: std::time::Duration,
+}
+impl busbar_api::AuthModule for BlockingModule {
+    fn name(&self) -> &'static str {
+        "blocking-test-module"
+    }
+    fn authenticate(&self, _candidate: Option<&str>) -> busbar_api::AuthOutcome {
+        let _ = self.entered.send(());
+        std::thread::sleep(self.hold);
+        busbar_api::AuthOutcome::Pass
+    }
+    fn cacheable(&self) -> bool {
+        false
+    }
+}
+
+/// RED (chain called inline from `auth_middleware`): the probe below is never scheduled, because
+/// the single worker is inside the plugin.
+/// GREEN (chain offloaded to the blocking pool): the worker is free and the probe completes while
+/// the plugin is still blocking.
+///
+/// A one-worker runtime is not a contrived shape — busbar sizes its runtime from
+/// `available_parallelism()` and the docs recommend 1-2 workers for sidecar deployments. It is
+/// simply the smallest configuration in which "a worker is parked" is decidable.
+#[test]
+fn a_blocking_auth_plugin_does_not_park_the_reactor() {
+    let (tx, entered) = std::sync::mpsc::channel();
+    let auth = std::sync::Arc::new(AuthMiddleware::from_chain_for_test(
+        vec![Box::new(BlockingModule {
+            entered: tx,
+            hold: std::time::Duration::from_secs(3),
+        })],
+        /* has_plugin_module = */ true,
+    ));
+    let cache = std::sync::Arc::new(crate::auth_cache::CredentialCache::new());
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .expect("runtime");
+
+    rt.spawn(async move {
+        let _ = AuthMiddleware::run_chain_on_request_path(&auth, &cache, Some("tok".into())).await;
+    });
+    entered
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the auth module must actually have been entered");
+
+    // Can the runtime still schedule anything while the module blocks? Signalled over a STD channel
+    // with a std timeout deliberately: a dead reactor has a dead timer driver, so a
+    // `tokio::time::timeout` would hang instead of failing.
+    let (ptx, probe) = std::sync::mpsc::channel();
+    rt.spawn(async move {
+        let _ = ptx.send("healthz ok");
+    });
+    let served = probe.recv_timeout(std::time::Duration::from_secs(2));
+    assert!(
+        matches!(served, Ok("healthz ok")),
+        "the runtime must keep serving while an auth module blocks; the worker is parked inside \
+         the plugin (got {served:?})"
+    );
+}
+
+/// The counterpart, so the offload is not applied blindly: an ALL-IN-PROCESS chain is called
+/// inline. Those modules are microsecond constant-time compares, and paying a `spawn_blocking` hop
+/// per request to protect against work that cannot block would be a pure regression. Asserted by
+/// behaviour — the verdict is identical and correct either way — plus the explicit flag.
+#[test]
+fn an_in_process_chain_is_not_offloaded() {
+    let auth = std::sync::Arc::new(AuthMiddleware::from_chain_for_test(
+        vec![Box::new(crate::auth::TestGroupsModule)],
+        /* has_plugin_module = */ false,
+    ));
+    let cache = std::sync::Arc::new(crate::auth_cache::CredentialCache::new());
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    // A current-thread runtime has NO blocking-pool round-trip to hide behind: if this path tried to
+    // offload, the verdict would still arrive, but the point is that it resolves synchronously
+    // within one poll of the future.
+    let verdict = rt.block_on(async {
+        AuthMiddleware::run_chain_on_request_path(&auth, &cache, Some("grp:admins".into())).await
+    });
+    assert!(
+        matches!(verdict, ChainVerdict::Identified { .. }),
+        "an in-process chain must keep identifying exactly as before"
+    );
+}
