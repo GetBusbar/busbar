@@ -37,6 +37,55 @@ const PROBE_ERROR_BODY_CAP: usize = 64 * 1024;
 // / `health.default_probe_timeout_secs` (defaults 30 / 5), read through `crate::limits`. The per-lane
 // override still wins (see `unwrap_or` below).
 
+/// The probe schedule, shared by every clone-derived snapshot of one `App` lineage.
+///
+/// `AppHandle::swap` re-spawns the probers on EVERY config mutation — a hook PATCH, a group create,
+/// a settings apply — because a prober holds a `Weak<App>` and must be re-attached to the new
+/// snapshot. Each fresh generation built its own `interval`, whose first tick is discarded so the
+/// gateway does not probe a cold upstream before traffic has established health. That means a
+/// generation must survive a full interval before it can probe ONCE. Under swap churn faster than
+/// the probe interval — an onboarding wave that auto-provisions a group per new subject, or a script
+/// applying settings in a loop — every generation was replaced before its first tick, and health
+/// probing went entirely DARK for the duration plus one interval, while logging that it was enabled.
+///
+/// Carrying the deadline here makes the schedule phase-stable across swaps: at each deadline the
+/// live generation probes, and the stale ones exit. A full rebuild from disk mints a new schedule,
+/// which is correct — a reload genuinely re-establishes probing.
+pub(crate) struct ProbeSchedule {
+    /// Bumped by every `spawn_probers`. A prober whose captured generation is no longer current
+    /// exits at its next tick, so generations never double-probe during the window where the old
+    /// snapshot is still alive on an in-flight request.
+    generation: std::sync::atomic::AtomicU64,
+    /// The reference point the deadlines are measured from. A MONOTONIC timer instant, not wall
+    /// clock: the deadlines feed `interval_at`, so mixing in a wall-clock reading would make the
+    /// schedule drift with clock adjustments and would not survive a paused test clock at all.
+    origin: tokio::time::Instant,
+    /// Per-lane next-probe deadline, milliseconds after `origin`. `None` = not yet scheduled.
+    deadlines: Vec<std::sync::atomic::AtomicU64>,
+}
+
+/// Sentinel for "this lane has no deadline yet" — `0` is a legitimate deadline at `origin`.
+const UNSCHEDULED: u64 = u64::MAX;
+
+impl ProbeSchedule {
+    pub(crate) fn new(lane_count: usize) -> Self {
+        Self {
+            generation: std::sync::atomic::AtomicU64::new(0),
+            origin: tokio::time::Instant::now(),
+            deadlines: (0..lane_count)
+                .map(|_| std::sync::atomic::AtomicU64::new(UNSCHEDULED))
+                .collect(),
+        }
+    }
+
+    /// Milliseconds from `origin` to now.
+    fn elapsed_ms(&self) -> u64 {
+        tokio::time::Instant::now()
+            .saturating_duration_since(self.origin)
+            .as_millis() as u64
+    }
+}
+
 /// Spawn one background prober task per lane that has a probing mode configured. A no-op for lanes
 /// with `mode: none` (or no `health:` block).
 ///
@@ -50,6 +99,9 @@ const PROBE_ERROR_BODY_CAP: usize = 64 * 1024;
 /// `AppHandle::swap` — which runs on EVERY config mutation (reload, apply, and each hook/auth swap), so
 /// no swap site can forget to re-attach probing.
 pub(crate) fn spawn_probers(app: &Arc<App>) {
+    use std::sync::atomic::Ordering;
+    let schedule = app.probe_schedule.clone();
+    let my_gen = schedule.generation.fetch_add(1, Ordering::Relaxed) + 1;
     for i in 0..app.lanes.len() {
         let Some(h) = app.lanes[i].health.clone() else {
             continue;
@@ -70,20 +122,58 @@ pub(crate) fn spawn_probers(app: &Arc<App>) {
         let mode = h.mode;
         let weak = Arc::downgrade(app);
         let model = app.lanes[i].model.clone();
-        tracing::info!(
-            lane = %model,
-            mode = ?mode,
-            interval_secs = interval.as_secs(),
-            "active health probing enabled for lane"
-        );
+        // Inherit this lane's deadline, or schedule the first probe one interval out (the
+        // deliberate "don't probe a cold upstream at startup" behaviour, now expressed as a
+        // deadline instead of a discarded first tick).
+        let first = schedule
+            .elapsed_ms()
+            .saturating_add(interval.as_millis() as u64);
+        let deadline_ms = match schedule.deadlines.get(i) {
+            Some(slot) => {
+                // A racing generation may schedule it first; take whichever landed.
+                match slot.compare_exchange(
+                    UNSCHEDULED,
+                    first,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => first,
+                    Err(theirs) => theirs,
+                }
+            }
+            // Lane count grew without a rebuild: fall back to an unshared schedule for this lane.
+            None => first,
+        };
+        // Only the FIRST generation announces probing. A swap burst re-spawns per lane, and the
+        // line claims probing was just enabled — logging it every time amplifies the burst and
+        // misdescribes what happened.
+        if my_gen == 1 {
+            tracing::info!(
+                lane = %model,
+                mode = ?mode,
+                interval_secs = interval.as_secs(),
+                "active health probing enabled for lane"
+            );
+        }
+        let schedule = schedule.clone();
         tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(interval);
+            let start = schedule.origin + Duration::from_millis(deadline_ms);
+            let mut ticker = tokio::time::interval_at(start, interval);
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            // The first tick fires immediately — skip it so we don't probe at startup before any
-            // traffic has had a chance to establish health.
-            ticker.tick().await;
             loop {
                 ticker.tick().await;
+                // A newer generation owns the schedule now — exit rather than probe alongside it.
+                if schedule.generation.load(Ordering::Relaxed) != my_gen {
+                    return;
+                }
+                if let Some(slot) = schedule.deadlines.get(i) {
+                    slot.store(
+                        schedule
+                            .elapsed_ms()
+                            .saturating_add(interval.as_millis() as u64),
+                        Ordering::Relaxed,
+                    );
+                }
                 // Upgrade the Weak each tick (holding no strong ref across the sleep). `None` means
                 // this snapshot was replaced by a reload and fully released — this prober is now
                 // stale, so exit rather than probe an orphaned store forever.
@@ -723,5 +813,55 @@ mod tests {
             "with no query string the signed canonical URI must equal the transmitted wire path \
              (signed == sent), the exact invariant that prevents SignatureDoesNotMatch"
         );
+    }
+    /// `AppHandle::swap` re-spawns the probers on EVERY config mutation, and each fresh generation
+    /// used to start a brand-new interval whose first tick is one full period out. A swap cadence
+    /// faster than the probe interval — an onboarding wave auto-provisioning a group per new
+    /// subject, or a script applying settings in a loop — therefore replaced every generation before
+    /// it could probe ONCE, and health probing went silently dark while logging that it was enabled.
+    ///
+    /// The schedule is shared across clone-derived swaps, so the deadline survives them.
+    #[tokio::test(start_paused = true)]
+    async fn swap_churn_does_not_starve_the_probe_schedule() {
+        let state = Arc::new(MockServerState::new());
+        for _ in 0..8 {
+            state.push(MockResponse::Ok {
+                status: StatusCode::OK,
+                body: serde_json::json!({"ok": true}),
+            });
+        }
+        let server = MockServer::new(state).await;
+        let app = TestApp::new()
+            .lane(
+                LaneSpec::new("l", Protocol::anthropic(), &server.base_url())
+                    .api_key("sk-test")
+                    .health(HealthCfg {
+                        mode: HealthMode::Active,
+                        interval_secs: Some(10),
+                        timeout_secs: Some(5),
+                    }),
+            )
+            .pool("p", &[(0, 1)])
+            .build();
+
+        let handle = Arc::new(crate::state::AppHandle::new(app.clone()));
+        spawn_probers(&app);
+
+        // Swap every simulated second for 20s — twice the probe interval.
+        for _ in 0..20 {
+            tokio::time::advance(Duration::from_secs(1)).await;
+            handle.swap(Arc::new((*handle.load()).clone()));
+            tokio::task::yield_now().await;
+        }
+        // Let the probe's own I/O settle without advancing far enough to earn another tick.
+        for _ in 0..40 {
+            tokio::task::yield_now().await;
+        }
+
+        assert!(
+            app.store.snapshot(0, now()).ok > 0,
+            "20s of swap churn against a 10s interval must not starve the probe schedule"
+        );
+        server.shutdown().await;
     }
 }

@@ -859,6 +859,7 @@ impl TestApp {
         ));
         let app = std::sync::Arc::new(crate::state::App {
             tslots,
+            probe_schedule: std::sync::Arc::new(crate::health::ProbeSchedule::new(lanes.len())),
             lanes,
             store: std::sync::Arc::new(crate::store::InMemoryStore::new(lane_data)),
             by_model,

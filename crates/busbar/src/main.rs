@@ -2929,6 +2929,7 @@ pub(crate) fn build_app_from_config(
         // collections move into the snapshot. Identical label sets across applies re-intern to the
         // same slots, so hot-path counters accumulate monotonically across config generations.
         tslots: Arc::new(telemetry::AppSlots::build(&lanes, &pools, &by_model)),
+        probe_schedule: Arc::new(crate::health::ProbeSchedule::new(lanes.len())),
         lanes,
         store,
         by_model,
