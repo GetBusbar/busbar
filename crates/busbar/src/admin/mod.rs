@@ -667,12 +667,15 @@ pub(crate) async fn create_key(
     // released the store lock, `.await`ed, then minted in a second task with no lock spanning the
     // two — so concurrent callers all read `n < cap` and all minted, overshooting the cap by up to
     // `N-1`. `>= cap` is a `409` (a retry can't fix it without deleting a key).
-    let cap_group = if app.max_keys_per_principal > 0 {
-        req.group.clone()
-    } else {
-        None
-    };
-    let cap = app.max_keys_per_principal;
+    // Re-read the cap from the LIVE handle rather than the pre-lock `app` snapshot (line 464): a
+    // config apply/reload between that snapshot and acquiring `_config_guard` could change
+    // `max_keys_per_principal`, so a stale cap would be enforced. When a bound group is present we
+    // hold the mutation guard here (line 636), so `handle.load()` reflects any concurrent config
+    // change and cannot itself race a further apply. Mirrors the round-3 mint re-verify. A groupless
+    // key has no principal to cap, so the pre-lock snapshot is harmless there — but re-reading is
+    // uniformly correct and costs nothing.
+    let cap = handle.load().max_keys_per_principal;
+    let cap_group = if cap > 0 { req.group.clone() } else { None };
     // Keys carry NO inline limits (S1); enforcement flows through the bound group.
     let spec = NewKeySpec {
         name: req.name,
