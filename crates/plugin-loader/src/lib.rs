@@ -137,7 +137,10 @@ impl RawPlugin {
     /// on the OUT-OF-BAND status (e.g. [`STATUS_PROTOCOL`] = "this plugin cannot decode this request
     /// variant") rather than on the plugin-controlled body TEXT. On the OK path the numeric status is
     /// irrelevant (the buffer is the decoded response) and never surfaced.
-    pub(crate) fn transport_call_status<Req: serde::Serialize, Resp: serde::de::DeserializeOwned>(
+    pub(crate) fn transport_call_status<
+        Req: serde::Serialize,
+        Resp: serde::de::DeserializeOwned,
+    >(
         &self,
         req: &Req,
     ) -> Result<Resp, TransportError> {
@@ -185,9 +188,8 @@ impl RawPlugin {
         };
         free_guarded(self.free, &self.path, out, out_len);
         if status == STATUS_OK {
-            serde_json::from_slice(&bytes).map_err(|e| {
-                TransportError::engine(format!("plugin response decode failed: {e}"))
-            })
+            serde_json::from_slice(&bytes)
+                .map_err(|e| TransportError::engine(format!("plugin response decode failed: {e}")))
         } else {
             // Preserve the plugin-returned numeric `status` OUT OF BAND. The message is still the
             // plugin's body (for diagnostics), but the fallback decision keys on `status`, NOT on this
@@ -591,15 +593,23 @@ impl Store for DynStore {
     }
 
     fn list_audit_tail(&self, limit: u64) -> StoreResult<Vec<AuditRecord>> {
-        // A plugin built against an OLDER SDK never learned this request variant and will reject it
-        // (a protocol/decode error). Fall back to the trait default (`list_audit` + tail-truncation)
-        // so restore still works against old durable plugins - it just materializes the full list
-        // once before truncating rather than bounding at the source. A new plugin returns the bounded
-        // tail directly (no full materialization), which is the point of the variant.
-        match self.call_raw(StoreRequest::ListAuditTail(limit)) {
+        // A plugin built against an OLDER SDK never learned this request variant and will reject it —
+        // and the SDK signals THAT out of band as a PROTOCOL status ([`STATUS_PROTOCOL`]), not in the
+        // plugin-controlled body text. For THAT case ONLY we fall back to the trait default
+        // (`list_audit` + tail-truncation) so restore still works against old durable plugins — it just
+        // materializes the full list once before truncating rather than bounding at the source. A new
+        // plugin returns the bounded tail directly (no full materialization), which is the point of the
+        // variant.
+        //
+        // A bare `Err(_)` fallback would MASK a real backend error (a `STATUS_ERR` I/O/DB failure, an
+        // engine-side encode/decode/panic): it would be misread as "old SDK" and silently re-issue a
+        // FULL `list_audit` — hiding the fault and doing extra work against a store that just failed
+        // (mirrors the `list_denylist` fail-open closure). Key the fallback on the numeric status the
+        // plugin cannot forge; propagate every other error so the caller sees the true failure.
+        match self.call_raw_status(StoreRequest::ListAuditTail(limit)) {
             Ok(StoreResponse::Audit(a)) => Ok(a),
             Ok(other) => Err(unexpected(other)),
-            Err(_) => {
+            Err(e) if e.is_unsupported_variant() => {
                 let mut all = self.list_audit()?;
                 let limit = limit as usize;
                 if all.len() > limit {
@@ -607,6 +617,7 @@ impl Store for DynStore {
                 }
                 Ok(all)
             }
+            Err(e) => Err(StoreError(e.message)),
         }
     }
 
@@ -1492,7 +1503,12 @@ mod tests {
             return;
         };
         // Old-SDK path: the SDK returns STATUS_PROTOCOL with a "malformed request JSON" style message.
-        FAKE_CALL.with(|c| c.set((STATUS_PROTOCOL, b"malformed request JSON: unknown variant `ListDenylist`")));
+        FAKE_CALL.with(|c| {
+            c.set((
+                STATUS_PROTOCOL,
+                b"malformed request JSON: unknown variant `ListDenylist`",
+            ))
+        });
         let out = store.list_denylist();
         assert_eq!(
             out.expect("old-SDK unsupported variant must boot with an empty denylist"),
@@ -1516,11 +1532,37 @@ mod tests {
                 b"backend read failed: table 'denylist' reported unknown variant of corruption",
             ))
         });
-        let err = store
-            .list_denylist()
-            .expect_err("a STATUS_ERR must fail CLOSED even when its text contains 'unknown variant'");
+        let err = store.list_denylist().expect_err(
+            "a STATUS_ERR must fail CLOSED even when its text contains 'unknown variant'",
+        );
         assert!(
             err.0.contains("unknown variant"),
+            "the propagated error keeps the backend message: {}",
+            err.0
+        );
+    }
+
+    /// `list_audit_tail`: a real backend error (`STATUS_ERR`) must PROPAGATE, not be masked as an
+    /// old-SDK unsupported-variant signal and silently re-issued as a full `list_audit`. Before the fix
+    /// the bare `Err(_)` fallback swallowed EVERY error into the full-list path, hiding a store fault
+    /// (and doing extra work against a store that just failed). Now only `STATUS_PROTOCOL` falls back.
+    #[test]
+    fn audit_tail_backend_error_propagates_not_masked_by_fallback() {
+        let Some(store) = dyn_store_with_fake_call() else {
+            eprintln!("skip: sqlite plugin cdylib not built (run under --workspace)");
+            return;
+        };
+        FAKE_CALL.with(|c| {
+            c.set((
+                busbar_plugin_abi::STATUS_ERR,
+                b"backend read failed: audit table I/O error",
+            ))
+        });
+        let err = store
+            .list_audit_tail(10)
+            .expect_err("a STATUS_ERR from the store must propagate, not fall back to list_audit");
+        assert!(
+            err.0.contains("audit table I/O error"),
             "the propagated error keeps the backend message: {}",
             err.0
         );
@@ -1540,7 +1582,9 @@ mod tests {
             message: "unknown variant".into(),
         }
         .is_unsupported_variant());
-        assert!(!TransportError::engine("plugin response decode failed".into())
-            .is_unsupported_variant());
+        assert!(
+            !TransportError::engine("plugin response decode failed".into())
+                .is_unsupported_variant()
+        );
     }
 }
