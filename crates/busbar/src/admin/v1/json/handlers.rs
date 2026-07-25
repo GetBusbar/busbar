@@ -2223,17 +2223,39 @@ pub(crate) async fn apply_config(
         // rather than run inline under the async lock.
         let snapshot = current.clone();
         Ok(txn.read_store(move || {
-            let next = crate::config::resolve(&req.config, &req.providers)
+            // The applied body layers UNDER the persisted overlay, exactly as reload/reset/boot/
+            // `--validate` do. Apply was the sole rebuild path that skipped this, and it already
+            // carried `overlay_path` forward — so it kept WRITING an overlay it refused to read,
+            // and the next hook/group mutation persisted the truncated registry over it.
+            let overlay_doc = snapshot
+                .overlay_path
+                .as_deref()
+                .and_then(crate::config::overlay::read);
+            let ApplyConfigReq {
+                config: mut deploy,
+                providers,
+            } = req;
+            if let Some(doc) = overlay_doc.as_ref() {
+                crate::config::overlay::apply_root_to_deploy(&mut deploy, doc);
+                // Without this an apply re-validates against the BASE floors and silently reverts a
+                // live audited plugin rollback until the next restart re-applies the pin.
+                crate::config::overlay::apply_plugin_versions_to_deploy(&mut deploy, doc);
+            }
+            let next = crate::config::resolve(&deploy, &providers)
                 .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))
-                .and_then(|cfg| {
-                    // Base hook + group names = the applied config's own (synthesized) registry.
+                .and_then(|mut cfg| {
+                    // Base names are the APPLIED config's own registry, taken pre-merge so an
+                    // overlay-only hook is not misread as base-defined (and so undeletable).
                     let base_hook_names: std::collections::HashSet<String> =
                         cfg.hooks.keys().cloned().collect();
                     let base_group_names: std::collections::HashSet<String> =
                         cfg.groups.keys().cloned().collect();
+                    if let Some(doc) = overlay_doc {
+                        crate::config::overlay::merge_into(&mut cfg, doc);
+                    }
                     crate::build_app_from_config(
                         cfg,
-                        req.config.plugins.clone(),
+                        deploy.plugins.clone(),
                         snapshot.overlay_path.clone(),
                         base_hook_names,
                         base_group_names,

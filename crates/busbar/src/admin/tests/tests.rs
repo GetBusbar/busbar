@@ -2862,6 +2862,97 @@ async fn test_admin_v1_hook_register_persists_to_overlay() {
     handle.abort();
 }
 
+/// `POST /config/apply` layers the applied body UNDER the persisted overlay, as every other
+/// rebuild path does. Apply was the sole exception while still carrying `overlay_path` forward, so
+/// it kept writing an overlay it refused to read: an API-created group vanished from the live
+/// registry immediately — every key bound to it fails closed at admission from that instant — and
+/// the next unrelated group mutation then persisted the truncated registry over the file.
+#[tokio::test]
+async fn test_admin_v1_config_apply_preserves_the_persisted_overlay() {
+    crate::metrics::init();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let overlay = std::env::temp_dir().join(format!(
+        "busbar-apply-overlay-{}-{}.json",
+        std::process::id(),
+        crate::store::now()
+    ));
+    let _ = std::fs::remove_file(&overlay);
+    let app = TestApp::new()
+        .governance(gov)
+        .overlay_path(overlay.clone())
+        .build();
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+
+    let create_group = |name: &'static str| {
+        let c = client.clone();
+        async move {
+            c.post(format!("http://{addr}/api/v1/admin/groups"))
+                .header("x-admin-token", "admintok")
+                .header("content-type", "application/json")
+                .body(
+                    serde_json::json!({
+                        "name": name,
+                        "config": {"limits": [{"requests": 10, "per": "minute"}]}
+                    })
+                    .to_string(),
+                )
+                .send()
+                .await
+                .unwrap()
+                .status()
+                .as_u16()
+        }
+    };
+    assert_eq!(create_group("api_team").await, 201);
+
+    // Apply a config that does not mention `api_team`. A DeployCfg body has no way to express an
+    // API-created group, so omitting one is not an instruction to delete it.
+    let applied = client
+        .post(format!("http://{addr}/api/v1/admin/config/apply"))
+        .header("x-admin-token", "admintok")
+        .header("content-type", "application/json")
+        .body(serde_json::json!({"config": {"providers": {}, "models": {}}}).to_string())
+        .send()
+        .await
+        .unwrap();
+    let st = applied.status().as_u16();
+    let body = applied.text().await.unwrap_or_default();
+    assert_eq!(st, 200, "the apply itself succeeds: {body}");
+
+    // LIVE: still there, so a key bound to it still admits.
+    let got = client
+        .get(format!("http://{addr}/api/v1/admin/groups/api_team"))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        got.status().as_u16(),
+        200,
+        "an API-created group survives an apply that does not name it"
+    );
+
+    // ON DISK: a later, unrelated mutation must not clobber it out of the overlay.
+    assert_eq!(create_group("second_team").await, 201);
+    let doc = crate::config::overlay::read(&overlay).expect("overlay still readable");
+    assert!(
+        doc.groups.contains_key("api_team"),
+        "the next group write must not erase the earlier one from the overlay"
+    );
+    assert!(
+        doc.groups.contains_key("second_team"),
+        "and records the new one"
+    );
+
+    let _ = std::fs::remove_file(&overlay);
+    handle.abort();
+}
+
 /// Key mutations are audited too: minting a key records
 /// `key.create` / `applied` with the new key's id.
 #[tokio::test]
