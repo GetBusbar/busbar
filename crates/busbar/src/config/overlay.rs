@@ -284,19 +284,31 @@ pub(crate) fn persist_root(path: Option<&Path>, settings: &RootSettings) {
 /// no-op (persistence disabled). Best-effort: the live policy already swapped, so this is durability
 /// (a restart re-derives the same lowered floor from the persisted pin), never correctness.
 pub(crate) fn persist_plugin_versions(path: Option<&Path>, pins: &BTreeMap<String, String>) {
-    if let Some(p) = path {
-        let Some(mut doc) = load_for_rmw(p) else {
-            return;
-        };
-        doc.plugin_versions = pins.clone();
-        doc.version = OVERLAY_VERSION;
-        if let Err(e) = write(p, &doc) {
-            tracing::warn!(
-                error = %e, path = %p.display(),
-                "failed to persist config overlay (plugin_versions)"
-            );
-        }
+    if let Err(e) = try_persist_plugin_versions(path, pins) {
+        tracing::warn!(error = %e, "failed to persist config overlay (plugin_versions)");
     }
+}
+
+/// Result-returning variant of [`persist_plugin_versions`]. The default caller treats a failed write
+/// as best-effort (warn + continue), but the rollback COMPENSATION path (reverting a pin after a failed
+/// rebuild) must know whether the revert itself failed — a silently-swallowed failure there would leave
+/// a stale rolled-forward pin on disk that a restart would then honor, contradicting the running engine.
+pub(crate) fn try_persist_plugin_versions(
+    path: Option<&Path>,
+    pins: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    let Some(p) = path else {
+        return Ok(());
+    };
+    let Some(mut doc) = load_for_rmw(p) else {
+        return Err(format!(
+            "could not read the overlay at '{}' to update plugin_versions",
+            p.display()
+        ));
+    };
+    doc.plugin_versions = pins.clone();
+    doc.version = OVERLAY_VERSION;
+    write(p, &doc).map_err(|e| format!("overlay write to '{}' failed: {e}", p.display()))
 }
 
 /// One MUTABLE overlay SECTION — the unit a per-section reset (`DELETE /api/v1/admin/overlay/{section}`)
@@ -453,11 +465,18 @@ pub(crate) fn read(path: &Path) -> Option<OverlayDoc> {
         OverlayReadState::Absent => None,
         OverlayReadState::Loaded(doc) => Some(*doc),
         OverlayReadState::Unreadable => {
+            // ADMISSION-CONTROL SIGNAL (audit LOW): a torn overlay drops every API-registered hook,
+            // which includes SECURITY GATES — so admission control silently reverts to base config. Warn
+            // LOUD and name gates explicitly, aligning with the fail-closed hook discipline: an operator
+            // who registered a gate via the API must not silently lose it to a corrupt overlay without a
+            // diagnostic. (We still fail-soft on boot — a corrupt overlay must never brick startup — but
+            // never silently.)
             tracing::warn!(
                 path = %path.display(),
                 "config overlay is present but unreadable/corrupt; starting on base config.yaml ALONE \
-                 — API-applied hooks and groups are NOT restored. Fix or remove the overlay file to \
-                 restore durability."
+                 — API-applied hooks (INCLUDING security GATES that enforce admission control), groups, \
+                 and plugin version pins are NOT restored. Any gate registered only via the admin API \
+                 is now ABSENT until re-applied. Fix or remove the overlay file to restore durability."
             );
             None
         }

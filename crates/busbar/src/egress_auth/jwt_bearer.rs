@@ -163,7 +163,10 @@ impl Signer {
             ])
             .send()
             .await
-            .map_err(|e| format!("token endpoint request failed: {e}"))?;
+            // `.without_url()` strips the token-endpoint URL from the reqwest error Display — the URL
+            // can carry query/secret material and leaking it into a surfaced/logged error is an SSRF /
+            // secret-hygiene hazard. The status/body branch below already redacts.
+            .map_err(|e| format!("token endpoint request failed: {}", e.without_url()))?;
         let status = resp.status();
         let body = resp
             .text()
