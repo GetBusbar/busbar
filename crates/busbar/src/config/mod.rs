@@ -14,6 +14,7 @@ pub(crate) mod groups;
 /// The 1.4.x -> 1.5.0 config migrator + the loud fail-closed 1.x detector (P9).
 pub(crate) mod migrate;
 /// The secret-reference type (C2): `{ module, settings }` + the `{env}`/`{file}` sugar.
+pub(crate) mod patch;
 pub(crate) mod secret;
 
 pub(crate) use groups::{GroupCfg, LimitCfg};
