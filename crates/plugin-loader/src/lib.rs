@@ -193,20 +193,11 @@ impl RawPlugin {
                 .map_err(|e| TransportError::engine(format!("plugin response decode failed: {e}")))
         } else {
             // Classify the plugin-returned `status` into a SEMANTIC kind OUT OF BAND. The fallback
-            // decision keys on the kind, NOT on the plugin-controlled body text — closing the
-            // revocation fail-open (a crafted error body can no longer masquerade as the old-SDK
-            // signal). A caught PANIC (STATUS_PANIC) classifies to `Fault`, never `Unsupported`, so a
-            // plugin crash can never open the safe-default fallback. An empty-buffer STATUS_PROTOCOL is
-            // the LEGACY v1-SDK decode-failure shape (it predates STATUS_UNSUPPORTED) → treated as
-            // Unsupported for interop; a STATUS_PROTOCOL WITH a message is a caller-protocol violation.
-            let msg = String::from_utf8_lossy(&bytes).into_owned();
-            let empty_buffer = msg.is_empty();
-            let message = if empty_buffer {
-                format!("plugin '{}' call failed (status {status})", self.path)
-            } else {
-                msg
-            };
-            Err(TransportError::from_status(status, empty_buffer, message))
+            // decision keys on the kind, never on a bare status integer, and a caught PANIC
+            // (STATUS_PANIC) classifies to `Fault` — so a plugin crash can never open the safe-default
+            // fallback. See `TransportError::from_status` for the legacy-v1 STATUS_PROTOCOL rule.
+            let body = String::from_utf8_lossy(&bytes);
+            Err(TransportError::from_status(status, &body, &self.path))
         }
     }
 }
@@ -226,9 +217,9 @@ pub(crate) struct TransportError {
 
 /// The SEMANTIC classification a loader caller keys on — never a bare integer, never body text.
 pub(crate) enum TransportErrorKind {
-    /// The plugin returned [`STATUS_UNSUPPORTED`] (or the LEGACY v1-SDK decode-failure shape: an
-    /// empty-buffer [`STATUS_PROTOCOL`], which predates the crisp code): the op is not implemented by
-    /// this plugin build. The ONLY kind that enables a safe-default fallback.
+    /// The plugin returned [`STATUS_UNSUPPORTED`], or the LEGACY v1-SDK decode-failure shape (a
+    /// [`STATUS_PROTOCOL`] whose body starts with [`LEGACY_V1_UNDECODABLE_PREFIX`]): the op is not
+    /// implemented by this plugin build. The ONLY kind that enables a safe-default fallback.
     Unsupported,
     /// The plugin returned [`STATUS_ERR`]: a real backend failure. Propagate.
     Backend,
@@ -236,24 +227,57 @@ pub(crate) enum TransportErrorKind {
     /// encode/decode/cap/ffi-panic. A real failure that is explicitly NOT unsupported. Propagate — and
     /// it can NEVER masquerade as [`Self::Unsupported`], so a plugin panic cannot open the fallback.
     Fault,
-    /// The plugin returned [`STATUS_PROTOCOL`] for a caller-protocol violation (null handle, garbled
-    /// frame — a NON-empty-buffer protocol status). Propagate.
+    /// The plugin returned [`STATUS_PROTOCOL`] for a caller-protocol violation: a null handle, a null
+    /// request pointer, or — from an SDK predating [`STATUS_PANIC`] — a caught panic. Every one of
+    /// these arrives with an EMPTY out buffer. Propagate.
     Protocol,
 }
 
+/// The out-buffer prefix the v1 SDK wrote when it could not decode the request enum — the ONE shape a
+/// plugin predating [`STATUS_UNSUPPORTED`] used to say "I do not know this variant".
+///
+/// EVERY generation of the v1 SDK spelled the request-decode failure
+/// `Err((format!("malformed request JSON: {e}"), /* protocol */ true))` and then `write_buf`'d that
+/// message alongside `STATUS_PROTOCOL`. So the legacy unsupported signal is a NON-EMPTY
+/// `STATUS_PROTOCOL` carrying this prefix.
+///
+/// The inverse — an EMPTY-buffer `STATUS_PROTOCOL` — is what a null handle, a null request pointer,
+/// and (in an SDK predating [`STATUS_PANIC`]) a CAUGHT PANIC produce: those paths `return
+/// STATUS_PROTOCOL` before any `write_buf`. Treating the empty buffer as the legacy signal therefore
+/// had the discriminator exactly BACKWARDS: it re-opened the revocation fail-open (a pre-`STATUS_PANIC`
+/// store plugin that panicked inside `list_denylist` hydrated an EMPTY denylist, accepting every
+/// revoked token again) while the interop it was meant to provide never fired, because a genuine v1
+/// decode failure returns a non-empty body and was classified as a hard protocol violation.
+///
+/// The current SDK never pairs `STATUS_PROTOCOL` with a buffer at all (`boundary::call_boundary`
+/// returns the bare status before any user code runs), so this prefix cannot collide with anything a
+/// current-generation plugin emits.
+pub(crate) const LEGACY_V1_UNDECODABLE_PREFIX: &str = "malformed request JSON:";
+
 impl TransportError {
-    /// Classify a plugin-returned `status` into a semantic kind. `empty_buffer` disambiguates the
-    /// LEGACY v1-SDK signal: an empty-buffer [`STATUS_PROTOCOL`] is the old decode-failure shape (→
-    /// Unsupported, for interop), whereas a STATUS_PROTOCOL WITH a message is a caller-protocol
-    /// violation (→ Protocol). An unknown status ⇒ Fault (propagate), never Unsupported.
-    fn from_status(status: i32, empty_buffer: bool, message: String) -> Self {
+    /// Classify a plugin-returned `status` + response `body` into a semantic kind, and build the human
+    /// message. Only two shapes are the unsupported signal: the crisp [`STATUS_UNSUPPORTED`], and the
+    /// legacy v1 decode failure (a [`STATUS_PROTOCOL`] whose body starts with
+    /// [`LEGACY_V1_UNDECODABLE_PREFIX`]). A caught panic, a backend error, a bare `STATUS_PROTOCOL`,
+    /// and an unknown status all classify to kinds that are explicitly NOT unsupported and always
+    /// propagate.
+    fn from_status(status: i32, body: &str, path: &str) -> Self {
         let kind = match status {
             STATUS_UNSUPPORTED => TransportErrorKind::Unsupported,
             STATUS_ERR => TransportErrorKind::Backend,
             STATUS_PANIC => TransportErrorKind::Fault,
-            STATUS_PROTOCOL if empty_buffer => TransportErrorKind::Unsupported,
+            // v1 interop, keyed on the shape the v1 SDK ACTUALLY emits — never on an empty buffer,
+            // which is the caller-protocol / legacy-panic shape.
+            STATUS_PROTOCOL if body.starts_with(LEGACY_V1_UNDECODABLE_PREFIX) => {
+                TransportErrorKind::Unsupported
+            }
             STATUS_PROTOCOL => TransportErrorKind::Protocol,
             _ => TransportErrorKind::Fault, // unknown status ⇒ fault, never unsupported
+        };
+        let message = if body.is_empty() {
+            format!("plugin '{path}' call failed (status {status})")
+        } else {
+            body.to_string()
         };
         TransportError { kind, message }
     }
@@ -267,10 +291,10 @@ impl TransportError {
         }
     }
 
-    /// Whether this failure is the "unsupported request variant" signal: the plugin returned
-    /// [`STATUS_UNSUPPORTED`] (or the legacy empty-buffer [`STATUS_PROTOCOL`] shape), meaning it could
-    /// not decode the request enum (an older plugin predating a variant). This is an out-of-band signal
-    /// that CANNOT be spoofed by response-body text and CANNOT be produced by a panic (which is Fault).
+    /// Whether this failure is the "unsupported request variant" signal: the plugin could not decode
+    /// the request enum because it predates the variant. CANNOT be produced by a panic — a current-SDK
+    /// panic is [`STATUS_PANIC`] (Fault) and a v1-SDK panic is a bare [`STATUS_PROTOCOL`] (Protocol),
+    /// so neither can open a safe-default fallback.
     fn is_unsupported(&self) -> bool {
         matches!(self.kind, TransportErrorKind::Unsupported)
     }
@@ -478,6 +502,27 @@ impl DynStore {
         self.raw
             .transport_call_status::<StoreRequest, StoreResponse>(&req)
     }
+
+    /// THE ONE PLACE a store op is allowed a safe default when the plugin is too OLD to know the
+    /// request variant. `extract` names the response variant the op expects; `on_unsupported` supplies
+    /// the default for the [`TransportErrorKind::Unsupported`] case and NOTHING ELSE.
+    ///
+    /// Every op that tolerates an old plugin routes through here, so the fail-open surface is one
+    /// function instead of four hand-written `match` arms — a fifth op cannot re-introduce the class by
+    /// writing `Err(_) => <default>` (which would swallow a real backend error, a caught PANIC, and a
+    /// caller-protocol violation, hydrating an empty denylist and re-accepting revoked tokens).
+    fn call_with_legacy_default<T>(
+        &self,
+        req: StoreRequest,
+        extract: impl FnOnce(StoreResponse) -> StoreResult<T>,
+        on_unsupported: impl FnOnce() -> StoreResult<T>,
+    ) -> StoreResult<T> {
+        match self.call_raw_status(req) {
+            Ok(resp) => extract(resp),
+            Err(e) if e.is_unsupported() => on_unsupported(),
+            Err(e) => Err(StoreError(e.message)),
+        }
+    }
 }
 
 /// Enforce [`MAX_PLUGIN_RESPONSE_LEN`] on a plugin-declared response length before the engine
@@ -612,55 +657,54 @@ impl Store for DynStore {
     }
 
     fn append_audit(&self, entry: &AuditRecord) -> StoreResult<()> {
-        // A store that predates this request variant signals THAT out of band as an UNSUPPORTED kind
-        // ([`STATUS_UNSUPPORTED`], or the legacy empty-buffer [`STATUS_PROTOCOL`] shape) — "this store
-        // has no durable audit". Audit write-through is best-effort (the RAM ring still holds the
-        // entry), so for THAT case ONLY we return `Ok(())` silently. Keying on the SEMANTIC kind (like
-        // the `list_denylist`/`list_audit_tail` siblings) means a REAL backend error, a caught PANIC
-        // (Fault), or a caller-protocol violation still PROPAGATES instead of being swallowed — a plugin
-        // crash can NEVER masquerade as the unsupported signal. New durable stores return `Unit`.
-        match self.call_raw_status(StoreRequest::AppendAudit(entry.clone())) {
-            Ok(StoreResponse::Unit) => Ok(()),
-            Ok(other) => Err(unexpected(other)),
-            Err(e) if e.is_unsupported() => Ok(()),
-            Err(e) => Err(StoreError(e.message)),
-        }
+        // A store predating this request variant means "this store has no durable audit". Audit
+        // write-through is best-effort (the RAM ring still holds the entry), so for THAT case ONLY the
+        // choke point returns `Ok(())` silently; every other failure propagates.
+        self.call_with_legacy_default(
+            StoreRequest::AppendAudit(entry.clone()),
+            |r| match r {
+                StoreResponse::Unit => Ok(()),
+                other => Err(unexpected(other)),
+            },
+            || Ok(()),
+        )
     }
 
     fn list_audit(&self) -> StoreResult<Vec<AuditRecord>> {
-        match self.call_raw(StoreRequest::ListAudit)? {
-            StoreResponse::Audit(a) => Ok(a),
-            other => Err(unexpected(other)),
-        }
+        // Routed through the same choke point as its three siblings. This op used the status-BLIND
+        // `call_raw`, so a store predating the durable-audit variant failed the whole restore instead
+        // of reporting "no durable audit" — the mirror image of the `append_audit` asymmetry.
+        self.call_with_legacy_default(
+            StoreRequest::ListAudit,
+            |r| match r {
+                StoreResponse::Audit(a) => Ok(a),
+                other => Err(unexpected(other)),
+            },
+            || Ok(Vec::new()),
+        )
     }
 
     fn list_audit_tail(&self, limit: u64) -> StoreResult<Vec<AuditRecord>> {
-        // A store predating this request variant rejects it, signaled out of band as an UNSUPPORTED
-        // kind ([`STATUS_UNSUPPORTED`], or the legacy empty-buffer [`STATUS_PROTOCOL`] shape), NOT in
-        // the plugin-controlled body text. For THAT case ONLY we fall back to the trait default
-        // (`list_audit` + tail-truncation) so restore still works against old durable plugins — it just
-        // materializes the full list once before truncating rather than bounding at the source. A new
-        // plugin returns the bounded tail directly (no full materialization), which is the point of the
-        // variant.
-        //
-        // A bare `Err(_)` fallback would MASK a real backend error, a caught PANIC (Fault), or a
-        // caller-protocol violation: it would be misread as "unsupported" and silently re-issue a FULL
-        // `list_audit` — hiding the fault and doing extra work against a store that just failed (mirrors
-        // the `list_denylist` fail-open closure). Key the fallback on the SEMANTIC kind the plugin
-        // cannot forge; propagate every other error so the caller sees the true failure.
-        match self.call_raw_status(StoreRequest::ListAuditTail(limit)) {
-            Ok(StoreResponse::Audit(a)) => Ok(a),
-            Ok(other) => Err(unexpected(other)),
-            Err(e) if e.is_unsupported() => {
+        // A store predating this variant falls back to the trait default (`list_audit` +
+        // tail-truncation) so restore still works: it just materializes the full list once before
+        // truncating rather than bounding at the source. The fallback re-issues `list_audit`, which is
+        // now itself status-aware — so a fault on the SECOND call surfaces too, instead of being
+        // flattened into a bare `StoreError` by the status-blind path.
+        self.call_with_legacy_default(
+            StoreRequest::ListAuditTail(limit),
+            |r| match r {
+                StoreResponse::Audit(a) => Ok(a),
+                other => Err(unexpected(other)),
+            },
+            || {
                 let mut all = self.list_audit()?;
                 let limit = limit as usize;
                 if all.len() > limit {
                     all.drain(0..all.len() - limit);
                 }
                 Ok(all)
-            }
-            Err(e) => Err(StoreError(e.message)),
-        }
+            },
+        )
     }
 
     fn add_denylist(&self, sub: &str, reason: &str) -> StoreResult<()> {
@@ -674,25 +718,22 @@ impl Store for DynStore {
     }
 
     fn list_denylist(&self) -> StoreResult<Vec<String>> {
-        // Revocation fail-open closure (D4): a store that cannot deserialize the `ListDenylist` request
-        // variant surfaces THAT as an UNSUPPORTED kind ([`STATUS_UNSUPPORTED`], or the legacy
-        // empty-buffer [`STATUS_PROTOCOL`] shape) — a signal carried OUT OF BAND in the semantic kind,
-        // NOT in the plugin-controlled body text. For that case ONLY we fall back to the trait default
-        // (empty) so a store predating the variant hydrates nothing rather than failing boot. Every
-        // OTHER failure — a real backend error, a caught PANIC (Fault), a caller-protocol violation, or
-        // an unexpected response variant — PROPAGATES so boot fails CLOSED.
+        // Revocation fail-open closure (D4). A store that cannot DECODE the `ListDenylist` request
+        // variant hydrates an empty denylist rather than failing boot. Every OTHER failure — a real
+        // backend error, a caught PANIC, a caller-protocol violation, an unexpected response variant —
+        // PROPAGATES, so boot fails CLOSED rather than accepting previously-revoked signed tokens.
         //
-        // This closes the fail-open BY CONSTRUCTION: the SDK emits STATUS_UNSUPPORTED ONLY on a decode
-        // failure, and a plugin PANIC is a separate STATUS_PANIC (→ Fault), so a crash inside
-        // `list_denylist` can no longer be misclassified as "old SDK" and silently empty the denylist —
-        // which would accept previously-revoked signed tokens. Only a deliberate unsupported signal
-        // opens the fallback; a fault can never reach it.
-        match self.call_raw_status(StoreRequest::ListDenylist) {
-            Ok(StoreResponse::Denylist(d)) => Ok(d),
-            Ok(other) => Err(unexpected(other)),
-            Err(e) if e.is_unsupported() => Ok(Vec::new()),
-            Err(e) => Err(StoreError(e.message)),
-        }
+        // The class rests entirely on `TransportError::from_status`: a current-SDK panic is
+        // STATUS_PANIC (Fault) and a v1-SDK panic is a BARE STATUS_PROTOCOL (Protocol). Neither is
+        // Unsupported, so no crash can reach this fallback.
+        self.call_with_legacy_default(
+            StoreRequest::ListDenylist,
+            |r| match r {
+                StoreResponse::Denylist(d) => Ok(d),
+                other => Err(unexpected(other)),
+            },
+            || Ok(Vec::new()),
+        )
     }
 }
 
@@ -1519,7 +1560,12 @@ mod tests {
         // Stage a genuine `RawPlugin` (real `Library` + handle + `close`), then splice in our fake
         // `call`/`free` so the response's (status, body) is what the test chooses.
         let bytes = std::fs::read(&path).expect("read sqlite cdylib");
-        let (lib, staged) = stage::load_library_from_bytes(&bytes, "fake-call-store").ok()?;
+        // `.expect`, NOT `.ok()?`: the ONLY sanctioned reason these D4 guards may skip is "the cdylib
+        // was never built" — which `sqlite_plugin_path` already turns into a hard panic under CI. A
+        // STAGING failure is a different thing entirely, and swallowing it into a `None` let the whole
+        // revocation fail-open suite self-disable while the run stayed green.
+        let (lib, staged) = stage::load_library_from_bytes(&bytes, "fake-call-store")
+            .expect("stage the sqlite cdylib for the fake-call harness");
         let mut raw = wire_up_raw(
             lib,
             r#"{"db_path": ":memory:"}"#,
@@ -1557,22 +1603,128 @@ mod tests {
         );
     }
 
-    /// (1b) LEGACY v1-SDK interop: a not-yet-rebuilt plugin predating `STATUS_UNSUPPORTED` returns the
-    /// old decode-failure shape — an EMPTY-buffer `STATUS_PROTOCOL` — which is still honored as
-    /// unsupported so it boots with an empty denylist. A STATUS_PROTOCOL WITH a message is instead a
-    /// caller-protocol violation and PROPAGATES (proven in the class test).
+    /// (1b) LEGACY v1-SDK interop, keyed on the shape the v1 SDK ACTUALLY emits. Every generation of
+    /// the v1 SDK spelled an undecodable request variant
+    /// `Err((format!("malformed request JSON: {e}"), true))` + `write_buf` → a NON-EMPTY
+    /// `STATUS_PROTOCOL`. That is what must boot with an empty denylist.
     #[test]
-    fn denylist_legacy_empty_protocol_falls_back_empty() {
+    fn denylist_legacy_v1_decode_failure_falls_back_empty() {
         let Some(store) = dyn_store_with_fake_call() else {
             eprintln!("skip: sqlite plugin cdylib not built (run under --workspace)");
             return;
         };
-        FAKE_CALL.with(|c| c.set((STATUS_PROTOCOL, b"")));
-        let out = store.list_denylist();
+        FAKE_CALL.with(|c| {
+            c.set((
+                STATUS_PROTOCOL,
+                b"malformed request JSON: unknown variant `ListDenylist`, expected one of `PutKey`",
+            ))
+        });
         assert_eq!(
-            out.expect("legacy empty-buffer STATUS_PROTOCOL boots with an empty denylist"),
+            store
+                .list_denylist()
+                .expect("the real v1 decode-failure shape must boot with an empty denylist"),
             Vec::<String>::new(),
         );
+    }
+
+    /// THE CLASS TEST for the revocation fail-open (D4). It enumerates every way a store plugin of ANY
+    /// SDK generation can CRASH or violate the protocol, and asserts that NONE of them can empty the
+    /// denylist. The discriminator that decides this is `TransportError::from_status`, so one function
+    /// has to be wrong for any row here to flip — there is no per-op patch to keep in sync.
+    ///
+    /// The row that motivated it: an EMPTY-buffer `STATUS_PROTOCOL`. A v1 SDK mapped a CAUGHT PANIC to
+    /// exactly that (`Err(_) => STATUS_PROTOCOL`, no `write_buf`), as does a null handle, as does the
+    /// CURRENT SDK's `call_boundary` on a caller-protocol violation. Classifying it as the legacy
+    /// unsupported signal meant a pre-`STATUS_PANIC` store plugin that panicked inside `list_denylist`
+    /// hydrated an EMPTY denylist and every revoked signed token was accepted again.
+    #[test]
+    fn no_plugin_crash_shape_can_empty_the_denylist() {
+        let Some(store) = dyn_store_with_fake_call() else {
+            eprintln!("skip: sqlite plugin cdylib not built (run under --workspace)");
+            return;
+        };
+        // (status, body, what the shape IS) — every one must FAIL CLOSED.
+        let crashes: &[(i32, &'static [u8], &str)] = &[
+            (
+                STATUS_PROTOCOL,
+                b"",
+                "v1-SDK caught panic / null handle / current-SDK protocol violation (bare status)",
+            ),
+            (STATUS_PANIC, b"plugin panicked", "current-SDK caught panic"),
+            (
+                STATUS_PROTOCOL,
+                b"null request pointer",
+                "v1-SDK caller-protocol violation with a message",
+            ),
+            (
+                busbar_plugin_abi::STATUS_ERR,
+                b"backend read failed: unknown variant of corruption",
+                "real backend error whose text mimics a decode failure",
+            ),
+            (99, b"novel status", "a status this engine has never seen"),
+        ];
+        for (status, body, what) in crashes {
+            FAKE_CALL.with(|c| c.set((*status, body)));
+            assert!(
+                store.list_denylist().is_err(),
+                "{what}: must fail CLOSED, never hydrate an empty denylist"
+            );
+            FAKE_CALL.with(|c| c.set((*status, body)));
+            assert!(
+                store.list_audit_tail(8).is_err(),
+                "{what}: must not silently degrade the audit tail"
+            );
+            FAKE_CALL.with(|c| c.set((*status, body)));
+            assert!(
+                store.append_audit(&audit_fixture()).is_err(),
+                "{what}: must not be swallowed as 'this store has no durable audit'"
+            );
+        }
+        // Positive control: the TWO shapes that ARE the unsupported signal still open the fallback, so
+        // this test cannot pass by simply refusing every fallback.
+        for (status, body, what) in [
+            (STATUS_UNSUPPORTED, &b"unsupported variant"[..], "crisp"),
+            (
+                STATUS_PROTOCOL,
+                &b"malformed request JSON: unknown variant `ListDenylist`"[..],
+                "legacy v1",
+            ),
+        ] {
+            FAKE_CALL.with(|c| c.set((status, body)));
+            assert_eq!(
+                store.list_denylist().unwrap_or_else(|e| panic!(
+                    "{what} unsupported signal must fall back: {}",
+                    e.0
+                )),
+                Vec::<String>::new(),
+            );
+        }
+    }
+
+    /// The CURRENT SDK returns a BARE `STATUS_PROTOCOL` — no buffer — for a null handle or a null
+    /// request pointer, and its own comment calls that "a caller-protocol violation, not an old-SDK
+    /// signal". Pin that the loader agrees, so the two halves of the design cannot drift apart again.
+    #[test]
+    fn current_sdk_bare_protocol_is_not_unsupported() {
+        assert!(
+            !TransportError::from_status(STATUS_PROTOCOL, "", "p").is_unsupported(),
+            "a bare STATUS_PROTOCOL is what busbar_plugin_sdk::boundary::call_boundary returns for a \
+             caller-protocol violation; treating it as 'unsupported' opens the safe-default fallback"
+        );
+    }
+
+    /// A minimal audit record for the crash-shape sweep.
+    fn audit_fixture() -> AuditRecord {
+        AuditRecord {
+            seq: 1,
+            ts: 2,
+            action: "plugin.install".into(),
+            resource: "plugin:1".into(),
+            outcome: "applied".into(),
+            principal: "admin".into(),
+            prev_hash: String::new(),
+            hash: "h".into(),
+        }
     }
 
     /// (2) THE CLOSED FAIL-OPEN: a real backend error (`STATUS_ERR`) whose BODY happens to contain the
@@ -1712,39 +1864,44 @@ mod tests {
         );
     }
 
-    /// Direct classification proof (no FFI) of the total status → semantic-kind map. Only a deliberate
-    /// `STATUS_UNSUPPORTED` (or the legacy empty-buffer `STATUS_PROTOCOL`) is the unsupported signal; a
-    /// PANIC, a backend error (even one whose text says "unknown variant"), a non-empty protocol
-    /// violation, an unknown status, and every engine-internal error are NOT unsupported. This is the
-    /// D4 fail-open closed by construction: a plugin crash can never open the safe-default fallback.
+    /// Direct classification proof (no FFI) of the total status → semantic-kind map. EXACTLY TWO shapes
+    /// are the unsupported signal: the crisp `STATUS_UNSUPPORTED`, and the legacy v1 decode failure (a
+    /// `STATUS_PROTOCOL` carrying `LEGACY_V1_UNDECODABLE_PREFIX`). A PANIC, a backend error (even one
+    /// whose text says "unknown variant"), a BARE protocol violation, an unknown status, and every
+    /// engine-internal error are NOT unsupported.
     #[test]
     fn transport_error_classification() {
-        // The ONE unsupported signal (crisp), plus the legacy empty-buffer STATUS_PROTOCOL shape.
+        // The two unsupported signals: the crisp code, and the shape the v1 SDK really emitted.
         assert!(
-            TransportError::from_status(STATUS_UNSUPPORTED, false, "unsupported".into())
-                .is_unsupported()
+            TransportError::from_status(STATUS_UNSUPPORTED, "unsupported", "p").is_unsupported()
         );
-        assert!(TransportError::from_status(STATUS_PROTOCOL, true, "".into()).is_unsupported());
+        assert!(TransportError::from_status(
+            STATUS_PROTOCOL,
+            "malformed request JSON: unknown variant `ListDenylist`",
+            "p"
+        )
+        .is_unsupported());
 
         // A PANIC is a Fault, NEVER unsupported — this is what keeps a crash from opening the fallback.
-        assert!(
-            !TransportError::from_status(STATUS_PANIC, false, "panicked".into()).is_unsupported()
-        );
+        assert!(!TransportError::from_status(STATUS_PANIC, "panicked", "p").is_unsupported());
         // A backend error whose body contains "unknown variant" is NOT unsupported.
         assert!(!TransportError::from_status(
             busbar_plugin_abi::STATUS_ERR,
-            false,
-            "unknown variant".into()
+            "unknown variant",
+            "p"
         )
         .is_unsupported());
-        // A STATUS_PROTOCOL WITH a message is a caller-protocol violation, NOT unsupported.
-        assert!(
-            !TransportError::from_status(STATUS_PROTOCOL, false, "null handle".into())
-                .is_unsupported()
-        );
+        // A BARE STATUS_PROTOCOL — null handle, null request pointer, or a v1-SDK caught panic — is a
+        // caller-protocol violation, NOT unsupported. This is the inversion that reopened D4.
+        assert!(!TransportError::from_status(STATUS_PROTOCOL, "", "p").is_unsupported());
+        // Nor is a STATUS_PROTOCOL carrying any OTHER message.
+        assert!(!TransportError::from_status(STATUS_PROTOCOL, "null handle", "p").is_unsupported());
         // An unknown status defaults to Fault (propagate), never unsupported.
-        assert!(!TransportError::from_status(99, false, "novel status".into()).is_unsupported());
+        assert!(!TransportError::from_status(99, "novel status", "p").is_unsupported());
         // An engine-internal error is always Fault.
         assert!(!TransportError::engine("plugin response decode failed".into()).is_unsupported());
+        // A bare status still produces a diagnosable message naming the plugin and the status.
+        let m = TransportError::from_status(STATUS_PROTOCOL, "", "libstore.so").message;
+        assert!(m.contains("libstore.so") && m.contains("-1"), "{m}");
     }
 }

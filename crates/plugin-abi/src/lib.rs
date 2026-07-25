@@ -124,8 +124,9 @@ pub const MAX_PLUGIN_RESPONSE_LEN: usize = 256 * 1024 * 1024;
 /// TRANSPORT is FROZEN at [`TRANSPORT_VERSION`] = 1: adding [`STATUS_UNSUPPORTED`]/[`STATUS_PANIC`] is
 /// NOT a transport bump — the six signatures, the ptr+len rule, and the meanings of `OK`/`ERR` are
 /// unchanged; `PROTOCOL` merely stops being overloaded and two positive codes are added. A v1-era SDK
-/// plugin that predates these still returns `STATUS_PROTOCOL` for an undecodable variant; the loader's
-/// legacy-shape acceptance keeps that interoperable (see `plugin-loader`'s `TransportErrorKind`).
+/// plugin that predates these still returns `STATUS_PROTOCOL` WITH a `"malformed request JSON: …"`
+/// body for an undecodable variant; the loader keys its legacy-shape acceptance on exactly that body
+/// (see `plugin-loader`'s `LEGACY_V1_UNDECODABLE_PREFIX`), never on the status alone.
 ///
 /// `OK`: the out buffer holds the success payload.
 pub const STATUS_OK: i32 = 0;
@@ -133,9 +134,15 @@ pub const STATUS_OK: i32 = 0;
 /// error (a [`busbar_api::StoreError`]/`SecretError`/… rendered). Propagated by the loader.
 pub const STATUS_ERR: i32 = 1;
 /// A caller-PROTOCOL violation the plugin detected BEFORE running user code: a null handle, a null
-/// request buffer with `len > 0`, a garbled ABI frame. No user code ran. Propagated (never a fallback
-/// signal for a NEW plugin). Value is negative for backward wire compatibility with the v1-era SDK,
-/// which ALSO emitted this for an undecodable request variant (see [`STATUS_UNSUPPORTED`]).
+/// request buffer with `len > 0`, a garbled ABI frame. No user code ran, so the out buffer stays
+/// EMPTY. Propagated, never a fallback signal.
+///
+/// Value is negative for backward wire compatibility with the v1-era SDK, which overloaded this code.
+/// The two v1 uses are told apart by the OUT BUFFER, and the direction matters: a v1 undecodable
+/// request variant wrote `"malformed request JSON: …"` into the buffer (→ the loader's legacy
+/// unsupported signal, see [`STATUS_UNSUPPORTED`]), whereas a v1 CAUGHT PANIC returned this status
+/// bare, with NO buffer — exactly like a null handle. So an EMPTY buffer is never the unsupported
+/// signal; reading it as one re-opens the revocation fail-open [`STATUS_PANIC`] exists to close.
 pub const STATUS_PROTOCOL: i32 = -1;
 /// The plugin could not DECODE this request variant — an older SDK build that predates the op. A
 /// forward-compat signal the loader MAY treat as "op unsupported by this build" and fall back to a
