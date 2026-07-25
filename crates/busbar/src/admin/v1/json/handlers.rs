@@ -623,24 +623,33 @@ pub(crate) async fn register_hook(
     match build_with_hook(&current, &req.name, req.config) {
         Ok(next) => {
             let installed = Arc::new(next);
-            handle.swap(installed.clone());
+            // PERSIST-then-SWAP, fail-closed: record the new hook state to the overlay FIRST; only if
+            // disk takes it do we swap the live engine. A persist failure returns an error and swaps
+            // nothing (the running engine is untouched). Clear any tombstone for this name — a
+            // re-register un-deletes it. Persist args are sourced from the CANDIDATE (`installed`),
+            // which IS the state we are about to make live.
+            if let Err(e) = handle.commit_and_swap(installed.clone(), || {
+                crate::config::overlay::persist(
+                    installed.overlay_path.as_deref(),
+                    &installed.hook_registry,
+                    &installed.global_hooks,
+                    None,
+                    Some(&req.name),
+                )
+            }) {
+                audit::AUDIT.record_by("hook.register", &resource, audit::OUTCOME_REJECTED, &actor);
+                return err_json(&AdminError::Validation(format!(
+                    "hook could not be persisted to the overlay: {e}; nothing was changed (the \
+                     running engine is unaffected)"
+                )));
+            }
             audit::AUDIT.record_by("hook.register", &resource, audit::OUTCOME_APPLIED, &actor);
-            // Persist the new hook state to the overlay (best-effort; no-op when persistence disabled).
-            // Clear any tombstone for this name — a re-register un-deletes it.
-            let cur = handle.load();
             installed.versions.record(
                 installed.config_version,
                 &actor,
                 &format!("hook.register {resource}"),
                 &installed.hook_registry,
                 &installed.global_hooks,
-            );
-            crate::config::overlay::persist(
-                cur.overlay_path.as_deref(),
-                &cur.hook_registry,
-                &cur.global_hooks,
-                None,
-                Some(&req.name),
             );
             // Project the registered hook from the NEW (post-swap) snapshot for the 201 body; the
             // new config-plane ETag rides along so the caller chains its next If-Match without a read.
@@ -718,22 +727,29 @@ pub(crate) async fn put_hook(
     match build_with_hook(&current, &name, req.config) {
         Ok(next) => {
             let installed = Arc::new(next);
-            handle.swap(installed.clone());
+            // PERSIST-then-SWAP, fail-closed (see hook.register / AppHandle::commit_and_swap).
+            if let Err(e) = handle.commit_and_swap(installed.clone(), || {
+                crate::config::overlay::persist(
+                    installed.overlay_path.as_deref(),
+                    &installed.hook_registry,
+                    &installed.global_hooks,
+                    None,
+                    Some(&name),
+                )
+            }) {
+                audit::AUDIT.record_by("hook.replace", &resource, audit::OUTCOME_REJECTED, &actor);
+                return err_json(&AdminError::Validation(format!(
+                    "hook could not be persisted to the overlay: {e}; nothing was changed (the \
+                     running engine is unaffected)"
+                )));
+            }
             audit::AUDIT.record_by("hook.replace", &resource, audit::OUTCOME_APPLIED, &actor);
-            let cur = handle.load();
             installed.versions.record(
                 installed.config_version,
                 &actor,
                 &format!("hook.replace {resource}"),
                 &installed.hook_registry,
                 &installed.global_hooks,
-            );
-            crate::config::overlay::persist(
-                cur.overlay_path.as_deref(),
-                &cur.hook_registry,
-                &cur.global_hooks,
-                None,
-                Some(&name),
             );
             with_config_etag(
                 respond(StatusCode::OK, service(&handle).get_hook(&name).await),
@@ -806,23 +822,30 @@ pub(crate) async fn delete_hook(
     match build_without_hook(&current, &name) {
         Ok(next) => {
             let installed = Arc::new(next);
-            handle.swap(installed.clone());
+            // PERSIST-then-SWAP, fail-closed. Tombstone this name (arg `Some(&name)`) so the deletion
+            // survives a restart even if the hook was base-defined.
+            if let Err(e) = handle.commit_and_swap(installed.clone(), || {
+                crate::config::overlay::persist(
+                    installed.overlay_path.as_deref(),
+                    &installed.hook_registry,
+                    &installed.global_hooks,
+                    Some(&name),
+                    None,
+                )
+            }) {
+                audit::AUDIT.record_by("hook.delete", &resource, audit::OUTCOME_REJECTED, &actor);
+                return err_json(&AdminError::Validation(format!(
+                    "hook deletion could not be persisted to the overlay: {e}; nothing was changed \
+                     (the running engine is unaffected)"
+                )));
+            }
             audit::AUDIT.record_by("hook.delete", &resource, audit::OUTCOME_APPLIED, &actor);
-            // Tombstone this name so the deletion survives a restart even if the hook was base-defined.
-            let cur = handle.load();
             installed.versions.record(
                 installed.config_version,
                 &actor,
                 &format!("hook.delete {resource}"),
                 &installed.hook_registry,
                 &installed.global_hooks,
-            );
-            crate::config::overlay::persist(
-                cur.overlay_path.as_deref(),
-                &cur.hook_registry,
-                &cur.global_hooks,
-                Some(&name),
-                None,
             );
             // 204 still carries the NEW config-plane ETag — a scripted delete chain needs no re-read.
             with_config_etag(
@@ -944,19 +967,30 @@ pub(crate) async fn resolve_mint_group(
     match build_with_group(&current, group, leaf) {
         Ok(next) => {
             let installed = Arc::new(next);
-            handle.swap(installed.clone());
+            // PERSIST-then-SWAP, fail-closed (see AppHandle::commit_and_swap).
+            if let Err(e) = handle.commit_and_swap(installed.clone(), || {
+                crate::config::overlay::persist_groups(
+                    installed.overlay_path.as_deref(),
+                    &installed.groups_registry,
+                    None,
+                    Some(group),
+                )
+            }) {
+                audit::AUDIT.record_by(
+                    "group.provision",
+                    &resource,
+                    audit::OUTCOME_REJECTED,
+                    actor,
+                );
+                return Err(AdminError::Validation(format!(
+                    "group could not be persisted to the overlay: {e}; nothing was changed"
+                )));
+            }
             audit::AUDIT.record_by("group.provision", &resource, audit::OUTCOME_APPLIED, actor);
-            let cur = handle.load();
             record_group_version(
                 &installed,
                 actor,
                 &format!("group.provision {resource} (auto, parent {parent})"),
-            );
-            crate::config::overlay::persist_groups(
-                cur.overlay_path.as_deref(),
-                &cur.groups_registry,
-                None,
-                Some(group),
             );
             Ok(true)
         }
@@ -1014,17 +1048,24 @@ pub(crate) async fn register_group(
     match build_with_group(&current, &req.name, req.config) {
         Ok(next) => {
             let installed = Arc::new(next);
-            handle.swap(installed.clone());
+            // PERSIST-then-SWAP, fail-closed. Persist the whole groups section; clear any tombstone
+            // for this name (re-create un-deletes).
+            if let Err(e) = handle.commit_and_swap(installed.clone(), || {
+                crate::config::overlay::persist_groups(
+                    installed.overlay_path.as_deref(),
+                    &installed.groups_registry,
+                    None,
+                    Some(&req.name),
+                )
+            }) {
+                audit::AUDIT.record_by("group.create", &resource, audit::OUTCOME_REJECTED, &actor);
+                return err_json(&AdminError::Validation(format!(
+                    "group could not be persisted to the overlay: {e}; nothing was changed (the \
+                     running engine is unaffected)"
+                )));
+            }
             audit::AUDIT.record_by("group.create", &resource, audit::OUTCOME_APPLIED, &actor);
-            let cur = handle.load();
             record_group_version(&installed, &actor, &format!("group.create {resource}"));
-            // Persist the whole groups section; clear any tombstone for this name (re-create un-deletes).
-            crate::config::overlay::persist_groups(
-                cur.overlay_path.as_deref(),
-                &cur.groups_registry,
-                None,
-                Some(&req.name),
-            );
             with_config_etag(
                 respond(
                     if existed {
@@ -1088,16 +1129,23 @@ pub(crate) async fn put_group(
     match build_with_group(&current, &name, req.config) {
         Ok(next) => {
             let installed = Arc::new(next);
-            handle.swap(installed.clone());
+            // PERSIST-then-SWAP, fail-closed.
+            if let Err(e) = handle.commit_and_swap(installed.clone(), || {
+                crate::config::overlay::persist_groups(
+                    installed.overlay_path.as_deref(),
+                    &installed.groups_registry,
+                    None,
+                    Some(&name),
+                )
+            }) {
+                audit::AUDIT.record_by("group.replace", &resource, audit::OUTCOME_REJECTED, &actor);
+                return err_json(&AdminError::Validation(format!(
+                    "group could not be persisted to the overlay: {e}; nothing was changed (the \
+                     running engine is unaffected)"
+                )));
+            }
             audit::AUDIT.record_by("group.replace", &resource, audit::OUTCOME_APPLIED, &actor);
-            let cur = handle.load();
             record_group_version(&installed, &actor, &format!("group.replace {resource}"));
-            crate::config::overlay::persist_groups(
-                cur.overlay_path.as_deref(),
-                &cur.groups_registry,
-                None,
-                Some(&name),
-            );
             with_config_etag(
                 respond(StatusCode::OK, service(&handle).get_group(&name).await),
                 installed.config_version,
@@ -1164,16 +1212,23 @@ pub(crate) async fn patch_group(
     match build_with_group(&current, &name, merged) {
         Ok(next) => {
             let installed = Arc::new(next);
-            handle.swap(installed.clone());
+            // PERSIST-then-SWAP, fail-closed.
+            if let Err(e) = handle.commit_and_swap(installed.clone(), || {
+                crate::config::overlay::persist_groups(
+                    installed.overlay_path.as_deref(),
+                    &installed.groups_registry,
+                    None,
+                    Some(&name),
+                )
+            }) {
+                audit::AUDIT.record_by("group.patch", &resource, audit::OUTCOME_REJECTED, &actor);
+                return err_json(&AdminError::Validation(format!(
+                    "group could not be persisted to the overlay: {e}; nothing was changed (the \
+                     running engine is unaffected)"
+                )));
+            }
             audit::AUDIT.record_by("group.patch", &resource, audit::OUTCOME_APPLIED, &actor);
-            let cur = handle.load();
             record_group_version(&installed, &actor, &format!("group.patch {resource}"));
-            crate::config::overlay::persist_groups(
-                cur.overlay_path.as_deref(),
-                &cur.groups_registry,
-                None,
-                Some(&name),
-            );
             with_config_etag(
                 respond(StatusCode::OK, service(&handle).get_group(&name).await),
                 installed.config_version,
@@ -1242,17 +1297,24 @@ pub(crate) async fn delete_group(
     match built {
         Ok(next) => {
             let installed = Arc::new(next);
-            handle.swap(installed.clone());
+            // PERSIST-then-SWAP, fail-closed. Tombstone this name (arg `Some(&name)`) so the deletion
+            // survives a restart (the overlay is additive otherwise).
+            if let Err(e) = handle.commit_and_swap(installed.clone(), || {
+                crate::config::overlay::persist_groups(
+                    installed.overlay_path.as_deref(),
+                    &installed.groups_registry,
+                    Some(&name),
+                    None,
+                )
+            }) {
+                audit::AUDIT.record_by("group.delete", &resource, audit::OUTCOME_REJECTED, &actor);
+                return err_json(&AdminError::Validation(format!(
+                    "group deletion could not be persisted to the overlay: {e}; nothing was changed \
+                     (the running engine is unaffected)"
+                )));
+            }
             audit::AUDIT.record_by("group.delete", &resource, audit::OUTCOME_APPLIED, &actor);
-            let cur = handle.load();
             record_group_version(&installed, &actor, &format!("group.delete {resource}"));
-            // Tombstone this name so the deletion survives a restart (overlay is additive otherwise).
-            crate::config::overlay::persist_groups(
-                cur.overlay_path.as_deref(),
-                &cur.groups_registry,
-                Some(&name),
-                None,
-            );
             with_config_etag(
                 StatusCode::NO_CONTENT.into_response(),
                 installed.config_version,
@@ -1396,9 +1458,19 @@ pub(crate) async fn reset_overlay_section(
             // the operator just reset (e.g. re-pin the plugin_versions they cleared). Persisting first
             // means a crash before the swap comes up already reset (the safe direction). The installed
             // App preserves `current.overlay_path`, so it names the same overlay file. (The sibling
-            // section is preserved verbatim by the read-modify-write inside `clear_section`.)
-            crate::config::overlay::clear_section(installed.overlay_path.as_deref(), section);
-            handle.swap(installed.clone());
+            // section is preserved verbatim by the read-modify-write inside `clear_section`.) Routed
+            // through `commit_and_swap` so this reset shares the EXACT persist-then-swap/fail-closed
+            // discipline as every other mutation — the C3/C4/C5 ordering asymmetry is gone by
+            // construction.
+            if let Err(e) = handle.commit_and_swap(installed.clone(), || {
+                crate::config::overlay::clear_section(installed.overlay_path.as_deref(), section)
+            }) {
+                audit::AUDIT.record_by("overlay.reset", &resource, audit::OUTCOME_REJECTED, &actor);
+                return err_json(&AdminError::Validation(format!(
+                    "overlay section reset could not be persisted: {e}; nothing was changed (the \
+                     running engine is unaffected)"
+                )));
+            }
             audit::AUDIT.record_by("overlay.reset", &resource, audit::OUTCOME_APPLIED, &actor);
             let cur = handle.load();
             record_group_version(
@@ -1685,7 +1757,30 @@ pub(crate) async fn rollback_config(
     match build_with_registry(&current, target.hook_registry, target.global_hooks) {
         Ok(next) => {
             let installed = Arc::new(next);
-            handle.swap(installed.clone());
+            // PERSIST-then-SWAP, fail-closed. A wholesale registry write (both tombstone args `None`);
+            // the reconciliation inside `persist` drops any tombstone for a restored name so the
+            // rollback survives a restart. Routed through `commit_and_swap` so config.rollback shares
+            // the same durability discipline as plugin.rollback (C4 ≡ C5).
+            if let Err(e) = handle.commit_and_swap(installed.clone(), || {
+                crate::config::overlay::persist(
+                    installed.overlay_path.as_deref(),
+                    &installed.hook_registry,
+                    &installed.global_hooks,
+                    None,
+                    None,
+                )
+            }) {
+                audit::AUDIT.record_by(
+                    "config.rollback",
+                    &resource,
+                    audit::OUTCOME_REJECTED,
+                    &actor,
+                );
+                return err_json(&AdminError::Validation(format!(
+                    "config rollback could not be persisted to the overlay: {e}; nothing was changed \
+                     (the running engine is unaffected)"
+                )));
+            }
             audit::AUDIT.record_by("config.rollback", &resource, audit::OUTCOME_APPLIED, &actor);
             let cur = handle.load();
             installed.versions.record(
@@ -1694,14 +1789,6 @@ pub(crate) async fn rollback_config(
                 &format!("config.rollback to v{}", req.version),
                 &installed.hook_registry,
                 &installed.global_hooks,
-            );
-            // Best-effort overlay persistence of the restored surface (no-op when disabled).
-            crate::config::overlay::persist(
-                cur.overlay_path.as_deref(),
-                &cur.hook_registry,
-                &cur.global_hooks,
-                None,
-                None,
             );
             with_config_etag(
                 ok_json(
@@ -2333,7 +2420,22 @@ pub(crate) async fn put_config_settings(
     match outcome {
         Ok(next) => {
             let installed = Arc::new(next);
-            handle.swap(installed.clone());
+            // PERSIST-then-SWAP, fail-closed. Persist the merged root section (the sibling hooks/groups
+            // sections are preserved verbatim by the read-modify-write).
+            if let Err(e) = handle.commit_and_swap(installed.clone(), || {
+                crate::config::overlay::persist_root(installed.overlay_path.as_deref(), &merged)
+            }) {
+                audit::AUDIT.record_by(
+                    "config.settings",
+                    "config:settings",
+                    audit::OUTCOME_REJECTED,
+                    &actor,
+                );
+                return err_json(&AdminError::Validation(format!(
+                    "config settings could not be persisted to the overlay: {e}; nothing was changed \
+                     (the running engine is unaffected)"
+                )));
+            }
             audit::AUDIT.record_by(
                 "config.settings",
                 "config:settings",
@@ -2342,9 +2444,6 @@ pub(crate) async fn put_config_settings(
             );
             let cur = handle.load();
             record_group_version(&installed, &actor, "config.settings (root section applied)");
-            // Persist the merged root section (best-effort; the sibling hooks/groups sections are
-            // preserved verbatim by the read-modify-write).
-            crate::config::overlay::persist_root(cur.overlay_path.as_deref(), &merged);
             let reload_to_apply = reload_to_apply_fields(&req);
             let note = if reload_to_apply.is_empty() {
                 "applied live".to_string()
@@ -2483,22 +2582,29 @@ pub(crate) async fn patch_hook_settings(
     match build_with_hook(&current, &name, updated) {
         Ok(next) => {
             let installed = Arc::new(next);
-            handle.swap(installed.clone());
+            // PERSIST-then-SWAP, fail-closed.
+            if let Err(e) = handle.commit_and_swap(installed.clone(), || {
+                crate::config::overlay::persist(
+                    installed.overlay_path.as_deref(),
+                    &installed.hook_registry,
+                    &installed.global_hooks,
+                    None,
+                    Some(&name),
+                )
+            }) {
+                audit::AUDIT.record_by("hook.settings", &resource, audit::OUTCOME_REJECTED, &actor);
+                return err_json(&AdminError::Validation(format!(
+                    "hook settings could not be persisted to the overlay: {e}; nothing was changed \
+                     (the running engine is unaffected)"
+                )));
+            }
             audit::AUDIT.record_by("hook.settings", &resource, audit::OUTCOME_APPLIED, &actor);
-            let cur = handle.load();
             installed.versions.record(
                 installed.config_version,
                 &actor,
                 &format!("hook.settings {resource}"),
                 &installed.hook_registry,
                 &installed.global_hooks,
-            );
-            crate::config::overlay::persist(
-                cur.overlay_path.as_deref(),
-                &cur.hook_registry,
-                &cur.global_hooks,
-                None,
-                Some(&name),
             );
             with_config_etag(
                 respond(StatusCode::OK, service(&handle).get_hook(&name).await),

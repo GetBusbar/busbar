@@ -425,6 +425,29 @@ impl AppHandle {
         *self.current.write().unwrap_or_else(|e| e.into_inner()) = next.clone();
         crate::health::spawn_probers(&next);
     }
+
+    /// Commit a live-config mutation as PERSIST-then-SWAP, FAIL-CLOSED — the ONE sanctioned way to
+    /// apply a mutation that must survive a restart. `persist` writes the DESIRED overlay to disk; only
+    /// if it succeeds do we `swap` the live engine to `next`. On a persist error nothing swaps and the
+    /// error is returned (the caller records `OUTCOME_REJECTED` and returns a 4xx/5xx) — the running
+    /// engine is left exactly as it was.
+    ///
+    /// Why this direction is the safe one, in ONE place so reset and rollback cannot diverge: a crash
+    /// between persist and swap restarts ALREADY-APPLIED (disk carries the operator's change), the
+    /// direction they asked for. The old swap-then-persist sites had the opposite failure window — a
+    /// persist failure (or a crash before it) left the live engine AHEAD of disk, so a restart silently
+    /// REVERTED the operator's applied change. `plugin.rollback` already used this discipline
+    /// (persist-then-swap, fail-closed) because its rebuild re-reads the overlay; routing every mutation
+    /// through here makes that discipline uniform rather than a rollback-only special case.
+    pub(crate) fn commit_and_swap(
+        &self,
+        next: Arc<App>,
+        persist: impl FnOnce() -> Result<(), String>,
+    ) -> Result<(), String> {
+        persist()?; // fail-closed: if disk didn't take it, do not swap.
+        self.swap(next); // only after the desired state is durable.
+        Ok(())
+    }
 }
 
 /// An axum extractor that yields the CURRENT `App` snapshot from the router's `Arc<AppHandle>` state.
