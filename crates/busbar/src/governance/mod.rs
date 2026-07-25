@@ -442,10 +442,15 @@ pub(crate) struct GovState {
     /// touching the map again. Read-locked on the hot path (atomics mutate through a shared ref);
     /// write-locked only to materialise a gauge on first sight.
     concurrent: RwLock<HashMap<String, Arc<std::sync::atomic::AtomicI64>>>,
-    /// SHA-256 hex digest of the configured /admin bearer token, computed once at construction. The
-    /// plaintext token is NOT retained — only its digest, which is all the constant-time compare on
-    /// the /admin path needs (less plaintext secret held in memory). `None` = admin API disabled.
-    admin_token_hash: Option<String>,
+    /// SHA-256 hex digest of the configured /admin bearer token. The plaintext token is NOT retained
+    /// — only its digest, which is all the constant-time compare on the /admin path needs (less
+    /// plaintext secret held in memory). `None` = admin API disabled.
+    ///
+    /// RE-SETTABLE (`set_admin_token`): `GovState` is process-lifetime and is REUSED across every
+    /// config apply/reload (the key cache, ledgers and rate windows must survive one), so a digest
+    /// frozen at construction meant rotating `auth.admin_auth`'s token secret and reloading had NO
+    /// effect — the process kept accepting the boot-time credential forever (audit round-5 HIGH-7).
+    admin_token_hash: RwLock<Option<String>>,
     /// AUTHORITATIVE in-memory TOKEN-LEDGER cells - the hard-cap admission state consulted (and
     /// charged) on the request hot path with NO await and NO store round-trip. Keyed by BUCKET id:
     /// a virtual key's id, or `group:<name>` for a budget-group bucket - key buckets and group
@@ -460,13 +465,16 @@ pub(crate) struct GovState {
     /// stores raw tokens and spend derives at read time, so there is no remainder to carry and no
     /// O(n) carry sweep to amortize.
     budget: Sharded<BudgetCell>,
-    /// The busbar TOKEN SIGNER (1.5.0, S1/S2): mints signed `{sub, exp, kid}` key tokens. `Some`
-    /// once a signing key is resolved/generated at boot; `None` in the (test) path that constructs
-    /// GovState without signing (SigV4-only / legacy-hash tests).
-    signer: Option<crate::governance::signing::TokenSigner>,
-    /// The STATELESS token VERIFIER (public keyset). Verifies a presented token's signature + expiry
-    /// before any store read; policy is then resolved by `sub`. `Some` iff `signer` is.
-    verifier: Option<crate::governance::signing::TokenVerifier>,
+    /// The busbar SIGNING material (1.5.0, S1/S2) — the mint-side signer paired with the
+    /// verify-side public keyset, held together so they can never drift. `Some` once a signing key
+    /// is resolved/generated at boot; `None` in the (test) path that constructs GovState without
+    /// signing (SigV4-only / legacy-hash tests).
+    ///
+    /// RE-SETTABLE (`set_signing_key`) for the same reason as `admin_token_hash`: `auth.signing_key`
+    /// is a SecretRef, and a reused `GovState` never re-resolved it, so rotating the underlying
+    /// secret and reloading silently kept minting and accepting tokens under the old key. Read as an
+    /// `Arc` clone on the verify hot path, so the lock is held only for the clone.
+    signing: RwLock<Option<Arc<SigningMaterial>>>,
     /// The revocation DENYLIST as an in-memory set of subject ids, hydrated from the store at boot,
     /// updated live on revoke, and RE-HYDRATED from the store on a bounded TTL by
     /// [`GovState::sync_revocations_if_stale`] (see [`REVOCATION_SYNC_TTL_SECS`]). A verified token
@@ -489,6 +497,23 @@ pub(crate) struct GovState {
     /// has committed, so it can never contain strictly-older store state. Guarded data is `()`;
     /// a poisoned lock is recovered with `into_inner()` (serializing is strictly better than not).
     refresh_lock: std::sync::Mutex<()>,
+}
+
+/// The busbar signing key as ONE unit: the mint-side signer and the verify-side keyset derived
+/// from it. Swapped atomically by `GovState::set_signing_key`, so a reload can never leave the
+/// engine minting under one key while verifying under another.
+pub(crate) struct SigningMaterial {
+    signer: crate::governance::signing::TokenSigner,
+    verifier: crate::governance::signing::TokenVerifier,
+}
+
+impl SigningMaterial {
+    /// Derive the verifier from the signer (the only construction path — they cannot drift).
+    fn new(signer: crate::governance::signing::TokenSigner) -> Self {
+        let verifier =
+            crate::governance::signing::TokenVerifier::single(signer.kid(), signer.verifying_key());
+        Self { signer, verifier }
+    }
 }
 
 /// What `POST /keys/{id}/rotate` re-issued — the credential shape the key actually carries. The

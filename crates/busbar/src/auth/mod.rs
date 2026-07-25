@@ -566,7 +566,10 @@ fn run_admin_chain(
         let outcome = match name.as_str() {
             #[cfg(feature = "auth-admin-tokens")]
             "admin-tokens" => busbar_auth_admin_tokens::authenticate_admin_tokens(
-                app.governance.as_ref().and_then(|g| g.admin_token_hash()),
+                app.governance
+                    .as_ref()
+                    .and_then(|g| g.admin_token_hash())
+                    .as_deref(),
                 bearer,
                 header,
             ),

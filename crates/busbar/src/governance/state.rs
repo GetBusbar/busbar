@@ -18,9 +18,6 @@ impl GovState {
         let by_hash = Self::load(store.as_ref())?;
         let by_access_key_id = Self::load_by_access_key_id(store.as_ref(), &by_hash)?;
         let by_id = Self::index_by_id(&by_hash);
-        let verifier = signer
-            .as_ref()
-            .map(|s| crate::governance::signing::TokenVerifier::single(s.kid(), s.verifying_key()));
         // Hydrate the denylist. A store with no denylist support returns empty (nothing revoked);
         // a durable one returns every persisted revoked subject.
         let denylist: std::collections::HashSet<String> =
@@ -33,12 +30,13 @@ impl GovState {
                 by_id,
             }),
             concurrent: RwLock::new(HashMap::new()),
-            admin_token_hash: admin_token
-                .as_ref()
-                .map(|t| crate::sigv4::sha256_hex(t.as_bytes())),
+            admin_token_hash: RwLock::new(
+                admin_token
+                    .as_ref()
+                    .map(|t| crate::sigv4::sha256_hex(t.as_bytes())),
+            ),
             budget: Sharded::new(),
-            signer,
-            verifier,
+            signing: RwLock::new(signer.map(|s| Arc::new(SigningMaterial::new(s)))),
             denylist: RwLock::new(denylist),
             // The set was just read from the store, so the staleness clock starts NOW.
             denylist_synced_at: std::sync::atomic::AtomicU64::new(crate::store::now()),
@@ -101,7 +99,7 @@ impl GovState {
 
     /// Whether signed-token minting is available (a signing key was resolved at boot).
     pub(crate) fn signing_enabled(&self) -> bool {
-        self.signer.is_some()
+        self.signing_material().is_some()
     }
 
     /// VERIFY a presented signed token (1.5.0): signature + expiry (stateless) + the `sub` not on
@@ -111,8 +109,8 @@ impl GovState {
     /// resolves to no binding (a token for a deleted key). The distinction is logged, never
     /// surfaced (no enumeration oracle - the auth path maps every `None` to one opaque 401).
     pub(crate) fn verify_token(&self, token: &str, now: u64) -> Option<Arc<VirtualKey>> {
-        let verifier = self.verifier.as_ref()?;
-        let claims = match verifier.verify(token, now) {
+        let material = self.signing_material()?;
+        let claims = match material.verifier.verify(token, now) {
             Ok(c) => c,
             Err(e) => {
                 tracing::debug!(reason = %e, "signed-token verify rejected");
@@ -217,7 +215,7 @@ impl GovState {
         exp: u64,
         now: u64,
     ) -> StoreResult<(VirtualKey, String)> {
-        let Some(signer) = self.signer.as_ref() else {
+        let Some(material) = self.signing_material() else {
             return Err(StoreError(
                 "signed-token minting is unavailable: no signing key is configured".to_string(),
             ));
@@ -247,7 +245,7 @@ impl GovState {
         };
         self.store.put_key(&binding)?;
         self.refresh()?;
-        let token = signer.mint(&id, exp, Some(&generation));
+        let token = material.signer.mint(&id, exp, Some(&generation));
         Ok((binding, token))
     }
 
@@ -261,7 +259,7 @@ impl GovState {
         exp: u64,
         now: u64,
     ) -> StoreResult<(VirtualKey, String, String, String)> {
-        let Some(signer) = self.signer.as_ref() else {
+        let Some(material) = self.signing_material() else {
             return Err(StoreError(
                 "signed-token minting is unavailable: no signing key is configured".to_string(),
             ));
@@ -291,13 +289,13 @@ impl GovState {
             },
         )?;
         self.refresh()?;
-        let token = signer.mint(&id, exp, Some(&generation));
+        let token = material.signer.mint(&id, exp, Some(&generation));
         Ok((binding, token, access_key_id, secret_access_key))
     }
 
     /// The signing key id (`kid`) this node stamps into minted tokens, if signing is enabled.
-    pub(crate) fn signing_kid(&self) -> Option<&str> {
-        self.signer.as_ref().map(|s| s.kid())
+    pub(crate) fn signing_kid(&self) -> Option<String> {
+        self.signing_material().map(|m| m.signer.kid().to_string())
     }
 
     /// Run a best-effort, FIRE-AND-FORGET store write WITHOUT blocking the async executor thread.
@@ -530,8 +528,43 @@ impl GovState {
     // Only read by the `auth-admin-tokens` chain link; without that feature the getter is unused
     // (the field is still populated/validated, so keep the method rather than gate the field).
     #[cfg_attr(not(feature = "auth-admin-tokens"), allow(dead_code))]
-    pub(crate) fn admin_token_hash(&self) -> Option<&str> {
-        self.admin_token_hash.as_deref()
+    pub(crate) fn admin_token_hash(&self) -> Option<String> {
+        self.admin_token_hash
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// RE-SET the /admin bearer credential from a freshly-resolved plaintext token (`None` disables
+    /// the admin API). Called on every config apply/reload with the re-resolved `SecretRef`, so
+    /// rotating the underlying secret and reloading actually changes the accepted credential — the
+    /// digest used to be frozen at construction and `GovState` is reused across applies, so it never
+    /// did (audit round-5 HIGH-7). Only the digest is retained; the plaintext is dropped here.
+    pub(crate) fn set_admin_token(&self, token: Option<&str>) {
+        let hash = token.map(|t| crate::sigv4::sha256_hex(t.as_bytes()));
+        *self
+            .admin_token_hash
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = hash;
+    }
+
+    /// RE-SET the signing material (mint-side signer + the verifier derived from it, swapped as one
+    /// unit so they can never drift). Called on every config apply/reload with the re-resolved
+    /// `auth.signing_key`. Rotating the key invalidates every outstanding token by design — that is
+    /// what a signing-key rotation MEANS — and until this existed a reload could not perform one at
+    /// all (audit round-5 HIGH-7).
+    pub(crate) fn set_signing_key(&self, signer: Option<crate::governance::signing::TokenSigner>) {
+        let next = signer.map(|s| Arc::new(SigningMaterial::new(s)));
+        *self.signing.write().unwrap_or_else(|e| e.into_inner()) = next;
+    }
+
+    /// The current signing material, as a cheap `Arc` clone (the lock is held only for the clone,
+    /// never across the crypto).
+    fn signing_material(&self) -> Option<Arc<SigningMaterial>> {
+        self.signing
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Mint a new virtual key, persist it, refresh the cache, and return `(key, plaintext
@@ -686,7 +719,7 @@ impl GovState {
             return Ok(None);
         };
         if is_binding_marker(&key.key_hash) {
-            let Some(signer) = self.signer.as_ref() else {
+            let Some(material) = self.signing_material() else {
                 return Err(StoreError(
                     "cannot rotate a signed-token key: no signing key is configured (rotation \
                      re-mints the token; it must never fall back to arming a legacy bearer secret)"
@@ -697,7 +730,7 @@ impl GovState {
             key.key_hash = binding_marker(&key.id, &generation);
             self.store.put_key(&key)?;
             self.refresh()?;
-            let token = signer.mint(&key.id, exp, Some(&generation));
+            let token = material.signer.mint(&key.id, exp, Some(&generation));
             return Ok(Some(RotatedCredential::Token { key, token, exp }));
         }
         let secret = generate_secret().store()?;

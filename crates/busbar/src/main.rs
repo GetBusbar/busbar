@@ -2575,8 +2575,71 @@ pub(crate) fn build_app_from_config(
     // so a bad plugin state can never produce a partial App. When plugins are disabled and nothing
     // references one, this is a no-op empty registry.
     // open the governance store + load the virtual-key cache when enabled.
+    // Credentials RE-RESOLVED on this apply/reload, applied to the reused `GovState` once the rest
+    // of the build has succeeded (see the `apply` call just before `Ok(App { .. })`). Resolution
+    // itself happens HERE and is FAIL-CLOSED: an `auth.admin_auth` token ref or an `auth.signing_key`
+    // that no longer resolves aborts the apply rather than silently leaving the old credential live.
+    let mut rotate_gov_credentials: Option<Box<dyn FnOnce()>> = None;
     let governance = if let Some(p) = prior {
-        // REUSED across applies: the keys + spend/rate state must survive config changes.
+        // REUSED across applies: the keys + spend/rate state must survive config changes. But the
+        // CREDENTIALS on it are config, not state: `GovState` used to freeze the admin-token digest
+        // and the signing key at construction, so rotating either SecretRef and reloading had no
+        // effect whatsoever — the process kept accepting the boot-time credential for its entire
+        // life (audit round-5 HIGH-7). Re-resolve both refs against the fresh resolver and swap them
+        // into the reused instance.
+        //
+        // SCOPE: a credential is re-resolved exactly when THIS config DECLARES it — an
+        // `admin-tokens` entry in `auth.admin_auth`/`auth.chain` for the admin token, an explicit
+        // `auth.signing_key` for the signing key. A config that declares neither is not asserting
+        // "no credential"; it simply does not own that credential (the dev signing key is
+        // generate-and-persist at BOOT, and re-running that on every reload would churn key
+        // material), so the live one stands. REMOVING a declaration therefore still needs a restart
+        // — documented, and the narrow case; ROTATING one, the operational path that matters and
+        // the one that silently did nothing, now works.
+        if let Some(gs) = p.governance.clone() {
+            let auth = cfg.auth.as_ref();
+            let declares_admin_tokens = auth.is_some_and(|a| {
+                a.admin_auth
+                    .iter()
+                    .chain(a.chain.iter())
+                    .any(|e| e.module == crate::config::ADMIN_TOKENS_MODULE)
+            });
+            // FAIL-CLOSED: a declared ref that no longer resolves ABORTS the apply. The alternative
+            // — carry on serving with the old credential — is exactly the defect being fixed.
+            let admin_token: Option<Option<String>> = if declares_admin_tokens {
+                Some(match auth.and_then(|a| a.admin_token_ref()) {
+                    Some(r) => Some(secret_resolver.resolve_string(r).map_err(|e| {
+                        format!(
+                            "auth.admin_auth admin-tokens token did not re-resolve on this \
+                             apply/reload: {e}; nothing was changed"
+                        )
+                    })?),
+                    // Declared with no token ref: the admin API is credential-less BY
+                    // CONFIGURATION. Fail closed — disable it rather than keep the old secret.
+                    None => None,
+                })
+            } else {
+                None
+            };
+            let signer = match auth.and_then(|a| a.signing_key.as_ref()) {
+                Some(_) => Some(resolve_signing_key(
+                    auth,
+                    &secret_resolver,
+                    config_paths.0.as_deref(),
+                )?),
+                None => None,
+            };
+            if admin_token.is_some() || signer.is_some() {
+                rotate_gov_credentials = Some(Box::new(move || {
+                    if let Some(token) = admin_token {
+                        gs.set_admin_token(token.as_deref());
+                    }
+                    if let Some(signer) = signer {
+                        gs.set_signing_key(signer);
+                    }
+                }));
+            }
+        }
         p.governance.clone()
     } else {
         // Governance is ALWAYS available (it is inert until an admin token is set and virtual keys are
@@ -2720,6 +2783,13 @@ pub(crate) fn build_app_from_config(
     // every request. Empty unless configured.
     let global_gates =
         hooks::resolve_gate_hooks(&cfg.hooks, &cfg.global_hooks, &hook_env, app_config_version);
+
+    // EVERY fallible step of this build has now succeeded, so the re-resolved governance
+    // credentials (HIGH-7) can be swapped into the reused `GovState`. Deferring to here means a
+    // build that fails later leaves the running engine's credentials exactly as they were.
+    if let Some(apply) = rotate_gov_credentials {
+        apply();
+    }
 
     Ok(App {
         // Telemetry-bank slot table for this generation, registered BEFORE the config-derived
