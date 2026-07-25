@@ -80,12 +80,20 @@ pub(crate) fn write(path: &Path, state: &PersistedState) -> Result<(), String> {
         return Err(e);
     }
     // fsync the parent directory so the rename (a directory-metadata change) is itself durable.
+    // For a RELATIVE state-file path `path.parent()` is `Some("")` (an empty path that cannot be
+    // opened), which the prior `filter(non-empty)` silently SKIPPED — so a relative path never got
+    // its parent-dir fsync and the rename could be lost on power loss. Resolve an empty parent to
+    // "." (the current directory, where the file lives), matching `config::overlay::write`.
     // Best-effort: not every platform/filesystem supports opening a directory for fsync, and the
     // file contents are already durable, so a failure here does not fail the write.
-    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-        if let Ok(dir) = std::fs::File::open(parent) {
-            let _ = dir.sync_all();
-        }
+    let parent = path.parent().unwrap_or_else(|| Path::new(""));
+    let parent = if parent.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        parent
+    };
+    if let Ok(dir) = std::fs::File::open(parent) {
+        let _ = dir.sync_all();
     }
     Ok(())
 }
