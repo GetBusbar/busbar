@@ -481,12 +481,14 @@ pub(crate) async fn forward_with_pool_parsed_inner(
 
     // Apply configured failover exclusions: members named here are excluded from this pool's
     // candidate set (never selected, primary or failover) — a per-pool member blocklist.
+    //
+    // Removed from `cands` rather than seeded into `request_ctx.excluded`, mirroring how gate
+    // restricts narrow the set. The two are different kinds of exclusion: `request_ctx.excluded`
+    // accumulates already-tried lanes, so a consumer that reads it cannot tell a blocklisted member
+    // from one this request has burned through. The exhaustion paths read `cands` directly —
+    // `least_bad` and the `Retry-After` computation both did, and so reached blocklisted members.
     if let Some(excl) = pool_failover.and_then(|f| f.exclusions.as_ref()) {
-        for wl in &cands {
-            if excl.iter().any(|m| m == &app.lanes[wl.idx].model) {
-                request_ctx.exclude(wl.idx);
-            }
-        }
+        cands.retain(|wl| !excl.iter().any(|m| m == &app.lanes[wl.idx].model));
     }
 
     // ── ROUTING-POLICY SEAM ───────────────────────────────────────────────────────────────────────
