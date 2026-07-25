@@ -866,9 +866,23 @@ async fn run() {
     let (shutdown_tx, _keep_open) = tokio::sync::broadcast::channel::<()>(1);
     {
         let shutdown_tx = shutdown_tx.clone();
+        let snap_handle = app_handle.clone();
+        let snap_file = state_file.clone();
         tokio::spawn(async move {
             shutdown_signal().await;
             let _ = shutdown_tx.send(());
+            // Snapshot AT SIGNAL, not only after the drain. The drain is unbounded by design — a
+            // streaming response may run to `limits.upstream_request_timeout_secs` — so an
+            // orchestrator whose grace period expires first SIGKILLs the process and the post-drain
+            // snapshot never runs. Bounding the drain instead would truncate healthy streams and
+            // trip breakers against a lane that did nothing wrong.
+            if let Some(ref sf) = snap_file {
+                let app = snap_handle.load();
+                if let Err(e) = state_persist::write(sf, &state_persist::capture(&app)) {
+                    tracing::warn!(path = %sf.display(), error = %e,
+                        "shutdown-signal state snapshot failed");
+                }
+            }
         });
     }
 
