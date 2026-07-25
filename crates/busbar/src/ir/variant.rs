@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The per-operation IR enums (design §12.4): `IrReq` / `IrResp`, one variant per operation. The
+//! The per-operation IR enums: `IrReq` / `IrResp`, one variant per operation. The
 //! design's single `enum Ir` reconciles to TWO enums because the engine already splits request from
 //! response (`IrRequest`/`IrResponse`). The inherent methods here ARE the surface the operation-blind
-//! middle sees; each exhaustive `match` is the removability / symmetry gate (§9) — adding the next
+//! middle sees; each exhaustive `match` is the removability / symmetry gate — adding the next
 //! operation (an 8th, past the current seven Chat..Rerank) is a compile error at every one.
 //!
 //! `affinity_key` and `unmappable_for` (B1) land with the seam wiring (P4/P5), where they can be
@@ -61,7 +61,7 @@ impl IrReq {
     /// its IR is written into a foreign egress dialect; the engine calls this without knowing which
     /// operation it holds. Chat: default `max_tokens` when the egress requires one, decode the
     /// client-echoed tool ids back to the backend's originals, and clear source-only `extra` keys
-    /// (the §8.2 foreign-format leak guard). The other operations' extras are source-scoped by
+    /// (the foreign-format leak guard). The other operations' extras are source-scoped by
     /// construction, so they need no clearing.
     pub(crate) fn prepare_for_egress(&mut self, prep: &EgressPrep) {
         match self {
@@ -288,7 +288,7 @@ impl IrResp {
         }
     }
 
-    /// The billable item for this response (§0b/§5b). Chat maps the existing `IrUsage` into
+    /// The billable item for this response. Chat maps the existing `IrUsage` into
     /// `Billing::Tokens` (preserving the uncached-input + additive-cache convention); moderation is
     /// flat; the rest project their own usage. Exhaustive match = the symmetry gate.
     pub(crate) fn usage(&self) -> Option<Billing> {

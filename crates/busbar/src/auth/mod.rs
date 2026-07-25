@@ -267,7 +267,7 @@ impl AuthMiddleware {
     }
 
     /// [`run_chain`] with the CREDENTIAL CACHE consulted around each `cacheable()` module
-    /// (design-hooks-v2 §2.5). The cache stores the module's RAW verdict; the `allowed_groups:`
+    ///. The cache stores the module's RAW verdict; the `allowed_groups:`
     /// intersection is applied AFTER retrieval, so a config change to the caps takes effect
     /// immediately even for cached identities. In-process modules report `cacheable() == false`
     /// and never touch the cache (caching a microsecond compare only widens revocation).
@@ -573,7 +573,7 @@ pub(crate) struct AuthPrincipal(pub(crate) Option<Principal>);
 
 /// The EFFECTIVE admin scope resolved by the admin middleware (role_bindings + module ceiling), attached
 /// to admin-path requests so mutation handlers can apply body-derived authorization refinements the
-/// route-level `required_scope` matrix cannot (design-admin-api-v1 §6.3). `None` = no admin grant
+/// route-level `required_scope` matrix cannot. `None` = no admin grant
 /// (the request would have been 403'd) OR the explicit open posture; a handler treats non-`Full` as
 /// "restricted automation".
 #[derive(Debug, Clone, Copy)]
@@ -853,7 +853,7 @@ fn rate_limited_response() -> Response {
 }
 
 /// Fire the synthetic `rejected_by_auth` completion taps (fire-and-forget) and return the auth
-/// denial — so audit taps see auth denials, not just served traffic (design-hooks-v2 §3.2). The
+/// denial — so audit taps see auth denials, not just served traffic. The
 /// request body is unparsed at the auth stage, so the shape is the zeroed default bucket with the
 /// path-inferred protocol. The tap's `status` MUST be the client-visible HTTP status, which is
 /// PROTOCOL-NATIVE for an auth failure — 401 for anthropic/openai/responses/cohere, 403 for Bedrock
@@ -940,7 +940,7 @@ pub(crate) async fn auth_middleware(
     // `[admin-tokens]` — the single operator token, Bearer or X-Admin-Token) — NOT a virtual key,
     // and NOT the vendor-SDK carriers (admin is a busbar operator surface, not a native SDK
     // ingress). The chain authenticates (WHO); the principal's admin SCOPE then authorizes against
-    // the endpoint's required scope (WHAT) — the §1 matrix, checked here at the one chokepoint
+    // the endpoint's required scope (WHAT) — the matrix, checked here at the one chokepoint
     // every /admin path crosses. Extract the admin Bearer separately so the multi-scheme
     // client-token carriers can't present an operator token via `x-api-key`/`x-goog-api-key`.
     if is_admin {
@@ -976,7 +976,7 @@ pub(crate) async fn auth_middleware(
         match scope {
             Some(s) if s.allows(required) => {}
             _ => {
-                // Denied authorization is AUDITED (§6.7: failures leave a trail — a credential
+                // Denied authorization is AUDITED (: failures leave a trail — a credential
                 // probing beyond its scope is exactly what an operator wants to see).
                 crate::admin::audit::AUDIT.record_by(
                     "admin.forbidden",
@@ -990,7 +990,7 @@ pub(crate) async fn auth_middleware(
                 return Err(forbidden_response(required));
             }
         }
-        // MUTATION RATE LIMITS (§6.6): per-principal fixed windows, spent BEFORE the handler so
+        // MUTATION RATE LIMITS: per-principal fixed windows, spent BEFORE the handler so
         // FAILED attempts count too (anti-enumeration). Config-plane mutations (apply/rollback)
         // are the tight class; every other mutation is the CRUD class. Reads are unmetered.
         let method = req.method();
@@ -1047,7 +1047,7 @@ pub(crate) async fn auth_middleware(
         }
         req.extensions_mut().insert(AuthPrincipal(principal));
         // The EFFECTIVE admin scope (resolved + capped) is attached so mutation handlers can apply
-        // the §6.3 body-derived refinements the route-level `required_scope` matrix cannot express —
+        // the body-derived refinements the route-level `required_scope` matrix cannot express —
         // e.g. a `hooks-register` principal may create a hook DEFINITION but must not register one
         // wired into a security-critical path (a `prompt: ro|rw` gate, or an inline `global: true`).
         req.extensions_mut().insert(AdminScope(scope));
@@ -1219,7 +1219,7 @@ pub(crate) async fn auth_middleware(
                 req.extensions_mut()
                     .insert(crate::governance::GovCtx { key: Some(key) });
             }
-            // Not a virtual key (or disabled). THE GOVERNANCE RE-KEY (§2.3): if the auth chain
+            // Not a virtual key (or disabled). THE GOVERNANCE RE-KEY: if the auth chain
             // identified a GROUP-carrying principal whose groups earn a data-plane grant in
             // `role_bindings:`, admit it with a SYNTHESIZED key: governance enforcement (pool ACL,
             // RPM/TPM, budget, usage) keyed by the principal id, identical to a virtual key.

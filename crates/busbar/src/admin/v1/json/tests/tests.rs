@@ -180,7 +180,7 @@ fn openapi_error_enum_matches_admin_error_codes() {
     );
 }
 
-/// The §6.3 escalation 403 fires on PUT `/hooks/{name}` and PATCH
+/// The escalation 403 fires on PUT `/hooks/{name}` and PATCH
 /// `/hooks/{name}/settings` (a `hooks-register` principal touching a content-seeing / global
 /// hook), exactly as it does on POST `/hooks` — so all three must DOCUMENT the 403.
 #[cfg(feature = "openapi-schema")]
@@ -196,7 +196,7 @@ fn openapi_hook_escalation_endpoints_document_403() {
     for (path, method) in cases {
         assert!(
             doc["paths"][path][method]["responses"]["403"].is_object(),
-            "{method} {path} can 403 on §6.3 escalation but its openapi omits it"
+            "{method} {path} can 403 on escalation but its openapi omits it"
         );
     }
 }
@@ -317,7 +317,7 @@ fn openapi_every_operation_has_a_typed_response_schema() {
     );
 }
 
-/// EXHAUSTIVENESS BRIDGE (design D §5.2a): every `AdminError` variant is classified — either as a
+/// EXHAUSTIVENESS BRIDGE: every `AdminError` variant is classified — either as a
 /// per-endpoint-declarable `ErrKind` or as ALGORITHMIC (`None`, stamped on every operation). The
 /// bridge itself is `err_kind_of`'s `match`, which will not COMPILE once a new variant exists; this
 /// test locks the other half: that the declarable kinds round-trip to the same frozen code + status

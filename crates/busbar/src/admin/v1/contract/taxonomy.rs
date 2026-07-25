@@ -50,7 +50,7 @@ pub(crate) enum ErrKind {
     VersionConflict,
     /// A TERMINAL state conflict (`conflict`, 409).
     Conflict,
-    /// A §6.3 body-derived authorization refusal (`forbidden`, 403). Declared per-endpoint ONLY where
+    /// A body-derived authorization refusal (`forbidden`, 403). Declared per-endpoint ONLY where
     /// the phrasing is more specific than the generic under-scope 403 (the hook-escalation case).
     Forbidden,
 }
@@ -175,7 +175,7 @@ impl Cond {
             Cond::SettingsPush => "a config change landed during the settings push — retry",
             Cond::HookEscalation => {
                 "a `hooks-register` principal may not touch a content-seeing (`prompt`/`user`) or \
-                 `global` hook (§6.3)"
+                 `global` hook"
             }
             Cond::MalformedCursor => "malformed or foreign pagination `cursor`",
             Cond::MissingRequiredQuery => "missing or unknown required query parameter",
@@ -279,7 +279,7 @@ pub(crate) fn method_tag(m: &axum::http::Method) -> Option<MethodTag> {
 ///
 /// NOT listed here (and not listable): 401, the generic under-scope 403, 405, 429 and 500 — every
 /// operation can emit them, so `openapi_doc()` stamps them algorithmically. A `Forbidden` entry IS
-/// declared where the §6.3 hook-escalation refusal needs its own, more specific phrasing.
+/// declared where the hook-escalation refusal needs its own, more specific phrasing.
 pub(crate) fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr] {
     use Cond::*;
     use ErrKind::*;

@@ -1695,7 +1695,7 @@ fn test_group_limit_pool_qualifier() {
     assert!(err.to_string().contains("duplicate"), "{err}");
 }
 
-/// The `on_exhaust` pair (§6c): parses + round-trips on a pool-scoped budget; every malformed
+/// The `on_exhaust` pair: parses + round-trips on a pool-scoped budget; every malformed
 /// coupling fails AT PARSE with a teaching error (downgrade without a target, a dangling target
 /// without downgrade, a non-budget metric, a group-wide budget, a self-referential target).
 #[test]

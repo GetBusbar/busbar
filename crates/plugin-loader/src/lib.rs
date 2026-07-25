@@ -1828,7 +1828,7 @@ mod tests {
         );
     }
 
-    // ── Class-level loader discrimination harness (redesign B §6b): the SAME matrix of injected
+    // ── Class-level loader discrimination harness (redesign B): the SAME matrix of injected
     // statuses × the three fallback-bearing methods, driven through the real
     // `call_raw_status` → `TransportError::from_status` → `is_unsupported()` path. A new
     // fallback-bearing method inherits this coverage the moment it keys on `is_unsupported()`. ────

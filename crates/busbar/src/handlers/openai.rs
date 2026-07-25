@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! OpenAI `RequestHandler` and its OperationHandlers (design §6/§7). Per the design these live under
+//! OpenAI `RequestHandler` and its OperationHandlers. Per the design these live under
 //! `handlers/request/openai/operations/`; the flat `cells/openai.rs` layout is a deferred cosmetic
 //! move. OperationHandlers are pure codecs — wire ↔ IR, both directions, nothing else.
 //!

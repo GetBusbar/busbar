@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# §5.3.4 — THE COMPILE FENCE for the config-mutation transaction guard.
+# THE COMPILE FENCE for the config-mutation transaction guard.
 #
 # `crates/busbar/src/admin/v1/json/tests/txn_fence.rs` is a NEGATIVE test: a transaction body that
 # tries to reach a blocking store call (`store.list_keys()`, `txn.store()`) or to `.await` inside the

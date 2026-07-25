@@ -214,7 +214,7 @@ pub(crate) enum LimitBlocked {
         window: Option<&'static str>,
         pool: Option<String>,
         /// For a BUDGET block whose limit declared `on_exhaust: downgrade`: the pool ingress
-        /// should re-admit + dispatch through instead of refusing (§6c). `None` = block.
+        /// should re-admit + dispatch through instead of refusing. `None` = block.
         downgrade_to: Option<String>,
         retry_after: Option<u64>,
     },

@@ -30,7 +30,7 @@ use crate::admin::transport::AdminTransport;
 use crate::state::AppHandle;
 
 /// The JSON-REST adapter for v1: the `/api/v1/admin/*` resource API with the stable
-/// `{"error":{"code","message"}}` envelope (design-admin-api-v1 §0.3). Zero-sized — each request
+/// `{"error":{"code","message"}}` envelope. Zero-sized — each request
 /// builds an `AdminService` over the CURRENT snapshot from the router's `Arc<AppHandle>` state (so a
 /// read after a config apply reflects the new config), and the mutation path swaps through the handle.
 pub(crate) struct JsonV1;
@@ -233,7 +233,7 @@ fn ap(rel: &str) -> String {
     format!("{}{rel}", crate::admin::v1::contract::ADMIN_PREFIX)
 }
 
-/// §6.3 BODY-DERIVED AUTHORIZATION REFINEMENT for hook registration. The route matrix admits a
+/// BODY-DERIVED AUTHORIZATION REFINEMENT for hook registration. The route matrix admits a
 /// `hooks-register` principal to POST/PUT `/api/v1/admin/hooks*`, but that scope is "define a hook,
 /// don't wire it into a security-critical path". A non-`Full` caller therefore may NOT register a
 /// hook that (a) sees or rewrites caller content/identity (`prompt`/`user` above `no`) or (b) sets

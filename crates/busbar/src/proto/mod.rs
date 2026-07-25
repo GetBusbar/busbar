@@ -417,7 +417,7 @@ pub(crate) trait ProtocolWriter: Send + Sync {
 
     /// Render a router/forward/auth-layer error as this protocol's NATIVE error envelope, so a
     /// client on the vendor's official SDK gets the typed exception it expects instead of a
-    /// plain-text body it cannot decode (the §8.1 / Unit I transparency gap). `status` is the HTTP
+    /// plain-text body it cannot decode (the / Unit I transparency gap). `status` is the HTTP
     /// status to be sent (informational; the envelope body may also embed it, e.g. Gemini's
     /// `error.code`); `kind` is a protocol-appropriate error type/category string (e.g.
     /// `"invalid_request_error"`, `"not_found"`); `message` is the human-readable detail.
@@ -1403,7 +1403,7 @@ pub(crate) fn find_frame_terminator(buf: &[u8]) -> Option<(usize, usize)> {
 
 /// Parse one SSE frame into `(event_type, data_payload)`. `event_type` is "" when the frame has
 /// no `event:` line (OpenAI style). Multiple `data:` lines in a single frame are concatenated with
-/// `\n` per the SSE spec (§9.2.6). Returns `None` if the frame carries no `data:` line (including a
+/// `\n` per the SSE spec. Returns `None` if the frame carries no `data:` line (including a
 /// frame with only an `event:` line) or is invalid UTF-8.
 pub(crate) fn parse_sse_frame(frame: &[u8]) -> Option<(String, String)> {
     let text = std::str::from_utf8(frame).ok()?;

@@ -1,15 +1,15 @@
-//! THE CLASS-LEVEL HARNESS for the config-mutation transaction guard (design C §5).
+//! THE CLASS-LEVEL HARNESS for the config-mutation transaction guard.
 //!
 //! These are not per-site regression tests. Each asserts a property of the CHOKE POINT that, once
 //! true, holds for every mutation funnelling through it — including ones written later:
 //!
-//! - §5.1 no dangling-group bind — a bind's existence check and its store write share one lock hold;
-//! - §5.2 no stale snapshot — a body reads the config the lock froze, never one captured before it;
-//! - §5.3 no blocking under the async lock — a slow store cannot stall the reactor, asserted by a
+//! - no dangling-group bind — a bind's existence check and its store write share one lock hold;
+//! - no stale snapshot — a body reads the config the lock froze, never one captured before it;
+//! - no blocking under the async lock — a slow store cannot stall the reactor, asserted by a
 //!   liveness probe on a SINGLE-worker runtime (the compile fence is `scripts/txn-fence.sh`);
-//! - §5.4 install/remove/reload/rollback share ONE mutation domain, so no plugin write can land
+//! - install/remove/reload/rollback share ONE mutation domain, so no plugin write can land
 //!   inside another plugin op's validate→rebuild window;
-//! - §5.5 the swap lost-update invariant, modelled under loom in `tests/txn_loom.rs`.
+//! - the swap lost-update invariant, modelled under loom in `tests/txn_loom.rs`.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -161,7 +161,7 @@ async fn delete_team(handle: Arc<AppHandle>) -> StatusCode {
     .status()
 }
 
-// ── §5.3 no blocking under the async lock (the executor-not-stalled assertion) ───────────────────
+// ── no blocking under the async lock (the executor-not-stalled assertion) ───────────────────
 
 /// THE SHARPEST TEST. A store whose `list_keys()` blocks for 400ms is installed, then
 /// `DELETE /groups/team` — which MUST count bound keys through exactly that call — runs while a
@@ -244,7 +244,7 @@ async fn slow_store_read_does_not_stall_the_executor() {
     );
 }
 
-// ── §5.2 no stale snapshot: the body reads the config the lock froze ────────────────────────────
+// ── no stale snapshot: the body reads the config the lock froze ────────────────────────────
 
 /// A config change that COMMITS BEFORE this mint acquires the lock must be the config the mint
 /// enforces. Deterministic by construction rather than by racing: transaction A takes the lock and
@@ -313,7 +313,7 @@ async fn cap_is_read_from_the_post_lock_snapshot() {
     );
 }
 
-// ── §5.1 no dangling-group bind ─────────────────────────────────────────────────────────────────
+// ── no dangling-group bind ─────────────────────────────────────────────────────────────────
 
 /// Mints binding `team` run concurrently with `DELETE /groups/team`. Whatever the interleaving, the
 /// TERMINAL store state must hold no key bound to a group that does not exist: either a bind lands
@@ -433,7 +433,7 @@ async fn concurrent_rebinds_never_bind_a_deleted_group() {
     }
 }
 
-// ── §5.4 one plugin mutation domain: install cannot interleave a validate→rebuild ───────────────
+// ── one plugin mutation domain: install cannot interleave a validate→rebuild ───────────────
 
 /// `install_plugin` used to take NO lock at all, so a tarball write could land between a rollback's
 /// `resolve_plugin_rollback` (validate) and its `rebuild_app_from_disk` (read back) — the rollback
@@ -565,7 +565,7 @@ async fn concurrent_transactions_never_lose_a_swap() {
     );
 }
 
-// ── §5.6 the mutation domain survives handler-future cancellation ────────────────────────────────
+// ── the mutation domain survives handler-future cancellation ────────────────────────────────
 
 /// CANCELLATION SAFETY. Admin handlers are cancellable: hyper serves each connection on its own task
 /// (`serve_connection_with_upgrades`), so a client reset, disconnect, or timeout DROPS the service

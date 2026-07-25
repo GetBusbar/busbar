@@ -681,7 +681,7 @@ pub(crate) async fn decide_policy_order(
         })
         .collect();
 
-    // The HOOK SEAM's budget projection (cost-model spec §9): for the caller key and each ancestor
+    // The HOOK SEAM's budget projection: for the caller key and each ancestor
     // budget group, {bucket_id, spend_micros_at_current_rate, remaining_micros, window} - derived
     // fresh from the token ledger x the CURRENT rate card at this moment. Built ONLY here (a
     // routing-policy pool; the zero-cost default path never runs this fn), so its allocation stays

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The protocol handlers — the design's middle, in one module (design-operations-oop.md §6/§7):
+//! The protocol handlers — the design's middle, in one module:
 //!
 //! `Router → RequestHandler → OperationHandler → IR`
 //!
@@ -91,7 +91,7 @@ impl WireBody {
 
 /// A request that could not be parsed into this operation's IR — rendered as a caller-dialect 4xx
 /// (via the existing `proxy::ingress_error`). `UnsupportedSubOp` is the m3 second 404 site
-/// (`ImageIr.op` unsupported for the model) — distinct from handler-absence (§3), same terminal.
+/// (`ImageIr.op` unsupported for the model) — distinct from handler-absence, same terminal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum IngressReject {
     BadRequest(String),
@@ -222,7 +222,7 @@ pub(crate) trait RequestHandler: Send + Sync {
     fn protocol_name(&self) -> &'static str;
 
     /// This protocol's row of the support matrix. `None` ⇒ the protocol does not serve the operation
-    /// ⇒ the no-handler 404 (§3). The OperationHandler, when present, is a pure codec.
+    /// ⇒ the no-handler 404. The OperationHandler, when present, is a pure codec.
     fn operation_handler(&self, op: Operation) -> Option<&dyn OperationHandler>;
 
     /// WHICH operation this request asks for — the RequestHandler knows its protocol and reads the

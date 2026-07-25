@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 /// everything downstream (governance, audit attribution, the hook `send_user` projection, admin
 /// scopes). IDENTITY ONLY: a module returns who; policy (allowed pools, group, admin scope) is
 /// resolved by busbar from config (`auth.role_bindings:`, nested by module), never asserted by the
-/// module (design-hooks-v2 §2.3). NEVER carries the credential itself.
+/// module. NEVER carries the credential itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Principal {
     /// Stable identity handle (required): the virtual-key id for governance keys, a stable
@@ -39,7 +39,7 @@ impl Principal {
 }
 
 /// The verdict of one auth module. The PAM-style trichotomy the 1.3 auth-plugin layer is built on
-/// (design-hooks-v2 §2): `Identify` = this module authenticated the caller and this is WHO —
+///: `Identify` = this module authenticated the caller and this is WHO —
 /// carries the [`Principal`]; `Reject` = a credential was presented but is invalid (fail-closed,
 /// stop the chain); `Pass` = "not mine" — no usable credential for this module, defer to the next
 /// module / the mode default.

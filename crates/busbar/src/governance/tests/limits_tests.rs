@@ -684,7 +684,7 @@ fn rate_headroom_reads_the_chain() {
     assert_eq!(g.rate_headroom(&cm, &key("vk_none", None), None, now), None);
 }
 
-// ── pool-scoped limits (§6b: per-(group, pool) accounting) ───────────────────────────────────────
+// ── pool-scoped limits accounting) ───────────────────────────────────────
 
 fn pooled(metric: LimitMetric, amount: u64, per: LimitWindow, pool: &str) -> LimitCfg {
     LimitCfg {
@@ -849,7 +849,7 @@ fn pool_scoped_accrual_and_refund_mirror_the_charge() {
         .expect("the refunded fee re-opened frontier's bucket");
 }
 
-/// §6c budget-that-teaches, engine side: a budget block whose limit declared `on_exhaust:
+/// Budget-that-teaches, engine side: a budget block whose limit declared `on_exhaust:
 /// downgrade` NAMES the downgrade pool in the rejection (ingress re-admits there); the most
 /// restrictive of two merged budgets is the one whose behavior governs; and a plain budget
 /// block still carries no downgrade.

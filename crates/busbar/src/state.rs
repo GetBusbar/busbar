@@ -284,7 +284,7 @@ pub(crate) struct App {
     // Read by the Phase 1 groups-CRUD PUT/DELETE base-shadow guard (task #100); carried here first.
     #[allow(dead_code)]
     pub(crate) base_group_names: std::collections::HashSet<String>,
-    /// Per-principal ADMIN MUTATION rate limiter (§6.6). Arc-shared across apply snapshots so the
+    /// Per-principal ADMIN MUTATION rate limiter. Arc-shared across apply snapshots so the
     /// windows survive every swap.
     pub(crate) mutation_limiter: Arc<crate::admin::rate::MutationLimiter>,
     /// Idempotency-Key replay cache for key minting (bounded, ~10min TTL): a retried POST with the
@@ -304,7 +304,7 @@ pub(crate) struct App {
     /// The ADMIN auth chain (`admin_auth:` module names, default `[admin-tokens]`) — executed by
     /// the auth middleware for `/admin` paths. Empty = the explicit OPEN admin posture (dev).
     pub(crate) admin_chain: Vec<String>,
-    /// The credential cache (design-hooks-v2 §2.5) — Arc-shared ACROSS config swaps (like the
+    /// The credential cache — Arc-shared ACROSS config swaps (like the
     /// mutation limiter): an apply/reload must not silently re-open every cached-allow window.
     pub(crate) credential_cache: Arc<crate::auth_cache::CredentialCache>,
     /// Per-module `max_admin_scope:` ceilings (from the auth chain entries) - consulted at admin
@@ -329,8 +329,8 @@ pub(crate) struct App {
     /// tooling can tell whether the running config changed since a prior read. Process-local (resets on
     /// restart); durable version history + rollback is a follow-up.
     pub(crate) config_version: u64,
-    /// Anti-sprawl cap on keys BOUND TO ONE GROUP (self-service §6a; `limits.max_keys_per_principal`).
-    /// Because a `user:<sub>` leaf IS the principal (§5), this is effectively "max keys per principal".
+    /// Anti-sprawl cap on keys BOUND TO ONE GROUP.
+    /// Because a `user:<sub>` leaf IS the principal, this is effectively "max keys per principal".
     /// `0` = unlimited (default). Enforced at `POST /keys`; carried on the snapshot so a config apply
     /// can change it (survives `App::clone`).
     pub(crate) max_keys_per_principal: usize,

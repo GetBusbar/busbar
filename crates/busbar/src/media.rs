@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Opaque media payload value types for the operations rebuild (design-operations-oop.md §5b).
+//! Opaque media payload value types for the operations rebuild.
 //!
 //! Two distinct value types, deliberately NOT unified (the re-verification, finding C3, showed a
 //! single one-of type is lossy for image output):

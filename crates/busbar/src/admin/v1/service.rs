@@ -237,7 +237,7 @@ pub(crate) fn build_with_hook(current: &App, name: &str, cfg: HookCfg) -> Result
             "`prompt: rw` is invalid on a `kind: tap` hook (a tap cannot rewrite)".into(),
         ));
     }
-    // GRANT IMMUTABILITY (§6.4): `kind`/`prompt`/`user` are definition-only and FROZEN after first
+    // GRANT IMMUTABILITY: `kind`/`prompt`/`user` are definition-only and FROZEN after first
     // registration. Re-registering a name with different grants is a `conflict` — delete and
     // re-register to change them. This closes the "register `prompt: no`, wire it in, then escalate to
     // `rw`" exfiltration path: a grant can never widen in place. Re-registering with the SAME grants is
@@ -641,7 +641,7 @@ impl AdminService {
 
     /// `GET /api/v1/admin/pools` — the pool topology (name + member models/weights). Read scope. Sorted
     /// by name for a stable, diff-friendly listing. Live per-member
-    /// status is an additive follow-up (§6.9).
+    /// status is an additive follow-up.
     pub(crate) async fn list_pools(&self) -> Result<Page<PoolView>, AdminError> {
         let mut pools: Vec<PoolView> = self
             .app
@@ -799,7 +799,7 @@ impl AdminService {
     }
 
     /// `GET /api/v1/admin/groups/{name}/usage` — the group's derived current-window usage per
-    /// enforcement bucket vs its caps (§6d, the self-service dashboard read). Read scope.
+    /// enforcement bucket vs its caps. Read scope.
     /// `not_found` for an unknown group; governance off = every bucket reads zero (the caps are
     /// still projected — the definition exists even when nothing enforces).
     pub(crate) async fn get_group_usage(
@@ -1749,7 +1749,7 @@ mod tests {
         ));
     }
 
-    /// GRANT IMMUTABILITY (§6.4): re-registering an existing hook with DIFFERENT kind/prompt/user is a
+    /// GRANT IMMUTABILITY: re-registering an existing hook with DIFFERENT kind/prompt/user is a
     /// `conflict`; re-registering with the SAME grants is allowed (idempotent). Closes the escalation
     /// path (register `prompt: no`, then widen to `rw`).
     #[test]
@@ -2478,11 +2478,11 @@ mod tests {
         );
     }
 
-    // ---- group usage read (§6d, `GET /groups/{name}/usage`) ----
+    // ---- group usage read ----
 
     use crate::governance::{GovState, MemoryStore, TierTokens, VirtualKey};
 
-    /// The §6d fixture group: a group-wide requests cap (day), a group-wide budget (month), and a
+    /// The fixture group: a group-wide requests cap (day), a group-wide budget (month), and a
     /// POOL-SCOPED budget on `frontier` (month) — three distinct `(window, pool?)` enforcement
     /// buckets from three limits.
     fn usage_group_cfg() -> GroupCfg {
@@ -2546,7 +2546,7 @@ mod tests {
         }
     }
 
-    /// §6d: `get_group_usage` returns ONE row per `(window, pool?)` enforcement bucket. Usage is
+    /// `get_group_usage` returns ONE row per `(window, pool?)` enforcement bucket. Usage is
     /// driven through the REAL admission/accrual seam (`try_admit` + `record_usage`, the same path
     /// the proxy charges), so the read proves: the pool-scoped bucket accounts ONLY its pool's
     /// traffic, the group-wide buckets account everything, caps are projected from the limits, and

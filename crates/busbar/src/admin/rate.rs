@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Per-principal ADMIN MUTATION rate limits (design-admin-api-v1 §6.6) — separate from the data
+//! Per-principal ADMIN MUTATION rate limits — separate from the data
 //! plane's per-key RPM. Config-plane mutations (apply/rollback) are capped at 10/min and the other
 //! mutation classes (hook CRUD, key CRUD) at 60/min, per principal, in fixed one-minute windows.
 //! FAILED attempts count too (anti-enumeration: probing 404s spends the same budget as mutating),

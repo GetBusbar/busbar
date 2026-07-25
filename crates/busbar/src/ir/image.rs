@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Image-generation IR (design-operations-oop.md §5b). Cross-protocol across OpenAI, Gemini, Bedrock.
+//! Image-generation IR. Cross-protocol across OpenAI, Gemini, Bedrock.
 //! ONE operation with an `op` discriminant (Generate/Edit/Variation) — edit/variation are not separate
-//! ops; an unsupported `(op, model)` pair is a sub-op 404 (§3/m3). Split request/response per §12.4.
+//! ops; an unsupported `(op, model)` pair is a sub-op 404. Split request/response per.
 //!
 //! Losslessness: the three provider geometry conventions (explicit W×H, `aspect_ratio` string, size
 //! `tier`) are PARALLEL optionals — never collapsed. Response images are additive [`ImageOutput`]

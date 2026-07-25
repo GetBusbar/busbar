@@ -89,7 +89,7 @@ pub(crate) async fn get_group(
 }
 
 /// `GET /api/v1/admin/groups/{name}/usage` — the group's derived current-window usage per
-/// enforcement bucket vs its caps (§6d, the self-service dashboard read; 404 if unknown).
+/// enforcement bucket vs its caps.
 pub(crate) async fn get_group_usage(
     State(handle): State<Arc<AppHandle>>,
     Path(name): Path<String>,
@@ -208,7 +208,7 @@ pub(crate) async fn remove_plugin(
 ) -> Response {
     let actor = principal.actor_id().to_string();
     let resource = format!("plugin:{file}");
-    // Same global mutation domain as install (§4): a DELETE racing a rebuild-from-disk is the mirror
+    // Same global mutation domain as install: a DELETE racing a rebuild-from-disk is the mirror
     // hazard of an install racing one — the rebuild would read a plugin set that changed under it.
     // The filesystem delete runs on `spawn_blocking`, under the guard.
     let out = config_transaction(&handle, move |txn| {
@@ -252,7 +252,7 @@ pub(crate) async fn reload_plugins(
 ) -> Response {
     let actor = principal.actor_id().to_string();
     // Serialize against config applies/reloads AND against plugin install/remove — they all touch
-    // the same plugins directory and rebuild-and-swap the App snapshot (§4: one global mutation
+    // the same plugins directory and rebuild-and-swap the App snapshot (: one global mutation
     // domain). The whole rebuild is disk I/O, so it is queued onto `spawn_blocking`.
     let out = config_transaction(&handle, |txn| {
         let snapshot = txn.app().clone();
@@ -370,7 +370,7 @@ pub(crate) async fn rollback_plugin(
     let file = req.file.clone();
     let audit_resource = resource.clone();
     // ONE section for validate → persist-pin → rebuild → swap. Because install/remove now enter the
-    // SAME section (§4), no concurrent write to the plugins directory can land between the artifact
+    // SAME section, no concurrent write to the plugins directory can land between the artifact
     // this resolves and the artifact the rebuild reads back: the validate/rebuild pair is atomic.
     // Every step here is disk I/O, so the whole thing runs on `spawn_blocking`.
     let out = config_transaction(&handle, move |txn| {
@@ -607,7 +607,7 @@ pub(crate) async fn register_hook(
         Ok(r) => r,
         Err(e) => return err_json(&AdminError::Validation(format!("malformed hook body: {e}"))),
     };
-    // §6.3: a hooks-register principal may not register a content-seeing / global (wired) hook.
+    // A hooks-register principal may not register a content-seeing / global (wired) hook.
     if let Some(e) = hooks_register_escalation(scope, &req.config) {
         audit::AUDIT.record_by(
             "hook.register",
@@ -706,7 +706,7 @@ pub(crate) async fn register_hook(
 /// `PUT /api/v1/admin/hooks/{name}` — REPLACE an existing hook definition at runtime (live, atomic
 /// swap). `404 not_found` for an unregistered name (PUT replaces; POST creates). `409 conflict`
 /// for a BASE-defined hook (operator file config is edited in the file, never silently shadowed
-/// via the API) and for a grant change (`kind`/`prompt`/`user` are immutable — §6.4, enforced in
+/// via the API) and for a grant change (`kind`/`prompt`/`user` are immutable —, enforced in
 /// `build_with_hook`). Audited + versioned + overlay-persisted like every mutation.
 pub(crate) async fn put_hook(
     State(handle): State<Arc<AppHandle>>,
@@ -725,7 +725,7 @@ pub(crate) async fn put_hook(
         Ok(r) => r,
         Err(e) => return err_json(&AdminError::Validation(format!("malformed hook body: {e}"))),
     };
-    // §6.3: a hooks-register principal may not replace a hook into a content-seeing / global form.
+    // A hooks-register principal may not replace a hook into a content-seeing / global form.
     if let Some(e) = hooks_register_escalation(scope, &req.config) {
         audit::AUDIT.record_by(
             "hook.replace",
@@ -832,7 +832,7 @@ pub(crate) async fn delete_hook(
         if let Some(e) = stale_if_match(expected, current.config_version) {
             return Err(e);
         }
-        // §6.3 escalation guard, keyed on the EXISTING hook's grants — a non-Full (hooks-register)
+        // Escalation guard, keyed on the EXISTING hook's grants — a non-Full (hooks-register)
         // principal may not DELETE a content-seeing (`prompt`/`user`) or `global: true` gate. Such a
         // hook can only have been created by a Full admin (register/put block a narrow token from
         // wiring one), and DELETING it TEARS DOWN that admin's security gate — the same escalation
@@ -903,7 +903,7 @@ pub(crate) async fn delete_hook(
 }
 
 /// Resolve — and if needed AUTO-PROVISION — the group a `POST /keys` mint binds to (self-service
-/// D2, §6a). The mint-time group contract, one place, shared by the key handler:
+/// D2). The mint-time group contract, one place, shared by the key handler:
 ///
 /// - group EXISTS, no `parent` given → bind as-is (`Ok(None)`, nothing to provision).
 /// - group EXISTS, `parent` given → the given parent MUST equal the group's actual parent, else
@@ -1981,7 +1981,7 @@ pub(crate) async fn put_auth(
     let installed = match out {
         Ok(installed) => installed,
         Err(e) => {
-            // Audit the rejected attempt (§6.7: every mutation attempt leaves a trail — uniform with
+            // Audit the rejected attempt (: every mutation attempt leaves a trail — uniform with
             // every other stale-If-Match rejection in this file, and with put_auth's own
             // dry-run-guard rejection).
             audit::AUDIT.record_by(
@@ -2024,7 +2024,7 @@ pub(crate) async fn put_auth(
 }
 
 /// `POST /api/v1/admin/auth/cache/flush` — INSTANT REVOCATION of the credential cache's
-/// cached-allow window (design-hooks-v2 §2.5). Body `{"module": "<name>"}` flushes one module's
+/// cached-allow window. Body `{"module": "<name>"}` flushes one module's
 /// partition; no/empty body flushes everything. The deny path never needed this (`Reject` is
 /// never cached); this closes the Identify window when a directory changes NOW.
 pub(crate) async fn flush_credential_cache(
@@ -2629,7 +2629,7 @@ pub(crate) async fn patch_hook_settings(
         audit::AUDIT.record_by("hook.settings", &resource, audit::OUTCOME_REJECTED, &actor);
         return err_json(&AdminError::not_found(format!("hook `{name}`")));
     };
-    // §6.3 escalation guard, keyed on the EXISTING hook's grants (PATCH changes settings, not
+    // Escalation guard, keyed on the EXISTING hook's grants (PATCH changes settings, not
     // grants). A non-Full (hooks-register) principal may not push settings to a content-seeing
     // (`prompt`/`user`) or `global: true` hook — the same ceiling register_hook/put_hook enforce.
     // Without it a narrow token could retune a `prompt: rw` global gate it can neither create nor
@@ -2653,7 +2653,7 @@ pub(crate) async fn patch_hook_settings(
     let pre_push_version = current.config_version;
     let settings_version = pre_push_version.wrapping_add(1);
     // PUSH first, COMMIT on ack — a hook that never acked never sees committed state it doesn't
-    // hold (§6.5: no partial config ever goes live). The hook plugin env is captured here; the load()
+    // hold. The hook plugin env is captured here; the load()
     // that feeds the actual swap is re-taken AFTER the await, under the mutation lock.
     let hook_env = current.hook_env.clone();
     if let Err(e) = crate::hooks::push_configure(&updated, &name, settings_version, &hook_env).await
@@ -3432,7 +3432,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     // more, so an endpoint cannot omit a status it emits (the class-level drift test in
     // `tests/tests.rs` fails the build) and cannot document one it doesn't. Descriptions come from
     // `Cond::phrase()`, so the same condition reads identically on every endpoint that declares it.
-    // This runs BEFORE the algorithmic pass below so a declared `403` (the §6.3 hook escalation,
+    // This runs BEFORE the algorithmic pass below so a declared `403` (the hook escalation,
     // whose phrasing is more specific) wins over the generic under-scope 403's `or_insert`.
     for (path, methods) in paths.iter_mut() {
         let Some(obj) = methods.as_object_mut() else {
@@ -3457,7 +3457,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
 
     // Stamp EVERY path+method with its required admin scope (`x-busbar-required-scope`) from the
     // SAME `required_scope` matrix the middleware enforces — the machine-readable authorization
-    // matrix (§6.3), drift-proof by construction because both readers share one function. The
+    // matrix, drift-proof by construction because both readers share one function. The
     // matrix keys on the literal path shape; templated segments (`{name}`) sit inside the same
     // prefix the matcher tests, so the annotation is exact for every route documented here.
     for (path, methods) in paths.iter_mut() {

@@ -5,7 +5,12 @@
 # silently passes). Run this before every `git tag vX.Y.Z`.
 #
 #   scripts/preflight.sh          # the CI mirror (fast)
-#   scripts/preflight.sh --full   # + the acceptance harness (tests.json), the deeper release gate
+#   scripts/preflight.sh --full   # + an external acceptance harness, if one is configured
+#
+# `--full` additionally runs an acceptance harness against the release binary. The harness is an
+# EXTERNAL, optional tool — point `BUSBAR_ACCEPTANCE_HARNESS` at a directory holding an executable
+# `run.sh` that takes the binary path as its first argument and writes a summary to /tmp/kat.json.
+# Unset, `--full` skips that step and everything else still runs.
 #
 # Exit 0 only if every mirrored job is green. Windows can't fully build on a mac (cross C
 # toolchain), so it is a *type-check* best-effort here + a loud reminder to confirm the CI job.
@@ -29,7 +34,7 @@ fi
 # ── Job 1: fmt · structure · clippy · build · test (default features) ──
 step "fmt --all --check"                 cargo fmt --all -- --check
 [ -x scripts/structure-lint.sh ] && step "structure-lint" ./scripts/structure-lint.sh
-# The config-mutation compile fence (design C §5.3.4): a transaction body that reaches a store or
+# The config-mutation compile fence: a transaction body that reaches a store or
 # awaits must NOT type-check. The script inverts the verdict, so a clean build there fails here.
 [ -x scripts/txn-fence.sh ] && step "txn compile fence" ./scripts/txn-fence.sh
 step "clippy (default, all-targets)"     cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -75,14 +80,16 @@ fi
 
 # ── Optional: deeper release gate (acceptance harness) ──
 if [ "${1:-}" = "--full" ]; then
-  H=../busbarAI-private/testing/harness
-  if [ -x "$H/run.sh" ]; then
+  H="${BUSBAR_ACCEPTANCE_HARNESS:-}"
+  if [ -n "$H" ] && [ -x "$H/run.sh" ]; then
     # NOTE: pass the binary as an ABSOLUTE path — run.sh cd's into its own dir before reading $1, so a
     # path relative to this repo root (e.g. target/release/busbar) would resolve under the harness dir
     # and the binary would never launch (a silent, always-red --full harness step).
-    step "acceptance harness (tests.json)" bash -c "cargo build --release --locked && env -u ANTHROPIC_API_KEY -u OPENAI_API_KEY -u GEMINI_API_KEY -u COHERE_API_KEY $H/run.sh \"\$PWD/target/release/busbar\" >/dev/null 2>&1 && python3 -c 'import json;d=json.load(open(\"/tmp/kat.json\"));s=d[\"summary\"];exit(0 if s[\"fail\"]==0 else 1)'"
+    step "acceptance harness" bash -c "cargo build --release --locked && env -u ANTHROPIC_API_KEY -u OPENAI_API_KEY -u GEMINI_API_KEY -u COHERE_API_KEY $H/run.sh \"\$PWD/target/release/busbar\" >/dev/null 2>&1 && python3 -c 'import json;d=json.load(open(\"/tmp/kat.json\"));s=d[\"summary\"];exit(0 if s[\"fail\"]==0 else 1)'"
+  elif [ -n "$H" ]; then
+    echo; echo "  ⚠ BUSBAR_ACCEPTANCE_HARNESS=$H has no executable run.sh — skipping."
   else
-    echo; echo "  ⚠ acceptance harness not found at $H — skipping."
+    echo; echo "  ⚠ BUSBAR_ACCEPTANCE_HARNESS is unset — skipping the acceptance harness."
   fi
 fi
 

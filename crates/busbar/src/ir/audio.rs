@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Audio IRs (design-operations-oop.md §5b) — two structurally-opposite operations in one module:
+//! Audio IRs — two structurally-opposite operations in one module:
 //!
 //! - **Transcription** (STT): multipart audio IN → text OUT. `target_language` folds translation in
 //!   (not a third op). Billing is model-dependent: `Duration` (whisper-1) | `Tokens` (gpt-4o-transcribe).
 //! - **Speech** (TTS): text IN → binary audio OUT. Billing: `Characters` (tts-1) | `Tokens` (gpt-4o-mini-tts).
 //!
 //! Both share the [`crate::media::MediaBlob`] payload (audio in / audio out). Split request/response
-//! per §12.4. Because audio billing is polymorphic per model, the response stores `Option<Billing>`
+//! per. Because audio billing is polymorphic per model, the response stores `Option<Billing>`
 //! directly rather than a token struct.
 #![allow(dead_code)]
 
@@ -53,7 +53,7 @@ pub(crate) struct TranscriptionReq {
     pub(crate) audio: Option<MediaBlob>,
     pub(crate) model: String,
     pub(crate) source_language: Option<String>, // ISO-639-1
-    /// `None` = transcribe; `Some("en")` (or other) = TRANSLATE — folds `/audio/translations` in (§1b).
+    /// `None` = transcribe; `Some("en")` (or other) = TRANSLATE — folds `/audio/translations` in.
     pub(crate) target_language: Option<String>,
     pub(crate) prompt: Option<String>,
     pub(crate) response_format: Option<String>, // json/text/srt/verbose_json/vtt/diarized_json
