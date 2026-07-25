@@ -69,6 +69,39 @@ pub(crate) fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
 /// is the fully-written new contents (contents fsync before rename) with its directory entry durable
 /// (best-effort parent fsync after). On `Err`: no temp is left behind and `path` is untouched (still
 /// the prior contents, or still absent).
+/// The directory whose ENTRY a publish or an unlink of `path` mutates -- the one that has to be
+/// fsynced for the change to survive a power loss. A RELATIVE `path` has an empty parent
+/// (`Some("")`, which cannot be opened), so it resolves to "." -- the CWD, where the file actually
+/// lives. UNCONDITIONAL and in ONE place, so no caller can pass a relative path that dodges the
+/// parent fsync (the D2 class), and `write`/`remove` can never disagree about which directory it is.
+fn holding_dir(path: &Path) -> &Path {
+    path.parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+}
+
+/// fsync the directory that holds `path`, so a rename or an unlink of it is itself durable.
+/// Best-effort by design: the file CONTENTS are already durable at every call site, and not every
+/// platform/filesystem supports opening a directory for fsync.
+fn sync_holding_dir(path: &Path) {
+    let parent = holding_dir(path);
+    #[cfg(test)]
+    fault_record_parent_fsync(parent);
+    if let Ok(dir) = std::fs::File::open(parent) {
+        let _ = dir.sync_all();
+    }
+}
+
+/// DURABLY remove `path`: unlink it, then fsync the holding directory so the REMOVAL survives a
+/// power loss. The asymmetric sibling of [`write`] -- installing a file fsynced the directory entry
+/// and removing one did not, so a crash after a plugin delete could resurrect the deleted artifact
+/// on the next boot and load it. `Err` only if the unlink itself fails.
+pub(crate) fn remove(path: &Path) -> io::Result<()> {
+    std::fs::remove_file(path)?;
+    sync_holding_dir(path);
+    Ok(())
+}
+
 pub(crate) fn write_with(path: &Path, bytes: &[u8], opts: DurableOpts) -> io::Result<()> {
     use std::io::Write as _;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -84,10 +117,7 @@ pub(crate) fn write_with(path: &Path, bytes: &[u8], opts: DurableOpts) -> io::Re
     // so no caller can pass a relative path that dodges the parent fsync (fixes the D2 class). The
     // temp is created in this same resolved parent, so temp + target always co-locate (same-FS
     // rename).
-    let parent = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
+    let parent = holding_dir(path);
     let file_name = path.file_name().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -102,6 +132,11 @@ pub(crate) fn write_with(path: &Path, bytes: &[u8], opts: DurableOpts) -> io::Re
         SEQ.fetch_add(1, Ordering::Relaxed)
     ));
     let tmp = parent.join(tmp_name);
+    // #[cfg(test)] seam: plant a decoy AT the exact about-to-use temp name. The name embeds a pid +
+    // an atomic sequence, so no test can predict it from the outside -- which is why the `exclusive`
+    // anti-wedge pre-removal below had no test at all until this existed.
+    #[cfg(test)]
+    plant_decoy_if_armed(&tmp);
 
     // RAII: the temp is removed on EVERY early return (every `?` below, and any future `?` an editor
     // adds) UNLESS we disarm after a successful rename. There is no manual cleanup to forget, so the
@@ -154,13 +189,8 @@ pub(crate) fn write_with(path: &Path, bytes: &[u8], opts: DurableOpts) -> io::Re
     std::fs::rename(&tmp, path)?; // ? → cleaned (temp may already be consumed; remove is best-effort)
     guard.armed = false; // published: the temp was consumed by the rename; disarm.
 
-    // fsync the parent dir so the rename's directory entry is itself durable. Best-effort: the
-    // contents are already durable, and not every platform/FS supports opening a directory for fsync.
-    #[cfg(test)]
-    fault_record_parent_fsync(parent);
-    if let Ok(dir) = std::fs::File::open(parent) {
-        let _ = dir.sync_all();
-    }
+    // fsync the parent dir so the rename's directory entry is itself durable.
+    sync_holding_dir(path);
     Ok(())
 }
 
@@ -203,6 +233,8 @@ thread_local! {
     /// The parent path the primitive fsync'd on this thread (for the relative-path assertion).
     static FAULT_PARENT_FSYNC: std::cell::RefCell<Option<std::path::PathBuf>> =
         const { std::cell::RefCell::new(None) };
+    /// One-shot: plant a decoy file at the NEXT write's exact temp path on this thread.
+    static PLANT_DECOY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Arm a one-shot fault: the next matching step returns `io::Error::from_raw_os_error(errno)`.
@@ -233,6 +265,22 @@ fn fault_take_if(step: FaultStep) -> Option<io::Error> {
     })
 }
 
+/// Arm a one-shot decoy: the next write on this thread finds a file ALREADY SITTING at the exact
+/// temp path it is about to create. That is the crashed-previous-run state the `exclusive` posture's
+/// pre-removal exists for, and the only way to reach it deterministically -- the temp name embeds a
+/// pid and an atomic counter, so a test cannot name it from outside.
+#[cfg(test)]
+fn plant_decoy_arm() {
+    PLANT_DECOY.with(|c| c.set(true));
+}
+
+#[cfg(test)]
+fn plant_decoy_if_armed(tmp: &Path) {
+    if PLANT_DECOY.with(|c| c.replace(false)) {
+        let _ = std::fs::write(tmp, b"leftover from a crashed run");
+    }
+}
+
 #[cfg(test)]
 fn fault_record_parent_fsync(parent: &Path) {
     FAULT_PARENT_FSYNC.with(|c| *c.borrow_mut() = Some(parent.to_path_buf()));
@@ -246,7 +294,8 @@ fn fault_parent_fsynced() -> Option<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        fault_arm, fault_parent_fsynced, fault_reset, write, write_with, DurableOpts, FaultStep,
+        fault_arm, fault_parent_fsynced, fault_reset, plant_decoy_arm, write, write_with,
+        DurableOpts, FaultStep,
     };
     use std::path::{Path, PathBuf};
 
@@ -433,12 +482,73 @@ mod tests {
         write_with(&target, b"deadbeef", opts).unwrap();
         let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "exclusive+mode must publish 0600");
-        // A leftover temp of the primitive's OWN naming shape from a crashed run must not wedge the
-        // next exclusive write (anti-wedge pre-removal). We can't predict the exact pid-seq, but the
-        // pre-removal targets the exact about-to-use name, so a plain re-write must simply succeed.
         write_with(&target, b"cafebabe", opts).unwrap();
         assert_eq!(std::fs::read(&target).unwrap(), b"cafebabe");
         assert!(!sc.has_durable_temp("signing.key"));
+    }
+
+    /// THE ANTI-WEDGE PRE-REMOVAL, actually exercised. `exclusive` opens the temp with `O_EXCL`, so a
+    /// leftover at the exact about-to-use name from a crashed run would make every subsequent write
+    /// fail `EEXIST` forever -- the signing key could never be rotated again. The `remove_file(&tmp)`
+    /// that prevents it had NO test: the temp name embeds a pid and an atomic counter, so no test
+    /// could name the file it needed to plant, and the old case admitted as much ("we can't predict
+    /// the exact pid-seq") and then asserted only that an ordinary re-write succeeds -- which it does
+    /// with the pre-removal deleted.
+    ///
+    /// `plant_decoy_arm` plants INSIDE the primitive, at the exact path it computed. RED with the
+    /// pre-removal removed: `EEXIST`.
+    #[test]
+    fn exclusive_pre_removal_clears_a_temp_left_by_a_crashed_run() {
+        let sc = Scratch::new("wedge");
+        let target = sc.path("signing.key");
+        let opts = DurableOpts {
+            mode: Some(0o600),
+            exclusive: true,
+        };
+        fault_reset();
+        write_with(&target, b"first", opts).unwrap();
+
+        plant_decoy_arm();
+        write_with(&target, b"rotated", opts)
+            .expect("a temp left by a crashed run must not wedge the exclusive write");
+        assert_eq!(
+            std::fs::read(&target).unwrap(),
+            b"rotated",
+            "the rotation published, and published OUR bytes -- never the decoy's"
+        );
+        assert!(
+            !sc.has_durable_temp("signing.key"),
+            "the temp was consumed by the rename; nothing leaks"
+        );
+    }
+
+    /// THE REMOVE SIDE of the durability contract. Installing an artifact fsyncs the holding
+    /// directory so its entry survives a power loss; removing one used to skip that (a bare
+    /// `remove_file` at the plugin-delete call site), which is the asymmetric half -- a crash right
+    /// after a delete could resurrect the artifact and load it on the next boot. Asserted the same
+    /// way the write side is: by observing the directory the primitive actually fsync'd, including
+    /// the RELATIVE-path resolution to "." that a call site cannot dodge.
+    #[test]
+    fn remove_unlinks_and_fsyncs_the_holding_dir() {
+        let sc = Scratch::new("remove");
+        let target = sc.path("plugin-1.0.0.tar.gz");
+        fault_reset();
+        write(&target, b"artifact").unwrap();
+
+        super::remove(&target).expect("the unlink succeeds");
+        assert!(!target.exists(), "the artifact is gone");
+        assert_eq!(
+            fault_parent_fsynced().as_deref(),
+            Some(sc.dir.as_path()),
+            "the REMOVAL's directory entry must be fsync'd, exactly as the install's is"
+        );
+
+        // A missing target is a real error, not a silent success -- the caller's 404 check is a
+        // separate concern and must not be papered over here.
+        assert!(
+            super::remove(&target).is_err(),
+            "removing nothing is an error"
+        );
     }
 
     /// §5b(8): concurrent writers to the SAME target — the final file is exactly ONE writer's payload
