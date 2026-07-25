@@ -12,7 +12,7 @@
 //!
 //! The file is a single JSON document written temp-then-atomic-rename (never a torn read), owned
 //! by busbar, fail-soft in every direction: unreadable/corrupt/stale at boot ⇒ start fresh with a
-//! loud log; unwritable at runtime ⇒ persistence disables itself with a loud log. It contains NO
+//! loud log; unwritable at runtime ⇒ the snapshotter keeps retrying and says so. It contains NO
 //! secrets (health metrics, audit metadata, hook definitions).
 //!
 //! Path resolution: `BUSBAR_STATE_FILE=/path` overrides; empty string disables; unset defaults to
@@ -101,21 +101,67 @@ pub(crate) fn capture(app: &crate::state::App) -> PersistedState {
     }
 }
 
-/// The periodic snapshotter: every ~30s capture + write. Spawned by main after boot; reads the
-/// CURRENT app through the handle so it follows config swaps. Self-disables (loudly, once) if the
-/// path stops being writable.
+/// How often the snapshotter captures + writes.
+const SNAPSHOT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Re-warn every Nth consecutive failure, so a persistent outage stays visible without a line per
+/// tick. A write failure is a time-varying runtime condition, not a static contradiction — warning
+/// once and going quiet leaves an operator who missed that line with no signal that persistence has
+/// been down for hours.
+const SNAPSHOT_WARN_EVERY: u32 = 10;
+
+/// The periodic snapshotter: capture + write on a fixed cadence. Spawned by main after boot; reads
+/// the CURRENT app through the handle so it follows config swaps.
 pub(crate) fn spawn_snapshotter(handle: std::sync::Arc<crate::state::AppHandle>, path: PathBuf) {
+    spawn_snapshotter_with_interval(handle, path, SNAPSHOT_INTERVAL);
+}
+
+/// [`spawn_snapshotter`] with the cadence injected, so a test can drive many ticks without waiting.
+pub(crate) fn spawn_snapshotter_with_interval(
+    handle: std::sync::Arc<crate::state::AppHandle>,
+    path: PathBuf,
+    interval: std::time::Duration,
+) {
     tokio::spawn(async move {
-        let mut tick = tokio::time::interval(std::time::Duration::from_secs(30));
+        let mut tick = tokio::time::interval(interval);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         // The first tick fires immediately: an early snapshot exists even for short-lived runs.
+        let mut consecutive: u32 = 0;
+        let mut last_success = crate::store::now();
         loop {
             tick.tick().await;
             let app = handle.load();
-            if let Err(e) = write(&path, &capture(&app)) {
-                tracing::warn!(path = %path.display(), error = %e,
-                    "state snapshot failed; persistence disabled for this run");
-                return;
+            match write(&path, &capture(&app)) {
+                Ok(()) => {
+                    if consecutive > 0 {
+                        tracing::info!(
+                            path = %path.display(),
+                            failed_attempts = consecutive,
+                            outage_secs = crate::store::now().saturating_sub(last_success),
+                            "state snapshot recovered"
+                        );
+                    }
+                    consecutive = 0;
+                    last_success = crate::store::now();
+                }
+                // RETRY, never give up. A full disk, an unmounted volume and a momentary NFS blip
+                // are indistinguishable here, so exiting on the first error turned any transient
+                // fault into permanent loss of the config version history and learned lane health
+                // that only this snapshot carries.
+                Err(e) => {
+                    consecutive = consecutive.saturating_add(1);
+                    if consecutive == 1 || consecutive.is_multiple_of(SNAPSHOT_WARN_EVERY) {
+                        tracing::warn!(
+                            path = %path.display(),
+                            error = %e,
+                            consecutive_failures = consecutive,
+                            last_success_age_secs =
+                                crate::store::now().saturating_sub(last_success),
+                            "state snapshot failed; retrying on the next tick (an unclean exit \
+                             would lose config version history and learned lane health)"
+                        );
+                    }
+                }
             }
         }
     });
@@ -237,5 +283,43 @@ mod tests {
             );
             assert_eq!(resolve_path(None), None, "no config path = disabled");
         }
+    }
+
+    /// A transient write failure must not end persistence for the process. Every other periodic task
+    /// in the crate retries — the budget flusher re-marks the cell dirty, the revocation sync leaves
+    /// its window open, the audit write-through backfills on the next success — and this one used to
+    /// `return` on the first error, giving up the config version history and learned lane health
+    /// that no other durable path carries.
+    #[tokio::test]
+    async fn a_failed_snapshot_retries_and_recovers() {
+        let dir = std::env::temp_dir().join(format!("busbar-snap-retry-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("state.json"); // parent absent: every write fails until it exists
+
+        let app = crate::test_support::TestApp::new().build();
+        let handle = std::sync::Arc::new(crate::state::AppHandle::new(app));
+        spawn_snapshotter_with_interval(handle, path.clone(), std::time::Duration::from_millis(10));
+
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+        assert!(
+            !path.exists(),
+            "precondition: the writes are genuinely failing"
+        );
+
+        std::fs::create_dir_all(&dir).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !path.exists() && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(
+            path.exists(),
+            "the snapshotter recovered once the path became writable"
+        );
+        assert!(
+            read(&path, crate::store::now()).is_some(),
+            "and wrote a valid snapshot, not a truncated one"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
