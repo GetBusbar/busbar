@@ -649,6 +649,9 @@ pub(crate) struct TestApp {
     lanes: Vec<LaneSpec>,
     pools: std::collections::HashMap<String, Vec<crate::state::WeightedLane>>,
     auth: Option<std::sync::Arc<crate::auth::AuthMiddleware>>,
+    /// `admin_auth:` chain module names for the built App. `None` = the production default
+    /// (`[admin-tokens]`); `Some(vec![])` selects the explicit OPEN admin posture (dev).
+    admin_chain: Option<Vec<String>>,
     governance: Option<std::sync::Arc<crate::governance::GovState>>,
     cost: Option<std::sync::Arc<crate::cost::CostModel>>,
     failover_cfg: Option<crate::config::FailoverCfg>,
@@ -673,6 +676,7 @@ impl TestApp {
             lanes: Vec::new(),
             pools: std::collections::HashMap::new(),
             auth: None,
+            admin_chain: None,
             governance: None,
             cost: None,
             failover_cfg: None,
@@ -781,6 +785,13 @@ impl TestApp {
         ));
         self
     }
+    /// Override the ADMIN auth chain. `vec![]` is the explicit OPEN admin posture — the only way
+    /// to reach the admin surface on a fixture that has no governance to hold an operator token.
+    pub(crate) fn admin_chain(mut self, modules: Vec<String>) -> Self {
+        self.admin_chain = Some(modules);
+        self
+    }
+
     pub(crate) fn auth(mut self, a: std::sync::Arc<crate::auth::AuthMiddleware>) -> Self {
         self.auth = Some(a);
         self
@@ -864,7 +875,10 @@ impl TestApp {
                 std::collections::HashMap::new(),
             )),
             base_hook_names: self.base_hook_names,
-            admin_chain: vec!["admin-tokens".to_string()],
+            admin_chain: self
+                .admin_chain
+                .clone()
+                .unwrap_or_else(|| vec!["admin-tokens".to_string()]),
             credential_cache: std::sync::Arc::new(crate::auth_cache::CredentialCache::new()),
             auth_scope_caps: std::collections::HashMap::new(),
             role_bindings: crate::config::RoleBindings::new(),
