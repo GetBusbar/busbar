@@ -6,10 +6,11 @@
 //! Writing a plugin is: implement [`busbar_api::Store`] for your backend, write a constructor
 //! `fn(&str) -> Result<Box<dyn Store>, String>` (the `&str` is the JSON config the operator set),
 //! call [`export_store_plugin!`] with it, and build the crate as a `cdylib`. The macro emits the
-//! six `extern "C"` symbols the engine's loader resolves (`busbar_abi`, `busbar_plugin_kind`,
-//! `busbar_open`, `busbar_call`, `busbar_free`, `busbar_close`); everything unsafe
-//! lives here in [`open_impl`]/[`call_impl`]/[`free_impl`]/[`close_impl`], which are ordinary,
-//! unit-tested functions — the macro is a thin, per-plugin wrapper.
+//! six `extern "C-unwind"` symbols the engine's loader resolves (`busbar_abi`, `busbar_plugin_kind`,
+//! `busbar_open`, `busbar_call`, `busbar_free`, `busbar_close`); every one routes through the single
+//! export-boundary choke point in [`boundary`] (null-out-guard-before-alloc, mandatory `catch_unwind`,
+//! and a total status map), so no per-symbol code can get an FFI-boundary invariant wrong. The author
+//! supplies only a ctor + a per-kind [`dispatch`] returning a [`BoundaryOutcome`].
 //!
 //! ```ignore
 //! use busbar_plugin_sdk::export_store_plugin;
@@ -24,17 +25,21 @@
 //! a plugin in (e.g. Postgres compiled straight into a custom binary) without any `cfg` sprawl.
 
 use busbar_api::{Store, StoreError};
-use busbar_plugin_abi::{
-    StoreRequest, StoreResponse, ABI_VERSION, STATUS_ERR, STATUS_OK, STATUS_PROTOCOL,
-};
+use busbar_plugin_abi::{StoreRequest, StoreResponse, ABI_VERSION};
 use std::os::raw::c_void;
-use std::panic::{catch_unwind, AssertUnwindSafe};
+
+pub mod boundary;
+pub use boundary::BoundaryOutcome;
 
 // Re-export so a plugin's `export_store_plugin!` expansion can name the trait via `$crate`.
 pub use busbar_api::Store as StoreTrait;
 
+/// The handle type behind the opaque `*mut c_void` for a store plugin (a boxed trait object). Named at
+/// the module level so the `export_plugin!` expansion can pass it to `close_boundary::<$ty>`.
+pub type StoreHandle = Box<dyn Store>;
+
 /// The store handle behind the opaque `*mut c_void` that crosses the ABI: a boxed trait object.
-type BoxedStore = Box<dyn Store>;
+type BoxedStore = StoreHandle;
 
 /// Return the store PAYLOAD schema version this SDK builds against (the manifest `abi_version` a
 /// `kind: store` plugin declares). NOT the transport version — see [`transport_version`].
@@ -113,167 +118,31 @@ pub fn dispatch(store: &dyn Store, req: StoreRequest) -> Result<StoreResponse, S
     })
 }
 
-/// Hand a byte buffer to the engine: allocate as a boxed slice (so cap == len), leak it, and write
-/// (ptr, len). The engine owns it until it calls [`free_impl`]. `out`/`out_len` must be non-null.
-unsafe fn write_buf(bytes: Vec<u8>, out: *mut *mut u8, out_len: *mut usize) {
-    let boxed = bytes.into_boxed_slice();
-    let len = boxed.len();
-    // Only leak the buffer (`into_raw`) once we know we can hand the pointer back through `out`. A
-    // prior version leaked BEFORE the null-check, so a null `out` (a misbehaving/aborting caller)
-    // permanently leaked the buffer — the pointer was never written anywhere and could never be
-    // freed. If `out` is null there is nowhere to return the pointer, so drop the box instead. Same
-    // pattern as the open_impl null-out fix.
-    if out.is_null() {
-        drop(boxed);
-        return;
-    }
-    let ptr = Box::into_raw(boxed) as *mut u8;
-    *out = ptr;
-    if !out_len.is_null() {
-        *out_len = len;
-    }
-}
-
-/// `busbar_store_free` body — reclaim a buffer produced by [`open_impl`]/[`call_impl`]. Freed with the
-/// same allocator that produced it (the plugin's), never the engine's.
+/// The per-kind `dispatch` closure `export_store_plugin!` hands to [`boundary::call_boundary`]: decode a
+/// [`StoreRequest`], run it via [`dispatch`], and encode the [`StoreResponse`] into a [`BoundaryOutcome`].
+/// The boundary wrapper supplies the null-handle guard, the mandatory `catch_unwind`, the status map,
+/// and the alloc-after-check buffer publish — this closure only names the kind's types.
+///
+/// A REQUEST-decode failure is the ONLY [`BoundaryOutcome::Unsupported`] case: it is how an older plugin
+/// (predating a request variant) signals "I cannot understand this variant", which the loader keys on to
+/// fall back (empty denylist / full-list audit tail). A RESPONSE-encode failure is a real fault →
+/// [`BoundaryOutcome::Error`], never Unsupported, or the loader would swallow it as old-SDK.
 ///
 /// # Safety
-/// `(ptr, len)` must be exactly a pair this plugin returned and not yet freed.
-pub unsafe fn free_impl(ptr: *mut u8, len: usize) {
-    if ptr.is_null() {
-        return;
-    }
-    let slice = std::slice::from_raw_parts_mut(ptr, len);
-    drop(Box::from_raw(slice as *mut [u8]));
-}
-
-/// `busbar_store_open` body — build a store from the JSON config via `ctor`. On success sets
-/// `*out_handle`; on failure writes a UTF-8 message to `out_err`/`out_err_len`. A panic in the
-/// constructor is caught and reported as a protocol error (a panic must never cross the C boundary).
-///
-/// # Safety
-/// Pointers must be valid per the ABI: `cfg`/`cfg_len` a readable buffer (or len 0), and the three
-/// out pointers writable.
-pub unsafe fn open_impl(
-    cfg: *const u8,
-    cfg_len: usize,
-    out_handle: *mut *mut c_void,
-    out_err: *mut *mut u8,
-    out_err_len: *mut usize,
-    ctor: fn(&str) -> Result<BoxedStore, String>,
-) -> i32 {
-    let res = catch_unwind(AssertUnwindSafe(|| {
-        let bytes: &[u8] = if cfg_len == 0 {
-            &[]
-        } else if cfg.is_null() {
-            return Err((String::from("null config pointer"), true));
-        } else {
-            std::slice::from_raw_parts(cfg, cfg_len)
-        };
-        let s = match std::str::from_utf8(bytes) {
-            Ok(s) => s,
-            Err(_) => return Err((String::from("config is not valid UTF-8"), true)),
-        };
-        ctor(s).map_err(|msg| (msg, false))
-    }));
-    match res {
-        Ok(Ok(store)) => {
-            // A null `out_handle` is a caller-protocol violation: there is nowhere to write the
-            // handle. Allocate ONLY when there is a slot for it — otherwise `Box::into_raw` would
-            // leak the boxed handle permanently (never written back, never freed). `store` drops
-            // here (freeing anything the ctor opened) and we report a protocol error.
-            if out_handle.is_null() {
-                write_buf(b"null out_handle pointer".to_vec(), out_err, out_err_len);
-                return STATUS_PROTOCOL;
-            }
-            *out_handle = Box::into_raw(Box::new(store)) as *mut c_void;
-            STATUS_OK
-        }
-        Ok(Err((msg, protocol))) => {
-            write_buf(msg.into_bytes(), out_err, out_err_len);
-            if protocol {
-                STATUS_PROTOCOL
-            } else {
-                STATUS_ERR
-            }
-        }
-        Err(_) => STATUS_PROTOCOL,
-    }
-}
-
-/// `busbar_store_call` body — deserialize a [`StoreRequest`], run it, serialize the [`StoreResponse`].
-/// On `STATUS_OK` the out buffer holds the response JSON; on a nonzero status it holds a UTF-8 error
-/// message. A panic in the backend is caught and reported as a protocol error.
-///
-/// # Safety
-/// `handle` must be a live handle from [`open_impl`]; `req`/`req_len` a readable buffer (or len 0);
-/// the out pointers writable.
-pub unsafe fn call_impl(
-    handle: *mut c_void,
-    req: *const u8,
-    req_len: usize,
-    out: *mut *mut u8,
-    out_len: *mut usize,
-) -> i32 {
-    if handle.is_null() {
-        return STATUS_PROTOCOL;
-    }
+/// `handle` is a live store handle from `open` (guaranteed non-null by the boundary wrapper).
+pub unsafe fn store_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutcome {
     let store: &BoxedStore = &*(handle as *const BoxedStore);
-    let res = catch_unwind(AssertUnwindSafe(|| {
-        let bytes: &[u8] = if req_len == 0 {
-            &[]
-        } else if req.is_null() {
-            return Err((String::from("null request pointer"), true));
-        } else {
-            std::slice::from_raw_parts(req, req_len)
-        };
-        // A REQUEST-decode failure is the ONLY genuine `STATUS_PROTOCOL` case from here: it is how an
-        // older plugin (that predates a request variant) signals "I cannot understand this variant",
-        // which the loader keys on to fall back (e.g. an empty denylist / a full-list audit tail). A
-        // RESPONSE-encode failure below is NOT that — it is a real backend/serialization fault and must
-        // surface as `STATUS_ERR`, or the loader would misread it as unsupported-variant and silently
-        // swallow the failure (hydrating an empty denylist, masking the fault). `protocol` = true only
-        // for a request the plugin could not decode.
-        let request: StoreRequest = match serde_json::from_slice(bytes) {
-            Ok(r) => r,
-            Err(e) => return Err((format!("malformed request JSON: {e}"), true)),
-        };
-        match dispatch(store.as_ref(), request) {
-            // A response-encode failure is a real fault, NOT an unsupported-variant signal → STATUS_ERR.
-            Ok(resp) => serde_json::to_vec(&resp)
-                .map_err(|e| (format!("response encode failed: {e}"), false)),
-            Err(e) => Err((e.0, false)),
-        }
-    }));
-    match res {
-        Ok(Ok(payload)) => {
-            write_buf(payload, out, out_len);
-            STATUS_OK
-        }
-        Ok(Err((msg, protocol))) => {
-            write_buf(msg.into_bytes(), out, out_len);
-            if protocol {
-                STATUS_PROTOCOL
-            } else {
-                STATUS_ERR
-            }
-        }
-        // A PANIC inside the backend is a real out-of-band failure, NOT an unsupported-variant signal.
-        // Mapping it to STATUS_PROTOCOL would let the loader misclassify it as "old SDK" and silently
-        // swallow it (e.g. hydrate an empty denylist). Report STATUS_ERR so the real failure propagates.
-        Err(_) => STATUS_ERR,
+    let request: StoreRequest = match serde_json::from_slice(bytes) {
+        Ok(r) => r,
+        Err(e) => return BoundaryOutcome::Unsupported(format!("malformed request JSON: {e}")),
+    };
+    match dispatch(store.as_ref(), request) {
+        Ok(resp) => match serde_json::to_vec(&resp) {
+            Ok(payload) => BoundaryOutcome::Ok(payload),
+            Err(e) => BoundaryOutcome::Error(format!("response encode failed: {e}")),
+        },
+        Err(e) => BoundaryOutcome::Error(e.0),
     }
-}
-
-/// `busbar_store_close` body — drop the store instance behind `handle`. Idempotent on null.
-///
-/// # Safety
-/// `handle` must be a live handle from [`open_impl`] that has not already been closed.
-pub unsafe fn close_impl(handle: *mut c_void) {
-    if handle.is_null() {
-        return;
-    }
-    drop(Box::from_raw(handle as *mut BoxedStore));
 }
 
 // ── AUTH-plugin glue (`kind: auth`) ──────────────────────────────────────────────────────────────
@@ -281,8 +150,12 @@ pub unsafe fn close_impl(handle: *mut c_void) {
 // (`Box<dyn AuthModule>`) and the identity-only auth wire. A denied credential is a SUCCESSFUL call
 // (`Reject`/`Pass` ride the OK payload); only a malformed request / encode failure is a protocol error.
 
+/// The auth handle behind the opaque `*mut c_void`: a boxed [`busbar_api::AuthModule`]. Named at the
+/// module level so the `export_plugin!` expansion can pass it to `close_boundary::<$ty>`.
+pub type AuthHandle = Box<dyn busbar_api::AuthModule>;
+
 /// The auth handle behind the opaque `*mut c_void`: a boxed [`busbar_api::AuthModule`].
-type BoxedAuth = Box<dyn busbar_api::AuthModule>;
+type BoxedAuth = AuthHandle;
 
 /// The auth PAYLOAD schema version this SDK builds against (the manifest `abi_version` a `kind: auth`
 /// plugin declares). NOT the transport version — see [`transport_version`].
@@ -312,114 +185,24 @@ pub fn dispatch_auth(
     }
 }
 
-/// `busbar_open` body for an auth plugin — build a `Box<dyn AuthModule>` from the JSON config.
+/// The per-kind `dispatch` closure `export_auth_plugin!` hands to [`boundary::call_boundary`]: decode an
+/// [`busbar_plugin_abi::auth::AuthRequest`], run it via [`dispatch_auth`], and encode the
+/// [`busbar_plugin_abi::auth::AuthResponse`] into a [`BoundaryOutcome`]. An `authenticate` verdict
+/// (`Reject`/`Pass`) rides the OK payload — only an undecodable request / encode failure is non-OK.
 ///
 /// # Safety
-/// Pointers must be valid per the ABI (see [`open_impl`]).
-pub unsafe fn auth_open_impl(
-    cfg: *const u8,
-    cfg_len: usize,
-    out_handle: *mut *mut c_void,
-    out_err: *mut *mut u8,
-    out_err_len: *mut usize,
-    ctor: fn(&str) -> Result<BoxedAuth, String>,
-) -> i32 {
-    let res = catch_unwind(AssertUnwindSafe(|| {
-        let bytes: &[u8] = if cfg_len == 0 {
-            &[]
-        } else if cfg.is_null() {
-            return Err((String::from("null config pointer"), true));
-        } else {
-            std::slice::from_raw_parts(cfg, cfg_len)
-        };
-        let s = match std::str::from_utf8(bytes) {
-            Ok(s) => s,
-            Err(_) => return Err((String::from("config is not valid UTF-8"), true)),
-        };
-        ctor(s).map_err(|msg| (msg, false))
-    }));
-    match res {
-        Ok(Ok(module)) => {
-            // A null `out_handle` is a caller-protocol violation: there is nowhere to write the
-            // handle. Allocate ONLY when there is a slot for it — otherwise `Box::into_raw` would
-            // leak the boxed handle permanently (never written back, never freed). `module` drops
-            // here (freeing anything the ctor opened) and we report a protocol error.
-            if out_handle.is_null() {
-                write_buf(b"null out_handle pointer".to_vec(), out_err, out_err_len);
-                return STATUS_PROTOCOL;
-            }
-            *out_handle = Box::into_raw(Box::new(module)) as *mut c_void;
-            STATUS_OK
-        }
-        Ok(Err((msg, protocol))) => {
-            write_buf(msg.into_bytes(), out_err, out_err_len);
-            if protocol {
-                STATUS_PROTOCOL
-            } else {
-                STATUS_ERR
-            }
-        }
-        Err(_) => STATUS_PROTOCOL,
-    }
-}
-
-/// `busbar_call` body for an auth plugin — deserialize an [`busbar_plugin_abi::auth::AuthRequest`],
-/// dispatch, serialize the [`busbar_plugin_abi::auth::AuthResponse`]. Panics are caught.
-///
-/// # Safety
-/// `handle` must be a live handle from [`auth_open_impl`]; buffers per the ABI.
-pub unsafe fn auth_call_impl(
-    handle: *mut c_void,
-    req: *const u8,
-    req_len: usize,
-    out: *mut *mut u8,
-    out_len: *mut usize,
-) -> i32 {
-    if handle.is_null() {
-        return STATUS_PROTOCOL;
-    }
+/// `handle` is a live auth handle from `open` (guaranteed non-null by the boundary wrapper).
+pub unsafe fn auth_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutcome {
     let module: &BoxedAuth = &*(handle as *const BoxedAuth);
-    let res = catch_unwind(AssertUnwindSafe(|| {
-        let bytes: &[u8] = if req_len == 0 {
-            &[]
-        } else if req.is_null() {
-            return Err((String::from("null request pointer"), true));
-        } else {
-            std::slice::from_raw_parts(req, req_len)
-        };
-        let request: busbar_plugin_abi::auth::AuthRequest = match serde_json::from_slice(bytes) {
-            Ok(r) => r,
-            Err(e) => return Err((format!("malformed request JSON: {e}"), true)),
-        };
-        let resp = dispatch_auth(module.as_ref(), request);
-        serde_json::to_vec(&resp).map_err(|e| (format!("response encode failed: {e}"), true))
-    }));
-    match res {
-        Ok(Ok(payload)) => {
-            write_buf(payload, out, out_len);
-            STATUS_OK
-        }
-        Ok(Err((msg, protocol))) => {
-            write_buf(msg.into_bytes(), out, out_len);
-            if protocol {
-                STATUS_PROTOCOL
-            } else {
-                STATUS_ERR
-            }
-        }
-        Err(_) => STATUS_PROTOCOL,
+    let request: busbar_plugin_abi::auth::AuthRequest = match serde_json::from_slice(bytes) {
+        Ok(r) => r,
+        Err(e) => return BoundaryOutcome::Unsupported(format!("malformed request JSON: {e}")),
+    };
+    let resp = dispatch_auth(module.as_ref(), request);
+    match serde_json::to_vec(&resp) {
+        Ok(payload) => BoundaryOutcome::Ok(payload),
+        Err(e) => BoundaryOutcome::Error(format!("response encode failed: {e}")),
     }
-}
-
-/// `busbar_close` body for an auth plugin — drop the module instance. Idempotent on null.
-///
-/// # Safety
-/// `handle` must be a live handle from [`auth_open_impl`] not already closed.
-pub unsafe fn auth_close_impl(handle: *mut c_void) {
-    if handle.is_null() {
-        return;
-    }
-    drop(Box::from_raw(handle as *mut BoxedAuth));
 }
 
 /// Emit an `auth`-kind cdylib plugin from `$ctor` (a
@@ -430,10 +213,9 @@ macro_rules! export_auth_plugin {
     ($ctor:path) => {
         $crate::export_plugin!(
             kind = "auth",
-            open = $crate::auth_open_impl,
-            call = $crate::auth_call_impl,
-            close = $crate::auth_close_impl,
+            dispatch = $crate::auth_dispatch,
             ctor = $ctor,
+            handle = $crate::AuthHandle,
         );
     };
 }
@@ -442,8 +224,12 @@ macro_rules! export_auth_plugin {
 // Mirrors the store glue one-to-one: same five-symbol shape, same panic-catching impl style, its
 // own handle type (`Box<dyn SecretModule>`) and its own tiny request enum.
 
+/// The secret handle behind the opaque `*mut c_void`: a boxed [`busbar_api::SecretModule`]. Named at
+/// the module level so the `export_plugin!` expansion can pass it to `close_boundary::<$ty>`.
+pub type SecretHandle = Box<dyn busbar_api::SecretModule>;
+
 /// The secret handle behind the opaque `*mut c_void`: a boxed [`busbar_api::SecretModule`].
-type BoxedSecret = Box<dyn busbar_api::SecretModule>;
+type BoxedSecret = SecretHandle;
 
 /// Return the SECRET ABI version this SDK builds against (`busbar_secret_abi_version`).
 pub fn secret_abi_version() -> u32 {
@@ -463,117 +249,26 @@ pub fn dispatch_secret(
     }
 }
 
-/// `busbar_secret_open` body - build a secret module from the JSON config via `ctor`.
+/// The per-kind `dispatch` closure `export_secret_plugin!` hands to [`boundary::call_boundary`]: decode
+/// a [`busbar_plugin_abi::SecretRequest`], run it via [`dispatch_secret`], and encode the response into
+/// a [`BoundaryOutcome`]. A resolve failure is a defined backend error → [`BoundaryOutcome::Error`]
+/// (the message must never carry secret material).
 ///
 /// # Safety
-/// Pointers must be valid per the ABI (see [`open_impl`]).
-pub unsafe fn secret_open_impl(
-    cfg: *const u8,
-    cfg_len: usize,
-    out_handle: *mut *mut c_void,
-    out_err: *mut *mut u8,
-    out_err_len: *mut usize,
-    ctor: fn(&str) -> Result<BoxedSecret, String>,
-) -> i32 {
-    let res = catch_unwind(AssertUnwindSafe(|| {
-        let bytes: &[u8] = if cfg_len == 0 {
-            &[]
-        } else if cfg.is_null() {
-            return Err((String::from("null config pointer"), true));
-        } else {
-            std::slice::from_raw_parts(cfg, cfg_len)
-        };
-        let s = match std::str::from_utf8(bytes) {
-            Ok(s) => s,
-            Err(_) => return Err((String::from("config is not valid UTF-8"), true)),
-        };
-        ctor(s).map_err(|msg| (msg, false))
-    }));
-    match res {
-        Ok(Ok(module)) => {
-            // A null `out_handle` is a caller-protocol violation: there is nowhere to write the
-            // handle. Allocate ONLY when there is a slot for it — otherwise `Box::into_raw` would
-            // leak the boxed handle permanently (never written back, never freed). `module` drops
-            // here (freeing anything the ctor opened) and we report a protocol error.
-            if out_handle.is_null() {
-                write_buf(b"null out_handle pointer".to_vec(), out_err, out_err_len);
-                return STATUS_PROTOCOL;
-            }
-            *out_handle = Box::into_raw(Box::new(module)) as *mut c_void;
-            STATUS_OK
-        }
-        Ok(Err((msg, protocol))) => {
-            write_buf(msg.into_bytes(), out_err, out_err_len);
-            if protocol {
-                STATUS_PROTOCOL
-            } else {
-                STATUS_ERR
-            }
-        }
-        Err(_) => STATUS_PROTOCOL,
-    }
-}
-
-/// `busbar_secret_call` body - deserialize a [`busbar_plugin_abi::SecretRequest`], run it,
-/// serialize the response. Panics are caught (a panic never crosses the C boundary).
-///
-/// # Safety
-/// `handle` must be a live handle from [`secret_open_impl`]; buffers per the ABI.
-pub unsafe fn secret_call_impl(
-    handle: *mut c_void,
-    req: *const u8,
-    req_len: usize,
-    out: *mut *mut u8,
-    out_len: *mut usize,
-) -> i32 {
-    if handle.is_null() {
-        return STATUS_PROTOCOL;
-    }
+/// `handle` is a live secret handle from `open` (guaranteed non-null by the boundary wrapper).
+pub unsafe fn secret_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutcome {
     let module: &BoxedSecret = &*(handle as *const BoxedSecret);
-    let res = catch_unwind(AssertUnwindSafe(|| {
-        let bytes: &[u8] = if req_len == 0 {
-            &[]
-        } else if req.is_null() {
-            return Err((String::from("null request pointer"), true));
-        } else {
-            std::slice::from_raw_parts(req, req_len)
-        };
-        let request: busbar_plugin_abi::SecretRequest = match serde_json::from_slice(bytes) {
-            Ok(r) => r,
-            Err(e) => return Err((format!("malformed request JSON: {e}"), true)),
-        };
-        match dispatch_secret(module.as_ref(), request) {
-            Ok(resp) => serde_json::to_vec(&resp)
-                .map_err(|e| (format!("response encode failed: {e}"), true)),
-            Err(e) => Err((e.0, false)),
-        }
-    }));
-    match res {
-        Ok(Ok(payload)) => {
-            write_buf(payload, out, out_len);
-            STATUS_OK
-        }
-        Ok(Err((msg, protocol))) => {
-            write_buf(msg.into_bytes(), out, out_len);
-            if protocol {
-                STATUS_PROTOCOL
-            } else {
-                STATUS_ERR
-            }
-        }
-        Err(_) => STATUS_PROTOCOL,
+    let request: busbar_plugin_abi::SecretRequest = match serde_json::from_slice(bytes) {
+        Ok(r) => r,
+        Err(e) => return BoundaryOutcome::Unsupported(format!("malformed request JSON: {e}")),
+    };
+    match dispatch_secret(module.as_ref(), request) {
+        Ok(resp) => match serde_json::to_vec(&resp) {
+            Ok(payload) => BoundaryOutcome::Ok(payload),
+            Err(e) => BoundaryOutcome::Error(format!("response encode failed: {e}")),
+        },
+        Err(e) => BoundaryOutcome::Error(e.0),
     }
-}
-
-/// `busbar_secret_close` body - drop the secret-module instance. Idempotent on null.
-///
-/// # Safety
-/// `handle` must be a live handle from [`secret_open_impl`] not already closed.
-pub unsafe fn secret_close_impl(handle: *mut c_void) {
-    if handle.is_null() {
-        return;
-    }
-    drop(Box::from_raw(handle as *mut BoxedSecret));
 }
 
 // ── HOOK-plugin glue (`kind: hook`) ───────────────────────────────────────────────────────────────
@@ -623,8 +318,12 @@ pub trait HookHandler: Send + Sync {
     }
 }
 
+/// The hook handle behind the opaque `*mut c_void`: a boxed [`HookHandler`]. Named at the module level
+/// so the `export_plugin!` expansion can pass it to `close_boundary::<$ty>`.
+pub type HookHandle = Box<dyn HookHandler>;
+
 /// The hook handle behind the opaque `*mut c_void`: a boxed [`HookHandler`].
-type BoxedHook = Box<dyn HookHandler>;
+type BoxedHook = HookHandle;
 
 /// Return the HOOK PAYLOAD schema version this SDK builds against (`busbar_plugin_kind() == "hook"`).
 pub fn hook_abi_version() -> u32 {
@@ -664,115 +363,23 @@ pub fn dispatch_hook(
     }
 }
 
-/// `busbar_open` body for a hook plugin — build a `Box<dyn HookHandler>` from the JSON config.
+/// The per-kind `dispatch` closure `export_hook_plugin!` hands to [`boundary::call_boundary`]: decode a
+/// [`busbar_plugin_abi::hook::HookRequest`], run it via [`dispatch_hook`], and encode the reply into a
+/// [`BoundaryOutcome`].
 ///
 /// # Safety
-/// Pointers must be valid per the ABI (see [`open_impl`]).
-pub unsafe fn hook_open_impl(
-    cfg: *const u8,
-    cfg_len: usize,
-    out_handle: *mut *mut c_void,
-    out_err: *mut *mut u8,
-    out_err_len: *mut usize,
-    ctor: fn(&str) -> Result<BoxedHook, String>,
-) -> i32 {
-    let res = catch_unwind(AssertUnwindSafe(|| {
-        let bytes: &[u8] = if cfg_len == 0 {
-            &[]
-        } else if cfg.is_null() {
-            return Err((String::from("null config pointer"), true));
-        } else {
-            std::slice::from_raw_parts(cfg, cfg_len)
-        };
-        let s = match std::str::from_utf8(bytes) {
-            Ok(s) => s,
-            Err(_) => return Err((String::from("config is not valid UTF-8"), true)),
-        };
-        ctor(s).map_err(|msg| (msg, false))
-    }));
-    match res {
-        Ok(Ok(handler)) => {
-            // A null `out_handle` is a caller-protocol violation: there is nowhere to write the
-            // handle. Allocate ONLY when there is a slot for it — otherwise `Box::into_raw` would
-            // leak the boxed handle permanently (never written back, never freed). `handler` drops
-            // here (freeing anything the ctor opened) and we report a protocol error.
-            if out_handle.is_null() {
-                write_buf(b"null out_handle pointer".to_vec(), out_err, out_err_len);
-                return STATUS_PROTOCOL;
-            }
-            *out_handle = Box::into_raw(Box::new(handler)) as *mut c_void;
-            STATUS_OK
-        }
-        Ok(Err((msg, protocol))) => {
-            write_buf(msg.into_bytes(), out_err, out_err_len);
-            if protocol {
-                STATUS_PROTOCOL
-            } else {
-                STATUS_ERR
-            }
-        }
-        Err(_) => STATUS_PROTOCOL,
-    }
-}
-
-/// `busbar_call` body for a hook plugin — deserialize a
-/// [`busbar_plugin_abi::hook::HookRequest`], dispatch, serialize the reply. Panics are caught (a panic
-/// never crosses the C boundary — the engine maps a caught panic to a PROTOCOL error).
-///
-/// # Safety
-/// `handle` must be a live handle from [`hook_open_impl`]; buffers per the ABI.
-pub unsafe fn hook_call_impl(
-    handle: *mut c_void,
-    req: *const u8,
-    req_len: usize,
-    out: *mut *mut u8,
-    out_len: *mut usize,
-) -> i32 {
-    if handle.is_null() {
-        return STATUS_PROTOCOL;
-    }
+/// `handle` is a live hook handle from `open` (guaranteed non-null by the boundary wrapper).
+pub unsafe fn hook_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutcome {
     let handler: &BoxedHook = &*(handle as *const BoxedHook);
-    let res = catch_unwind(AssertUnwindSafe(|| {
-        let bytes: &[u8] = if req_len == 0 {
-            &[]
-        } else if req.is_null() {
-            return Err((String::from("null request pointer"), true));
-        } else {
-            std::slice::from_raw_parts(req, req_len)
-        };
-        let request: busbar_plugin_abi::hook::HookRequest = match serde_json::from_slice(bytes) {
-            Ok(r) => r,
-            Err(e) => return Err((format!("malformed request JSON: {e}"), true)),
-        };
-        let resp = dispatch_hook(handler.as_ref(), request);
-        serde_json::to_vec(&resp).map_err(|e| (format!("response encode failed: {e}"), true))
-    }));
-    match res {
-        Ok(Ok(payload)) => {
-            write_buf(payload, out, out_len);
-            STATUS_OK
-        }
-        Ok(Err((msg, protocol))) => {
-            write_buf(msg.into_bytes(), out, out_len);
-            if protocol {
-                STATUS_PROTOCOL
-            } else {
-                STATUS_ERR
-            }
-        }
-        Err(_) => STATUS_PROTOCOL,
+    let request: busbar_plugin_abi::hook::HookRequest = match serde_json::from_slice(bytes) {
+        Ok(r) => r,
+        Err(e) => return BoundaryOutcome::Unsupported(format!("malformed request JSON: {e}")),
+    };
+    let resp = dispatch_hook(handler.as_ref(), request);
+    match serde_json::to_vec(&resp) {
+        Ok(payload) => BoundaryOutcome::Ok(payload),
+        Err(e) => BoundaryOutcome::Error(format!("response encode failed: {e}")),
     }
-}
-
-/// `busbar_close` body for a hook plugin — drop the handler instance. Idempotent on null.
-///
-/// # Safety
-/// `handle` must be a live handle from [`hook_open_impl`] not already closed.
-pub unsafe fn hook_close_impl(handle: *mut c_void) {
-    if handle.is_null() {
-        return;
-    }
-    drop(Box::from_raw(handle as *mut BoxedHook));
 }
 
 /// Emit a `hook`-kind cdylib plugin from `$ctor` (a
@@ -783,27 +390,32 @@ macro_rules! export_hook_plugin {
     ($ctor:path) => {
         $crate::export_plugin!(
             kind = "hook",
-            open = $crate::hook_open_impl,
-            call = $crate::hook_call_impl,
-            close = $crate::hook_close_impl,
+            dispatch = $crate::hook_dispatch,
             ctor = $ctor,
+            handle = $crate::HookHandle,
         );
     };
 }
 
-/// The ONE macro that stamps a plugin's KIND and emits the SIX kind-neutral `extern "C"` symbols
-/// (`busbar_abi`, `busbar_plugin_kind`, `busbar_open`, `busbar_call`, `busbar_free`, `busbar_close`),
-/// wiring `open`/`call`/`close` to the caller-supplied bodies. The per-kind `export_*_plugin!`
-/// convenience macros expand through this — a plugin author normally calls those, not this directly.
+/// The ONE macro that stamps a plugin's KIND and emits the SIX kind-neutral `extern "C-unwind"`
+/// symbols (`busbar_abi`, `busbar_plugin_kind`, `busbar_open`, `busbar_call`, `busbar_free`,
+/// `busbar_close`), hard-wiring EVERY symbol through the [`boundary`] choke point. The per-kind
+/// `export_*_plugin!` convenience macros expand through this — a plugin author normally calls those.
 ///
-/// - `$kind` — a `&'static str` kind (`"store"` | `"secret"` | `"auth"` | `"hook"`), stamped into
-///   `busbar_plugin_kind()` as a NUL-terminated string.
-/// - `$open`/`$call`/`$close` — paths to the SDK `*_impl` bodies for this kind (the FFI unsafe lives
-///   there, unit-tested; the macro is a thin per-plugin wrapper).
-/// - `$ctor` — the plugin's `fn(&str) -> Result<Box<dyn Trait>, String>` constructor.
+/// The author supplies ONLY a `$ctor` (`fn(&str) -> Result<$handle, String>`) and a `$dispatch`
+/// (`unsafe fn(*mut c_void, &[u8]) -> BoundaryOutcome`). The null-out-guard-before-alloc, the mandatory
+/// `catch_unwind`, the total status mapping, and the drop-on-null handle publish are supplied by
+/// `boundary::open_boundary`/`call_boundary`/`close_boundary`/`free_boundary`. There is NO seam on which
+/// an author can get a boundary facet wrong: `$dispatch` returns a [`BoundaryOutcome`] that cannot name
+/// a raw pointer or a status integer, and these SIX symbols are the ONLY `#[no_mangle]` exports.
+///
+/// - `$kind` — a `&'static str` kind (`"store"` | `"secret"` | `"auth"` | `"hook"`).
+/// - `$dispatch` — the per-kind SDK `dispatch` adapter (`store_dispatch`/`auth_dispatch`/…).
+/// - `$ctor` — the plugin's `fn(&str) -> Result<$handle, String>` constructor.
+/// - `$handle` — the boxed handle type, so `close_boundary::<$handle>` frees it correctly.
 #[macro_export]
 macro_rules! export_plugin {
-    (kind = $kind:expr, open = $open:path, call = $call:path, close = $close:path, ctor = $ctor:path $(,)?) => {
+    (kind = $kind:expr, dispatch = $dispatch:path, ctor = $ctor:path, handle = $handle:ty $(,)?) => {
         /// # Safety
         /// Read only by the busbar loader as the frozen TRANSPORT handshake.
         ///
@@ -824,7 +436,9 @@ macro_rules! export_plugin {
         }
 
         /// # Safety
-        /// Called only by the busbar loader with ABI-valid pointers.
+        /// Called only by the busbar loader with ABI-valid pointers. Routes through
+        /// `boundary::open_boundary`: the ctor runs under a mandatory `catch_unwind`, the handle is
+        /// published only into a confirmed non-null slot (else dropped), and the status is total.
         #[no_mangle]
         pub unsafe extern "C-unwind" fn busbar_open(
             cfg: *const u8,
@@ -833,11 +447,20 @@ macro_rules! export_plugin {
             out_err: *mut *mut u8,
             out_err_len: *mut usize,
         ) -> i32 {
-            $open(cfg, cfg_len, out_handle, out_err, out_err_len, $ctor)
+            $crate::boundary::open_boundary::<$handle>(
+                cfg,
+                cfg_len,
+                out_handle,
+                out_err,
+                out_err_len,
+                |s| $ctor(s).map_err($crate::BoundaryOutcome::Error),
+            )
         }
 
         /// # Safety
-        /// Called only by the busbar loader with a live handle and ABI-valid pointers.
+        /// Called only by the busbar loader with a live handle and ABI-valid pointers. Routes through
+        /// `boundary::call_boundary`: null-handle → protocol, dispatch under mandatory `catch_unwind`,
+        /// alloc-after-check buffer publish, total status.
         #[no_mangle]
         pub unsafe extern "C-unwind" fn busbar_call(
             handle: *mut ::core::ffi::c_void,
@@ -846,21 +469,25 @@ macro_rules! export_plugin {
             out: *mut *mut u8,
             out_len: *mut usize,
         ) -> i32 {
-            $call(handle, req, req_len, out, out_len)
+            $crate::boundary::call_boundary(handle, req, req_len, out, out_len, |h, b| {
+                $dispatch(h, b)
+            })
         }
 
         /// # Safety
-        /// Called only by the busbar loader with a buffer this plugin returned.
+        /// Called only by the busbar loader with a buffer this plugin returned. Catch-wrapped dealloc.
         #[no_mangle]
         pub unsafe extern "C-unwind" fn busbar_free(ptr: *mut u8, len: usize) {
-            $crate::free_impl(ptr, len)
+            $crate::boundary::free_boundary(ptr, len)
         }
 
         /// # Safety
-        /// Called only by the busbar loader with a live handle, once.
+        /// Called only by the busbar loader with a live handle, once. Routes through
+        /// `boundary::close_boundary`: the box is owned BEFORE the `catch_unwind`, so a panicking Drop
+        /// frees the allocation and never unwinds out of this symbol.
         #[no_mangle]
         pub unsafe extern "C-unwind" fn busbar_close(handle: *mut ::core::ffi::c_void) {
-            $close(handle)
+            $crate::boundary::close_boundary::<$handle>(handle)
         }
     };
 }
@@ -873,10 +500,9 @@ macro_rules! export_secret_plugin {
     ($ctor:path) => {
         $crate::export_plugin!(
             kind = "secret",
-            open = $crate::secret_open_impl,
-            call = $crate::secret_call_impl,
-            close = $crate::secret_close_impl,
+            dispatch = $crate::secret_dispatch,
             ctor = $ctor,
+            handle = $crate::SecretHandle,
         );
     };
 }
@@ -889,10 +515,9 @@ macro_rules! export_store_plugin {
     ($ctor:path) => {
         $crate::export_plugin!(
             kind = "store",
-            open = $crate::open_impl,
-            call = $crate::call_impl,
-            close = $crate::close_impl,
+            dispatch = $crate::store_dispatch,
             ctor = $ctor,
+            handle = $crate::StoreHandle,
         );
     };
 }
@@ -900,9 +525,99 @@ macro_rules! export_store_plugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use boundary::{call_boundary, close_boundary, free_boundary, open_boundary, BoundaryOutcome};
     use busbar_api::VirtualKey;
+    use busbar_plugin_abi::{STATUS_ERR, STATUS_OK, STATUS_PROTOCOL, STATUS_UNSUPPORTED};
     use busbar_store_memory::MemoryStore;
+    use std::os::raw::c_void;
     use std::ptr;
+
+    // ── Test shims: drive the SHIPPING boundary exactly as `export_plugin!` expands, per kind. The
+    //    macro can't be invoked in a lib crate (it stamps `#[no_mangle]` exports), so these thin
+    //    wrappers route open/call/free/close through the same `boundary::*` helpers the macro uses.
+    //    A test exercising these exercises the real choke point.
+
+    unsafe fn open_impl(
+        cfg: *const u8,
+        cfg_len: usize,
+        out_handle: *mut *mut c_void,
+        out_err: *mut *mut u8,
+        out_err_len: *mut usize,
+        ctor: fn(&str) -> Result<BoxedStore, String>,
+    ) -> i32 {
+        open_boundary::<StoreHandle>(cfg, cfg_len, out_handle, out_err, out_err_len, |s| {
+            ctor(s).map_err(BoundaryOutcome::Error)
+        })
+    }
+    unsafe fn call_impl(
+        handle: *mut c_void,
+        req: *const u8,
+        req_len: usize,
+        out: *mut *mut u8,
+        out_len: *mut usize,
+    ) -> i32 {
+        call_boundary(handle, req, req_len, out, out_len, |h, b| {
+            store_dispatch(h, b)
+        })
+    }
+    unsafe fn close_impl(handle: *mut c_void) {
+        close_boundary::<StoreHandle>(handle)
+    }
+    unsafe fn free_impl(ptr: *mut u8, len: usize) {
+        free_boundary(ptr, len)
+    }
+    unsafe fn secret_open_impl(
+        cfg: *const u8,
+        cfg_len: usize,
+        out_handle: *mut *mut c_void,
+        out_err: *mut *mut u8,
+        out_err_len: *mut usize,
+        ctor: fn(&str) -> Result<BoxedSecret, String>,
+    ) -> i32 {
+        open_boundary::<SecretHandle>(cfg, cfg_len, out_handle, out_err, out_err_len, |s| {
+            ctor(s).map_err(BoundaryOutcome::Error)
+        })
+    }
+    unsafe fn secret_call_impl(
+        handle: *mut c_void,
+        req: *const u8,
+        req_len: usize,
+        out: *mut *mut u8,
+        out_len: *mut usize,
+    ) -> i32 {
+        call_boundary(handle, req, req_len, out, out_len, |h, b| {
+            secret_dispatch(h, b)
+        })
+    }
+    unsafe fn secret_close_impl(handle: *mut c_void) {
+        close_boundary::<SecretHandle>(handle)
+    }
+    unsafe fn hook_open_impl(
+        cfg: *const u8,
+        cfg_len: usize,
+        out_handle: *mut *mut c_void,
+        out_err: *mut *mut u8,
+        out_err_len: *mut usize,
+        ctor: fn(&str) -> Result<BoxedHook, String>,
+    ) -> i32 {
+        open_boundary::<HookHandle>(cfg, cfg_len, out_handle, out_err, out_err_len, |s| {
+            ctor(s).map_err(BoundaryOutcome::Error)
+        })
+    }
+    unsafe fn hook_call_impl(
+        handle: *mut c_void,
+        req: *const u8,
+        req_len: usize,
+        out: *mut *mut u8,
+        out_len: *mut usize,
+    ) -> i32 {
+        call_boundary(handle, req, req_len, out, out_len, |h, b| {
+            hook_dispatch(h, b)
+        })
+    }
+    unsafe fn hook_close_impl(handle: *mut c_void) {
+        close_boundary::<HookHandle>(handle)
+    }
 
     /// A test secret module: settings.name in, "resolved:<name>" bytes out; missing name errors.
     struct EchoSecret;
@@ -1088,12 +803,13 @@ mod tests {
                 other => panic!("expected Reply, got {other:?}"),
             }
 
-            // Malformed request → PROTOCOL, with a message, never a crash.
+            // Malformed/undecodable request → UNSUPPORTED (an old-SDK "I can't decode this variant"
+            // signal), with a message, never a crash. Distinct from a caller-protocol violation.
             let junk = b"not json";
             let mut out: *mut u8 = ptr::null_mut();
             let mut out_len: usize = 0;
             let st = hook_call_impl(handle, junk.as_ptr(), junk.len(), &mut out, &mut out_len);
-            assert_eq!(st, STATUS_PROTOCOL);
+            assert_eq!(st, STATUS_UNSUPPORTED);
             free_impl(out, out_len);
 
             hook_close_impl(handle);
@@ -1169,9 +885,11 @@ mod tests {
         }
     }
 
-    /// A malformed request payload is a protocol error with a message, not a crash.
+    /// A malformed/undecodable request payload is an UNSUPPORTED signal (old-SDK "I can't decode this
+    /// variant") with a message, not a crash — distinct from a caller-protocol violation and from a
+    /// panic. This is the taxonomy split that closes the loader fail-open.
     #[test]
-    fn ffi_bad_request_is_protocol_error() {
+    fn ffi_bad_request_is_unsupported() {
         unsafe {
             let mut handle: *mut c_void = ptr::null_mut();
             let mut err: *mut u8 = ptr::null_mut();
@@ -1191,9 +909,18 @@ mod tests {
             let mut out: *mut u8 = ptr::null_mut();
             let mut out_len: usize = 0;
             let st = call_impl(handle, junk.as_ptr(), junk.len(), &mut out, &mut out_len);
-            assert_eq!(st, STATUS_PROTOCOL);
+            assert_eq!(st, STATUS_UNSUPPORTED);
             assert!(!out.is_null());
             free_impl(out, out_len);
+            // A NULL handle IS a caller-protocol violation → STATUS_PROTOCOL (no user code runs).
+            let st = call_impl(
+                ptr::null_mut(),
+                junk.as_ptr(),
+                junk.len(),
+                &mut out,
+                &mut out_len,
+            );
+            assert_eq!(st, STATUS_PROTOCOL);
             close_impl(handle);
         }
     }
@@ -1225,28 +952,27 @@ mod tests {
         }
     }
 
-    /// `write_buf` with a null `out` must DROP the buffer, not leak it. Before the fix `into_raw`
-    /// ran before the null-check, so a null `out` leaked the boxed slice forever (never written back,
-    /// never freeable). We can't observe the leak directly in a unit test, but we can prove the
-    /// fixed contract: a null `out` writes nothing (neither `out` nor `out_len`) and does not crash,
-    /// while a non-null `out` still returns a freeable (ptr, len) pair. Run under Miri/ASan this also
-    /// flags the leak the fix removes.
+    /// `OutBuf::commit` (the successor to `write_buf`) with a null `out` must DROP the owned `Vec`, not
+    /// leak it: the alloc (`into_boxed_slice`/`Box::into_raw`) lives INSIDE the non-null branch, so the
+    /// null path never realizes a raw box — D1 made structurally impossible. `out_len` is left
+    /// untouched; a non-null slot returns a freeable (ptr, len) pair. Under Miri/ASan this flags the
+    /// leak the old ordering caused.
     #[test]
-    fn write_buf_null_out_drops_without_leaking_or_writing() {
+    fn outbuf_commit_null_out_drops_without_leaking_or_writing() {
         unsafe {
-            // Null `out`: nothing is written, `out_len` is left untouched, no crash (buffer dropped).
+            // Null `out`: nothing is written, `out_len` is left untouched, no crash (Vec dropped).
             let mut len_slot: usize = 0xDEAD;
-            write_buf(vec![1u8, 2, 3], ptr::null_mut(), &mut len_slot);
+            boundary::OutBuf::new(vec![1u8, 2, 3]).commit(ptr::null_mut(), &mut len_slot);
             assert_eq!(
                 len_slot, 0xDEAD,
                 "out_len must be untouched when out is null"
             );
 
             // Non-null `out`: the (ptr, len) pair is returned and is freeable (round-trip through
-            // free_impl proves the allocation is intact and owned by the same allocator).
+            // free_boundary proves the allocation is intact and owned by the same allocator).
             let mut ptr_slot: *mut u8 = ptr::null_mut();
             let mut len2: usize = 0;
-            write_buf(vec![7u8, 8, 9, 10], &mut ptr_slot, &mut len2);
+            boundary::OutBuf::new(vec![7u8, 8, 9, 10]).commit(&mut ptr_slot, &mut len2);
             assert!(!ptr_slot.is_null());
             assert_eq!(len2, 4);
             assert_eq!(std::slice::from_raw_parts(ptr_slot, len2), &[7, 8, 9, 10]);
