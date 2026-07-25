@@ -323,13 +323,28 @@ fn test_translation_bank_counts_known_protocol_pair() {
 /// near the peak — the class-level statement of "RSS returns to idle after the load stops".
 ///
 /// Per-THREAD jemalloc counters are used rather than process-wide ones so the measurement is immune
-/// to the other tests running concurrently in this binary; every allocation and free involved here
-/// happens on this thread. Not on windows-msvc, which uses the system allocator (the jemalloc dep is
-/// target-gated; see `main.rs`), so there are no jemalloc counters to read.
+/// to the other tests running concurrently in this binary. That immunity has ONE hole, and it is
+/// why this test used to pass in isolation and fail under a loaded workspace run:
+/// `telemetry::flush_to_recorder` `mem::take`s a thread's sample `Vec` and DROPS it on the DRAINING
+/// thread, so a concurrent test's `render()`/`drain_pending()` frees THIS thread's buffers on ITS
+/// thread and leaves `allocated - deallocated` here permanently inflated — measured at 5.15 MiB
+/// (2.6 B/observation) against the 1 MiB tolerance, with the fix under test working correctly. A
+/// proof that only holds on an idle machine is no proof, so the window is now serialised
+/// explicitly: `drain_serial` makes this thread the only drainer for the duration, which is what
+/// the measurement always assumed. Nothing about WHAT is asserted changes — same baseline, same
+/// burst, same tolerance, same failure on the pre-fix build.
+///
+/// Not on windows-msvc, which uses the system allocator (the jemalloc dep is target-gated; see
+/// `main.rs`), so there are no jemalloc counters to read.
 #[cfg(not(target_env = "msvc"))]
 #[test]
 fn test_observations_are_released_after_the_load_stops() {
     use tikv_jemalloc_ctl::thread as jethread;
+
+    // EXCLUSIVE drain rights for the whole measured window (re-entrant: the `drain_pending()`
+    // calls below still work). Held before the warm-up so the baseline is taken under the same
+    // regime as the burst.
+    let _drain_serial = crate::telemetry::drain_serial::lock();
 
     /// Bytes this thread has allocated and not yet freed.
     fn retained() -> u64 {

@@ -395,6 +395,60 @@ fn drain_hist_overflow(slot: u32, samples: Vec<f64>) {
     }
 }
 
+/// TEST-ONLY drain serialisation — a MEASUREMENT guard, not a correctness one.
+///
+/// [`flush_to_recorder`] MOVES each thread's sample `Vec` out (`mem::take`) and DROPS it on the
+/// DRAINING thread, so the free is charged to whoever drains rather than to the thread that
+/// allocated the buffer. `test_observations_are_released_after_the_load_stops` reads per-THREAD
+/// jemalloc alloc/dealloc counters exactly so its measurement is immune to the rest of the suite —
+/// but that immunity does NOT survive another test draining ITS buffer: those frees land on the
+/// other thread and leave `allocated - deallocated` on the measuring thread permanently inflated.
+/// Measured under a loaded `cargo test --workspace`: 5.15 MiB of phantom retention against a 1 MiB
+/// tolerance (2.6 B/observation, versus the ~24 B/observation the real regression costs) — a pure
+/// measurement artefact of WHICH thread ran the drain, with the fix itself working correctly.
+///
+/// Holding this guard for the measured window makes that thread the only drainer, which is what the
+/// assertion always assumed. RE-ENTRANT, so the holder still drives its own drains through the
+/// ordinary `metrics::drain_pending()` entry point. Lock ORDER is always `drain_serial` →
+/// `flush_lock` (both acquisitions are at the top of their function), so there is no inversion.
+#[cfg(test)]
+pub(crate) mod drain_serial {
+    use std::cell::Cell;
+    use std::sync::{Mutex, MutexGuard};
+
+    static LOCK: Mutex<()> = Mutex::new(());
+    thread_local! {
+        /// 0 = this thread does not hold `LOCK`; 1 = it does (nesting is strictly re-entrant, so a
+        /// boolean depth suffices).
+        static HELD: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// Held for as long as this thread needs exclusive drain rights. `None` = a re-entrant
+    /// acquisition whose outer guard owns the release.
+    pub(crate) struct Guard(Option<MutexGuard<'static, ()>>);
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            // Clear the flag BEFORE the inner `MutexGuard` field drops (fields drop after
+            // `Drop::drop`), so no other thread can take the lock while this one still claims it.
+            if self.0.is_some() {
+                HELD.with(|h| h.set(false));
+            }
+        }
+    }
+
+    /// Acquire exclusive drain rights, re-entrantly. `std::sync::ReentrantLock` is still unstable
+    /// (rust#121440), so this is the two-line equivalent for the one shape we need.
+    pub(crate) fn lock() -> Guard {
+        if HELD.with(Cell::get) {
+            return Guard(None);
+        }
+        let g = LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        HELD.with(|h| h.set(true));
+        Guard(Some(g))
+    }
+}
+
 /// THE aggregator: sum every thread's cells per slot and push the delta since the last flush into
 /// the process-global Prometheus recorder. Called from `metrics::render()` so every scrape (and
 /// every test that reads the exposition) observes up-to-date bank totals. Deltas (not absolutes)
@@ -402,6 +456,8 @@ fn drain_hist_overflow(slot: u32, samples: Vec<f64>) {
 /// series. No-op until the recorder is installed — a handle minted before install would bind to
 /// the no-op recorder forever (same contract as the handle cache in `metrics.rs`).
 pub(crate) fn flush_to_recorder() {
+    #[cfg(test)]
+    let _serial = drain_serial::lock();
     if !crate::metrics::recorder_installed() {
         return;
     }
