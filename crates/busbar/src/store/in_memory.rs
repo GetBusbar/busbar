@@ -1679,6 +1679,10 @@ impl StateStore for InMemoryStore {
         self.get_lane(lane).sem.available_permits()
     }
 
+    fn lane_admissible(&self, lane: usize) -> bool {
+        InMemoryStore::lane_admissible(self, lane)
+    }
+
     fn lane_budget_remaining(&self, lane: usize) -> Option<i64> {
         let ls = self.get_lane(lane);
         if ls.limited {

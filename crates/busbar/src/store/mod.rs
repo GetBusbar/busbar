@@ -272,6 +272,11 @@ pub(crate) trait StateStore: Send + Sync + 'static {
     /// Per-lane lifetime request budget remaining (`None` = unlimited / unmetered). A routing-policy
     /// signal (`usage`) read cheaply from the store. Read-only.
     fn lane_budget_remaining(&self, lane: usize) -> Option<i64>;
+    /// Lane-global admissibility IGNORING the breaker: false when the lane is marked dead or has
+    /// exhausted its `max_requests` budget. Separated from `ready_in` because the `least_bad`
+    /// exhaustion mode deliberately overrides an Open breaker — an inference busbar made — but must
+    /// never override these two, which are operator declarations. Read-only.
+    fn lane_admissible(&self, lane: usize) -> bool;
     /// Rolling EWMA of observed end-to-end latency for this lane, in milliseconds — a routing-policy
     /// signal (`fastest`). `None` until the lane has served at least one request. Read-only, lock-free.
     fn lane_latency_ms(&self, lane: usize) -> Option<f64>;

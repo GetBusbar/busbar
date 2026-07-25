@@ -11,6 +11,11 @@ pub(crate) fn find_soonest_cooldown(
     let mut soonest_remaining = u64::MAX;
 
     for wl in cands {
+        // A dead or budget-exhausted lane reports a cooldown of 0 (deadness lives outside the cell
+        // FSM), so without this it sorts FIRST and beats a lane that genuinely recovers in seconds.
+        if !store.lane_admissible(wl.idx) {
+            continue;
+        }
         let remaining = store.cooldown_remaining_in(pool, wl.idx, now);
         if remaining < soonest_remaining {
             soonest_remaining = remaining;
