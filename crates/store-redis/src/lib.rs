@@ -790,6 +790,25 @@ impl Store for RedisStore {
         Ok(out)
     }
 
+    fn list_audit_tail(&self, limit: u64) -> StoreResult<Vec<AuditRecord>> {
+        // BOUNDED restore read: fetch only the most-recent `limit` members at the SOURCE. `ZRANGE key
+        // -limit -1` returns the highest-scored (newest) `limit` members in ASCENDING score order =
+        // oldest-first WITHIN the tail, exactly the restore contract — no in-memory reverse needed.
+        // Without this override the trait default ZRANGEs the WHOLE (never-pruned) audit zset and
+        // truncates in memory, which over the plugin ABI can exceed the response cap or OOM on a large
+        // log. Mirrors the SQLite/Postgres `LIMIT`ed tail queries. `limit == 0` degenerates to
+        // `ZRANGE 0 -1` (start 0 wins), which the engine never requests (the ring is always positive).
+        let start: isize = isize::try_from(limit).map(|n| -n).unwrap_or(isize::MIN);
+        let members: Vec<String> = self.with_conn(|c| c.zrange(AUDIT_ZSET, start, -1))?;
+        let mut out = Vec::with_capacity(members.len());
+        for m in members {
+            let rec: AuditRecord = serde_json::from_str(&m)
+                .map_err(|e| StoreError(format!("audit decode failed: {e}")))?;
+            out.push(rec);
+        }
+        Ok(out)
+    }
+
     fn add_denylist(&self, sub: &str, reason: &str) -> StoreResult<()> {
         // Revoke a signed-token key by subject id: SET the reason string + SADD the sub to the index,
         // as ONE atomic MULTI/EXEC. Idempotent (SET overwrites the reason, SADD is a set member), so
