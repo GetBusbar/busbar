@@ -4378,3 +4378,119 @@ fn write_request_stop_sequences_array_and_empty_omitted() {
         "an empty stop vec must be omitted, not emitted as []"
     );
 }
+
+/// A structured-outputs / safety refusal arrives as `content: null` + `refusal: "..."` with
+/// `finish_reason: "stop"`. Reading only `content` produced an empty IR response, which every
+/// cross-protocol writer emits as a 200 with `content: []` — indistinguishable from a model that
+/// returned nothing, and an index error for any SDK reading `content[0]`. The refusal text must
+/// survive as assistant Text and the stop reason must be promoted so the SIGNAL survives too.
+#[test]
+fn read_response_surfaces_a_refusal_as_text_and_promotes_the_stop_reason() {
+    let body = serde_json::json!({
+        "id": "chatcmpl-1",
+        "model": "gpt-4o-2024-08-06",
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": null, "refusal": "I can't help with that."},
+            "finish_reason": "stop"
+        }],
+        "usage": {"prompt_tokens": 5, "completion_tokens": 7}
+    });
+
+    let ir = OpenAiReader.read_response(&body).expect("read_response");
+    assert_eq!(
+        ir.content,
+        vec![IrBlock::Text {
+            text: "I can't help with that.".to_string(),
+            cache_control: None,
+            citations: Vec::new(),
+        }],
+        "the refusal text must not be dropped"
+    );
+    assert_eq!(
+        ir.stop_reason,
+        Some(crate::ir::IrStopReason::Refusal),
+        "finish_reason `stop` on a refusal must be promoted to Refusal"
+    );
+}
+
+/// A refusal that ALSO hit the length cap keeps MaxTokens — the promotion overrides EndTurn only.
+#[test]
+fn read_response_refusal_does_not_override_a_length_stop() {
+    let body = serde_json::json!({
+        "id": "chatcmpl-2",
+        "model": "gpt-4o-2024-08-06",
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": null, "refusal": "I can't"},
+            "finish_reason": "length"
+        }],
+        "usage": {"prompt_tokens": 5, "completion_tokens": 7}
+    });
+
+    let ir = OpenAiReader.read_response(&body).expect("read_response");
+    assert_eq!(ir.stop_reason, Some(crate::ir::IrStopReason::MaxTokens));
+}
+
+/// The streaming refusal is the same defect on the other path: `delta.refusal` carries the text in
+/// the same incremental shape as `delta.content`, and the terminal frame still says `stop`.
+#[test]
+fn stream_refusal_deltas_open_a_text_block_and_promote_the_stop_reason() {
+    let mut state = crate::ir::StreamDecodeState::default();
+
+    let c1 = serde_json::json!({
+        "choices": [{"index": 0, "delta": {"role": "assistant", "refusal": "I can't "}, "finish_reason": null}]
+    });
+    let evs1 = OpenAiReader.read_response_events("", &c1, &mut state);
+    assert!(
+        evs1.iter().any(|e| matches!(
+            e,
+            IrStreamEvent::BlockStart {
+                index: 0,
+                block: IrBlockMeta::Text
+            }
+        )),
+        "a refusal delta must open a text block, got {evs1:?}"
+    );
+    assert!(
+        evs1.iter().any(|e| matches!(
+            e,
+            IrStreamEvent::BlockDelta {
+                index: 0,
+                delta: IrDelta::TextDelta(t)
+            } if t == "I can't "
+        )),
+        "the refusal text must be emitted, got {evs1:?}"
+    );
+    assert!(state.refusal_seen);
+
+    let c2 = serde_json::json!({
+        "choices": [{"index": 0, "delta": {"refusal": "help with that."}, "finish_reason": null}]
+    });
+    let evs2 = OpenAiReader.read_response_events("", &c2, &mut state);
+    assert!(
+        evs2.iter().any(|e| matches!(
+            e,
+            IrStreamEvent::BlockDelta {
+                index: 0,
+                delta: IrDelta::TextDelta(t)
+            } if t == "help with that."
+        )),
+        "a continuing refusal delta must land on the same block, got {evs2:?}"
+    );
+
+    let c3 = serde_json::json!({
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]
+    });
+    let evs3 = OpenAiReader.read_response_events("", &c3, &mut state);
+    assert!(
+        evs3.iter().any(|e| matches!(
+            e,
+            IrStreamEvent::MessageDelta {
+                stop_reason: Some(crate::ir::IrStopReason::Refusal),
+                ..
+            }
+        )),
+        "the terminal frame must carry the promoted Refusal stop reason, got {evs3:?}"
+    );
+}
