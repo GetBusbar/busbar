@@ -1107,8 +1107,10 @@ impl AdminService {
         }
 
         // ── 5. atomic publish via the crate's ONE durable-write choke point ──
-        // `create_dir_all` stays here (dir provisioning is the caller's concern, not the primitive's);
-        // the temp-in-same-dir → write → flush → fsync(file) → rename → fsync(dir) dance is the
+        // Directory provisioning goes through the primitive too: `std::fs::create_dir_all` leaves the
+        // new directory's own entry non-durable, so the FIRST plugin installed into a not-yet-existing
+        // plugins dir could vanish with the directory on power loss — despite the response promising
+        // it was installed durably. The temp-in-same-dir → write → flush → fsync(file) → rename → fsync(dir) dance is the
         // primitive's. Collapsing onto it FIXES the former leaked-`.tmp`-on-pre-rename-error class for
         // free: the old `{ }` block returned early on a create/write/flush/fsync failure WITHOUT
         // removing the temp (only the rename path cleaned up), so a full disk / I/O error orphaned a
@@ -1116,7 +1118,7 @@ impl AdminService {
         // temp on EVERY error path. The pid+seq temp naming supersedes the bespoke pid+now stamp with
         // the same per-call-uniqueness property.
         let dir = &self.app.plugins_dir;
-        std::fs::create_dir_all(dir)
+        crate::durable::create_dir_all(dir)
             .map_err(|e| AdminError::Validation(format!("cannot create plugins dir: {e}")))?;
         let final_path = dir.join(&file);
         crate::durable::write(&final_path, tarball).map_err(|e| {

@@ -953,13 +953,13 @@ pub(crate) fn test_hook_env(
         candidate
     };
     let lib = std::fs::read(&cdylib).expect("read hook cdylib");
+    // A monotonic counter, NOT a clock read: two threads can read the same nanosecond, and a
+    // colliding fixture path means one test scans a tarball another is still writing.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let dir = std::env::temp_dir().join(format!(
         "busbar-test-hook-env-{}-{}",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     std::fs::create_dir_all(&dir).unwrap();
     for (i, alias) in aliases.iter().enumerate() {
