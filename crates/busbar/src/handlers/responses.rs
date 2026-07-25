@@ -3,7 +3,6 @@
 
 //! OpenAI Responses `RequestHandler`. Chat-only (the `/v1/responses` conversational API); non-chat
 //! operations stay `None` = no-handler 404. Chat dispatches through the same registry as every op.
-#![allow(dead_code)]
 
 use crate::handlers::{EgressCtx, OperationHandler, RequestHandler};
 use crate::operation::Operation;

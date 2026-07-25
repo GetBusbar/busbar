@@ -12,7 +12,6 @@
 //! image edit/variation are `Image` with an `op` discriminant — NOT separate operations.
 //!
 //! Foundation type; `dead_code` allowed until the Router/IR wiring lands.
-#![allow(dead_code)]
 
 /// The seven semantic operations busbar 1.2 speaks. Closed set — adding one is a compile error at
 /// every exhaustive match (the removability/symmetry gate).

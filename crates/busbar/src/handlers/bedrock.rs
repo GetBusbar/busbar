@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Bedrock `RequestHandler` + cells. Embeddings first (Titan, via InvokeModel).
-#![allow(dead_code)]
 
 use crate::handlers::{
     CodecError, EgressCtx, IngressReject, OperationHandler, RequestHandler, WireBody,

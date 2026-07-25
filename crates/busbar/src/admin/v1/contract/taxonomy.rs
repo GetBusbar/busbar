@@ -15,6 +15,7 @@
 //! 401 / 403 (generic under-scope) / 405 / 429 / 500 are ALGORITHMIC: stamped on every operation by
 //! `openapi_doc()` because every operation can emit them. They are deliberately NOT declarable here
 //! (see [`err_kind_of`], which classifies them as `None`).
+#![allow(dead_code)]
 
 // WHICH items are live here depends on TWO independent cfgs: `openapi-schema` (the CI-only feature
 // that compiles the generator) selects the declaration + phrasing + projection, and `test` selects
@@ -22,7 +23,6 @@
 // serves the pre-generated `openapi.json` — so in a release build this module is a pure declaration
 // with no caller, BY DESIGN (zero runtime cost). A per-item cfg matrix over those two axes would be
 // noise on every item, so the whole module opts out of the dead-code lint once.
-#![allow(dead_code)]
 
 use super::{AdminError, Scope};
 

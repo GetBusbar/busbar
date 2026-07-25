@@ -4,7 +4,6 @@
 //! Anthropic `RequestHandler`. Chat-only today (Anthropic ships no embeddings/images/audio API here);
 //! its non-chat operations stay `None` = no-handler 404. Chat dispatches through the same registry as
 //! every other operation.
-#![allow(dead_code)]
 
 use crate::handlers::{EgressCtx, OperationHandler, RequestHandler};
 use crate::operation::Operation;
