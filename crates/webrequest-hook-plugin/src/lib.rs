@@ -75,7 +75,27 @@ struct Forwarder {
     url: reqwest::Url,
     client: reqwest::Client,
     timeout: Duration,
-    rt: tokio::runtime::Runtime,
+    // Wrapped in `Option` SOLELY so `Drop` can move the runtime out and shut it down NON-blockingly.
+    // A bare `tokio::runtime::Runtime` dropped in place runs its blocking `Drop`, which PANICS when
+    // the drop happens on a tokio worker thread ("Cannot drop a runtime in a context where blocking
+    // is not allowed"). On a hot config reload the last `Arc<App>` — and thus this forwarder via the
+    // SDK's `hook_close` → plugin drop chain — can drop on an async thread, so that panic would fire,
+    // be caught by the SDK's `ffi_guard`, and LEAK the runtime + reqwest client every reload. Instead
+    // `Drop` takes the runtime and calls `shutdown_background()`, which never blocks. Always `Some`
+    // between construction and drop.
+    rt: Option<tokio::runtime::Runtime>,
+}
+
+impl Drop for Forwarder {
+    /// Shut the owned runtime down WITHOUT blocking, so dropping the forwarder on a tokio worker
+    /// thread (the hot-reload path — see the `rt` field doc) can never panic. `shutdown_background`
+    /// drops the runtime's driver on a detached thread rather than blocking-joining its workers here,
+    /// which is exactly what a blocking `Runtime::drop` in an async context is forbidden from doing.
+    fn drop(&mut self) {
+        if let Some(rt) = self.rt.take() {
+            rt.shutdown_background();
+        }
+    }
 }
 
 impl Forwarder {
@@ -108,7 +128,7 @@ impl Forwarder {
             url,
             client,
             timeout: Duration::from_millis(timeout_ms),
-            rt,
+            rt: Some(rt),
         })
     }
 
@@ -119,7 +139,12 @@ impl Forwarder {
     fn post_op(&self, envelope: &serde_json::Value) -> Result<serde_json::Value, String> {
         let body = serde_json::to_vec(envelope)
             .map_err(|e| format!("webrequest: failed to serialize op envelope: {e}"))?;
-        self.rt.block_on(async {
+        // Safe: `rt` is `Some` for the whole lifetime between `new` and `Drop` (only `Drop` takes it).
+        let rt = self
+            .rt
+            .as_ref()
+            .expect("forwarder runtime present until drop");
+        rt.block_on(async {
             // `.without_url()` on every reqwest error: a reqwest error's Display carries the request URL
             // WITH any embedded `user:pass@` userinfo. This error can reach operator logs, so the URL is
             // stripped before it is formatted. Parity with the old webhook hardening.
@@ -449,5 +474,32 @@ mod tests {
             fwd.configure(&serde_json::Map::new(), 4),
             "a missing url ACKs"
         );
+    }
+
+    /// Dropping a `Forwarder` from INSIDE an async context (a tokio worker thread) must NOT panic.
+    /// This reproduces the hot-reload drop path: on config reload the last `Arc<App>` — and this
+    /// forwarder with it — can drop on a tokio async thread. A bare `Runtime` dropped there panics
+    /// ("Cannot drop a runtime in a context where blocking is not allowed"), which the SDK's
+    /// `ffi_guard` would catch and LEAK the handle. The `Drop` impl's `shutdown_background()` makes
+    /// the drop non-blocking, so no panic fires. Before the fix this test panicked/aborted.
+    #[test]
+    fn drop_in_async_context_does_not_panic() {
+        // A MULTI-thread runtime with worker threads: `block_on` here runs on a thread that IS a
+        // tokio runtime context, so the inner forwarder's owned current-thread runtime would hit the
+        // forbidden blocking-drop if `Drop` did not use `shutdown_background()`.
+        let outer = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("build outer runtime");
+        outer.block_on(async {
+            let fwd = Forwarder::new(Config {
+                url: "https://api.example.com/route".to_string(),
+                timeout_ms: None,
+            })
+            .expect("valid config");
+            // Dropping `fwd` here is the operation under test — it must not panic in this async context.
+            drop(fwd);
+        });
     }
 }
