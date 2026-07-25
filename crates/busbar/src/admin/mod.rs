@@ -420,10 +420,55 @@ impl Drop for IdemReservation {
     }
 }
 
+/// The label a cap rejection uses for the UNBOUND (no `group:`) key bucket.
+const UNBOUND_BUCKET_LABEL: &str = "(no group)";
+
+/// THE `limits.max_keys_per_principal` CHOKE POINT — the one place any path that can add a key to a
+/// principal's bucket asks "is this bucket already full?". Called by the MINT (`POST /keys`) and by
+/// the REBIND (`PATCH /keys/{id}`), both from inside their `EXISTENCE_GATE`d blocking section, so
+/// the count and the write that follows it are one atomic critical region. A store failure
+/// propagates and the caller FAILS CLOSED — never admit past a ceiling we could not verify.
+///
+/// `group` names the bucket: `Some(g)` for a bound key, `None` for the UNBOUND bucket (which is
+/// capped too — see below). `exclude_id` is the key being MOVED, so a rebind does not count the
+/// mover twice; `None` on the mint path (nothing to exclude). Returns `Some((bucket_label, n))`
+/// when the bucket is at or over `cap`. `cap == 0` = unlimited (the default) and short-circuits.
+///
+/// Two round-5 defects die here rather than at N call sites:
+///
+///   * #18 — the count is of LIVE keys only: a disabled or revoked key holds no usable credential,
+///     so counting it forever made the cap a ONE-WAY RATCHET (a principal that revoked ten keys
+///     could never mint again, and the documented remedy "revoke or delete an existing key" was
+///     simply false for `revoke`). Enabled + not-denylisted is exactly "can still authenticate".
+///   * #19 — the UNBOUND bucket is counted. A groupless key escapes the whole limit tree, so
+///     exempting it from the key-count cap as well made the ceiling evadable by omitting one field.
+fn check_key_cap(
+    gov: &crate::governance::GovState,
+    cap: usize,
+    group: Option<&str>,
+    exclude_id: Option<&str>,
+) -> crate::governance::StoreResult<Option<(String, usize)>> {
+    if cap == 0 {
+        return Ok(None); // unlimited
+    }
+    let n = gov
+        .all_keys()?
+        .iter()
+        .filter(|k| k.group.as_deref() == group)
+        .filter(|k| Some(k.id.as_str()) != exclude_id)
+        .filter(|k| k.enabled && !gov.is_revoked(&k.id))
+        .count();
+    if n >= cap {
+        return Ok(Some((group.unwrap_or(UNBOUND_BUCKET_LABEL).to_string(), n)));
+    }
+    Ok(None)
+}
+
 /// POST /api/v1/admin/keys — mint a virtual key. Returns the plaintext secret ONCE.
 pub(crate) async fn create_key(
     axum::extract::State(handle): axum::extract::State<std::sync::Arc<crate::state::AppHandle>>,
     axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
+    axum::Extension(scope): axum::Extension<crate::auth::AdminScope>,
     headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Response {
@@ -600,31 +645,35 @@ pub(crate) async fn create_key(
             Cond::ParentWithoutGroup,
         );
     }
+    // DELEGATED MINTS MUST BIND (audit round-5 #19, §6.3 body-derived refinement). A key with no
+    // `group` is authed + UNLIMITED: its enforcement chain is a single uncapped bucket, so it
+    // escapes the whole limit tree. That is a legitimate operator act (`full` scope — the operator
+    // owns the tree), but it must not be reachable from a DELEGATED `mint` credential, whose entire
+    // purpose is self-service issuance INSIDE the tree. Otherwise the narrowest key-issuing scope
+    // could hand out uncapped keys, and the anti-sprawl ceiling with it. Refused as a 400 naming the
+    // fix, alongside the counting cap enforced below.
+    if req.group.is_none()
+        && !matches!(
+            scope.0,
+            Some(crate::admin::v1::contract::Scope::Full) | None
+        )
+    {
+        return key_err(
+            &AdminError::Validation(
+                "`group` is required: a delegated `mint` credential may only issue keys BOUND to a \
+                 group (an unbound key carries no limits at all). Name an existing group, or pass \
+                 `parent:` to auto-provision one under it"
+                    .into(),
+            ),
+            Cond::RebindTargetMissing,
+        );
+    }
     /// What the mint's blocking half produced: the key (bearer-only or with AWS credentials), or the
     /// anti-sprawl ceiling it hit.
     enum MintOutcome {
         Bearer(Box<(crate::governance::VirtualKey, String)>),
         Aws(Box<(crate::governance::VirtualKey, String, String, String)>),
         AtCap { group: String, n: usize, cap: usize },
-    }
-    /// Count the keys bound to `group` and report the ceiling hit. Runs on a blocking thread under
-    /// `EXISTENCE_GATE`, atomically with the mint that follows it. A store failure FAILS CLOSED.
-    fn check_cap(
-        gov: &crate::governance::GovState,
-        cap_group: &Option<String>,
-        cap: usize,
-    ) -> crate::governance::StoreResult<Option<(String, usize)>> {
-        if let Some(group) = cap_group.as_deref() {
-            let n = gov
-                .all_keys()?
-                .iter()
-                .filter(|k| k.group.as_deref() == Some(group))
-                .count();
-            if n >= cap {
-                return Ok(Some((group.to_string(), n)));
-            }
-        }
-        Ok(None)
     }
     // Keys carry NO inline limits (S1); enforcement flows through the bound group.
     let spec = NewKeySpec {
@@ -664,13 +713,17 @@ pub(crate) async fn create_key(
         // key. An auto-provisioned leaf is brand-new (0 keys), so a group's FIRST self-mint always
         // passes. READ FROM THE FRESH SNAPSHOT — this is the stale-cap fix.
         let cap = current.max_keys_per_principal;
-        let cap_group = if cap > 0 { spec.group.clone() } else { None };
+        // The BUCKET this mint lands in. `None` is the UNBOUND bucket, and it is capped too: a
+        // groupless key escapes the limit tree entirely, so leaving it uncapped made
+        // `max_keys_per_principal` trivially evadable by simply omitting `group` (audit round-5
+        // #19). `check_key_cap` is a no-op when `cap == 0` (unlimited).
+        let cap_group = spec.group.clone();
         let did_provision = provisioned.is_some();
         // The blocking half: cap count + mint, one `spawn_blocking`, one `EXISTENCE_GATE` hold.
         let mint = move || {
             let _existence_guard = EXISTENCE_GATE.lock().unwrap_or_else(|e| e.into_inner());
             let minted = (|| -> crate::governance::StoreResult<MintOutcome> {
-                if let Some((group, n)) = check_cap(&gov, &cap_group, cap)? {
+                if let Some((group, n)) = check_key_cap(&gov, cap, cap_group.as_deref(), None)? {
                     return Ok(MintOutcome::AtCap { group, n, cap });
                 }
                 if issue_aws {
@@ -744,7 +797,7 @@ pub(crate) async fn create_key(
         MintOutcome::AtCap { group, n, cap } => {
             return key_err(
                 &AdminError::Conflict(format!(
-                    "group '{group}' already has {n} key(s), at the \
+                    "group '{group}' already has {n} live key(s), at the \
                      `limits.max_keys_per_principal` cap of {cap}; revoke or delete an existing \
                      key before minting another",
                 )),
@@ -884,6 +937,12 @@ pub(crate) async fn update_key(
         Updated(Box<crate::governance::VirtualKey>),
         NotFound,
         EtagStale,
+        /// The REBIND target bucket is already at `limits.max_keys_per_principal`.
+        AtCap {
+            group: String,
+            n: usize,
+            cap: usize,
+        },
     }
     let resource = format!("key:{id}");
     let res = crate::admin::v1::json::config_transaction(&handle, move |txn| {
@@ -906,6 +965,8 @@ pub(crate) async fn update_key(
             }
         }
         let (enabled, group) = (req.enabled, req.group);
+        // The anti-sprawl ceiling, read from the FRESH post-lock snapshot exactly as the mint does.
+        let cap = current.max_keys_per_principal;
         Ok(txn.store_write(move || {
             let _existence_guard = EXISTENCE_GATE.lock().unwrap_or_else(|e| e.into_inner());
             let outcome = (|| -> crate::governance::StoreResult<UpdateOutcome> {
@@ -914,6 +975,19 @@ pub(crate) async fn update_key(
                         Some(k) if key_etag(&k) != *tag => return Ok(UpdateOutcome::EtagStale),
                         None => return Ok(UpdateOutcome::NotFound),
                         Some(_) => {}
+                    }
+                }
+                // ANTI-SPRAWL CAP ON REBIND (audit round-5 HIGH-9). `max_keys_per_principal` was
+                // enforced only at MINT, so a PATCH could walk a principal past its own ceiling one
+                // rebind at a time — mint N keys under an empty group, then rebind them all onto the
+                // capped one. Same choke point, same fresh snapshot, same gated critical section as
+                // the mint; the key being MOVED is excluded from the count so a no-op rebind of an
+                // at-cap bucket onto itself is not spuriously refused.
+                if let Some(target) = group.as_ref() {
+                    if let Some((g, n)) =
+                        check_key_cap(&gov, cap, target.as_deref(), Some(id.as_str()))?
+                    {
+                        return Ok(UpdateOutcome::AtCap { group: g, n, cap });
                     }
                 }
                 Ok(match gov.update_key(&id, enabled, group)? {
@@ -947,6 +1021,17 @@ pub(crate) async fn update_key(
         Ok(UpdateOutcome::NotFound) => {
             audit::AUDIT.record_by("key.patch", &resource, audit::OUTCOME_REJECTED, &actor);
             key_err(&AdminError::not_found("key"), Cond::UnknownResource)
+        }
+        Ok(UpdateOutcome::AtCap { group, n, cap }) => {
+            audit::AUDIT.record_by("key.patch", &resource, audit::OUTCOME_REJECTED, &actor);
+            key_err(
+                &AdminError::Conflict(format!(
+                    "group '{group}' already has {n} live key(s), at the \
+                     `limits.max_keys_per_principal` cap of {cap}; revoke or delete one of its keys \
+                     before rebinding another onto it",
+                )),
+                Cond::AtKeyCap,
+            )
         }
         // The only 400 this body can raise is the dangling rebind target; anything else is the
         // generic store failure, which carries no condition of its own.
@@ -1475,6 +1560,131 @@ pub(crate) async fn delete_key(
         }
         Ok(Err(e)) => internal_error("delete_key", &e),
         Err(e) => join_error("delete_key", &e),
+    }
+}
+
+/// THE KEY-CAP CHOKE POINT, class-level (audit round-5 HIGH-9 / #18 / #19). Every path that can add
+/// a key to a principal's bucket — the mint and the rebind — asks `check_key_cap`, so these cases
+/// pin the shared predicate rather than one call site.
+#[cfg(test)]
+mod key_cap_tests {
+    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+    use std::sync::Arc;
+
+    fn gov() -> Arc<GovState> {
+        Arc::new(GovState::new(Arc::new(MemoryStore::new()), Some("t".into())).unwrap())
+    }
+
+    fn mint(gov: &GovState, name: &str, group: Option<&str>) -> crate::governance::VirtualKey {
+        gov.create_key(
+            NewKeySpec {
+                name: name.into(),
+                allowed_pools: None,
+                group: group.map(str::to_string),
+                labels: Default::default(),
+            },
+            0,
+        )
+        .expect("mint")
+        .0
+    }
+
+    /// `cap == 0` is unlimited, and a bucket under its ceiling admits.
+    #[test]
+    fn zero_cap_is_unlimited_and_under_cap_admits() {
+        let g = gov();
+        for i in 0..5 {
+            mint(&g, &format!("k{i}"), Some("team"));
+        }
+        assert!(super::check_key_cap(&g, 0, Some("team"), None)
+            .unwrap()
+            .is_none());
+        assert!(super::check_key_cap(&g, 6, Some("team"), None)
+            .unwrap()
+            .is_none());
+        let hit = super::check_key_cap(&g, 5, Some("team"), None)
+            .unwrap()
+            .expect("at cap");
+        assert_eq!(hit, ("team".to_string(), 5));
+    }
+
+    /// #18: the cap counts LIVE keys only. A revoked or disabled key holds no usable credential, so
+    /// counting it forever made the ceiling a ONE-WAY RATCHET — and made the rejection's own advice
+    /// ("revoke or delete an existing key") false for `revoke`.
+    #[test]
+    fn revoked_and_disabled_keys_do_not_hold_a_cap_slot() {
+        let g = gov();
+        let a = mint(&g, "a", Some("team"));
+        let b = mint(&g, "b", Some("team"));
+        mint(&g, "c", Some("team"));
+        assert!(
+            super::check_key_cap(&g, 3, Some("team"), None)
+                .unwrap()
+                .is_some(),
+            "three live keys fill a cap of 3"
+        );
+
+        // REVOKE one: its credential is dead, so its slot must come back.
+        g.revoke(&a.id, "test").expect("revoke");
+        assert!(
+            super::check_key_cap(&g, 3, Some("team"), None)
+                .unwrap()
+                .is_none(),
+            "a revoked key must not hold a cap slot forever"
+        );
+
+        // DISABLE another: same reasoning.
+        g.update_key(&b.id, Some(false), None).expect("disable");
+        assert!(
+            super::check_key_cap(&g, 2, Some("team"), None)
+                .unwrap()
+                .is_none(),
+            "a disabled key must not hold a cap slot"
+        );
+    }
+
+    /// #19: the UNBOUND bucket is capped too. A groupless key escapes the limit tree entirely, so
+    /// exempting it from the key-count ceiling made the ceiling evadable by omitting one field.
+    #[test]
+    fn the_unbound_bucket_is_counted_too() {
+        let g = gov();
+        mint(&g, "a", None);
+        mint(&g, "b", None);
+        let hit = super::check_key_cap(&g, 2, None, None)
+            .unwrap()
+            .expect("the no-group bucket is capped");
+        assert_eq!(hit, (super::UNBOUND_BUCKET_LABEL.to_string(), 2));
+        // Bound keys live in their own bucket and do not spend the unbound one's slots.
+        mint(&g, "c", Some("team"));
+        assert_eq!(
+            super::check_key_cap(&g, 2, None, None).unwrap(),
+            Some((super::UNBOUND_BUCKET_LABEL.to_string(), 2)),
+            "buckets are independent"
+        );
+    }
+
+    /// HIGH-9: the REBIND path excludes the key being MOVED, so re-PATCHing a key onto the group it
+    /// is already bound to is not spuriously refused — while a genuine move into a full bucket is.
+    #[test]
+    fn rebind_excludes_the_mover_but_still_refuses_a_full_target() {
+        let g = gov();
+        let a = mint(&g, "a", Some("team"));
+        mint(&g, "b", Some("team"));
+        // `a` re-bound onto its OWN group: excluding the mover leaves 1 < 2, so it admits.
+        assert!(
+            super::check_key_cap(&g, 2, Some("team"), Some(&a.id))
+                .unwrap()
+                .is_none(),
+            "a no-op rebind of an at-cap bucket onto itself must not 409"
+        );
+        // A key from elsewhere moving IN sees 2 >= 2 and is refused.
+        let outsider = mint(&g, "c", None);
+        assert!(
+            super::check_key_cap(&g, 2, Some("team"), Some(&outsider.id))
+                .unwrap()
+                .is_some(),
+            "a rebind must not walk a principal past its ceiling"
+        );
     }
 }
 
