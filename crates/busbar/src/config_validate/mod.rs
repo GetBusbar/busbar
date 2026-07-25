@@ -1342,6 +1342,41 @@ fn validate_limits(limits: &crate::config::LimitsResolved, errors: &mut Vec<Stri
 /// module reference, and every
 /// secret reference's MODULE resolvability. Paste-ready stubs throughout. Pure - shared verbatim
 /// by boot and `--validate` so the two cannot drift.
+/// Enumerate EVERY secret reference in the resolved config as `(what, &SecretRef)`, where `what` is
+/// the human-readable config path used in error messages. The SINGLE source of truth for which
+/// references are secrets: the structural check in `validate_cost_model` and the registry-backed
+/// module-existence check in `main::validate_secret_refs` (deferred until the plugin registry exists)
+/// both walk this list, so a new secret-bearing field is covered by both the moment it is added here.
+pub(crate) fn secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::config::SecretRef)> {
+    let mut refs: Vec<(String, &crate::config::SecretRef)> = Vec::new();
+    for (name, p) in &cfg.providers {
+        refs.push((format!("providers.{name}.api_key"), &p.api_key));
+    }
+    if let Some(tls) = &cfg.tls {
+        refs.push(("tls.cert".to_string(), &tls.cert));
+        refs.push(("tls.key".to_string(), &tls.key));
+        if let Some(ca) = &tls.client_ca {
+            refs.push(("tls.client_ca".to_string(), ca));
+        }
+    }
+    if let Some(tls) = &cfg.admin_tls {
+        refs.push(("admin_tls.cert".to_string(), &tls.cert));
+        refs.push(("admin_tls.key".to_string(), &tls.key));
+        if let Some(ca) = &tls.client_ca {
+            refs.push(("admin_tls.client_ca".to_string(), ca));
+        }
+    }
+    if let Some(auth) = &cfg.auth {
+        if let Some(sk) = &auth.signing_key {
+            refs.push(("auth.signing_key".to_string(), sk));
+        }
+        if let Some(tok) = auth.admin_token_ref() {
+            refs.push(("auth.admin_auth admin-tokens token".to_string(), tok));
+        }
+    }
+    refs
+}
+
 fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
     if let Some(card) = &cfg.rate_card {
         // Well-formed rates: every tier finite and >= 0 (names the exact config path).
@@ -1439,23 +1474,21 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
         }
     }
 
-    // SECRET REFERENCES (C2): every secret's MODULE must be resolvable BY NAME. In P1/P2 the
-    // built-ins are `env` and `file`; a `kind: secret` plugin passes once loadable. The VALUE is
-    // deliberately not resolved here (CI validates config structure without secrets present);
-    // resolution failures are boot-time fail-closed errors.
+    // SECRET REFERENCES (C2): every secret's MODULE must be resolvable BY NAME. The built-ins are
+    // `env` and `file`; ANY OTHER module name is a `kind: secret` PLUGIN reference (vault, aws-sm,
+    // …), which is the marquee 1.5.0 "secrets are plugins" feature. Whether such a plugin actually
+    // exists + is `kind: secret` + is trusted is resolved against the plugin REGISTRY — but this
+    // function runs at boot AND `--validate` BEFORE the plugin pre-flight builds that registry, and
+    // captures none, so it CANNOT tell an installed vault plugin from a typo. Therefore the
+    // module-EXISTENCE check for a non-built-in module is DEFERRED to the shared plugin pre-flight
+    // (`validate_secret_refs`, called from `plugins_preflight`'s two call-sites) — the SAME deferral
+    // the `store.module` plugin reference already uses (a non-`memory` store is only checked once the
+    // registry exists). Here we validate ONLY the STRUCTURE that is checkable without the registry:
+    // the built-in `env`/`file` modules' required settings. The VALUE is never resolved here (CI
+    // validates config structure without secrets present); resolution failures are boot-time
+    // fail-closed errors.
     let mut check_secret = |what: String, r: &crate::config::SecretRef| {
-        let known = matches!(
-            r.module.as_str(),
-            crate::config::secret::SECRET_MODULE_ENV | crate::config::secret::SECRET_MODULE_FILE
-        );
-        if !known {
-            errors.push(format!(
-                "{what} references secret module '{}', which is not a built-in (`env` | `file`) \
-                 and no loadable `kind: secret` plugin provides it. Use e.g.:\n\n    {what}: \
-                 {{ env: MY_SECRET_VAR }}\n",
-                r.module
-            ));
-        } else if r.module == crate::config::secret::SECRET_MODULE_ENV && r.env_var().is_none() {
+        if r.module == crate::config::secret::SECRET_MODULE_ENV && r.env_var().is_none() {
             errors.push(format!(
                 "{what}: secret module 'env' requires settings.key (the environment variable name)"
             ));
@@ -1464,31 +1497,14 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
                 "{what}: secret module 'file' requires settings.path (the file to read)"
             ));
         }
+        // A non-built-in module name (a `kind: secret` plugin reference) is NOT rejected here: its
+        // existence is proven against the registry in `validate_secret_refs` at plugin pre-flight.
     };
-    for (name, p) in &cfg.providers {
-        check_secret(format!("providers.{name}.api_key"), &p.api_key);
-    }
-    if let Some(tls) = &cfg.tls {
-        check_secret("tls.cert".to_string(), &tls.cert);
-        check_secret("tls.key".to_string(), &tls.key);
-        if let Some(ca) = &tls.client_ca {
-            check_secret("tls.client_ca".to_string(), ca);
-        }
-    }
-    if let Some(tls) = &cfg.admin_tls {
-        check_secret("admin_tls.cert".to_string(), &tls.cert);
-        check_secret("admin_tls.key".to_string(), &tls.key);
-        if let Some(ca) = &tls.client_ca {
-            check_secret("admin_tls.client_ca".to_string(), ca);
-        }
-    }
-    if let Some(auth) = &cfg.auth {
-        if let Some(sk) = &auth.signing_key {
-            check_secret("auth.signing_key".to_string(), sk);
-        }
-        if let Some(tok) = auth.admin_token_ref() {
-            check_secret("auth.admin_auth admin-tokens token".to_string(), tok);
-        }
+    // Enumerate EVERY secret reference in the config through ONE shared walk (`secret_refs`), so the
+    // structural check here and the registry-backed module-existence check at plugin pre-flight
+    // (`validate_secret_refs`) can never drift over WHICH refs they cover.
+    for (what, r) in secret_refs(cfg) {
+        check_secret(what, r);
     }
 
     // secrets (module-level `open()` config for `kind: secret` plugins): the built-in `env` / `file`

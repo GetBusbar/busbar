@@ -1417,18 +1417,20 @@ fn test_validate_admin_tokens_secret_module_checked() {
         validate(&cfg)
     };
 
-    // Unknown secret module: fail-closed, with a paste-ready `{ env: ... }` stub.
-    let errs = build(config::SecretRef {
-        module: "vault".to_string(),
-        settings: serde_json::Map::new(),
-    })
-    .expect_err("an unknown secret module on the admin token must fail validation");
+    // A NON-built-in secret module (a `kind: secret` plugin reference, e.g. `vault`) is the marquee
+    // 1.5.0 "secrets are plugins" feature. `validate` runs BEFORE the plugin registry exists, so it
+    // can no longer distinguish an installed vault plugin from a typo — the module-EXISTENCE check is
+    // DEFERRED to the plugin pre-flight (`validate_secret_refs`, exercised by the main.rs integration
+    // tests). Here `validate` must NOT reject a plugin-backed module on structural grounds alone (the
+    // structural `env`/`file` shape checks below still fire); a real typo is caught downstream.
     assert!(
-        errs.iter()
-            .any(|e| e.contains("auth.admin_auth admin-tokens token")
-                && e.contains("secret module 'vault'")
-                && e.contains("{ env: MY_SECRET_VAR }")),
-        "expected an unknown-secret-module error with the env stub; got: {errs:?}"
+        build(config::SecretRef {
+            module: "vault".to_string(),
+            settings: serde_json::Map::new(),
+        })
+        .is_ok(),
+        "a plugin-backed secret module must not be rejected by `validate` (existence is checked \
+         against the registry at plugin pre-flight, not here)"
     );
 
     // env module WITHOUT settings.key: the ref can never resolve; must fail naming the shape.
@@ -3847,23 +3849,27 @@ fn test_validate_role_binding_reserved_role_name_rejected() {
 /// their required setting fail too. Well-formed env/file refs pass (values are NOT resolved).
 #[test]
 fn test_validate_secret_module_resolvability() {
-    // providers.*.api_key with an unknown module.
+    // REGRESSION (audit round-4 #3/#4): a NON-built-in module (a `kind: secret` PLUGIN reference such
+    // as `vault`) is the marquee 1.5.0 "secrets are plugins" feature. `validate` runs BEFORE the
+    // plugin registry exists, so it CANNOT tell an installed vault plugin from a typo — the
+    // module-EXISTENCE check is DEFERRED to `main::validate_secret_refs` at plugin pre-flight (see the
+    // `secret_ref_*` tests in the main tests module). Therefore `validate` must NOT reject a
+    // plugin-backed module here; it must ONLY enforce the built-in `env`/`file` STRUCTURAL shape.
     let (mut providers, models, pools) = valid_maps();
     providers.get_mut("myprovider").unwrap().api_key = config::SecretRef {
         module: "vault".to_string(),
         settings: serde_json::Map::new(),
     };
     let cfg = make_root_cfg(providers, models, pools);
-    let errs = validate(&cfg).expect_err("an unknown secret module must fail validation");
     assert!(
-        errs.iter()
-            .any(|e| e.contains("providers.myprovider.api_key")
-                && e.contains("secret module 'vault'")
-                && e.contains("{ env: MY_SECRET_VAR }")),
-        "expected the unknown-secret-module error with the env stub; got: {errs:?}"
+        validate(&cfg).is_ok(),
+        "a plugin-backed api_key module must not be rejected by pre-registry validate; got: {:?}",
+        validate(&cfg)
     );
 
-    // tls.cert / tls.key / tls.client_ca each checked; a file ref missing settings.path fails.
+    // The STRUCTURAL env/file shape checks still fire: a plugin-backed `tls.cert` passes `validate`
+    // (existence deferred), but a `file` ref missing settings.path and an `env` ref missing
+    // settings.key are structural errors validate STILL catches.
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
     cfg.tls = Some(config::TlsCfg {
@@ -3880,11 +3886,11 @@ fn test_validate_secret_module_resolvability() {
             settings: serde_json::Map::new(), // missing settings.key
         }),
     });
-    let errs = validate(&cfg).expect_err("bad tls secret refs must fail validation");
+    let errs = validate(&cfg).expect_err("structurally-bad tls secret refs must fail validation");
+    // The plugin-backed `tls.cert` is NOT rejected by validate (its existence is a pre-flight concern).
     assert!(
-        errs.iter()
-            .any(|e| e.contains("tls.cert") && e.contains("secret module 'vault'")),
-        "tls.cert unknown module must error; got: {errs:?}"
+        !errs.iter().any(|e| e.contains("tls.cert")),
+        "a plugin-backed tls.cert must not be rejected by pre-registry validate; got: {errs:?}"
     );
     assert!(
         errs.iter()
@@ -3911,7 +3917,7 @@ fn test_validate_secret_module_resolvability() {
         validate(&cfg)
     );
 
-    // auth.signing_key is checked through the same seam.
+    // auth.signing_key with a plugin-backed module is likewise NOT rejected by pre-registry validate.
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
     let mut auth = config::AuthCfg::default_none();
@@ -3920,11 +3926,10 @@ fn test_validate_secret_module_resolvability() {
         settings: serde_json::Map::new(),
     });
     cfg.auth = Some(auth);
-    let errs = validate(&cfg).expect_err("an unknown signing_key module must fail validation");
     assert!(
-        errs.iter()
-            .any(|e| e.contains("auth.signing_key") && e.contains("secret module 'vault'")),
-        "auth.signing_key unknown module must error; got: {errs:?}"
+        validate(&cfg).is_ok(),
+        "a plugin-backed signing_key module must not be rejected by pre-registry validate; got: {:?}",
+        validate(&cfg)
     );
 }
 
@@ -3992,6 +3997,42 @@ advanced:
     assert!(cfg.groups.contains_key("eng"));
     assert_eq!(cfg.store.as_ref().unwrap().module, "memory");
     assert_eq!(cfg.limits.rate_sweep_interval, 256);
+}
+
+/// REGRESSION (audit round-4 #3/#4): the DOCUMENTED "secrets are plugins" vault example — a provider
+/// `api_key: { module: acme-vault }` (docs/plugins.md, configuration.md, migration-1.5.md) — RESOLVES
+/// and passes the shared boot/`--validate` semantic gate. `validate` runs before the plugin registry
+/// exists, so it must not reject the plugin-backed module; the registry-backed existence check is the
+/// deferred `validate_secret_refs` pre-flight (proven in the main tests module). This closes the
+/// round-3 regression where `validate` hard-rejected every plugin-backed secret module.
+#[test]
+fn test_validate_accepts_plugin_backed_secret_module_config() {
+    let yaml = r#"
+listen: "0.0.0.0:8080"
+providers:
+  anthropic:
+    api_key: { module: acme-vault, settings: { path: "secret/data/anthropic#key" } }
+models:
+  claude:
+    provider: anthropic
+pools:
+  main:
+    members:
+      - model: claude
+store:
+  module: memory
+"#;
+    let cfg = resolve_yaml(yaml).expect("the vault-api_key config must resolve");
+    assert_eq!(
+        cfg.providers.get("anthropic").unwrap().api_key.module,
+        "acme-vault",
+        "the plugin-backed secret module survived resolution"
+    );
+    assert!(
+        validate(&cfg).is_ok(),
+        "a plugin-backed api_key module must pass the shared boot/--validate gate; got: {:?}",
+        validate(&cfg)
+    );
 }
 
 /// The faulty twin: every NEW cost/auth-surface fault in one resolved config is collected by the
