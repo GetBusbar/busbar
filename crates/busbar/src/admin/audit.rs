@@ -117,6 +117,13 @@ pub(crate) struct AuditLog {
     /// Serializes the write-through (backfill + append) so two concurrent recorders cannot interleave
     /// their catch-up writes and re-introduce a gap or write a seq out of order to the store.
     durable_lock: std::sync::Mutex<()>,
+    /// Set when a boot restore could NOT read the durable log (a transient store error), so the
+    /// durable MAX SEQ — and with it the sequence floor — is UNKNOWN. While it is set the
+    /// write-through refuses to append: the sequence counter may sit below what the store already
+    /// holds, and appending would OVERWRITE existing durable history at those seqs (the durable
+    /// write is keyed on `seq`), silently destroying the append-only guarantee. Each write-through
+    /// first RETRIES the floor read, so the log self-heals the moment the store recovers.
+    durable_floor_unknown: std::sync::atomic::AtomicBool,
 }
 
 impl AuditLog {
@@ -127,6 +134,7 @@ impl AuditLog {
             sink: std::sync::Mutex::new(None),
             durable_high: std::sync::atomic::AtomicU64::new(0),
             durable_lock: std::sync::Mutex::new(()),
+            durable_floor_unknown: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -154,9 +162,28 @@ impl AuditLog {
         // max (the seq floor below stays correct), and tamper-evidence is verified over the loaded tail
         // (internal linkage + the tail head's self-digest). `list_audit_tail` bounds at the source for a
         // durable backend and falls back to `list_audit` + truncation for an older plugin.
-        let records = store
-            .list_audit_tail(MAX_AUDIT_ENTRIES as u64)
-            .map_err(|e| format!("audit restore read failed: {}", e.0))?;
+        let records = match store.list_audit_tail(MAX_AUDIT_ENTRIES as u64) {
+            Ok(r) => r,
+            Err(e) => {
+                // THE SEQ FLOOR MUST NOT BE BYPASSED (audit round-5 HIGH-10). A transient read
+                // error here used to return early, and the caller then fell back to the file
+                // snapshot — whose `load` floors the counter only to the SNAPSHOT's max, which can
+                // be far below what the store already holds (or, with no snapshot at all, leaves
+                // the counter at 1). The durable write-through is keyed on `seq`, so the next
+                // mutations would append AT seqs the store already occupies and OVERWRITE existing
+                // history: an append-only/contiguity violation caused by a store blip.
+                //
+                // We cannot floor to a max we could not read, so instead we SEAL the durable
+                // write-through until the floor is known. `durable_write_through` retries the floor
+                // read on every mutation, so this self-heals as soon as the store answers.
+                self.durable_floor_unknown
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                return Err(format!("audit restore read failed: {}", e.0));
+            }
+        };
+        // The read SUCCEEDED, so the durable floor is known (an empty log floors at 0).
+        self.durable_floor_unknown
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         if records.is_empty() {
             return Ok(0);
         }
@@ -274,7 +301,58 @@ impl AuditLog {
     /// the only in-process source - but a single transient hiccup can no longer corrupt the chain.
     fn durable_write_through(&self, store: &dyn busbar_api::Store, new_seq: u64) {
         let _serial = self.durable_lock.lock().unwrap_or_else(|e| e.into_inner());
+        // SEALED while the durable floor is unknown (a boot restore whose read failed): appending
+        // now could overwrite durable history at seqs the store already holds. Retry the floor read
+        // first — one small tail read — so the log heals as soon as the store recovers.
+        if self
+            .durable_floor_unknown
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            match store.list_audit_tail(1) {
+                Ok(tail) => {
+                    let durable_max = tail.iter().map(|r| r.seq).max().unwrap_or(0);
+                    self.seq
+                        .fetch_max(durable_max + 1, std::sync::atomic::Ordering::Relaxed);
+                    self.durable_high
+                        .fetch_max(durable_max, std::sync::atomic::Ordering::Relaxed);
+                    self.durable_floor_unknown
+                        .store(false, std::sync::atomic::Ordering::SeqCst);
+                    tracing::info!(
+                        durable_max,
+                        "durable audit floor recovered; resuming the write-through above it"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e.0,
+                        "durable audit write-through skipped: the durable sequence floor is still \
+                         unknown (the boot restore read failed). The entry is retained in the RAM \
+                         ring + state snapshot; writing now could overwrite durable history."
+                    );
+                    return;
+                }
+            }
+        }
+        // The backfill starts after the last CONFIRMED durable seq. It is deliberately NOT clamped
+        // up to the ring's oldest retained seq: `durable_high` sitting below the ring means either
+        // (a) a genuinely unpersisted, now-pruned seq — a real hole, where halting is the whole
+        // point (round-4 #12) — or (b) a watermark that was never seeded, which is a RESTORE bug
+        // and is fixed where it belongs, in `load`/`restore_from_store` (round-5 #15/#24). Clamping
+        // here would paper over (a) and manufacture a false-contiguous durable tail.
         let start = self.durable_high.load(std::sync::atomic::Ordering::Relaxed) + 1;
+        if new_seq < start {
+            // This entry's seq is BELOW the durable floor — it can only be the mutation that
+            // triggered the floor recovery just above (its seq was allocated while the floor was
+            // unknown). Writing it would overwrite durable history; it stays in the RAM ring and the
+            // state snapshot, and the next mutation appends above the floor.
+            tracing::warn!(
+                seq = new_seq,
+                durable_floor = start,
+                "durable audit write-through skipped: this entry's seq predates the recovered \
+                 durable floor (it is retained in the RAM ring + state snapshot)"
+            );
+            return;
+        }
         for seq in start..=new_seq {
             // Source the record for `seq` from the RAM ring (the authoritative in-process copy).
             let record = {
@@ -336,6 +414,15 @@ impl AuditLog {
         q.extend(entries);
         self.seq
             .fetch_max(max_seq + 1, std::sync::atomic::Ordering::Relaxed);
+        // Seed the durable CATCH-UP watermark too (audit round-5 #15). This path only runs when the
+        // durable restore did NOT supply the ring, i.e. the snapshot IS the most complete history
+        // this process has. Leaving `durable_high` at 0 aimed the next write-through's backfill at
+        // seq 1 — which the restored ring cannot supply once it has been pruned — so the catch-up
+        // hit the unrepairable-gap branch immediately and durable audit stayed dead for the life of
+        // the process. `fetch_max` only ever RAISES it, so a floor already learned from the store
+        // (which is authoritative) wins.
+        self.durable_high
+            .fetch_max(max_seq, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Verify the tamper-evidence chain over the RETAINED entries: every entry's `hash` recomputes
@@ -622,6 +709,205 @@ mod tests {
             store.list_audit().unwrap().len(),
             total,
             "the durable store keeps the full history; only the boot read is bounded"
+        );
+    }
+
+    // ── THE SEQ FLOOR IS NEVER BYPASSED (audit round-5 HIGH-10 / #15 / #24) ─────────────────────
+    //
+    // The durable write-through is keyed on `seq`, so the ONE thing boot must never do is resume
+    // with a counter below the durable max. Three ways that used to happen, one class:
+    //   HIGH-10  a transient `list_audit_tail` failure returned EARLY, before the floor was applied,
+    //            and the caller fell back to a snapshot that floors only to its own (lower) max;
+    //   #15      the file-snapshot `load` never seeded `durable_high` at all;
+    //   #24      the backfill always started at `durable_high + 1`, so a restored ring whose oldest
+    //            seq is higher hit the unrepairable-gap branch on the first iteration and left the
+    //            durable log permanently stuck.
+
+    /// A store whose AUDIT READS can be made to fail on demand (a transient backend blip), while
+    /// writes and everything else delegate to a real SQLite store.
+    struct FlakyAuditReads {
+        inner: busbar_store_sqlite::SqliteStore,
+        fail_reads: std::sync::atomic::AtomicBool,
+    }
+
+    impl FlakyAuditReads {
+        fn failing(&self) -> bool {
+            self.fail_reads.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    impl busbar_api::Store for FlakyAuditReads {
+        fn put_key(&self, key: &busbar_api::VirtualKey) -> busbar_api::StoreResult<()> {
+            self.inner.put_key(key)
+        }
+        fn get_key(&self, id: &str) -> busbar_api::StoreResult<Option<busbar_api::VirtualKey>> {
+            self.inner.get_key(id)
+        }
+        fn list_keys(&self) -> busbar_api::StoreResult<Vec<busbar_api::VirtualKey>> {
+            self.inner.list_keys()
+        }
+        fn delete_key(&self, id: &str) -> busbar_api::StoreResult<()> {
+            self.inner.delete_key(id)
+        }
+        fn get_usage(
+            &self,
+            bucket_id: &str,
+            window_start: u64,
+        ) -> busbar_api::StoreResult<busbar_api::UsageLedger> {
+            self.inner.get_usage(bucket_id, window_start)
+        }
+        fn put_usage(
+            &self,
+            bucket_id: &str,
+            window_start: u64,
+            ledger: &busbar_api::UsageLedger,
+        ) -> busbar_api::StoreResult<()> {
+            self.inner.put_usage(bucket_id, window_start, ledger)
+        }
+        fn add_metering(&self, delta: &busbar_api::MeteringDelta) -> busbar_api::StoreResult<()> {
+            self.inner.add_metering(delta)
+        }
+        fn list_metering(
+            &self,
+            bucket: u64,
+        ) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
+            self.inner.list_metering(bucket)
+        }
+        fn append_audit(&self, record: &busbar_api::AuditRecord) -> busbar_api::StoreResult<()> {
+            self.inner.append_audit(record)
+        }
+        fn list_audit(&self) -> busbar_api::StoreResult<Vec<busbar_api::AuditRecord>> {
+            if self.failing() {
+                return Err(busbar_api::StoreError("audit read unavailable".into()));
+            }
+            self.inner.list_audit()
+        }
+        fn list_audit_tail(
+            &self,
+            limit: u64,
+        ) -> busbar_api::StoreResult<Vec<busbar_api::AuditRecord>> {
+            if self.failing() {
+                return Err(busbar_api::StoreError("audit read unavailable".into()));
+            }
+            self.inner.list_audit_tail(limit)
+        }
+    }
+
+    /// HIGH-10: a TRANSIENT read failure at boot must not let the sequence rewind into durable
+    /// history. While the floor is unknown the write-through is SEALED (nothing is written, and
+    /// certainly nothing is overwritten); once the store answers again the floor is recovered and
+    /// appends resume ABOVE the durable max.
+    #[test]
+    fn transient_restore_read_failure_cannot_rewind_the_durable_seq() {
+        let inner = busbar_store_sqlite::SqliteStore::open_in_memory().unwrap();
+        let store = Arc::new(FlakyAuditReads {
+            inner,
+            fail_reads: std::sync::atomic::AtomicBool::new(false),
+        });
+
+        // Process 1: three durable entries (seq 1..=3).
+        let log1 = AuditLog::new();
+        log1.set_sink(store.clone());
+        log1.record_by("hook.register", "hook:a", OUTCOME_APPLIED, "admin");
+        log1.record_by("hook.register", "hook:b", OUTCOME_APPLIED, "admin");
+        log1.record_by("hook.delete", "hook:a", OUTCOME_APPLIED, "admin");
+        assert_eq!(store.list_audit().unwrap().len(), 3);
+        let before: Vec<(u64, String)> = store
+            .list_audit()
+            .unwrap()
+            .into_iter()
+            .map(|r| (r.seq, r.action))
+            .collect();
+
+        // Process 2 (the restart): the store blips, so the restore READ fails. The counter is still
+        // at 1 — below the durable max of 3.
+        store
+            .fail_reads
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let log2 = AuditLog::new();
+        log2.set_sink(store.clone());
+        assert!(
+            log2.restore_from_store(store.as_ref()).is_err(),
+            "the read failure surfaces as a restore error"
+        );
+
+        // A mutation now: it must NOT write at seq 1/2/3 over the existing durable history.
+        log2.record_by("plugin.install", "plugin:x", OUTCOME_APPLIED, "admin");
+        // Read PAST the simulated blip (straight off the inner store) to see the durable truth.
+        let during: Vec<(u64, String)> = store
+            .inner
+            .list_audit()
+            .unwrap()
+            .into_iter()
+            .map(|r| (r.seq, r.action))
+            .collect();
+        assert_eq!(
+            during, before,
+            "durable history is untouched while the sequence floor is unknown"
+        );
+
+        // The store recovers: the next mutation recovers the floor and appends ABOVE the max.
+        store
+            .fail_reads
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        // The first mutation after recovery RECOVERS the floor; its own seq was allocated while the
+        // floor was unknown, so it is (loudly) skipped rather than written over durable history.
+        log2.record_by("plugin.install", "plugin:y", OUTCOME_APPLIED, "admin");
+        // The next one lands durably, ABOVE the durable max.
+        log2.record_by("plugin.install", "plugin:z", OUTCOME_APPLIED, "admin");
+        let after = store.list_audit().unwrap();
+        assert_eq!(after.len(), 4, "the durable log GREW; nothing was replaced");
+        assert!(
+            after.last().unwrap().seq > 3,
+            "the post-recovery entry appended past the durable max: {:?}",
+            after.last().unwrap().seq
+        );
+        assert_eq!(
+            after.last().unwrap().resource,
+            "plugin:z",
+            "the post-recovery mutation is what landed"
+        );
+        for (i, (seq, action)) in before.iter().enumerate() {
+            assert_eq!((after[i].seq, &after[i].action), (*seq, action));
+        }
+    }
+
+    /// #15 + #24: after a FILE-SNAPSHOT restore (the durable restore did not supply the ring), the
+    /// next mutation must still reach the durable sink. Before the fix `durable_high` stayed 0, so
+    /// the backfill aimed at seq 1 — a seq the restored (pruned) ring cannot supply — hit the
+    /// unrepairable-gap branch immediately, and durable audit was dead for the life of the process.
+    #[test]
+    fn file_snapshot_restore_keeps_the_durable_write_through_alive() {
+        // A snapshot of a ring that has already been pruned: it starts at seq 10, not 1.
+        let source = AuditLog::new();
+        for i in 0..12 {
+            source.record_by(
+                "hook.register",
+                &format!("hook:{i}"),
+                OUTCOME_APPLIED,
+                "admin",
+            );
+        }
+        let pruned_snapshot: Vec<AuditEntry> = source.export().into_iter().skip(9).collect(); // seq 10..=12
+
+        let store: Arc<dyn Store> =
+            Arc::new(busbar_store_sqlite::SqliteStore::open_in_memory().unwrap());
+        let log = AuditLog::new();
+        log.set_sink(store.clone());
+        log.load(pruned_snapshot);
+
+        log.record_by("plugin.install", "plugin:x", OUTCOME_APPLIED, "admin");
+
+        let persisted = store.list_audit().unwrap();
+        assert_eq!(
+            persisted.len(),
+            1,
+            "the post-restore mutation reached the durable sink"
+        );
+        assert!(
+            persisted[0].seq > 12,
+            "and appended past the restored snapshot's max seq: {}",
+            persisted[0].seq
         );
     }
 
