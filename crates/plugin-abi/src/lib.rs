@@ -236,20 +236,31 @@ pub enum SecretResponse {
 
 // ── C fn-pointer signatures the engine resolves ──────────────────────────────────────────────────
 // Provided as type aliases so the engine's loader and the plugin's SDK agree on the exact ABI. All
-// are `unsafe extern "C"`. Buffers the plugin allocates (the `out*` params) are owned by the engine
-// until it calls `busbar_free` on them.
+// are `unsafe extern "C-unwind"`. Buffers the plugin allocates (the `out*` params) are owned by the
+// engine until it calls `busbar_free` on them.
+//
+// WHY `"C-unwind"` (not plain `"C"`): under the workspace default `panic = "unwind"`, a Rust panic
+// that tries to unwind OUT OF a plain `extern "C"` function is turned by the compiler into an
+// immediate ABORT at the callee (plugin) frame — it never reaches the caller, so the engine's
+// `catch_unwind` at the call site can NEVER intercept it and a panicking plugin aborts the whole
+// gateway. `extern "C-unwind"` makes unwinding across this boundary DEFINED: a panic propagates as a
+// forced unwind that the engine's `catch_unwind` DOES catch, turning a panicking plugin into a clean
+// fail-closed error instead of a process abort. This is the load-bearing half of the L6 panic-safety
+// seam; the engine wraps every call site (open/call/close/free/handshake) in `catch_unwind` (see the
+// loader), and non-`"C-unwind"` C/Go/Zig plugins still abort on unwind exactly as before (their
+// runtimes don't unwind), which is the pre-existing, documented behavior for non-Rust plugins.
 
 /// `busbar_abi` — returns the [`TRANSPORT_VERSION`] the plugin was built against.
-pub type AbiFn = unsafe extern "C" fn() -> u32;
+pub type AbiFn = unsafe extern "C-unwind" fn() -> u32;
 
 /// `busbar_plugin_kind` — returns a pointer to a NUL-terminated static string naming the ONE kind
 /// this library speaks (`"store"` | `"secret"` | `"auth"` | `"hook"`).
-pub type PluginKindFn = unsafe extern "C" fn() -> *const u8;
+pub type PluginKindFn = unsafe extern "C-unwind" fn() -> *const u8;
 
 /// `busbar_open` — construct an instance from a JSON config blob. On `STATUS_OK`, `*out_handle` is
 /// the opaque instance pointer (passed back to `call`/`close`). On `STATUS_ERR`, `*out_err` /
 /// `*out_err_len` hold a UTF-8 message the engine must `free`.
-pub type OpenFn = unsafe extern "C" fn(
+pub type OpenFn = unsafe extern "C-unwind" fn(
     cfg: *const u8,
     cfg_len: usize,
     out_handle: *mut *mut c_void,
@@ -260,7 +271,7 @@ pub type OpenFn = unsafe extern "C" fn(
 /// `busbar_call` — run one request (JSON in `req`). On `STATUS_OK`, `*out`/`*out_len` hold the JSON
 /// response; on `STATUS_ERR`, a UTF-8 error message. Either way the engine owns and must `free` the
 /// out buffer.
-pub type CallFn = unsafe extern "C" fn(
+pub type CallFn = unsafe extern "C-unwind" fn(
     handle: *mut c_void,
     req: *const u8,
     req_len: usize,
@@ -270,10 +281,10 @@ pub type CallFn = unsafe extern "C" fn(
 
 /// `busbar_free` — release a buffer the plugin allocated (`open`'s error, `call`'s payload). The
 /// plugin frees with the SAME allocator it allocated with — the engine never frees plugin memory.
-pub type FreeFn = unsafe extern "C" fn(ptr: *mut u8, len: usize);
+pub type FreeFn = unsafe extern "C-unwind" fn(ptr: *mut u8, len: usize);
 
 /// `busbar_close` — drop the instance behind `handle`. Called once, at shutdown/unload.
-pub type CloseFn = unsafe extern "C" fn(handle: *mut c_void);
+pub type CloseFn = unsafe extern "C-unwind" fn(handle: *mut c_void);
 
 #[cfg(test)]
 mod tests {

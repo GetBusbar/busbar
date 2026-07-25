@@ -768,15 +768,19 @@ macro_rules! export_plugin {
     (kind = $kind:expr, open = $open:path, call = $call:path, close = $close:path, ctor = $ctor:path $(,)?) => {
         /// # Safety
         /// Read only by the busbar loader as the frozen TRANSPORT handshake.
+        ///
+        /// `extern "C-unwind"` (matches [`busbar_plugin_abi::AbiFn`]): a panic that unwinds out of
+        /// this symbol propagates as a DEFINED forced unwind the engine's `catch_unwind` can catch,
+        /// rather than an immediate abort at this frame (which plain `extern "C"` would force).
         #[no_mangle]
-        pub extern "C" fn busbar_abi() -> u32 {
+        pub extern "C-unwind" fn busbar_abi() -> u32 {
             $crate::transport_version()
         }
 
         /// # Safety
         /// The returned pointer is to a `'static` NUL-terminated string owned by this library.
         #[no_mangle]
-        pub extern "C" fn busbar_plugin_kind() -> *const u8 {
+        pub extern "C-unwind" fn busbar_plugin_kind() -> *const u8 {
             const KIND_NUL: &str = concat!($kind, "\0");
             KIND_NUL.as_ptr()
         }
@@ -784,7 +788,7 @@ macro_rules! export_plugin {
         /// # Safety
         /// Called only by the busbar loader with ABI-valid pointers.
         #[no_mangle]
-        pub unsafe extern "C" fn busbar_open(
+        pub unsafe extern "C-unwind" fn busbar_open(
             cfg: *const u8,
             cfg_len: usize,
             out_handle: *mut *mut ::core::ffi::c_void,
@@ -797,7 +801,7 @@ macro_rules! export_plugin {
         /// # Safety
         /// Called only by the busbar loader with a live handle and ABI-valid pointers.
         #[no_mangle]
-        pub unsafe extern "C" fn busbar_call(
+        pub unsafe extern "C-unwind" fn busbar_call(
             handle: *mut ::core::ffi::c_void,
             req: *const u8,
             req_len: usize,
@@ -810,14 +814,14 @@ macro_rules! export_plugin {
         /// # Safety
         /// Called only by the busbar loader with a buffer this plugin returned.
         #[no_mangle]
-        pub unsafe extern "C" fn busbar_free(ptr: *mut u8, len: usize) {
+        pub unsafe extern "C-unwind" fn busbar_free(ptr: *mut u8, len: usize) {
             $crate::free_impl(ptr, len)
         }
 
         /// # Safety
         /// Called only by the busbar loader with a live handle, once.
         #[no_mangle]
-        pub unsafe extern "C" fn busbar_close(handle: *mut ::core::ffi::c_void) {
+        pub unsafe extern "C-unwind" fn busbar_close(handle: *mut ::core::ffi::c_void) {
             $close(handle)
         }
     };

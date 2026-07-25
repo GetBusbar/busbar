@@ -67,6 +67,34 @@ pub(crate) fn intern_name(name: &str) -> &'static str {
     leaked
 }
 
+/// Run an FFI call `f` across the plugin ABI boundary under `catch_unwind`, converting a plugin panic
+/// into a fail-closed `Err` string instead of a process abort. EFFECTIVE only because the ABI fn
+/// pointers are `extern "C-unwind"` (see [`busbar_plugin_abi`]): a Rust plugin's panic unwinds as a
+/// DEFINED forced unwind that lands here; a plain `extern "C"` boundary would have aborted at the
+/// plugin frame BEFORE returning. `op` names the crossing (`open`/`call`/`close`/`free`/`abi`/`kind`)
+/// for the diagnostic. Every host-side ABI call site routes through this so no crossing is unguarded.
+fn ffi_guard<R>(path: &str, op: &str, f: impl FnOnce() -> R) -> Result<R, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_err(|_| {
+        format!("plugin '{path}' panicked across the ABI boundary in {op} (treated as failure)")
+    })
+}
+
+/// Call the plugin's `busbar_free` on `(ptr, len)` under a panic guard. A panicking `free` is logged
+/// and swallowed (the buffer is leaked rather than aborting the engine) — free runs on the request hot
+/// path and on error/cleanup paths where an abort would be the worst possible outcome.
+fn free_guarded(free: busbar_plugin_abi::FreeFn, path: &str, ptr: *mut u8, len: usize) {
+    if ptr.is_null() {
+        return;
+    }
+    if ffi_guard(path, "free", || unsafe { free(ptr, len) }).is_err() {
+        // A leaked buffer is strictly better than aborting the whole gateway on a bad plugin `free`.
+        tracing::warn!(
+            plugin = %path,
+            "plugin busbar_free panicked; leaking the buffer to keep the engine alive"
+        );
+    }
+}
+
 /// The resolved core C fn pointers + the opaque handle + the mapped library + staging backing, shared
 /// by every kind's typed wrapper. The KIND is bound at construction (cross-checked against the signed
 /// manifest) and then carried by the typed `DynStore`/`DynSecret`/`DynAuth`.
@@ -117,13 +145,16 @@ impl RawPlugin {
             .map_err(|e| TransportError::engine(format!("plugin request encode failed: {e}")))?;
         let mut out: *mut u8 = std::ptr::null_mut();
         let mut out_len: usize = 0;
-        // L6: catch any panic that unwinds across the `busbar_call` C-ABI boundary, for PARITY with the
+        // L6: catch any panic that unwinds across the `busbar_call` ABI boundary, for PARITY with the
         // hook seam (`DlopenPolicy::call`). SDK-built plugins catch panics plugin-side, but a signed
         // third-party (trust=signature, in-process) plugin NOT built with the busbar SDK that panics
-        // outside a caught region would otherwise unwind across the C-ABI boundary → process abort. All
-        // kinds (store/secret/auth) route their FFI call through here, so this is the single seam that
-        // fails such a plugin CLOSED instead of aborting the engine.
-        let status = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+        // outside a caught region would otherwise unwind across the boundary. This `catch_unwind` is
+        // EFFECTIVE because the ABI fn-pointer types are `extern "C-unwind"` (plugin-abi): the unwind is
+        // DEFINED and propagates here to be caught, rather than aborting at the plugin frame (which
+        // plain `extern "C"` would force). All kinds (store/secret/auth) route their FFI call through
+        // here, so this is the single seam that fails such a plugin CLOSED instead of aborting the
+        // engine. (Non-Rust C/Go/Zig plugins don't unwind, so they still abort — unchanged.)
+        let status = ffi_guard(&self.path, "call", || unsafe {
             (self.call)(
                 self.handle,
                 payload.as_ptr(),
@@ -131,18 +162,11 @@ impl RawPlugin {
                 &mut out,
                 &mut out_len,
             )
-        }))
-        .map_err(|_| {
-            TransportError::engine(format!(
-                "plugin '{}' panicked across the ABI boundary (call aborted, treated as failure)",
-                self.path
-            ))
-        })?;
+        })
+        .map_err(TransportError::engine)?;
         // Cap-reject BEFORE reading; still hand the buffer back to the plugin to free (it owns it).
         if let Err(msg) = response_len_ok(out_len, &self.path) {
-            if !out.is_null() {
-                unsafe { (self.free)(out, out_len) };
-            }
+            free_guarded(self.free, &self.path, out, out_len);
             return Err(TransportError::engine(msg));
         }
         let bytes = if out.is_null() || out_len == 0 {
@@ -150,9 +174,7 @@ impl RawPlugin {
         } else {
             unsafe { std::slice::from_raw_parts(out, out_len) }.to_vec()
         };
-        if !out.is_null() {
-            unsafe { (self.free)(out, out_len) };
-        }
+        free_guarded(self.free, &self.path, out, out_len);
         if status == STATUS_OK {
             serde_json::from_slice(&bytes).map_err(|e| {
                 TransportError::engine(format!("plugin response decode failed: {e}"))
@@ -208,7 +230,19 @@ impl TransportError {
 
 impl Drop for RawPlugin {
     fn drop(&mut self) {
-        unsafe { (self.close)(self.handle) };
+        // Guard `busbar_close` against a panicking plugin destructor. This runs on the hot-reload
+        // path (the OLD instance drops as its last in-flight request drains) and at clean shutdown; a
+        // panic here in a plain `extern "C"` `drop` would double-panic → unconditional abort. With the
+        // `extern "C-unwind"` ABI the unwind is defined and caught here, so a bad backend `Drop`
+        // degrades to a logged warning + leaked handle instead of tearing down the whole gateway.
+        let close = self.close;
+        let handle = self.handle;
+        if ffi_guard(&self.path, "close", || unsafe { close(handle) }).is_err() {
+            tracing::warn!(
+                plugin = %self.path,
+                "plugin busbar_close panicked during drop; leaking the handle to keep the engine alive"
+            );
+        }
     }
 }
 
@@ -252,11 +286,12 @@ fn wire_up_raw(
     };
     let lib = guard.lib.as_ref().expect("lib present");
     // ── 1. Transport handshake FIRST — refuse a non-matching transport before resolving open/call. ──
-    let transport = unsafe {
-        let f = lib
-            .get::<busbar_plugin_abi::AbiFn>(symbol::ABI)
+    // The `busbar_abi()` call runs plugin code, so it too rides `ffi_guard`: a plugin that panics in
+    // its handshake fails the load CLOSED instead of aborting the engine during boot/reload.
+    let transport = {
+        let f = unsafe { lib.get::<busbar_plugin_abi::AbiFn>(symbol::ABI) }
             .map_err(|_| format!("'{display}' is not a busbar plugin (no busbar_abi symbol)"))?;
-        (*f)()
+        ffi_guard(&display, "abi", || unsafe { (*f)() })?
     };
     if transport != TRANSPORT_VERSION {
         return Err(format!(
@@ -297,10 +332,13 @@ fn wire_up_raw(
     };
 
     // ── 4. open: construct the instance from the JSON config. ──
+    // Guarded: `busbar_open` runs plugin constructor code on every load (boot AND hot config-reload).
+    // With the `extern "C-unwind"` ABI a panicking constructor unwinds here and fails the load CLOSED,
+    // rather than aborting the whole gateway mid-reload.
     let mut handle: *mut c_void = std::ptr::null_mut();
     let mut err: *mut u8 = std::ptr::null_mut();
     let mut err_len: usize = 0;
-    let status = unsafe {
+    let status = ffi_guard(&display, "open", || unsafe {
         open(
             cfg_json.as_ptr(),
             cfg_json.len(),
@@ -308,18 +346,22 @@ fn wire_up_raw(
             &mut err,
             &mut err_len,
         )
-    };
+    })?;
     if status != STATUS_OK || handle.is_null() {
         let msg = if err.is_null() || err_len == 0 {
             format!("status {status}")
         } else {
             let m = String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(err, err_len) })
                 .into_owned();
-            unsafe { free(err, err_len) };
+            free_guarded(free, &display, err, err_len);
             m
         };
         return Err(format!("plugin '{display}' open failed: {msg}"));
     }
+    // LOW (audit): on the SUCCESS path a well-behaved plugin leaves `err` null, but an ABI-violating
+    // plugin may set a non-null `err` alongside `STATUS_OK`. Free it here rather than leaking it on
+    // every load (the hot `fetch_status` → `open_hook` → `wire_up_raw` metrics-scrape path).
+    free_guarded(free, &display, err, err_len);
 
     // Success: disarm the guard and move the library + backing into the RawPlugin (whose fields drop
     // in the same lib-before-backing order).
@@ -337,12 +379,11 @@ fn wire_up_raw(
 
 /// Read `busbar_plugin_kind()` from a mapped library into an owned `String`.
 fn read_plugin_kind(lib: &Library, display: &str) -> Result<String, String> {
-    let ptr = unsafe {
-        let f = lib.get::<PluginKindFn>(symbol::PLUGIN_KIND).map_err(|_| {
-            format!("'{display}' is not a busbar plugin (no busbar_plugin_kind symbol)")
-        })?;
-        (*f)()
-    };
+    let f = unsafe { lib.get::<PluginKindFn>(symbol::PLUGIN_KIND) }.map_err(|_| {
+        format!("'{display}' is not a busbar plugin (no busbar_plugin_kind symbol)")
+    })?;
+    // Guarded: `busbar_plugin_kind()` runs plugin code; a panic fails the load CLOSED, not an abort.
+    let ptr = ffi_guard(display, "kind", || unsafe { (*f)() })?;
     if ptr.is_null() {
         return Err(format!("plugin '{display}' returned a null kind string"));
     }
@@ -734,11 +775,10 @@ pub fn validate_plugin(lib_path: &Path) -> Result<u32, String> {
     // itself the trust of compiling it in. The path is operator/admin-supplied, never request data.
     let lib = unsafe { Library::new(lib_path) }
         .map_err(|e| format!("failed to load plugin '{display}': {e}"))?;
-    let transport = unsafe {
-        let f = lib
-            .get::<busbar_plugin_abi::AbiFn>(symbol::ABI)
+    let transport = {
+        let f = unsafe { lib.get::<busbar_plugin_abi::AbiFn>(symbol::ABI) }
             .map_err(|_| format!("'{display}' is not a busbar plugin (no busbar_abi symbol)"))?;
-        (*f)()
+        ffi_guard(&display, "abi", || unsafe { (*f)() })?
     };
     if transport != TRANSPORT_VERSION {
         return Err(format!(
@@ -1367,7 +1407,7 @@ mod tests {
 
     /// A fake `busbar_call`: allocate a buffer holding the thread-local body and return the
     /// thread-local status. Mimics the plugin side (plugin allocates, engine frees via `busbar_free`).
-    unsafe extern "C" fn fake_call(
+    unsafe extern "C-unwind" fn fake_call(
         _handle: *mut c_void,
         _req: *const u8,
         _req_len: usize,
@@ -1389,7 +1429,7 @@ mod tests {
     }
 
     /// Free a buffer `fake_call` allocated (reconstruct the boxed slice and drop it).
-    unsafe extern "C" fn fake_free(ptr: *mut u8, len: usize) {
+    unsafe extern "C-unwind" fn fake_free(ptr: *mut u8, len: usize) {
         if !ptr.is_null() && len != 0 {
             drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, len)));
         }
