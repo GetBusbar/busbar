@@ -776,9 +776,17 @@ async fn run() {
                     "audit log restored from the durable governance store"
                 );
             }
-            Err(e) => tracing::warn!(
+            // A store READ failure and a chain-VERIFICATION failure are different events: the first
+            // is a hiccup, the second is tamper evidence. Reporting both as "chain verification"
+            // trains an operator to ignore the one that matters.
+            Err(e) if e.starts_with("audit restore read failed") => tracing::warn!(
                 error = %e,
-                "durable audit restore failed (chain verification); falling back to the state snapshot"
+                "could not read the durable audit log; falling back to the state snapshot"
+            ),
+            Err(e) => tracing::error!(
+                error = %e,
+                "durable audit CHAIN VERIFICATION failed — the persisted log does not verify \
+                 against its own hash chain; falling back to the state snapshot"
             ),
         }
     }
