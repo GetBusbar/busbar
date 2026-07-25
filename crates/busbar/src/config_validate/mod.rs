@@ -1325,7 +1325,7 @@ fn validate_limits(limits: &crate::config::LimitsResolved, errors: &mut Vec<Stri
     // unlimited default) is valid.
 }
 
-// NOTE (audit round-5 #37): a long doc comment used to sit here describing a BLANK-ADMIN-TOKEN boot
+// NOTE: a long doc comment used to sit here describing a BLANK-ADMIN-TOKEN boot
 // guard validated at this layer. The function it documented is gone — the admin token became a
 // SecretRef, so its VALUE is not visible to this (pre-resolution) validation pass at all. The guard
 // itself now lives where the value exists: `main::resolve_admin_token`, which refuses an
@@ -1760,9 +1760,9 @@ fn reject_cidr_metadata_entries(key: &str, entries: &[String], errors: &mut Vec<
 /// entry in `entries`, using the EXACT canonicalization the denylist block check uses for operator-
 /// supplied `blocked_metadata_hosts`. This is shared by the allow-override path so an allow entry
 /// unblocks every spelling of an IP the same way a block entry blocks every spelling:
-///   * a hostname entry matches case-insensitively, trailing dot stripped;
-///   * an IP-literal entry matches the parsed connect-host AND its IPv4-mapped/compatible-IPv6 and
-///     alternate-encoding (decimal-int / hex / octal / short-dotted) spellings.
+/// * a hostname entry matches case-insensitively, trailing dot stripped;
+/// * an IP-literal entry matches the parsed connect-host AND its IPv4-mapped/compatible-IPv6 and
+/// alternate-encoding (decimal-int / hex / octal / short-dotted) spellings.
 ///
 /// Empty / whitespace-only entries never match.
 fn host_matches_any(host: &str, entries: &[String]) -> bool {
@@ -1822,14 +1822,14 @@ fn host_matches_any(host: &str, entries: &[String]) -> bool {
 /// Ollama/vLLM "just works" with no flag).
 ///
 /// The hardcoded denylist:
-///   * link-local `169.254.0.0/16` — catches IMDS `169.254.169.254`, AWS ECS task-creds
-///     `169.254.170.2`, Tencent `169.254.0.23`, and any other link-local metadata in one range
-///     (nothing legitimate runs on link-local);
-///   * `100.100.100.200` (Alibaba Cloud ECS, inside the otherwise-allowed CGNAT /10);
-///   * `168.63.129.16` (Azure WireServer / platform);
-///   * `192.0.0.192` (Oracle Cloud / OCI IMDS — globally-routable-shaped, so it needs an explicit literal);
-///   * the EC2 IMDSv6 `fd00:ec2::254`;
-///   * the metadata hostnames in `METADATA_HOSTS`.
+/// * link-local `169.254.0.0/16` — catches IMDS `169.254.169.254`, AWS ECS task-creds
+/// `169.254.170.2`, Tencent `169.254.0.23`, and any other link-local metadata in one range
+/// (nothing legitimate runs on link-local);
+/// * `100.100.100.200` (Alibaba Cloud ECS, inside the otherwise-allowed CGNAT /10);
+/// * `168.63.129.16` (Azure WireServer / platform);
+/// * `192.0.0.192` (Oracle Cloud / OCI IMDS — globally-routable-shaped, so it needs an explicit literal);
+/// * the EC2 IMDSv6 `fd00:ec2::254`;
+/// * the metadata hostnames in `METADATA_HOSTS`.
 ///
 /// All IP entries are matched through the SAME obfuscation defenses (IPv4-mapped/compatible IPv6,
 /// decimal-int / hex / octal encoding, percent-encoded dots, trailing-dot FQDN), not just IMDS.
@@ -1841,13 +1841,13 @@ fn host_matches_any(host: &str, entries: &[String]) -> bool {
 /// `!allow_all` AND on-denylist(hardcoded ∪ `extra_blocked`) AND NOT in `allow_overrides`.
 ///
 /// * `allow_all` is `security.allow_all_metadata` — the nuclear override; when `true` the guard is
-///   fully disabled and the function always returns `None`.
+/// fully disabled and the function always returns `None`.
 /// * `allow_overrides` is the UNION of the provider's `allow_metadata_hosts` and the global
-///   `security.allow_metadata_hosts` — a surgical carve-out. An entry is matched with the SAME
-///   canonicalization as the block check (an IP entry unblocks all its obfuscated spellings —
-///   decimal-int, IPv4-mapped/compatible IPv6, trailing-dot — mirroring how a block entry blocks
-///   all spellings; a hostname entry matches case-insensitively, trailing dot stripped). Allow
-///   always wins: a host on the denylist that ALSO appears in `allow_overrides` is permitted.
+/// `security.allow_metadata_hosts` — a surgical carve-out. An entry is matched with the SAME
+/// canonicalization as the block check (an IP entry unblocks all its obfuscated spellings —
+/// decimal-int, IPv4-mapped/compatible IPv6, trailing-dot — mirroring how a block entry blocks
+/// all spellings; a hostname entry matches case-insensitively, trailing dot stripped). Allow
+/// always wins: a host on the denylist that ALSO appears in `allow_overrides` is permitted.
 pub(crate) fn ssrf_blocked_host(
     url: &str,
     allow_overrides: &[String],
@@ -1896,10 +1896,10 @@ pub(crate) fn ssrf_blocked_host(
     }
 
     // The hardcoded metadata IP literals.
-    //  * link-local `169.254.0.0/16` (IMDS `169.254.169.254`, ECS `169.254.170.2`, Tencent
-    //    `169.254.0.23`, …);
-    //  * Alibaba `100.100.100.200`; Azure `168.63.129.16`; Oracle Cloud (OCI) `192.0.0.192`;
-    //    EC2 IMDSv6 `fd00:ec2::254`.
+    // * link-local `169.254.0.0/16` (IMDS `169.254.169.254`, ECS `169.254.170.2`, Tencent
+    // `169.254.0.23`, …);
+    // * Alibaba `100.100.100.200`; Azure `168.63.129.16`; Oracle Cloud (OCI) `192.0.0.192`;
+    // EC2 IMDSv6 `fd00:ec2::254`.
     let imds_v6 = Ipv6Addr::new(0xfd00, 0x0ec2, 0, 0, 0, 0, 0, 0x254);
     let alibaba_v4 = Ipv4Addr::new(100, 100, 100, 200);
     let azure_v4 = Ipv4Addr::new(168, 63, 129, 16);

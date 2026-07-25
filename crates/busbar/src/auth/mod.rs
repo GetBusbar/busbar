@@ -479,23 +479,23 @@ fn vendor_auth_failure_message(proto: &str) -> &'static str {
 /// inferred ingress protocol. The pair is chosen to MATCH what the genuine vendor returns for a
 /// bad API key, because the status code and the writer-mapped `error.type`/`error.status` are both
 /// deterministic protocol tells a native SDK keys its typed exception off:
-///   - bedrock → HTTP 403 + "auth": a real SigV4 rejection is 403 AccessDenied (NOT 401).
-///   - gemini  → HTTP 400 + "invalid_request_error": the Generative Language API does NOT return
-///     401/UNAUTHENTICATED for a bad API key; it returns HTTP 400 with `error.status:
-///     "INVALID_ARGUMENT"` (google.rpc.Code; the gemini writer maps `invalid_request_error` →
-///     INVALID_ARGUMENT and echoes `code: 400`). A 401/UNAUTHENTICATED body would be a tell the
-///     google-genai SDK never sees from real Google on the bad-key path.
-///   - openai / responses → HTTP 401 + "authentication_error": the genuine OpenAI/Responses bad-key
-///     401 body carries `error.code: "invalid_api_key"`, and the official SDKs surface that value as
-///     `AuthenticationError.code`. Emitting `code: null` is a deterministic proxy tell a native SDK
-///     keys its typed-exception comparison off. The openai/responses writers pair
-///     `code: "invalid_api_key"` ONLY with `error.type: "authentication_error"` (see
-///     `proto::openai_family::bearer_error_code`); the alternate `invalid_request_error` type maps
-///     to `code: null`. We therefore pass `authentication_error` here so the wire body carries the
-///     real `code: "invalid_api_key"` pairing — matching the modern OpenAI bad-key shape the writers
-///     document — rather than the `code: null` tell.
-///   - anthropic / cohere / unknown → HTTP 401 + "authentication_error": the standard
-///     bad-credential shape for those vendors.
+/// - bedrock → HTTP 403 + "auth": a real SigV4 rejection is 403 AccessDenied (NOT 401).
+/// - gemini  → HTTP 400 + "invalid_request_error": the Generative Language API does NOT return
+/// 401/UNAUTHENTICATED for a bad API key; it returns HTTP 400 with `error.status:
+/// "INVALID_ARGUMENT"` (google.rpc.Code; the gemini writer maps `invalid_request_error` →
+/// INVALID_ARGUMENT and echoes `code: 400`). A 401/UNAUTHENTICATED body would be a tell the
+/// google-genai SDK never sees from real Google on the bad-key path.
+/// - openai / responses → HTTP 401 + "authentication_error": the genuine OpenAI/Responses bad-key
+/// 401 body carries `error.code: "invalid_api_key"`, and the official SDKs surface that value as
+/// `AuthenticationError.code`. Emitting `code: null` is a deterministic proxy tell a native SDK
+/// keys its typed-exception comparison off. The openai/responses writers pair
+/// `code: "invalid_api_key"` ONLY with `error.type: "authentication_error"` (see
+/// `proto::openai_family::bearer_error_code`); the alternate `invalid_request_error` type maps
+/// to `code: null`. We therefore pass `authentication_error` here so the wire body carries the
+/// real `code: "invalid_api_key"` pairing — matching the modern OpenAI bad-key shape the writers
+/// document — rather than the `code: null` tell.
+/// - anthropic / cohere / unknown → HTTP 401 + "authentication_error": the standard
+/// bad-credential shape for those vendors.
 ///
 /// Not a disposition/breaker match, so an unknown future proto falls back to the Anthropic-family
 /// 401 authentication_error, keeping the request path panic-free.
@@ -1009,7 +1009,7 @@ pub(crate) async fn auth_middleware(
                 .unwrap_or(&path);
             // `/config/validate` is a stateless dry-run (read-only scope, no blast radius) — it
             // meters in the roomy CRUD class so a CI pipeline linting configs never contends with
-            // the 10/min budget that guards real config mutations (re-audit M3).
+            // the 10/min budget that guards real config mutations.
             let class = if (rel.starts_with("/config/")
                 && rel != crate::admin::v1::contract::PATH_CONFIG_VALIDATE)
                 || rel == crate::admin::v1::contract::PATH_ADMIN_AUTH

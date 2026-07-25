@@ -372,7 +372,7 @@ fn wire_up_raw(
     }
 
     // ── 2. Kind bound at load — read the exported kind, cross-check it against the seam AND the
-    //       signed manifest. Any disagreement is a hard fail-closed load error naming both. ──
+    // signed manifest. Any disagreement is a hard fail-closed load error naming both. ──
     let exported_kind = read_plugin_kind(lib, &display)?;
     if exported_kind != expected_kind {
         return Err(format!(
@@ -847,15 +847,15 @@ pub fn load_store(lib_path: &Path, cfg_json: &str) -> Result<Box<dyn Store>, Str
 /// gap: the caller verifies the bytes ONCE and passes them here; the loader maps EXACTLY those bytes.
 ///
 /// - **Linux**: `memfd_create` + `dlopen("/proc/self/fd/N")` — ZERO disk files, no path an attacker
-///   could ever race.
+/// could ever race.
 /// - **macOS / Windows**: the verified bytes are written to a fresh `create_new` file inside a
-///   per-process PRIVATE `0700` staging directory (`busbar-plugins-<pid>-<random>`) and loaded from
-///   there. The staged file is throwaway output regenerated from the verified bytes on every load —
-///   a pre-existing on-disk file is NEVER loaded. On clean shutdown the library is unloaded FIRST,
-///   then the staged file removed; a crash's leftovers are removed by [`sweep_dead_staging`] at the
-///   next boot. Residual (do not overstate): on these platforms the load is by PATH inside the
-///   owner-created private dir, so only an attacker who already owns that dir (i.e. the same user)
-///   could interfere; a hostile `TMPDIR` base remains the operator's responsibility.
+/// per-process PRIVATE `0700` staging directory (`busbar-plugins-<pid>-<random>`) and loaded from
+/// there. The staged file is throwaway output regenerated from the verified bytes on every load —
+/// a pre-existing on-disk file is NEVER loaded. On clean shutdown the library is unloaded FIRST,
+/// then the staged file removed; a crash's leftovers are removed by [`sweep_dead_staging`] at the
+/// next boot. Residual (do not overstate): on these platforms the load is by PATH inside the
+/// owner-created private dir, so only an attacker who already owns that dir (i.e. the same user)
+/// could interfere; a hostile `TMPDIR` base remains the operator's responsibility.
 ///
 /// `display` is a human label for diagnostics (typically the plugin's canonical name); `manifest_kind`
 /// is the trust-verified signed-manifest `kind`, cross-checked against `busbar_plugin_kind()`.
@@ -1305,7 +1305,7 @@ mod tests {
             load_store(&victim, r#"{"db_path": ":memory:"}"#).is_err(),
             "the swapped-in junk is not a loadable plugin (path load sees the swap)"
         );
-        // ...but the from-bytes load, fed the bytes we verified BEFORE the swap, loads fine.
+        // ..but the from-bytes load, fed the bytes we verified BEFORE the swap, loads fine.
         let store =
             load_store_from_bytes(&verified, r#"{"db_path": ":memory:"}"#, "toctou", "store")
                 .expect("verified bytes still load despite the on-disk swap");
@@ -1559,7 +1559,7 @@ mod tests {
     }
 
     // ── L5 re-audit follow-up: the denylist fallback keys on the OUT-OF-BAND ABI status, not on
-    //    plugin-controlled body text ─────────────────────────────────────────────────────────────
+    // plugin-controlled body text ─────────────────────────────────────────────────────────────
     //
     // The regression uses a FAKE `busbar_call` whose returned (status, body) is chosen per-test via a
     // thread-local, wired into a genuine `RawPlugin` built on a real loaded `Library` (so the whole
@@ -1829,9 +1829,9 @@ mod tests {
     }
 
     // ── Class-level loader discrimination harness (redesign B §6b): the SAME matrix of injected
-    //    statuses × the three fallback-bearing methods, driven through the real
-    //    `call_raw_status` → `TransportError::from_status` → `is_unsupported()` path. A new
-    //    fallback-bearing method inherits this coverage the moment it keys on `is_unsupported()`. ────
+    // statuses × the three fallback-bearing methods, driven through the real
+    // `call_raw_status` → `TransportError::from_status` → `is_unsupported()` path. A new
+    // fallback-bearing method inherits this coverage the moment it keys on `is_unsupported()`. ────
 
     /// THE D4 REGRESSION GUARD: a plugin PANIC on `ListDenylist` arrives as `STATUS_PANIC` → `Fault`,
     /// `is_unsupported()` is false, so `list_denylist` fails CLOSED (Err) — it does NOT silently return

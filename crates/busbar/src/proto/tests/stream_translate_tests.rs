@@ -2173,7 +2173,7 @@ fn test_translate_openai_include_usage_egress_to_bedrock_ingress_single_metadata
         "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n",
         // include_usage: terminal finish chunk carries NO usage...
         "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
-        // ...usage rides a SEPARATE trailing chunk (empty choices).
+        // ..usage rides a SEPARATE trailing chunk (empty choices).
         "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":11}}\n\n",
         "data: [DONE]\n\n",
     ] {

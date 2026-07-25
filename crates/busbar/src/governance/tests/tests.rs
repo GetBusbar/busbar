@@ -1356,11 +1356,11 @@ fn test_budget_sweep_is_window_agnostic_across_cotenants() {
 fn test_budget_sweep_cadence_post_increment_no_off_by_one() {
     // Regression for the sweep-cadence off-by-one, now on the budget shard sweep (the rate map is
     // gone; the same amortized POST-increment machinery guards the budget cells):
-    //  - It must NOT fire on the very first admission (ticker starts at 0; the post-increment
-    //    value 1 is not a multiple of N), so startup against an empty map does no wasted scan.
-    //  - It must fire on admissions N, 2N, 3N, ...
-    //  - The u32 wrap boundary must NOT skip a cycle: when the pre-increment value is 0xFFFFFFFF,
-    //    the post-increment value wraps to 0 (a multiple of N) and the sweep still fires.
+    // - It must NOT fire on the very first admission (ticker starts at 0; the post-increment
+    // value 1 is not a multiple of N), so startup against an empty map does no wasted scan.
+    // - It must fire on admissions N, 2N, 3N, ...
+    // - The u32 wrap boundary must NOT skip a cycle: when the pre-increment value is 0xFFFFFFFF,
+    // the post-increment value wraps to 0 (a multiple of N) and the sweep still fires.
     const N: u32 = crate::config::DEFAULT_RATE_SWEEP_INTERVAL;
     let store = Arc::new(MemoryStore::new());
     let gov = GovState::new(store, None).unwrap();
@@ -2350,14 +2350,14 @@ mod signed_token {
         assert!(err.0.contains("no signing key"), "got {}", err.0);
     }
 
-    // ── REVOCATION IS AUTHORITATIVE, NOT A BOOT SNAPSHOT (audit round-5 HIGH-5 / HIGH-8) ─────────
+    // ── REVOCATION IS AUTHORITATIVE, NOT A BOOT SNAPSHOT ─────────
     //
     // The denylist used to be hydrated ONCE in `GovState::new_with_signer` and thereafter mutated
     // only by a revoke performed by THIS process. Consequences, both live auth bypasses:
-    //   * a revoke (or a DELETE, which denylists before removing the binding) performed on ANOTHER
-    //     node of a fleet sharing one durable store never reached this node — the credential kept
-    //     authenticating for the entire life of the process;
-    //   * the same for any revocation written out-of-band directly against the store.
+    // * a revoke (or a DELETE, which denylists before removing the binding) performed on ANOTHER
+    // node of a fleet sharing one durable store never reached this node — the credential kept
+    // authenticating for the entire life of the process;
+    // * the same for any revocation written out-of-band directly against the store.
     // The fix makes every auth path re-read the store denylist once its copy is older than
     // `REVOCATION_SYNC_TTL_SECS`. These two cases are the class: (a) local revoke = zero window,
     // (b) peer revoke = bounded window.
@@ -2433,14 +2433,14 @@ mod signed_token {
         );
     }
 
-    // ── ROTATION ACTUALLY ROTATES (audit round-5 HIGH-6) ─────────────────────────────────────────
+    // ── ROTATION ACTUALLY ROTATES ─────────────────────────────────────────
     //
     // `POST /keys/{id}/rotate` used to mint a legacy BEARER SECRET and stamp its hash over the
     // binding marker. Two defects in one line:
-    //   * the outstanding SIGNED TOKEN kept verifying (the token path resolves by `sub` and never
-    //     looked at `key_hash`), so the operation revoked precisely nothing;
-    //   * it ARMED the legacy hashed-secret path on a key deliberately minted without one — a
-    //     second, weaker, non-expiring credential (a downgrade).
+    // * the outstanding SIGNED TOKEN kept verifying (the token path resolves by `sub` and never
+    // looked at `key_hash`), so the operation revoked precisely nothing;
+    // * it ARMED the legacy hashed-secret path on a key deliberately minted without one — a
+    // second, weaker, non-expiring credential (a downgrade).
     // Rotation now stamps a fresh binding GENERATION (durable, so every node agrees) and re-mints
     // the token against it.
 

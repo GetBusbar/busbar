@@ -1955,7 +1955,7 @@ async fn test_admin_v1_key_rotate_and_pagination() {
     // Rotate the first key: these are SIGNED-TOKEN bindings, so rotation re-mints the TOKEN at a
     // fresh binding generation (every prior token for the subject is now rejected) and keeps the id
     // stable. It must NOT hand back a legacy bearer secret — arming the hashed-secret path on a key
-    // minted without one would add a second, weaker, non-expiring credential (audit round-5 HIGH-6).
+    // minted without one would add a second, weaker, non-expiring credential.
     let id = ids[0].clone();
     let rotated: serde_json::Value =
         admin(client.post(format!("http://{addr}/api/v1/admin/keys/{id}/rotate")))
@@ -4954,12 +4954,12 @@ async fn test_cancelled_patch_keeps_gate_held_for_full_store_mutation() {
     // existence check and its write). We then DROP (cancel) the PATCH's driving future while it is
     // parked, and fire a DELETE. The DELETE must NOT be able to complete while the PATCH's blocking
     // mutation is still in flight:
-    //   - Old code (async guard owned by the dropped PATCH future): cancelling releases the gate, so
-    //     the DELETE acquires it and COMPLETES within the window -> this test's "DELETE still
-    //     pending" assertion FAILS.
-    //   - Fixed code (gate locked inside the still-running blocking closure): the DELETE blocks on
-    //     the gate until the PATCH's `put_key` finishes -> the DELETE is STILL PENDING in the
-    //     window -> this test PASSES. Releasing the barrier then lets both drain.
+    // - Old code (async guard owned by the dropped PATCH future): cancelling releases the gate, so
+    // the DELETE acquires it and COMPLETES within the window -> this test's "DELETE still
+    // pending" assertion FAILS.
+    // - Fixed code (gate locked inside the still-running blocking closure): the DELETE blocks on
+    // the gate until the PATCH's `put_key` finishes -> the DELETE is STILL PENDING in the
+    // window -> this test PASSES. Releasing the barrier then lets both drain.
     crate::metrics::init();
     let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel::<()>(1);
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
@@ -5887,7 +5887,7 @@ async fn test_mint_scope_is_sibling_of_hooks_register() {
     handle.abort();
 }
 
-/// `max_keys_per_principal` (audit gap 7): with the cap set to 2, a group's 3rd mint is a 409 that
+/// `max_keys_per_principal`: with the cap set to 2, a group's 3rd mint is a 409 that
 /// names the cap; a DIFFERENT group is unaffected (the cap is per group = per principal). Cap `0`
 /// (default, tested elsewhere) is unlimited.
 #[tokio::test]
@@ -5957,19 +5957,19 @@ async fn test_max_keys_per_principal_cap_trips() {
 }
 
 /// The three refusals the 1.5.0 anti-sprawl work SHIPPED WITHOUT A DRIVER, and what their absence
-/// hid (round-6 audit). Split out of the `#[tokio::test]` so the class-level drift test can run it.
+/// hid. Split out of the `#[tokio::test]` so the class-level drift test can run it.
 ///
 /// 1. **`PATCH /keys/{id}` rebind into an at-cap group** — the round-5 HIGH-9 fix. Only its pure
-///    predicate (`check_key_cap`) was tested; the HANDLER arm that turns it into a 409 had no test
-///    at all, so `contract::taxonomy` never declared `Conflict/AtKeyCap` for that operation and
-///    `openapi.json` documented a `409` that named only `GovernanceOff`. The under-claim guard could
-///    not catch it either: it compared `ErrKind` alone, and `Conflict` WAS declared.
+/// predicate (`check_key_cap`) was tested; the HANDLER arm that turns it into a 409 had no test
+/// at all, so `contract::taxonomy` never declared `Conflict/AtKeyCap` for that operation and
+/// `openapi.json` documented a `409` that named only `GovernanceOff`. The under-claim guard could
+/// not catch it either: it compared `ErrKind` alone, and `Conflict` WAS declared.
 /// 2. **RE-ENABLE past the cap** — the same ratchet HIGH-9 claimed to close, through the other
-///    field. `check_key_cap` counts LIVE keys, so `disable → mint → re-enable` walks a bucket past
-///    its ceiling with every single request passing the guard. Now gated by the same 409.
-/// 3. **`POST /keys` delegated-mint-must-bind 400** (round-5 #19) — never exercised, and its
-///    emission reused `Cond::RebindTargetMissing`, whose canonical phrase describes a DIFFERENT
-///    refusal. `openapi.json` therefore described this 400 as a dangling-rebind error.
+/// field. `check_key_cap` counts LIVE keys, so `disable → mint → re-enable` walks a bucket past
+/// its ceiling with every single request passing the guard. Now gated by the same 409.
+/// 3. **`POST /keys` delegated-mint-must-bind 400** — never exercised, and its
+/// emission reused `Cond::RebindTargetMissing`, whose canonical phrase describes a DIFFERENT
+/// refusal. `openapi.json` therefore described this 400 as a dangling-rebind error.
 ///
 /// It also asserts the audit consequence: every one of these refusals writes a `rejected` row.
 /// `POST /keys` wrote NOTHING on any refusal before round-6 — the one verb whose refusals a
@@ -9090,13 +9090,13 @@ const COND_WITNESS_DEBT: &[(
 /// mechanisms, both structural:
 ///
 /// - **UNDER-CLAIM** (a handler emits a kind the declaration omits → `openapi.json` would hide a
-///   response clients hit) is fatal AT THE EMISSION: the v1 router's recording layer panics inside
-///   whichever test produced it. Every test in the suite is a driver; nothing accumulates and
-///   nothing depends on test order. That check is live for the whole suite, not just this test.
+/// response clients hit) is fatal AT THE EMISSION: the v1 router's recording layer panics inside
+/// whichever test produced it. Every test in the suite is a driver; nothing accumulates and
+/// nothing depends on test order. That check is live for the whole suite, not just this test.
 /// - **OVER-CLAIM** (the declaration lists a response no handler can produce → `openapi.json`
-///   documents fiction) needs a WITNESS, which is what this test drives. It runs the error-surface
-///   drivers directly — no reliance on other tests having run — and then asserts every declared
-///   entry was seen. A declared 409 no test can trigger IS an over-claim until proven otherwise.
+/// documents fiction) needs a WITNESS, which is what this test drives. It runs the error-surface
+/// drivers directly — no reliance on other tests having run — and then asserts every declared
+/// entry was seen. A declared 409 no test can trigger IS an over-claim until proven otherwise.
 ///
 /// The witness is required at **`(operation, ErrKind, Cond)`** granularity, which is what the design
 /// claims and what an `(operation, ErrKind)` check silently did not give: a 409 whose code path had
@@ -9136,11 +9136,11 @@ async fn declared_error_set_is_exactly_what_the_handlers_emit() {
     // GRANULARITY, which is what the design claims and what a `(op, ErrKind)` check does not give.
     //
     // The two cases differ in what counts as proof, and the difference is exact, not a concession:
-    //   * the op declares this ErrKind under exactly ONE Cond — then no other condition on this
-    //     operation can produce that kind, so ANY witness of the kind witnesses that condition;
-    //   * the op declares the SAME ErrKind under two or more Conds — then an untagged witness is
-    //     genuinely ambiguous (it proves one of them, and cannot say which), so the emission must
-    //     name its condition via `err_json_cond` for the declaration to be witness-backed at all.
+    // * the op declares this ErrKind under exactly ONE Cond — then no other condition on this
+    // operation can produce that kind, so ANY witness of the kind witnesses that condition;
+    // * the op declares the SAME ErrKind under two or more Conds — then an untagged witness is
+    // genuinely ambiguous (it proves one of them, and cannot say which), so the emission must
+    // name its condition via `err_json_cond` for the declaration to be witness-backed at all.
     // A declared condition that only the ambiguous case can reach is therefore an over-claim until
     // its emission site says which condition it is: that is precisely how a 409 whose code path was
     // deleted (`GroupRaceOnMint`, removed with the mint race) went on being documented while a

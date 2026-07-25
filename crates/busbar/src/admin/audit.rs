@@ -165,7 +165,7 @@ impl AuditLog {
         let records = match store.list_audit_tail(MAX_AUDIT_ENTRIES as u64) {
             Ok(r) => r,
             Err(e) => {
-                // THE SEQ FLOOR MUST NOT BE BYPASSED (audit round-5 HIGH-10). A transient read
+                // THE SEQ FLOOR MUST NOT BE BYPASSED. A transient read
                 // error here used to return early, and the caller then fell back to the file
                 // snapshot — whose `load` floors the counter only to the SNAPSHOT's max, which can
                 // be far below what the store already holds (or, with no snapshot at all, leaves
@@ -336,8 +336,8 @@ impl AuditLog {
         // The backfill starts after the last CONFIRMED durable seq. It is deliberately NOT clamped
         // up to the ring's oldest retained seq: `durable_high` sitting below the ring means either
         // (a) a genuinely unpersisted, now-pruned seq — a real hole, where halting is the whole
-        // point (round-4 #12) — or (b) a watermark that was never seeded, which is a RESTORE bug
-        // and is fixed where it belongs, in `load`/`restore_from_store` (round-5 #15/#24). Clamping
+        // point — or (b) a watermark that was never seeded, which is a RESTORE bug
+        // and is fixed where it belongs, in `load`/`restore_from_store`. Clamping
         // here would paper over (a) and manufacture a false-contiguous durable tail.
         let start = self.durable_high.load(std::sync::atomic::Ordering::Relaxed) + 1;
         if new_seq < start {
@@ -410,7 +410,7 @@ impl AuditLog {
         q.extend(entries);
         self.seq
             .fetch_max(max_seq + 1, std::sync::atomic::Ordering::Relaxed);
-        // Seed the durable CATCH-UP watermark too (audit round-5 #15). This path only runs when the
+        // Seed the durable CATCH-UP watermark too. This path only runs when the
         // durable restore did NOT supply the ring, i.e. the snapshot IS the most complete history
         // this process has. Leaving `durable_high` at 0 aimed the next write-through's backfill at
         // seq 1 — which the restored ring cannot supply once it has been pruned — so the catch-up
@@ -708,16 +708,16 @@ mod tests {
         );
     }
 
-    // ── THE SEQ FLOOR IS NEVER BYPASSED (audit round-5 HIGH-10 / #15 / #24) ─────────────────────
+    // ── THE SEQ FLOOR IS NEVER BYPASSED ─────────────────────
     //
     // The durable write-through is keyed on `seq`, so the ONE thing boot must never do is resume
     // with a counter below the durable max. Three ways that used to happen, one class:
-    //   HIGH-10  a transient `list_audit_tail` failure returned EARLY, before the floor was applied,
-    //            and the caller fell back to a snapshot that floors only to its own (lower) max;
-    //   #15      the file-snapshot `load` never seeded `durable_high` at all;
-    //   #24      the backfill always started at `durable_high + 1`, so a restored ring whose oldest
-    //            seq is higher hit the unrepairable-gap branch on the first iteration and left the
-    //            durable log permanently stuck.
+    // HIGH-10  a transient `list_audit_tail` failure returned EARLY, before the floor was applied,
+    // and the caller fell back to a snapshot that floors only to its own (lower) max;
+    // #15      the file-snapshot `load` never seeded `durable_high` at all;
+    // #24      the backfill always started at `durable_high + 1`, so a restored ring whose oldest
+    // seq is higher hit the unrepairable-gap branch on the first iteration and left the
+    // durable log permanently stuck.
 
     /// A store whose AUDIT READS can be made to fail on demand (a transient backend blip), while
     /// writes and everything else delegate to a real SQLite store.
@@ -1123,7 +1123,7 @@ mod tests {
         assert!(log2.verify(), "the restored bounded tail's chain verifies");
     }
 
-    /// AUDIT (round-4 #12): a PRUNED, unpersisted seq must HALT durable catch-up — `durable_high`
+    /// AUDIT: a PRUNED, unpersisted seq must HALT durable catch-up — `durable_high`
     /// must never advance PAST an unrepairable hole. We permanently fail seq 2's write-through, then
     /// record far past the RAM-ring cap so seq 2 is pruned from the ring (no longer backfillable).
     /// The prior code `continue`d over the pruned gap, and the very next successful append then

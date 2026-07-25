@@ -1709,7 +1709,7 @@ async fn test_gemini_stream_generate_content_alt_sse_is_event_stream() {
     server.shutdown().await;
 }
 
-/// Round-13 HIGH/test-coverage: a MID-STREAM transport failure on a gemini
+/// A MID-STREAM transport failure on a gemini
 /// `:streamGenerateContent?alt=sse` request (the SSE framer, `json_array=false`) must terminate
 /// the body with a NATIVE Gemini SSE error frame — `text/event-stream`, a trailing `data:`
 /// payload carrying a `google.rpc.Status`-shaped envelope (`error.status`), with NO `event:`
@@ -1795,7 +1795,7 @@ async fn test_gemini_alt_sse_mid_stream_transport_error_appends_native_sse_frame
     server.shutdown().await;
 }
 
-/// Round-13 MEDIUM/security: an UNRESOLVED model on a body-model ingress (openai) must NOT stamp
+/// An UNRESOLVED model on a body-model ingress (openai) must NOT stamp
 /// the raw client-supplied model string as the Prometheus `pool` label — the bounded-cardinality
 /// contract (metrics.rs) requires the fixed sentinel `"unresolved"`. A regression that
 /// passed the raw model through `finish` would let a single credential mint unbounded time
@@ -2298,7 +2298,7 @@ async fn test_gemini_unsupported_action_is_observable() {
     handle.abort();
 }
 
-/// Round-13 MEDIUM/security (unit test for `pool_label`): the bounded-label mapper returns a
+/// The bounded-label mapper returns a
 /// model verbatim ONLY when it names a configured pool or by-model lane, and the fixed sentinel
 /// `"unresolved"` for anything else.
 #[test]
@@ -2394,7 +2394,7 @@ async fn test_gemini_stream_generate_content_no_alt_sse_is_json_array() {
     server.shutdown().await;
 }
 
-/// Round-4 HIGH/correctness: a MID-STREAM transport failure on a gemini `:streamGenerateContent`
+/// A MID-STREAM transport failure on a gemini `:streamGenerateContent`
 /// request WITHOUT `?alt=sse` (the JSON-array framer is engaged) must terminate the body as a
 /// VALID JSON array — a trailing gemini-shaped error element + closing `]` — NOT raw SSE
 /// `event:`/`data:` text spliced into the array (the bug: `mid_stream_error_bytes` bypassed the
@@ -2461,7 +2461,7 @@ async fn test_gemini_json_array_mid_stream_error_closes_array_no_sse() {
     server.shutdown().await;
 }
 
-/// Round-4 HIGH/conformance (UPDATED R9): the router-internal `__busbar_gemini_json_array` shim
+/// The router-internal `__busbar_gemini_json_array` shim
 /// must NEVER reach a CROSS-protocol backend. Routes gemini `:streamGenerateContent` (no
 /// `?alt=sse`) → an OpenAI backend and asserts the upstream-received body carries no array shim
 /// key (the bug: the gemini reader swept it into IR `extra` and the egress writer re-emitted the
@@ -2526,7 +2526,7 @@ async fn test_gemini_json_array_shim_not_leaked_cross_protocol() {
     server.shutdown().await;
 }
 
-/// Round-4 HIGH/conformance: a CROSS-protocol stream to an Anthropic-SDK client must emit a FULL
+/// A CROSS-protocol stream to an Anthropic-SDK client must emit a FULL
 /// `message_start` skeleton — `id` (msg_-prefixed), `type:"message"`, `content:[]`,
 /// `stop_reason`/`stop_sequence` (null) — not the degenerate `{role,usage}` the
 /// `has_identity`-gated writer produced once `StreamTranslate` stripped the foreign id/model.
@@ -2597,7 +2597,7 @@ async fn test_anthropic_cross_protocol_message_start_full_skeleton() {
     server.shutdown().await;
 }
 
-/// Round-4 HIGH/conformance: a CROSS-protocol passthrough 401 must be RESHAPED into the ingress
+/// A CROSS-protocol passthrough 401 must be RESHAPED into the ingress
 /// protocol's native error envelope, not relayed verbatim from the egress provider. Anthropic
 /// ingress → OpenAI backend that 401s in Passthrough mode: the client must see the Anthropic error
 /// shape (`{"type":"error","error":{"type":...}}`), not the OpenAI `{"error":{...}}` shape.
@@ -5618,12 +5618,12 @@ async fn test_named_by_model_fallback_round_trip_via_router() {
 // ---- LOW #4 (re-audit, completeness): breaker op_handler-key consistency for by_model routes ----
 //
 // A single-model lane (no pool) can be reached two ways:
-//   1. the universal body-model ingress (`/v1/chat/completions` etc.) → `forward_resolved`'s
-//      `by_model` arm, which calls `forward_with_pool` directly with the ingress protocol so a
-//      cross-protocol backend is translated both ways; and
-//   2. the Anthropic `/<model>/v1/messages` (`named`) / `/<provider>/<model>/v1/messages`
-//      (`adhoc`) routes → `crate::proxy::forward_with_pool`, which passes `""` (the lane-default breaker
-//      CELL shared by every direct/single-model route — proxy engine design intent).
+// 1. the universal body-model ingress (`/v1/chat/completions` etc.) → `forward_resolved`'s
+// `by_model` arm, which calls `forward_with_pool` directly with the ingress protocol so a
+// cross-protocol backend is translated both ways; and
+// 2. the Anthropic `/<model>/v1/messages` (`named`) / `/<provider>/<model>/v1/messages`
+// (`adhoc`) routes → `crate::proxy::forward_with_pool`, which passes `""` (the lane-default breaker
+// CELL shared by every direct/single-model route — proxy engine design intent).
 //
 // proxy engine records every breaker outcome against the CELL keyed by the `pool_name` argument
 // (`record_transient_in(pool_name, …)`). If `forward_resolved`'s by_model arm passes the MODEL

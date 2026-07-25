@@ -905,14 +905,14 @@ pub(crate) async fn delete_hook(
 /// Resolve — and if needed AUTO-PROVISION — the group a `POST /keys` mint binds to (self-service
 /// D2, §6a). The mint-time group contract, one place, shared by the key handler:
 ///
-///   - group EXISTS, no `parent` given → bind as-is (`Ok(None)`, nothing to provision).
-///   - group EXISTS, `parent` given → the given parent MUST equal the group's actual parent, else
-///     `409 conflict` (a portal must not silently re-home an existing leaf under a different team).
-///   - group MISSING, `parent` given → return the CANDIDATE `App` that creates it as a leaf under
-///     `parent`, limits stamped from the nearest-ancestor `child_default` (inherit-only when none),
-///     via the SAME `build_with_group` validate-at-the-door path every group write uses (so
-///     validation / cost rebuild / base-shadow guard all hold).
-///   - group MISSING, no `parent` → today's `400` (an unknown group with nowhere to root it).
+/// - group EXISTS, no `parent` given → bind as-is (`Ok(None)`, nothing to provision).
+/// - group EXISTS, `parent` given → the given parent MUST equal the group's actual parent, else
+/// `409 conflict` (a portal must not silently re-home an existing leaf under a different team).
+/// - group MISSING, `parent` given → return the CANDIDATE `App` that creates it as a leaf under
+/// `parent`, limits stamped from the nearest-ancestor `child_default` (inherit-only when none),
+/// via the SAME `build_with_group` validate-at-the-door path every group write uses (so
+/// validation / cost rebuild / base-shadow guard all hold).
+/// - group MISSING, no `parent` → today's `400` (an unknown group with nowhere to root it).
 ///
 /// PURE and SYNCHRONOUS: it decides against the snapshot it is handed and returns a plan. It takes
 /// no lock and performs no swap — the caller runs it INSIDE `config_transaction`, so the existence
@@ -985,7 +985,7 @@ pub(crate) fn plan_mint_group(
              silently shadow operator file config)"
         )));
     }
-    // ANTI-SPRAWL CEILING ON THE TREE'S SHAPE (audit round-5 #20). `max_keys_per_principal` bounds
+    // ANTI-SPRAWL CEILING ON THE TREE'S SHAPE. `max_keys_per_principal` bounds
     // how many keys a group holds but says nothing about how many GROUPS exist, so a `mint`-scope
     // credential could grow the limit tree without bound — every auto-provisioned `user:<sub>` leaf
     // is a new enforcement bucket, a new version-log entry and a new persisted overlay row.
@@ -1683,7 +1683,7 @@ pub(crate) async fn get_config_version(
         Some(cv) => {
             // Project the snapshot through the ONE wire HookView shape (against the SNAPSHOT's own
             // global wiring) — never the raw HookCfg file shape, so a consumer parses hooks with a
-            // single schema whether it reads /hooks or a retained version (re-audit M6).
+            // single schema whether it reads /hooks or a retained version.
             let hooks: std::collections::BTreeMap<&String, _> = cv
                 .hook_registry
                 .iter()
@@ -1895,9 +1895,9 @@ pub(crate) async fn rollback_config(
 /// - every name must be a compiled-in admin module (a typo can never silently drop auth);
 /// - optimistic concurrency via `If-Match` (409 `version_conflict` when stale — re-read and retry);
 /// - **the D4 DRY-RUN GUARD**: the CALLING request's own credentials are re-evaluated against the
-///   CANDIDATE chain, and unless they would still hold FULL scope under it the change is rejected
-///   with 409 — you cannot lock yourself out with this endpoint. (A chain broken some other way
-///   is fix-config + restart: sub-second, health persists.)
+/// CANDIDATE chain, and unless they would still hold FULL scope under it the change is rejected
+/// with 409 — you cannot lock yourself out with this endpoint. (A chain broken some other way
+/// is fix-config + restart: sub-second, health persists.)
 ///
 /// Applied live and atomically (config-version bump, audited); like `config/apply`, the change is
 /// live until the next reload/restart returns to disk truth — persist by updating config.yaml.
@@ -3474,13 +3474,13 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 if let Some(op) = op.as_object_mut() {
                     let scope = crate::admin::v1::contract::required_scope(&m, path);
                     op.insert("x-busbar-required-scope".to_string(), json!(scope.as_str()));
-                    // Both accepted credential carriers, on every op (re-audit M8).
+                    // Both accepted credential carriers, on every op.
                     op.insert(
                         "security".to_string(),
                         json!([{"adminToken": []}, {"bearerAuth": []}]),
                     );
                     // The always-possible responses, stamped algorithmically so no hand-written
-                    // entry can forget them (re-audit M7): 401 (bad/missing credential), 403
+                    // entry can forget them: 401 (bad/missing credential), 403
                     // (authenticated but under-scoped), 500 (any handler can fail internally), and
                     // 429 on every mutation (the per-principal mutation budget). These are the
                     // UNIVERSAL half of the taxonomy — `err_kind_of` classifies exactly these
@@ -3509,7 +3509,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         }
     }
 
-    // Machine-readable QUERY PARAMETERS for the list/filter GETs (re-audit M7) — previously prose-
+    // Machine-readable QUERY PARAMETERS for the list/filter GETs — previously prose-
     // only, so generated clients had no query surface. Stamped from one table.
     /// (name, description, required) — one documented query parameter.
     type QueryParam = (&'static str, &'static str, bool);

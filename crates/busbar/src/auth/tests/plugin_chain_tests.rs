@@ -6,11 +6,11 @@
 //! `busbar-auth-static-plugin` cdylib into a tarball, run it through `plugins_preflight` +
 //! `AuthMiddleware::new`, and prove:
 //!
-//!   * a valid token → `Identify` → a mapped `Principal` whose roles resolve to `role_bindings`
-//!     policy AND whose admin scope is capped by `auth.chain.<module>.max_admin_scope`;
-//!   * an invalid/absent credential → the chain fail-closed-denies (all-`Pass`);
-//!   * a MISSING or UNTRUSTED plugin at boot → a LOUD failure (never a silently-open front door);
-//!   * `plugins.enabled: false` + a configured auth plugin → boot refuses (`plugins_preflight`).
+//! * a valid token → `Identify` → a mapped `Principal` whose roles resolve to `role_bindings`
+//! policy AND whose admin scope is capped by `auth.chain.<module>.max_admin_scope`;
+//! * an invalid/absent credential → the chain fail-closed-denies (all-`Pass`);
+//! * a MISSING or UNTRUSTED plugin at boot → a LOUD failure (never a silently-open front door);
+//! * `plugins.enabled: false` + a configured auth plugin → boot refuses (`plugins_preflight`).
 //!
 //! Mirrors the store-plugin end-to-end packed test (`crate::tests`), reusing its plugin-dir /
 //! manifest helpers.
@@ -260,7 +260,7 @@ fn auth_plugin_role_binding_and_scope_cap_apply() {
         Some(Scope::Full),
         "role binds full under the PLUGIN module name"
     );
-    // ...but the module's `max_admin_scope: mint` ceiling caps the effective scope.
+    // ..but the module's `max_admin_scope: mint` ceiling caps the effective scope.
     let capped = std::cmp::min(bound.unwrap(), Scope::Mint);
     assert_eq!(
         capped,
@@ -402,7 +402,7 @@ fn keys_module_is_not_a_plugin_ref() {
     assert!(mw.chain_names().is_empty(), "keys is not a boxed module");
 }
 
-// ── THE AUTH CHAIN MUST NOT RUN ON THE REACTOR (audit round-6) ───────────────────────────────────
+// ── THE AUTH CHAIN MUST NOT RUN ON THE REACTOR ───────────────────────────────────
 //
 // A `kind: auth` plugin's `authenticate` is a synchronous FFI call, and behind it the module does
 // whatever it does — the shipped OIDC module fetches JWKS over blocking HTTPS with a 10s timeout.

@@ -38,7 +38,7 @@ use std::sync::Arc;
 /// external mock). It's a no-op unless `BUSBAR_CAPTURE_METRICS` is set, so it costs nothing in CI.
 ///
 /// For release-representative numbers, build under `--release`:
-///   BUSBAR_CAPTURE_METRICS=1 cargo test --release -p busbar capture_latency_metrics -- --nocapture
+/// BUSBAR_CAPTURE_METRICS=1 cargo test --release -p busbar capture_latency_metrics -- --nocapture
 /// Emits a line the site metrics harness parses:  `BUSBAR_METRICS busbar.latency.inproc_handle_us ...`
 #[tokio::test]
 async fn capture_latency_metrics() {
@@ -3819,7 +3819,7 @@ async fn test_exhaustion_least_bad_selects_soonest() {
     server1.shutdown().await;
 }
 
-/// Round-4 MEDIUM/correctness: `forward_once` (the LeastBad/FallbackPool helper) must record
+/// `forward_once` (the LeastBad/FallbackPool helper) must record
 /// lane success AND spend budget on a 2xx, mirroring the main forward loop. Without it a HalfOpen
 /// lane served only via the degraded path never recovers and its `max_requests` budget never
 /// depletes. Route a budget-limited lane via LeastBad and assert `ok` incremented and `budget`
@@ -4398,8 +4398,8 @@ async fn test_sticky_session_while_healthy() {
 /// pick falling through to SWRR over the healthy remainder. That requires TWO
 /// things to line up deterministically:
 ///
-///   1. the session key must hash onto the TRIPPED member, and
-///   2. the tripped member's breaker must actually be Open at selection time.
+/// 1. the session key must hash onto the TRIPPED member, and
+/// 2. the tripped member's breaker must actually be Open at selection time.
 ///
 /// `pick_among` computes `pos = stable_hash(key) % cands.len()` and treats
 /// `cands[pos].idx` as the sticky member. With `cands = [lane0, lane1]`,

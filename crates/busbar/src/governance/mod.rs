@@ -453,7 +453,7 @@ pub(crate) struct GovState {
     /// RE-SETTABLE (`set_admin_token`): `GovState` is process-lifetime and is REUSED across every
     /// config apply/reload (the key cache, ledgers and rate windows must survive one), so a digest
     /// frozen at construction meant rotating `auth.admin_auth`'s token secret and reloading had NO
-    /// effect — the process kept accepting the boot-time credential forever (audit round-5 HIGH-7).
+    /// effect — the process kept accepting the boot-time credential forever.
     admin_token_hash: RwLock<Option<String>>,
     /// AUTHORITATIVE in-memory TOKEN-LEDGER cells - the hard-cap admission state consulted (and
     /// charged) on the request hot path with NO await and NO store round-trip. Keyed by BUCKET id:
@@ -922,7 +922,7 @@ mod limits_tests;
 mod budget_cell_tests {
     use super::*;
 
-    /// AUDIT (round-4 #26): the sweep's `prune_dead_models` bounds the per-cell `models` Vec so a
+    /// AUDIT: the sweep's `prune_dead_models` bounds the per-cell `models` Vec so a
     /// never-rolled cell cannot accumulate a dead entry per model name ever seen. A model with live
     /// tokens (or an unacked flush delta) is KEPT (enforcement/write-behind truth); a zero-token,
     /// fully-flushed entry is DROPPED; a re-appearing model is simply re-interned by `accrue`.

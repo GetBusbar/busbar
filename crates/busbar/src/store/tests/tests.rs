@@ -728,7 +728,7 @@ fn test_is_ready_any_cell_true_when_a_pool_cell_is_ready() {
     );
 }
 
-/// Round-4 MEDIUM/correctness: cooldown jitter must be SYMMETRIC in [-r, +r] (r = duration/10),
+/// Cooldown jitter must be SYMMETRIC in [-r, +r] (r = duration/10),
 /// not the old (-3r, +r) skew. The old code cast the u128 FNV seed `as i64` (frequently negative)
 /// before `% (2r+1)`, so the centered jitter biased SHORTER. Trip a fresh lane across many
 /// distinct time-seeds and assert every resulting cooldown stays within [0.9·duration,
@@ -768,7 +768,7 @@ fn test_cooldown_jitter_is_symmetric() {
     );
 }
 
-/// Round-18 LOW/correctness: a small `base_cooldown_secs` must still get a real jitter spread.
+/// A small `base_cooldown_secs` must still get a real jitter spread.
 /// When `duration < 10` the old `jitter_range = duration / 10` truncated to 0, so `span == 1` and
 /// EVERY trip on a tight cooldown produced the identical value — no anti-thundering-herd desync
 /// exactly when the herd is densest. With the band floored at >=1s, distinct time-seeds must yield
@@ -805,7 +805,7 @@ fn test_small_base_cooldown_still_jitters() {
     );
 }
 
-/// Round-18 LOW/perf: memoizing the per-pool shard MUST NOT change selection semantics. The
+/// Memoizing the per-pool shard MUST NOT change selection semantics. The
 /// memoized `swrr_shard` returns the SAME shard index as a fresh FNV-1a of the pool name, so a
 /// selection sequence over the same pools/weights is identical before and after. Assert the
 /// memoized lookup agrees with the pure recompute for every pool, and that repeated selections
@@ -852,7 +852,7 @@ fn test_swrr_shard_memo_preserves_selection() {
     );
 }
 
-/// Round-18 LOW/test-coverage: pin `now_for_test`'s documented behavior. "Unset" is signalled by
+/// Pin `now_for_test`'s documented behavior. "Unset" is signalled by
 /// the `IN_TEST` flag alone — so `set_now_for_test(0)` is a LEGAL mock instant (epoch 0), not a
 /// silent wall-clock fallback. This FAILS on the old code (the `val != 0` guard fell back to real
 /// time for an injected 0) and passes now.

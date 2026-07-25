@@ -361,7 +361,7 @@ pub(crate) fn resolve_settings(
     for (field, value) in settings {
         // A ref is always a JSON object; skip scalars/arrays without an allocating round-trip.
         if let serde_json::Value::Object(obj) = value {
-            // THE LITERAL ESCAPE HATCH (audit round-5 #40). Ref-shape is a HEURISTIC: a plugin whose
+            // THE LITERAL ESCAPE HATCH. Ref-shape is a HEURISTIC: a plugin whose
             // own settings legitimately contain `{ file: /var/lib/db }` or `{ env: HOME }` — a path
             // or a variable NAME the plugin means to read itself — was silently swapped for the
             // CONTENTS of that file / the value of that variable, with no diagnostic anywhere. The
