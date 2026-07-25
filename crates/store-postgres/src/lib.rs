@@ -707,6 +707,37 @@ impl Store for PostgresStore {
             .collect())
     }
 
+    fn list_audit_tail(&self, limit: u64) -> StoreResult<Vec<AuditRecord>> {
+        // BOUNDED restore read: select only the most-recent `limit` rows at the SOURCE (a `LIMIT` on
+        // a descending scan), then reverse into oldest-first. Without this override the trait default
+        // materializes the ENTIRE (never-pruned) durable audit log before truncating in memory, which
+        // over the plugin ABI can exceed the response cap or OOM on a large log. Mirrors the SQLite
+        // backend's `LIMIT`ed tail query.
+        let rows = self
+            .lock()
+            .query(
+                "SELECT seq, ts, action, resource, outcome, principal, prev_hash, hash
+                 FROM audit_log ORDER BY seq DESC LIMIT $1",
+                &[&i64::try_from(limit).unwrap_or(i64::MAX)],
+            )
+            .store()?;
+        let mut out: Vec<AuditRecord> = rows
+            .iter()
+            .map(|r| AuditRecord {
+                seq: read_u64(r.get::<_, i64>(0)),
+                ts: read_u64(r.get::<_, i64>(1)),
+                action: r.get(2),
+                resource: r.get(3),
+                outcome: r.get(4),
+                principal: r.get(5),
+                prev_hash: r.get(6),
+                hash: r.get(7),
+            })
+            .collect();
+        out.reverse(); // DESC LIMIT gave newest-first; the restore contract is oldest-first.
+        Ok(out)
+    }
+
     fn add_denylist(&self, sub: &str, reason: &str) -> StoreResult<()> {
         // Idempotent revoke (mirrors the SQLite backend): the subject stays denied exactly once; a
         // repeat refreshes the operator reason.
