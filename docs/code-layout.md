@@ -7,6 +7,11 @@ true by construction. Size reduction is a side effect of getting that right, not
 Four invariants, all mechanically enforced by `scripts/structure-lint.sh` (run in CI). If they hold,
 the tree cannot drift back into giant, inconsistent files.
 
+The same script enforces two further invariants that are about *behavior* rather than layout — the
+**choke-point registry** (every hazard class has one owner, and no file hand-rolls a bypass) and
+**REGRESSION-marker parity**. Both belong to the remediation contract; they are documented in
+[testing.md](testing.md#the-remediation-contract), and § "Running the lint" below covers all six.
+
 ## 0. Workspace layout: all Rust lives under `crates/`
 
 The repo is a Cargo workspace. Every crate lives under `crates/`, and nothing else at the root is
@@ -92,4 +97,8 @@ scripts/structure-lint.sh
 ```
 
 Non-zero exit on any violation, with the offending path and the fix. It runs in CI (the `check` job),
-so a PR that reintroduces a giant file or a hybrid module fails before merge.
+so a PR that reintroduces a giant file or a hybrid module fails before merge — and likewise a PR that
+hand-rolls a durable write, a plugin export, or a config swap outside its choke point
+(`DURABLE-BYPASS` / `EXPORT-BYPASS` / `MUTATION-BYPASS`), deletes a choke point's class-level test
+(`MISSING-CLASS-TEST`), or tags a production fix as a regression with no test carrying its label
+(`UNGUARDED-REGRESSION`). See [testing.md](testing.md#the-remediation-contract).
