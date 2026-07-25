@@ -190,7 +190,7 @@ impl SqliteStore {
     }
 
     fn migrate(&self) -> StoreResult<()> {
-        let conn = self.lock_conn();
+        let mut conn = self.lock_conn();
         // SCHEMA-VERSION BUMP (v4, the 1.5.0 billable-requests ledger split; see SCHEMA_VERSION).
         // 1.5.0 is unreleased, so a pre-v4 database (user_version < 4 with any governance table
         // already present) is DROPPED and recreated - a bump, not a migration. A fresh database (no
@@ -199,8 +199,15 @@ impl SqliteStore {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .store()?;
+        // ONE transaction over the drop, the recreate and the version stamp — the postgres backend
+        // already does this and names the hazard: a crash between them leaves a half-initialised DB
+        // that the re-run cannot repair. `execute_batch` commits each statement separately, so
+        // dropping `virtual_keys` and losing power before `usage_windows` clears BOTH sentinels; the
+        // re-run then sees no legacy tables, skips the drops, and stamps v4 over a v3-shaped table
+        // that `CREATE TABLE IF NOT EXISTS` cannot fix.
+        let tx = conn.transaction().store()?;
         if version < SCHEMA_VERSION {
-            let has_legacy: bool = conn
+            let has_legacy: bool = tx
                 .query_row(
                     "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='usage_counters')
                        OR EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='virtual_keys')",
@@ -209,7 +216,7 @@ impl SqliteStore {
                 )
                 .store()?;
             if has_legacy {
-                conn.execute_batch(
+                tx.execute_batch(
                     "DROP TABLE IF EXISTS virtual_keys;
                      DROP TABLE IF EXISTS aws_credentials;
                      DROP TABLE IF EXISTS usage_counters;
@@ -222,9 +229,10 @@ impl SqliteStore {
                 .store()?;
             }
         }
-        conn.execute_batch(SCHEMA).store()?;
-        conn.pragma_update(None, "user_version", SCHEMA_VERSION)
+        tx.execute_batch(SCHEMA).store()?;
+        tx.pragma_update(None, "user_version", SCHEMA_VERSION)
             .store()?;
+        tx.commit().store()?;
         Ok(())
     }
 
@@ -1041,6 +1049,49 @@ mod tests {
             1,
             "a v4 database must re-open without being dropped"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A migration that fails partway must leave the database EXACTLY as it was. Without one
+    /// transaction over the drop/recreate/stamp, `execute_batch` commits the drops on their own and
+    /// the legacy tables are gone forever while the schema is never rebuilt - unrecoverable data
+    /// loss from a single failed open.
+    ///
+    /// The failure is induced with a VIEW named `denylist`: the drop list drops TABLEs, so the view
+    /// survives it, and `CREATE TABLE IF NOT EXISTS denylist` in SCHEMA then errors on the name
+    /// collision - a real sqlite failure at the recreate step, not a mocked one.
+    #[test]
+    fn a_failed_migration_leaves_the_legacy_database_intact() {
+        let dir = std::env::temp_dir().join(format!("busbar-sqlite-atomic-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("halfway.db");
+        let path_str = path.to_str().unwrap().to_string();
+        {
+            let conn = Connection::open(&path_str).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE virtual_keys (id TEXT PRIMARY KEY, key_hash TEXT NOT NULL);
+                 INSERT INTO virtual_keys (id, key_hash) VALUES ('vk_precious', 'h');
+                 CREATE VIEW denylist AS SELECT id AS sub FROM virtual_keys;",
+            )
+            .unwrap();
+            conn.pragma_update(None, "user_version", 1).unwrap();
+        }
+
+        assert!(
+            SqliteStore::open(&path_str, 5000).is_err(),
+            "the denylist name collision must fail the migration"
+        );
+
+        let conn = Connection::open(&path_str).unwrap();
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM virtual_keys", [], |r| r.get(0))
+            .expect("the legacy table must still exist after a failed migration");
+        assert_eq!(rows, 1, "the legacy row must survive a failed migration");
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 1, "a failed migration must not stamp the version");
+        drop(conn);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
