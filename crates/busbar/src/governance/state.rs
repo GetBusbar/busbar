@@ -94,9 +94,7 @@ impl GovState {
     /// Build the `by_id` (subject id → key) index from a `by_hash` snapshot, sharing the same `Arc`
     /// rows. Called wherever `by_hash` is (re)built so the two indices are always derived from the
     /// SAME snapshot and can never drift (M6).
-    fn index_by_id(
-        by_hash: &HashMap<String, Arc<VirtualKey>>,
-    ) -> HashMap<String, Arc<VirtualKey>> {
+    fn index_by_id(by_hash: &HashMap<String, Arc<VirtualKey>>) -> HashMap<String, Arc<VirtualKey>> {
         by_hash
             .values()
             .map(|k| (k.id.clone(), k.clone()))

@@ -2100,5 +2100,11 @@ fn to_policy_honors_runtime_first_party_floor_override() {
         .insert("acme-hook".to_string(), "0.9.0".to_string());
     let pinned = cfg.to_policy().expect("policy");
     assert_eq!(pinned.binary_version, env!("CARGO_PKG_VERSION"));
-    assert_eq!(pinned.first_party_floors.get("acme-hook").map(String::as_str), Some("0.9.0"));
+    assert_eq!(
+        pinned
+            .first_party_floors
+            .get("acme-hook")
+            .map(String::as_str),
+        Some("0.9.0")
+    );
 }

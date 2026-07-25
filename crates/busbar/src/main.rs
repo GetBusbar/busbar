@@ -1939,8 +1939,10 @@ pub(crate) fn build_app_from_config(
     // The SECRET RESOLVER (P2): built-in env/file resolve inline; any other module delegates to a
     // loaded `kind: secret` plugin via the registry (fail-closed if the plugin subsystem is off or
     // the module is unknown). Shared by provider keys, the admin token, and the TLS listener.
-    let secret_resolver =
-        Arc::new(build_secret_resolver(plugin_registry.clone(), &cfg.secrets)?);
+    let secret_resolver = Arc::new(build_secret_resolver(
+        plugin_registry.clone(),
+        &cfg.secrets,
+    )?);
 
     let mut lanes_data = Vec::new();
     // Validated provider handle for each lane, captured in lockstep with `lanes_data` below. The

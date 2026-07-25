@@ -427,9 +427,10 @@ pub(crate) async fn rollback_plugin(
                 audit::OUTCOME_REJECTED,
                 &actor,
             );
-            if let Err(revert_err) =
-                crate::config::overlay::try_persist_plugin_versions(Some(&overlay_path), &prior_pins)
-            {
+            if let Err(revert_err) = crate::config::overlay::try_persist_plugin_versions(
+                Some(&overlay_path),
+                &prior_pins,
+            ) {
                 tracing::error!(
                     plugin = %resource, rebuild_error = %e, revert_error = %revert_err,
                     "plugin rollback rebuild failed AND reverting the persisted version pin failed; \
@@ -3572,7 +3573,12 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     typed!("/keys/{id}/usage", "get", "200", sview::KeyMeteringView);
     typed!("/keys/{id}/rotate", "post", "200", sview::RotatedKeyView);
     typed!("/keys/{id}/revoke", "post", "200", sview::RevokeView);
-    typed!("/signing-key/rotate", "post", "200", sview::SigningKeyRotateView);
+    typed!(
+        "/signing-key/rotate",
+        "post",
+        "200",
+        sview::SigningKeyRotateView
+    );
 
     // The discovery endpoint returns THIS very OpenAPI 3.1 document — an arbitrary object. There is
     // no named struct for "an OpenAPI document"; an inline permissive object schema is the honest
