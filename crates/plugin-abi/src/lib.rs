@@ -118,14 +118,35 @@ pub mod symbol {
 /// is orders of magnitude past any real governance/auth payload, so a legitimate reply never trips it.
 pub const MAX_PLUGIN_RESPONSE_LEN: usize = 256 * 1024 * 1024;
 
-/// Status returned by `open`/`call`. `OK`: the out buffer holds the success payload. `ERR`: the out
-/// buffer holds a UTF-8 error message (a [`busbar_api::StoreError`] rendered). `PROTOCOL`: an
-/// ABI-level violation (null/oversized args, a serialize failure inside the plugin) with no buffer.
+/// Status returned by `open`/`call`. The four positive/neutral codes below are DISTINCT signals the
+/// loader keys different behavior on; they are never overloaded. See each const.
+///
+/// TRANSPORT is FROZEN at [`TRANSPORT_VERSION`] = 1: adding [`STATUS_UNSUPPORTED`]/[`STATUS_PANIC`] is
+/// NOT a transport bump — the six signatures, the ptr+len rule, and the meanings of `OK`/`ERR` are
+/// unchanged; `PROTOCOL` merely stops being overloaded and two positive codes are added. A v1-era SDK
+/// plugin that predates these still returns `STATUS_PROTOCOL` for an undecodable variant; the loader's
+/// legacy-shape acceptance keeps that interoperable (see `plugin-loader`'s `TransportErrorKind`).
+///
+/// `OK`: the out buffer holds the success payload.
 pub const STATUS_OK: i32 = 0;
-/// A store-level failure — the out buffer carries a UTF-8 error message.
+/// A DEFINED backend failure — the out buffer holds a UTF-8 error message. The op RAN and returned an
+/// error (a [`busbar_api::StoreError`]/`SecretError`/… rendered). Propagated by the loader.
 pub const STATUS_ERR: i32 = 1;
-/// An ABI/protocol violation (bad arguments, internal serialize failure) — no buffer produced.
+/// A caller-PROTOCOL violation the plugin detected BEFORE running user code: a null handle, a null
+/// request buffer with `len > 0`, a garbled ABI frame. No user code ran. Propagated (never a fallback
+/// signal for a NEW plugin). Value is negative for backward wire compatibility with the v1-era SDK,
+/// which ALSO emitted this for an undecodable request variant (see [`STATUS_UNSUPPORTED`]).
 pub const STATUS_PROTOCOL: i32 = -1;
+/// The plugin could not DECODE this request variant — an older SDK build that predates the op. A
+/// forward-compat signal the loader MAY treat as "op unsupported by this build" and fall back to a
+/// safe default WHERE a fallback is defined (denylist/audit-tail/append-audit). NEVER emitted for a
+/// panic or a backend failure — that distinction is what closes the revocation fail-open. Out buffer =
+/// UTF-8 message.
+pub const STATUS_UNSUPPORTED: i32 = 2;
+/// User code PANICKED and was caught at the export boundary. A REAL failure that MUST propagate — it is
+/// explicitly NOT the unsupported signal, so a plugin panic can never open the safe-default fallback
+/// (the revocation-denylist fail-open is closed by this distinction). Out buffer = UTF-8 message.
+pub const STATUS_PANIC: i32 = 3;
 
 /// A `Store` operation and its arguments, serialized as the `call` request payload. One
 /// self-describing enum keeps the C ABI to a single `call` symbol regardless of how many methods
@@ -290,6 +311,29 @@ pub type CloseFn = unsafe extern "C-unwind" fn(handle: *mut c_void);
 mod tests {
     use super::*;
     use busbar_api::{AuditRecord, VirtualKey};
+
+    /// The five status codes are pairwise DISTINCT integers. The loader's discrimination (esp. the
+    /// revocation-denylist fallback) keys on these being different: an undecodable-variant signal
+    /// ([`STATUS_UNSUPPORTED`]) must never collide with a caught panic ([`STATUS_PANIC`]) or a backend
+    /// failure ([`STATUS_ERR`]) or a caller-protocol violation ([`STATUS_PROTOCOL`]).
+    #[test]
+    fn status_codes_are_pairwise_distinct() {
+        let all = [
+            STATUS_OK,
+            STATUS_ERR,
+            STATUS_PROTOCOL,
+            STATUS_UNSUPPORTED,
+            STATUS_PANIC,
+        ];
+        for (i, a) in all.iter().enumerate() {
+            for b in &all[i + 1..] {
+                assert_ne!(a, b, "status codes must be pairwise distinct");
+            }
+        }
+        // The two forward-compat codes are the specific values the loader/SDK agree on.
+        assert_eq!(STATUS_UNSUPPORTED, 2);
+        assert_eq!(STATUS_PANIC, 3);
+    }
 
     fn sample_audit() -> AuditRecord {
         AuditRecord {
