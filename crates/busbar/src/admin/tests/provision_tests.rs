@@ -301,3 +301,51 @@ async fn auto_provision_stops_at_the_group_ceiling() {
         "a mint that provisions nothing is unaffected by the ceiling"
     );
 }
+
+/// An auto-provisioning mint caps the GROUP name it is about to create, not just `parent`.
+/// `create_key` caps only the key's own `name`, so an overlong `group` used to reach
+/// `build_with_group` and come back described as a tree error rather than a length error.
+#[tokio::test]
+async fn auto_provision_caps_the_group_name() {
+    crate::metrics::init();
+    let app = TestApp::new()
+        .governance(gov(Arc::new(MemoryStore::new())))
+        .groups_tree(tree(&["team"]))
+        .build();
+    let handle = Arc::new(AppHandle::new(app));
+
+    let overlong = "u".repeat(crate::admin::v1::service::MAX_GROUP_NAME_LEN + 1);
+    let resp = crate::admin::create_key(
+        State(handle.clone()),
+        axum::Extension(crate::auth::AuthPrincipal(None)),
+        axum::Extension(crate::auth::AdminScope(Some(
+            crate::admin::v1::contract::Scope::Full,
+        ))),
+        HeaderMap::new(),
+        axum::body::Bytes::from(
+            json!({ "name": "k", "group": overlong, "parent": "team" }).to_string(),
+        ),
+    )
+    .await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "an overlong group name is refused"
+    );
+    let body = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+        .await
+        .expect("body");
+    let v: serde_json::Value = serde_json::from_slice(&body).expect("json");
+    let msg = v["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        msg.contains("group name is") && msg.contains("chars"),
+        "the refusal names the GROUP length cap, not a generic tree error: {msg}"
+    );
+    assert!(
+        !handle
+            .load()
+            .groups_registry
+            .contains_key(overlong.as_str()),
+        "and nothing was provisioned"
+    );
+}
