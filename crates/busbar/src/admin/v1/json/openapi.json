@@ -3374,11 +3374,30 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "Optimistic concurrency: the resource's ETag from a prior read (or the ETag returned by the previous mutation). Stale = 409 `version_conflict` (re-read and retry), nothing changes; absent or `*` = unconditional.",
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
           "204": {
             "description": "Removed"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Malformed `If-Match` header (error code `invalid_request`)"
           },
           "401": {
             "content": {
@@ -3418,7 +3437,7 @@
                 }
               }
             },
-            "description": "Base-defined group, or another group still names it as parent (error code `conflict`)"
+            "description": "Base-defined group, another group still names it as parent, or one or more keys are still bound to it (rebind/delete them first) (error code `conflict`); or a stale `If-Match` (error code `version_conflict`)"
           },
           "429": {
             "content": {
@@ -3515,6 +3534,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "Optimistic concurrency: the resource's ETag from a prior read (or the ETag returned by the previous mutation). Stale = 409 `version_conflict` (re-read and retry), nothing changes; absent or `*` = unconditional.",
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -3606,6 +3634,15 @@
             "in": "path",
             "name": "name",
             "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Optimistic concurrency: the resource's ETag from a prior read (or the ETag returned by the previous mutation). Stale = 409 `version_conflict` (re-read and retry), nothing changes; absent or `*` = unconditional.",
+            "in": "header",
+            "name": "If-Match",
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -3926,6 +3963,16 @@
         "responses": {
           "204": {
             "description": "Removed"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Malformed `If-Match` header (error code `invalid_request`)"
           },
           "401": {
             "content": {
