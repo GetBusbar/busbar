@@ -979,6 +979,15 @@ impl GovState {
                 map.retain(|_, c| {
                     c.window_start == 0 || c.window_start.saturating_add(max_window) > now
                 });
+                // Bound the per-cell `models` Vec too: a never-rolled cell (the all-time
+                // `window_start == 0` bucket) accumulates a dead `ModelCell` for every model name
+                // ever seen (interned on first sight by `accrue`, including zero-token responses).
+                // Prune the dead (zero-token, fully-flushed) entries on the same amortized cadence so
+                // the Vec cannot grow unbounded in-process. Retained cells keep every model that still
+                // carries tokens or an unacked flush delta, so enforcement is unaffected.
+                for c in map.values_mut() {
+                    c.prune_dead_models();
+                }
             }
             guards[g] = Some(map);
             guard_shards[g] = sh;
