@@ -277,8 +277,12 @@ pub(crate) struct DerivedUsage {
 /// seconds. A revoke performed on THIS node is applied to the in-memory set synchronously by
 /// [`GovState::revoke`] and takes effect on the very next check (zero window).
 ///
+/// The re-read is SCHEDULED by the request path, not performed by it (see
+/// [`revocation::RevocationSync`]), so a peer's revoke lands within roughly two of these windows on
+/// a healthy store — the price of never parking a reactor thread inside a store call.
+///
 /// WHY 5s: the re-read costs ONE small store query per node per window regardless of request rate
-/// (single-flighted by a CAS on `denylist_synced_at`), so at 5s even a 50k-RPS node adds 0.2
+/// (single-flighted by a CAS on the attempt stamp), so at 5s even a 50k-RPS node adds 0.2
 /// queries/sec — negligible — while bounding the worst case that matters (a compromised credential
 /// still authenticating after the operator revoked it) to seconds rather than the lifetime of the
 /// process. Shorter windows buy little (a revoke is an operator action measured in seconds anyway)
@@ -476,18 +480,15 @@ pub(crate) struct GovState {
     /// `Arc` clone on the verify hot path, so the lock is held only for the clone.
     signing: RwLock<Option<Arc<SigningMaterial>>>,
     /// The revocation DENYLIST as an in-memory set of subject ids, hydrated from the store at boot,
-    /// updated live on revoke, and RE-HYDRATED from the store on a bounded TTL by
-    /// [`GovState::sync_revocations_if_stale`] (see [`REVOCATION_SYNC_TTL_SECS`]). A verified token
-    /// whose `sub` is present is rejected - the ONLY state the otherwise-stateless verify path
-    /// reads. Under an `RwLock` (read on the hot path, write only on revoke / a TTL re-sync).
-    denylist: RwLock<std::collections::HashSet<String>>,
-    /// Unix-seconds epoch at which `denylist` was last (re-)read from the STORE. The check-time
-    /// staleness guard on every auth path: once it is older than [`REVOCATION_SYNC_TTL_SECS`] the
-    /// next credential check re-reads the store denylist, so a revocation performed by ANOTHER NODE
-    /// (or out-of-band against the shared store) takes effect on this node within that window
-    /// instead of never. Single-flight: the thread that wins the CAS does the read, everyone else
-    /// proceeds on the current set.
-    denylist_synced_at: std::sync::atomic::AtomicU64,
+    /// updated live on revoke, and RE-HYDRATED from the store on a bounded TTL (see
+    /// [`REVOCATION_SYNC_TTL_SECS`]). A verified token whose `sub` is present is rejected - the ONLY
+    /// state the otherwise-stateless verify path reads.
+    ///
+    /// The re-hydration is a blocking store round-trip and the auth path is an `async fn` on a Tokio
+    /// worker, so the set and its refresh live in [`revocation::RevocationSync`], which keeps the
+    /// read OFF the reactor and BOUNDS it. The request path only ever reads the set; see that
+    /// module's docs for why, and for what the offload costs.
+    denylist: Arc<revocation::RevocationSync>,
     /// Serializes `refresh` so a slow reader-load cannot clobber a newer swap (lost-update guard).
     /// `refresh` loads the full key set from the store OUTSIDE the `caches` write lock (to keep that
     /// critical section short), then swaps. Without serialization, two concurrent refreshes could
@@ -553,6 +554,7 @@ pub(crate) struct NewKeySpec {
     pub(crate) labels: std::collections::BTreeMap<String, String>,
 }
 
+pub(crate) mod revocation;
 pub(crate) mod signing;
 mod state;
 
