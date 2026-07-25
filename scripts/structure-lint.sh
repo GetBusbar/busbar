@@ -99,6 +99,9 @@ TEST_SCOPE_AWK='
 # (NOT -v) so awk performs no escape processing on it and the ERE arrives verbatim.
 scan_rule() { awk "$TEST_SCOPE_AWK"'
   gated || is_comment { next }
+  # `unless` is the rule OPT-OUT for a shape that shares the pattern but not the hazard (the atomic
+  # `.swap(x, Ordering::…)` idiom, say). Empty = no opt-out.
+  ENVIRON["LINT_UNLESS"] != "" && $0 ~ ENVIRON["LINT_UNLESS"] { next }
   # FNR (not NR): one awk pass spans many files, so the report must carry the PER-FILE line number.
   $0 ~ ENVIRON["LINT_PAT"] { printf "%s:%d: %s\n", FILENAME, FNR, ENVIRON["LINT_WHAT"] }
 ' "$@"; }
@@ -127,7 +130,8 @@ selftest_case() {   # $1 = name, stdin = fixture source
   src="$SELFTEST_DIR/$name.rs"
   cat > "$src"
   # Registry side: which lines does scan_rule flag?
-  LINT_PAT='std::fs::rename\(' LINT_WHAT='probe' export LINT_PAT LINT_WHAT
+  LINT_PAT='std::fs::rename\('; LINT_WHAT='probe'; LINT_UNLESS=''
+  export LINT_PAT LINT_WHAT LINT_UNLESS
   got_hit=$(scan_rule "$src" | cut -d: -f2 | sort -n | tr '\n' ' ')
   want_hit=$({ grep -n '//= HIT' "$src" || true; } | cut -d: -f1 | sort -n | tr '\n' ' ')
   if [ "$got_hit" != "$want_hit" ]; then
@@ -352,7 +356,9 @@ done < <(find crates -name '*.rs')
 #   4. classtest — `<path>::<fn>`: the ONE class-level test; the lint fails if it disappears.
 #   5. remedy    — the one-line "route through X" instruction printed with every violation.
 #   6. rules     — `;`-separated banned patterns that BYPASS the choke point. Each rule is
-#                  `<awk-ERE>>><what it is>>><comma-separated allowed-exception paths>`.
+#                  `<awk-ERE>>><what it is>>><allowed-exception paths>[>><unless-ERE>]`, where the
+#                  optional trailing `unless` opts out lines that share the pattern but not the
+#                  hazard (an atomic `.swap(x, Ordering::…)`, say).
 #                  A literal `-` means "no greppable bypass" (see the note on differently-enforced
 #                  choke points below).
 #   7. rationale — one line: why this class needs a single point of truth.
@@ -371,16 +377,16 @@ CHOKE_POINTS=(
   # ── A ── persistence: one durable-write primitive. A 5th call site that re-hand-rolls the
   #         atomic-write dance would silently drop whichever facet (parent fsync / temp cleanup /
   #         0600 mode) its author forgot.
-  'A-persistence|DURABLE-BYPASS|crates/busbar/src/durable.rs (durable::write / write_with; AppHandle::commit_and_swap)|crates/busbar/src/durable.rs::fault_matrix_returns_err_untouched_target_no_temp_leak|route through crate::durable::write|std::fs::rename\(>>hand-rolled rename-to-publish>>crates/busbar/src/durable.rs;\.sync_all\(>>hand-rolled sync_all durability>>crates/busbar/src/durable.rs|persist-then-swap is only atomic if EVERY writer does the identical fsync/rename/cleanup dance'
+  'A-persistence|DURABLE-BYPASS|crates/busbar/src/durable.rs (durable::write / write_with; AppHandle::commit_and_swap)|crates/busbar/src/durable.rs::fault_matrix_returns_err_untouched_target_no_temp_leak|route through crate::durable::write|fs::rename\(>>hand-rolled rename-to-publish>>crates/busbar/src/durable.rs;sync_[ad]>>hand-rolled fsync durability (sync_all/sync_data)>>crates/busbar/src/durable.rs|persist-then-swap is only atomic if EVERY writer does the identical fsync/rename/cleanup dance'
 
   # ── B ── plugin FFI/ABI: one export boundary. A hand-written #[no_mangle] skips the
   #         null-out-guard-before-alloc, the mandatory catch_unwind, and the total status map.
-  'B-plugin-export|EXPORT-BYPASS|crates/plugin-sdk/src/boundary.rs (via the export_*_plugin! macro)|crates/plugin-sdk/tests/boundary_class.rs::null_out_pointer_never_leaks|define exports via export_*_plugin!, never by hand|#\[no_mangle\]>>hand-rolled #[no_mangle]>>crates/plugin-sdk/src/lib.rs|an unwind or a written-then-failed out-param crossing the C ABI is UB, so no export may skip the wrapper'
+  'B-plugin-export|EXPORT-BYPASS|crates/plugin-sdk/src/boundary.rs (via the export_*_plugin! macro)|crates/plugin-sdk/tests/boundary_class.rs::null_out_pointer_never_leaks|define exports via export_*_plugin!, never by hand|#\[(unsafe\()?no_mangle>>hand-rolled #[no_mangle] export>>crates/plugin-sdk/src/lib.rs;#\[(unsafe\()?export_name>>hand-rolled #[export_name] export>>crates/plugin-sdk/src/lib.rs|an unwind or a written-then-failed out-param crossing the C ABI is UB, so no export may skip the wrapper'
 
   # ── C ── admin config mutation: one transaction. A raw lock re-opens lock-then-arbitrary-code; a
   #         swap outside the section IS the lost update the lock exists to prevent. state.rs DEFINES
   #         swap/commit_and_swap, so it is allowed alongside txn.rs.
-  'C-config-mutation|MUTATION-BYPASS|crates/busbar/src/admin/v1/json/txn.rs (config_transaction)|crates/busbar/src/admin/v1/json/tests/txn_tests.rs::concurrent_transactions_never_lose_a_swap|route through json::txn::config_transaction|CONFIG_MUTATION_LOCK>>names the config mutation lock>>crates/busbar/src/admin/v1/json/txn.rs;\.commit_and_swap\(>>direct commit_and_swap outside a transaction>>crates/busbar/src/admin/v1/json/txn.rs,crates/busbar/src/state.rs;handle\.swap\(>>direct handle.swap outside a transaction>>crates/busbar/src/admin/v1/json/txn.rs,crates/busbar/src/state.rs|a fresh post-lock snapshot + one persist-then-swap is the only way concurrent mutations cannot lose an update'
+  'C-config-mutation|MUTATION-BYPASS|crates/busbar/src/admin/v1/json/txn.rs (config_transaction)|crates/busbar/src/admin/v1/json/tests/txn_tests.rs::concurrent_transactions_never_lose_a_swap|route through json::txn::config_transaction|CONFIG_MUTATION_LOCK>>names the config mutation lock>>crates/busbar/src/admin/v1/json/txn.rs;commit_and_swap\(>>direct commit_and_swap outside a transaction>>crates/busbar/src/admin/v1/json/txn.rs,crates/busbar/src/state.rs;\.swap\(>>direct swap on an AppHandle outside a transaction>>crates/busbar/src/admin/v1/json/txn.rs,crates/busbar/src/state.rs>>Ordering::;AppHandle::swap\(>>direct AppHandle::swap outside a transaction>>crates/busbar/src/admin/v1/json/txn.rs,crates/busbar/src/state.rs|a fresh post-lock snapshot + one persist-then-swap is the only way concurrent mutations cannot lose an update'
 
   # ── D ── OpenAPI error taxonomy: one declaration the generator PROJECTS. Enforced differently —
   #         there is no pattern to ban, because the hazard is an endpoint emitting an ErrKind the
@@ -397,7 +403,18 @@ while IFS= read -r f; do CANDIDATES+=("$f"); done < <(find crates -name '*.rs' -
 hdr "choke-point registry (every hazard class has ONE owner; no hand-rolled bypass)"
 ck=0
 for row in "${CHOKE_POINTS[@]}"; do
-  IFS='|' read -r cp_id cp_tag cp_owner cp_test cp_remedy cp_rules cp_why <<<"$row"
+  IFS='|' read -r cp_id cp_tag cp_owner cp_test cp_remedy cp_rules cp_why extra <<<"$row"
+
+  # (0) ROW INTEGRITY. `|` is the field separator, so a `|` that leaks into a rule's ERE silently
+  #     shifts every field right: the pattern gets truncated, the allowed-exception list empties, and
+  #     the OWNER file starts reporting itself as a bypass. That is a lint that lies, so it is a hard
+  #     error. Write alternation as a character class (`sync_[ad]`) or as a second `;` rule.
+  if [ -n "$extra" ] || [ -z "$cp_why" ] || [ -z "$cp_rules" ]; then
+    note "MALFORMED-ROW: ${cp_id} — a field contains a literal '|' (the row separator). Rewrite the"
+    note "  pattern without alternation, or split it into another ';'-separated rule."
+    fail=1; ck=1
+    continue
+  fi
 
   # (i) the class-level test must exist. A choke point whose one class test was deleted or renamed
   #     is a choke point nothing proves; the contract requires the pair, so the lint requires it too.
@@ -415,8 +432,8 @@ for row in "${CHOKE_POINTS[@]}"; do
   IFS=';' read -r -a rules <<<"$cp_rules"
   for rule in "${rules[@]}"; do
     # `pat>>what>>allow` → collapse the `>>` separators to a single `>` and split on it.
-    IFS='>' read -r LINT_PAT LINT_WHAT rule_allow <<<"${rule//>>/>}"
-    export LINT_PAT LINT_WHAT
+    IFS='>' read -r LINT_PAT LINT_WHAT rule_allow LINT_UNLESS <<<"${rule//>>/>}"
+    export LINT_PAT LINT_WHAT LINT_UNLESS
     files=()
     for f in "${CANDIDATES[@]}"; do
       case ",${rule_allow}," in *",${f},"*) continue ;; esac   # the owner / definer files
@@ -430,7 +447,7 @@ for row in "${CHOKE_POINTS[@]}"; do
     fi
   done
 done
-unset LINT_PAT LINT_WHAT
+unset LINT_PAT LINT_WHAT LINT_UNLESS
 [ "$ck" -eq 0 ] && note "ok (${#CHOKE_POINTS[@]} choke points registered, class tests present, no bypass)"
 
 # ── Invariant 5: REGRESSION-marker parity (a ratchet, not a cliff). ───────────────────────────────

@@ -1960,7 +1960,7 @@ pub(crate) async fn put_auth(
         // LIVE-only (documented in the response `note`): the admin chain is not overlay-persisted,
         // so this is a swap with a no-op persist — still the single swap site.
         let installed = Arc::new(next);
-        Ok(txn.swap(installed.clone(), installed))
+        Ok(txn.live_swap(installed.clone(), installed))
     })
     .await;
     let installed = match out {

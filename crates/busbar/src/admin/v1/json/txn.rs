@@ -206,8 +206,11 @@ impl<'a> Txn<'a> {
         Outcome::commit(next, persist, value)
     }
 
-    /// Declare a live-only swap with no durable persist (see [`Outcome::swap`]).
-    pub(crate) fn swap<T>(&self, next: Arc<App>, value: T) -> Outcome<T> {
+    /// Declare a live-only swap with no durable persist (see [`Outcome::swap`]). Named
+    /// `live_swap`, not `swap`, so the structure lint can ban the bare `.swap(` receiver form
+    /// OUTRIGHT outside `txn.rs`/`state.rs` instead of carving out an exception for whichever
+    /// variable name a transaction body happens to bind the `Txn` to.
+    pub(crate) fn live_swap<T>(&self, next: Arc<App>, value: T) -> Outcome<T> {
         Outcome::swap(next, value)
     }
 
