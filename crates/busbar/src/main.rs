@@ -1085,12 +1085,30 @@ async fn method_not_allowed_handler(uri: axum::http::Uri) -> axum::response::Res
     )
 }
 
-/// The exact body axum 0.7's `DefaultBodyLimit` emits when a request exceeds the limit: its
-/// extractor rejection (`FailedToBufferBody::LengthLimitError`) renders a 413 with this literal
-/// `text/plain` body. This is the SENTINEL used to distinguish axum's OWN body-limit 413 from a
-/// forward-path-relayed upstream 413: the reshape acts only on a response whose body is
-/// exactly this marker, so a relayed upstream 413 (any other body, JSON or not) passes through
-/// untouched. (Pinned to axum's wire shape; covered by `test_reshape_oversized_413_passthrough`.)
+/// The SENTINEL substring in the `text/plain` body axum's `DefaultBodyLimit` emits when a request
+/// exceeds the limit — used to distinguish axum's OWN body-limit 413 from a forward-path-relayed
+/// upstream 413, which must pass through untouched.
+///
+/// SUBSTRING, NOT BYTE-EQUALITY, and that is the fix. This was pinned to axum 0.7's EXACT body
+/// (`"length limit exceeded"`), and axum-core 0.5 renders the same rejection as
+/// `"Failed to buffer the request body: length limit exceeded"` — the `__define_rejection!`
+/// Error-variant arm prefixes the outer `FailedToBufferBody` prose onto the inner error. So on
+/// axum 0.8 the equality gate NEVER matched and the whole reshape was dead code in production:
+/// every oversized request, admin and data plane alike, answered with a bare `text/plain` body.
+/// That broke the admin surface's frozen `{error:{code}}` envelope (tooling that branches on `code`
+/// throws on parse) and handed official OpenAI/Anthropic/Bedrock SDKs a router tell instead of the
+/// vendor-native JSON envelope.
+///
+/// Matching the inner error's own words survives that wrapping. The residual risk — a relayed
+/// UPSTREAM `text/plain` 413 whose body happens to contain this phrase being reshaped into a JSON
+/// envelope of the same status — is far smaller than the risk this replaced, and is bounded to the
+/// envelope shape (the status is 413 either way).
+///
+/// THE REAL GUARD IS THE TEST, not this constant. Every prior test of this path hand-constructed
+/// the marker and called the pure reshape function, so all four stayed green while the layer was
+/// dead. `oversized_request_413_is_reshaped_on_the_live_stack` drives a real oversized request
+/// through the real layer stack, so the next time axum changes its prose the build goes red instead
+/// of the reshape silently switching itself off.
 const AXUM_BODY_LIMIT_413_MARKER: &[u8] = b"length limit exceeded";
 
 /// Reshape an oversized-body rejection into a protocol-native error. axum's `DefaultBodyLimit`
@@ -1274,7 +1292,10 @@ async fn reshape_oversized_413(
         // already-consumed parts through with an empty body rather than reshape a non-axum reject.
         Err(_) => return axum::response::Response::from_parts(parts, axum::body::Body::empty()),
     };
-    if bytes.as_ref() != AXUM_BODY_LIMIT_413_MARKER {
+    if !bytes
+        .windows(AXUM_BODY_LIMIT_413_MARKER.len())
+        .any(|w| w == AXUM_BODY_LIMIT_413_MARKER)
+    {
         // A relayed upstream 413 (or any non-axum 413): pass through untouched, body re-attached.
         return axum::response::Response::from_parts(parts, axum::body::Body::from(bytes));
     }
