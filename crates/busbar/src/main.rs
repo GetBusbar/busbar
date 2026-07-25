@@ -2581,6 +2581,24 @@ pub(crate) fn build_app_from_config(
     // (fail-OPEN), letting traffic the gate was configured to restrict/reject flow unfiltered.
     hook_env.preresolve_hook_secrets(&cfg.hooks)?;
 
+    // The store's SecretRefs are resolved only on the BOOT arm (`prior == None`), because the store
+    // backend is reused across a hot reload. So a `PUT /config/settings` naming an unresolvable ref
+    // returned 200, persisted it, and the NEXT restart died in `resolve_settings` before serving.
+    //
+    // WARN, never fail: the store is restart-to-apply, so staging a ref whose secret the
+    // orchestrator mounts on the next deploy is a legitimate workflow — and `tls` already accepts
+    // exactly that. Rejecting here would make the store stricter than the block beside it.
+    if let Some(store_cfg) = cfg.store.as_ref() {
+        if let Err(e) = config::secret::resolve_settings(&store_cfg.settings, &secret_resolver) {
+            tracing::warn!(
+                store = %store_cfg.module,
+                error = %e,
+                "store settings hold a secret reference that does not resolve here; the store is \
+                 restart-to-apply, so THIS WILL FAIL THE NEXT RESTART unless the secret exists then"
+            );
+        }
+    }
+
     // B1 (open-time variant) FAIL-CLOSED: actually OPEN every referenced decision/rewrite gate up
     // front so an `open()`-time failure of a PRESENT plugin aborts boot/reload here — matching the
     // store (`open_store`) and auth (`AuthMiddleware::new`) paths. Without this, a gate whose plugin
