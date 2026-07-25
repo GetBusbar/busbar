@@ -140,6 +140,13 @@ struct BudgetCell {
     /// actually used), scanned linearly.
     models: Vec<ModelCell>,
     dirty: bool,
+    /// Wall-clock of the last accrual or admission charge. The eviction sweep ages cells by
+    /// `window_start`, but a key's own bucket and a synthesized SSO principal's bucket both live in
+    /// the all-time window (`window_start == 0`), which never ages — so those cells were retained
+    /// for the process lifetime even after the key was deleted or the principal stopped appearing.
+    /// `dirty` alone cannot substitute: the flusher clears it every 100ms, so a busy cell is
+    /// legitimately clean and would be swept mid-use.
+    last_touch: u64,
 }
 
 impl BudgetCell {

@@ -1298,6 +1298,7 @@ fn test_budget_sweep_is_window_agnostic_across_cotenants() {
         flushed_billable_requests: 0,
         models: Vec::new(),
         dirty,
+        last_touch: now,
     };
 
     // Seed co-tenants directly INTO the survivor's shard (same idiom as the old rate sweep test).
@@ -1374,6 +1375,7 @@ fn test_budget_sweep_cadence_post_increment_no_off_by_one() {
         flushed_billable_requests: 0,
         models: Vec::new(),
         dirty: false,
+        last_touch: now,
     };
 
     // Seed a STALE co-tenant INTO k1's shard so k1's own admission runs the (per-shard) sweep
@@ -2557,5 +2559,139 @@ fn delete_key_drops_its_budget_cell() {
     assert!(
         !gov.budget.read(&key.id).contains_key(&key.id),
         "the deleted key's budget cell is reclaimed, not retained for the process lifetime"
+    );
+}
+
+/// Two bucket kinds live in the all-time window and so never aged out: a key's own attribution
+/// bucket, and a synthesized SSO principal's. A deleted key can leave its cell behind (a request
+/// admitted in the gap between the store delete and the in-memory removal re-inserts it), and a
+/// synthesized principal is never written to the store at all, so nothing can ever name it for
+/// removal. Both leaked for the process lifetime, one cell per distinct IdP subject.
+///
+/// Eviction is safe for these and only these: `cost::chain_for` pins a key bucket's caps to `None`,
+/// so it enforces nothing, and the flush is additive against baselines the cell already wrote — a
+/// re-created cell contributes only new accrual. A `group:` bucket in the same window is the
+/// opposite: it holds an enforced cap, and hydrate is boot-only, so resetting it is cap evasion.
+#[test]
+fn test_budget_sweep_evicts_idle_attribution_cells_but_never_group_caps() {
+    let store = Arc::new(MemoryStore::new());
+    let gov = GovState::new(store, None).unwrap();
+    let now = 1_700_000_040u64;
+    let idle_for = 40 * SECS_PER_DAY;
+
+    let survivor = sample_key("survivor", "hs");
+
+    let all_time = |requests: u64, dirty: bool, last_touch: u64| BudgetCell {
+        window_start: 0,
+        requests,
+        billable_requests: requests,
+        flushed_requests: requests,
+        flushed_billable_requests: requests,
+        models: Vec::new(),
+        dirty,
+        last_touch,
+    };
+
+    {
+        let mut map = gov.budget.write("survivor");
+        // A deleted key's orphaned attribution cell, and a synthesized principal's: both idle, both
+        // fully flushed. Nothing will ever name either again.
+        map.insert(
+            "vk_deleted".to_string(),
+            all_time(17, false, now - idle_for),
+        );
+        map.insert(
+            "user:alice@example.com".to_string(),
+            all_time(3, false, now - idle_for),
+        );
+        // An equally idle GROUP cell holding enforced spend — must survive.
+        map.insert(
+            "group:acme@total".to_string(),
+            all_time(4999, false, now - idle_for),
+        );
+        // An idle-but-DIRTY attribution cell: its delta has not reached the store, so evicting it
+        // would silently drop spend.
+        map.insert(
+            "vk_unflushed".to_string(),
+            all_time(9, true, now - idle_for),
+        );
+    }
+
+    gov.budget.sweep_ticker_for("survivor").store(
+        crate::config::DEFAULT_RATE_SWEEP_INTERVAL - 1,
+        Ordering::Relaxed,
+    );
+    assert!(gov.try_admit(&flat_cost(1), &survivor, "", now).is_ok());
+
+    let map = gov.budget.read("survivor");
+    assert!(
+        !map.contains_key("vk_deleted"),
+        "an idle, fully-flushed key attribution cell must not be retained forever"
+    );
+    assert!(
+        !map.contains_key("user:alice@example.com"),
+        "a synthesized principal's cell has no other removal path and must age out"
+    );
+    assert_eq!(
+        map.get("group:acme@total").map(|c| c.requests),
+        Some(4999),
+        "an enforced group cap must never be reset by the sweep"
+    );
+    assert_eq!(
+        map.get("vk_unflushed").map(|c| c.requests),
+        Some(9),
+        "an unflushed cell must be retained until its delta lands"
+    );
+    assert!(
+        map.contains_key("survivor"),
+        "the cell just charged is not idle"
+    );
+}
+
+/// Hydrated cells must carry a `last_touch`, or every restored key's history is discarded by the
+/// first post-boot sweep — before that key has served a single request.
+#[test]
+fn test_hydrated_cells_survive_the_first_sweep() {
+    let store = Arc::new(MemoryStore::new());
+    let restored = sample_key("restored", "hr");
+    store.put_key(&restored).unwrap();
+    store
+        .add_usage(
+            "restored",
+            0,
+            &busbar_api::UsageDelta {
+                requests: 42,
+                billable_requests: 42,
+                models: Vec::new(),
+            },
+        )
+        .unwrap();
+
+    let gov = GovState::new(store, None).unwrap();
+    let now = 1_700_000_040u64;
+    gov.hydrate_budgets(&flat_cost(1), now).unwrap();
+    assert_eq!(
+        gov.budget
+            .read("restored")
+            .get("restored")
+            .map(|c| c.requests),
+        Some(42),
+        "hydrate seeds the cell"
+    );
+
+    let driver = sample_key("restored", "hr");
+    gov.budget.sweep_ticker_for("restored").store(
+        crate::config::DEFAULT_RATE_SWEEP_INTERVAL - 1,
+        Ordering::Relaxed,
+    );
+    assert!(gov.try_admit(&flat_cost(1), &driver, "", now).is_ok());
+
+    assert_eq!(
+        gov.budget
+            .read("restored")
+            .get("restored")
+            .map(|c| c.requests),
+        Some(43),
+        "a hydrated cell must not be swept away before it is first used"
     );
 }
