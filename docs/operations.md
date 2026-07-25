@@ -130,7 +130,7 @@ directly exposed to untrusted networks is not recommended.
 | Endpoint | Auth | Meaning |
 |---|---|---|
 | `GET /healthz` | open | `200 ok` if **any** lane is usable; `503` otherwise. Use for liveness/readiness probes. |
-| `GET /metrics` | virtual key | Prometheus exposition; requires a valid key with a non-empty `auth.chain`, open under `chain: []`. Restrict at the network layer if unauthenticated scraping is needed. |
+| `GET /metrics` | virtual key | Prometheus exposition. OPT-IN: mounted only when a `metrics:` block is configured (with its required `buffer_seconds`); otherwise the path 404s like any other. Requires a valid key with a non-empty `auth.chain`, open under `chain: []`. Restrict at the network layer if unauthenticated scraping is needed. |
 | `GET /stats` | virtual key | Per-lane health snapshot + pool membership, JSON. |
 
 `/stats` returns, per lane: `model`, `provider`, `max_concurrent`, `inflight`,
@@ -172,7 +172,7 @@ one instance and scale the box, not the count.
 
 ## Metrics to watch
 
-All metrics are Prometheus counters/histograms exposed at `/metrics`.
+All metrics are Prometheus counters/histograms exposed at `/metrics`, which is opt-in: with no `metrics:` block busbar records nothing and does not mount the endpoint. `metrics.buffer_seconds` (required when you opt in) sets how many seconds of observations are retained — quantiles cover that window, `_sum`/`_count` stay cumulative, and memory is bounded by the window rather than by uptime.
 
 | Metric | Type | Labels | Watch for |
 |---|---|---|---|

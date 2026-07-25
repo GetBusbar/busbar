@@ -43,6 +43,7 @@ use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use std::sync::OnceLock;
+use std::time::Duration;
 
 use crate::state::App;
 
@@ -50,6 +51,33 @@ use crate::state::App;
 // without panicking: `None` = install was attempted and failed; `Some(handle)` = installed. The
 // `OnceLock` still serializes the single global `install_recorder()` call across threads/tests.
 static HANDLE: OnceLock<Option<PrometheusHandle>> = OnceLock::new();
+
+/// Whether the operator opted in to metrics (`observability.metrics` present). Set SYNCHRONOUSLY by
+/// [`configure`] at startup, before the router is built, while the recorder install itself happens on
+/// a background thread — so route mounting reads a settled decision rather than racing the install.
+/// Unset ⇒ `false`: a build that never calls `configure` (and every test that does not ask for
+/// metrics) has them off.
+static ENABLED: OnceLock<bool> = OnceLock::new();
+
+/// Did the operator opt in to metrics? Gates the `/metrics` routes; the recorder's own absence is
+/// what makes the hot path free.
+pub(crate) fn enabled() -> bool {
+    ENABLED.get().copied().unwrap_or(false)
+}
+
+/// Apply the operator's `observability.metrics` decision. `None` = the block was absent = metrics
+/// OFF: no recorder is installed, so every emission macro and bank helper is a no-op, `/metrics` is
+/// not mounted, and nothing is retained. `Some(buffer)` = opted in with a declared retention window.
+///
+/// Called once, synchronously, from `run()` after config load. The RECORDER install is deferred to a
+/// background thread because its one-time clock calibration (~200 ms) would otherwise delay the
+/// listener bind; the enabled flag is set here, in the foreground, so the router sees it.
+pub(crate) fn configure(buffer: Option<Duration>) {
+    let _ = ENABLED.set(buffer.is_some());
+    if let Some(buffer) = buffer {
+        std::thread::spawn(move || init_with(buffer));
+    }
+}
 
 /// The canonical busbar metric taxonomy. Names are referenced here so the emission sites and the
 /// descriptions below stay in one authoritative list.
@@ -164,14 +192,31 @@ const PROMETHEUS_CONTENT_TYPE: &str = "text/plain; version=0.0.4";
 /// Install the global Prometheus recorder. Idempotent: safe to call once at startup and
 /// repeatedly from tests (the global recorder can only be installed once per process, so the
 /// `OnceLock` guards it). Also registers HELP/TYPE descriptions for the taxonomy.
-pub(crate) fn init() {
+/// Install the recorder for an operator who OPTED IN, retaining `buffer` seconds of observations.
+///
+/// `buffer` is `observability.metrics.buffer_seconds` — a REQUIRED config field, so this value is
+/// always one a human named (see `config::MetricsCfg`). It sets both halves of the retention
+/// contract: the rolling-summary window (quantiles cover the last `buffer`; anything older is
+/// dropped) and, via [`MAINTENANCE_DIVISOR`], how often parked raw samples are folded into it.
+///
+/// NOT called unless `observability.metrics` is present. With no recorder installed, every emission
+/// macro and every bank helper is a no-op against the default recorder, so an operator who did not
+/// opt in records nothing and retains nothing.
+pub(crate) fn init_with(buffer: Duration) {
+    // Retention is split across a few rolling buckets so quantiles degrade smoothly as the window
+    // slides, instead of the whole window vanishing at once on rollover. The buckets SUM to
+    // `buffer`, which is the operator's declared retention.
+    let bucket = buffer
+        .checked_div(SUMMARY_BUCKETS.get())
+        .unwrap_or(buffer)
+        .max(Duration::from_millis(1));
     // The global recorder can only be installed once per process, so the `OnceLock` runs this
     // initializer exactly once and serializes concurrent callers (startup + tests). On install
     // FAILURE — typically because another library already installed a global recorder — we log and
-    // store `None` rather than panicking: `init()` runs on a background thread (main.rs) where a
+    // store `None` rather than panicking: this runs on a background thread (main.rs) where a
     // panic would be silent, leaving `/metrics` empty with no operator-visible cause. Storing `None`
     // degrades gracefully (empty exposition) AND emits an error log so the cause is discoverable.
-    HANDLE.get_or_init(|| match PrometheusBuilder::new().install_recorder() {
+    HANDLE.get_or_init(|| match build_recorder(bucket) {
         Ok(handle) => {
             describe();
             // Pre-register the unlabeled counter so `/metrics` is non-empty from the first
@@ -183,6 +228,7 @@ pub(crate) fn init() {
             // inventing label values, which the cardinality contract above forbids. The
             // labeled gauges appear on the first scrape via `refresh_scrape_gauges`.
             metrics::counter!(BILLING_TRUNCATED_TOTAL).absolute(0);
+            spawn_maintenance(bucket);
             Some(handle)
         }
         Err(e) => {
@@ -190,6 +236,98 @@ pub(crate) fn init() {
             None
         }
     });
+}
+
+/// Number of rolling buckets the retention window is split across (see [`init_with`]).
+const SUMMARY_BUCKETS: std::num::NonZeroU32 = match std::num::NonZeroU32::new(3) {
+    Some(n) => n,
+    None => unreachable!(),
+};
+
+/// Build the Prometheus recorder with the operator's retention window and install it globally.
+/// Split out of [`init_with`] so the fallible builder chain reads in one place.
+fn build_recorder(
+    bucket: Duration,
+) -> Result<PrometheusHandle, metrics_exporter_prometheus::BuildError> {
+    PrometheusBuilder::new()
+        .set_bucket_duration(bucket)?
+        .set_bucket_count(SUMMARY_BUCKETS)
+        .install_recorder()
+}
+
+/// Test-only entry point: install the recorder with a retention window long enough that no test's
+/// samples age out mid-assertion. Production ALWAYS goes through [`init_with`] with the operator's
+/// configured `buffer_seconds`; there is deliberately no arg-less initializer outside tests, so no
+/// build path can install metrics without a named retention window.
+#[cfg(test)]
+pub(crate) fn init() {
+    let _ = ENABLED.set(true);
+    init_with(Duration::from_secs(3600));
+}
+
+// ── SCRAPE-INDEPENDENT MAINTENANCE ───────────────────────────────────────────────────────────────
+//
+// THE INVARIANT: an observation costs BOUNDED memory whether or not anyone ever scrapes `/metrics`.
+//
+// Two layers buffer raw per-request observations on the way to their bounded aggregate form:
+//   1. the telemetry BANK — each thread appends one `f64` per request to its own sample `Vec`
+//      (`telemetry::HistogramSlot::record`), drained by `telemetry::flush_to_recorder`;
+//   2. the Prometheus recorder — `metrics-exporter-prometheus` parks every histogram sample handed
+//      to it in an `AtomicBucket` (a linked list of 64-slot blocks, ~8.4 B/sample) until something
+//      calls `run_upkeep()`/render, which folds them into the FIXED-SIZE rolling summary.
+//
+// Both drains used to happen ONLY inside `render()` — i.e. only when a scrape arrived. A gateway
+// nobody scrapes therefore retained one f64 per request FOREVER: RSS grew linearly with total
+// requests served (measured: ~23 B/request; 18.1 M requests → +389 MiB, with no plateau and no
+// release when the load stopped), instead of tracking the live working set. That is a leak by any
+// ordinary definition — `/metrics` is an OPTIONAL endpoint, and memory must not depend on whether
+// an operator wired Prometheus up (or on whether their scrape job is currently healthy).
+//
+// The fix is one choke point: a maintenance tick that performs EXACTLY the same two drains a scrape
+// performs, on a timer, so the buffered depth is bounded by one interval's traffic instead of by the
+// process lifetime. It changes no metric value: `_sum`/`_count` are cumulative either way, and the
+// quantile window becomes a true rolling window (samples land in the bucket matching when they were
+// observed) rather than every sample since the last scrape being crammed into the scrape instant.
+
+// The tick cadence is DERIVED from the operator's `buffer_seconds` rather than picked here: it is
+// one rolling bucket (`buffer / 3`), so parked raw samples never exceed a third of the declared
+// retention window, and every sample lands in the bucket its own timestamp belongs to.
+
+/// Fold every buffered observation into its bounded aggregate storage — the drain half of a scrape,
+/// without rendering. Idempotent and safe to call at any time (a no-op before the recorder is
+/// installed, and when nothing is buffered).
+pub(crate) fn drain_pending() {
+    // Outer `None` = `init()` has not run; inner `None` = install failed. Both mean there is no
+    // recorder to drain into, and the bank's own emit helpers are no-ops in that state.
+    let Some(Some(handle)) = HANDLE.get() else {
+        return;
+    };
+    // 1. bank → recorder (per-thread sample buffers + counter deltas)
+    crate::telemetry::flush_to_recorder();
+    // 2. recorder's per-sample buckets → fixed-size distributions
+    handle.run_upkeep();
+}
+
+/// Start the maintenance tick. Called once, from the successful branch of [`init`], so every build
+/// that has a recorder also has the drain — no configuration, no operator action, no dependency on
+/// anyone scraping. A dedicated OS thread (not a Tokio task) because the drain is synchronous and
+/// takes the bank's locks: it must never occupy an executor worker, and it must keep running even
+/// if the runtime is saturated. Best-effort: if the thread cannot be spawned we log and continue —
+/// the pre-existing scrape-driven drain still applies.
+fn spawn_maintenance(interval: Duration) {
+    let spawned = std::thread::Builder::new()
+        .name("busbar-metrics-drain".into())
+        .spawn(move || loop {
+            std::thread::sleep(interval);
+            drain_pending();
+        });
+    if let Err(e) = spawned {
+        tracing::warn!(
+            error = %e,
+            "could not spawn the metrics maintenance thread; buffered observations now drain only \
+             on a /metrics scrape"
+        );
+    }
 }
 
 fn describe() {

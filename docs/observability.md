@@ -55,7 +55,25 @@ Authorization: Bearer <client-token-or-virtual-key>
 
 Prometheus text exposition (`text/plain; version=0.0.4`). Goes through the same auth check as other routes, it is treated as an information-disclosure surface (it reveals pool structure, lane names, and failure rates). With no auth chain (`auth.chain: []`), the check admits unconditionally, so `/metrics` is effectively open. Restrict it at the network layer if that matters for your threat model.
 
-Always enabled; no config needed.
+### Metrics are opt-in
+
+Metrics are **off unless you ask for them.** With no `metrics:` block busbar installs no recorder, records nothing on the request path, and does not mount `/metrics` or `/metrics/hooks` at all — a scrape of either gets the same 404 as any other unknown path. Opting in is one block, and `buffer_seconds` is **required**:
+
+```yaml
+metrics:
+  buffer_seconds: 60      # REQUIRED — how many seconds of observations to retain
+  key_gauge_limit: 500    # optional (default 500)
+```
+
+`buffer_seconds` is the retention window. Busbar folds buffered observations into their aggregate form on a timer and drops anything older, so:
+
+* **quantile lines** on `/metrics` (`busbar_request_duration_seconds{quantile="…"}`) cover the last `buffer_seconds`;
+* **`_sum` and `_count` are cumulative** and unaffected by the window — totals and rates never lose anything;
+* **memory is bounded by the window, not by uptime.** Retention is one window's traffic, whether or not anything ever scrapes you.
+
+There is no default because the right value is a memory-for-fidelity trade only you can make: every second of buffer holds that second's raw observations in memory (at very high request rates, a few MB per second). Pick the window your dashboards actually query. `buffer_seconds: 0` is rejected at boot — it would retain nothing while still paying the recording cost; omit the whole block instead.
+
+Scraping is not required for correctness. A gateway with metrics enabled and nothing scraping it retains one `buffer_seconds` window and no more.
 
 ## Metrics to watch
 

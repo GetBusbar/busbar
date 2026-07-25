@@ -627,12 +627,9 @@ fn main() {
 }
 
 async fn run() {
-    // Install the Prometheus recorder on a background thread. Its one-time clock calibration
-    // (quanta's TSC calibration, ~200ms) would otherwise block the listener; deferring it lets
-    // busbar bind and serve (incl. /healthz) in tens of ms. `/metrics` renders empty until the
-    // recorder is live, and the sliver of requests in that startup window go uncounted — an
-    // acceptable trade for a daemon/k8s readiness path. Emission macros are no-ops until then.
-    std::thread::spawn(metrics::init);
+    // Metrics are configured AFTER the config loads (below, via `metrics::configure`) because they
+    // are 100% OPT-IN: `observability.metrics` absent ⇒ no recorder, no `/metrics`, nothing recorded
+    // and nothing retained. Nothing may install a recorder before that decision is read.
 
     // Locate the two config files (env-overridable paths) and run the shared disk-load pipeline —
     // the SAME pipeline `POST /api/v1/admin/config/reload` re-runs at runtime.
@@ -669,6 +666,16 @@ async fn run() {
 
     // Optional observability sinks; grab before `deploy` is borrowed by resolve.
     let observability_cfg = deploy.observability.clone().unwrap_or_default();
+    // METRICS OPT-IN, read here and nowhere else: `observability.metrics` present ⇒ install the
+    // recorder with the operator's REQUIRED `buffer_seconds` retention window; absent ⇒ metrics stay
+    // off for the life of the process. Called before the router is built so `/metrics` mounting sees
+    // a settled decision.
+    metrics::configure(
+        deploy
+            .metrics
+            .as_ref()
+            .map(|m| Duration::from_secs(m.buffer_seconds)),
+    );
     // The top-level `plugins:` block (master switch + dir + trust). Absent = disabled defaults.
     let plugins_cfg = deploy.plugins.clone();
 
@@ -2969,15 +2976,25 @@ fn build_router_with_limits(
 /// router in the single-listener case, or onto its own router in the split case) so it can move to
 /// a dedicated listener without any of these routes coming with it.
 fn base_data_router() -> Router<std::sync::Arc<state::AppHandle>> {
-    Router::new()
+    let router = Router::new()
         .route("/stats", get(endpoints::stats))
-        .route("/healthz", get(endpoints::healthz))
-        .route("/metrics", get(metrics::handler))
-        // The Prometheus scrape of HOOK-reported metrics — a SEPARATE exposition from busbar's own
-        // `/metrics` so a hook can never type-conflict or shadow a first-party series. Verbatim hook
-        // metric names + an auto `hook="<name>"` label, so an external dashboard built against a hook
-        // repoints here and just works. Stale-while-revalidate; never blocks on a hook socket.
-        .route("/metrics/hooks", get(crate::hooks::scrape::handler))
+        .route("/healthz", get(endpoints::healthz));
+    // METRICS ARE OPT-IN (`observability.metrics`). Not opted in ⇒ neither exposition route is
+    // mounted at all, so an un-opted-in deployment has no scrape surface to speak of and the
+    // unknown path falls through to the same native-envelope 404 as any other (no bare-proxy tell).
+    let router = if metrics::enabled() {
+        router
+            .route("/metrics", get(metrics::handler))
+            // The Prometheus scrape of HOOK-reported metrics — a SEPARATE exposition from busbar's
+            // own `/metrics` so a hook can never type-conflict or shadow a first-party series.
+            // Verbatim hook metric names + an auto `hook="<name>"` label, so an external dashboard
+            // built against a hook repoints here and just works. Stale-while-revalidate; never
+            // blocks on a hook socket.
+            .route("/metrics/hooks", get(crate::hooks::scrape::handler))
+    } else {
+        router
+    };
+    router
         // busbar's OWN API keeps explicit routes (it is not a protocol dialect): discovery,
         // health/metrics/stats above, and the named/adhoc conveniences below.
         // OpenAI list-models: SDKs call `models.list()` first; UIs build pickers from it.
