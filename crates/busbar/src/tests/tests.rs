@@ -980,3 +980,136 @@ fn secrets_block_rejects_non_secret_kind() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A minimal `RootCfg` whose SOLE provider's `api_key` is the given secret reference — the smallest
+/// config that exercises `config_validate::secret_refs` (and thus `validate_secret_refs`).
+fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::config::RootCfg {
+    let mut error_map = std::collections::HashMap::new();
+    error_map.insert("400".to_string(), "client_error".to_string());
+    let provider = crate::config::ProviderCfg {
+        protocol: "openai".into(),
+        base_url: "https://api.example.com".into(),
+        api_key,
+        health: None,
+        error_map,
+        path: None,
+        path_base: None,
+        token_url: None,
+        scope: None,
+        auth: None,
+        allow_metadata_hosts: Vec::new(),
+    };
+    let mut providers = std::collections::HashMap::new();
+    providers.insert("acme".to_string(), provider);
+    crate::config::RootCfg {
+        listen: crate::config::DEFAULT_LISTEN_ADDR.into(),
+        tls: None,
+        admin_listen: crate::config::DEFAULT_ADMIN_LISTEN_ADDR.to_string(),
+        admin_tls: None,
+        auth: None,
+        providers,
+        models: std::collections::HashMap::new(),
+        pools: std::collections::HashMap::new(),
+        hooks: std::collections::HashMap::new(),
+        admin_auth: vec!["admin-tokens".to_string()],
+        groups: std::collections::BTreeMap::new(),
+        rate_card: None,
+        per_request_fee: 0,
+        store: None,
+        secrets: std::collections::BTreeMap::new(),
+        global_hooks: Vec::new(),
+        blocked_metadata_hosts: Vec::new(),
+        allow_metadata_hosts: Vec::new(),
+        allow_all_metadata: false,
+        limits: crate::config::LimitsResolved::default(),
+    }
+}
+
+/// REGRESSION (audit round-4 #3/#4): the marquee 1.5.0 "secrets are plugins" feature — a provider
+/// `api_key: { module: acme-vault, … }` (TLS cert/key, `auth.signing_key`, and the admin token are
+/// the same shape) — must PASS validation when the `kind: secret` plugin is loaded + trusted. The
+/// module-existence check is DEFERRED past `config_validate::validate` (which runs before the plugin
+/// registry exists) to `validate_secret_refs`, which consults the SAME registry the resolver uses.
+#[test]
+fn secret_ref_plugin_backed_module_passes_when_plugin_present() {
+    let (dir, reg) = secret_registry("secretref-vault-ok");
+    // The `vault` alias AND the canonical `acme-secret-vault` name both resolve → both pass.
+    for module in ["vault", "acme-secret-vault"] {
+        let cfg = cfg_with_provider_api_key(crate::config::SecretRef {
+            module: module.to_string(),
+            settings: serde_json::Map::new(),
+        });
+        // `config_validate::validate` (pre-registry) must NOT reject a plugin-backed module.
+        assert!(
+            crate::config_validate::validate(&cfg).is_ok(),
+            "pre-registry validate must not reject plugin-backed module '{module}'"
+        );
+        // The registry-backed pre-flight check PASSES because the plugin is loaded + is kind:secret.
+        assert!(
+            validate_secret_refs(&reg, &cfg).is_ok(),
+            "a loaded kind:secret plugin '{module}' must pass the secret-ref pre-flight"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// REGRESSION (audit round-4 #3/#4): a GENUINE typo — a secret module that is neither a built-in
+/// (`env`/`file`) nor a loaded plugin — must still FAIL, so the deferral does not weaken the check.
+#[test]
+fn secret_ref_typo_module_still_fails_at_preflight() {
+    let (dir, reg) = secret_registry("secretref-typo");
+    let cfg = cfg_with_provider_api_key(crate::config::SecretRef {
+        module: "vaultt".to_string(), // typo of the `vault` alias — no such plugin
+        settings: serde_json::Map::new(),
+    });
+    // `validate` alone can't tell a typo from an installed plugin (no registry), so it must NOT be
+    // the layer that catches this — the deferred registry check is.
+    assert!(
+        crate::config_validate::validate(&cfg).is_ok(),
+        "pre-registry validate cannot (and must not) reject the unknown module by itself"
+    );
+    let err = validate_secret_refs(&reg, &cfg)
+        .expect_err("a typo'd secret module with no plugin must fail the pre-flight");
+    assert!(
+        err.contains("providers.acme.api_key")
+            && err.contains("vaultt")
+            && err.contains("no loadable"),
+        "the error must name the ref and the unknown module: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// REGRESSION (audit round-4 #3/#4): the built-in `env`/`file` modules always pass the registry
+/// pre-flight (they are resolved inline, never through a plugin), even with an EMPTY registry.
+#[test]
+fn secret_ref_builtin_modules_pass_with_empty_registry() {
+    let reg = busbar_plugin_loader::PluginRegistry::empty();
+    let cfg = cfg_with_provider_api_key(crate::config::SecretRef::env("ACME_KEY"));
+    assert!(
+        validate_secret_refs(&reg, &cfg).is_ok(),
+        "a built-in env ref must pass the pre-flight with no plugins loaded"
+    );
+}
+
+/// REGRESSION (audit round-4 #3/#4): a secret ref naming a plugin of the WRONG kind (a store plugin,
+/// not `kind: secret`) fails the pre-flight — the same wrong-kind guard the `secrets:` block gets.
+#[test]
+fn secret_ref_wrong_kind_plugin_fails_at_preflight() {
+    let dir = tmp_plugin_dir("secretref-wrong-kind");
+    let mut cfg = plugins_cfg(&dir, true);
+    cfg.trust.allow_unsigned = true;
+    let tarball = unsigned_tarball(plugin_manifest("acme-store-x", "x", "acme"), b"lib");
+    std::fs::write(dir.join("x.tar.gz"), tarball).unwrap();
+    let reg = crate::plugins_preflight(None, None, &Default::default(), &cfg).unwrap();
+    let root = cfg_with_provider_api_key(crate::config::SecretRef {
+        module: "x".to_string(),
+        settings: serde_json::Map::new(),
+    });
+    let err = validate_secret_refs(&reg, &root)
+        .expect_err("a store-kind plugin cannot back a secret reference");
+    assert!(
+        err.contains("not 'secret'") && err.contains("providers.acme.api_key"),
+        "wrong-kind rejection names the ref and mismatch: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

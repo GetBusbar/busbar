@@ -312,6 +312,14 @@ fn validate_config_command() -> i32 {
         eprintln!("[error] {e}");
         return 1;
     }
+    // Every SECRET REFERENCE (provider api_key, TLS cert/key, auth.signing_key, admin token) whose
+    // module is not a built-in must resolve to a loaded `kind: secret` plugin. This is the deferred
+    // half of the C2 check `config_validate` cannot do pre-registry; it lets the documented vault
+    // `api_key: { module: acme-vault }` example pass --validate while a genuine typo still fails.
+    if let Err(e) = validate_secret_refs(&registry, &cfg) {
+        eprintln!("[error] {e}");
+        return 1;
+    }
     println!(
         "ok: config valid — {} provider(s), {} model(s), {} pool(s)\n  config:    {}\n  providers: {}",
         cfg.providers.len(),
@@ -1922,6 +1930,47 @@ fn validate_secret_modules(
     Ok(())
 }
 
+/// Validate every SECRET REFERENCE's module against the plugin registry — the deferred half of the
+/// C2 secret-reference check `config_validate` cannot do (it runs before the registry exists). The
+/// built-in `env`/`file` modules always pass; ANY OTHER module name is a `kind: secret` PLUGIN
+/// reference (the 1.5.0 "secrets are plugins" feature: `api_key: { module: acme-vault, … }`, TLS
+/// cert/key, `auth.signing_key`, the admin token) and must resolve to a LOADED, TRUSTED, `kind:
+/// secret` plugin. A genuine typo (no built-in, no plugin) is a hard boot / `--validate` error;
+/// an installed vault/aws-sm plugin PASSES. Shared by boot (`build_app_from_config`) and the
+/// `--validate` pre-flight so the two cannot drift. Returns the FIRST offending reference's error.
+fn validate_secret_refs(
+    registry: &busbar_plugin_loader::PluginRegistry,
+    cfg: &config::RootCfg,
+) -> Result<(), String> {
+    for (what, r) in config_validate::secret_refs(cfg) {
+        if r.module == config::secret::SECRET_MODULE_ENV
+            || r.module == config::secret::SECRET_MODULE_FILE
+        {
+            continue; // built-in resolver — already structurally checked in config_validate
+        }
+        match registry.resolve(&r.module) {
+            Some(p) if p.manifest.kind == "secret" => {}
+            Some(p) => {
+                return Err(format!(
+                    "{what} references secret module '{}', but plugin '{}' has kind '{}', not \
+                     'secret'; only a `kind: secret` plugin can back a secret reference",
+                    r.module, p.manifest.name, p.manifest.kind
+                ));
+            }
+            None => {
+                return Err(format!(
+                    "{what} references secret module '{}', which is not a built-in (`env` | `file`) \
+                     and no loadable `kind: secret` plugin is named or aliased '{}'. Fix the \
+                     spelling, install/trust the plugin (see --list-plugins), or use a built-in, \
+                     e.g.:\n\n    {what}: {{ env: MY_SECRET_VAR }}\n",
+                    r.module, r.module
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Build the [`config::secret::SecretResolver`] the engine resolves every secret reference through:
 /// the built-in `env`/`file` modules inline, and any OTHER module name via a loaded `kind: secret`
 /// plugin from `registry` (opened per resolution; a secret module is off every hot path so the
@@ -2031,6 +2080,13 @@ pub(crate) fn build_app_from_config(
         &cfg.hooks,
         &plugins_cfg,
     )?);
+
+    // Every SECRET REFERENCE whose module is not a built-in (`env`/`file`) must resolve to a loaded
+    // `kind: secret` plugin — the deferred half of the C2 check `config_validate::validate` cannot do
+    // (it runs before the registry exists). A typo'd module fails boot HERE; the documented vault
+    // `api_key: { module: acme-vault }` passes once the plugin is loaded + trusted. This is the boot
+    // twin of the `--validate` check, sharing `validate_secret_refs`/`config_validate::secret_refs`.
+    validate_secret_refs(&plugin_registry, &cfg)?;
 
     // The SECRET RESOLVER (P2): built-in env/file resolve inline; any other module delegates to a
     // loaded `kind: secret` plugin via the registry (fail-closed if the plugin subsystem is off or
