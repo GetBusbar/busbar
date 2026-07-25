@@ -56,6 +56,13 @@ jobs:
       - name: Format check
         run: cargo fmt --all -- --check
 
+      # The structure lint's `#[cfg(test)]` scope scanner decides which lines are EXEMPT from every
+      # choke-point bypass rule, so a scanner that can be lied to reports "no bypass" while the
+      # bypass sits in production. Its self-test runs FIRST: never trust the lint's verdict before
+      # proving the lint still works.
+      - name: Structure lint self-test
+        run: scripts/structure-lint.sh --selftest
+
       - name: Structure lint
         run: scripts/structure-lint.sh
 
@@ -116,6 +123,23 @@ jobs:
         run: cargo build --no-default-features --locked --verbose
       - name: Test (no-default-features)
         run: cargo test --no-default-features --locked --verbose
+
+  # CONCURRENCY GATES for the config-mutation transaction (choke point C). Neither of these can run
+  # inside `cargo test --workspace`: the compile fence must FAIL to build (it is a negative test
+  # behind the `txn-fence-red` feature) and the loom model explores interleavings exhaustively behind
+  # `loom-model`, far too slowly for the default suite. A gate nothing runs is not a gate, so they
+  # get their own job — otherwise the transaction guard could be dismantled with the tree still green.
+  txn-guards:
+    name: txn compile fence · loom model
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Transaction compile fence (must fail to compile)
+        run: scripts/txn-fence.sh
+      - name: Loom model of the swap invariant
+        run: scripts/loom.sh
 
   # TIMING GATE: the ignored hot-path latency test, in release mode. Its bounds are deliberately
   # generous (25ms p50 / 250ms p99 through the full in-process router+mock round trip) so runner
