@@ -251,7 +251,10 @@ impl RootSettings {
             deploy.advanced = v.clone();
         }
         if let Some(v) = &self.metrics {
-            deploy.metrics = v.clone();
+            // `metrics:` is the opt-in switch as well as its own settings, so an overlay that names
+            // the block turns metrics ON for the merged config (and must carry `buffer_seconds`,
+            // which has no default).
+            deploy.metrics = Some(v.clone());
         }
         if let Some(v) = &self.health {
             deploy.health = v.clone();

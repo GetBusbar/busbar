@@ -301,3 +301,94 @@ fn test_translation_bank_counts_known_protocol_pair() {
     let fb_after = metric_sum(crate::metrics::TRANSLATIONS_TOTAL, &fb_labels);
     assert_eq!((fb_after - fb_before).round() as u64, 1);
 }
+
+/// THE CLASS INVARIANT: an observation costs BOUNDED memory whether or not anyone ever scrapes
+/// `/metrics`, and the memory it does cost is RELEASED once the traffic stops.
+///
+/// REGRESSION THIS PINS. Both buffering layers on the way from a per-request observation to its
+/// aggregate form — the bank's per-thread sample `Vec` and, behind it,
+/// `metrics-exporter-prometheus`'s `AtomicBucket` of raw `(value, timestamp)` pairs — used to be
+/// drained ONLY inside `metrics::render()`, i.e. only when a scrape arrived. A gateway nobody
+/// scrapes therefore parked ~24 B per request FOREVER. Measured on the released 1.4.1 image under a
+/// fixed load, peak RSS grew strictly linearly with total requests served — 2.16 M requests →
+/// +60 MiB, 4.58 M → +113 MiB, 9.32 M → +212 MiB, 18.13 M → +389 MiB — with no plateau at any
+/// duration, and only ~8% given back after the load stopped, because the samples were LIVE data that
+/// no allocator could reclaim. The same binary scraped every 10 s peaked at 46.8 MiB and fell to
+/// 22.7 MiB, which isolates the drain as the only variable.
+///
+/// WHAT IT ASSERTS — the benchmark's own shape, not a ceiling. A ceiling assertion ("stayed under
+/// N MiB") would pass on a build that plateaus high and never recovers, which is the reported bug.
+/// So: measure a quiet BASELINE, drive a sustained burst with the maintenance drain running, then go
+/// quiet and drain again, and require that the RECOVERED level lands near the baseline rather than
+/// near the peak — the class-level statement of "RSS returns to idle after the load stops".
+///
+/// Per-THREAD jemalloc counters are used rather than process-wide ones so the measurement is immune
+/// to the other tests running concurrently in this binary; every allocation and free involved here
+/// happens on this thread. Not on windows-msvc, which uses the system allocator (the jemalloc dep is
+/// target-gated; see `main.rs`), so there are no jemalloc counters to read.
+#[cfg(not(target_env = "msvc"))]
+#[test]
+fn test_observations_are_released_after_the_load_stops() {
+    use tikv_jemalloc_ctl::thread as jethread;
+
+    /// Bytes this thread has allocated and not yet freed.
+    fn retained() -> u64 {
+        let a = jethread::allocatedp::read()
+            .map(|m| m.get())
+            .unwrap_or_default();
+        let d = jethread::deallocatedp::read()
+            .map(|m| m.get())
+            .unwrap_or_default();
+        a.saturating_sub(d)
+    }
+
+    crate::metrics::init();
+    let slot = histogram_slot(
+        crate::metrics::REQUEST_DURATION_SECONDS,
+        &[
+            ("ingress_protocol", "openai"),
+            ("pool", "tel-unscraped-recovery-pool"),
+        ],
+    );
+    assert!(slot.is_valid(), "slot table must not be full in tests");
+
+    /// Observations in the burst. Sized so the pre-fix cost (~24 B each) is tens of MiB — orders of
+    /// magnitude above the tolerance below, so the assertion cannot pass by luck.
+    const BURST: usize = 2_000_000;
+    /// Observations per maintenance interval — the buffered depth the drain may leave behind.
+    const PER_INTERVAL: usize = 20_000;
+
+    // Warm-up OUTSIDE the measured window: mint the recorder handle, grow the per-thread buffer to
+    // its steady capacity, prime the distribution. One-time costs, not per-observation ones.
+    for _ in 0..PER_INTERVAL {
+        slot.record(0.001);
+    }
+    crate::metrics::drain_pending();
+
+    // IDLE baseline.
+    let idle = retained();
+
+    // BURST, with the maintenance tick firing as it does on a live gateway (there on a timer, here
+    // driven deterministically so the test does not race a thread).
+    for i in 0..BURST {
+        slot.record(0.001);
+        if i % PER_INTERVAL == PER_INTERVAL - 1 {
+            crate::metrics::drain_pending();
+        }
+    }
+
+    // QUIET: traffic stops, one more maintenance tick lands.
+    crate::metrics::drain_pending();
+    let recovered = retained().saturating_sub(idle);
+
+    // One interval's samples plus allocator slack. Pre-fix this is BURST × ~24 B (tens of MiB) and
+    // stays there — the load having stopped changes nothing, which is precisely the reported defect.
+    const TOLERANCE: u64 = 1024 * 1024;
+    assert!(
+        recovered < TOLERANCE,
+        "after {BURST} observations and the traffic stopping, {recovered} bytes were still held \
+         ({:.1} B/observation); a stopped load must fall back to the idle baseline, not stay parked \
+         at the burst peak (tolerance {TOLERANCE} bytes)",
+        recovered as f64 / BURST as f64,
+    );
+}

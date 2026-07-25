@@ -59,7 +59,7 @@ fn base_deploy() -> DeployCfg {
         plugins: Default::default(),
         security: None,
         limits: LimitsCfg::default(),
-        metrics: MetricsCfg::default(),
+        metrics: None,
         health: HealthDefaultsCfg::default(),
         routing: RoutingCfg::default(),
     }
@@ -1182,7 +1182,7 @@ models:
         &deploy.limits,
         &deploy.observability.clone().unwrap_or_default(),
         &deploy.advanced,
-        &deploy.metrics,
+        deploy.metrics.as_ref(),
         &deploy.health,
         &deploy.routing,
     );
@@ -1242,7 +1242,7 @@ fn test_limits_resolved_default_matches_from_sections_defaults() {
         &LimitsCfg::default(),
         &ObservabilityCfg::default(),
         &AdvancedCfg::default(),
-        &MetricsCfg::default(),
+        None,
         &HealthDefaultsCfg::default(),
         &RoutingCfg::default(),
     );
@@ -1277,6 +1277,7 @@ limits:
   request_body_max_bytes: 1048576
   pool_idle_timeout_secs: 77
 metrics:
+  buffer_seconds: 30
   key_gauge_limit: 9
 advanced:
   rate_sweep_interval: 64
@@ -1291,7 +1292,7 @@ routing:
         &deploy.limits,
         &deploy.observability.clone().unwrap_or_default(),
         &deploy.advanced,
-        &deploy.metrics,
+        deploy.metrics.as_ref(),
         &deploy.health,
         &deploy.routing,
     );
@@ -1337,7 +1338,7 @@ limits:
         &deploy.limits,
         &ObservabilityCfg::default(),
         &AdvancedCfg::default(),
-        &MetricsCfg::default(),
+        None,
         &HealthDefaultsCfg::default(),
         &RoutingCfg::default(),
     );

@@ -1624,9 +1624,11 @@ pub(crate) struct DeployCfg {
     /// field defaults to its historical hardcoded value (absent = today's behavior).
     #[serde(default)]
     pub(crate) limits: LimitsCfg,
-    /// Process-wide metrics tunables.
+    /// Prometheus metrics — 100% OPT-IN. ABSENT = metrics are OFF: no recorder is installed, the
+    /// hot path records nothing, `/metrics` is not mounted, and nothing is retained. Present = the
+    /// operator opted in and MUST name `buffer_seconds` (see [`MetricsCfg`]).
     #[serde(default)]
-    pub(crate) metrics: MetricsCfg,
+    pub(crate) metrics: Option<MetricsCfg>,
     /// Process-wide active-probe fallbacks (per-lane overrides still win).
     #[serde(default)]
     pub(crate) health: HealthDefaultsCfg,
@@ -1940,6 +1942,7 @@ pub(crate) struct ObservabilityCfg {
     pub(crate) emit_server_timing: bool,
 }
 
+
 impl Default for ObservabilityCfg {
     fn default() -> Self {
         // Route the limit fields through the serde-default fns so the omitted-block path and the
@@ -2238,20 +2241,31 @@ impl Default for LimitsCfg {
     }
 }
 
-/// The `metrics:` block.
+/// The `metrics:` block — PRESENT means the operator opted in to Prometheus metrics. Omit the whole
+/// block and busbar collects nothing (no recorder, no `/metrics`, no retention).
+///
+/// WHY OPT-IN. Recording an observation is not free: each sample is held as a raw
+/// `(value, timestamp)` pair until something folds it into its aggregate form. A gateway collecting
+/// metrics nobody reads pays that cost for data no one will look at. With the block absent the cost
+/// is structurally zero rather than merely small.
+///
+/// WHY `buffer_seconds` HAS NO DEFAULT. It is the retention window the operator asks busbar to hold
+/// in memory on their behalf — busbar folds parked samples into the rolling summary on a timer and
+/// drops what is older. That is a memory-for-fidelity trade with no universally right answer (at
+/// 100k rps each second of buffer is a few MB of raw samples), so it is NAMED by whoever opts in
+/// rather than defaulted to a number they never chose. Turning metrics on is a decision; how much
+/// memory that decision costs is part of the same decision.
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(deny_unknown_fields)] // M8: a typo'd metrics key must fail boot, not be silently ignored.
 pub(crate) struct MetricsCfg {
+    /// How many SECONDS of observations to retain. REQUIRED — omitting it fails config load, the
+    /// same posture as any other field whose value must be a deliberate choice. Quantile lines on
+    /// `/metrics` cover the last `buffer_seconds`; `_sum`/`_count` stay cumulative and are unaffected
+    /// by the window. Also bounds memory: raw samples are folded on a timer derived from this value,
+    /// so retention is one window's traffic instead of the whole process lifetime.
+    pub(crate) buffer_seconds: u64,
     #[serde(default = "default_key_gauge_limit")]
     pub(crate) key_gauge_limit: usize,
-}
-
-impl Default for MetricsCfg {
-    fn default() -> Self {
-        Self {
-            key_gauge_limit: default_key_gauge_limit(),
-        }
-    }
 }
 
 /// The `health:` block — process-wide active-probe fallbacks (per-lane `health.interval_secs` /
@@ -2328,7 +2342,7 @@ impl Default for LimitsResolved {
             &LimitsCfg::default(),
             &ObservabilityCfg::default(),
             &AdvancedCfg::default(),
-            &MetricsCfg::default(),
+            None,
             &HealthDefaultsCfg::default(),
             &RoutingCfg::default(),
         )
@@ -2340,7 +2354,7 @@ impl LimitsResolved {
         limits: &LimitsCfg,
         obs: &ObservabilityCfg,
         advanced: &AdvancedCfg,
-        metrics: &MetricsCfg,
+        metrics: Option<&MetricsCfg>,
         health: &HealthDefaultsCfg,
         routing: &RoutingCfg,
     ) -> Self {
@@ -2361,7 +2375,10 @@ impl LimitsResolved {
             reasoning_effort_budgets: limits.reasoning_effort_budgets,
             max_inflight_webhook_deliveries: obs.max_inflight_webhook_deliveries,
             webhook_delivery_timeout_secs: obs.webhook_delivery_timeout_secs,
-            key_gauge_limit: metrics.key_gauge_limit,
+            // Metrics off (block absent) ⇒ the gauge cap is inert; carry the historical value so
+            // nothing downstream has to special-case a disabled collector.
+            key_gauge_limit: metrics
+                .map_or_else(default_key_gauge_limit, |m| m.key_gauge_limit),
             rate_sweep_interval: advanced.rate_sweep_interval,
             usage_flush_interval_ms: advanced.usage_flush_interval_ms,
             default_probe_interval_secs: health.default_probe_interval_secs,
@@ -2410,6 +2427,20 @@ pub(crate) fn resolve(
     defs: &HashMap<String, ProviderDef>,
 ) -> Result<RootCfg, Vec<String>> {
     let mut errors = Vec::new();
+
+    // `metrics.buffer_seconds: 0` would ask busbar to retain observations for no time at all: the
+    // rolling window is empty at every scrape, so `/metrics` renders quantiles over nothing while
+    // the hot path still pays the full recording cost — opted-in metrics that report nothing.
+    // Omitting the whole `metrics:` block is how collection is turned OFF; `0` is not that, so it
+    // fails boot loudly rather than silently producing an inert collector.
+    if deploy.metrics.as_ref().is_some_and(|m| m.buffer_seconds == 0) {
+        errors.push(
+            "metrics.buffer_seconds: 0 retains no observations, so every scrape would report empty \
+             quantiles while still paying the recording cost — name a positive retention window in \
+             seconds, or omit the whole `metrics:` block to turn metrics off"
+                .to_string(),
+        );
+    }
     let mut resolved_providers: HashMap<String, ProviderCfg> = HashMap::new();
 
     for (deploy_name, deploy_cfg) in &deploy.providers {
@@ -2625,7 +2656,7 @@ pub(crate) fn resolve(
                 &deploy.limits,
                 &deploy.observability.clone().unwrap_or_default(),
                 &deploy.advanced,
-                &deploy.metrics,
+                deploy.metrics.as_ref(),
                 &deploy.health,
                 &deploy.routing,
             ),

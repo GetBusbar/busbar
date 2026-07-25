@@ -143,7 +143,8 @@ limits:                         # global operational caps  → #limits
   { upstream_request_timeout_secs: 300, request_body_max_bytes: 33554432, max_inbound_concurrent: 8192 }
 health:                         # process-wide probe fallbacks  → #health-probing
   { default_probe_interval_secs: 30, default_probe_timeout_secs: 5 }
-metrics: { key_gauge_limit: 2000 }
+metrics:                        # OPT-IN — omit the block and metrics are OFF  → #metrics
+  { buffer_seconds: 60, key_gauge_limit: 2000 }   # buffer_seconds is REQUIRED
 routing: { default_policy_timeout_ms: 1 }
 advanced:                       # internal tuning (normally omitted)
   { rate_sweep_interval: 256, usage_flush_interval_ms: 100 }

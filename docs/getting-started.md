@@ -319,7 +319,7 @@ curl -s http://localhost:8080/stats \
 
 `/stats` goes through the auth middleware, so with a non-empty `auth.chain` it requires a valid key; under `chain: []` it is open. It returns a per-lane snapshot: `model`, `provider`, `max_concurrent`, `inflight`, `free_slots`, `ok`/`err`/`client_fault` counts, `usable`, `dead`, `dead_reason`, `cooldown_remaining_s`, `streak`, and `budget`. A key restricted to specific `allowed_pools` only sees the pools and lanes it can reach.
 
-**Prometheus metrics** (`/metrics`):
+**Prometheus metrics** (`/metrics`) — opt-in; add a `metrics:` block with a required `buffer_seconds` retention window first, otherwise the route is not mounted:
 
 ```bash
 curl -s http://localhost:8080/metrics \

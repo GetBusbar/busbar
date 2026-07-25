@@ -1277,12 +1277,20 @@ pools:
 
 # ---------------------------------------------------------------------------
 # Observability: traces and per-request webhook logging.
-# /metrics is always on (no config needed).
 # ---------------------------------------------------------------------------
 observability:
   otlp_url: "http://localhost:4318/v1/traces"
   request_log_webhook_url: "https://logs.example.com/busbar"
   emit_server_timing: true
+
+# ---------------------------------------------------------------------------
+# Prometheus metrics — OPT-IN. Omit this block entirely and busbar records
+# nothing and does not mount /metrics. `buffer_seconds` is REQUIRED: it is how
+# many seconds of observations to retain (quantiles cover that window; _sum and
+# _count stay cumulative), and it bounds the memory metrics cost.
+# ---------------------------------------------------------------------------
+metrics:
+  buffer_seconds: 60
 ```
 
 Then mint a key for each caller (shown once; bind it to a group):
