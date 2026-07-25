@@ -2074,7 +2074,13 @@ pub(crate) fn build_app_from_config(
     // explicitly (client/store/router/TLS) read `cfg.limits` directly; the deep call-stack sites
     // (translate-body cap, metrics gauge limit, webhook timeout, governance sqlite/sweep, health
     // probe fallbacks, routing policy timeout) read the installed values.
-    limits::install(&cfg.limits);
+    //
+    // …THROUGH A GUARD, because everything below this line is fallible. The install has to come
+    // first (the build itself reads these values), but a build that goes on to FAIL must not leave
+    // the rejected config's limits installed under the old `App` that keeps serving. The guard
+    // restores the previous values on drop unless the build reaches its `Ok`, so "an invalid apply
+    // changes nothing" holds for process-wide limits the same way it holds for everything else.
+    let limits_guard = limits::InstallGuard::install(&cfg.limits);
     // The config version this App will carry — computed ONCE up front because hook-transport
     // resolution stamps it into every socket configure preamble (W-M4: the preamble's
     // settings_version must be the REAL version of the settings it delivers, not a hardcoded 0).
@@ -2843,7 +2849,7 @@ pub(crate) fn build_app_from_config(
         apply();
     }
 
-    Ok(App {
+    let app = App {
         // Telemetry-bank slot table for this generation, registered BEFORE the config-derived
         // collections move into the snapshot. Identical label sets across applies re-intern to the
         // same slots, so hot-path counters accumulate monotonically across config generations.
@@ -2924,7 +2930,11 @@ pub(crate) fn build_app_from_config(
             let b = cfg.limits.reasoning_effort_budgets;
             [b.minimal, b.low, b.medium, b.high]
         },
-    })
+    };
+    // The build reached its end without a single fallible step refusing: KEEP the limits installed
+    // at the top. Every earlier `return Err` / `?` drops the guard instead and rolls them back.
+    limits_guard.commit();
+    Ok(app)
 }
 
 /// Build the busbar HTTP router for a given `App` state with default limits. Factored out so the

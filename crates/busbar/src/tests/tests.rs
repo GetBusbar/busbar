@@ -1360,3 +1360,50 @@ fn secrets_block_rejects_alias_and_canonical_for_one_module() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// REGRESSION (round-6 audit): A REJECTED CONFIG MUST NOT LEAVE ITS LIMITS INSTALLED.
+///
+/// `build_app_from_config` installs the candidate `limits` process-wide as its FIRST act — it has
+/// to, because the build itself reads them through the deep-call-stack accessors. But every step
+/// after that is fallible (semantic validation, the plugin pre-flight, secret-ref resolution, the
+/// store open), and no error path used to put the previous values back. A `POST /config/apply` that
+/// returned 400 therefore mutated live, process-wide caps under the old `App` that kept serving:
+/// `limits::translate_body_max_bytes()` bounds both the SigV4 auth-middleware body buffer and the
+/// cross-protocol translate buffer, so a rejected apply could silently start 401-ing larger Bedrock
+/// requests and failing larger cross-protocol completions.
+///
+/// The sharpest case is the one asserted here, because it is self-contradictory: the values
+/// `validate_limits` exists to REJECT are exactly the ones that got installed anyway, since the
+/// range check runs after the install.
+///
+/// Asserted as "the rejected value is not what is installed" rather than "the prior value is" —
+/// `INSTALLED` is process-global and other tests in this binary build apps concurrently, but none
+/// of them uses this deliberately-illegal number.
+#[test]
+fn a_rejected_config_leaves_no_limits_behind() {
+    crate::metrics::init();
+    // Below `REQUEST_BODY_MAX_BYTES_FLOOR` (64 KiB) — `validate_limits` refuses it, which is the
+    // whole point: the refusal happens AFTER the install.
+    const ILLEGAL: usize = 4096;
+    // Precondition, checked at COMPILE time: raising the floor must not quietly make this test
+    // assert nothing.
+    const _: () = assert!(ILLEGAL < crate::config::REQUEST_BODY_MAX_BYTES_FLOOR);
+
+    let mut cfg =
+        cfg_with_provider_api_key(crate::config::SecretRef::env("BUSBAR_TEST_NO_SUCH_KEY"));
+    cfg.limits.request_body_max_bytes = ILLEGAL;
+
+    let Err(err) = build_once(cfg, None) else {
+        panic!("a below-floor body cap must fail validation")
+    };
+    assert!(
+        err.contains("request_body_max_bytes"),
+        "the build failed for the expected reason: {err}"
+    );
+    assert_ne!(
+        crate::limits::translate_body_max_bytes(),
+        ILLEGAL,
+        "the REJECTED config's limits are installed process-wide — an invalid apply changed the \
+         live SigV4 and cross-protocol translate body caps"
+    );
+}
