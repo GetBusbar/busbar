@@ -117,7 +117,35 @@ pub(crate) struct AuthMiddleware {
     /// open front door (`chain: []`, the old none/passthrough). No `AuthMode` — the front-door policy
     /// is the chain shape, the egress policy is `upstream_creds`.
     chain: Vec<Box<dyn AuthModule>>,
+    /// Whether ANY chain module is a loaded PLUGIN — i.e. whether running this chain can perform
+    /// blocking work (an FFI/IPC `transport_call`, and behind it whatever the module does: an HTTPS
+    /// JWKS fetch, a token-introspection round-trip, a directory lookup). Decided once at build
+    /// time because it decides how the request path calls the chain: see
+    /// [`AuthMiddleware::run_chain_on_request_path`]. In-process modules are microsecond compares
+    /// and are called inline; a plugin chain is offloaded off the reactor.
+    has_plugin_module: bool,
 }
+
+/// The bound on CONCURRENT offloaded auth-chain calls. `spawn_blocking` on its own is not a fix: a
+/// wedged auth plugin would accumulate one parked thread per in-flight request until the process's
+/// shared 512-thread blocking pool is exhausted, at which point every other `spawn_blocking` in the
+/// engine (the write-behind budget flush, audit appends, config transactions) stalls behind it. This
+/// caps auth's share of that pool; requests past the cap wait ASYNCHRONOUSLY (no thread, and the
+/// reactor keeps running) rather than adding threads.
+const AUTH_OFFLOAD_MAX_INFLIGHT: usize = 64;
+
+/// How long a request will wait for an offload permit before giving up. A chain that cannot even be
+/// STARTED within this is a chain that is not verifying anyone, so the request is answered rather
+/// than left hanging. Fail-closed: the answer is a denial, the same posture as every other
+/// "could not verify" outcome in this file.
+const AUTH_OFFLOAD_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The permit pool for [`AUTH_OFFLOAD_MAX_INFLIGHT`]. Process-wide (not per-`AuthMiddleware`) on
+/// purpose: the resource being bounded is the process's one shared blocking pool, and a config
+/// reload swaps the `AuthMiddleware` while in-flight offloads from the previous one are still
+/// running.
+static AUTH_OFFLOAD_PERMITS: std::sync::LazyLock<tokio::sync::Semaphore> =
+    std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(AUTH_OFFLOAD_MAX_INFLIGHT));
 
 impl fmt::Debug for AuthMiddleware {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -151,6 +179,7 @@ impl AuthMiddleware {
         secret_resolver: &crate::config::secret::SecretResolver,
     ) -> Result<Self, String> {
         let mut keys_in_chain = false;
+        let mut has_plugin_module = false;
         let mut chain: Vec<Box<dyn AuthModule>> = Vec::new();
         for entry in &cfg.chain {
             match entry.module.as_str() {
@@ -182,6 +211,7 @@ impl AuthMiddleware {
                         )
                     })?;
                     chain.push(module);
+                    has_plugin_module = true;
                 }
             }
         }
@@ -196,6 +226,7 @@ impl AuthMiddleware {
             upstream_creds: cfg.upstream_credentials,
             keys_in_chain,
             chain,
+            has_plugin_module,
         })
     }
 
@@ -278,6 +309,70 @@ impl AuthMiddleware {
             }
         }
         ChainVerdict::Denied
+    }
+
+    /// THE REQUEST-PATH ENTRY POINT for the data-plane auth chain — the one place `auth_middleware`
+    /// calls it, and the reason it is not just `run_chain_cached`.
+    ///
+    /// A chain module can be a loaded PLUGIN, and a plugin's `authenticate` is a synchronous FFI
+    /// call that may do real I/O — the shipped OIDC module fetches JWKS over blocking HTTPS with a
+    /// 10s timeout, and any introspection/directory module is a network round-trip. Called inline,
+    /// that runs on a Tokio worker thread inside an `async fn`: a slow IdP parks a worker per
+    /// in-flight request, and once every worker is parked NOTHING in the process is polled — not
+    /// other requests, not the admin plane, not `/healthz` (which is exempt from this chain but
+    /// still needs a worker to run at all). The node then fails its liveness probe and is killed, on
+    /// account of an identity provider that most of the stalled traffic never even used.
+    ///
+    /// So a plugin chain is OFFLOADED to the blocking pool, and BOUNDED there
+    /// ([`AUTH_OFFLOAD_MAX_INFLIGHT`]) so a wedged plugin cannot drain the pool the rest of the
+    /// engine shares. An all-in-process chain (or an empty one) is called inline: those modules are
+    /// microsecond constant-time compares, and paying a `spawn_blocking` hop per request to protect
+    /// against work that cannot block would be a pure regression.
+    ///
+    /// FAIL-CLOSED at every failure: a panicking plugin (join error) and an offload that cannot be
+    /// started are both `Denied`, never an admit.
+    pub(crate) async fn run_chain_on_request_path(
+        auth: &std::sync::Arc<AuthMiddleware>,
+        cache: &std::sync::Arc<crate::auth_cache::CredentialCache>,
+        candidate: Option<String>,
+    ) -> ChainVerdict {
+        if auth.chain.is_empty() {
+            return ChainVerdict::Open;
+        }
+        if !auth.has_plugin_module {
+            return auth.run_chain_cached(candidate.as_deref(), Some(cache));
+        }
+        let permit =
+            match tokio::time::timeout(AUTH_OFFLOAD_WAIT, AUTH_OFFLOAD_PERMITS.acquire()).await {
+                Ok(Ok(p)) => p,
+                // Timed out waiting, or the semaphore was closed. Either way the chain never ran, so
+                // the credential is unverified — deny.
+                _ => {
+                    tracing::warn!(
+                        "auth chain offload could not be started within {AUTH_OFFLOAD_WAIT:?} \
+                     ({AUTH_OFFLOAD_MAX_INFLIGHT} already in flight); an auth plugin is not \
+                     returning. Denying (fail-closed) rather than admitting unverified."
+                    );
+                    return ChainVerdict::Denied;
+                }
+            };
+        let (auth, cache) = (auth.clone(), cache.clone());
+        let joined = tokio::task::spawn_blocking(move || {
+            let verdict = auth.run_chain_cached(candidate.as_deref(), Some(&cache));
+            // The permit is released when the blocking work is DONE, not when the awaiting future
+            // is dropped — a cancelled request must not hand its slot to another request while the
+            // plugin thread it started is still wedged.
+            drop(permit);
+            verdict
+        })
+        .await;
+        match joined {
+            Ok(verdict) => verdict,
+            Err(e) => {
+                tracing::warn!(error = %e, "auth chain panicked; denying (fail-closed)");
+                ChainVerdict::Denied
+            }
+        }
     }
 
     /// Constant-time string comparison — the single timing-safe primitive, now provided by the
@@ -823,9 +918,14 @@ pub(crate) async fn auth_middleware(
     // check and the governance virtual-key lookup, so every scheme is validated identically and in
     // constant time. Replaces the previous Bearer-only `bearer_token`.
     let client_token: Option<String> = AuthMiddleware::extract_client_token(&req);
-    let chain_verdict = app
-        .auth
-        .run_chain_cached(client_token.as_deref(), Some(&app.credential_cache));
+    // NOT `run_chain_cached` directly: a plugin chain does blocking I/O and this is a Tokio worker.
+    // See `run_chain_on_request_path`.
+    let chain_verdict = AuthMiddleware::run_chain_on_request_path(
+        &app.auth,
+        &app.credential_cache,
+        client_token.clone(),
+    )
+    .await;
     let token_valid = !matches!(chain_verdict, ChainVerdict::Denied);
 
     // Thread the caller's token into request extensions for passthrough forwarding, using the same
@@ -1380,6 +1480,25 @@ fn verify_bedrock_sigv4(
         (Err(e), _) => {
             tracing::debug!(reason = ?e, "inbound SigV4 rejected");
             Err(())
+        }
+    }
+}
+
+#[cfg(test)]
+impl AuthMiddleware {
+    /// Build an `AuthMiddleware` directly over a chain, declaring whether it should be treated as
+    /// containing a PLUGIN module. Tests need this because the real constructor only sets
+    /// `has_plugin_module` by actually `dlopen`ing a signed cdylib, and the property under test
+    /// (that a blocking module does not run on the reactor) is about ANY blocking module.
+    pub(crate) fn from_chain_for_test(
+        chain: Vec<Box<dyn AuthModule>>,
+        has_plugin_module: bool,
+    ) -> Self {
+        Self {
+            upstream_creds: UpstreamCreds::Own,
+            keys_in_chain: false,
+            chain,
+            has_plugin_module,
         }
     }
 }
