@@ -1407,3 +1407,62 @@ fn a_rejected_config_leaves_no_limits_behind() {
          live SigV4 and cross-protocol translate body caps"
     );
 }
+
+/// REGRESSION (round-6 audit): THE 413 RESHAPE MUST FIRE ON A REAL OVERSIZED REQUEST.
+///
+/// Every existing test of this path hand-constructs the sentinel body and calls the pure
+/// `reshape_oversized_413` directly, so all four passed while the layer was dead in production:
+/// `AXUM_BODY_LIMIT_413_MARKER` was pinned to axum 0.7's wire shape and the crate is on axum 0.8,
+/// whose `FailedToBufferBody::LengthLimitError` renders a DIFFERENT body. The byte-equality gate
+/// therefore never matched, and every oversized request — admin and data plane alike — answered with
+/// a bare `text/plain` body: the admin surface's frozen `{error:{code}}` envelope broken (tooling
+/// that branches on `code` throws on parse), and official OpenAI/Anthropic/Bedrock SDKs handed a
+/// router tell instead of the vendor-native JSON the reshape exists to produce.
+///
+/// This drives a REAL request through the REAL layer stack, so it cannot pass on a marker the
+/// running axum does not emit — whatever axum emits next, this fails when it changes. One leg is
+/// enough: `apply_common_layers` installs the body limit and this reshape on the admin and data
+/// routers alike, so the layer is either live for both surfaces or dead for both. (The admin leg
+/// cannot be driven here without a configured admin credential — auth answers 401 before the body
+/// is ever buffered.)
+#[tokio::test]
+async fn oversized_request_413_is_reshaped_on_the_live_stack() {
+    crate::metrics::init();
+    let app = crate::test_support::TestApp::new().build();
+    // A tiny body cap so an ordinary request trips `DefaultBodyLimit`.
+    let (router, _handle) = crate::build_router_with_limits(app, 64, 1024, false);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+
+    let client = reqwest::Client::new();
+    let oversized = "x".repeat(4096);
+    let r = client
+        .post(format!("http://{addr}/v1/chat/completions"))
+        .header("content-type", "application/json")
+        .body(serde_json::json!({"pad": oversized}).to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 413, "the body cap must reject");
+    let ct = r
+        .headers()
+        .get("content-type")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let body = r.text().await.unwrap();
+    assert!(
+        ct.starts_with("application/json"),
+        "an oversized-body 413 must speak JSON, not the bare `{body}` router tell (content-type \
+         was `{ct}`) — the reshape layer's sentinel no longer matches what axum emits"
+    );
+    let v: serde_json::Value = serde_json::from_str(&body)
+        .unwrap_or_else(|e| panic!("the 413 body must be JSON ({e}): {body}"));
+    assert!(
+        v.get("error").is_some(),
+        "the 413 must carry the error envelope; got {v}"
+    );
+
+    server.abort();
+}
