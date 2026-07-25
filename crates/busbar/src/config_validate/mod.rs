@@ -1491,6 +1491,23 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
         }
     }
 
+    // secrets (module-level `open()` config for `kind: secret` plugins): the built-in `env` / `file`
+    // modules take NO module config, so naming them under `secrets:` is a mistake (their settings live
+    // per-reference). A non-built-in module additionally requires the plugin subsystem, which the
+    // shared `plugins_preflight` verifies against the registry at boot.
+    for module in cfg.secrets.keys() {
+        if matches!(
+            module.as_str(),
+            crate::config::secret::SECRET_MODULE_ENV | crate::config::secret::SECRET_MODULE_FILE
+        ) {
+            errors.push(format!(
+                "secrets.{module}: the built-in '{module}' secret module takes no module-level \
+                 config; its settings (`key` / `path`) belong on each individual secret reference, \
+                 not in the top-level `secrets:` block"
+            ));
+        }
+    }
+
     // ADMIN-TOKENS availability: a configured admin token with the module compiled OUT would
     // silently disable the admin API (the chain all-Passes) - a silent lockout must be a loud
     // boot error instead.

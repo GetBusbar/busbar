@@ -53,6 +53,7 @@ fn base_deploy() -> DeployCfg {
         rate_card: None,
         per_request_fee: 0,
         store: None,
+        secrets: Default::default(),
         advanced: AdvancedCfg::default(),
         observability: None,
         plugins: Default::default(),

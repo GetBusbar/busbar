@@ -3433,6 +3433,7 @@ mod disposition_matrix_tests {
                 rate_card: None,
                 per_request_fee: 0,
                 store: None,
+                secrets: std::collections::BTreeMap::new(),
                 providers,
                 models,
                 pools,

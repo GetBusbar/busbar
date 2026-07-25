@@ -1834,6 +1834,17 @@ fn persist_signing_key(path: &std::path::Path, secret: &[u8; 32]) -> Result<(), 
     // the prior posture on those platforms — the sensitive-key concern is the multi-user unix host).
     std::fs::rename(&tmp, path)
         .map_err(|e| format!("cannot install signing key '{}': {e}", path.display()))?;
+    // fsync the parent DIRECTORY so the rename (a directory-metadata change) is itself durable. The key
+    // bytes are already durable in the file (`sync_all` above), but under power loss the directory entry
+    // for the rename could still be lost, leaving the key-minting root of trust missing on the next boot
+    // — silently invalidating every minted key. Mirrors `overlay::write`. Best-effort: not every
+    // platform/filesystem supports opening a directory for fsync, and a failure here corrupts nothing
+    // (the contents are durable), so don't fail the install over it.
+    if let Some(parent) = path.parent() {
+        if let Ok(dir) = std::fs::File::open(parent) {
+            let _ = dir.sync_all();
+        }
+    }
     Ok(())
 }
 
@@ -1845,17 +1856,42 @@ fn persist_signing_key(path: &std::path::Path, secret: &[u8; 32]) -> Result<(), 
 /// is a fail-closed error at resolve time.
 fn build_secret_resolver(
     registry: Arc<busbar_plugin_loader::PluginRegistry>,
-) -> config::secret::SecretResolver {
-    config::secret::SecretResolver::with_plugin(Box::new(
+    secret_modules: &std::collections::BTreeMap<String, config::SecretModuleCfg>,
+) -> Result<config::secret::SecretResolver, String> {
+    // MODULE-LEVEL config delivery for `kind: secret` plugins (audit MEDIUM): resolve each configured
+    // `secrets.<module>.settings` ONCE at boot and hand it to the plugin's `open()`, exactly as
+    // `store.settings` configures the store plugin. Without this a secret plugin's `open()` always
+    // received `{}`, so a Vault-style plugin's address/namespace/token/CA had to be repeated in EVERY
+    // SecretRef — multiplying secret exposure and defeating the open-vs-resolve separation the ABI
+    // is designed around.
+    //
+    // The module config is resolved against the BUILT-IN env/file resolvers ONLY (a `builtins_only`
+    // resolver). A secret module cannot resolve its OWN `open()` config through a secret plugin —
+    // that would be a bootstrap cycle — so `{ token: { env: VAULT_TOKEN } }` resolves but
+    // `{ token: { module: some-other-secret-plugin } }` is a fail-closed error.
+    let builtins = config::secret::SecretResolver::builtins_only();
+    let mut open_config: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
+    for (module, mcfg) in secret_modules {
+        let resolved = config::secret::resolve_settings(&mcfg.settings, &builtins)
+            .map_err(|e| format!("secrets.{module} settings: {e}"))?;
+        open_config.insert(
+            module.clone(),
+            serde_json::Value::Object(resolved).to_string(),
+        );
+    }
+    Ok(config::secret::SecretResolver::with_plugin(Box::new(
         move |module: &str, settings: &str| -> Result<Vec<u8>, String> {
-            let m = registry.open_secret(module, "{}")?;
+            // Deliver the module's configured open() JSON (default `{}` for an unconfigured module).
+            let open_cfg = open_config.get(module).map(String::as_str).unwrap_or("{}");
+            let m = registry.open_secret(module, open_cfg)?;
             m.resolve(
                 &serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(settings)
                     .map_err(|e| format!("secret settings are not a JSON object: {e}"))?,
             )
             .map_err(|e| e.to_string())
         },
-    ))
+    )))
 }
 
 pub(crate) fn build_app_from_config(
@@ -1903,7 +1939,8 @@ pub(crate) fn build_app_from_config(
     // The SECRET RESOLVER (P2): built-in env/file resolve inline; any other module delegates to a
     // loaded `kind: secret` plugin via the registry (fail-closed if the plugin subsystem is off or
     // the module is unknown). Shared by provider keys, the admin token, and the TLS listener.
-    let secret_resolver = Arc::new(build_secret_resolver(plugin_registry.clone()));
+    let secret_resolver =
+        Arc::new(build_secret_resolver(plugin_registry.clone(), &cfg.secrets)?);
 
     let mut lanes_data = Vec::new();
     // Validated provider handle for each lane, captured in lockstep with `lanes_data` below. The
