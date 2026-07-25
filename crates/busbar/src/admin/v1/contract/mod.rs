@@ -23,6 +23,11 @@ use serde::Serialize;
 #[cfg(feature = "openapi-schema")]
 pub(crate) mod schema;
 
+// The per-endpoint error DECLARATION `openapi.json` is a projection of (design D). Always compiled:
+// the generator reads it under `openapi-schema`, the class-level drift test reads it under `test`,
+// and the emission recorder tags responses with it in a test build.
+pub(crate) mod taxonomy;
+
 /// The root every busbar-NATIVE API surface mounts under (`/api/<version>/<area>/…`). The data
 /// plane (the six mimicked SDK wire protocols) is deliberately OUTSIDE this root — its paths are
 /// dictated by the upstream SDKs, not by busbar.

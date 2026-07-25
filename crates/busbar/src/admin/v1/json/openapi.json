@@ -2208,7 +2208,7 @@
                 }
               }
             },
-            "description": "Missing/invalid admin credential"
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
           },
           "403": {
             "content": {
@@ -2219,6 +2219,16 @@
               }
             },
             "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -2263,7 +2273,7 @@
                 }
               }
             },
-            "description": "Unknown module / malformed body (error code `invalid_request`)"
+            "description": "`invalid_request`: unknown module / malformed body, malformed body / unknown field, malformed `If-Match` header"
           },
           "401": {
             "content": {
@@ -2293,7 +2303,7 @@
                 }
               }
             },
-            "description": "Stale `If-Match` (`version_conflict`), or the new chain would lock the caller out (error code `conflict`)"
+            "description": "`conflict`: the new chain would lock the caller out | `version_conflict`: stale `If-Match` (re-read and retry)"
           },
           "429": {
             "content": {
@@ -2304,6 +2314,16 @@
               }
             },
             "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -2377,7 +2397,7 @@
                 }
               }
             },
-            "description": "Malformed or foreign pagination `cursor` (error code `invalid_request`)"
+            "description": "`invalid_request`: malformed or foreign pagination `cursor`"
           },
           "401": {
             "content": {
@@ -2387,7 +2407,7 @@
                 }
               }
             },
-            "description": "Missing/invalid admin credential"
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
           },
           "403": {
             "content": {
@@ -2398,6 +2418,16 @@
               }
             },
             "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -2433,7 +2463,7 @@
                 }
               }
             },
-            "description": "Missing/invalid admin credential"
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
           },
           "403": {
             "content": {
@@ -2444,6 +2474,16 @@
               }
             },
             "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -2479,7 +2519,7 @@
                 }
               }
             },
-            "description": "Malformed body (error code `invalid_request`)"
+            "description": "`invalid_request`: malformed body / unknown field"
           },
           "401": {
             "content": {
@@ -2510,6 +2550,16 @@
               }
             },
             "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -2545,7 +2595,7 @@
                 }
               }
             },
-            "description": "Missing/invalid admin credential"
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
           },
           "403": {
             "content": {
@@ -2556,6 +2606,16 @@
               }
             },
             "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -2602,7 +2662,7 @@
                 }
               }
             },
-            "description": "Invalid config (error code `invalid_request`); nothing changed"
+            "description": "`invalid_request`: invalid config; nothing changed, malformed body / unknown field, malformed `If-Match` header"
           },
           "401": {
             "content": {
@@ -2632,7 +2692,7 @@
                 }
               }
             },
-            "description": "Stale `If-Match` (error code `version_conflict` — re-read and retry)"
+            "description": "`version_conflict`: stale `If-Match` (re-read and retry)"
           },
           "429": {
             "content": {
@@ -2643,6 +2703,16 @@
               }
             },
             "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -2696,7 +2766,7 @@
                 }
               }
             },
-            "description": "Missing/non-numeric `from` or `to` (error code `invalid_request`)"
+            "description": "`invalid_request`: missing or unknown required query parameter"
           },
           "401": {
             "content": {
@@ -2706,7 +2776,7 @@
                 }
               }
             },
-            "description": "Missing/invalid admin credential"
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
           },
           "403": {
             "content": {
@@ -2726,7 +2796,17 @@
                 }
               }
             },
-            "description": "Either version pruned or never recorded (error code `not_found`)"
+            "description": "`not_found`: unknown resource"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -2762,7 +2842,7 @@
                 }
               }
             },
-            "description": "Disk config invalid or no config files (error code `invalid_request`); nothing changed"
+            "description": "`invalid_request`: invalid config; nothing changed, ephemeral busbar: no disk config to read, merge onto, or revert to"
           },
           "401": {
             "content": {
@@ -2793,6 +2873,16 @@
               }
             },
             "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -2839,7 +2929,7 @@
                 }
               }
             },
-            "description": "Snapshot fails re-validation (error code `invalid_request`)"
+            "description": "`invalid_request`: invalid config; nothing changed, malformed body / unknown field, malformed `If-Match` header"
           },
           "401": {
             "content": {
@@ -2869,7 +2959,7 @@
                 }
               }
             },
-            "description": "Target version not retained (error code `not_found`)"
+            "description": "`not_found`: unknown resource"
           },
           "409": {
             "content": {
@@ -2879,7 +2969,7 @@
                 }
               }
             },
-            "description": "Stale `If-Match` (error code `version_conflict` — re-read and retry)"
+            "description": "`version_conflict`: stale `If-Match` (re-read and retry)"
           },
           "429": {
             "content": {
@@ -2890,6 +2980,16 @@
               }
             },
             "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -2925,7 +3025,7 @@
                 }
               }
             },
-            "description": "Missing/invalid admin credential"
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
           },
           "403": {
             "content": {
@@ -2936,6 +3036,16 @@
               }
             },
             "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -2980,7 +3090,7 @@
                 }
               }
             },
-            "description": "Invalid config after the merge, unknown field, or ephemeral busbar with no disk base (error code `invalid_request`); nothing changed"
+            "description": "`invalid_request`: invalid config; nothing changed, malformed body / unknown field, malformed `If-Match` header, ephemeral busbar: no disk config to read, merge onto, or revert to"
           },
           "401": {
             "content": {
@@ -3010,7 +3120,7 @@
                 }
               }
             },
-            "description": "Stale `If-Match` (error code `version_conflict` — re-read and retry)"
+            "description": "`version_conflict`: stale `If-Match` (re-read and retry)"
           },
           "429": {
             "content": {
@@ -3021,6 +3131,16 @@
               }
             },
             "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -3056,7 +3176,7 @@
                 }
               }
             },
-            "description": "Malformed request body (error code `invalid_request`)"
+            "description": "`invalid_request`: malformed body / unknown field"
           },
           "401": {
             "content": {
@@ -3087,6 +3207,16 @@
               }
             },
             "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -3142,7 +3272,7 @@
                 }
               }
             },
-            "description": "Malformed or foreign pagination `cursor` (error code `invalid_request`)"
+            "description": "`invalid_request`: malformed or foreign pagination `cursor`"
           },
           "401": {
             "content": {
@@ -3152,7 +3282,7 @@
                 }
               }
             },
-            "description": "Missing/invalid admin credential"
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
           },
           "403": {
             "content": {
@@ -3163,6 +3293,16 @@
               }
             },
             "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -3208,7 +3348,7 @@
                 }
               }
             },
-            "description": "Non-numeric version path segment (error code `invalid_request`)"
+            "description": "`invalid_request`: non-numeric path segment"
           },
           "401": {
             "content": {
@@ -3238,7 +3378,17 @@
                 }
               }
             },
-            "description": "Pruned or never recorded (error code `not_found`)"
+            "description": "`not_found`: unknown resource"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -3274,7 +3424,7 @@
                 }
               }
             },
-            "description": "Missing/invalid admin credential"
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
           },
           "403": {
             "content": {
@@ -3285,6 +3435,16 @@
               }
             },
             "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -3339,7 +3499,7 @@
                 }
               }
             },
-            "description": "Invalid tree — dangling/cyclic parent or depth (`invalid_request`)"
+            "description": "`invalid_request`: invalid tree — dangling/cyclic parent or depth, malformed body / unknown field, malformed `If-Match` header"
           },
           "401": {
             "content": {
@@ -3369,7 +3529,7 @@
                 }
               }
             },
-            "description": "Base-defined group (edit config.yaml) or stale `If-Match` (`version_conflict`)"
+            "description": "`conflict`: base-defined (edit config.yaml) | `version_conflict`: stale `If-Match` (re-read and retry)"
           },
           "429": {
             "content": {
@@ -3380,6 +3540,16 @@
               }
             },
             "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -3427,7 +3597,7 @@
                 }
               }
             },
-            "description": "Malformed `If-Match` header (error code `invalid_request`)"
+            "description": "`invalid_request`: malformed `If-Match` header"
           },
           "401": {
             "content": {
@@ -3457,7 +3627,7 @@
                 }
               }
             },
-            "description": "Unknown group (error code `not_found`)"
+            "description": "`not_found`: unknown resource"
           },
           "409": {
             "content": {
@@ -3467,7 +3637,7 @@
                 }
               }
             },
-            "description": "Base-defined group, another group still names it as parent, or one or more keys are still bound to it (rebind/delete them first) (error code `conflict`); or a stale `If-Match` (error code `version_conflict`)"
+            "description": "`conflict`: base-defined (edit config.yaml), another group still names it as parent, one or more keys are still bound (rebind/delete them first) | `version_conflict`: stale `If-Match` (re-read and retry)"
           },
           "429": {
             "content": {
@@ -3478,6 +3648,16 @@
               }
             },
             "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -3541,7 +3721,17 @@
                 }
               }
             },
-            "description": "Unknown group (error code `not_found`)"
+            "description": "`not_found`: unknown resource"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -3594,7 +3784,7 @@
                 }
               }
             },
-            "description": "Invalid tree after the merge, or unknown patch field (error code `invalid_request`)"
+            "description": "`invalid_request`: invalid tree — dangling/cyclic parent or depth, malformed body / unknown field, malformed `If-Match` header"
           },
           "401": {
             "content": {
@@ -3624,7 +3814,7 @@
                 }
               }
             },
-            "description": "Unknown group (error code `not_found`)"
+            "description": "`not_found`: unknown resource"
           },
           "409": {
             "content": {
@@ -3634,7 +3824,7 @@
                 }
               }
             },
-            "description": "Base-defined group, or stale `If-Match` (`version_conflict`)"
+            "description": "`conflict`: base-defined (edit config.yaml) | `version_conflict`: stale `If-Match` (re-read and retry)"
           },
           "429": {
             "content": {
@@ -3645,6 +3835,16 @@
               }
             },
             "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -3697,7 +3897,7 @@
                 }
               }
             },
-            "description": "Invalid tree — dangling/cyclic parent or depth (error code `invalid_request`)"
+            "description": "`invalid_request`: invalid tree — dangling/cyclic parent or depth, malformed body / unknown field, malformed `If-Match` header"
           },
           "401": {
             "content": {
@@ -3727,7 +3927,7 @@
                 }
               }
             },
-            "description": "Unknown group (error code `not_found`)"
+            "description": "`not_found`: unknown resource"
           },
           "409": {
             "content": {
@@ -3737,7 +3937,7 @@
                 }
               }
             },
-            "description": "Base-defined group (edit config.yaml), or stale `If-Match` (`version_conflict`)"
+            "description": "`conflict`: base-defined (edit config.yaml) | `version_conflict`: stale `If-Match` (re-read and retry)"
           },
           "429": {
             "content": {
@@ -3748,6 +3948,16 @@
               }
             },
             "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -3813,7 +4023,17 @@
                 }
               }
             },
-            "description": "Unknown group (error code `not_found`)"
+            "description": "`not_found`: unknown resource"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -3849,7 +4069,7 @@
                 }
               }
             },
-            "description": "Missing/invalid admin credential"
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
           },
           "403": {
             "content": {
@@ -3860,6 +4080,16 @@
               }
             },
             "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -3914,7 +4144,7 @@
                 }
               }
             },
-            "description": "Malformed body or invalid definition (`invalid_request`)"
+            "description": "`invalid_request`: malformed body / unknown field, malformed `If-Match` header"
           },
           "401": {
             "content": {
@@ -3934,7 +4164,7 @@
                 }
               }
             },
-            "description": "hooks-register principal may not register a content-seeing (`prompt`/`user`) or `global: true` hook (`forbidden`, §6.3)"
+            "description": "`forbidden`: a `hooks-register` principal may not touch a content-seeing (`prompt`/`user`) or `global` hook (§6.3)"
           },
           "409": {
             "content": {
@@ -3944,7 +4174,7 @@
                 }
               }
             },
-            "description": "Base-defined hook (edit config.yaml), grant change on an existing hook, or stale `If-Match` (`version_conflict`, §6.4)"
+            "description": "`conflict`: base-defined (edit config.yaml), grant change on an existing definition | `version_conflict`: stale `If-Match` (re-read and retry)"
           },
           "429": {
             "content": {
@@ -3955,6 +4185,16 @@
               }
             },
             "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -4002,7 +4242,7 @@
                 }
               }
             },
-            "description": "Malformed `If-Match` header (error code `invalid_request`)"
+            "description": "`invalid_request`: malformed `If-Match` header"
           },
           "401": {
             "content": {
@@ -4022,7 +4262,7 @@
                 }
               }
             },
-            "description": "A `hooks-register` principal may not delete a content-seeing (`prompt`/`user`) or `global` hook (error code `forbidden`, §6.3)"
+            "description": "`forbidden`: a `hooks-register` principal may not touch a content-seeing (`prompt`/`user`) or `global` hook (§6.3)"
           },
           "404": {
             "content": {
@@ -4032,7 +4272,7 @@
                 }
               }
             },
-            "description": "Unknown hook (error code `not_found`)"
+            "description": "`not_found`: unknown resource"
           },
           "409": {
             "content": {
@@ -4042,7 +4282,7 @@
                 }
               }
             },
-            "description": "Base-defined hook — read-only via the API; edit config.yaml (error code `conflict`)"
+            "description": "`conflict`: base-defined (edit config.yaml) | `version_conflict`: stale `If-Match` (re-read and retry)"
           },
           "429": {
             "content": {
@@ -4053,6 +4293,16 @@
               }
             },
             "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -4116,7 +4366,17 @@
                 }
               }
             },
-            "description": "Unknown hook (error code `not_found`)"
+            "description": "`not_found`: unknown resource"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -4169,7 +4429,7 @@
                 }
               }
             },
-            "description": "Invalid definition (error code `invalid_request`)"
+            "description": "`invalid_request`: malformed body / unknown field, malformed `If-Match` header"
           },
           "401": {
             "content": {
@@ -4189,7 +4449,7 @@
                 }
               }
             },
-            "description": "A `hooks-register` principal may not replace a hook into a content-seeing (`prompt`/`user`) or `global` form (error code `forbidden`, §6.3)"
+            "description": "`forbidden`: a `hooks-register` principal may not touch a content-seeing (`prompt`/`user`) or `global` hook (§6.3)"
           },
           "404": {
             "content": {
@@ -4199,7 +4459,7 @@
                 }
               }
             },
-            "description": "Unknown hook (error code `not_found`)"
+            "description": "`not_found`: unknown resource"
           },
           "409": {
             "content": {
@@ -4209,7 +4469,7 @@
                 }
               }
             },
-            "description": "Base-defined hook, grant change (`conflict`), or stale `If-Match` (`version_conflict`)"
+            "description": "`conflict`: base-defined (edit config.yaml), grant change on an existing definition | `version_conflict`: stale `If-Match` (re-read and retry)"
           },
           "429": {
             "content": {
@@ -4220,6 +4480,16 @@
               }
             },
             "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -4285,7 +4555,17 @@
                 }
               }
             },
-            "description": "Unknown hook (error code `not_found`)"
+            "description": "`not_found`: unknown resource"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -4351,7 +4631,17 @@
                 }
               }
             },
-            "description": "Unknown hook (error code `not_found`)"
+            "description": "`not_found`: unknown resource"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -4406,7 +4696,7 @@
                 }
               }
             },
-            "description": "Hook did not acknowledge (error code `invalid_request`); nothing committed"
+            "description": "`invalid_request`: malformed body / unknown field, malformed `If-Match` header, the hook did not acknowledge; nothing committed"
           },
           "401": {
             "content": {
@@ -4426,7 +4716,7 @@
                 }
               }
             },
-            "description": "A `hooks-register` principal may not push settings to a content-seeing (`prompt`/`user`) or `global` hook (error code `forbidden`, §6.3)"
+            "description": "`forbidden`: a `hooks-register` principal may not touch a content-seeing (`prompt`/`user`) or `global` hook (§6.3)"
           },
           "404": {
             "content": {
@@ -4436,7 +4726,7 @@
                 }
               }
             },
-            "description": "Unknown hook (error code `not_found`)"
+            "description": "`not_found`: unknown resource"
           },
           "409": {
             "content": {
@@ -4446,7 +4736,7 @@
                 }
               }
             },
-            "description": "Base-defined hook (`conflict`), a config change landed during the settings push — retry (`conflict`), or stale `If-Match` (`version_conflict`)"
+            "description": "`conflict`: base-defined (edit config.yaml), a config change landed during the settings push — retry | `version_conflict`: stale `If-Match` (re-read and retry)"
           },
           "429": {
             "content": {
@@ -4457,6 +4747,16 @@
               }
             },
             "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -4522,7 +4822,17 @@
                 }
               }
             },
-            "description": "Unknown hook (error code `not_found`)"
+            "description": "`not_found`: unknown resource"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -4558,7 +4868,7 @@
                 }
               }
             },
-            "description": "Missing/invalid admin credential"
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
           },
           "403": {
             "content": {
@@ -4569,6 +4879,16 @@
               }
             },
             "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -4651,7 +4971,7 @@
                 }
               }
             },
-            "description": "Malformed/foreign pagination cursor (error code `invalid_request`)"
+            "description": "`invalid_request`: malformed or foreign pagination `cursor`, invalid query-parameter value"
           },
           "401": {
             "content": {
@@ -4661,7 +4981,7 @@
                 }
               }
             },
-            "description": "Missing/invalid admin credential"
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
           },
           "403": {
             "content": {
@@ -4672,6 +4992,16 @@
               }
             },
             "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -4705,7 +5035,7 @@
                 }
               }
             },
-            "description": "Malformed body / unknown field / bad `expires_in`|`expires_at` / `parent` without `group` (error code `invalid_request`)"
+            "description": "`invalid_request`: malformed body / unknown field, bad `expires_in` / `expires_at`, `parent` was given without `group`, invalid tree — dangling/cyclic parent or depth"
           },
           "401": {
             "content": {
@@ -4735,7 +5065,7 @@
                 }
               }
             },
-            "description": "One of (error code `conflict`): an Idempotency-Key request is already in flight; governance is not enabled; no signing key is configured for signed-token minting; the bound group was deleted concurrently with the mint; or the group is at the `limits.max_keys_per_principal` cap"
+            "description": "`conflict`: governance is not enabled on this server, no signing key is configured for signed-token minting, an `Idempotency-Key` request is already in flight, the group is at the `limits.max_keys_per_principal` cap, base-defined (edit config.yaml)"
           },
           "429": {
             "content": {
@@ -4746,6 +5076,16 @@
               }
             },
             "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -4793,7 +5133,7 @@
                 }
               }
             },
-            "description": "Malformed `If-Match` (error code `invalid_request`)"
+            "description": "`invalid_request`: malformed `If-Match` header, overlong identifier"
           },
           "401": {
             "content": {
@@ -4823,7 +5163,7 @@
                 }
               }
             },
-            "description": "Unknown key (error code `not_found`)"
+            "description": "`not_found`: unknown resource"
           },
           "409": {
             "content": {
@@ -4833,7 +5173,7 @@
                 }
               }
             },
-            "description": "Governance is not enabled on this server, or a stale `If-Match` ETag (error codes `conflict` / `version_conflict` — re-read and retry the latter)"
+            "description": "`conflict`: governance is not enabled on this server | `version_conflict`: stale `If-Match` (re-read and retry)"
           },
           "429": {
             "content": {
@@ -4844,6 +5184,16 @@
               }
             },
             "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -4879,6 +5229,16 @@
             },
             "description": "Key metadata (+ `ETag` header)"
           },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`invalid_request`: overlong identifier"
+          },
           "401": {
             "content": {
               "application/json": {
@@ -4907,7 +5267,17 @@
                 }
               }
             },
-            "description": "Unknown key (error code `not_found`)"
+            "description": "`not_found`: unknown resource"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -4960,7 +5330,7 @@
                 }
               }
             },
-            "description": "Malformed body / unknown field (error code `invalid_request`)"
+            "description": "`invalid_request`: malformed body / unknown field, malformed `If-Match` header, overlong identifier, the rebind target group does not exist"
           },
           "401": {
             "content": {
@@ -4990,7 +5360,7 @@
                 }
               }
             },
-            "description": "Unknown key (error code `not_found`)"
+            "description": "`not_found`: unknown resource"
           },
           "409": {
             "content": {
@@ -5000,7 +5370,7 @@
                 }
               }
             },
-            "description": "Governance is not enabled on this server, or a stale `If-Match` ETag (error codes `conflict` / `version_conflict` — re-read and retry the latter)"
+            "description": "`conflict`: governance is not enabled on this server | `version_conflict`: stale `If-Match` (re-read and retry)"
           },
           "429": {
             "content": {
@@ -5011,6 +5381,16 @@
               }
             },
             "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -5056,7 +5436,7 @@
                 }
               }
             },
-            "description": "Overlong key id (> 64 chars) (error code `invalid_request`)"
+            "description": "`invalid_request`: overlong identifier"
           },
           "401": {
             "content": {
@@ -5086,7 +5466,7 @@
                 }
               }
             },
-            "description": "Unknown key (error code `not_found`)"
+            "description": "`not_found`: unknown resource"
           },
           "409": {
             "content": {
@@ -5096,7 +5476,7 @@
                 }
               }
             },
-            "description": "Governance is not enabled on this server (error code `conflict`)"
+            "description": "`conflict`: governance is not enabled on this server"
           },
           "429": {
             "content": {
@@ -5107,6 +5487,16 @@
               }
             },
             "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -5172,7 +5562,7 @@
                 }
               }
             },
-            "description": "Unknown key (error code `not_found`)"
+            "description": "`not_found`: unknown resource"
           },
           "409": {
             "content": {
@@ -5182,7 +5572,7 @@
                 }
               }
             },
-            "description": "Governance is not enabled on this server, or an Idempotency-Key request is already in flight (error code `conflict`)"
+            "description": "`conflict`: governance is not enabled on this server, an `Idempotency-Key` request is already in flight"
           },
           "429": {
             "content": {
@@ -5193,6 +5583,16 @@
               }
             },
             "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -5230,6 +5630,16 @@
             },
             "description": "Budget-window counters + `rate_headroom` (fraction of the tightest RPM/TPM cap left; null = uncapped)"
           },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`invalid_request`: overlong identifier"
+          },
           "401": {
             "content": {
               "application/json": {
@@ -5258,7 +5668,17 @@
                 }
               }
             },
-            "description": "Unknown key (error code `not_found`)"
+            "description": "`not_found`: unknown resource"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -5294,7 +5714,7 @@
                 }
               }
             },
-            "description": "Missing/invalid admin credential"
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
           },
           "403": {
             "content": {
@@ -5305,6 +5725,16 @@
               }
             },
             "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -5341,7 +5771,7 @@
                 }
               }
             },
-            "description": "Missing/invalid admin credential"
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
           },
           "403": {
             "content": {
@@ -5352,6 +5782,16 @@
               }
             },
             "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -5412,7 +5852,7 @@
                 }
               }
             },
-            "description": "Unknown section, or ephemeral busbar with no config files to revert to (error code `invalid_request`)"
+            "description": "`invalid_request`: unknown overlay section (expected `groups`|`hooks`|`root`|`plugin_versions`), malformed `If-Match` header, ephemeral busbar: no disk config to read, merge onto, or revert to, invalid config; nothing changed"
           },
           "401": {
             "content": {
@@ -5442,7 +5882,7 @@
                 }
               }
             },
-            "description": "Stale `If-Match` (error code `version_conflict` — re-read and retry)"
+            "description": "`version_conflict`: stale `If-Match` (re-read and retry)"
           },
           "429": {
             "content": {
@@ -5453,6 +5893,16 @@
               }
             },
             "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -5499,7 +5949,7 @@
                 }
               }
             },
-            "description": "Missing or unknown `type` (must be `auth` | `hooks` | `store`) (error code `invalid_request`)"
+            "description": "`invalid_request`: missing or unknown required query parameter"
           },
           "401": {
             "content": {
@@ -5509,7 +5959,7 @@
                 }
               }
             },
-            "description": "Missing/invalid admin credential"
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
           },
           "403": {
             "content": {
@@ -5520,6 +5970,16 @@
               }
             },
             "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -5553,7 +6013,7 @@
                 }
               }
             },
-            "description": "Malformed body, bad base64, or the library is not a loadable busbar store plugin (`invalid_request`)"
+            "description": "`invalid_request`: malformed body / unknown field, invalid plugin filename, the artifact is not loadable — bad archive/manifest, or it fails structure/trust validation"
           },
           "401": {
             "content": {
@@ -5583,7 +6043,7 @@
                 }
               }
             },
-            "description": "The upload is untrusted and not opted-in (`conflict`) - sign it with an allowlisted publisher, add the publisher to plugins.trust.publishers, or set plugins.trust.allow_unsigned / allow_third_party"
+            "description": "`conflict`: the upload is untrusted and not opted-in, the plugin name/alias collides with an already-installed plugin under a different filename"
           },
           "429": {
             "content": {
@@ -5594,6 +6054,16 @@
               }
             },
             "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -5620,6 +6090,16 @@
               }
             },
             "description": "`{plugins, note}` — the current dynamic-library inventory"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`invalid_request`: invalid config; nothing changed"
           },
           "401": {
             "content": {
@@ -5650,6 +6130,16 @@
               }
             },
             "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -5696,7 +6186,7 @@
                 }
               }
             },
-            "description": "Malformed body, or the target artifact fails structure/trust validation (error code `invalid_request`)"
+            "description": "`invalid_request`: malformed body / unknown field, malformed `If-Match` header, invalid plugin filename, ephemeral busbar: no disk config to read, merge onto, or revert to"
           },
           "401": {
             "content": {
@@ -5726,7 +6216,7 @@
                 }
               }
             },
-            "description": "No such plugin file in the plugins directory (error code `not_found`)"
+            "description": "`not_found`: unknown resource"
           },
           "409": {
             "content": {
@@ -5736,7 +6226,7 @@
                 }
               }
             },
-            "description": "Stale `If-Match`, or the target is not loadable even with the floor lowered to its own version (error code `version_conflict`/`conflict`)"
+            "description": "`conflict`: the artifact is not loadable — bad archive/manifest, or it fails structure/trust validation | `version_conflict`: stale `If-Match` (re-read and retry)"
           },
           "429": {
             "content": {
@@ -5747,6 +6237,16 @@
               }
             },
             "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -5785,7 +6285,7 @@
                 }
               }
             },
-            "description": "Invalid plugin filename (`invalid_request`)"
+            "description": "`invalid_request`: invalid plugin filename"
           },
           "401": {
             "content": {
@@ -5815,7 +6315,7 @@
                 }
               }
             },
-            "description": "No such plugin file (`not_found`)"
+            "description": "`not_found`: unknown resource"
           },
           "429": {
             "content": {
@@ -5826,6 +6326,16 @@
               }
             },
             "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -5872,7 +6382,7 @@
                 }
               }
             },
-            "description": "Invalid `detail` (must be `true` | `false`) (error code `invalid_request`)"
+            "description": "`invalid_request`: invalid query-parameter value"
           },
           "401": {
             "content": {
@@ -5882,7 +6392,7 @@
                 }
               }
             },
-            "description": "Missing/invalid admin credential"
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
           },
           "403": {
             "content": {
@@ -5893,6 +6403,16 @@
               }
             },
             "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -5958,7 +6478,17 @@
                 }
               }
             },
-            "description": "Unknown pool (error code `not_found`)"
+            "description": "`not_found`: unknown resource"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -5994,7 +6524,7 @@
                 }
               }
             },
-            "description": "Missing/invalid admin credential"
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
           },
           "403": {
             "content": {
@@ -6005,6 +6535,16 @@
               }
             },
             "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -6060,7 +6600,7 @@
                 }
               }
             },
-            "description": "No signing key is configured; nothing to rotate (error code `conflict`)"
+            "description": "`conflict`: governance is not enabled on this server, no signing key is configured; nothing to rotate"
           },
           "429": {
             "content": {
@@ -6071,6 +6611,16 @@
               }
             },
             "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
@@ -6117,7 +6667,7 @@
                 }
               }
             },
-            "description": "Non-parseable `window` (expected a UTC-day bucket start epoch) (error code `invalid_request`)"
+            "description": "`invalid_request`: invalid query-parameter value"
           },
           "401": {
             "content": {
@@ -6127,7 +6677,7 @@
                 }
               }
             },
-            "description": "Missing/invalid admin credential"
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
           },
           "403": {
             "content": {
@@ -6138,6 +6688,16 @@
               }
             },
             "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
           }
         },
         "security": [
