@@ -205,6 +205,19 @@ async fn auto_provision_stops_at_the_group_ceiling() {
         StatusCode::CREATED,
         "the first self-mint provisions its leaf"
     );
+    // Counted before/after, not asserted absolutely: the ring is process-global, so a concurrent
+    // test can evict older rows. Eviction only shrinks the `before` side, so a strict increase
+    // survives it.
+    let rejected_before = crate::admin::audit::AUDIT
+        .list_filtered(
+            0,
+            1000,
+            Some("key.create"),
+            Some(crate::admin::KEY_RESOURCE_NONE),
+        )
+        .iter()
+        .filter(|e| e.outcome == crate::admin::audit::OUTCOME_REJECTED)
+        .count();
     let status = mint_with_parent(&handle, "k2", "user:bob", "team").await;
     assert_eq!(
         status,
@@ -214,6 +227,21 @@ async fn auto_provision_stops_at_the_group_ceiling() {
     assert!(
         !handle.load().groups_registry.contains_key("user:bob"),
         "and nothing was provisioned"
+    );
+    let rejected_after = crate::admin::audit::AUDIT
+        .list_filtered(
+            0,
+            1000,
+            Some("key.create"),
+            Some(crate::admin::KEY_RESOURCE_NONE),
+        )
+        .iter()
+        .filter(|e| e.outcome == crate::admin::audit::OUTCOME_REJECTED)
+        .count();
+    assert!(
+        rejected_after > rejected_before,
+        "the ceiling refusal must write a `key.create`/rejected audit row \
+         (before={rejected_before}, after={rejected_after})"
     );
 
     // Binding to an EXISTING group still works at the ceiling — only auto-provisioning is gated.
