@@ -41,7 +41,7 @@ pub(crate) struct StreamTranslate {
     /// translator consults it and never names a protocol's wire quirk. A protocol with no per-stream
     /// quirk gets the inert [`PassthroughFraming`] default.
     framing: Box<dyn StreamFraming>,
-    /// CROSS-PROTOCOL tool-id native remap (the streaming half of the §Finding-2 class fix). Reshapes
+    /// CROSS-PROTOCOL tool-id native remap (the streaming half of the class fix). Reshapes
     /// each egress `tool_use` id (e.g. OpenAI `call_…`) to the INGRESS client's native shape (Anthropic
     /// `toolu_…`) before the ingress writer serializes it, so a foreign id never reaches the client. The
     /// map is stream-scoped: a tool id seen on `BlockStart` maps stably for the life of this stream (and

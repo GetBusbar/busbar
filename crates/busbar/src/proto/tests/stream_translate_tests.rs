@@ -1682,7 +1682,7 @@ fn test_translate_anthropic_egress_to_bedrock_ingress_tool_call() {
         Some("get_weather"),
         "toolUse name round-trips; got {v}"
     );
-    // §Finding-2 (cross-protocol tool-id native remap): the egress Anthropic `toolu_abc` id is NO
+    // Cross-protocol tool-id native remap: the egress Anthropic `toolu_abc` id is NO
     // LONGER emitted verbatim to the Bedrock client — that would leak a foreign id shape. It is
     // reshaped to the Bedrock-native `tooluse_` form at the seam, and the reshaped id must decode
     // back to the original `toolu_abc` so the round-trip (client → request path → backend) stays
@@ -2331,7 +2331,7 @@ fn test_translate_split_frame_reassembly() {
 }
 
 // Cross-protocol tool-calling fidelity: openai tool_calls → anthropic tool_use survives, and the
-// foreign `call_1` id is RESHAPED to the Anthropic-native `toolu_` form at the seam (§Finding-2),
+// foreign `call_1` id is RESHAPED to the Anthropic-native `toolu_` form at the seam,
 // never leaked verbatim. (Updated from the prior verbatim-`call_1` assertion — the new contract.)
 #[test]
 fn test_translate_tool_call_fidelity() {
@@ -2393,7 +2393,7 @@ fn test_translate_same_protocol_is_none() {
     assert!(StreamTranslate::new("anthropic", "anthropic").is_none());
 }
 
-// §Finding-3 (linear SSE drain): a single `feed` carrying MANY complete SSE frames at once must
+// Linear SSE drain: a single `feed` carrying MANY complete SSE frames at once must
 // translate ALL of them (the cursor advances frame-by-frame and reclaims the prefix in one shift —
 // no per-frame `drain` re-scan, no dropped/duplicated frames, no infinite loop). Large N here would
 // be quadratic under the old `drain(..end)`-per-frame reassembly; it must complete near-instantly.
@@ -2424,7 +2424,7 @@ fn test_translate_many_frames_in_one_feed_is_linear_and_complete() {
     );
 }
 
-// §Finding-3: the same buffer split arbitrarily across many `feed` calls (frames straddling chunk
+// The same buffer split arbitrarily across many `feed` calls (frames straddling chunk
 // boundaries) must reassemble identically — the `scanned`/`consumed` cursors carry across feeds.
 #[test]
 fn test_translate_frames_split_across_chunks_reassemble() {
@@ -2910,7 +2910,7 @@ fn test_cross_protocol_tool_use_response() {
     );
 }
 
-// ── §Finding-2: cross-protocol tool-id native remap at the seam ──────────────────────────────
+// ── Cross-protocol tool-id native remap at the seam ──────────────────────────────
 
 #[test]
 fn test_tool_id_remap_reshapes_to_ingress_native_prefix() {
