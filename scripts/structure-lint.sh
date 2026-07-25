@@ -62,23 +62,67 @@ while IFS= read -r f; do
 done < <(find crates -name '*.rs')
 [ "$loc" -eq 0 ] && note "ok"
 
-# ── Invariant 4: ONE durable-write choke point. Every durable file publish goes through
-#    `crate::durable::write` (crates/busbar/src/durable.rs). Outside the primitive, the ephemeral
-#    plugin-loader staging (no rename-to-publish, no durability intent), and #[cfg(test)] code, NO
-#    source file may hand-roll a `std::fs::rename(` used to publish or a `.sync_all(` for durability.
-#    This is the "no-hack" guarantee: a 5th call-site that re-hand-rolls the atomic-write dance fails
-#    CI instead of silently re-introducing whichever facet (parent fsync / temp cleanup / …) its
-#    author forgets — it must route through the choke point. See crates/busbar/src/durable.rs. ──────
-hdr "one durable-write choke point (no hand-rolled rename-to-publish / sync_all outside durable.rs)"
-# The only files permitted to publish via rename or fsync for durability. Keep this list to the
-# primitive alone; the ephemeral stager uses neither call.
-ALLOW_DURABLE='crates/busbar/src/durable.rs'
-dur=0
-# awk skips lines inside a `#[cfg(test)]`-gated region (tracked by brace depth) and `//` comment
-# lines, then flags a `std::fs::rename(` or `.sync_all(` in the remaining production code.
-scan_durable() { awk '
-  # Enter a #[cfg(test)] region: the NEXT brace-opening line starts a test scope we ignore until it
-  # closes. Track nested braces so we resume exactly when the test module/fn ends.
+# ══ Invariant 4: THE CHOKE-POINT REGISTRY ════════════════════════════════════════════════════════
+#
+# A "choke point" is the single place a whole class of hazard is handled correctly ONCE, so a future
+# sibling cannot re-introduce the class by hand-rolling its own copy. The remediation contract
+# (docs/testing.md § "The remediation contract") says a finding with a sibling is not a bug, it is a
+# missing choke point — and the fix is the choke point plus ONE class-level test.
+#
+# This is the machine-readable ledger of that contract: ONE declarative table, not N bespoke awk
+# passes. Every row is a complete choke point. Adding the next one is a ONE-ROW addition — no new
+# scanner, no new loop, no new exit path.
+#
+# ── Row format (fields separated by `|`, in this order) ──────────────────────────────────────────
+#   1. id        — the choke point's stable name (also the docs/testing.md anchor).
+#   2. tag       — the violation label printed on a bypass (e.g. DURABLE-BYPASS).
+#   3. owner     — the module/API that OWNS the choke point (where the correct implementation lives).
+#   4. classtest — `<path>::<fn>`: the ONE class-level test; the lint fails if it disappears.
+#   5. remedy    — the one-line "route through X" instruction printed with every violation.
+#   6. rules     — `;`-separated banned patterns that BYPASS the choke point. Each rule is
+#                  `<awk-ERE>>><what it is>>><comma-separated allowed-exception paths>`.
+#                  A literal `-` means "no greppable bypass" (see the note on differently-enforced
+#                  choke points below).
+#   7. rationale — one line: why this class needs a single point of truth.
+#
+# ── What the scan covers ──────────────────────────────────────────────────────────────────────────
+# Every `crates/**/*.rs` EXCEPT: files under a `tests/` dir (name-navigated; they drive the
+# primitives directly), `#[cfg(test)]`-gated regions (same reason), whole-line `//` comments (prose
+# may name the banned call), and the rule's own allowed-exception paths.
+#
+# ── Differently-enforced choke points ─────────────────────────────────────────────────────────────
+# A row with `rules = -` has NO greppable bypass: it is enforced in the type system or at runtime
+# instead (D's router layer PANICS on an under-claim, and its class test fails on an over-claim).
+# Those rows are still listed here so the registry is a COMPLETE map of every choke point in the
+# tree — you should never have to ask "is there a choke point for X?" anywhere but this table.
+CHOKE_POINTS=(
+  # ── A ── persistence: one durable-write primitive. A 5th call site that re-hand-rolls the
+  #         atomic-write dance would silently drop whichever facet (parent fsync / temp cleanup /
+  #         0600 mode) its author forgot.
+  'A-persistence|DURABLE-BYPASS|crates/busbar/src/durable.rs (durable::write / write_with; AppHandle::commit_and_swap)|crates/busbar/src/durable.rs::fault_matrix_returns_err_untouched_target_no_temp_leak|route through crate::durable::write|std::fs::rename\(>>hand-rolled rename-to-publish>>crates/busbar/src/durable.rs;\.sync_all\(>>hand-rolled sync_all durability>>crates/busbar/src/durable.rs|persist-then-swap is only atomic if EVERY writer does the identical fsync/rename/cleanup dance'
+
+  # ── B ── plugin FFI/ABI: one export boundary. A hand-written #[no_mangle] skips the
+  #         null-out-guard-before-alloc, the mandatory catch_unwind, and the total status map.
+  'B-plugin-export|EXPORT-BYPASS|crates/plugin-sdk/src/boundary.rs (via the export_*_plugin! macro)|crates/plugin-sdk/tests/boundary_class.rs::null_out_pointer_never_leaks|define exports via export_*_plugin!, never by hand|#\[no_mangle\]>>hand-rolled #[no_mangle]>>crates/plugin-sdk/src/lib.rs|an unwind or a written-then-failed out-param crossing the C ABI is UB, so no export may skip the wrapper'
+
+  # ── C ── admin config mutation: one transaction. A raw lock re-opens lock-then-arbitrary-code; a
+  #         swap outside the section IS the lost update the lock exists to prevent. state.rs DEFINES
+  #         swap/commit_and_swap, so it is allowed alongside txn.rs.
+  'C-config-mutation|MUTATION-BYPASS|crates/busbar/src/admin/v1/json/txn.rs (config_transaction)|crates/busbar/src/admin/v1/json/tests/txn_tests.rs::concurrent_transactions_never_lose_a_swap|route through json::txn::config_transaction|CONFIG_MUTATION_LOCK>>names the config mutation lock>>crates/busbar/src/admin/v1/json/txn.rs;\.commit_and_swap\(>>direct commit_and_swap outside a transaction>>crates/busbar/src/admin/v1/json/txn.rs,crates/busbar/src/state.rs;handle\.swap\(>>direct handle.swap outside a transaction>>crates/busbar/src/admin/v1/json/txn.rs,crates/busbar/src/state.rs|a fresh post-lock snapshot + one persist-then-swap is the only way concurrent mutations cannot lose an update'
+
+  # ── D ── OpenAPI error taxonomy: one declaration the generator PROJECTS. Enforced differently —
+  #         there is no pattern to ban, because the hazard is an endpoint emitting an ErrKind the
+  #         declaration omits. The v1 router's recording layer PANICS on that under-claim at the
+  #         moment of emission, and the class test fails on the mirror-image over-claim.
+  'D-openapi-taxonomy|TAXONOMY-BYPASS|crates/busbar/src/admin/v1/contract/taxonomy.rs (declared_errors)|crates/busbar/src/admin/tests/tests.rs::declared_error_set_is_exactly_what_the_handlers_emit|declare the ErrKind in contract::taxonomy::declared_errors|-|openapi.json must be a PROJECTION of one declaration, never a hand-maintained parallel list'
+)
+
+# ── The single generic scanner. One awk pass per rule over every candidate file. ─────────────────
+# Skips #[cfg(test)] regions by brace depth (state reset per file at FNR==1) and whole-line comments,
+# then flags the rule's pattern in the remaining production code. The pattern is handed over via the
+# environment (NOT -v) so awk performs no escape processing on it and the ERE arrives verbatim.
+scan_rule() { awk '
+  FNR==1 { in_test=0; pending_test=0; depth=0 }     # per-file reset (one awk pass, many files)
   /#\[cfg\(test\)\]/ { pending_test=1 }
   {
     line=$0
@@ -88,98 +132,134 @@ scan_durable() { awk '
     if (in_test) { depth += nopen - nclose; if (depth<=0) { in_test=0; depth=0 }; next }
   }
   /^[[:space:]]*\/\// { next }                       # skip whole-line comments (incl doc comments)
-  /std::fs::rename\(/  { printf "%s:%d: hand-rolled rename-to-publish\n", FILENAME, NR }
-  /\.sync_all\(/       { printf "%s:%d: hand-rolled sync_all durability\n", FILENAME, NR }
-' "$1"; }
-while IFS= read -r f; do
-  case "$f" in */tests/*) continue ;; esac          # test files are exempt (name-navigated)
-  [ "$f" = "$ALLOW_DURABLE" ] && continue            # the primitive itself
-  hits=$(scan_durable "$f")
-  if [ -n "$hits" ]; then
-    while IFS= read -r h; do note "DURABLE-BYPASS: $h — route through crate::durable::write"; done <<<"$hits"
-    fail=1; dur=1
-  fi
-done < <(find crates -name '*.rs')
-[ "$dur" -eq 0 ] && note "ok"
+  # FNR (not NR): one awk pass spans many files, so the report must carry the PER-FILE line number.
+  $0 ~ ENVIRON["LINT_PAT"] { printf "%s:%d: %s\n", FILENAME, FNR, ENVIRON["LINT_WHAT"] }
+' "$@"; }
 
-# ── Invariant 5: ONE plugin-export choke point. Every plugin `cdylib` gets its six `extern
-#    "C-unwind"` symbols ONLY from `export_*_plugin!`, which routes them through the boundary wrapper
-#    (null-out-guard-before-alloc, mandatory catch_unwind, total status map — crates/plugin-sdk/
-#    src/boundary.rs). A hand-written `#[no_mangle]` in a plugin crate would skip those guards, so it
-#    is a build failure. Combined with the DUPLICATE-SYMBOL linker error a second `busbar_*` export
-#    triggers, this is the "no-hack" guarantee: a future export CANNOT skip the boundary. The ONLY
-#    file permitted a literal `#[no_mangle]` is the SDK macro that DEFINES the choke point. #[cfg(test)]
-#    and test files are exempt (name-navigated; they never ship in the cdylib's export table). ──────
-hdr "one plugin-export choke point (no hand-rolled #[no_mangle] outside export_*_plugin!)"
-# The macro that stamps the six symbols; it is the choke point, so it alone may name #[no_mangle].
-ALLOW_EXPORT='crates/plugin-sdk/src/lib.rs'
-exp=0
-# awk skips #[cfg(test)]-gated regions (brace-tracked) and comment lines, then flags a bare
-# #[no_mangle] in the remaining production code. Same skipping shape as Invariant 4's scanner.
-scan_export() { awk '
+# Candidate set, computed once: every crate .rs outside a tests/ dir. (Built with a read loop rather
+# than `mapfile` so the script still runs on the bash 3.2 that ships with macOS.)
+CANDIDATES=()
+while IFS= read -r f; do CANDIDATES+=("$f"); done < <(find crates -name '*.rs' -not -path '*/tests/*' | sort)
+
+hdr "choke-point registry (every hazard class has ONE owner; no hand-rolled bypass)"
+ck=0
+for row in "${CHOKE_POINTS[@]}"; do
+  IFS='|' read -r cp_id cp_tag cp_owner cp_test cp_remedy cp_rules cp_why <<<"$row"
+
+  # (i) the class-level test must exist. A choke point whose one class test was deleted or renamed
+  #     is a choke point nothing proves; the contract requires the pair, so the lint requires it too.
+  cp_test_file="${cp_test%%::*}"; cp_test_fn="${cp_test##*::}"
+  if [ ! -f "$cp_test_file" ]; then
+    note "MISSING-CLASS-TEST: ${cp_id} — ${cp_test_file} does not exist (${cp_why})"
+    fail=1; ck=1
+  elif ! grep -qE "fn[[:space:]]+${cp_test_fn}[[:space:]]*\(" "$cp_test_file"; then
+    note "MISSING-CLASS-TEST: ${cp_id} — ${cp_test_file} has no \`fn ${cp_test_fn}\` (${cp_why})"
+    fail=1; ck=1
+  fi
+
+  # (ii) no production file outside the allowed exceptions may hand-roll a bypass.
+  [ "$cp_rules" = "-" ] && continue                  # differently-enforced (see the header note)
+  IFS=';' read -r -a rules <<<"$cp_rules"
+  for rule in "${rules[@]}"; do
+    # `pat>>what>>allow` → collapse the `>>` separators to a single `>` and split on it.
+    IFS='>' read -r LINT_PAT LINT_WHAT rule_allow <<<"${rule//>>/>}"
+    export LINT_PAT LINT_WHAT
+    files=()
+    for f in "${CANDIDATES[@]}"; do
+      case ",${rule_allow}," in *",${f},"*) continue ;; esac   # the owner / definer files
+      files+=("$f")
+    done
+    [ ${#files[@]} -eq 0 ] && continue
+    hits=$(scan_rule "${files[@]}")
+    if [ -n "$hits" ]; then
+      while IFS= read -r h; do note "${cp_tag}: $h — ${cp_remedy}"; done <<<"$hits"
+      fail=1; ck=1
+    fi
+  done
+done
+unset LINT_PAT LINT_WHAT
+[ "$ck" -eq 0 ] && note "ok (${#CHOKE_POINTS[@]} choke points registered, class tests present, no bypass)"
+
+# ── Invariant 5: REGRESSION-marker parity (a ratchet, not a cliff). ───────────────────────────────
+# The tree tags fixed defects with `REGRESSION (<label>)` / `Regression (<label>)` at the head of a
+# comment. Those markers are the family ledger: grep a label and you get every sibling the finding
+# touched. The contract's rule is that a fix is not done until a TEST carries the same label — a
+# source fix tagged as a regression with no test guarding it is exactly the "patched an instance, no
+# class test" process failure. So: for every marker on PRODUCTION code, the same label must appear
+# on at least one marker in a TEST (a `tests/` file, or a `#[cfg(test)]` region).
+#
+# Label key: the text inside the first `(...)`, truncated at the first comma, lowercased, with runs
+# of punctuation collapsed to single spaces. `REGRESSION (R22 LOW #23, symmetric probe accounting)`
+# and `Regression (r22 low #23)` are therefore the SAME label.
+#
+# Waiver: put `REGRESSION-WAIVED(<reason>)` on the marker line to declare a deliberate no-test fix.
+# Baseline: scripts/regression-parity.baseline holds the count of KNOWN gaps. gaps > baseline fails
+# the build; gaps < baseline prints the ratchet-down instruction. Pre-existing debt therefore cannot
+# grow, and nobody has to clear it in one go before the check can be turned on.
+hdr "REGRESSION-marker parity (every production marker has a test carrying the same label)"
+PARITY_BASELINE_FILE='scripts/regression-parity.baseline'
+baseline=0
+[ -f "$PARITY_BASELINE_FILE" ] && baseline=$(tr -dc '0-9' < "$PARITY_BASELINE_FILE")
+: "${baseline:=0}"
+
+# Emit `<side>\t<file>:<line>\t<raw>` for every anchored marker. `side` is impl for production code
+# and test for a tests/ file or a #[cfg(test)] region — the same brace-tracked scoping the registry
+# scanner uses, so "is this a test?" has ONE answer in this file.
+marker_scan() { awk -v force="$1" '
+  FNR==1 { in_test=0; pending_test=0; depth=0 }
   /#\[cfg\(test\)\]/ { pending_test=1 }
   {
-    line=$0
+    line=$0; keep=$0
     nopen=gsub(/\{/, "{", line); nclose=gsub(/\}/, "}", line)
     if (pending_test && nopen>0) { in_test=1; pending_test=0 }
-    if (in_test) { depth += nopen - nclose; if (depth<=0) { in_test=0; depth=0 }; next }
+    side = (force == "test" || in_test) ? "test" : "impl"
+    if (in_test) { depth += nopen - nclose; if (depth<=0) { in_test=0; depth=0 } }
+    if (keep ~ /^[[:space:]]*\/\/[\/!]?[[:space:]]*[Rr][Ee][Gg][Rr][Ee][Ss][Ss][Ii][Oo][Nn][[:space:]]*\(/)
+      printf "%s\t%s:%d\t%s\n", side, FILENAME, FNR, keep
   }
-  /^[[:space:]]*\/\// { next }                       # skip whole-line comments (incl doc comments)
-  /#\[no_mangle\]/    { printf "%s:%d: hand-rolled #[no_mangle]\n", FILENAME, NR }
-' "$1"; }
-while IFS= read -r f; do
-  case "$f" in */tests/*) continue ;; esac          # test files are exempt (name-navigated)
-  [ "$f" = "$ALLOW_EXPORT" ] && continue             # the choke-point macro itself
-  hits=$(scan_export "$f")
-  if [ -n "$hits" ]; then
-    while IFS= read -r h; do note "EXPORT-BYPASS: $h — define exports via export_*_plugin!, never by hand"; done <<<"$hits"
-    fail=1; exp=1
-  fi
-done < <(find crates -name '*.rs')
-[ "$exp" -eq 0 ] && note "ok"
+' "${@:2}"; }
 
-# ── Invariant 6: ONE config-mutation choke point. Every admin config mutation runs inside
-#    `config_transaction` (crates/busbar/src/admin/v1/json/txn.rs), which owns the file-private
-#    `CONFIG_MUTATION_LOCK`, hands the body a FRESH post-lock snapshot, forces store/disk work onto
-#    spawn_blocking, and applies the plan through `AppHandle::commit_and_swap`. Two bypasses are
-#    build failures outside txn.rs: naming a `CONFIG_MUTATION_LOCK` (a second config lock re-opens
-#    lock-then-arbitrary-code, which visibility already forbids for THIS one), and calling
-#    `handle.swap(` / `.commit_and_swap(` directly (a swap outside the section is the lost-update the
-#    lock exists to prevent). `state.rs` defines both methods, so it is allowed alongside txn.rs.
-#    #[cfg(test)] regions and test files are exempt (name-navigated; they drive the primitives
-#    directly). See crates/busbar/src/admin/v1/json/txn.rs. ──────────────────────────────────────
-hdr "one config-mutation choke point (no raw config lock / swap outside txn.rs)"
-# txn.rs is the choke point; state.rs DEFINES swap/commit_and_swap (and calls swap from within
-# commit_and_swap), so both may name them.
-ALLOW_TXN='crates/busbar/src/admin/v1/json/txn.rs'
-ALLOW_SWAP='crates/busbar/src/state.rs'
-txnfail=0
-scan_txn() { awk -v allow_swap="$2" '
-  /#\[cfg\(test\)\]/ { pending_test=1 }
-  {
-    line=$0
-    nopen=gsub(/\{/, "{", line); nclose=gsub(/\}/, "}", line)
-    if (pending_test && nopen>0) { in_test=1; pending_test=0 }
-    if (in_test) { depth += nopen - nclose; if (depth<=0) { in_test=0; depth=0 }; next }
-  }
-  /^[[:space:]]*\/\// { next }                       # skip whole-line comments (incl doc comments)
-  /CONFIG_MUTATION_LOCK/ { printf "%s:%d: names the config mutation lock\n", FILENAME, NR }
-  allow_swap == "1" { next }
-  /\.commit_and_swap\(/ { printf "%s:%d: direct commit_and_swap outside a transaction\n", FILENAME, NR }
-  /handle\.swap\(/      { printf "%s:%d: direct handle.swap outside a transaction\n", FILENAME, NR }
-' "$1"; }
-while IFS= read -r f; do
-  case "$f" in */tests/*) continue ;; esac          # test files are exempt (name-navigated)
-  [ "$f" = "$ALLOW_TXN" ] && continue                # the choke point itself
-  allow_swap=0
-  [ "$f" = "$ALLOW_SWAP" ] && allow_swap=1           # the file that DEFINES swap/commit_and_swap
-  hits=$(scan_txn "$f" "$allow_swap")
-  if [ -n "$hits" ]; then
-    while IFS= read -r h; do note "MUTATION-BYPASS: $h — route through json::txn::config_transaction"; done <<<"$hits"
-    fail=1; txnfail=1
+label_key() {   # stdin: raw marker line → stdout: normalized label key
+  tr 'A-Z' 'a-z' \
+    | sed 's/.*regression[[:space:]]*(\([^)]*\)).*/\1/' \
+    | sed 's/,.*//;s/[^a-z0-9#/]\{1,\}/ /g;s/^ //;s/ $//'
+}
+
+markers_tmp=$(mktemp); trap 'rm -f "$markers_tmp"' EXIT
+TESTFILES=()
+while IFS= read -r f; do TESTFILES+=("$f"); done < <(find crates -name '*.rs' -path '*/tests/*' | sort)
+{ [ ${#CANDIDATES[@]} -gt 0 ] && marker_scan impl "${CANDIDATES[@]}"
+  [ ${#TESTFILES[@]}  -gt 0 ] && marker_scan test "${TESTFILES[@]}"; } > "$markers_tmp"
+
+n_all=$(wc -l < "$markers_tmp" | tr -d ' ')
+n_test=$(grep -c $'^test\t' "$markers_tmp" || true)
+n_impl=$(grep -c $'^impl\t' "$markers_tmp" || true)
+test_keys=$(grep $'^test\t' "$markers_tmp" | cut -f3 | label_key | sort -u)
+n_labels=$(cut -f3 "$markers_tmp" | label_key | sort -u | wc -l | tr -d ' ')
+
+guarded=0; gaps=0; waived=0
+while IFS=$'\t' read -r _side loc raw; do
+  case "$raw" in *REGRESSION-WAIVED\(*) waived=$((waived+1)); continue ;; esac
+  k=$(printf '%s\n' "$raw" | label_key)
+  if printf '%s\n' "$test_keys" | grep -qxF "$k"; then
+    guarded=$((guarded+1))
+  else
+    gaps=$((gaps+1))
+    note "UNGUARDED-REGRESSION: ${loc}: label \"${k}\" is tagged on production code but no test carries it"
   fi
-done < <(find crates -name '*.rs')
-[ "$txnfail" -eq 0 ] && note "ok"
+done < <(grep $'^impl\t' "$markers_tmp" || true)
+
+note "corpus: ${n_all} markers (${n_test} on tests, ${n_impl} on production code), ${n_labels} distinct labels"
+note "parity: ${guarded} guarded, ${waived} waived, ${gaps} unguarded (baseline ${baseline})"
+if [ "$gaps" -gt "$baseline" ]; then
+  note "PARITY-RATCHET: ${gaps} unguarded marker(s) > baseline ${baseline} — add a test carrying the"
+  note "  label, or REGRESSION-WAIVED(<reason>) on the marker line. Do NOT raise the baseline."
+  fail=1
+elif [ "$gaps" -lt "$baseline" ]; then
+  note "ratchet down: write ${gaps} to ${PARITY_BASELINE_FILE} (gaps fell below the baseline)"
+else
+  note "ok"
+fi
 
 hdr "result"
 if [ "$fail" -ne 0 ]; then note "structure-lint FAILED — see docs/code-layout.md"; exit 1; fi
