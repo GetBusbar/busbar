@@ -367,7 +367,7 @@ mod tests {
         (app, server)
     }
 
-    /// Regression (conformance): an active health probe must send the SAME native-SDK fingerprint
+    /// An active health probe must send the SAME native-SDK fingerprint
     /// headers organic traffic sends — `User-Agent` and `Accept` — or a backend could fingerprint
     /// and special-case busbar's probes (defeating indistinguishability). reqwest emits no default
     /// User-Agent, so its absence on the probe was a tell.
@@ -485,7 +485,7 @@ mod tests {
         assert!(matches!(app.store.breaker_state(0), BreakerState::Closed));
     }
 
-    /// REGRESSION (R22 LOW #23, symmetric probe accounting): a 2xx probe must record a SUCCESS into
+    /// A 2xx probe must record a SUCCESS into
     /// every cell's sliding error-rate window, not just a failed probe recording a FAILURE. With the
     /// old failure-only accounting, a lane whose probes intermittently fail presented a window holding
     /// ONLY failures, so the error-rate breaker (errors / total) read ~100% and tripped a recoverable
@@ -541,7 +541,7 @@ mod tests {
         server.shutdown().await;
     }
 
-    /// REGRESSION (R22 LOW #23): a 2xx probe on an already-Closed, never-tripped lane must still push
+    /// A 2xx probe on an already-Closed, never-tripped lane must still push
     /// a success outcome into the lane's window (the success half of symmetric accounting) — it is NOT
     /// silently dropped just because the lane needed no recovery. We assert observably: after one
     /// success probe followed by 4 failing probes, the default cell holds 1 success + 4 errors = 5
@@ -589,7 +589,7 @@ mod tests {
         server.shutdown().await;
     }
 
-    /// REGRESSION (R24 LOW #17): a single SUCCESSFUL probe bumps the lane-global `ok` stat EXACTLY
+    /// A single SUCCESSFUL probe bumps the lane-global `ok` stat EXACTLY
     /// ONCE — not once per cell. The lane sits in THREE pools, so the pre-fix code (which recorded the
     /// success via a per-cell `record_success_in` loop over the default cell plus every pool) bumped
     /// `LaneState.ok` 4 times per 2xx probe (1 default + 3 pools), inflating the public `/stats` `ok`
@@ -668,7 +668,7 @@ mod tests {
         // wire name everywhere.
     }
 
-    /// REGRESSION (audit H2): `spawn_probers` must capture a `Weak<App>`, never a strong `Arc`, so a
+    /// `spawn_probers` must capture a `Weak<App>`, never a strong `Arc`, so a
     /// config reload's old prober generation exits (and the old snapshot frees) instead of leaking one
     /// task-set per reload forever. Deterministic: the closure holds only a `Weak` regardless of task
     /// scheduling, so dropping the last strong ref must make `upgrade()` fail immediately.
@@ -691,7 +691,7 @@ mod tests {
         );
     }
 
-    /// REGRESSION (R16 HIGH, SigV4 signed==sent): the active probe MUST sign the canonical URI from
+    /// The active probe MUST sign the canonical URI from
     /// the SAME path encoding it transmits on the wire. `probe_lane` derives both the SigV4
     /// `canonical_uri` and the wire URL from `crate::proxy::sign_and_wire_path(&url_path)` (the
     /// identical primitive the organic forward path uses), so for a Bedrock-style path whose modelId

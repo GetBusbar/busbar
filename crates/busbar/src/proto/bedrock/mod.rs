@@ -1056,7 +1056,7 @@ pub(crate) fn bedrock_response_to_eventstream(
             // ThinkingDelta / SignatureDelta / RedactedReasoningDelta deltas. The old comment claimed
             // the writer maps them to None and skipped the block, silently dropping upstream
             // reasoning on a cross-protocol→Bedrock streaming client. Synthesize the same
-            // start/delta(s)/stop the live streaming path produces. (found: audit c2r2.)
+            // start/delta(s)/stop the live streaming path produces.
             IrBlock::Thinking {
                 text,
                 signature,

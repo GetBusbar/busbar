@@ -494,7 +494,10 @@ impl DynStore {
     /// [`stage::Staged::temp_path`] for why the count was the wrong instrument.
     #[cfg(test)]
     pub(crate) fn staged_path(&self) -> Option<&std::path::Path> {
-        self.raw._backing.as_ref().and_then(stage::Staged::temp_path)
+        self.raw
+            ._backing
+            .as_ref()
+            .and_then(stage::Staged::temp_path)
     }
 
     /// Serialize a request, ship it across the kind-neutral C ABI, decode the response. A THIN wrapper

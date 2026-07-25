@@ -1119,7 +1119,7 @@ fn test_validate_rejects_bad_breaker_params() {
             "max_cooldown_secs",
         ),
         (
-            // Regression (MED #9): a zero base cooldown yields a degenerate breaker that re-admits
+            // A zero base cooldown yields a degenerate breaker that re-admits
             // a tripped backend immediately — must fail loud, mirroring the trip.* zero-floor guards.
             "base_cooldown 0",
             make_breaker(
@@ -1130,7 +1130,7 @@ fn test_validate_rejects_bad_breaker_params() {
             "base_cooldown_secs must be >= 1",
         ),
         (
-            // Regression (MED #9): the max-cooldown twin of the above.
+            // The max-cooldown twin of the above.
             "max_cooldown 0",
             make_breaker(
                 0,
@@ -1183,7 +1183,7 @@ fn test_validate_accepts_good_breaker_params() {
 
 #[test]
 fn test_validate_rejects_zero_cooldown_breaker() {
-    // Regression (MED #9): a breaker with base_cooldown_secs == 0 or max_cooldown_secs == 0
+    // A breaker with base_cooldown_secs == 0 or max_cooldown_secs == 0
     // passes the inversion check (0 <= 0) yet is degenerate — when it trips open it re-admits the
     // failing backend immediately because the cooldown window is zero seconds, defeating the
     // back-off the breaker exists to provide. This is the cooldown-axis twin of the trip.* zero-
@@ -1269,7 +1269,7 @@ fn test_validate_accepts_positive_failover_deadline_and_zero_cap() {
 
 #[test]
 fn test_validate_rejects_unknown_failover_exclusion() {
-    // Regression (MEDIUM, re-audit): a `failover.exclusions` entry is a member model name benched
+    // A `failover.exclusions` entry is a member model name benched
     // from the pool's candidate set at runtime; the runtime matches it against member targets. A
     // misspelled / stale entry resolves to nothing and silently fails to bench the intended
     // member, so it must fail loud at boot (mirroring the dangling-fallback-pool rule).
@@ -1658,7 +1658,7 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for WarnCapture {
 
 #[test]
 fn test_validate_passthrough_warns_on_nonempty_configured_key() {
-    // Regression (LOW #10): in passthrough mode the proxy engine selects the upstream key as
+    // In passthrough mode the proxy engine selects the upstream key as
     // `caller_token.unwrap_or("")` (NOT `lane.api_key` - that was hardened per LOW #15), so under
     // passthrough the configured `api_key` is NEVER forwarded: it is inert dead config. Its presence
     // means the operator likely wanted static-key gating (`upstream_credentials: own`) but wired
@@ -2101,7 +2101,7 @@ fn test_ssrf_allows_private_and_loopback_by_default() {
 
 #[test]
 fn test_ssrf_blocks_backslash_authority_bypass() {
-    // Regression (HIGH, re-audit): `https` is a WHATWG special scheme, so reqwest's `url` crate
+    // `https` is a WHATWG special scheme, so reqwest's `url` crate
     // rewrites every `\` to `/` while parsing — terminating the authority at the FIRST `\`. A
     // hand-parser that split only on `['/', '?', '#']` saw the whole `10.0.0.1\x.allowed.com` as
     // the host (passing every internal/metadata check) while reqwest connected to `10.0.0.1` /
@@ -2145,7 +2145,7 @@ fn test_ssrf_blocks_backslash_authority_bypass() {
 
 #[test]
 fn test_validate_rejects_path_override_host_fusion() {
-    // Regression (MEDIUM, re-audit): a provider `path` override is appended to base_url VERBATIM
+    // A provider `path` override is appended to base_url VERBATIM
     // at request time (`format!("{base}{wire_path}")`), and the composed string chooses the
     // connect host. base_url validation alone misses this: a path NOT starting with '/' fuses
     // into the authority — base_url `https://api.example.com` + path `.evil.com/v1` connects to
@@ -2541,7 +2541,7 @@ fn test_validate_accepts_session_affinity_mode() {
     );
 }
 
-/// REGRESSION (audit c2r5): the provider `base_url` scheme check is CASE-INSENSITIVE (RFC 3986
+/// The provider `base_url` scheme check is CASE-INSENSITIVE (RFC 3986
 /// §3.1) — an uppercase `HTTPS://` (which reqwest lowercases and accepts) must validate, not be
 /// rejected with a misleading "must use http or https". Mirrors the webhook guard's `scheme_is`.
 #[test]
@@ -2563,7 +2563,7 @@ fn test_validate_accepts_uppercase_url_scheme() {
     assert!(!scheme_is("httpsx://h", "https"));
 }
 
-/// REGRESSION (audit c2r3): an EMPTY `affinity.header_name` must be REJECTED at boot. It passes
+/// An EMPTY `affinity.header_name` must be REJECTED at boot. It passes
 /// the ASCII + length checks but silently disables session affinity at runtime
 /// (`headers.get("")` is always None) — the exact silent-disable the validator's comment promises
 /// to catch.
@@ -3849,7 +3849,7 @@ fn test_validate_role_binding_reserved_role_name_rejected() {
 /// their required setting fail too. Well-formed env/file refs pass (values are NOT resolved).
 #[test]
 fn test_validate_secret_module_resolvability() {
-    // REGRESSION (audit round-4 #3/#4): a NON-built-in module (a `kind: secret` PLUGIN reference such
+    // A NON-built-in module (a `kind: secret` PLUGIN reference such
     // as `vault`) is the marquee 1.5.0 "secrets are plugins" feature. `validate` runs BEFORE the
     // plugin registry exists, so it CANNOT tell an installed vault plugin from a typo — the
     // module-EXISTENCE check is DEFERRED to `main::validate_secret_refs` at plugin pre-flight (see the
@@ -3999,7 +3999,7 @@ advanced:
     assert_eq!(cfg.limits.rate_sweep_interval, 256);
 }
 
-/// REGRESSION (audit round-4 #3/#4): the DOCUMENTED "secrets are plugins" vault example — a provider
+/// The DOCUMENTED "secrets are plugins" vault example — a provider
 /// `api_key: { module: acme-vault }` (docs/plugins.md, configuration.md, migration-1.5.md) — RESOLVES
 /// and passes the shared boot/`--validate` semantic gate. `validate` runs before the plugin registry
 /// exists, so it must not reject the plugin-backed module; the registry-backed existence check is the

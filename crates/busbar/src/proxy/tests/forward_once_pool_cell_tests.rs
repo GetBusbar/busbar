@@ -5,7 +5,7 @@ use reqwest::StatusCode;
 use serde_json::json;
 use std::sync::Arc;
 
-/// REGRESSION (H1): on the degraded FallbackPool path, `forward_once` must record breaker outcomes
+/// On the degraded FallbackPool path, `forward_once` must record breaker outcomes
 /// against the ROUTING POOL cell — NOT the default `""` cell. The fallback caller selects the
 /// member via the pool cell and CAS-wins a single-flight HalfOpen probe on it; recording on `""`
 /// left the pool cell wedged HalfOpen + `probe_in_flight` forever, benching the lane.
@@ -99,7 +99,7 @@ async fn test_forward_once_fallback_2xx_closes_pool_cell_not_default() {
     server.shutdown().await;
 }
 
-/// REGRESSION (H1) Case B — a fallback transport error must OPEN the POOL cell. The fb pool cell
+/// Case B — a fallback transport error must OPEN the POOL cell. The fb pool cell
 /// starts expired-Open (→ HalfOpen on dispatch); a pre-response transport error (unreachable
 /// member) must reopen the POOL cell (HalfOpen→Open), re-arming its cooldown — not the default
 /// `""` cell. Before the fix the reopen hit `""`, leaving the pool cell wedged HalfOpen forever.
@@ -171,7 +171,7 @@ async fn test_forward_once_fallback_transport_error_opens_pool_cell() {
     );
 }
 
-/// REGRESSION (HIGH #1 — the probe-LEAK class). A fallback-pool member that returns a NON-2xx
+/// A fallback-pool member that returns a NON-2xx
 /// must leave its POOL cell USABLE, not wedged HalfOpen. `forward_once`'s same-protocol non-2xx
 /// branch relays the error verbatim and records NO breaker outcome, so the single-flight
 /// HalfOpen probe the fallback dispatch CAS-won on the pool cell is still in flight at the early
@@ -277,7 +277,7 @@ async fn test_forward_once_fallback_non2xx_leaves_pool_cell_usable() {
     server.shutdown().await;
 }
 
-/// REGRESSION (LOW #22): an A<->B FallbackPool cycle must terminate via the visited-pool guard,
+/// An A<->B FallbackPool cycle must terminate via the visited-pool guard,
 /// NOT recurse back into the originating pool. The guard in `handle_fallback_pool` only
 /// checks/marks the FALLBACK pool name, so an A->B->A chain was not caught on the second hop:
 /// when B fell back to A, the guard saw A as unvisited and RE-ENTERED A's members. The fix marks
@@ -367,7 +367,7 @@ async fn test_fallback_pool_a_b_a_cycle_terminates_via_guard() {
     server.shutdown().await;
 }
 
-/// REGRESSION (LOW #25): the upstream/breaker METRIC pool label must resolve to the ROUTED
+/// The upstream/breaker METRIC pool label must resolve to the ROUTED
 /// MODEL name for the default (`""`) breaker cell — the cell shared by every direct/ad-hoc
 /// (single-model) route via `forward()` — so those series correlate with `REQUESTS_TOTAL`
 /// (which labels model-routed traffic by model, never `""`). For a NAMED pool the label is the

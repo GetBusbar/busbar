@@ -570,7 +570,7 @@ fn write_request_keeps_tool_use_on_user_message() {
     );
 }
 
-/// Regression (MEDIUM/correctness): a Tool-role message carrying ONLY ToolResult blocks must
+/// A Tool-role message carrying ONLY ToolResult blocks must
 /// emit ONLY the flat `{"role":"tool",...}` entries — `msg_obj` is NOT pushed (no spurious
 /// `{"role":"tool","content":null}` entry).
 #[test]
@@ -619,7 +619,7 @@ fn write_request_pure_tool_result_message_emits_only_flat_entries() {
     assert_eq!(msgs[0]["content"], serde_json::json!("42"));
 }
 
-/// Regression (MEDIUM/correctness): a Tool-role message carrying BOTH a ToolResult block AND
+/// A Tool-role message carrying BOTH a ToolResult block AND
 /// non-ToolResult content (Text here, plus a ToolUse) must NOT silently drop the non-ToolResult
 /// content. Previously the `msg_obj` (carrying the Text content and `tool_calls`) was never
 /// pushed on the Tool-role path, dropping it. The fix surfaces it as an additional message entry.
@@ -3051,7 +3051,7 @@ fn singular_read_response_event_empty_chunk_yields_none() {
     assert!(OpenAiReader.read_response_event("", &done).is_none());
 }
 
-// Regression (HIGH): under `stream_options:{include_usage:true}` the OpenAI API sets
+// Under `stream_options:{include_usage:true}` the OpenAI API sets
 // `usage: null` on EVERY non-final chunk. `Value::get("usage")` returns `Some(Null)` for that,
 // so without the object-filter the reader synthesized `Some(IrUsage{0,..})` and emitted a
 // spurious mid-stream `MessageDelta` on every content chunk. A content chunk carrying
@@ -3078,7 +3078,7 @@ fn null_usage_on_content_chunk_emits_no_message_delta() {
         );
 }
 
-// Regression (MEDIUM): the reader is ingress-AGNOSTIC, so it must faithfully translate the
+// The reader is ingress-AGNOSTIC, so it must faithfully translate the
 // trailing `include_usage` usage-only chunk (empty `choices`, real top-level `usage`) into a
 // `MessageDelta{stop_reason: None, usage}` carrying the REAL token counts — Bedrock ingress folds
 // exactly this into its single `metadata` frame. (The cross-protocol ORDERING concern — this

@@ -203,7 +203,7 @@ pub(crate) fn build_with_hook(current: &App, name: &str, cfg: HookCfg) -> Result
     // Cap the name length. The name is a registry key that gets written VERBATIM into the overlay
     // state file and every audit row (and echoed on the wire); without a bound a `hooks-register`
     // token could POST a name up to the body-size cap (~MB), bloating the durable state / audit /
-    // reconnect path — the same defensive posture as the key-id / settings caps. (found: audit c2r4.)
+    // reconnect path — the same defensive posture as the key-id / settings caps.
     if name.len() > MAX_HOOK_NAME_LEN {
         return Err(AdminError::Validation(format!(
             "hook name is {} chars; must be <= {MAX_HOOK_NAME_LEN}",
@@ -221,7 +221,7 @@ pub(crate) fn build_with_hook(current: &App, name: &str, cfg: HookCfg) -> Result
         )));
     }
     // The `settings` map rides register/PUT too — cap it here so it is bounded on EVERY write path,
-    // not just PATCH (found: audit c1r12 — register/PUT were missing the cap PATCH already had).
+    // not just PATCH.
     validate_hook_settings_size(&cfg.settings)?;
     // A hook must name exactly one `kind: hook` plugin (the retired socket/webhook transports are
     // gone). Emptiness is the structural check here; the plugin's existence/kind is validated against
@@ -1629,7 +1629,7 @@ mod tests {
         );
     }
 
-    /// REGRESSION (audit c1r8): a PUT that REPLACES a `global: true` hook with `global: false` must
+    /// A PUT that REPLACES a `global: true` hook with `global: false` must
     /// DE-WIRE it from the global fan-out — remove it from `global_hooks` AND drop it from the fired
     /// transports — so the demotion actually takes effect. The prior code only ever APPENDED on
     /// `global: true` and never removed, so a demoted hook kept firing on every request and still
@@ -1665,7 +1665,7 @@ mod tests {
         );
     }
 
-    /// REGRESSION (audit c1r12): the `settings` map size cap enforced by PATCH must ALSO gate
+    /// The `settings` map size cap enforced by PATCH must ALSO gate
     /// register/PUT (both funnel through `build_with_hook`) — else an unbounded map could be
     /// registered/replaced, bloating the durable state and the reconnect path the cap protects.
     #[test]
@@ -1704,7 +1704,7 @@ mod tests {
         assert!(build_with_hook(&app, "fine", ok).is_ok());
     }
 
-    /// REGRESSION (audit c2r4): the hook NAME (a registry key persisted to the state file + every
+    /// The hook NAME (a registry key persisted to the state file + every
     /// audit row) must be length-capped, like the key id / settings map — else a `hooks-register`
     /// token could POST a megabyte-long name and bloat the durable state / audit / reconnect path.
     #[test]

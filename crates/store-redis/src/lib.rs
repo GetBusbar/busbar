@@ -1112,7 +1112,7 @@ mod tests {
         assert_eq!((audit[0].seq, audit[1].seq), (1, 2), "oldest-first by seq");
         assert_eq!(audit[1].prev_hash, "h1");
 
-        // REGRESSION (append_audit upserts on SEQ, not member): a re-append of an EXISTING seq with a
+        // A re-append of an EXISTING seq with a
         // DIFFERENT payload (a corrected hash) must OVERWRITE the record at that seq, never leave two
         // members at one score. A bare ZADD (upsert-on-member) would produce a duplicate seq-2 row and
         // diverge from the SQL backends (whose replay overwrites the digest). ZREMRANGEBYSCORE+ZADD.

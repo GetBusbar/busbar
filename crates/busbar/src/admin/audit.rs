@@ -362,14 +362,10 @@ impl AuditLog {
             let Some(record) = record else {
                 // `seq` has already been pruned from the ring (a gap older than the ring bound); it
                 // can NEVER be backfilled in-process. STOP the catch-up here and leave `durable_high`
-                // BELOW the hole. A prior version `continue`d past the gap, but the very next
-                // successful append then `fetch_max`ed `durable_high` PAST the unpersisted seq —
-                // permanently claiming a durable chain that actually has a hole at `seq`. Restore's
-                // strict contiguity check would still reject that durable chain, but `durable_high`
-                // would lie about it, and the gap would never be re-attempted. The durable chain is
-                // genuinely broken at this seq and cannot be repaired from the ring, so advancing
-                // over it only manufactures a false-contiguous tail. Only genuinely-persisted seqs
-                // (the `fetch_max` after a successful `append_audit` below) may advance `durable_high`.
+                // BELOW the hole — do NOT `continue`, or the next successful append advances
+                // `durable_high` PAST the unpersisted seq and claims a durable chain that has a hole
+                // at `seq`, which is then never re-attempted. Only genuinely-persisted seqs (the
+                // `fetch_max` after a successful `append_audit` below) may advance `durable_high`.
                 tracing::warn!(
                     seq,
                     durable_high = self.durable_high.load(std::sync::atomic::Ordering::Relaxed),

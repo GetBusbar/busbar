@@ -108,7 +108,7 @@ pub(crate) fn apply_rewrite_to_body(
                     // hook's reply — a hook that echoes the role it was PROJECTED (see the
                     // gemini-role canonicalization in build_prompt_projection) or one written to the
                     // gemini vocabulary must both round-trip to `model`, not silently fall through to
-                    // `user` and corrupt every assistant turn. (found: audit c1r14.)
+                    // `user` and corrupt every assistant turn.
                     let g_role = if role == "assistant" || role == "model" {
                         "model"
                     } else {

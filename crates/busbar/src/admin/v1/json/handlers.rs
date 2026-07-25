@@ -630,7 +630,7 @@ pub(crate) async fn register_hook(
         // and PATCH enforce (put_hook / patch_hook_settings). Without it a narrow hooks-register token
         // could POST a same-shape definition over a base hook's name and silently redirect its
         // transport (e.g. point a base `pii-guard` gate at a hostile socket). Edit config.yaml for base
-        // hooks. (found: audit c1r5 — register was the one mutation verb missing this check.)
+        // hooks.
         if current.base_hook_names.contains(&txn_name) {
             return Err(AdminError::Conflict(format!(
                 "hook `{txn_name}` is defined in the base config file; edit config.yaml (the API \
@@ -837,9 +837,7 @@ pub(crate) async fn delete_hook(
         // hook can only have been created by a Full admin (register/put block a narrow token from
         // wiring one), and DELETING it TEARS DOWN that admin's security gate — the same escalation
         // register / put / patch already forbid. Without this a hooks-register token could remove an
-        // operator's global `pii-guard` gate and reach content by the back door. (found: audit
-        // c1r13; the sibling c1r6 fix closed the PATCH path — DELETE was the remaining verb missing
-        // the guard.)
+        // operator's global `pii-guard` gate and reach content by the back door.
         if let Some(existing) = current.hook_registry.get(&txn_name) {
             if let Some(e) = hooks_register_escalation(scope, existing) {
                 return Err(e);
@@ -849,7 +847,7 @@ pub(crate) async fn delete_hook(
         // patch_hook_settings). Without this a narrow hooks-register token could DELETE an
         // operator's base-defined security gate (e.g. `pii-guard`) — an escalation beyond
         // "register" — and the additive overlay can't durably subtract a base hook anyway. Edit
-        // config.yaml. (found: audit c1r5.)
+        // config.yaml.
         if current.base_hook_names.contains(&txn_name) {
             return Err(AdminError::Conflict(format!(
                 "hook `{txn_name}` is defined in the base config file; edit config.yaml (the API \
@@ -2635,7 +2633,7 @@ pub(crate) async fn patch_hook_settings(
     // grants). A non-Full (hooks-register) principal may not push settings to a content-seeing
     // (`prompt`/`user`) or `global: true` hook — the same ceiling register_hook/put_hook enforce.
     // Without it a narrow token could retune a `prompt: rw` global gate it can neither create nor
-    // replace, reaching a content-seeing hook by the back door. (found: audit c1r6.)
+    // replace, reaching a content-seeing hook by the back door.
     if let Some(e) = hooks_register_escalation(scope, existing) {
         audit::AUDIT.record_by("hook.settings", &resource, audit::OUTCOME_REJECTED, &actor);
         return err_json(&e);

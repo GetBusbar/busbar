@@ -158,7 +158,7 @@ fn reprice_on_read_recomputes_derived_spend() {
     );
 }
 
-/// REGRESSION (audit cost-1.5.0 #2): a cent total past i64::MAX SATURATES at i64::MAX
+/// A cent total past i64::MAX SATURATES at i64::MAX
 /// (fail-closed: an astronomical ledger blocks). The pre-fix `as i64` cast wrapped - a large
 /// (u64-scale tokens x large configured rate) ledger could land NEGATIVE, be floored to 0 by
 /// `.max(0)`, and derive as FREE, bypassing every budget cap.

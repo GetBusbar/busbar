@@ -648,7 +648,7 @@ mod tests {
         assert_eq!(event_type_for_frame(&h), "");
     }
 
-    /// REGRESSION (HIGH/conformance, eventstream.rs): an AWS modeled-exception frame carries
+    /// An AWS modeled-exception frame carries
     /// `:message-type: exception` + `:exception-type: <Name>` and NO `:event-type`. `drain_frames`
     /// must surface the exception name (normalized to the Smithy union-member token the reader
     /// matches) rather than the old empty string that fell into the no-op arm and silently dropped
@@ -671,7 +671,7 @@ mod tests {
         assert_eq!(event_type_for_frame(&h2), "throttlingException");
     }
 
-    /// REGRESSION (LOW/conformance, eventstream.rs): AWS may qualify the `:exception-type`
+    /// AWS may qualify the `:exception-type`
     /// header with a Smithy namespace / shape-ARN prefix (e.g. `com.amazon.coral.service#ThrottlingException`).
     /// The prefix must be stripped before lowercasing — mirroring `extract_error`'s
     /// `rsplit(['#', '/'])` in proto/bedrock.rs — so the bare normalized name still matches the
@@ -709,7 +709,7 @@ mod tests {
         assert_eq!(event_type_for_frame(&h3), "modelStreamErrorException");
     }
 
-    /// REGRESSION (LOW #14, eventstream.rs `event_type_for_frame`): an `:exception-type` value
+    /// An `:exception-type` value
     /// that ENDS with a Smithy/ARN delimiter (`ThrottlingException#`, `aws.bedrock/`) made
     /// `rsplit(['#', '/']).next()` return the empty LEADING token, dropping the classification to
     /// `""` — re-sinking the mid-stream error into the no-op arm the namespace fix was meant to
@@ -754,7 +754,7 @@ mod tests {
         );
     }
 
-    /// REGRESSION (MEDIUM/test-coverage, eventstream.rs): an exception-typed frame
+    /// An exception-typed frame
     /// (`:message-type: exception`) that carries NO `:exception-type` header must fall through to the
     /// empty string — never panic and never misreport. This guards the `None` arm of the
     /// `:exception-type` lookup, which a future refactor adding an assertion/panic there would break.
@@ -934,7 +934,7 @@ mod tests {
         assert!(hs.contains("event")); // golden wire-contract literal (kept bare on purpose)
     }
 
-    /// REGRESSION (MEDIUM/test-coverage, eventstream.rs): the SMALLEST valid frame —
+    /// The SMALLEST valid frame —
     /// `total_len == 16` (12-byte prelude + 0-byte headers + 0-byte payload + 4-byte message CRC) —
     /// must decode cleanly. This is the lower boundary of the `(16..=MAX_FRAME_BYTES)` guard at line
     /// 61: a frame this small carries an empty header block and an empty payload (e.g. a
@@ -970,7 +970,7 @@ mod tests {
         assert!(buf.is_empty(), "minimum frame is fully consumed");
     }
 
-    /// REGRESSION (LOW/perf, eventstream.rs / frame_open+frame_close): the single-buffer
+    /// The single-buffer
     /// encoder must be BYTE-FOR-BYTE identical to the prior two-Vec (`headers` + `frame`) encoding.
     /// We independently rebuild the exact wire bytes from the documented layout — placeholder-free,
     /// in one pass — and assert equality, so a future refactor of the buffer plumbing that perturbs
@@ -1044,7 +1044,7 @@ mod tests {
         }
     }
 
-    /// REGRESSION (LOW/quality, eventstream.rs): when an oversized `:event-type` makes
+    /// When an oversized `:event-type` makes
     /// `push_string_header` reject the header, `encode_frame` drops the frame — but that drop MUST be
     /// observable via a `tracing::warn!`, not a silent empty `Vec`. This test captures WARN events:
     /// against the old (silent) code it FAILS (no warning), and passes once the warn! is emitted.
@@ -1078,7 +1078,7 @@ mod tests {
         );
     }
 
-    /// REGRESSION (LOW/quality, eventstream.rs): the same observability guarantee for
+    /// The same observability guarantee for
     /// `encode_exception_frame` — an oversized `:exception-type` drops the frame but must warn, so a
     /// swallowed mid-stream error-signal frame is not silent.
     #[test]
@@ -1103,7 +1103,7 @@ mod tests {
         );
     }
 
-    /// REGRESSION (LOW #18, eventstream.rs `drain_frames_checked`): a malformed prelude must abandon
+    /// A malformed prelude must abandon
     /// the stream via a DISTINCT propagated status (`DrainStatus::MalformedPrelude`), not be inferred
     /// from the buffer being emptied. The key discriminator this test pins: a NORMAL full drain that
     /// also leaves the buffer empty returns `DrainStatus::Ok`, so the abort signal is unambiguous —
@@ -1183,7 +1183,7 @@ mod tests {
         assert_eq!(only_frames[0].0, "messageStart");
     }
 
-    /// REGRESSION (MEDIUM/test-coverage, eventstream.rs): the smallest frame with a NON-empty
+    /// The smallest frame with a NON-empty
     /// payload that carries no headers — `total_len == 18` (12 prelude + 0 headers + 2 payload + 4
     /// CRC). Sits one above the empty-payload minimum and guards the `12 + headers_len .. total_len
     /// - 4` payload slice arithmetic at its lower edge.

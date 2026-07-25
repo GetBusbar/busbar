@@ -91,7 +91,7 @@ fn apply_rewrite_renders_per_dialect() {
     assert_eq!(b2, before, "non-text rewrite leaves bedrock untouched");
 }
 
-/// REGRESSION (audit c1r14): the gemini rewrite-hook role vocabulary must round-trip. Gemini
+/// The gemini rewrite-hook role vocabulary must round-trip. Gemini
 /// assistant turns are natively `role: "model"`; the projection now CANONICALIZES that to
 /// `assistant` (so the hook sees canonical IR), AND the write-back accepts BOTH `assistant` and
 /// `model` — so a hook that echoes the role it received no longer corrupts assistant turns into
@@ -317,7 +317,7 @@ fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
     );
 }
 
-/// REGRESSION (LOW #18, proxy engine token-sum): the buffered token-fee sum must use
+/// The buffered token-fee sum must use
 /// `saturating_add` over the UPSTREAM-CONTROLLED `input_tokens`/`output_tokens`. A hostile/buggy
 /// upstream that reports counts summing past `u64::MAX` would, under the old unchecked `+`, PANIC
 /// on the request path in debug (and silently WRAP in release). With `saturating_add` the sum
@@ -384,7 +384,7 @@ fn test_stable_hash_is_deterministic() {
     assert_ne!(stable_hash("session-abc"), stable_hash("session-xyz"));
 }
 
-/// REGRESSION (round-6 audit): THE LEDGER'S MODEL KEY IS THE RATE CARD'S MODEL KEY.
+/// THE LEDGER'S MODEL KEY IS THE RATE CARD'S MODEL KEY.
 ///
 /// The rate card is keyed by the CONFIG model name — `validate_cost_model` enforces it in both
 /// directions (every `models:` key needs a card entry; a card entry naming a non-`models:` key is a

@@ -619,7 +619,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 // Capture this restrict so it PERSISTS across a `fallback_pool` hop (which rebuilds
                 // candidates from an independent pool). Recorded for every restrict regardless of
                 // whether it narrows here — the fail-closed reject case returns below before any
-                // fallback, so a stray record is harmless. (found: audit c1r13.)
+                // fallback, so a stray record is harmless.
                 request_ctx.active_restricts.push(RestrictConstraint {
                     tags_any: tags_any.clone(),
                     on_empty: on_empty.clone(),
@@ -822,7 +822,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                         // failover; the fallback pool rebuilds candidates independently and consults
                         // `enforce_restricts`. The gate arm was the c1r13 fix; this BASE routing-policy
                         // arm (pool `route:` hook) is the sibling path that was still leaking a
-                        // compliance restrict at the pool boundary. (found: audit c1r14.)
+                        // compliance restrict at the pool boundary.
                         request_ctx.active_restricts.push(RestrictConstraint {
                             tags_any: tags_any.clone(),
                             on_empty: on_empty.clone(),

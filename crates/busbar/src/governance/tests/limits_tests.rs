@@ -302,7 +302,7 @@ fn per_request_fee_counts_into_group_budget() {
         .expect("refund re-opened the cap");
 }
 
-/// REGRESSION (found by the test agent): a REFUND must return the fee (2xx-only billing) WITHOUT
+/// A REFUND must return the fee (2xx-only billing) WITHOUT
 /// returning the request-LIMIT slot. Otherwise a caller escapes the `requests` cap by hammering
 /// failing requests: each refunds its own slot and the cap only ever counts successes.
 #[test]

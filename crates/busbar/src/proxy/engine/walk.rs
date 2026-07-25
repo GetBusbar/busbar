@@ -152,7 +152,7 @@ pub(crate) async fn forward_once(
     // The selected pool member's `reasoning` override (`WeightedLane.reasoning`), resolved by the
     // caller from its candidate slice. `None` = no member override → fall back to the lane flag. The
     // degraded path has no `cands` in scope, so the caller passes the already-resolved override here
-    // (mirrors the hot path's `effective_reasoning`). (found: audit c2r3.)
+    // (mirrors the hot path's `effective_reasoning`).
     reasoning_override: Option<bool>,
 ) -> Result<Response, ()> {
     // Re-parse body for per-lane model rewriting. An OPAQUE (non-JSON) body — multipart/binary
@@ -224,7 +224,7 @@ pub(crate) async fn forward_once(
         v,
         req_content_type,
         // Honor the pool member's `reasoning` override (as the hot path does via
-        // `effective_reasoning`), falling back to the lane-level flag. (found: audit c2r3.)
+        // `effective_reasoning`), falling back to the lane-level flag.
         reasoning_override.unwrap_or(app.lanes[i].reasoning),
         body,
     ) {
@@ -886,7 +886,7 @@ pub(crate) async fn handle_fallback_pool(
     // Re-apply any compliance restrict from the primary pool against THIS fallback pool's own member
     // tags — the fallback pool is an independent membership, so without this the "restrictions hold
     // across failover" guarantee would break at the pool boundary. Fail closed (503) if a required
-    // restrict leaves no eligible fallback lane. (found: audit c1r13.)
+    // restrict leaves no eligible fallback lane.
     let fallback_cands = match request_ctx.enforce_restricts(&app, pool_name, fallback_cands) {
         Ok(c) => c,
         Err(name) => {

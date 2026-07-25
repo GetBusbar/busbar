@@ -448,7 +448,6 @@ fn finish(
 /// at admission (`charged`, from `governance_guard`). Admitting a request WITHOUT charging (store-
 /// error fail-open, or governance off) and then refunding on a non-2xx would blind-decrement OTHER
 /// requests' spend/count in the same window — so those requests must finish with `charged = false`.
-/// (found: audit c2r1.)
 #[allow(clippy::too_many_arguments)]
 fn finish_admitted(
     app: &Arc<App>,

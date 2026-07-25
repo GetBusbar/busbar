@@ -548,7 +548,6 @@ impl ProtocolReader for AnthropicReader {
         // for redacted reasoning — a `Thinking` BlockStart plus a `RedactedReasoningDelta` carrying
         // the opaque bytes — from this one start event (the natural `content_block_stop` that follows
         // produces the BlockStop). Mirrors the Bedrock streaming reader + the non-stream `read_block`.
-        // (found: audit c2r2.)
         if event_type == EVT_CONTENT_BLOCK_START {
             if let Some(block) = data.get("content_block") {
                 if block.get("type").and_then(|t| t.as_str()) == Some(BLOCK_TYPE_REDACTED_THINKING)

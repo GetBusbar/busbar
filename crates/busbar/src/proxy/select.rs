@@ -44,7 +44,7 @@ impl RequestCtx {
     /// full membership, so without re-applying here a compliance (e.g. BAA-only) restrict would be
     /// silently dropped at the pool boundary. Mirrors Reconcile-2 exactly: a `Weighted` on_empty is an
     /// advisory escape (skip this restrict on this hop); the fail-closed default returns `Err(name)`
-    /// so the caller REJECTS rather than spilling to an ineligible lane. (found: audit c1r13.)
+    /// so the caller REJECTS rather than spilling to an ineligible lane.
     pub(crate) fn enforce_restricts(
         &self,
         app: &App,

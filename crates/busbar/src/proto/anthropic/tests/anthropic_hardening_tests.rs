@@ -356,7 +356,7 @@ fn extract_error_context_length_from_message() {
     );
 }
 
-/// Regression (block-index clamp): a streaming `content_block_start` whose `index` is an
+/// A streaming `content_block_start` whose `index` is an
 /// upstream-controlled pathological value (`u64::MAX`) must be CLAMPED to
 /// `MAX_ANTHROPIC_BLOCK_INDEX` before it enters the IR, so a downstream writer (GeminiWriter
 /// `open_tools`, Bedrock `contentBlockIndex`) never allocates/serializes against the raw value.
@@ -383,7 +383,7 @@ fn content_block_start_clamps_pathological_index() {
     }
 }
 
-/// Regression (block-index clamp, delta + stop sites): the same clamp must apply to
+/// The same clamp must apply to
 /// `content_block_delta` and `content_block_stop`, not just `content_block_start` — all three
 /// share `read_clamped_block_index`. Guards that the class is fixed at every read site.
 #[test]
@@ -418,7 +418,7 @@ fn content_block_delta_and_stop_clamp_pathological_index() {
     }
 }
 
-/// Regression (cross-protocol sibling of the Cohere context-length gate): a 429 whose
+/// A 429 whose
 /// body merely MENTIONS tokens/length must NOT be reclassified to context_length. The
 /// message-scan override is now gated on a request-size status (400/413), so a 429 keeps its
 /// rate-limit disposition: `extract_error` leaves `provider_code` empty of the context-length
@@ -448,7 +448,7 @@ fn extract_error_429_with_token_body_not_reclassified_to_context_length() {
     );
 }
 
-/// Regression (positive case): a genuine 400 oversized-prompt body STILL
+/// A genuine 400 oversized-prompt body STILL
 /// synthesizes the canonical context-length code under the new 400/413 gate, so legitimate
 /// context-length fail-over is unaffected by the gating change.
 #[test]
@@ -706,7 +706,7 @@ fn cross_protocol_write_synthesizes_valid_unique_id() {
     assert_eq!(out1.get("type").and_then(|v| v.as_str()), Some("message"));
 }
 
-/// Regression (recurring across rounds): an IR carrying NEITHER `id` NOR `created` — the exact
+/// An IR carrying NEITHER `id` NOR `created` — the exact
 /// shape a Bedrock Converse reader produces (its `read_response` returns `created: None` and no
 /// Anthropic id) — must STILL emit a synthesized `msg_`-prefixed id. `Message.id` is a REQUIRED,
 /// non-optional field in the official Anthropic SDK, so omitting it (the old `(None, None)` arm)
@@ -1318,7 +1318,7 @@ fn cache_control_on_image_and_thinking_blocks_round_trips() {
     );
 }
 
-/// Regression (cross-protocol image data loss): an Anthropic URL-type image source
+/// An Anthropic URL-type image source
 /// `{"type":"url","url":...}` must round-trip through the `image_url` sentinel rather than
 /// silently flatten to empty base64 (the base64 path reads media_type/data, both absent from a
 /// url source). Old code: `media_type`/`data` both `""`; fixed code: `media_type:"image_url"`,
@@ -1423,7 +1423,7 @@ fn read_block_unmodeled_document_type_degrades_not_400() {
     }
 }
 
-/// REGRESSION (audit c2r2): the STREAMING reader must not drop a `redacted_thinking` block. The
+/// The STREAMING reader must not drop a `redacted_thinking` block. The
 /// opaque `data` rides inline on `content_block_start` (no deltas follow), so the reader emits a
 /// `Thinking` BlockStart + a `RedactedReasoningDelta` carrying the bytes; the later
 /// `content_block_stop` yields the BlockStop. Before the fix the block hit `_ => None` and the
@@ -1576,7 +1576,7 @@ fn synth_id_matches_native_length_and_alphabet() {
     );
 }
 
-/// Regression (unchecked cast truncation): `max_tokens`/`top_k` larger than `u32::MAX` must drop to
+/// `max_tokens`/`top_k` larger than `u32::MAX` must drop to
 /// `None` via checked `try_from`, NOT silently truncate. Old code: `4_294_967_297 as u32` == 1,
 /// forwarding a corrupted cap. Fixed code: out-of-range → None.
 #[test]
@@ -1666,7 +1666,7 @@ fn write_message_drops_unsigned_thinking_block() {
     assert!(!texts.contains(&"unsigned reasoning"));
 }
 
-/// Regression (empty-content): when every content block is filtered out — e.g. an
+/// When every content block is filtered out — e.g. an
 /// all-thinking assistant message whose unsigned thinking blocks are all dropped on the request
 /// path — `write_message` must emit `content: []` (an empty array, a valid zero-block message),
 /// NOT `content: ""` (an empty string, which Anthropic's Messages API rejects with a 400). The
@@ -1838,7 +1838,7 @@ fn message_start_emits_present_usage_with_cache_fields() {
     );
 }
 
-/// Regression (terminal-event drop): reading a `message_delta` whose data omits the
+/// Reading a `message_delta` whose data omits the
 /// `usage` key must STILL yield the `MessageDelta` event — `usage` is optional on read and must
 /// not be `?`-propagated, because dropping the event would discard the terminal `stop_reason` and
 /// leave the client unable to tell whether generation completed. Counters default to zero.
@@ -2379,7 +2379,7 @@ fn read_request_promotes_system_role_message_into_system_blocks() {
     }
 }
 
-/// Regression (writer): `write_request` must NEVER emit a message with
+/// `write_request` must NEVER emit a message with
 /// `role:"system"` — even for a CROSS-PROTOCOL IR that still carries an `IrRole::System` message
 /// in `req.messages` (one that never passed through Anthropic's own `read_request` promotion).
 /// The writer folds it into the top-level `system` field and filters it out of `messages`,
@@ -2456,7 +2456,7 @@ fn write_request_never_emits_system_role_message() {
     );
 }
 
-/// Regression (writer unit): a direct `write_message` call on an `IrRole::System`
+/// A direct `write_message` call on an `IrRole::System`
 /// message must NOT emit `role:"system"` (the invalid Anthropic role). Defense-in-depth: even if
 /// a future caller bypasses `write_request`, the writer can never produce the rejected role.
 #[test]
@@ -3779,7 +3779,7 @@ fn read_response_cache_usage_is_additive_not_subtracted() {
     );
 }
 
-/// REGRESSION (finding P1 #1): the request-side unsigned-thinking filter in `write_message` must
+/// The request-side unsigned-thinking filter in `write_message` must
 /// NOT drop a REDACTED thinking block. A `redacted_thinking` block is carried in the IR as
 /// `Thinking { redacted: true, signature: None }` (opaque encrypted `data`, no signature — the
 /// Anthropic Messages API accepts `redacted_thinking` WITHOUT a signature, unlike a plaintext
@@ -3841,7 +3841,7 @@ fn write_message_keeps_redacted_thinking_block() {
     );
 }
 
-/// REGRESSION (finding P1 #2): the streaming `content_block_start` skeleton must carry the SEED
+/// The streaming `content_block_start` skeleton must carry the SEED
 /// field for each block type so an SDK accumulator initializes the field before any delta arrives:
 /// a `text` start ships `text:""`, a `tool_use` start ships `input:{}`, and a `thinking` start
 /// ships `thinking:""`. Omitting the seed leaves the SDK accumulator field undefined and the first
