@@ -302,7 +302,35 @@ impl AuditLog {
     /// retries from the same point (the mutation itself never fails). If the gap is older than the ring
     /// bound (many consecutive failures), the un-recoverable seq(s) simply stay missing - the ring is
     /// the only in-process source - but a single transient hiccup can no longer corrupt the chain.
-    fn durable_write_through(&self, store: &dyn busbar_api::Store, new_seq: u64) {
+    /// Renumber the ring's NON-DURABLE suffix — every entry whose seq the store has not confirmed —
+    /// onto consecutive seqs above `durable_max`, re-chained to `anchor_hash` (the durable tail).
+    /// Returns the highest seq assigned, or `None` if nothing needed rebasing. Caller holds
+    /// `durable_lock`.
+    ///
+    /// The suffix is taken by POSITION, not by `seq <= durable_max`: a concurrent `record_by` may
+    /// already have appended an above-floor entry chained to one of the stranded hashes, and leaving
+    /// it behind would break the chain at the join instead of at the skip. Rewriting the whole
+    /// suffix in ring order keeps it contiguous by construction.
+    ///
+    /// No store I/O happens here — the entries lock is never held across a store call.
+    fn rebase_nondurable_suffix(&self, durable_max: u64, anchor_hash: &str) -> Option<u64> {
+        let mut q = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let first = q.iter().position(|e| e.seq <= durable_max)?;
+        let mut next_seq = durable_max + 1;
+        let mut prev = anchor_hash.to_string();
+        for entry in q.iter_mut().skip(first) {
+            entry.seq = next_seq;
+            entry.prev_hash = prev.clone();
+            entry.hash = entry.compute_hash();
+            prev = entry.hash.clone();
+            next_seq += 1;
+        }
+        self.seq
+            .fetch_max(next_seq, std::sync::atomic::Ordering::Relaxed);
+        Some(next_seq - 1)
+    }
+
+    fn durable_write_through(&self, store: &dyn busbar_api::Store, mut new_seq: u64) {
         let _serial = self.durable_lock.lock().unwrap_or_else(|e| e.into_inner());
         // SEALED while the durable floor is unknown (a boot restore whose read failed): appending
         // now could overwrite durable history at seqs the store already holds. Retry the floor read
@@ -313,15 +341,30 @@ impl AuditLog {
         {
             match store.list_audit_tail(1) {
                 Ok(tail) => {
-                    let durable_max = tail.iter().map(|r| r.seq).max().unwrap_or(0);
-                    self.seq
-                        .fetch_max(durable_max + 1, std::sync::atomic::Ordering::Relaxed);
+                    // The tail's HASH, not just its seq: it is the authoritative predecessor for
+                    // whatever gets appended next. Chaining the resumed range to the RAM ring's back
+                    // instead is what welds a break into the durable chain.
+                    let anchor = tail.iter().max_by_key(|r| r.seq);
+                    let durable_max = anchor.map(|r| r.seq).unwrap_or(0);
+                    let anchor_hash = anchor.map(|r| r.hash.clone()).unwrap_or_default();
                     self.durable_high
                         .fetch_max(durable_max, std::sync::atomic::Ordering::Relaxed);
+                    // Entries recorded while the floor was unknown hold seqs BELOW it — seqs the
+                    // store already occupies with DIFFERENT entries. They are RAM-only (never
+                    // persisted), so renumbering them above the floor rewrites no durable history;
+                    // it resolves an identity collision that would otherwise strand them forever.
+                    // This call's captured `new_seq` names a seq that no longer exists once the
+                    // suffix is renumbered, so the backfill target moves with it.
+                    if let Some(top) = self.rebase_nondurable_suffix(durable_max, &anchor_hash) {
+                        new_seq = top;
+                    }
+                    self.seq
+                        .fetch_max(durable_max + 1, std::sync::atomic::Ordering::Relaxed);
                     self.durable_floor_unknown
                         .store(false, std::sync::atomic::Ordering::SeqCst);
                     tracing::info!(
                         durable_max,
+                        resume_at = new_seq,
                         "durable audit floor recovered; resuming the write-through above it"
                     );
                 }
@@ -420,8 +463,15 @@ impl AuditLog {
         // hit the unrepairable-gap branch immediately and durable audit stayed dead for the life of
         // the process. `fetch_max` only ever RAISES it, so a floor already learned from the store
         // (which is authoritative) wins.
+        //
+        // Seeded to the OLDEST retained seq minus one, not the highest: the snapshot is evidence of
+        // what the RING holds, never of what the STORE holds. Claiming the whole range as durable
+        // meant a switch to a fresh store (memory → sqlite) never backfilled any of it, and those
+        // entries were lost from both sources at the next restart. One below the oldest is exactly
+        // the range the ring can still supply.
+        let backfill_floor = q.iter().map(|e| e.seq).min().unwrap_or(0).saturating_sub(1);
         self.durable_high
-            .fetch_max(max_seq, std::sync::atomic::Ordering::Relaxed);
+            .fetch_max(backfill_floor, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Verify the tamper-evidence chain over the RETAINED entries: every entry's `hash` recomputes
@@ -849,26 +899,41 @@ mod tests {
         store
             .fail_reads
             .store(false, std::sync::atomic::Ordering::SeqCst);
-        // The first mutation after recovery RECOVERS the floor; its own seq was allocated while the
-        // floor was unknown, so it is (loudly) skipped rather than written over durable history.
+        // The first mutation after recovery RECOVERS the floor. The entries recorded while the
+        // floor was unknown hold seqs the store already occupies with DIFFERENT entries, so they are
+        // renumbered above the floor and persisted — not dropped.
         log2.record_by("plugin.install", "plugin:y", OUTCOME_APPLIED, "admin");
-        // The next one lands durably, ABOVE the durable max.
         log2.record_by("plugin.install", "plugin:z", OUTCOME_APPLIED, "admin");
         let after = store.list_audit().unwrap();
-        assert_eq!(after.len(), 4, "the durable log GREW; nothing was replaced");
-        assert!(
-            after.last().unwrap().seq > 3,
-            "the post-recovery entry appended past the durable max: {:?}",
-            after.last().unwrap().seq
-        );
         assert_eq!(
-            after.last().unwrap().resource,
-            "plugin:z",
-            "the post-recovery mutation is what landed"
+            after.len(),
+            6,
+            "every outage-window entry is persisted, not stranded: 3 originals + x, y, z"
+        );
+        let landed: Vec<&str> = after.iter().map(|r| r.resource.as_str()).collect();
+        assert_eq!(
+            &landed[3..],
+            &["plugin:x", "plugin:y", "plugin:z"],
+            "the outage-window entries kept their ORDER when renumbered"
+        );
+        assert!(
+            after[3].seq > 3,
+            "and were renumbered above the durable max, never over it: {:?}",
+            after[3].seq
         );
         for (i, (seq, action)) in before.iter().enumerate() {
             assert_eq!((after[i].seq, &after[i].action), (*seq, action));
         }
+
+        // THE POINT OF THE WHOLE FIX: a later boot must verify. Before, the chain was welded to a
+        // never-persisted entry, so restore reported a break — a permanent false tamper alarm from
+        // one transient read failure.
+        let log3 = AuditLog::new();
+        log3.set_sink(store.clone());
+        let restored = log3
+            .restore_from_store(store.as_ref())
+            .expect("the durable chain verifies after a transient read failure");
+        assert_eq!(restored, 6, "and restores every entry");
     }
 
     /// #15 + #24: after a FILE-SNAPSHOT restore (the durable restore did not supply the ring), the
@@ -900,13 +965,24 @@ mod tests {
         let persisted = store.list_audit().unwrap();
         assert_eq!(
             persisted.len(),
-            1,
-            "the post-restore mutation reached the durable sink"
+            4,
+            "the restored ring is BACKFILLED (seq 10..=12) and the new mutation appended — the \
+             snapshot is evidence of what the RING holds, never of what the STORE holds"
         );
-        assert!(
-            persisted[0].seq > 12,
-            "and appended past the restored snapshot's max seq: {}",
-            persisted[0].seq
+        assert_eq!(
+            persisted.iter().map(|r| r.seq).collect::<Vec<_>>(),
+            vec![10, 11, 12, 13],
+            "contiguous from the ring's oldest retained seq"
+        );
+
+        // A pruned ring must still not aim the backfill at seq 1 — that hits the unrepairable-gap
+        // branch and kills durable audit for the process, which is what seeding to 0 would do.
+        let log2 = AuditLog::new();
+        log2.set_sink(store.clone());
+        assert_eq!(
+            log2.restore_from_store(store.as_ref())
+                .expect("the backfilled chain verifies"),
+            4
         );
     }
 
