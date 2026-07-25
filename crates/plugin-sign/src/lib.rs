@@ -797,7 +797,10 @@ mod tests {
         let m = sign(&release, m, artifact);
         let pol = policy(Some(&release), &[], false, false);
         let err = evaluate(artifact, &m, &pol).unwrap_err();
-        assert!(err.reason.contains("first-party anti-downgrade"), "got {err:?}");
+        assert!(
+            err.reason.contains("first-party anti-downgrade"),
+            "got {err:?}"
+        );
 
         // Loose posture cannot launder it either (verified first-party never consults opt-ins).
         let loose = policy(Some(&release), &[], true, true);
@@ -826,7 +829,13 @@ mod tests {
 
         // A clears its lowered floor and loads.
         assert!(
-            matches!(evaluate(artifact_a, &a, &pol), Ok(Verdict::Trusted { first_party: true, .. })),
+            matches!(
+                evaluate(artifact_a, &a, &pol),
+                Ok(Verdict::Trusted {
+                    first_party: true,
+                    ..
+                })
+            ),
             "the pinned first-party plugin clears its own lowered floor"
         );
         // B, unpinned, still faces the full binary_version (1.5.0) floor and is REJECTED — the M1 fix.
