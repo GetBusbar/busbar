@@ -2349,4 +2349,87 @@ mod signed_token {
             .unwrap_err();
         assert!(err.0.contains("no signing key"), "got {}", err.0);
     }
+
+    // ── REVOCATION IS AUTHORITATIVE, NOT A BOOT SNAPSHOT (audit round-5 HIGH-5 / HIGH-8) ─────────
+    //
+    // The denylist used to be hydrated ONCE in `GovState::new_with_signer` and thereafter mutated
+    // only by a revoke performed by THIS process. Consequences, both live auth bypasses:
+    //   * a revoke (or a DELETE, which denylists before removing the binding) performed on ANOTHER
+    //     node of a fleet sharing one durable store never reached this node — the credential kept
+    //     authenticating for the entire life of the process;
+    //   * the same for any revocation written out-of-band directly against the store.
+    // The fix makes every auth path re-read the store denylist once its copy is older than
+    // `REVOCATION_SYNC_TTL_SECS`. These two cases are the class: (a) local revoke = zero window,
+    // (b) peer revoke = bounded window.
+
+    /// (a) A revoke performed on THIS node is authoritative on the VERY NEXT credential check —
+    /// both on the signed-token path (`verify_token`) and on the shared `is_revoked` predicate the
+    /// legacy-hash and inbound-SigV4 admit paths consult. No window at all.
+    #[test]
+    fn local_revoke_rejects_the_very_next_auth_attempt() {
+        let g = gov();
+        let base = crate::store::now();
+        let (binding, token) = g
+            .mint_signed(spec("bob", None, None), base + 10_000, base)
+            .expect("mint");
+        assert!(
+            g.verify_token(&token, base + 1).is_some(),
+            "admitted before the revoke"
+        );
+
+        g.revoke(&binding.id, "compromised").expect("revoke");
+
+        assert!(
+            g.verify_token(&token, base + 1).is_none(),
+            "the very next signed-token check after a local revoke must reject — no window"
+        );
+        assert!(
+            g.is_revoked_at(&binding.id, base + 1),
+            "the predicate the legacy-hash and SigV4 admit paths consult must agree immediately"
+        );
+    }
+
+    /// (b) A revoke written DIRECTLY to the shared store by a "peer" node (this node's in-memory set
+    /// is never told) is honoured here within `REVOCATION_SYNC_TTL_SECS` — the documented staleness
+    /// window — instead of never. RED without the check-time re-sync: the final assertion admits
+    /// forever.
+    #[test]
+    fn peer_revoke_written_to_the_store_is_honoured_within_the_window() {
+        use crate::governance::{Store, REVOCATION_SYNC_TTL_SECS};
+        let store = Arc::new(MemoryStore::new());
+        let signer = TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID);
+        let g = Arc::new(
+            GovState::new_with_signer(store.clone(), Some("t".into()), Some(signer)).unwrap(),
+        );
+        let base = crate::store::now();
+        let (binding, token) = g
+            .mint_signed(spec("bob", None, None), base + 10_000, base)
+            .expect("mint");
+        assert!(g.verify_token(&token, base).is_some(), "admitted at mint");
+
+        // THE PEER: another node revokes the subject. The write lands in the SHARED store only —
+        // nothing touches this process's in-memory denylist.
+        store
+            .add_denylist(&binding.id, "revoked by a peer node")
+            .expect("peer revoke persists");
+
+        // Inside the window this node may still admit — that is the documented, bounded exposure.
+        // (Asserted as a fact about the contract, not as a desirable property.)
+        assert!(
+            g.verify_token(&token, base).is_some(),
+            "inside the staleness window the cached set still governs (documented)"
+        );
+
+        // Past the window the next credential check re-reads the store and rejects — on BOTH the
+        // signed-token path and the `is_revoked` predicate.
+        let past = base + REVOCATION_SYNC_TTL_SECS + 2;
+        assert!(
+            g.verify_token(&token, past).is_none(),
+            "a peer's revoke must be honoured within REVOCATION_SYNC_TTL_SECS ({REVOCATION_SYNC_TTL_SECS}s)"
+        );
+        assert!(
+            g.is_revoked_at(&binding.id, past),
+            "the SigV4/legacy-hash admit predicate re-syncs on the same window"
+        );
+    }
 }
