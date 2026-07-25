@@ -1252,6 +1252,11 @@ async fn test_admin_v1_scope_ladder_e2e_with_group_mapped_principals() {
 /// operator (full) may register all of them.
 #[tokio::test]
 async fn test_admin_v1_hooks_register_cannot_escalate_via_grants_or_global() {
+    drive_hook_escalation_errors().await;
+}
+
+/// See the test above. Split out so the class-level over-claim test can drive it directly.
+async fn drive_hook_escalation_errors() {
     crate::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
@@ -1323,6 +1328,25 @@ async fn test_admin_v1_hooks_register_cannot_escalate_via_grants_or_global() {
         201,
         "a shape-only, non-global hook is within hooks-register"
     );
+
+    // The guard is on the SHAPE, not on the verb: REPLACING that same shape-only hook with a
+    // content-seeing one over PUT is the identical escalation and the identical 403. (POST alone
+    // would leave the PUT door open — and `openapi.json` documents the 403 on PUT for this reason.)
+    let r = client
+        .put(format!("http://{addr}/api/v1/admin/hooks/h"))
+        .header("x-admin-token", "grp:registrars")
+        .header("content-type", "application/json")
+        .body(serde_json::json!({"config": base(serde_json::json!({"prompt": "rw"}))}).to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status().as_u16(),
+        403,
+        "hooks-register must not PUT a hook into a content-seeing form"
+    );
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "forbidden");
 
     // The operator (full) can register a prompt: rw global gate (unique name — `h` is taken).
     let r = client
@@ -7333,6 +7357,13 @@ async fn serve_keys_fixture(
 /// `AdminError` + `err_json` may change how the bytes are PRODUCED, never what they ARE.
 #[tokio::test]
 async fn keys_error_surface_is_byte_stable() {
+    drive_keys_error_surface().await;
+}
+
+/// Drive every pinned keys error path and assert the wire is byte-identical to the golden. Split
+/// out of the `#[tokio::test]` so the class-level over-claim test can RUN it (and collect its
+/// emissions) without depending on test ordering.
+async fn drive_keys_error_surface() {
     crate::metrics::init();
     // A 65-character id (the cap is 64) and an id that cannot exist.
     const OVERLONG: &str = "vk_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -7741,4 +7772,1047 @@ const fn c(
         headers,
         body,
     }
+}
+
+// ── DESIGN D: WITNESS DRIVER FOR THE DECLARED ERROR SET ───────────────────────────────────────────
+//
+// `contract::taxonomy::declared_errors` is what `openapi.json` documents. Under-claim (a handler
+// emits a kind the declaration omits) is already fatal on the spot — the v1 router's recording layer
+// panics inside whichever test triggered it. OVER-claim (the declaration lists a response no handler
+// can produce) has no such moment: it needs a WITNESS. This test is the driver that produces one for
+// every declared entry the rest of the suite does not already exercise, so
+// `declared_error_set_has_no_over_claim` (in the json tests) can assert that every documented error
+// is a real one. A declared 409 nobody can trigger is a lie in the contract; this is how it stays
+// impossible to keep.
+
+/// Drive the non-keys admin error paths that the rest of the suite leaves unexercised: the group
+/// CRUD errors, the version-guard errors on every If-Match-guarded mutation, the list-GET query
+/// rejections and the config-plane read errors. Assertions are deliberately thin (status + code) —
+/// the POINT of the test is the emission, which the router's recording layer witnesses.
+#[tokio::test]
+async fn admin_error_surface_witnesses_every_declared_response() {
+    drive_admin_error_surface().await;
+}
+
+/// Build a FRESH admin fixture for the error-surface driver: a base-config group (`team`) and hook
+/// (`basehook`) — file-owned, so the `conflict` base-defined arms are reachable — plus an OVERLAY
+/// group (`og`) and hook (`oh`) created over the API, for the arms that must NOT hit the
+/// base-defined guard. Returns the address and the server task.
+///
+/// Each batch of cases gets its own fixture: the admin surface enforces a per-principal, per-class
+/// MUTATION BUDGET (10/min for the config plane), and a driver that exercises every declared error
+/// blows straight through it. A fresh App carries a fresh limiter, so the batching keeps the driver
+/// exercising HANDLERS rather than the rate limiter.
+async fn admin_error_fixture() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let app = TestApp::new()
+        .governance(gov)
+        .group(
+            "team",
+            crate::config::GroupCfg {
+                parent: None,
+                enabled: true,
+                limits: vec![],
+                child_default: None,
+            },
+        )
+        .base_hook(
+            "basehook",
+            crate::config::HookCfg {
+                kind: crate::config::HookKind::Gate,
+                plugin: "test-hook".to_string(),
+                timeout_ms: 25,
+                on_error: "reject".to_string(),
+                prompt: crate::config::PromptAccess::No,
+                user: crate::config::UserAccess::No,
+                priority: 0,
+                at: None,
+                settings: serde_json::Map::new(),
+                on_empty: None,
+                global: false,
+                default: false,
+            },
+        )
+        .build();
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    for (rel, body) in [
+        (
+            "/groups",
+            r#"{"name":"og","config":{"parent":"team","limits":[]}}"#,
+        ),
+        (
+            "/hooks",
+            r#"{"name":"oh","config":{"kind":"gate","plugin":"test-hook"}}"#,
+        ),
+    ] {
+        let created = client
+            .post(format!("http://{addr}/api/v1/admin{rel}"))
+            .header("x-admin-token", "admintok")
+            .header("content-type", "application/json")
+            .body(body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(created.status().as_u16(), 201, "fixture: POST {rel}");
+    }
+    (addr, server)
+}
+
+/// See the test above. Split out so the class-level over-claim test can drive it directly.
+async fn drive_admin_error_surface() {
+    crate::metrics::init();
+    // A syntactically valid but WRONG config-plane ETag — the stale guard, not the parser.
+    const STALE: &str = "\"999999\"";
+    const BAD_ETAG: &str = "not-an-etag";
+    let group_body = r#"{"config":{"limits":[]}}"#;
+    // (label, method, rel, if-match, body, expected status, expected code)
+    /// One driven error case: (label, method, relative path, `If-Match`, body, expected status,
+    /// expected frozen `code`).
+    type ErrCase = (
+        &'static str,
+        &'static str,
+        &'static str,
+        Option<&'static str>,
+        Option<&'static str>,
+        u16,
+        &'static str,
+    );
+    let cases: &[ErrCase] = &[
+        // ── POST /groups ──────────────────────────────────────────────────────────────────────
+        (
+            "groups_post_invalid_tree",
+            "POST",
+            "/groups",
+            None,
+            Some(r#"{"name":"x","config":{"parent":"ghost","limits":[]}}"#),
+            400,
+            "invalid_request",
+        ),
+        (
+            "groups_post_base_defined",
+            "POST",
+            "/groups",
+            None,
+            Some(r#"{"name":"team","config":{"limits":[]}}"#),
+            409,
+            "conflict",
+        ),
+        (
+            "groups_post_stale",
+            "POST",
+            "/groups",
+            Some(STALE),
+            Some(r#"{"name":"z","config":{"limits":[]}}"#),
+            409,
+            "version_conflict",
+        ),
+        (
+            "groups_post_bad_if_match",
+            "POST",
+            "/groups",
+            Some(BAD_ETAG),
+            Some(r#"{"name":"z","config":{"limits":[]}}"#),
+            400,
+            "invalid_request",
+        ),
+        // ── PUT /groups/{name} ────────────────────────────────────────────────────────────────
+        (
+            "groups_put_bad_if_match",
+            "PUT",
+            "/groups/og",
+            Some(BAD_ETAG),
+            Some(group_body),
+            400,
+            "invalid_request",
+        ),
+        (
+            "groups_put_unknown",
+            "PUT",
+            "/groups/ghost",
+            None,
+            Some(group_body),
+            404,
+            "not_found",
+        ),
+        (
+            "groups_put_base_defined",
+            "PUT",
+            "/groups/team",
+            None,
+            Some(group_body),
+            409,
+            "conflict",
+        ),
+        (
+            "groups_put_stale",
+            "PUT",
+            "/groups/og",
+            Some(STALE),
+            Some(group_body),
+            409,
+            "version_conflict",
+        ),
+        // ── PATCH /groups/{name} ──────────────────────────────────────────────────────────────
+        (
+            "groups_patch_bad_if_match",
+            "PATCH",
+            "/groups/og",
+            Some(BAD_ETAG),
+            Some("{}"),
+            400,
+            "invalid_request",
+        ),
+        (
+            "groups_patch_unknown",
+            "PATCH",
+            "/groups/ghost",
+            None,
+            Some("{}"),
+            404,
+            "not_found",
+        ),
+        (
+            "groups_patch_base_defined",
+            "PATCH",
+            "/groups/team",
+            None,
+            Some("{}"),
+            409,
+            "conflict",
+        ),
+        (
+            "groups_patch_stale",
+            "PATCH",
+            "/groups/og",
+            Some(STALE),
+            Some("{}"),
+            409,
+            "version_conflict",
+        ),
+        (
+            "groups_patch_invalid_tree",
+            "PATCH",
+            "/groups/og",
+            None,
+            Some(r#"{"parent":"ghost"}"#),
+            400,
+            "invalid_request",
+        ),
+        // ── DELETE /groups/{name} ─────────────────────────────────────────────────────────────
+        (
+            "groups_delete_bad_if_match",
+            "DELETE",
+            "/groups/og",
+            Some(BAD_ETAG),
+            None,
+            400,
+            "invalid_request",
+        ),
+        (
+            "groups_delete_unknown",
+            "DELETE",
+            "/groups/ghost",
+            None,
+            None,
+            404,
+            "not_found",
+        ),
+        (
+            "groups_delete_base_defined",
+            "DELETE",
+            "/groups/team",
+            None,
+            None,
+            409,
+            "conflict",
+        ),
+        (
+            "groups_delete_stale",
+            "DELETE",
+            "/groups/og",
+            Some(STALE),
+            None,
+            409,
+            "version_conflict",
+        ),
+        // ── Hooks: the version-guard arms the escalation tests don't reach ─────────────────────
+        (
+            "hooks_post_stale",
+            "POST",
+            "/hooks",
+            Some(STALE),
+            Some(r#"{"name":"h2","config":{"kind":"gate","plugin":"test-hook"}}"#),
+            409,
+            "version_conflict",
+        ),
+        (
+            "hooks_put_bad_if_match",
+            "PUT",
+            "/hooks/oh",
+            Some(BAD_ETAG),
+            Some(r#"{"config":{"kind":"gate","plugin":"test-hook"}}"#),
+            400,
+            "invalid_request",
+        ),
+        (
+            "hooks_delete_bad_if_match",
+            "DELETE",
+            "/hooks/oh",
+            Some(BAD_ETAG),
+            None,
+            400,
+            "invalid_request",
+        ),
+        (
+            "hooks_delete_stale",
+            "DELETE",
+            "/hooks/oh",
+            Some(STALE),
+            None,
+            409,
+            "version_conflict",
+        ),
+        (
+            "hook_settings_bad_if_match",
+            "PATCH",
+            "/hooks/oh/settings",
+            Some(BAD_ETAG),
+            Some(r#"{"settings":{}}"#),
+            400,
+            "invalid_request",
+        ),
+        (
+            "hook_settings_base_defined",
+            "PATCH",
+            "/hooks/basehook/settings",
+            None,
+            Some(r#"{"settings":{}}"#),
+            409,
+            "conflict",
+        ),
+        (
+            "hook_settings_stale",
+            "PATCH",
+            "/hooks/oh/settings",
+            Some(STALE),
+            Some(r#"{"settings":{}}"#),
+            409,
+            "version_conflict",
+        ),
+        // ── List/read GETs whose query string is rejected at the door ─────────────────────────
+        (
+            "pools_bad_detail",
+            "GET",
+            "/pools?detail=maybe",
+            None,
+            None,
+            400,
+            "invalid_request",
+        ),
+        (
+            "usage_bad_window",
+            "GET",
+            "/usage?window=soon",
+            None,
+            None,
+            400,
+            "invalid_request",
+        ),
+        (
+            "audit_bad_cursor",
+            "GET",
+            "/audit?cursor=%21%21",
+            None,
+            None,
+            400,
+            "invalid_request",
+        ),
+        (
+            "versions_bad_cursor",
+            "GET",
+            "/config/versions?cursor=%21%21",
+            None,
+            None,
+            400,
+            "invalid_request",
+        ),
+        (
+            "diff_missing_params",
+            "GET",
+            "/config/diff",
+            None,
+            None,
+            400,
+            "invalid_request",
+        ),
+        (
+            "diff_unknown_version",
+            "GET",
+            "/config/diff?from=900&to=901",
+            None,
+            None,
+            404,
+            "not_found",
+        ),
+        // ── Config plane ──────────────────────────────────────────────────────────────────────
+        (
+            "config_rollback_bad_body",
+            "POST",
+            "/config/rollback",
+            None,
+            Some("{"),
+            400,
+            "invalid_request",
+        ),
+        (
+            "config_rollback_bad_if_match",
+            "POST",
+            "/config/rollback",
+            Some(BAD_ETAG),
+            Some(r#"{"version":1}"#),
+            400,
+            "invalid_request",
+        ),
+        (
+            "config_apply_bad_body",
+            "POST",
+            "/config/apply",
+            None,
+            Some("{"),
+            400,
+            "invalid_request",
+        ),
+        (
+            "config_settings_bad_if_match",
+            "PUT",
+            "/config/settings",
+            Some(BAD_ETAG),
+            Some("{}"),
+            400,
+            "invalid_request",
+        ),
+        (
+            "admin_auth_bad_if_match",
+            "PUT",
+            "/admin-auth",
+            Some(BAD_ETAG),
+            Some(r#"{"admin_auth":[]}"#),
+            400,
+            "invalid_request",
+        ),
+        // ── Plugins ───────────────────────────────────────────────────────────────────────────
+        (
+            "plugin_rollback_bad_body",
+            "POST",
+            "/plugins/rollback",
+            None,
+            Some("{"),
+            400,
+            "invalid_request",
+        ),
+        (
+            "plugin_rollback_bad_if_match",
+            "POST",
+            "/plugins/rollback",
+            Some(BAD_ETAG),
+            Some(r#"{"file":"p.tar.gz"}"#),
+            400,
+            "invalid_request",
+        ),
+        (
+            "plugin_rollback_stale",
+            "POST",
+            "/plugins/rollback",
+            Some(STALE),
+            Some(r#"{"file":"p.tar.gz"}"#),
+            409,
+            "version_conflict",
+        ),
+        // ── Single-resource reads: the 404 every templated GET carries ────────────────────────
+        (
+            "pool_unknown",
+            "GET",
+            "/pools/ghost",
+            None,
+            None,
+            404,
+            "not_found",
+        ),
+        (
+            "hook_unknown",
+            "GET",
+            "/hooks/ghost",
+            None,
+            None,
+            404,
+            "not_found",
+        ),
+        (
+            "hook_health_unknown",
+            "GET",
+            "/hooks/ghost/health",
+            None,
+            None,
+            404,
+            "not_found",
+        ),
+        (
+            "hook_schema_unknown",
+            "GET",
+            "/hooks/ghost/schema",
+            None,
+            None,
+            404,
+            "not_found",
+        ),
+        (
+            "hook_status_unknown",
+            "GET",
+            "/hooks/ghost/status",
+            None,
+            None,
+            404,
+            "not_found",
+        ),
+        (
+            "group_unknown",
+            "GET",
+            "/groups/ghost",
+            None,
+            None,
+            404,
+            "not_found",
+        ),
+        (
+            "group_usage_unknown",
+            "GET",
+            "/groups/ghost/usage",
+            None,
+            None,
+            404,
+            "not_found",
+        ),
+        (
+            "version_non_numeric",
+            "GET",
+            "/config/versions/abc",
+            None,
+            None,
+            400,
+            "invalid_request",
+        ),
+        (
+            "version_unknown",
+            "GET",
+            "/config/versions/999",
+            None,
+            None,
+            404,
+            "not_found",
+        ),
+        (
+            "plugins_missing_type",
+            "GET",
+            "/plugins",
+            None,
+            None,
+            400,
+            "invalid_request",
+        ),
+        // ── Hook definition lifecycle ─────────────────────────────────────────────────────────
+        (
+            "hooks_post_bad_body",
+            "POST",
+            "/hooks",
+            None,
+            Some("{"),
+            400,
+            "invalid_request",
+        ),
+        (
+            "hooks_post_bad_if_match",
+            "POST",
+            "/hooks",
+            Some(BAD_ETAG),
+            Some(r#"{"name":"h3","config":{"kind":"gate","plugin":"test-hook"}}"#),
+            400,
+            "invalid_request",
+        ),
+        (
+            "hooks_post_base_defined",
+            "POST",
+            "/hooks",
+            None,
+            Some(r#"{"name":"basehook","config":{"kind":"gate","plugin":"test-hook"}}"#),
+            409,
+            "conflict",
+        ),
+        (
+            "hooks_post_grant_change",
+            "POST",
+            "/hooks",
+            None,
+            Some(r#"{"name":"oh","config":{"kind":"tap","plugin":"test-hook"}}"#),
+            409,
+            "conflict",
+        ),
+        (
+            "hooks_put_unknown",
+            "PUT",
+            "/hooks/ghost",
+            None,
+            Some(r#"{"config":{"kind":"gate","plugin":"test-hook"}}"#),
+            404,
+            "not_found",
+        ),
+        (
+            "hooks_put_base_defined",
+            "PUT",
+            "/hooks/basehook",
+            None,
+            Some(r#"{"config":{"kind":"gate","plugin":"test-hook"}}"#),
+            409,
+            "conflict",
+        ),
+        (
+            "hooks_put_stale",
+            "PUT",
+            "/hooks/oh",
+            Some(STALE),
+            Some(r#"{"config":{"kind":"gate","plugin":"test-hook"}}"#),
+            409,
+            "version_conflict",
+        ),
+        (
+            "hooks_delete_unknown",
+            "DELETE",
+            "/hooks/ghost",
+            None,
+            None,
+            404,
+            "not_found",
+        ),
+        (
+            "hooks_delete_base_defined",
+            "DELETE",
+            "/hooks/basehook",
+            None,
+            None,
+            409,
+            "conflict",
+        ),
+        (
+            "hook_settings_unknown",
+            "PATCH",
+            "/hooks/ghost/settings",
+            None,
+            Some(r#"{"settings":{}}"#),
+            404,
+            "not_found",
+        ),
+        // ── Overlay reset ─────────────────────────────────────────────────────────────────────
+        (
+            "overlay_unknown_section",
+            "DELETE",
+            "/overlay/nosuch",
+            None,
+            None,
+            400,
+            "invalid_request",
+        ),
+        (
+            "overlay_stale",
+            "DELETE",
+            "/overlay/groups",
+            Some(STALE),
+            None,
+            409,
+            "version_conflict",
+        ),
+        // ── Config plane ──────────────────────────────────────────────────────────────────────
+        (
+            "cache_flush_bad_body",
+            "POST",
+            "/auth/cache/flush",
+            None,
+            Some("["),
+            400,
+            "invalid_request",
+        ),
+        (
+            "config_validate_bad_body",
+            "POST",
+            "/config/validate",
+            None,
+            Some("{"),
+            400,
+            "invalid_request",
+        ),
+        (
+            "config_reload_ephemeral",
+            "POST",
+            "/config/reload",
+            None,
+            None,
+            400,
+            "invalid_request",
+        ),
+        (
+            "config_apply_stale",
+            "POST",
+            "/config/apply",
+            Some(STALE),
+            Some(r#"{"config":{"listen":"127.0.0.1:0","providers":{},"models":{},"pools":{}}}"#),
+            409,
+            "version_conflict",
+        ),
+        (
+            "config_rollback_unknown",
+            "POST",
+            "/config/rollback",
+            None,
+            Some(r#"{"version":999}"#),
+            404,
+            "not_found",
+        ),
+        (
+            "config_rollback_stale",
+            "POST",
+            "/config/rollback",
+            Some(STALE),
+            Some(r#"{"version":1}"#),
+            409,
+            "version_conflict",
+        ),
+        (
+            "config_settings_stale",
+            "PUT",
+            "/config/settings",
+            Some(STALE),
+            Some("{}"),
+            409,
+            "version_conflict",
+        ),
+        (
+            "admin_auth_unknown_module",
+            "PUT",
+            "/admin-auth",
+            None,
+            Some(r#"{"admin_auth":["definitely-not-a-module"]}"#),
+            400,
+            "invalid_request",
+        ),
+        (
+            "admin_auth_stale",
+            "PUT",
+            "/admin-auth",
+            Some(STALE),
+            Some(r#"{"admin_auth":["admin-tokens"]}"#),
+            409,
+            "version_conflict",
+        ),
+        (
+            "admin_auth_lockout",
+            "PUT",
+            "/admin-auth",
+            None,
+            Some(r#"{"admin_auth":["test-scope-module"]}"#),
+            409,
+            "conflict",
+        ),
+    ];
+
+    // The per-principal mutation budget is 10/min for the config class, so run the table in small
+    // batches, each against a fresh fixture (and therefore a fresh limiter).
+    let client = reqwest::Client::new();
+    for batch in cases.chunks(6) {
+        let (addr, server) = admin_error_fixture().await;
+        for (label, method, rel, if_match, body, want_status, want_code) in batch {
+            let mut req = client
+                .request(
+                    reqwest::Method::from_bytes(method.as_bytes()).unwrap(),
+                    format!("http://{addr}/api/v1/admin{rel}"),
+                )
+                .header("x-admin-token", "admintok");
+            if let Some(tag) = if_match {
+                req = req.header("if-match", *tag);
+            }
+            if let Some(b) = body {
+                req = req.header("content-type", "application/json").body(*b);
+            }
+            let resp = req.send().await.unwrap();
+            let status = resp.status().as_u16();
+            let parsed: serde_json::Value = resp.json().await.unwrap();
+            assert_eq!(
+                status, *want_status,
+                "{label}: expected {want_status}, got {status} ({parsed})"
+            );
+            assert_eq!(parsed["error"]["code"], *want_code, "{label}");
+        }
+        server.abort();
+    }
+}
+
+/// WITNESS (design D): the two `POST /plugins/rollback` errors that need a real plugins directory —
+/// a target file that is not there (404 `not_found`) and one that IS there but does not pass the
+/// running trust posture even with the anti-downgrade floor lowered to its own version (409
+/// `conflict`; a rollback authenticates the OPERATOR, never the bytes).
+#[tokio::test]
+async fn plugin_rollback_reports_missing_and_untrusted_targets() {
+    drive_plugin_rollback_errors().await;
+}
+
+/// See the test above. Split out so the class-level over-claim test can drive it directly.
+async fn drive_plugin_rollback_errors() {
+    crate::metrics::init();
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-admin-rollback-witness-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let overlay = dir.join("overlay.yaml");
+    // An UNSIGNED artifact sitting in the plugins directory, under the DEFAULT trust posture
+    // (unsigned not opted in) — so it is present but not loadable.
+    let tarball = admin_test_tarball("rollme", "rollme");
+    let file = "rollme-1.0.0.tar.gz";
+    std::fs::write(dir.join(file), &tarball).unwrap();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let app = TestApp::new()
+        .governance(gov)
+        .plugins_dir(dir.clone())
+        .plugins_cfg(crate::config::PluginsCfg::default())
+        .overlay_path(overlay)
+        .build();
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    let rollback = |body: String| {
+        client
+            .post(format!("http://{addr}/api/v1/admin/plugins/rollback"))
+            .header("x-admin-token", "admintok")
+            .header("content-type", "application/json")
+            .body(body)
+            .send()
+    };
+
+    let r = rollback(r#"{"file":"nosuch-9.9.9.tar.gz"}"#.to_string())
+        .await
+        .unwrap();
+    let status = r.status().as_u16();
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(
+        status, 404,
+        "a target that is not in the plugins dir: {body}"
+    );
+    assert_eq!(body["error"]["code"], "not_found");
+
+    let r = rollback(format!(r#"{{"file":"{file}"}}"#)).await.unwrap();
+    let status = r.status().as_u16();
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(
+        status, 409,
+        "an untrusted target is a terminal conflict, not a validation error: {body}"
+    );
+    assert_eq!(body["error"]["code"], "conflict");
+
+    // The sibling INSTALL + REMOVE errors, driven against the same directory: a malformed body, a
+    // filename that is not a plugin archive, an artifact the trust posture rejects, and a removal
+    // of something that was never installed.
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&tarball);
+    for (label, rel, method, body, want_status, want_code) in [
+        (
+            "install_bad_body",
+            "/plugins",
+            "POST",
+            Some("{".to_string()),
+            400,
+            "invalid_request",
+        ),
+        (
+            "install_bad_filename",
+            "/plugins",
+            "POST",
+            Some(format!(
+                r#"{{"file":"not-an-archive","tarball_b64":"{b64}"}}"#
+            )),
+            400,
+            "invalid_request",
+        ),
+        (
+            "install_untrusted",
+            "/plugins",
+            "POST",
+            Some(format!(
+                r#"{{"file":"fresh-1.0.0.tar.gz","tarball_b64":"{b64}"}}"#
+            )),
+            409,
+            "conflict",
+        ),
+        (
+            "remove_bad_filename",
+            "/plugins/not-an-archive",
+            "DELETE",
+            None,
+            400,
+            "invalid_request",
+        ),
+        (
+            "remove_unknown",
+            "/plugins/ghost-1.0.0.tar.gz",
+            "DELETE",
+            None,
+            404,
+            "not_found",
+        ),
+    ] {
+        let mut req = client
+            .request(
+                reqwest::Method::from_bytes(method.as_bytes()).unwrap(),
+                format!("http://{addr}/api/v1/admin{rel}"),
+            )
+            .header("x-admin-token", "admintok");
+        if let Some(b) = body {
+            req = req.header("content-type", "application/json").body(b);
+        }
+        let r = req.send().await.unwrap();
+        let status = r.status().as_u16();
+        let parsed: serde_json::Value = r.json().await.unwrap();
+        assert_eq!(status, want_status, "{label}: {parsed}");
+        assert_eq!(parsed["error"]["code"], want_code, "{label}");
+    }
+    server.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// THE CLASS-LEVEL GUARANTEE (design D §5): for EVERY documented operation, the declared error set
+/// equals the set the handlers can actually emit. The two directions are enforced by two different
+/// mechanisms, both structural:
+///
+/// - **UNDER-CLAIM** (a handler emits a kind the declaration omits → `openapi.json` would hide a
+///   response clients hit) is fatal AT THE EMISSION: the v1 router's recording layer panics inside
+///   whichever test produced it. Every test in the suite is a driver; nothing accumulates and
+///   nothing depends on test order. That check is live for the whole suite, not just this test.
+/// - **OVER-CLAIM** (the declaration lists a response no handler can produce → `openapi.json`
+///   documents fiction) needs a WITNESS, which is what this test drives. It runs the error-surface
+///   drivers directly — no reliance on other tests having run — and then asserts every declared
+///   entry was seen. A declared 409 no test can trigger IS an over-claim until proven otherwise.
+///
+/// Consequence: the per-endpoint audit that used to find "another missing 4xx" every round is now a
+/// machine set-comparison over every operation at once. There is no endpoint left to be next.
+#[tokio::test]
+async fn declared_error_set_is_exactly_what_the_handlers_emit() {
+    use crate::admin::v1::contract::taxonomy::{declared_errors, MethodTag};
+    // Drive every error path the declaration claims. (Other tests contribute to the same registry;
+    // calling the drivers here makes the assertion independent of whether they ran.)
+    drive_admin_error_surface().await;
+    drive_keys_error_surface().await;
+    drive_plugin_rollback_errors().await;
+    drive_hook_escalation_errors().await;
+
+    let witnessed = crate::admin::v1::contract::taxonomy::observed::snapshot();
+    // Every (operation, ErrKind) the suite has actually produced.
+    let seen: std::collections::BTreeSet<(String, MethodTag, _)> = witnessed
+        .iter()
+        .map(|(rel, method, kind, _cond)| (rel.clone(), *method, *kind))
+        .collect();
+
+    // Walk the DOCUMENTED operations — the openapi paths are the same (rel, method) pairs the
+    // router serves — and require a witness for each declared kind.
+    let mut over_claimed = Vec::new();
+    for (rel, method) in documented_operations() {
+        for de in declared_errors(method, &rel) {
+            if !seen.contains(&(rel.clone(), method, de.kind)) {
+                over_claimed.push(format!(
+                    "{} {rel} declares {:?}/{:?} ({} {}) — no test ever produced it",
+                    method.as_str().to_uppercase(),
+                    de.kind,
+                    de.cond,
+                    de.kind.status(),
+                    de.kind.code(),
+                ));
+            }
+        }
+    }
+    assert!(
+        over_claimed.is_empty(),
+        "OpenAPI OVER-CLAIM — openapi.json documents {} response(s) nothing can emit:\n  {}\n\
+         Either the declaration is wrong (delete the entry) or the condition is real and needs a \
+         negative test that triggers it. A documented error no test can produce is not a contract.",
+        over_claimed.len(),
+        over_claimed.join("\n  ")
+    );
+
+    // Sanity: the drivers really did exercise the surface (a registry that silently stopped
+    // recording would make the assertion above vacuously true).
+    assert!(
+        seen.len() >= 60,
+        "the error-surface drivers witnessed only {} (operation, kind) pairs — the recording layer \
+         is probably not installed",
+        seen.len()
+    );
+}
+
+/// Every (relative path, method) the admin surface documents — read straight off the router's route
+/// table via the same relative paths `declared_errors` is keyed on. Kept in sync with the router by
+/// construction: `openapi_paths_all_resolve` already proves the doc and the router agree.
+fn documented_operations() -> Vec<(String, crate::admin::v1::contract::taxonomy::MethodTag)> {
+    use crate::admin::v1::contract::taxonomy::MethodTag::*;
+    let mut ops = Vec::new();
+    for (rel, methods) in [
+        ("/info", &[Get][..]),
+        ("/pools", &[Get]),
+        ("/pools/{name}", &[Get]),
+        ("/models", &[Get]),
+        ("/providers", &[Get]),
+        ("/hooks", &[Get, Post]),
+        ("/hooks/{name}", &[Get, Put, Delete]),
+        ("/hooks/{name}/health", &[Get]),
+        ("/hooks/{name}/schema", &[Get]),
+        ("/hooks/{name}/status", &[Get]),
+        ("/hooks/{name}/settings", &[Patch]),
+        ("/groups", &[Get, Post]),
+        ("/groups/{name}", &[Get, Put, Patch, Delete]),
+        ("/groups/{name}/usage", &[Get]),
+        ("/overlay/{section}", &[Delete]),
+        ("/plugins", &[Get, Post]),
+        ("/plugins/reload", &[Post]),
+        ("/plugins/rollback", &[Post]),
+        ("/plugins/{file}", &[Delete]),
+        ("/auth", &[Get]),
+        ("/auth/cache/flush", &[Post]),
+        ("/admin-auth", &[Get, Put]),
+        ("/usage", &[Get]),
+        ("/config", &[Get]),
+        ("/config/apply", &[Post]),
+        ("/config/reload", &[Post]),
+        ("/config/rollback", &[Post]),
+        ("/config/settings", &[Get, Put]),
+        ("/config/validate", &[Post]),
+        ("/config/versions", &[Get]),
+        ("/config/versions/{v}", &[Get]),
+        ("/config/diff", &[Get]),
+        ("/audit", &[Get]),
+        ("/openapi.json", &[Get]),
+        ("/keys", &[Get, Post]),
+        ("/keys/{id}", &[Get, Patch, Delete]),
+        ("/keys/{id}/usage", &[Get]),
+        ("/keys/{id}/rotate", &[Post]),
+        ("/keys/{id}/revoke", &[Post]),
+        ("/signing-key/rotate", &[Post]),
+    ] {
+        for m in methods {
+            ops.push((rel.to_string(), *m));
+        }
+    }
+    ops
 }

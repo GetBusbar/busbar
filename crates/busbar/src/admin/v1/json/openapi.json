@@ -6091,16 +6091,6 @@
             },
             "description": "`{plugins, note}` — the current dynamic-library inventory"
           },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`invalid_request`: invalid config; nothing changed"
-          },
           "401": {
             "content": {
               "application/json": {
