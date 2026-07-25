@@ -187,7 +187,12 @@ The virtual-key surface at `/api/v1/admin/keys` (`full` scope for mutations). Ke
 
 **Idempotency.** `POST /keys` and `POST /keys/{id}/rotate` accept an **`Idempotency-Key`** header: a retried request with the same key inside the ~10-minute window returns the first response verbatim (including the once-shown secret) instead of double-minting. The cache is scoped per principal (and per operation + key id for rotate), so no other admin's identical header value can replay your secret. A concurrent request while the first is still in flight is a terminal `409 conflict`.
 
-**Anti-sprawl cap.** The optional `limits.max_keys_per_principal` config knob caps how many keys may be bound to one group (a group = one principal in the self-service model; a user leaf can only hold so many keys). An over-cap mint is a terminal `409 conflict`. Absent or `0` = unlimited (the default — today's behavior).
+**Anti-sprawl caps.** Two optional knobs, both `0` = unlimited by default (an absent knob changes nothing):
+
+- `limits.max_keys_per_principal` caps how many keys may be bound to **one group** (a group = one principal in the self-service model; a user leaf can only hold so many keys). It counts **live** keys only — revoking or disabling a key returns its slot — and it applies to the unbound (`no group`) bucket too. Enforced on **both** `POST /keys` and a `PATCH /keys/{id}` rebind, so a principal cannot be walked past its ceiling one rebind at a time. Over cap ⇒ terminal `409 conflict`.
+- `limits.max_auto_provisioned_groups` caps how many groups a mint may **auto-provision** (`parent:`), bounding the *shape* of the limit tree rather than its contents — every leaf is a new enforcement bucket, version-log entry and overlay row. Over ceiling ⇒ terminal `409 conflict`; mints that bind to an existing group are unaffected.
+
+A delegated `mint`-scope credential must always name a `group` (an unbound key carries no limits at all); issuing unbound keys requires `full` scope.
 
 With no store/keys, one unambiguous rule: `GET /keys` answers `200` with an empty page (the keyspace is truthfully empty), single-resource reads answer `404 not_found` (also truthful), and writes answer with an actionable message.
 

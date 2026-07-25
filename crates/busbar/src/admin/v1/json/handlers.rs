@@ -987,6 +987,23 @@ pub(crate) fn plan_mint_group(
              silently shadow operator file config)"
         )));
     }
+    // ANTI-SPRAWL CEILING ON THE TREE'S SHAPE (audit round-5 #20). `max_keys_per_principal` bounds
+    // how many keys a group holds but says nothing about how many GROUPS exist, so a `mint`-scope
+    // credential could grow the limit tree without bound — every auto-provisioned `user:<sub>` leaf
+    // is a new enforcement bucket, a new version-log entry and a new persisted overlay row.
+    // `limits.max_auto_provisioned_groups` (0 = unlimited, the default) caps the runtime group set
+    // this path may grow. Checked HERE, inside the transaction, against the same fresh snapshot the
+    // existence check reads, so N concurrent self-mints cannot jointly overshoot. Explicitly
+    // configured groups are unaffected: only auto-provisioning is gated.
+    let ceiling = current.max_auto_provisioned_groups;
+    if ceiling > 0 && current.groups_registry.len() >= ceiling {
+        return Err(AdminError::Conflict(format!(
+            "cannot auto-provision `{group}`: this server already has {} group(s), at the \
+             `limits.max_auto_provisioned_groups` ceiling of {ceiling}. Delete an unused group, \
+             raise the ceiling, or bind the key to an existing group",
+            current.groups_registry.len(),
+        )));
+    }
     let leaf = crate::config::groups::provision_child(&current.groups_registry, parent);
     match build_with_group(current, group, leaf) {
         Ok(next) => Ok(Some(Arc::new(next))),
