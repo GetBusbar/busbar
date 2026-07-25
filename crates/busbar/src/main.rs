@@ -304,6 +304,14 @@ fn validate_config_command() -> i32 {
             return 1;
         }
     };
+    // Every `secrets:` block entry must resolve to a registered `kind: secret` plugin (audit MEDIUM):
+    // catch a mistyped/aliased/wrong-kind module HERE, at --validate time, rather than as a silent
+    // `{}` open (or a fail-closed error) on the first secret resolution after boot. Mirrors the boot
+    // check in `build_secret_resolver`.
+    if let Err(e) = validate_secret_modules(&registry, &cfg.secrets) {
+        eprintln!("[error] {e}");
+        return 1;
+    }
     println!(
         "ok: config valid — {} provider(s), {} model(s), {} pool(s)\n  config:    {}\n  providers: {}",
         cfg.providers.len(),
@@ -1870,6 +1878,50 @@ fn persist_signing_key(path: &std::path::Path, secret: &[u8; 32]) -> Result<(), 
     Ok(())
 }
 
+/// Validate ONE `secrets:` block key against the plugin registry and return the plugin's CANONICAL
+/// name. Fail-closed (an `Err`) when the key names a reserved built-in resolver (`env`/`file`, which
+/// take no module-level config), when no loadable plugin is named or aliased by it, or when the
+/// resolved plugin is not `kind: secret`. Shared by `build_secret_resolver` (boot) and the
+/// `--validate` pre-flight so both apply the identical policy (audit MEDIUM: a mistyped/aliased
+/// `secrets:` key must never silently open a plugin with `{}`).
+fn validate_secret_module(
+    registry: &busbar_plugin_loader::PluginRegistry,
+    module: &str,
+) -> Result<String, String> {
+    if module == config::secret::SECRET_MODULE_ENV || module == config::secret::SECRET_MODULE_FILE {
+        return Err(format!(
+            "secrets.{module}: '{module}' is a built-in secret resolver, not a plugin; it takes no \
+             module-level configuration. Remove this `secrets:` entry (reference it inline as \
+             {{ {module}: … }} where the secret is used)."
+        ));
+    }
+    match registry.resolve(module) {
+        Some(p) if p.manifest.kind == "secret" => Ok(p.manifest.name.clone()),
+        Some(p) => Err(format!(
+            "secrets.{module}: plugin '{}' has kind '{}', not 'secret'; only a kind: secret plugin \
+             can back a `secrets:` block entry",
+            p.manifest.name, p.manifest.kind
+        )),
+        None => Err(format!(
+            "secrets.{module}: no loadable `kind: secret` plugin is named or aliased '{module}' \
+             (check the spelling against the plugin's manifest name/alias, and that the plugin \
+             loaded — see --list-plugins)"
+        )),
+    }
+}
+
+/// Validate EVERY `secrets:` block entry against the registry (the `--validate` counterpart of the
+/// per-entry check `build_secret_resolver` runs at boot). Returns the FIRST offending entry's error.
+fn validate_secret_modules(
+    registry: &busbar_plugin_loader::PluginRegistry,
+    secret_modules: &std::collections::BTreeMap<String, config::SecretModuleCfg>,
+) -> Result<(), String> {
+    for module in secret_modules.keys() {
+        validate_secret_module(registry, module)?;
+    }
+    Ok(())
+}
+
 /// Build the [`config::secret::SecretResolver`] the engine resolves every secret reference through:
 /// the built-in `env`/`file` modules inline, and any OTHER module name via a loaded `kind: secret`
 /// plugin from `registry` (opened per resolution; a secret module is off every hot path so the
@@ -1892,20 +1944,42 @@ fn build_secret_resolver(
     // that would be a bootstrap cycle — so `{ token: { env: VAULT_TOKEN } }` resolves but
     // `{ token: { module: some-other-secret-plugin } }` is a fail-closed error.
     let builtins = config::secret::SecretResolver::builtins_only();
+    // Key the open-config map by the plugin's CANONICAL name, not by the literal `secrets:` block key
+    // (audit MEDIUM): a `SecretRef` may name the plugin by EITHER its canonical name or its alias, and
+    // the registry resolves both — but a bare string-equality lookup on the block key would MISS the
+    // other spelling and silently open the plugin with `{}` (dropping the operator's configured
+    // address/token/CA). Canonicalize the block key through the SAME by_name/by_alias resolution the
+    // registry uses, so a `secrets:` entry written under an alias and a `SecretRef` written under the
+    // canonical name (or vice versa) line up. A `secrets:` entry that resolves to NOTHING — a typo, or
+    // a module that names one of the reserved built-in resolvers (`env`/`file`, which take no
+    // module-level open config) — is a hard boot error: silently passing `{}` for a mis-typed module
+    // is exactly the failure this closes. The `--validate` path applies the identical policy via the
+    // shared `validate_secret_module`/`validate_secret_modules` helpers.
     let mut open_config: std::collections::BTreeMap<String, String> =
         std::collections::BTreeMap::new();
     for (module, mcfg) in secret_modules {
+        // Validate + canonicalize the block key against the registry (shared with --validate). A
+        // reserved built-in name, an unknown module, or a non-secret plugin is a hard error here.
+        let canonical = validate_secret_module(&registry, module)?;
         let resolved = config::secret::resolve_settings(&mcfg.settings, &builtins)
             .map_err(|e| format!("secrets.{module} settings: {e}"))?;
-        open_config.insert(
-            module.clone(),
-            serde_json::Value::Object(resolved).to_string(),
-        );
+        open_config.insert(canonical, serde_json::Value::Object(resolved).to_string());
     }
     Ok(config::secret::SecretResolver::with_plugin(Box::new(
         move |module: &str, settings: &str| -> Result<Vec<u8>, String> {
+            // Canonicalize the referenced module the SAME way, so an alias-vs-name spelling difference
+            // between the `secrets:` block and this `SecretRef` still finds the configured open() JSON.
+            // A module that does not resolve falls through to `open_secret` below, which produces the
+            // authoritative "no such plugin" error.
+            let canonical = registry
+                .resolve(module)
+                .map(|p| p.manifest.name.as_str())
+                .unwrap_or(module);
             // Deliver the module's configured open() JSON (default `{}` for an unconfigured module).
-            let open_cfg = open_config.get(module).map(String::as_str).unwrap_or("{}");
+            let open_cfg = open_config
+                .get(canonical)
+                .map(String::as_str)
+                .unwrap_or("{}");
             let m = registry.open_secret(module, open_cfg)?;
             m.resolve(
                 &serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(settings)
