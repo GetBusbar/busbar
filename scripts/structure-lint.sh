@@ -354,7 +354,7 @@ CHOKE_POINTS=(
   # ── A ── persistence: one durable-write primitive. A 5th call site that re-hand-rolls the
   #         atomic-write dance would silently drop whichever facet (parent fsync / temp cleanup /
   #         0600 mode) its author forgot.
-  'A-persistence|DURABLE-BYPASS|crates/busbar/src/durable.rs (durable::write / write_with; AppHandle::commit_and_swap)|crates/busbar/src/durable.rs::fault_matrix_returns_err_untouched_target_no_temp_leak|route through crate::durable::write|fs::rename\(>>hand-rolled rename-to-publish>>crates/busbar/src/durable.rs;sync_[ad]>>hand-rolled fsync durability (sync_all/sync_data)>>crates/busbar/src/durable.rs|persist-then-swap is only atomic if EVERY writer does the identical fsync/rename/cleanup dance'
+  'A-persistence|DURABLE-BYPASS|crates/busbar/src/durable.rs (durable::write / write_with; AppHandle::commit_and_swap)|crates/busbar/src/durable.rs::fault_matrix_returns_err_untouched_target_no_temp_leak|route through crate::durable::write|fs::rename\(>>hand-rolled rename-to-publish>>crates/busbar/src/durable.rs;sync_[ad]>>hand-rolled fsync durability (sync_all/sync_data)>>crates/busbar/src/durable.rs;fs::create_dir_all\(>>directory creation that leaves the new entry non-durable>>crates/busbar/src/durable.rs,crates/busbar/src/test_support/mod.rs|persist-then-swap is only atomic if EVERY writer does the identical fsync/rename/cleanup dance'
 
   # ── B ── plugin FFI/ABI: one export boundary. A hand-written #[no_mangle] skips the
   #         null-out-guard-before-alloc, the mandatory catch_unwind, and the total status map.

@@ -102,6 +102,37 @@ pub(crate) fn remove(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// DURABLY create `path` and any missing ancestors: each directory that is actually created has its
+/// PARENT fsynced, so the new directory entry itself survives a power loss. `std::fs::create_dir_all`
+/// leaves that entry non-durable, so the very first artifact written into a freshly created directory
+/// could vanish along with the directory even though the file's own contents and holding-directory
+/// entry were fsynced -- the same asymmetry class as an unlink that skips the parent fsync.
+///
+/// Already-existing directories are left alone: their entries are durable by whoever created them.
+pub(crate) fn create_dir_all(path: &Path) -> io::Result<()> {
+    // Walk up collecting the missing ancestors (deepest first), then create shallowest first so each
+    // `create_dir` finds its parent present.
+    let mut missing: Vec<&Path> = Vec::new();
+    let mut cur = Some(path);
+    while let Some(p) = cur {
+        if p.as_os_str().is_empty() || p.exists() {
+            break;
+        }
+        missing.push(p);
+        cur = p.parent();
+    }
+    for dir in missing.iter().rev() {
+        match std::fs::create_dir(dir) {
+            // Fsync the HOLDING directory, which is what makes `dir`'s own entry durable.
+            Ok(()) => sync_holding_dir(dir),
+            // A concurrent creator won the race; the entry is theirs to make durable.
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn write_with(path: &Path, bytes: &[u8], opts: DurableOpts) -> io::Result<()> {
     use std::io::Write as _;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -230,9 +261,11 @@ thread_local! {
     /// `(step, raw_os_errno)` — the next `fault_point!(step)` on this thread returns that errno once.
     static FAULT_INJECT: std::cell::RefCell<Option<(FaultStep, i32)>> =
         const { std::cell::RefCell::new(None) };
-    /// The parent path the primitive fsync'd on this thread (for the relative-path assertion).
-    static FAULT_PARENT_FSYNC: std::cell::RefCell<Option<std::path::PathBuf>> =
-        const { std::cell::RefCell::new(None) };
+    /// Every parent path the primitive fsync'd on this thread, in order. A Vec, not a single slot,
+    /// because `create_dir_all` fsyncs one parent per directory it creates and the ancestor walk is
+    /// the thing under test.
+    static FAULT_PARENT_FSYNC: std::cell::RefCell<Vec<std::path::PathBuf>> =
+        const { std::cell::RefCell::new(Vec::new()) };
     /// One-shot: plant a decoy file at the NEXT write's exact temp path on this thread.
     static PLANT_DECOY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
@@ -247,7 +280,7 @@ fn fault_arm(step: FaultStep, errno: i32) {
 #[cfg(test)]
 fn fault_reset() {
     FAULT_INJECT.with(|c| *c.borrow_mut() = None);
-    FAULT_PARENT_FSYNC.with(|c| *c.borrow_mut() = None);
+    FAULT_PARENT_FSYNC.with(|c| c.borrow_mut().clear());
 }
 
 /// If a fault is armed for `step`, consume it and return the injected error.
@@ -283,19 +316,26 @@ fn plant_decoy_if_armed(tmp: &Path) {
 
 #[cfg(test)]
 fn fault_record_parent_fsync(parent: &Path) {
-    FAULT_PARENT_FSYNC.with(|c| *c.borrow_mut() = Some(parent.to_path_buf()));
+    FAULT_PARENT_FSYNC.with(|c| c.borrow_mut().push(parent.to_path_buf()));
 }
 
+/// The LAST parent fsync'd, for the single-publish assertions.
 #[cfg(test)]
 fn fault_parent_fsynced() -> Option<std::path::PathBuf> {
+    FAULT_PARENT_FSYNC.with(|c| c.borrow().last().cloned())
+}
+
+/// Every parent fsync'd, in order, for the `create_dir_all` ancestor-walk assertion.
+#[cfg(test)]
+fn fault_parents_fsynced() -> Vec<std::path::PathBuf> {
     FAULT_PARENT_FSYNC.with(|c| c.borrow().clone())
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        fault_arm, fault_parent_fsynced, fault_reset, plant_decoy_arm, write, write_with,
-        DurableOpts, FaultStep,
+        create_dir_all, fault_arm, fault_parent_fsynced, fault_parents_fsynced, fault_reset,
+        plant_decoy_arm, write, write_with, DurableOpts, FaultStep,
     };
     use std::path::{Path, PathBuf};
 
@@ -579,5 +619,38 @@ mod tests {
             !sc.has_durable_temp("shared.json"),
             "no durable temp may leak after concurrent writers"
         );
+    }
+    /// `std::fs::create_dir_all` leaves each new directory's own ENTRY non-durable, so the first
+    /// artifact written into a freshly created plugins dir could vanish along with the directory on
+    /// power loss — even though the file's contents and its holding directory were both fsynced.
+    /// The primitive must fsync one PARENT per directory it creates, walking the whole missing
+    /// ancestry, and must leave already-existing directories alone.
+    #[test]
+    fn create_dir_all_fsyncs_the_parent_of_every_directory_it_creates() {
+        let sc = Scratch::new("mkdir-ancestors");
+        fault_reset();
+
+        let leaf = sc.dir.join("a").join("b").join("c");
+        create_dir_all(&leaf).unwrap();
+        assert!(leaf.is_dir());
+        assert_eq!(
+            fault_parents_fsynced(),
+            vec![sc.dir.clone(), sc.dir.join("a"), sc.dir.join("a").join("b"),],
+            "one parent fsync per created directory, shallowest first"
+        );
+
+        // Re-running over an existing tree creates nothing, so it must fsync nothing.
+        fault_reset();
+        create_dir_all(&leaf).unwrap();
+        assert!(
+            fault_parents_fsynced().is_empty(),
+            "an already-durable directory must not be re-fsynced"
+        );
+
+        // Only the MISSING suffix is created, so only its parents are fsynced.
+        fault_reset();
+        let deeper = leaf.join("d");
+        create_dir_all(&deeper).unwrap();
+        assert_eq!(fault_parents_fsynced(), vec![leaf.clone()]);
     }
 }
