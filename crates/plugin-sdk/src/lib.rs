@@ -171,10 +171,15 @@ pub unsafe fn open_impl(
     }));
     match res {
         Ok(Ok(store)) => {
-            let handle = Box::into_raw(Box::new(store)) as *mut c_void;
-            if !out_handle.is_null() {
-                *out_handle = handle;
+            // A null `out_handle` is a caller-protocol violation: there is nowhere to write the
+            // handle. Allocate ONLY when there is a slot for it — otherwise `Box::into_raw` would
+            // leak the boxed handle permanently (never written back, never freed). `store` drops
+            // here (freeing anything the ctor opened) and we report a protocol error.
+            if out_handle.is_null() {
+                write_buf(b"null out_handle pointer".to_vec(), out_err, out_err_len);
+                return STATUS_PROTOCOL;
             }
+            *out_handle = Box::into_raw(Box::new(store)) as *mut c_void;
             STATUS_OK
         }
         Ok(Err((msg, protocol))) => {
@@ -317,10 +322,15 @@ pub unsafe fn auth_open_impl(
     }));
     match res {
         Ok(Ok(module)) => {
-            let handle = Box::into_raw(Box::new(module)) as *mut c_void;
-            if !out_handle.is_null() {
-                *out_handle = handle;
+            // A null `out_handle` is a caller-protocol violation: there is nowhere to write the
+            // handle. Allocate ONLY when there is a slot for it — otherwise `Box::into_raw` would
+            // leak the boxed handle permanently (never written back, never freed). `module` drops
+            // here (freeing anything the ctor opened) and we report a protocol error.
+            if out_handle.is_null() {
+                write_buf(b"null out_handle pointer".to_vec(), out_err, out_err_len);
+                return STATUS_PROTOCOL;
             }
+            *out_handle = Box::into_raw(Box::new(module)) as *mut c_void;
             STATUS_OK
         }
         Ok(Err((msg, protocol))) => {
@@ -463,10 +473,15 @@ pub unsafe fn secret_open_impl(
     }));
     match res {
         Ok(Ok(module)) => {
-            let handle = Box::into_raw(Box::new(module)) as *mut c_void;
-            if !out_handle.is_null() {
-                *out_handle = handle;
+            // A null `out_handle` is a caller-protocol violation: there is nowhere to write the
+            // handle. Allocate ONLY when there is a slot for it — otherwise `Box::into_raw` would
+            // leak the boxed handle permanently (never written back, never freed). `module` drops
+            // here (freeing anything the ctor opened) and we report a protocol error.
+            if out_handle.is_null() {
+                write_buf(b"null out_handle pointer".to_vec(), out_err, out_err_len);
+                return STATUS_PROTOCOL;
             }
+            *out_handle = Box::into_raw(Box::new(module)) as *mut c_void;
             STATUS_OK
         }
         Ok(Err((msg, protocol))) => {
@@ -659,10 +674,15 @@ pub unsafe fn hook_open_impl(
     }));
     match res {
         Ok(Ok(handler)) => {
-            let handle = Box::into_raw(Box::new(handler)) as *mut c_void;
-            if !out_handle.is_null() {
-                *out_handle = handle;
+            // A null `out_handle` is a caller-protocol violation: there is nowhere to write the
+            // handle. Allocate ONLY when there is a slot for it — otherwise `Box::into_raw` would
+            // leak the boxed handle permanently (never written back, never freed). `handler` drops
+            // here (freeing anything the ctor opened) and we report a protocol error.
+            if out_handle.is_null() {
+                write_buf(b"null out_handle pointer".to_vec(), out_err, out_err_len);
+                return STATUS_PROTOCOL;
             }
+            *out_handle = Box::into_raw(Box::new(handler)) as *mut c_void;
             STATUS_OK
         }
         Ok(Err((msg, protocol))) => {
@@ -1157,6 +1177,33 @@ mod tests {
             assert!(!out.is_null());
             free_impl(out, out_len);
             close_impl(handle);
+        }
+    }
+
+    /// A null `out_handle` on a SUCCESSFUL open is a protocol error, NOT a silent leak. Before the
+    /// fix `open_impl` boxed the store then dropped the pointer on the floor when `out_handle` was
+    /// null (STATUS_OK, handle leaked forever). Now it never allocates without a slot: the store is
+    /// freed and a protocol error is returned with a message. (This drives the store variant; all
+    /// four `*_open_impl` share the identical guard.)
+    #[test]
+    fn ffi_null_out_handle_is_protocol_error_not_leak() {
+        unsafe {
+            let cfg = b"{}";
+            let mut err: *mut u8 = ptr::null_mut();
+            let mut err_len: usize = 0;
+            let st = open_impl(
+                cfg.as_ptr(),
+                cfg.len(),
+                ptr::null_mut(), // no slot for the handle
+                &mut err,
+                &mut err_len,
+                mem_ctor,
+            );
+            assert_eq!(st, STATUS_PROTOCOL);
+            assert!(!err.is_null());
+            let msg = std::str::from_utf8(std::slice::from_raw_parts(err, err_len)).unwrap();
+            assert!(msg.contains("out_handle"), "unexpected message: {msg}");
+            free_impl(err, err_len);
         }
     }
 
