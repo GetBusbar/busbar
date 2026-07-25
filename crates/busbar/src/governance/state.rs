@@ -22,6 +22,14 @@ impl GovState {
         // a durable one returns every persisted revoked subject.
         let denylist: std::collections::HashSet<String> =
             store.list_denylist()?.into_iter().collect();
+        // The set was just read from the store, so the staleness clock starts NOW. `RevocationSync`
+        // owns its own handle to the store: its refresh runs on the blocking pool and so cannot
+        // borrow from `GovState`.
+        let denylist = crate::governance::revocation::RevocationSync::new(
+            store.clone(),
+            denylist,
+            crate::store::now(),
+        );
         Ok(Self {
             store,
             caches: RwLock::new(GovCaches {
@@ -37,14 +45,12 @@ impl GovState {
             ),
             budget: Sharded::new(),
             signing: RwLock::new(signer.map(|s| Arc::new(SigningMaterial::new(s)))),
-            denylist: RwLock::new(denylist),
-            // The set was just read from the store, so the staleness clock starts NOW.
-            denylist_synced_at: std::sync::atomic::AtomicU64::new(crate::store::now()),
+            denylist,
             refresh_lock: std::sync::Mutex::new(()),
         })
     }
 
-    /// RE-READ the store's revocation denylist when this node's copy is older than
+    /// SCHEDULE a re-read of the store's revocation denylist when this node's copy is older than
     /// [`REVOCATION_SYNC_TTL_SECS`] — the check-time staleness guard that makes revocation
     /// AUTHORITATIVE rather than a boot-time snapshot.
     ///
@@ -54,47 +60,12 @@ impl GovState {
     /// of the process — an auth bypass, not a staleness annoyance. `DELETE /keys/{id}` denylists the
     /// subject before removing the binding, so a peer's DELETE propagates through this same path.
     ///
-    /// SINGLE-FLIGHT: the caller that wins the compare-exchange on `denylist_synced_at` performs the
-    /// (blocking) store read; concurrent callers see the stamp already advanced and proceed against
-    /// the current set. So the cost is ONE query per node per window, whatever the request rate.
-    ///
-    /// UNION, never replace: the fetched subjects are merged INTO the in-memory set. A `Store` with
-    /// no denylist support returns `Ok(vec![])` from the defaulted trait method, and a wholesale
-    /// replace would then ERASE this node's live revocations. There is no un-revoke API, so a union
-    /// is also semantically complete — and it is the fail-closed direction either way.
-    ///
-    /// A store error leaves the previous set in place (fail-closed: we never widen access on a store
-    /// blip) and leaves the stamp ADVANCED, so a persistently-broken store is retried once per
-    /// window rather than on every request.
+    /// The read itself is blocking store I/O and every caller of this is on a Tokio worker, so it is
+    /// SCHEDULED (blocking pool, at most one outstanding) rather than performed here. All of the
+    /// single-flight, rate-limit, bound and stamping rules live in
+    /// [`crate::governance::revocation::RevocationSync`] — one place, documented there.
     fn sync_revocations_if_stale(&self, now: u64) {
-        use std::sync::atomic::Ordering;
-        let last = self.denylist_synced_at.load(Ordering::Relaxed);
-        if now.saturating_sub(last) < REVOCATION_SYNC_TTL_SECS {
-            return;
-        }
-        if self
-            .denylist_synced_at
-            .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
-            .is_err()
-        {
-            return; // another thread is doing this window's read
-        }
-        match self.store.list_denylist() {
-            Ok(subs) => {
-                if subs.is_empty() {
-                    return;
-                }
-                let mut set = self.denylist.write().unwrap_or_else(|e| e.into_inner());
-                set.extend(subs);
-            }
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "revocation denylist re-sync failed; keeping the previously-known revocations \
-                     (a peer's revoke may not be visible on this node until the next successful sync)"
-                );
-            }
-        }
+        self.denylist.refresh_if_stale(now);
     }
 
     /// Whether signed-token minting is available (a signing key was resolved at boot).
@@ -121,12 +92,7 @@ impl GovState {
         // CACHE of the store's denylist, re-read here when stale so a peer's (or an out-of-band)
         // revoke is honoured within `REVOCATION_SYNC_TTL_SECS` instead of never.
         self.sync_revocations_if_stale(now);
-        if self
-            .denylist
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .contains(&claims.sub)
-        {
+        if self.denylist.contains(&claims.sub) {
             tracing::debug!(sub = %claims.sub, "signed-token rejected: subject is revoked");
             return None;
         }
@@ -180,10 +146,7 @@ impl GovState {
     /// a "revoked" token still valid after a restart is a security hole).
     pub(crate) fn revoke(&self, sub: &str, reason: &str) -> StoreResult<()> {
         self.store.add_denylist(sub, reason)?;
-        self.denylist
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(sub.to_string());
+        self.denylist.insert(sub);
         Ok(())
     }
 
@@ -198,10 +161,7 @@ impl GovState {
     /// the tests need it deterministic. Production callers use `is_revoked`.
     pub(crate) fn is_revoked_at(&self, sub: &str, now: u64) -> bool {
         self.sync_revocations_if_stale(now);
-        self.denylist
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .contains(sub)
+        self.denylist.contains(sub)
     }
 
     /// MINT a signed-token key (1.5.0): persist the policy BINDING row (subject id -> group,

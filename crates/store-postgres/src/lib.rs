@@ -15,6 +15,13 @@
 //! Like SQLite, it is a **single mutex-guarded connection** used off the request hot path (key CRUD
 //! + the write-behind usage flush), so serializing access on one connection is correct and simple.
 //!
+//! "Off the hot path" means off the **reactor**: the one request-triggered read that exists (the
+//! revocation denylist re-sync, at most once per node per staleness window) is SCHEDULED onto the
+//! blocking pool and bounded to one outstanding call — no request ever waits on this connection,
+//! and no Tokio worker thread is ever parked inside it. That property is load-bearing precisely
+//! because of the two limitations below: with neither a reconnect nor a statement timeout, a call
+//! into this client can block forever, so it must never block anything that has to keep running.
+//!
 //! ## Known limitations (documented honestly, not papered over)
 //!
 //! - **No TLS in this build (`NoTls`).** Run the connection over a trusted network segment, a local
