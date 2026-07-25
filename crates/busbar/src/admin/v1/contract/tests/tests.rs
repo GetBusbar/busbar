@@ -15,7 +15,7 @@ fn mount_constants_are_the_frozen_wire_literals() {
     );
 }
 
-/// The §1 authorization matrix, test-locked: reads are read-only, hook-definition mutations
+/// The authorization matrix, test-locked: reads are read-only, hook-definition mutations
 /// are hooks-register, everything else (keys, config, auth, cache) is full. Unknown methods
 /// fail closed to full.
 #[test]

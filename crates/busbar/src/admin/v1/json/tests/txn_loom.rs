@@ -1,4 +1,4 @@
-//! §5.5 — a TARGETED loom model of the one invariant the config-mutation lock exists to protect.
+//! A TARGETED loom model of the one invariant the config-mutation lock exists to protect.
 //!
 //! Run with `scripts/loom.sh` (`cargo test -p busbar --features loom-model txn_loom`). The whole
 //! file sits behind the optional `loom-model` feature, so it never compiles into a normal build or

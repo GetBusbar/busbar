@@ -158,9 +158,9 @@ impl<T> Outcome<T> {
 
 /// The body's ONLY handle to config inside the critical section.
 ///
-/// It deliberately exposes no `AppHandle` (so a body cannot swap out of band, §4 above), no
+/// It deliberately exposes no `AppHandle` (so a body cannot swap out of band, above), no
 /// `&dyn Store` and no `&GovState` (so a body cannot run a blocking round-trip on the async thread,
-/// §3), and no second snapshot (so a body cannot read a stale pre-lock config, §1).
+/// ), and no second snapshot (so a body cannot read a stale pre-lock config).
 pub(crate) struct Txn<'a> {
     /// The FRESH, post-lock snapshot. The only config the body can read.
     app: &'a Arc<App>,
@@ -248,7 +248,7 @@ impl<'a> Txn<'a> {
 ///
 /// It also takes `commit_and_swap` off the reactor. Its persist step is real disk work — an overlay
 /// read-modify-write plus two fsyncs — which the previous shape ran inline on a Tokio worker while
-/// the lock was held, the same class of stall §3 defers store reads to avoid.
+/// the lock was held, the same class of stall defers store reads to avoid.
 pub(crate) async fn config_transaction<F, T>(
     handle: &Arc<AppHandle>,
     body: F,
@@ -305,14 +305,14 @@ fn apply<T>(handle: &Arc<AppHandle>, mut outcome: Outcome<T>) -> Result<T, Admin
 #[path = "tests/txn_tests.rs"]
 mod txn_tests;
 
-// §5.3.4: THE COMPILE FENCE — a module that must NOT type-check. Behind the `txn-fence-red`
+// THE COMPILE FENCE — a module that must NOT type-check. Behind the `txn-fence-red`
 // feature; `scripts/txn-fence.sh` compiles it and asserts the compiler rejects it. See the file
 // header for why this is an in-crate negative build rather than a `trybuild` ui case.
 #[cfg(feature = "txn-fence-red")]
 #[path = "tests/txn_fence.rs"]
 mod txn_fence;
 
-// §5.5: the targeted loom model of the swap lost-update invariant. Behind the OPTIONAL `loom-model`
+// The targeted loom model of the swap lost-update invariant. Behind the OPTIONAL `loom-model`
 // feature, so it is compiled ONLY by `scripts/loom.sh`, never by a normal build or CI test run.
 #[cfg(all(test, feature = "loom-model"))]
 #[path = "tests/txn_loom.rs"]

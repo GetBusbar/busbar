@@ -1047,7 +1047,7 @@ pub(crate) fn validate_with_unset(
 
         // Rule (chain entries/max-scope): every entry's `max_admin_scope` must be a known scope
         // token (typos fail at boot), and `full` - lifting the default read-only ceiling on an
-        // external chain - is a LOUD boot warning: it is the explicit opt-in §2.4 requires.
+        // external chain - is a LOUD boot warning: it is the explicit opt-in requires.
         for entry in auth.chain.iter().chain(auth.admin_auth.iter()) {
             if let Some(scope) = entry.max_admin_scope.as_deref() {
                 match crate::admin::v1::contract::Scope::parse(scope) {

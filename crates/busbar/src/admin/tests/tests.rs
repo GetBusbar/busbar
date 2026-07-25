@@ -1100,7 +1100,7 @@ async fn test_admin_v1_scope_ladder_e2e_with_group_mapped_principals() {
         inner
             .role_bindings
             .insert("other-module".to_string(), other);
-        // §2.4 trust-boundary CEILING on the external module: nothing through it can exceed
+        // Trust-boundary CEILING on the external module: nothing through it can exceed
         // hooks-register regardless of what role_bindings grant.
         inner.auth_scope_caps.insert(
             "test-scope-module".to_string(),
@@ -1246,7 +1246,7 @@ async fn test_admin_v1_scope_ladder_e2e_with_group_mapped_principals() {
     handle.abort();
 }
 
-/// §6.3 ESCALATION GUARD: a hooks-register principal may register a shape-only, non-global hook
+/// ESCALATION GUARD: a hooks-register principal may register a shape-only, non-global hook
 /// but NOT one wired into a security-critical path — a `prompt: rw`/`ro` content-seeing gate, a
 /// `user: ro` identity-seeing hook, or an inline `global: true` (chain wiring is full-only). The
 /// operator (full) may register all of them.
@@ -1367,7 +1367,7 @@ async fn drive_hook_escalation_errors() {
 
     // A hooks-register token may not RETUNE (PATCH settings) a
     // content-seeing / global hook it can neither create nor replace — PATCH must enforce the
-    // same §6.3 ceiling, keyed on the EXISTING hook's grants.
+    // same ceiling, keyed on the EXISTING hook's grants.
     let patch = client
         .patch(format!("http://{addr}/api/v1/admin/hooks/op-hook/settings"))
         .header("x-admin-token", "grp:registrars")
@@ -1387,7 +1387,7 @@ async fn drive_hook_escalation_errors() {
     );
 
     // A hooks-register token may not DELETE a content-seeing / global
-    // gate a full admin installed — tearing down that security gate is the same §6.3 escalation
+    // gate a full admin installed — tearing down that security gate is the same escalation
     // register/put/patch forbid.
     let del = client
         .delete(format!("http://{addr}/api/v1/admin/hooks/op-hook"))
@@ -1484,7 +1484,7 @@ async fn test_admin_v1_idempotency_key_is_principal_scoped() {
     handle.abort();
 }
 
-/// The credential cache end-to-end (§2.5): an external-module identify is CACHED (the second
+/// The credential cache end-to-end: an external-module identify is CACHED (the second
 /// request is served from the cache — observable via the flush count), `POST
 /// /api/v1/admin/auth/cache/flush` drops it (full scope; read-only principals get 403), and the
 /// built-in operator token is NEVER cached (flush finds nothing after operator calls).
@@ -1548,7 +1548,7 @@ async fn test_admin_v1_credential_cache_and_flush_endpoint() {
     assert_eq!(r.status().as_u16(), 200);
     let body: serde_json::Value = r.json().await.unwrap();
     // TWO entries in the module's partition: the viewers Identify, plus the PASS the module
-    // returned for the operator token (Pass IS cached, short-TTL — §2.5; only the built-in
+    // returned for the operator token (Pass IS cached, short-TTL —; only the built-in
     // admin-tokens module's own verdicts are exempt). The flushing request's own Pass was
     // inserted by its chain run before the handler flushed.
     assert_eq!(
@@ -2345,7 +2345,7 @@ async fn test_admin_v1_register_hook_takes_effect_live() {
         "invalid_request"
     );
 
-    // Grant immutability over the wire (§6.4): re-registering "compress" (a prompt:rw gate) with a
+    // Grant immutability over the wire: re-registering "compress" (a prompt:rw gate) with a
     // DIFFERENT grant (prompt:ro) → 409 conflict, no mutation. Same grants would be idempotent.
     let escalate = client
         .post(format!("http://{addr}/api/v1/admin/hooks"))
@@ -2424,7 +2424,7 @@ async fn test_admin_v1_audit_records_mutations() {
     assert_eq!(mine["outcome"], "applied");
     assert!(mine["seq"].is_number() && mine["ts"].is_number());
 
-    // Filter by resource (§2.5): only this hook's entries come back.
+    // Filter by resource: only this hook's entries come back.
     let filtered: serde_json::Value = client
         .get(format!(
             "http://{addr}/api/v1/admin/audit?resource=hook:{name}"
@@ -2534,7 +2534,7 @@ async fn test_admin_v1_hook_mutation_404_is_audited() {
     handle.abort();
 }
 
-/// `GET /api/v1/admin/keys` supports `?prefix=` and `?enabled=` filters (§2.1): a full-id prefix
+/// `GET /api/v1/admin/keys` supports `?prefix=` and `?enabled=` filters: a full-id prefix
 /// returns just that key; a non-matching prefix returns none; `?enabled=true` includes a fresh key.
 #[tokio::test]
 async fn test_admin_v1_list_keys_filters() {
@@ -2596,7 +2596,7 @@ async fn test_admin_v1_list_keys_filters() {
     handle.abort();
 }
 
-/// `GET /api/v1/admin/keys?group=<name>` (§6d): exact bound-group filter — returns the keys BOUND
+/// `GET /api/v1/admin/keys?group=<name>`: exact bound-group filter — returns the keys BOUND
 /// to that group and nothing else (not another group's, not a groupless key). A name no group
 /// registry carries is a valid EMPTY 200, never a 400/404 — deliberately no existence check, so a
 /// key whose group another node's config dropped stays findable (that dangling state is exactly
@@ -2862,7 +2862,7 @@ async fn test_admin_v1_hook_register_persists_to_overlay() {
     handle.abort();
 }
 
-/// Key mutations are audited too (§6.7 — EVERY admin mutation): minting a key records
+/// Key mutations are audited too: minting a key records
 /// `key.create` / `applied` with the new key's id.
 #[tokio::test]
 async fn test_admin_v1_audit_records_key_mutations() {
@@ -5541,7 +5541,7 @@ async fn test_create_key_budget_group_and_labels_roundtrip_and_missing_group_400
     handle.abort();
 }
 
-// ── self-service mint: auto-provision + delegated mint scope + max_keys_per_principal (D2/§6a) ────
+// ── self-service mint: auto-provision + delegated mint scope + max_keys_per_principal (D2/) ────
 
 /// A `budget` limit for a group tree (helper to keep the test trees readable).
 fn budget_limit(cents: u64) -> crate::config::groups::LimitCfg {
@@ -9085,7 +9085,7 @@ const COND_WITNESS_DEBT: &[(
     ]
 };
 
-/// THE CLASS-LEVEL GUARANTEE (design D §5): for EVERY documented operation, the declared error set
+/// THE CLASS-LEVEL GUARANTEE: for EVERY documented operation, the declared error set
 /// equals the set the handlers can actually emit. The two directions are enforced by two different
 /// mechanisms, both structural:
 ///

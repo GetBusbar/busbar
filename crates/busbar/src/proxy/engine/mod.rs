@@ -227,7 +227,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // affinity derivation, failover/breaker config) up to the failover loop. Zero cost when
     // `BUSBAR_PROFILE` is unset — `start` returns `None` and takes no `Instant`.
     let _prep = crate::profile::start(crate::profile::Stage::Prepare);
-    // EGRESS deletion switch (design §3, same contract as `forward_operation`): every candidate
+    // EGRESS deletion switch: every candidate
     // lane's protocol must HOLD this operation's handler. A protocol whose handler was deleted is
     // not a valid egress for the operation — a clean no-handler 404 in the CALLER's dialect, never a
     // silent dispatch. Dormant while all six protocols serve chat; load-bearing the moment one is
@@ -1409,7 +1409,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                         // native shape. On a CROSS-protocol boundary (e.g. an Anthropic-ingress client
                         // routed to an OpenAI backend that 401s) relaying the egress provider's native
                         // error envelope and Content-Type to a different-protocol SDK is a
-                        // foreign-format leak (§8.2) — the SDK fails to decode it into its typed
+                        // foreign-format leak — the SDK fails to decode it into its typed
                         // exception, an immediate proxy tell. Reshape into the ingress protocol's
                         // native envelope instead, deriving the kind from the status (the sibling
                         // ClientFault branch does the same). The passthrough breaker invariant is
@@ -2049,7 +2049,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                                         .unwrap_or_else(|_| status.into_response());
                                 }
                                 // Content-Type is the INGRESS JSON CT, not the upstream's — the body
-                                // is now in the client's native non-stream shape (§8.4). A
+                                // is now in the client's native non-stream shape. A
                                 // bedrock-ingress 2xx also carries `x-amzn-RequestId` (matching a real
                                 // Converse response and the error path).
                                 let rb = Response::builder()
@@ -2083,7 +2083,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     // We reached this block only because ingress != egress, so relaying the upstream
                     // body+Content-Type verbatim would leak the EGRESS provider's native wire format
                     // to a different-protocol client — a foreign-format response is an immediate proxy
-                    // tell (§8.2) and a functional failure (the client's SDK cannot decode it). Return
+                    // tell and a functional failure (the client's SDK cannot decode it). Return
                     // an ingress-native 500 instead. (Same-protocol passthrough never enters this
                     // block — it streams through FirstByteBody / the buffered same-protocol path — so
                     // a legitimate verbatim relay is never suppressed here.)
@@ -2165,7 +2165,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 let mut rb = Response::builder().status(status);
                 // Cross-protocol streaming: the body is reframed to the client's format, so the CT
                 // must be the ingress client's, not the upstream's. Same-protocol passthrough keeps
-                // the upstream CT verbatim. §8.4.
+                // the upstream CT verbatim..
                 let cross_protocol = ingress_protocol != app.lanes[i].protocol.name();
                 if gemini_json_array && is_sse {
                     // JSON-array streaming body: a `[ {...}, {...} ]` document, not SSE.

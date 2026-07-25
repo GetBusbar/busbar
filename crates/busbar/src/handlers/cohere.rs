@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Cohere `RequestHandler` + cells (design §6/§7). Embeddings via `/v2/embed`.
+//! Cohere `RequestHandler` + cells. Embeddings via `/v2/embed`.
 #![allow(dead_code)]
 
 use crate::handlers::{

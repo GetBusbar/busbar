@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Gemini `RequestHandler` + cells (design §6/§7). Embeddings via `models/{id}:embedContent`.
+//! Gemini `RequestHandler` + cells. Embeddings via `models/{id}:embedContent`.
 #![allow(dead_code)]
 
 use crate::handlers::{
@@ -185,7 +185,7 @@ impl OperationHandler for GeminiTranscription {
             }
             None => (String::new(), String::new()),
         };
-        // `target_language` set ⇒ translate (folds /audio/translations, §1b); else transcribe.
+        // `target_language` set ⇒ translate (folds /audio/translations); else transcribe.
         let instruction = if r.target_language.is_some() {
             "Translate the following audio to text."
         } else {

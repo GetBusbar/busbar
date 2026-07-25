@@ -82,7 +82,7 @@ fn test_find_frame_terminator_crlf_frame_split_is_clean() {
 
 /// The default `ProtocolWriter::write_error` (the only impl in this wave — no per-protocol
 /// overrides yet) must produce valid JSON carrying the message and the `kind` as `error.type`,
-/// so the §8.1 / Unit I plumbing exists before per-protocol envelopes land. (Content-type is a
+/// so the / Unit I plumbing exists before per-protocol envelopes land. (Content-type is a
 /// caller concern; the doc contract says `application/json` for all protocols.)
 #[test]
 fn test_write_error_default_envelope_is_valid_json() {

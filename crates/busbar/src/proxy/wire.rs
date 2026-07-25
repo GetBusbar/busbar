@@ -82,7 +82,7 @@ pub(crate) fn maybe_attach_route_policy(
 /// The CANONICAL per-protocol error-response builder. Every forward-layer error returned to the
 /// caller goes through here so the body is the INGRESS protocol's native error envelope
 /// (`application/json`) rather than `text/plain`, which an official SDK cannot decode (it raises a
-/// generic JSON-decode error — a deterministic proxy tell, design §8.1). The status code is
+/// generic JSON-decode error — a deterministic proxy tell, design). The status code is
 /// preserved exactly; only the body shape changes. `kind` is the protocol-agnostic error category
 /// (e.g. `"invalid_request_error"`, `"overloaded"`, `"authentication_error"`); `msg` is the
 /// human-readable detail. When `ingress` does not resolve to a known protocol, falls back to the
@@ -160,7 +160,7 @@ pub(crate) fn cross_protocol_error_kind(status: StatusCode) -> &'static str {
 /// and `forward_once`. Lifts the upstream's human message where present, maps the status to the
 /// canonical ingress `kind` (`cross_protocol_error_kind`), and reshapes into the ingress protocol's
 /// native error envelope via `ingress_error`. Relaying the EGRESS provider's native error body to a
-/// different-protocol client is a foreign-format leak (§8.2) the SDK cannot decode into its typed
+/// different-protocol client is a foreign-format leak the SDK cannot decode into its typed
 /// exception — an immediate proxy tell — so a crossed boundary NEVER relays verbatim.
 pub(crate) fn shape_cross_protocol_error(
     ingress_protocol: &str,
@@ -372,7 +372,7 @@ pub(crate) fn translate_request_cross_protocol(
         };
         // OPERATION-BLIND translate: the INGRESS operation handler parses its dialect into the
         // neutral IR; the IR applies its own cross-protocol semantics (`prepare_for_egress` — chat's
-        // max-tokens default, tool-id decode, and the §8.2 extra-key leak guard live INSIDE the IR,
+        // max-tokens default, tool-id decode, and the extra-key leak guard live INSIDE the IR,
         // not here); the EGRESS handler writes its dialect. The engine names no operation.
         // Codec roles resolve from PROTOCOL IDENTITY, not from the threaded handle: the ingress
         // dialect is (ingress_protocol, operation)'s handler; the egress dialect is the lane's.

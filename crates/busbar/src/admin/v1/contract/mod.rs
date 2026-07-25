@@ -10,7 +10,7 @@
 //! contract lives here as typed Rust, a second transport reuses it verbatim and `openapi.json` can be
 //! generated from the same structs.
 //!
-//! ADDITIVE-ONLY (design-admin-api-v1 §0.2): fields may be ADDED to a view; an error `code` string is
+//! ADDITIVE-ONLY: fields may be ADDED to a view; an error `code` string is
 //! never removed or repurposed once shipped. Serde `Serialize` derives give the JSON projection for
 //! free; a non-JSON transport maps the same fields differently.
 
@@ -50,7 +50,7 @@ pub(crate) const PATH_GROUPS: &str = "/groups";
 /// `mint`; per-key lifecycle verbs (`/keys/{id}` PATCH/DELETE, rotate, revoke) stay `full`.
 pub(crate) const PATH_KEYS: &str = "/keys";
 
-/// Shared pagination limit policy (§0.4, one cursor grammar → one limit policy) for the admin
+/// Shared pagination limit policy for the admin
 /// lists: `?limit=` hard cap and default page size, used by the keys list (admin.rs) and the
 /// audit list (json.rs).
 pub(crate) const LIST_LIMIT_MAX: usize = 1000;
@@ -62,7 +62,7 @@ pub(crate) const VERSIONS_LIMIT_DEFAULT: usize = 100;
 
 /// The built-in authorization scopes. They form a DIAMOND lattice, NOT a strict chain:
 /// `ReadOnly` at the bottom, `Full` at the top, and `HooksRegister` + `Mint` as two INCOMPARABLE
-/// siblings in the middle (design-admin-api-v1 §1; self-service governance D2). Authorization is
+/// siblings in the middle. Authorization is
 /// checked on the PRINCIPAL per endpoint and is NEVER derived from the request body, so a crafted
 /// request cannot escalate.
 ///
@@ -93,7 +93,7 @@ pub(crate) enum Scope {
     /// auth, or wire chains. SIBLING of `Mint` — carries NO key-mint authority.
     HooksRegister,
     /// read-only + MINT keys (`POST /keys`, INCLUDING the auto-provision-on-mint leaf-group
-    /// creation). The delegated scope for the customer's self-service portal (self-service §6a): it
+    /// creation). The delegated scope for the customer's self-service portal: it
     /// can mint a key into a group and auto-provision the `user:<sub>` leaf, but CANNOT register
     /// hooks, change auth, or mutate arbitrary config. SIBLING of `HooksRegister` — carries NO hook
     /// authority.
@@ -149,7 +149,7 @@ impl Scope {
     }
 }
 
-/// The AUTHORIZATION MATRIX (design-admin-api-v1 §1, §6.3): the scope an admin endpoint requires,
+/// The AUTHORIZATION MATRIX: the scope an admin endpoint requires,
 /// derived from METHOD + PATH — never from the body (a crafted request cannot escalate). NOT a
 /// ladder (the scope lattice is a diamond — see `Scope`): every read is `read-only`; the
 /// hook-DEFINITION lifecycle (`/api/v1/admin/hooks*` mutations) needs `hooks-register`; MINTING a
@@ -157,7 +157,7 @@ impl Scope {
 /// other mutation — config apply/rollback, auth chains, group_map, cache, group CRUD — needs
 /// `full`. Because `HooksRegister`/`Mint` are SIBLINGS in `allows`, a `mint` requirement is
 /// satisfied by exactly `mint` or `full` — never by `hooks-register`, and vice versa. Unknown
-/// methods fail closed to `full`. Body-derived refinements (§6.3: a `hooks-register` principal must
+/// methods fail closed to `full`. Body-derived refinements (: a `hooks-register` principal must
 /// not register a hook wired into a security-critical path) are enforced at the service layer.
 pub(crate) fn required_scope(method: &axum::http::Method, path: &str) -> Scope {
     use axum::http::Method;
@@ -182,7 +182,7 @@ pub(crate) fn required_scope(method: &axum::http::Method, path: &str) -> Scope {
     if is_mutation && (rel == PATH_HOOKS || rel.starts_with("/hooks/")) {
         return Scope::HooksRegister;
     }
-    // MINTING a key is the delegated self-service verb (self-service §6a): `POST /keys` (only) —
+    // MINTING a key is the delegated self-service verb: `POST /keys` (only) —
     // the auto-provision-on-mint leaf creation rides the same request, so the whole mint path is
     // `mint`, not `full`. Everything else under `/keys*` (list/get are reads above; PATCH/DELETE/
     // rotate/revoke are lifecycle mutations) stays `full` — a self-service portal mints, it does
@@ -234,7 +234,7 @@ pub(crate) enum AdminError {
     /// (governance disabled, base-defined hook, immutable grant change, in-flight idempotency
     /// reservation). `code = conflict`.
     Conflict(String),
-    /// The principal exhausted its per-minute mutation budget (§6.6). `code = rate_limited`.
+    /// The principal exhausted its per-minute mutation budget. `code = rate_limited`.
     RateLimited,
     /// An internal failure (store/plugin). `code = internal`. The human `message` is generic; details
     /// are logged server-side, never returned.
@@ -367,7 +367,7 @@ pub(crate) struct TopologyInfo {
 
 /// A pool in the topology read (`GET /api/v1/admin/pools`). Summary shape today: name + the member
 /// models and their weights. LIVE per-member status (breaker state, available concurrency, latency
-/// EWMA, budget/rate headroom — design-admin-api-v1 §6.9) is an additive follow-up; the field set
+/// EWMA, budget/rate headroom — design-admin-api-v1) is an additive follow-up; the field set
 /// only grows.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
@@ -385,7 +385,7 @@ pub(crate) struct PoolMemberView {
 }
 
 /// The LIVE per-pool detail read (`GET /api/v1/admin/pools/{name}`) — the reliability/capacity dashboard
-/// data (design-admin-api-v1 §6.9): each member's breaker state, concurrency headroom, in-flight
+/// data: each member's breaker state, concurrency headroom, in-flight
 /// count, latency EWMA, and success/error tallies, read from the SAME store signals the routing seam
 /// ranks on. No LLM content, no credentials.
 #[derive(Debug, Clone, Serialize)]
@@ -566,7 +566,7 @@ impl GroupView {
 
 /// `GET /groups/{name}/usage` — one group's DERIVED current-window usage, one row per
 /// enforcement bucket (each `(window, pool?)` its limits materialise), against that bucket's
-/// caps. The §6d dashboard read: spend/tokens/requests per tier vs the budgets, straight off the
+/// caps. The dashboard read: spend/tokens/requests per tier vs the budgets, straight off the
 /// ledger x the CURRENT rate card (reprice-on-read, nothing stored). The customer's self-service
 /// tool consumes this per group (`user:<sub>` leaf = one person's view) and re-scopes it.
 #[derive(Debug, Clone, Serialize)]
@@ -802,7 +802,7 @@ pub(crate) struct AuthView {
 }
 
 /// A cursor-paginated list envelope. `items` is this page; `next_cursor` is `Some` when more remain
-/// (design-admin-api-v1 §0.4). Generic over the item view so every list endpoint shares one shape.
+///. Generic over the item view so every list endpoint shares one shape.
 #[derive(Debug, Clone, Serialize)]
 // The generic list envelope. `rename = "Page_{T}"` interpolates the item type into the schema
 // name so each instantiation (`Page_HookView`, `Page_ModelView`, …) is a DISTINCT

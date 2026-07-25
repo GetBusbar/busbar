@@ -337,7 +337,7 @@ mod tests {
         }
     }
 
-    /// §5b: the injected-failure matrix — for every step × {ENOSPC, EIO}, the write returns `Err`,
+    /// The injected-failure matrix — for every step × {ENOSPC, EIO}, the write returns `Err`,
     /// the target is UNCHANGED (prior contents, or still absent), and NO durable temp remains (the
     /// RAII guard ran on every early-return path). The temp assertion is the one that would have
     /// caught D4 (leaked `.tmp` on a pre-rename error); the "target unchanged" is the whole-family
@@ -398,7 +398,7 @@ mod tests {
         }
     }
 
-    /// §5b(4): success on an ABSOLUTE path round-trips and leaves no temp.
+    /// Success on an ABSOLUTE path round-trips and leaves no temp.
     #[test]
     fn success_absolute_path_roundtrips_no_temp() {
         let sc = Scratch::new("abs");
@@ -412,7 +412,7 @@ mod tests {
         assert!(!sc.has_durable_temp("cfg.json"));
     }
 
-    /// §5b(5): success on a RELATIVE path round-trips AND the parent fsync was attempted on the
+    /// Success on a RELATIVE path round-trips AND the parent fsync was attempted on the
     /// resolved "." — the assertion that would have caught D2 (relative-path parent fsync skipped).
     /// Serialized behind a mutex because it mutates process-global CWD.
     #[test]
@@ -444,7 +444,7 @@ mod tests {
         assert!(!sc.has_durable_temp("relative.json"));
     }
 
-    /// §5b(6): a pre-existing stale temp of a DIFFERENT (crashed-run) name is irrelevant under the
+    /// A pre-existing stale temp of a DIFFERENT (crashed-run) name is irrelevant under the
     /// primitive's per-call-unique naming — a fresh write succeeds and ignores the foreign leftover.
     /// And for the `exclusive` posture, a stale temp of our OWN about-to-use name does not wedge
     /// (pre-removed) — covering D3's wedge concern.
@@ -464,7 +464,7 @@ mod tests {
         );
     }
 
-    /// §5b(7): the `exclusive` + `mode` posture (the signing key): the published file is 0600 on
+    /// The `exclusive` + `mode` posture (the signing key): the published file is 0600 on
     /// unix, and a pre-planted temp of our own name is cleared rather than wedging (anti-wedge), while
     /// O_EXCL still refuses to ADOPT a foreign temp we did not clear. Covers D3's security posture.
     #[test]
@@ -551,7 +551,7 @@ mod tests {
         );
     }
 
-    /// §5b(8): concurrent writers to the SAME target — the final file is exactly ONE writer's payload
+    /// Concurrent writers to the SAME target — the final file is exactly ONE writer's payload
     /// intact (no torn interleave), and no durable temp leaks. Covers the unique-naming race the old
     /// fixed `.overlay.tmp`/`.json.tmp` names allowed.
     #[test]

@@ -202,7 +202,7 @@ fn test_ingress_error_bedrock_amzn_headers() {
 /// A forward-layer error returned to the CLIENT must carry the INGRESS protocol's native JSON
 /// error envelope (not `text/plain`), with the status code preserved. For an Anthropic ingress
 /// the shape is `{"type":"error","error":{"type",...,"message"}}` — what `anthropic.APIStatusError`
-/// decodes. (§8.1)
+/// decodes.
 #[tokio::test]
 async fn test_ingress_error_emits_native_envelope_with_status() {
     use http_body_util::BodyExt as _;
@@ -292,7 +292,7 @@ async fn test_anthropic_ingress_error_request_id_header_matches_body() {
 }
 
 /// The streaming response Content-Type is driven by the ingress protocol, not the upstream:
-/// SSE protocols → `text/event-stream`; bedrock → `application/vnd.amazon.eventstream`. (§8.4)
+/// SSE protocols → `text/event-stream`; bedrock → `application/vnd.amazon.eventstream`.
 #[test]
 fn test_ingress_stream_content_type_by_protocol() {
     for p in ["openai", "anthropic", "gemini", "cohere", "responses"] {
@@ -309,7 +309,7 @@ fn test_ingress_stream_content_type_by_protocol() {
 /// Cross-protocol non-stream response: an OpenAI backend whose body carries a `chatcmpl-` id
 /// must NOT leak that foreign id to an Anthropic client. The translation seam strips the IR
 /// identity before the ingress writer runs, so the writer mints a NATIVE `msg_` id, and the
-/// response is served with the INGRESS Content-Type (`application/json`). (§8.2, §8.4)
+/// response is served with the INGRESS Content-Type (`application/json`).
 #[tokio::test]
 async fn test_cross_protocol_response_carries_ingress_ct_and_native_id() {
     crate::metrics::init();
@@ -1383,7 +1383,7 @@ async fn test_cross_protocol_client_fault_reshapes_error_envelope() {
 }
 
 /// A forward error path through the real `forward_with_pool` (empty candidate pool → exhaustion)
-/// returns the ingress protocol's native JSON envelope with the right status. (§8.1)
+/// returns the ingress protocol's native JSON envelope with the right status.
 #[tokio::test]
 async fn test_forward_error_path_returns_native_envelope() {
     use http_body_util::BodyExt as _;

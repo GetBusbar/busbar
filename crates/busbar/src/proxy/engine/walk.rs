@@ -391,7 +391,7 @@ pub(crate) async fn forward_once(
             if !status.is_success() {
                 let bytes = read_capped_body(r).await;
                 // Cross-protocol: relaying the EGRESS provider's native error body+Content-Type to a
-                // different-protocol client is a foreign-format leak (§8.2). Reshape to the ingress
+                // different-protocol client is a foreign-format leak. Reshape to the ingress
                 // protocol's native error envelope, lifting the upstream's human message where
                 // present. Same-protocol passthrough relays verbatim (already the client's shape).
                 if cross_protocol {

@@ -7,7 +7,7 @@
 //! `exp`/`nbf`, and read the configured role claim (`groups` by default, or `roles` for Entra
 //! app-roles) into the principal's GROUPS. busbar's own `group_map:` / `auth.modules.oidc:` config
 //! then resolves those groups to governance grants and admin scope — the module asserts identity
-//! only, never policy (design-hooks-v2 §2.3).
+//! only, never policy.
 //!
 //! This crate is the reusable LOGIC (usable statically). The dynamic `cdylib` that exports the auth C
 //! ABI is the sibling `busbar-auth-oidc-plugin` crate.

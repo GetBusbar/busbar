@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Class-level RED/GREEN harness for the plugin export boundary (redesign B §6a).
+//! Class-level RED/GREEN harness for the plugin export boundary (redesign B).
 //!
 //! One harness parameterized over the boundary WRAPPER (`open_boundary`/`call_boundary`/
 //! `close_boundary`/`free_boundary` — the exact helpers `export_plugin!` emits), not per-symbol. A new

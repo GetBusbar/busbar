@@ -82,7 +82,7 @@ struct CreateKeyReq {
     /// `parent` (self-service D2; see `parent`).
     #[serde(default)]
     group: Option<String>,
-    /// AUTO-PROVISION target (self-service §6a, D2): the EXISTING parent group under which to create
+    /// AUTO-PROVISION target: the EXISTING parent group under which to create
     /// `group` as a leaf when `group` does not yet exist — the first-self-mint materialization of a
     /// `user:<sub>` personal budget bucket. The new leaf's limits come from the nearest-ancestor
     /// `child_default` template (inherit-only when none up the chain), created through the same
@@ -238,7 +238,7 @@ fn json_response(status: StatusCode, body: Value) -> Response {
 ///
 /// It replaces a SECOND vocabulary (`error_response(status, ERR_TYPE_*, msg)`), which re-derived the
 /// frozen `code` enum from `*_error` tokens in a second place. That split made the keys responses
-/// invisible to the OpenAPI projection (design D §1.2) and let the two banks drift; naming a `Cond`
+/// invisible to the OpenAPI projection and let the two banks drift; naming a `Cond`
 /// here is what makes each keys emission observable to `contract::taxonomy` (design D route 2).
 /// WHO IS REFUSING, so the ONE error door can also be the ONE audit door.
 ///
@@ -277,7 +277,7 @@ pub(crate) const KEY_RESOURCE_NONE: &str = "key:-";
 ///
 /// It replaces a SECOND vocabulary (`error_response(status, ERR_TYPE_*, msg)`), which re-derived the
 /// frozen `code` enum from `*_error` tokens in a second place. That split made the keys responses
-/// invisible to the OpenAPI projection (design D §1.2) and let the two banks drift; naming a `Cond`
+/// invisible to the OpenAPI projection and let the two banks drift; naming a `Cond`
 /// here is what makes each keys emission observable to `contract::taxonomy` (design D route 2).
 ///
 /// Folding the audit row in here is the same move for the same reason: one door, one row, no
@@ -1171,8 +1171,8 @@ pub(crate) async fn update_key(
 }
 
 /// GET /api/v1/admin/keys — list key metadata (no secrets/hashes). Optional filters (design-admin-api-v1
-/// §2.1): `?enabled=true|false` (by enabled state), `?prefix=vk_ab` (by key-id prefix),
-/// `?group=<name>` (keys bound to that group — §6d: a `user:<sub>` leaf's keys are one person's
+/// ): `?enabled=true|false` (by enabled state), `?prefix=vk_ab` (by key-id prefix),
+/// `?group=<name>` (keys bound to that group —: a `user:<sub>` leaf's keys are one person's
 /// keys; a team group's are the team's; the customer's self-service tool re-scopes from here).
 pub(crate) async fn list_keys(
     crate::state::CurrentApp(app): crate::state::CurrentApp,
@@ -1201,7 +1201,7 @@ pub(crate) async fn list_keys(
     // reference a group another node's config no longer has, and listing "keys of `g`" must still
     // find them (that dangling state is exactly what an operator would be hunting).
     let group = q.get("group").cloned();
-    // PAGINATION (design-admin-api-v1 §0.4): the ONE cursor envelope shared by every admin list —
+    // PAGINATION: the ONE cursor envelope shared by every admin list —
     // `?limit=` bounds the page, `?cursor=` (opaque) resumes after the prior one, and the response is
     // `{items, next_cursor}` (next_cursor present iff more rows remain). No `total`, no `?offset=` —
     // one pagination grammar across keys/audit/versions/topology.
@@ -1502,7 +1502,7 @@ pub(crate) async fn rotate_signing_key(
 
 /// GET /api/v1/admin/keys/{id} — one key's metadata (id/name/pools/budgets/limits/enabled; never the
 /// secret or key_hash). 404 when no key with `id` exists. Fills the single-key read gap in the key
-/// surface (design-admin-api-v1 §2.1); it stays on the legacy `{type}` envelope + `key_meta` shape so
+/// surface; it stays on the legacy `{type}` envelope + `key_meta` shape so
 /// it is consistent with the sibling key routes (the full `{code}`-envelope migration is a follow-up).
 pub(crate) async fn get_key(
     crate::state::CurrentApp(app): crate::state::CurrentApp,

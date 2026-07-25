@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The admin AUDIT log — every admin MUTATION is recorded, success AND failure (design-admin-api-v1
-//! §6.7), so a credential probing the surface or an operator asking "who changed what" leaves a trail.
+//! ), so a credential probing the surface or an operator asking "who changed what" leaves a trail.
 //!
 //! This is the in-memory MVP: a bounded ring of entries behind a process-global. Audit is process-wide
 //! state (NOT config-derived), so it lives as a global rather than on the swappable `App` snapshot —
@@ -13,7 +13,7 @@
 use serde::Serialize;
 
 /// One admin audit record. `outcome` is a stable token tooling can branch on. The record is
-/// HASH-CHAINED for tamper-EVIDENCE (§6.7): `hash = sha256(prev_hash | seq | ts | action | resource |
+/// HASH-CHAINED for tamper-EVIDENCE: `hash = sha256(prev_hash | seq | ts | action | resource |
 /// outcome | principal)`, and `prev_hash` is the preceding entry's `hash`. Recomputing the chain detects any
 /// altered/reordered/deleted entry (detection, not prevention — a compromised host can still rewrite
 /// the whole chain; prevention is shipping the log off-box to a SIEM).
@@ -233,7 +233,7 @@ impl AuditLog {
 
     /// Record one mutation attempt. Never fails (a poisoned lock is recovered — losing the audit log
     /// to a panic would be worse than proceeding). Bounded RAM ring: prunes the oldest past the cap
-    /// (the durable sink, when present, keeps the pruned tail). WITH principal attribution (§6.7:
+    /// (the durable sink, when present, keeps the pruned tail). WITH principal attribution (:
     /// every mutation, success AND failure, attributed to WHO attempted it).
     pub(crate) fn record_by(
         &self,
@@ -445,7 +445,7 @@ impl AuditLog {
     }
 
     /// A page of entries newest-first, optionally filtered by exact `action` and/or `resource`
-    /// (design-admin-api-v1 §2.5): skip `offset`, then take `limit`. `None` filters match everything.
+    ///: skip `offset`, then take `limit`. `None` filters match everything.
     /// The transport fetches `limit + 1` to detect whether a further page exists (the cursor envelope).
     pub(crate) fn list_filtered(
         &self,

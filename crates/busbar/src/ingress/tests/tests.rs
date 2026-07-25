@@ -774,7 +774,7 @@ async fn test_gemini_path_resolves_model_and_stream() {
 }
 
 /// Direct unit test of the injected body for the path-model core: the parsed gemini body must
-/// gain `model` (from the path) and `stream` (from the action). This is the §3 "body shim".
+/// gain `model` (from the path) and `stream` (from the action). This is the "body shim".
 #[test]
 fn test_path_model_injects_model_and_stream_into_body() {
     // Mirror the injection ingress_path_model performs (kept here as a focused assertion on the
@@ -1983,7 +1983,7 @@ async fn test_served_request_increments_hot_path_metrics() {
     server.shutdown().await;
 }
 
-/// THE GOVERNANCE RE-KEY end-to-end (§2.3): with governance ON and an external data-plane
+/// THE GOVERNANCE RE-KEY end-to-end: with governance ON and an external data-plane
 /// module in the chain, a role-bound principal gets a SYNTHESIZED key - its binding's pool ACL
 /// admits/denies (403), an omitted `allowed_pools` grants ALL pools (C6), an explicit `[]`
 /// grants nothing, and an unbound role is rejected outright (fail closed) - all keyed by the
@@ -5880,7 +5880,7 @@ async fn test_unpriced_passthrough_model_rejected_when_rate_card_present() {
     assert!(ok.is_ok(), "a priced configured lane admits");
 }
 
-// ─── Budget downgrade at the ingress boundary (§6c on_exhaust: downgrade) ────────────────────────
+// ─── Budget downgrade at the ingress boundary ────────────────────────
 
 /// Governance-enabled App with pools `frontier` + `value` and a group whose frontier budget
 /// (25c/day at a 10c flat fee) declares `on_exhaust: downgrade, downgrade_to: value`.

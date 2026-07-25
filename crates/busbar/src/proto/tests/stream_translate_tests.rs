@@ -2453,7 +2453,7 @@ fn test_translate_frames_split_across_chunks_reassemble() {
     }
 }
 
-/// Multiple `data:` lines in one SSE frame must be concatenated with `\n` (SSE spec §9.2.6),
+/// Multiple `data:` lines in one SSE frame must be concatenated with `\n` (SSE spec),
 /// not collapsed to the last line. A leading space after the colon is stripped exactly once.
 #[test]
 fn test_parse_sse_frame_concatenates_multiple_data_lines() {

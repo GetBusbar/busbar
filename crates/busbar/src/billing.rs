@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Polymorphic billable-item data model (design-operations-oop.md §0b/§5b).
+//! Polymorphic billable-item data model.
 //!
 //! The billable UNIT is (operation, model)-dependent: chat/embeddings bill tokens, `whisper-1` bills
 //! audio DURATION, `tts-1` bills CHARACTERS, dall-e bills per IMAGE. A single fixed struct cannot

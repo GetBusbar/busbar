@@ -1106,7 +1106,7 @@ pub(crate) struct HookCfg {
     #[serde(default)]
     pub(crate) user: UserAccess,
     /// Hook ordering key (default 0). Orders the rewrite transform chain and the phase-2 decision
-    /// chain (which reject surfaces; which order is "last" — see design-hooks-v2 §3.2). Ascending;
+    /// chain (which reject surfaces; which order is "last" — see design-hooks-v2). Ascending;
     /// ties keep globals before pool gates, then config order.
     #[serde(default)]
     pub(crate) priority: u16,
@@ -2141,13 +2141,13 @@ pub(crate) struct LimitsCfg {
     #[serde(default = "default_max_inbound_concurrent")]
     pub(crate) max_inbound_concurrent: usize,
     /// Cap on how many keys may be BOUND TO ONE GROUP — the anti-sprawl mitigation for self-service
-    /// minting (self-service §6a). Because a `user:<sub>` leaf group IS the principal (§5), this is
+    /// minting. Because a `user:<sub>` leaf group IS the principal, this is
     /// effectively "max keys per principal": a self-issued mint into a group already holding this
     /// many keys is a `409`. `0` (default) = UNLIMITED (today's behavior — an absent knob changes
     /// nothing). Enforced at `POST /keys` only; keys already present are never retroactively revoked.
     #[serde(default = "default_max_keys_per_principal")]
     pub(crate) max_keys_per_principal: usize,
-    /// Cap on how many groups `POST /keys` may AUTO-PROVISION (`parent:` self-service, §6a). The
+    /// Cap on how many groups `POST /keys` may AUTO-PROVISION (`parent:` self-service). The
     /// key-count cap bounds keys per group but says nothing about the number of GROUPS, so a
     /// `mint`-scope credential could grow the limit tree without bound — every new `user:<sub>`
     /// leaf is a new bucket in the enforcement chain, the version log and the persisted overlay
@@ -2313,7 +2313,7 @@ pub(crate) struct LimitsResolved {
     pub(crate) pool_max_idle_per_host: usize,
     pub(crate) pool_idle_timeout_secs: u64,
     pub(crate) max_inbound_concurrent: usize,
-    /// Max keys bound to one group (0 = unlimited) — the self-service mint anti-sprawl cap (§6a).
+    /// Max keys bound to one group (0 = unlimited) — the self-service mint anti-sprawl cap.
     pub(crate) max_keys_per_principal: usize,
     /// Max groups a mint may AUTO-PROVISION (0 = unlimited) — the sibling anti-sprawl cap on the
     /// SHAPE of the limit tree, not just its contents.

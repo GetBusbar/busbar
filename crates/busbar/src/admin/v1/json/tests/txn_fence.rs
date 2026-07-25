@@ -1,4 +1,4 @@
-//! §5.3.4 — THE COMPILE FENCE. This file is a NEGATIVE test: it must FAIL to compile.
+//! THE COMPILE FENCE. This file is a NEGATIVE test: it must FAIL to compile.
 //!
 //! It is behind the `txn-fence-red` cargo feature and is never part of a normal build.
 //! `scripts/txn-fence.sh` compiles it and asserts the compiler REJECTS it; a green compile is a

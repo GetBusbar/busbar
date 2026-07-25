@@ -3,7 +3,7 @@
 
 //! Config VERSION HISTORY — every successful config-plane mutation records the resulting
 //! hook-surface snapshot, so an operator can list versions, inspect any one, diff two, and ROLL
-//! BACK (design-admin-api-v1 §2.2).
+//! BACK.
 //!
 //! This is the in-memory MVP: a bounded ring held on `App` behind an `Arc` (the Arc is SHARED
 //! across config-apply snapshots — `App::clone` clones the Arc, not the ring — so history survives
@@ -81,7 +81,7 @@ impl VersionLog {
 
     /// A page of version metadata, most-recent-first (the LIST projection — snapshots omitted): skip
     /// `offset`, then take `limit`. The transport fetches `limit + 1` to detect a further page for the
-    /// cursor envelope (design-admin-api-v1 §0.4).
+    /// cursor envelope.
     pub(crate) fn list(&self, offset: usize, limit: usize) -> Vec<ConfigVersion> {
         let q = self.entries.lock().unwrap_or_else(|e| e.into_inner());
         q.iter().rev().skip(offset).take(limit).cloned().collect()
