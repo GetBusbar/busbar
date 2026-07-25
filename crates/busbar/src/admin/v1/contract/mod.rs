@@ -801,8 +801,8 @@ pub(crate) struct AuthView {
     pub(crate) open: bool,
 }
 
-/// A cursor-paginated list envelope. `items` is this page; `next_cursor` is `Some` when more remain
-///. Generic over the item view so every list endpoint shares one shape.
+/// A cursor-paginated list envelope. `items` is this page; `next_cursor` is `Some` when more remain.
+/// Generic over the item view so every list endpoint shares one shape.
 #[derive(Debug, Clone, Serialize)]
 // The generic list envelope. `rename = "Page_{T}"` interpolates the item type into the schema
 // name so each instantiation (`Page_HookView`, `Page_ModelView`, …) is a DISTINCT

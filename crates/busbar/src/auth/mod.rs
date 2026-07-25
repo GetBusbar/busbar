@@ -266,8 +266,8 @@ impl AuthMiddleware {
         self.run_chain_cached(candidate, None)
     }
 
-    /// [`run_chain`] with the CREDENTIAL CACHE consulted around each `cacheable()` module
-    ///. The cache stores the module's RAW verdict; the `allowed_groups:`
+    /// [`run_chain`] with the CREDENTIAL CACHE consulted around each `cacheable()` module.
+    /// The cache stores the module's RAW verdict; the `allowed_groups:`
     /// intersection is applied AFTER retrieval, so a config change to the caps takes effect
     /// immediately even for cached identities. In-process modules report `cacheable() == false`
     /// and never touch the cache (caching a microsecond compare only widens revocation).

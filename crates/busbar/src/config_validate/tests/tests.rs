@@ -2541,8 +2541,7 @@ fn test_validate_accepts_session_affinity_mode() {
     );
 }
 
-/// The provider `base_url` scheme check is CASE-INSENSITIVE (RFC 3986
-/// ) — an uppercase `HTTPS://` (which reqwest lowercases and accepts) must validate, not be
+/// The provider `base_url` scheme check is CASE-INSENSITIVE (RFC 3986 §3.1) — an uppercase `HTTPS://` (which reqwest lowercases and accepts) must validate, not be
 /// rejected with a misleading "must use http or https". Mirrors the webhook guard's `scheme_is`.
 #[test]
 fn test_validate_accepts_uppercase_url_scheme() {

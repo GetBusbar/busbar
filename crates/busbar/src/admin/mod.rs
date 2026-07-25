@@ -1170,8 +1170,8 @@ pub(crate) async fn update_key(
     }
 }
 
-/// GET /api/v1/admin/keys — list key metadata (no secrets/hashes). Optional filters (design-admin-api-v1
-/// ): `?enabled=true|false` (by enabled state), `?prefix=vk_ab` (by key-id prefix),
+/// GET /api/v1/admin/keys — list key metadata (no secrets/hashes). Optional filters:
+/// `?enabled=true|false` (by enabled state), `?prefix=vk_ab` (by key-id prefix),
 /// `?group=<name>` (keys bound to that group —: a `user:<sub>` leaf's keys are one person's
 /// keys; a team group's are the team's; the customer's self-service tool re-scopes from here).
 pub(crate) async fn list_keys(

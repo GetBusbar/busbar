@@ -56,7 +56,7 @@
         "type": "object"
       },
       "AuditEntry": {
-        "description": "One admin audit record. `outcome` is a stable token tooling can branch on. The record is\nHASH-CHAINED for tamper-EVIDENCE (§6.7): `hash = sha256(prev_hash | seq | ts | action | resource |\noutcome | principal)`, and `prev_hash` is the preceding entry's `hash`. Recomputing the chain detects any\naltered/reordered/deleted entry (detection, not prevention — a compromised host can still rewrite\nthe whole chain; prevention is shipping the log off-box to a SIEM).",
+        "description": "One admin audit record. `outcome` is a stable token tooling can branch on. The record is\nHASH-CHAINED for tamper-EVIDENCE: `hash = sha256(prev_hash | seq | ts | action | resource |\noutcome | principal)`, and `prev_hash` is the preceding entry's `hash`. Recomputing the chain detects any\naltered/reordered/deleted entry (detection, not prevention — a compromised host can still rewrite\nthe whole chain; prevention is shipping the log off-box to a SIEM).",
         "properties": {
           "action": {
             "description": "The action, `noun.verb` (e.g. `hook.register`, `hook.delete`).",
@@ -738,7 +738,7 @@
         "type": "object"
       },
       "GroupUsageView": {
-        "description": "`GET /groups/{name}/usage` — one group's DERIVED current-window usage, one row per\nenforcement bucket (each `(window, pool?)` its limits materialise), against that bucket's\ncaps. The §6d dashboard read: spend/tokens/requests per tier vs the budgets, straight off the\nledger x the CURRENT rate card (reprice-on-read, nothing stored). The customer's self-service\ntool consumes this per group (`user:<sub>` leaf = one person's view) and re-scopes it.",
+        "description": "`GET /groups/{name}/usage` — one group's DERIVED current-window usage, one row per\nenforcement bucket (each `(window, pool?)` its limits materialise), against that bucket's\ncaps. The dashboard read: spend/tokens/requests per tier vs the budgets, straight off the\nledger x the CURRENT rate card (reprice-on-read, nothing stored). The customer's self-service\ntool consumes this per group (`user:<sub>` leaf = one person's view) and re-scopes it.",
         "properties": {
           "as_of": {
             "description": "Epoch seconds the read was taken at (the windows below are current AS OF this instant).",
@@ -1440,7 +1440,7 @@
         "type": "object"
       },
       "Page_GroupView": {
-        "description": "A cursor-paginated list envelope. `items` is this page; `next_cursor` is `Some` when more remain\n(design-admin-api-v1 §0.4). Generic over the item view so every list endpoint shares one shape.",
+        "description": "A cursor-paginated list envelope. `items` is this page; `next_cursor` is `Some` when more remain.\nGeneric over the item view so every list endpoint shares one shape.",
         "properties": {
           "items": {
             "items": {
@@ -1462,7 +1462,7 @@
         "type": "object"
       },
       "Page_HookView": {
-        "description": "A cursor-paginated list envelope. `items` is this page; `next_cursor` is `Some` when more remain\n(design-admin-api-v1 §0.4). Generic over the item view so every list endpoint shares one shape.",
+        "description": "A cursor-paginated list envelope. `items` is this page; `next_cursor` is `Some` when more remain.\nGeneric over the item view so every list endpoint shares one shape.",
         "properties": {
           "items": {
             "items": {
@@ -1484,7 +1484,7 @@
         "type": "object"
       },
       "Page_ModelView": {
-        "description": "A cursor-paginated list envelope. `items` is this page; `next_cursor` is `Some` when more remain\n(design-admin-api-v1 §0.4). Generic over the item view so every list endpoint shares one shape.",
+        "description": "A cursor-paginated list envelope. `items` is this page; `next_cursor` is `Some` when more remain.\nGeneric over the item view so every list endpoint shares one shape.",
         "properties": {
           "items": {
             "items": {
@@ -1506,7 +1506,7 @@
         "type": "object"
       },
       "Page_PluginView": {
-        "description": "A cursor-paginated list envelope. `items` is this page; `next_cursor` is `Some` when more remain\n(design-admin-api-v1 §0.4). Generic over the item view so every list endpoint shares one shape.",
+        "description": "A cursor-paginated list envelope. `items` is this page; `next_cursor` is `Some` when more remain.\nGeneric over the item view so every list endpoint shares one shape.",
         "properties": {
           "items": {
             "items": {
@@ -1528,7 +1528,7 @@
         "type": "object"
       },
       "Page_PoolView": {
-        "description": "A cursor-paginated list envelope. `items` is this page; `next_cursor` is `Some` when more remain\n(design-admin-api-v1 §0.4). Generic over the item view so every list endpoint shares one shape.",
+        "description": "A cursor-paginated list envelope. `items` is this page; `next_cursor` is `Some` when more remain.\nGeneric over the item view so every list endpoint shares one shape.",
         "properties": {
           "items": {
             "items": {
@@ -1550,7 +1550,7 @@
         "type": "object"
       },
       "Page_ProviderView": {
-        "description": "A cursor-paginated list envelope. `items` is this page; `next_cursor` is `Some` when more remain\n(design-admin-api-v1 §0.4). Generic over the item view so every list endpoint shares one shape.",
+        "description": "A cursor-paginated list envelope. `items` is this page; `next_cursor` is `Some` when more remain.\nGeneric over the item view so every list endpoint shares one shape.",
         "properties": {
           "items": {
             "items": {
@@ -1764,7 +1764,7 @@
         "type": "object"
       },
       "PoolDetailView": {
-        "description": "The LIVE per-pool detail read (`GET /api/v1/admin/pools/{name}`) — the reliability/capacity dashboard\ndata (design-admin-api-v1 §6.9): each member's breaker state, concurrency headroom, in-flight\ncount, latency EWMA, and success/error tallies, read from the SAME store signals the routing seam\nranks on. No LLM content, no credentials.",
+        "description": "The LIVE per-pool detail read (`GET /api/v1/admin/pools/{name}`) — the reliability/capacity dashboard\ndata: each member's breaker state, concurrency headroom, in-flight\ncount, latency EWMA, and success/error tallies, read from the SAME store signals the routing seam\nranks on. No LLM content, no credentials.",
         "properties": {
           "members": {
             "items": {
@@ -1888,7 +1888,7 @@
         "type": "object"
       },
       "PoolView": {
-        "description": "A pool in the topology read (`GET /api/v1/admin/pools`). Summary shape today: name + the member\nmodels and their weights. LIVE per-member status (breaker state, available concurrency, latency\nEWMA, budget/rate headroom — design-admin-api-v1 §6.9) is an additive follow-up; the field set\nonly grows.",
+        "description": "A pool in the topology read (`GET /api/v1/admin/pools`). Summary shape today: name + the member\nmodels and their weights. LIVE per-member status (breaker state, available concurrency, latency\nEWMA, budget/rate headroom — design-admin-api-v1) is an additive follow-up; the field set\nonly grows.",
         "properties": {
           "members": {
             "items": {
@@ -4182,7 +4182,7 @@
                 }
               }
             },
-            "description": "`forbidden`: a `hooks-register` principal may not touch a content-seeing (`prompt`/`user`) or `global` hook (§6.3)"
+            "description": "`forbidden`: a `hooks-register` principal may not touch a content-seeing (`prompt`/`user`) or `global` hook"
           },
           "409": {
             "content": {
@@ -4280,7 +4280,7 @@
                 }
               }
             },
-            "description": "`forbidden`: a `hooks-register` principal may not touch a content-seeing (`prompt`/`user`) or `global` hook (§6.3)"
+            "description": "`forbidden`: a `hooks-register` principal may not touch a content-seeing (`prompt`/`user`) or `global` hook"
           },
           "404": {
             "content": {
@@ -4467,7 +4467,7 @@
                 }
               }
             },
-            "description": "`forbidden`: a `hooks-register` principal may not touch a content-seeing (`prompt`/`user`) or `global` hook (§6.3)"
+            "description": "`forbidden`: a `hooks-register` principal may not touch a content-seeing (`prompt`/`user`) or `global` hook"
           },
           "404": {
             "content": {
@@ -4734,7 +4734,7 @@
                 }
               }
             },
-            "description": "`forbidden`: a `hooks-register` principal may not touch a content-seeing (`prompt`/`user`) or `global` hook (§6.3)"
+            "description": "`forbidden`: a `hooks-register` principal may not touch a content-seeing (`prompt`/`user`) or `global` hook"
           },
           "404": {
             "content": {

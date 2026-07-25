@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The admin AUDIT log — every admin MUTATION is recorded, success AND failure (design-admin-api-v1
-//! ), so a credential probing the surface or an operator asking "who changed what" leaves a trail.
+//! The admin AUDIT log — every admin MUTATION is recorded, success AND failure, so a credential
+//! probing the surface or an operator asking "who changed what" leaves a trail.
 //!
 //! This is the in-memory MVP: a bounded ring of entries behind a process-global. Audit is process-wide
 //! state (NOT config-derived), so it lives as a global rather than on the swappable `App` snapshot —
@@ -447,8 +447,8 @@ impl AuditLog {
         true
     }
 
-    /// A page of entries newest-first, optionally filtered by exact `action` and/or `resource`
-    ///: skip `offset`, then take `limit`. `None` filters match everything.
+    /// A page of entries newest-first, optionally filtered by exact `action` and/or `resource`:
+    /// skip `offset`, then take `limit`. `None` filters match everything.
     /// The transport fetches `limit + 1` to detect whether a further page exists (the cursor envelope).
     pub(crate) fn list_filtered(
         &self,
