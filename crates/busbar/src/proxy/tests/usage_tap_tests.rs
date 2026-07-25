@@ -383,3 +383,118 @@ fn test_stable_hash_is_deterministic() {
     assert_eq!(stable_hash("session-abc"), 0xe909_c864_ab05_9bea);
     assert_ne!(stable_hash("session-abc"), stable_hash("session-xyz"));
 }
+
+/// REGRESSION (round-6 audit): THE LEDGER'S MODEL KEY IS THE RATE CARD'S MODEL KEY.
+///
+/// The rate card is keyed by the CONFIG model name — `validate_cost_model` enforces it in both
+/// directions (every `models:` key needs a card entry; a card entry naming a non-`models:` key is a
+/// boot error). But all three accrual sites passed `lane.wire_model()`, which returns
+/// `upstream_model` whenever the lane sets one. For every ALIASED lane — the documented flagship
+/// multi-provider configuration — `rate_for()` therefore looked up a string that CANNOT be in the
+/// card, silently took its `None` arm, and derived spend of ZERO: a `budget:`-capped group was
+/// effectively uncapped on token cost, `busbar_bucket_spend_cents` read 0 with full headroom, and
+/// the same traffic priced CORRECTLY on `/api/v1/admin/usage`, which meters under `lane.model`.
+///
+/// The lane below is exactly that shape: config name `gpt-4o`, `upstream_model: glm-4.6`. The
+/// assertion is that spend is derived, and derived at the card's rate.
+#[test]
+fn ledger_prices_an_aliased_lane_at_the_rate_card() {
+    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+
+    let store = Arc::new(MemoryStore::new());
+    let gov = Arc::new(GovState::new(store, None).expect("gov"));
+    // A rate card keyed by the CONFIG model name — the only key space it is allowed to use.
+    // 1000 micro-units per token on input and output (a micro-unit is 1e-4 cents), nothing else.
+    let card = std::collections::BTreeMap::from([(
+        "gpt-4o".to_string(),
+        crate::config::RateEntryCfg {
+            input_utok: 1000.0,
+            output_utok: 1000.0,
+            cache_read_utok: 0.0,
+            cache_write_utok: 0.0,
+        },
+    )]);
+    let groups = std::collections::BTreeMap::from([(
+        "g".to_string(),
+        crate::config::GroupCfg {
+            parent: None,
+            enabled: true,
+            limits: vec![crate::config::groups::LimitCfg {
+                metric: crate::config::groups::LimitMetric::Budget,
+                amount: 1_000_000_000,
+                per: Some(crate::config::groups::LimitWindow::Day),
+                pool: None,
+                on_exhaust: None,
+                downgrade_to: None,
+            }],
+            ..Default::default()
+        },
+    )]);
+    let cost = Arc::new(crate::cost::CostModel::resolve_parts(
+        Some(&card),
+        0,
+        &groups,
+    ));
+    let (key, _secret) = gov
+        .create_key(
+            NewKeySpec {
+                name: "k".to_string(),
+                allowed_pools: None,
+                group: Some("g".to_string()),
+                labels: Default::default(),
+            },
+            1_700_000_000,
+        )
+        .expect("create key");
+    let charged_at: u64 = 1_700_000_000;
+    let sink = Some(UsageSink {
+        gov: gov.clone(),
+        cost: cost.clone(),
+        key: std::sync::Arc::new(key.clone()),
+        pool: std::sync::Arc::from(""),
+        charged_at,
+        admit: None,
+    });
+
+    // THE ALIASED LANE: config name `gpt-4o` (what the card prices), wire name `glm-4.6` (what the
+    // provider is sent, and what the ledger used to key on).
+    let lane_app = crate::test_support::TestApp::new()
+        .lane(
+            crate::test_support::LaneSpec::new(
+                "gpt-4o",
+                crate::proto::Protocol::openai(),
+                "http://127.0.0.1:1",
+            )
+            .provider("zai")
+            .upstream_model("glm-4.6"),
+        )
+        .build();
+    let lane = lane_app.lanes[0].clone();
+    assert_ne!(
+        lane.wire_model(),
+        lane.model,
+        "test precondition: the lane must be ALIASED, or the bug is masked"
+    );
+
+    record_ir_usage(
+        &IrUsage {
+            input_tokens: 600,
+            output_tokens: 400,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: None,
+        },
+        &sink,
+        Some(&lane),
+    );
+
+    let derived = gov
+        .derived_bucket_usage(&cost, "group:g@day", "day", true, charged_at)
+        .expect("usage read");
+    assert_eq!(derived.tokens, 1000, "tokens are ledgered either way");
+    // 1000 tokens x 1000 micro-units/token = 1_000_000 micro-units = 100 cents.
+    assert_eq!(
+        derived.spend_cents, 100,
+        "an aliased lane's tokens must price against the rate card — deriving 0 here is a \
+         budget-capped group being uncapped on token cost"
+    );
+}
