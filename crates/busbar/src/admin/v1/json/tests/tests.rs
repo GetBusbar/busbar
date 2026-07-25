@@ -316,3 +316,109 @@ fn openapi_every_operation_has_a_typed_response_schema() {
         "too few operations with a response body: {with_body}/{op_count}"
     );
 }
+
+/// EXHAUSTIVENESS BRIDGE (design D §5.2a): every `AdminError` variant is classified — either as a
+/// per-endpoint-declarable `ErrKind` or as ALGORITHMIC (`None`, stamped on every operation). The
+/// bridge itself is `err_kind_of`'s `match`, which will not COMPILE once a new variant exists; this
+/// test locks the other half: that the declarable kinds round-trip to the same frozen code + status
+/// the taxonomy already froze, and that the algorithmic bucket is exactly the universal errors.
+///
+/// Together with the golden, this subsumes `openapi_error_enum_matches_admin_error_codes`: the code
+/// enum can no longer be right while a per-endpoint response set is wrong.
+#[test]
+fn err_kind_bridges_every_admin_error_variant() {
+    use crate::admin::v1::contract::taxonomy::{err_kind_of, ErrKind};
+    let declarable = [
+        (AdminError::not_found(""), ErrKind::NotFound),
+        (AdminError::Validation(String::new()), ErrKind::Validation),
+        (
+            AdminError::VersionConflict(String::new()),
+            ErrKind::VersionConflict,
+        ),
+        (AdminError::Conflict(String::new()), ErrKind::Conflict),
+        (
+            AdminError::Forbidden {
+                needed: crate::admin::v1::contract::Scope::Full,
+            },
+            ErrKind::Forbidden,
+        ),
+    ];
+    for (e, kind) in declarable {
+        assert_eq!(err_kind_of(&e), Some(kind), "{e:?} lost its ErrKind");
+        assert_eq!(
+            kind.code(),
+            e.code(),
+            "{kind:?} code drifted from AdminError"
+        );
+        assert_eq!(
+            kind.status(),
+            e.http_status(),
+            "{kind:?} status drifted from AdminError"
+        );
+    }
+    // The universal half: emitted for EVERY operation, so never declarable per endpoint.
+    for e in [
+        AdminError::Unauthorized,
+        AdminError::MethodNotAllowed,
+        AdminError::RateLimited,
+        AdminError::Internal,
+    ] {
+        assert_eq!(
+            err_kind_of(&e),
+            None,
+            "{e:?} is algorithmic — declaring it per endpoint would be noise AND a drift vector"
+        );
+    }
+}
+
+/// TOTALITY of the declaration itself: every entry resolves to a real 4xx with a non-empty phrase,
+/// and no operation names the same condition twice (which would render a duplicated clause). Cheap,
+/// always-on, and it makes a typo'd table entry impossible rather than merely unlikely.
+#[cfg(feature = "openapi-schema")]
+#[test]
+fn declared_errors_is_total_and_well_formed() {
+    use crate::admin::v1::contract::taxonomy::{declared_errors, declared_responses, MethodTag};
+    let doc = openapi_doc();
+    let prefix = crate::admin::v1::contract::ADMIN_PREFIX;
+    for (path, methods) in doc["paths"].as_object().expect("paths") {
+        let rel = path.strip_prefix(prefix).unwrap_or(path);
+        for (key, op) in methods.as_object().expect("methods") {
+            let Some(method) = MethodTag::from_op_key(key) else {
+                continue;
+            };
+            let declared = declared_errors(method, rel);
+            let mut seen = std::collections::BTreeSet::new();
+            for de in declared {
+                assert!(
+                    (400..500).contains(&de.kind.status()),
+                    "{key} {rel} declares {:?}, whose status {} is not a 4xx — only client-visible \
+                     failures are per-endpoint declarable",
+                    de.kind,
+                    de.kind.status()
+                );
+                assert!(
+                    !de.cond.phrase().is_empty(),
+                    "{key} {rel}: {:?} has no phrase",
+                    de.cond
+                );
+                assert!(
+                    seen.insert((de.kind, de.cond)),
+                    "{key} {rel} declares {:?}/{:?} twice",
+                    de.kind,
+                    de.cond
+                );
+            }
+            // The document IS the projection: every status the declaration produces is present in
+            // the generated operation, with exactly the projected description.
+            let responses = op["responses"].as_object().expect("responses");
+            for (status, description) in declared_responses(method, rel) {
+                assert_eq!(
+                    responses[&status]["description"].as_str(),
+                    Some(description.as_str()),
+                    "{key} {rel} {status} is not the projection of its declaration — someone \
+                     hand-wrote a response body again"
+                );
+            }
+        }
+    }
+}

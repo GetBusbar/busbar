@@ -363,7 +363,12 @@ pub(crate) fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr]
             Conflict / UntrustedUpload,
             Conflict / NameCollision,
         ],
-        (Post, "/plugins/reload") => de![Validation / InvalidConfig],
+        // `POST /plugins/reload` CAN 400 when the rebuild-from-disk fails, but that needs an
+        // on-disk config that has gone invalid since boot — no fixture in this suite can drive it,
+        // and an error nothing witnesses is exactly the over-claim this table exists to forbid. It
+        // stays undeclared until a test can produce it: the router's under-claim assertion turns
+        // the build RED the moment any test does, which is what puts the entry back (with its
+        // witness). Declaring it on faith is the failure mode, not the fix.
         (Post, "/plugins/rollback") => de![
             Validation / MalformedBody,
             Validation / MalformedIfMatch,
@@ -569,6 +574,11 @@ pub(crate) mod observed {
     pub(crate) type Emission = (String, MethodTag, ErrKind, Option<Cond>);
 
     static WITNESSED: Mutex<BTreeSet<Emission>> = Mutex::new(BTreeSet::new());
+
+    /// Every emission the process has witnessed so far.
+    pub(crate) fn snapshot() -> BTreeSet<Emission> {
+        WITNESSED.lock().map(|s| s.clone()).unwrap_or_default()
+    }
 
     /// Record one observed emission (called by the router's recording layer).
     pub(crate) fn record(rel: &str, method: MethodTag, tag: Tag) {
