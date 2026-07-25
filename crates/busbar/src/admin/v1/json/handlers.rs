@@ -967,22 +967,6 @@ pub(crate) fn plan_mint_group(
             crate::admin::v1::service::MAX_GROUP_NAME_LEN
         )));
     }
-    // The GROUP name is capped here too, not just `parent`. `create_key` caps only the key's own
-    // `name`, so without this an overlong `group` travels all the way to `build_with_group`'s
-    // identical check and comes back as a generic tree error — one refusal wearing another's
-    // description, which is the confusion this surface has been unpicking.
-    if group.trim().is_empty() {
-        return Err(AdminError::Validation(
-            "group name must not be empty".into(),
-        ));
-    }
-    if group.len() > crate::admin::v1::service::MAX_GROUP_NAME_LEN {
-        return Err(AdminError::Validation(format!(
-            "group name is {} chars; must be <= {}",
-            group.len(),
-            crate::admin::v1::service::MAX_GROUP_NAME_LEN
-        )));
-    }
     // The named parent must exist — build_with_group's validate-at-the-door would reject a dangling
     // parent as a 400, but name it precisely here (the mint's parent, not an opaque tree error).
     // Existence via the enforcement truth (cost), matching the group existence check above.
