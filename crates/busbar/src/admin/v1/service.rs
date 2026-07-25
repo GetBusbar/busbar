@@ -327,7 +327,7 @@ pub(crate) fn build_with_hook(current: &App, name: &str, cfg: HookCfg) -> Result
 /// re-resolved here — that (plus the dangling-ref 409) lands with the broader config/apply.
 pub(crate) fn build_without_hook(current: &App, name: &str) -> Result<App, AdminError> {
     if !current.hook_registry.contains_key(name) {
-        return Err(AdminError::NotFound(format!("hook `{name}`")));
+        return Err(AdminError::not_found(format!("hook `{name}`")));
     }
     let mut next = current.clone();
     next.config_version = current.config_version.wrapping_add(1);
@@ -429,7 +429,7 @@ pub(crate) fn build_with_group(
 /// projection is rebuilt (the removed group's buckets disappear); the ledger survives the swap.
 pub(crate) fn build_without_group(current: &App, name: &str) -> Result<App, AdminError> {
     if !current.groups_registry.contains_key(name) {
-        return Err(AdminError::NotFound(format!("group `{name}`")));
+        return Err(AdminError::not_found(format!("group `{name}`")));
     }
     // BOUND-KEY GUARD: refuse to delete a group that virtual keys still charge through — an orphaned
     // `key.group` would fail that key CLOSED at every admission (a dangling budget-group reference),
@@ -648,7 +648,7 @@ impl AdminService {
             .app
             .pools
             .get(name)
-            .ok_or_else(|| AdminError::NotFound(format!("pool `{name}`")))?;
+            .ok_or_else(|| AdminError::not_found(format!("pool `{name}`")))?;
         Ok(self.pool_detail(name, members))
     }
 
@@ -750,7 +750,7 @@ impl AdminService {
             .hook_registry
             .get(name)
             .map(|cfg| self.hook_view(name, cfg))
-            .ok_or_else(|| AdminError::NotFound(format!("hook `{name}`")))
+            .ok_or_else(|| AdminError::not_found(format!("hook `{name}`")))
     }
 
     /// `GET /api/v1/admin/groups` — the `groups:` limit tree read. Read scope. Each entry is the
@@ -772,7 +772,7 @@ impl AdminService {
             .groups_registry
             .get(name)
             .map(|cfg| GroupView::from_cfg(name, cfg))
-            .ok_or_else(|| AdminError::NotFound(format!("group `{name}`")))
+            .ok_or_else(|| AdminError::not_found(format!("group `{name}`")))
     }
 
     /// `GET /api/v1/admin/groups/{name}/usage` — the group's derived current-window usage per
@@ -785,7 +785,7 @@ impl AdminService {
     ) -> Result<crate::admin::v1::contract::GroupUsageView, AdminError> {
         use crate::admin::v1::contract::{GroupBucketUsageView, GroupUsageView};
         let Some(rt) = self.app.cost.group_named(name) else {
-            return Err(AdminError::NotFound(format!("group `{name}`")));
+            return Err(AdminError::not_found(format!("group `{name}`")));
         };
         let now = crate::store::now();
         let mut buckets = Vec::with_capacity(rt.buckets.len());
@@ -1124,7 +1124,7 @@ impl AdminService {
         let file = validate_plugin_filename(file)?;
         let lib_path = self.app.plugins_dir.join(&file);
         if !lib_path.is_file() {
-            return Err(AdminError::NotFound(format!("plugin `{file}`")));
+            return Err(AdminError::not_found(format!("plugin `{file}`")));
         }
         std::fs::remove_file(&lib_path)
             .map_err(|e| AdminError::Validation(format!("cannot remove plugin: {e}")))?;
@@ -1186,7 +1186,7 @@ impl AdminService {
         let file = validate_plugin_filename(file)?;
         let lib_path = self.app.plugins_dir.join(&file);
         if !lib_path.is_file() {
-            return Err(AdminError::NotFound(format!("plugin `{file}`")));
+            return Err(AdminError::not_found(format!("plugin `{file}`")));
         }
         let bytes = std::fs::read(&lib_path)
             .map_err(|e| AdminError::Validation(format!("cannot read plugin `{file}`: {e}")))?;
@@ -1471,7 +1471,7 @@ impl AdminService {
             .app
             .hook_registry
             .get(name)
-            .ok_or_else(|| AdminError::NotFound(format!("hook `{name}`")))?;
+            .ok_or_else(|| AdminError::not_found(format!("hook `{name}`")))?;
         let view = self.hook_view(name, cfg);
         let (reachable, detail) = probe_transport(cfg, &self.app.hook_env).await;
         Ok(HookHealthView {
@@ -1928,7 +1928,7 @@ mod tests {
         assert!(!dir.join("junk.tar.gz").exists());
         assert!(matches!(
             svc.remove_store_plugin("junk.tar.gz"),
-            Err(AdminError::NotFound(_))
+            Err(AdminError::NotFound { .. })
         ));
     }
 
@@ -1998,7 +1998,7 @@ mod tests {
         // Absent file → NotFound.
         assert!(matches!(
             svc.resolve_plugin_rollback("nope.tar.gz", &empty),
-            Err(AdminError::NotFound(_))
+            Err(AdminError::NotFound { .. })
         ));
 
         // An UNSIGNED artifact present in the dir, under the STRICT posture: trust refuses it even for
@@ -2262,7 +2262,7 @@ mod tests {
 
         let err = svc.get_group("ghost").await.unwrap_err();
         assert!(
-            matches!(&err, AdminError::NotFound(msg) if msg.contains("ghost")),
+            matches!(&err, AdminError::NotFound { what: msg, .. } if msg.contains("ghost")),
             "unknown group is not_found: {err:?}"
         );
     }
@@ -2391,7 +2391,7 @@ mod tests {
         let Err(err) = build_without_group(&app, "ghost") else {
             panic!("unknown group must be not_found");
         };
-        assert!(matches!(&err, AdminError::NotFound(m) if m.contains("ghost")));
+        assert!(matches!(&err, AdminError::NotFound { what: m, .. } if m.contains("ghost")));
     }
 
     /// AUDIT (LOW): deleting a group that virtual keys still charge through is a 409 conflict — an
@@ -2586,7 +2586,7 @@ mod tests {
         let svc = AdminService::new(app);
         let err = svc.get_group_usage("ghost").await.unwrap_err();
         assert!(
-            matches!(&err, AdminError::NotFound(m) if m.contains("ghost")),
+            matches!(&err, AdminError::NotFound { what: m, .. } if m.contains("ghost")),
             "unknown group is not_found: {err:?}"
         );
     }

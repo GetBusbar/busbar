@@ -58,7 +58,7 @@ impl ErrKind {
     /// (payloads are empty; the doc dimension carries no message).
     fn as_admin_error(self) -> AdminError {
         match self {
-            ErrKind::NotFound => AdminError::NotFound(String::new()),
+            ErrKind::NotFound => AdminError::not_found(""),
             ErrKind::Validation => AdminError::Validation(String::new()),
             ErrKind::VersionConflict => AdminError::VersionConflict(String::new()),
             ErrKind::Conflict => AdminError::Conflict(String::new()),
@@ -87,7 +87,7 @@ impl ErrKind {
 /// `openapi_error_enum_matches_admin_error_codes`.
 pub(crate) fn err_kind_of(e: &AdminError) -> Option<ErrKind> {
     match e {
-        AdminError::NotFound(_) => Some(ErrKind::NotFound),
+        AdminError::NotFound { .. } => Some(ErrKind::NotFound),
         AdminError::Validation(_) => Some(ErrKind::Validation),
         AdminError::VersionConflict(_) => Some(ErrKind::VersionConflict),
         AdminError::Conflict(_) => Some(ErrKind::Conflict),
@@ -140,6 +140,8 @@ pub(crate) enum Cond {
     NothingToRotate,
     UnknownSection,
     NameCollision,
+    InvalidLabels,
+    GroupRaceOnMint,
 }
 
 impl Cond {
@@ -185,10 +187,18 @@ impl Cond {
                 "the artifact is not loadable — bad archive/manifest, or it fails structure/trust \
                  validation"
             }
-            Cond::Overlong => "overlong identifier",
+            Cond::Overlong => "an id or name exceeds its length cap",
             Cond::NothingToRotate => "no signing key is configured; nothing to rotate",
             Cond::UnknownSection => {
                 "unknown overlay section (expected `groups`|`hooks`|`root`|`plugin_versions`)"
+            }
+            Cond::InvalidLabels => {
+                "invalid mint-time `labels` — a reserved or non-Prometheus label name, or too \
+                 many/too long"
+            }
+            Cond::GroupRaceOnMint => {
+                "the bound group was deleted concurrently with the mint; retry against an existing \
+                 group"
             }
             Cond::NameCollision => {
                 "the plugin name/alias collides with an already-installed plugin under a different \
@@ -421,6 +431,8 @@ pub(crate) fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr]
         (Get, "/keys") => de![Validation / MalformedCursor, Validation / InvalidQueryValue,],
         (Post, "/keys") => de![
             Validation / MalformedBody,
+            Validation / Overlong,
+            Validation / InvalidLabels,
             Validation / KeyExpiryFields,
             Validation / ParentWithoutGroup,
             Validation / InvalidTree,
@@ -428,9 +440,14 @@ pub(crate) fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr]
             Conflict / NoSigningKey,
             Conflict / IdempotencyInFlight,
             Conflict / AtKeyCap,
+            Conflict / GroupRaceOnMint,
             Conflict / BaseDefined,
         ],
-        (Get, "/keys/{id}") => de![Validation / Overlong, NotFound / UnknownResource,],
+        (Get, "/keys/{id}") => de![
+            Validation / Overlong,
+            NotFound / UnknownResource,
+            NotFound / GovernanceOff,
+        ],
         (Patch, "/keys/{id}") => de![
             Validation / MalformedBody,
             Validation / MalformedIfMatch,
@@ -447,7 +464,11 @@ pub(crate) fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr]
             Conflict / GovernanceOff,
             VersionConflict / StaleIfMatch,
         ],
-        (Get, "/keys/{id}/usage") => de![Validation / Overlong, NotFound / UnknownResource,],
+        (Get, "/keys/{id}/usage") => de![
+            Validation / Overlong,
+            NotFound / UnknownResource,
+            NotFound / GovernanceOff,
+        ],
         (Post, "/keys/{id}/rotate") => de![
             NotFound / UnknownResource,
             Conflict / GovernanceOff,

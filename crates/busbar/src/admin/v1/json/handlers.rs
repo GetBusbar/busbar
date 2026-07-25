@@ -711,7 +711,7 @@ pub(crate) async fn put_hook(
         // Audit the 404 like every other reject in this handler (and like DELETE's 404) — otherwise
         // an attacker can probe which hook names exist via the response code with no audit trail.
         audit::AUDIT.record_by("hook.replace", &resource, audit::OUTCOME_REJECTED, &actor);
-        return err_json(&AdminError::NotFound(format!("hook `{name}`")));
+        return err_json(&AdminError::not_found(format!("hook `{name}`")));
     }
     if current.base_hook_names.contains(&name) {
         audit::AUDIT.record_by("hook.replace", &resource, audit::OUTCOME_REJECTED, &actor);
@@ -787,7 +787,7 @@ pub(crate) async fn delete_hook(
     // three verbs answer a stale guard on a nonexistent hook identically (404, not 409).
     if !current.hook_registry.contains_key(&name) {
         audit::AUDIT.record_by("hook.delete", &resource, audit::OUTCOME_REJECTED, &actor);
-        return err_json(&AdminError::NotFound(format!("hook `{name}`")));
+        return err_json(&AdminError::not_found(format!("hook `{name}`")));
     }
     // Optimistic concurrency (H3): DELETE honors `If-Match` like every other config-plane mutation
     // (it previously had NO guard — the one mutation verb missing it).
@@ -1113,7 +1113,7 @@ pub(crate) async fn put_group(
     let resource = format!("group:{name}");
     if !current.groups_registry.contains_key(&name) {
         audit::AUDIT.record_by("group.replace", &resource, audit::OUTCOME_REJECTED, &actor);
-        return err_json(&AdminError::NotFound(format!("group `{name}`")));
+        return err_json(&AdminError::not_found(format!("group `{name}`")));
     }
     if current.base_group_names.contains(&name) {
         audit::AUDIT.record_by("group.replace", &resource, audit::OUTCOME_REJECTED, &actor);
@@ -1188,7 +1188,7 @@ pub(crate) async fn patch_group(
     let resource = format!("group:{name}");
     let Some(existing) = current.groups_registry.get(&name) else {
         audit::AUDIT.record_by("group.patch", &resource, audit::OUTCOME_REJECTED, &actor);
-        return err_json(&AdminError::NotFound(format!("group `{name}`")));
+        return err_json(&AdminError::not_found(format!("group `{name}`")));
     };
     if current.base_group_names.contains(&name) {
         audit::AUDIT.record_by("group.patch", &resource, audit::OUTCOME_REJECTED, &actor);
@@ -1261,7 +1261,7 @@ pub(crate) async fn delete_group(
     let resource = format!("group:{name}");
     if !current.groups_registry.contains_key(&name) {
         audit::AUDIT.record_by("group.delete", &resource, audit::OUTCOME_REJECTED, &actor);
-        return err_json(&AdminError::NotFound(format!("group `{name}`")));
+        return err_json(&AdminError::not_found(format!("group `{name}`")));
     }
     // Base-config guard BEFORE the If-Match staleness check, matching the precedence `put_group`
     // and `patch_group` establish on this resource: a base-config group can NEVER be deleted via
@@ -1625,7 +1625,7 @@ pub(crate) async fn get_config_version(
                 }),
             )
         }
-        None => err_json(&AdminError::NotFound(format!(
+        None => err_json(&AdminError::not_found(format!(
             "config version {v} (pruned or never recorded)"
         ))),
     }
@@ -1651,7 +1651,7 @@ pub(crate) async fn config_diff(
     let a = match app.versions.get(from) {
         Some(v) => v,
         None => {
-            return err_json(&AdminError::NotFound(format!(
+            return err_json(&AdminError::not_found(format!(
                 "config version {from} (pruned or never recorded)"
             )))
         }
@@ -1659,7 +1659,7 @@ pub(crate) async fn config_diff(
     let b = match app.versions.get(to) {
         Some(v) => v,
         None => {
-            return err_json(&AdminError::NotFound(format!(
+            return err_json(&AdminError::not_found(format!(
                 "config version {to} (pruned or never recorded)"
             )))
         }
@@ -1749,7 +1749,7 @@ pub(crate) async fn rollback_config(
             audit::OUTCOME_REJECTED,
             &actor,
         );
-        return err_json(&AdminError::NotFound(format!(
+        return err_json(&AdminError::not_found(format!(
             "config version {} (pruned or never recorded)",
             req.version
         )));
@@ -2530,7 +2530,7 @@ pub(crate) async fn patch_hook_settings(
         // Audit the 404 like the other rejects here (and DELETE) — a missing audit row on the
         // unknown-name path lets a narrow token probe which hooks exist by response code alone.
         audit::AUDIT.record_by("hook.settings", &resource, audit::OUTCOME_REJECTED, &actor);
-        return err_json(&AdminError::NotFound(format!("hook `{name}`")));
+        return err_json(&AdminError::not_found(format!("hook `{name}`")));
     };
     // §6.3 escalation guard, keyed on the EXISTING hook's grants (PATCH changes settings, not
     // grants). A non-Full (hooks-register) principal may not push settings to a content-seeing
@@ -2626,7 +2626,7 @@ pub(crate) async fn hook_schema(
 ) -> Response {
     let current = handle.load();
     let Some(hook) = current.hook_registry.get(&name) else {
-        return err_json(&AdminError::NotFound(format!("hook `{name}`")));
+        return err_json(&AdminError::not_found(format!("hook `{name}`")));
     };
     let schema =
         crate::hooks::fetch_schema(&name, hook, current.config_version, &current.hook_env).await;
@@ -2645,7 +2645,7 @@ pub(crate) async fn hook_status(
 ) -> Response {
     let current = handle.load();
     let Some(hook) = current.hook_registry.get(&name) else {
-        return err_json(&AdminError::NotFound(format!("hook `{name}`")));
+        return err_json(&AdminError::not_found(format!("hook `{name}`")));
     };
     let desired_version = current.config_version;
     let reported =
