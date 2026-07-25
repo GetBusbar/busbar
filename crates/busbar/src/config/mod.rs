@@ -2271,6 +2271,7 @@ pub(crate) struct MetricsCfg {
 /// The `health:` block — process-wide active-probe fallbacks (per-lane `health.interval_secs` /
 /// `timeout_secs` still override these).
 #[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields)] // a typo'd health key must fail boot, not be silently ignored.
 pub(crate) struct HealthDefaultsCfg {
     #[serde(default = "default_probe_interval_secs")]
     pub(crate) default_probe_interval_secs: u64,
