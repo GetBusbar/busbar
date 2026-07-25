@@ -47,6 +47,41 @@ struct Cached {
 /// refresh fired from the scrape handler; read (never blocked) by the renderer.
 static CACHE: RwLock<Option<HashMap<String, Cached>>> = RwLock::new(None);
 
+/// The hooks with a refresh ALREADY IN FLIGHT. Without this, staleness alone gates the spawn -- and
+/// staleness does not clear until the refresh COMPLETES, so every scrape that lands while one is
+/// running spawns another. A refresh is not cheap: it stages a copy of the plugin to disk, `dlopen`s
+/// it, and runs its constructor. A scrape interval shorter than a slow hook's status round-trip
+/// therefore compounds without bound -- N monitoring replicas x every scrape x every hook, each
+/// loading a fresh copy of the library -- exactly when the hook is already struggling.
+///
+/// Membership is the admission ticket: a hook not in the set is claimed and refreshed, one in the
+/// set is skipped and picked up on a later scrape. Released by [`InFlight`] on the way out,
+/// including on panic, so a failed refresh cannot wedge a hook out of ever refreshing again.
+static IN_FLIGHT: RwLock<Option<std::collections::HashSet<String>>> = RwLock::new(None);
+
+/// RAII claim on a hook's refresh slot. `Drop` releases it, so an early return or a panic inside the
+/// spawned task cannot leak the claim.
+struct InFlight(String);
+
+impl InFlight {
+    /// Claim `name`, or `None` if a refresh for it is already running.
+    fn claim(name: &str) -> Option<InFlight> {
+        let mut guard = IN_FLIGHT.write().unwrap_or_else(|e| e.into_inner());
+        let set = guard.get_or_insert_with(std::collections::HashSet::new);
+        set.insert(name.to_string())
+            .then(|| InFlight(name.to_string()))
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        let mut guard = IN_FLIGHT.write().unwrap_or_else(|e| e.into_inner());
+        if let Some(set) = guard.as_mut() {
+            set.remove(&self.0);
+        }
+    }
+}
+
 /// True iff `name`'s cache is missing or older than the TTL — i.e. the scrape should fire an async
 /// refresh for it. Read-only; the refresh itself writes the cache.
 fn is_stale(name: &str, now: u64) -> bool {
@@ -102,11 +137,14 @@ fn snapshot() -> Vec<(String, Vec<HookMetric>)> {
 /// (never inline). Reuses the exact same [`super::fetch_status`] path the admin API uses, so the
 /// scrape and the live admin read see the identical hook data (just at different freshness).
 async fn refresh(
-    name: String,
+    claim: InFlight,
     hook: crate::config::HookCfg,
     settings_version: u64,
     env: super::HookEnv,
 ) {
+    // The claim is held for the WHOLE refresh and dropped on the way out (including on panic), so no
+    // second refresh for this hook can start while this one is still loading the plugin.
+    let name = claim.0.clone();
     let metrics = match super::fetch_status(&name, &hook, settings_version, &env).await {
         Some(status) => status
             .metrics
@@ -131,14 +169,20 @@ pub(crate) fn render(app: &Arc<crate::state::App>) -> String {
     prune_absent(app.hook_registry.keys().map(String::as_str));
     // Fire async refreshes for stale hooks; never block the scrape on them.
     for (name, hook) in app.hook_registry.iter() {
-        if is_stale(name, now) {
-            tokio::spawn(refresh(
-                name.clone(),
-                hook.clone(),
-                app.config_version,
-                app.hook_env.clone(),
-            ));
+        // Stale AND not already being refreshed. Staleness alone is not enough: it does not clear
+        // until the refresh lands, so it would re-arm on every scrape in the meantime.
+        if !is_stale(name, now) {
+            continue;
         }
+        let Some(claim) = InFlight::claim(name) else {
+            continue;
+        };
+        tokio::spawn(refresh(
+            claim,
+            hook.clone(),
+            app.config_version,
+            app.hook_env.clone(),
+        ));
     }
     render_text(&snapshot())
 }
