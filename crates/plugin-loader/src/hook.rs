@@ -76,13 +76,44 @@ pub struct DlopenPolicy {
     name: &'static str,
 }
 
+/// Concurrency cap on hook FFI calls occupying the shared blocking pool.
+///
+/// A `spawn_blocking` task, once scheduled, runs to completion: the deadline in [`call_bounded`]
+/// abandons the FUTURE, never the thread. A plugin that deadlocks, spins, or blocks on an unbounded
+/// syscall therefore holds its blocking thread for the life of the process, and a gate fires once
+/// per request. Uncapped, sustained traffic against one wedged plugin leaks a thread per call until
+/// Tokio's 512-thread default pool is gone — after which every unrelated `spawn_blocking` in the
+/// process queues behind it forever: governance store I/O, admin config transactions, the
+/// write-behind budget flusher, and the awaited shutdown flush. One bad plugin would take the admin
+/// plane and durable persistence with it.
+///
+/// The cap keeps that isolated to the hook: calls beyond it wait, and since acquisition happens
+/// under the caller's own budget a saturated plugin surfaces as its configured `on_error`
+/// disposition rather than as a process-wide stall. Sized far below the pool so the rest of the
+/// process always has threads, and above any plausible legitimate hook concurrency.
+const MAX_INFLIGHT_HOOK_CALLS: usize = 64;
+
+/// Borrowing from a `static` yields a `'static` permit, which is what lets the permit move INTO the
+/// blocking closure — see [`DlopenPolicy::call`] for why that placement is the whole point.
+static HOOK_CALL_SLOTS: tokio::sync::Semaphore =
+    tokio::sync::Semaphore::const_new(MAX_INFLIGHT_HOOK_CALLS);
+
 impl DlopenPolicy {
     /// The ONE blocking primitive: run `op` across `busbar_call` on a blocking thread, catching any
     /// panic that crosses the FFI boundary. Returns the [`HookReply`] or a `PolicyError` (coerced to
     /// the hook's `on_error` by the caller). Not bounded here — the caller wraps in a `timeout`.
     async fn call(&self, op: HookRequest) -> Result<HookReply, PolicyError> {
         let raw = self.raw.clone();
+        // Acquire BEFORE spawning and release only when the blocking closure RETURNS, not when the
+        // caller stops waiting. A timed-out call drops the future while the thread runs on, so a
+        // permit tied to the future's lifetime would count patience rather than threads and cap
+        // nothing. Acquisition sits under the caller's `timeout`, so a saturated plugin fails the
+        // hook on its own deadline instead of queueing.
+        let Ok(permit) = HOOK_CALL_SLOTS.acquire().await else {
+            return Err("hook call slots closed".into());
+        };
         let joined = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
             // Defense-in-depth `catch_unwind`: since the `extern "C-unwind"` ABI landed, the ACTUAL FFI
             // boundary is guarded inside `transport_call` (via `ffi_guard`), which converts a plugin
             // panic into a `TransportError` — so the C-unwind path this method documents is now caught
@@ -717,6 +748,46 @@ mod tests {
         assert!(
             r.is_err(),
             "a panicking gate must surface as a fail-closed Err"
+        );
+    }
+    /// A `spawn_blocking` task runs to completion, so a timed-out hook call abandons the future but
+    /// NOT the thread. Uncapped, a wedged plugin would leak one blocking thread per call until
+    /// Tokio's 512-thread pool is exhausted and every unrelated `spawn_blocking` in the process —
+    /// governance store I/O, admin transactions, the budget flusher — queued behind it forever.
+    ///
+    /// The cap must therefore (a) sit far below the pool, and (b) make a saturated plugin fail on
+    /// the caller's own deadline rather than wait for a slot indefinitely.
+    #[tokio::test]
+    async fn hook_calls_are_capped_and_saturation_fails_on_the_caller_deadline() {
+        // The cap must leave most of Tokio's 512-thread blocking pool to the rest of the process.
+        const _: () = assert!(MAX_INFLIGHT_HOOK_CALLS < 256);
+
+        let Some(_) = hook_plugin_path() else {
+            return;
+        };
+        let policy = load("{}");
+
+        // Occupy every slot, standing in for that many wedged plugin threads.
+        let held = HOOK_CALL_SLOTS
+            .acquire_many(MAX_INFLIGHT_HOOK_CALLS as u32)
+            .await
+            .expect("slots are open");
+
+        let start = std::time::Instant::now();
+        assert!(
+            policy.status(Duration::from_millis(150)).await.is_none(),
+            "with every slot held, a hook call must fail rather than wait for one"
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "the wait must be bounded by the caller's budget, not by the wedged plugin"
+        );
+
+        // Releasing the slots restores service — the cap is backpressure, not a latch.
+        drop(held);
+        assert!(
+            policy.status(Duration::from_secs(5)).await.is_some(),
+            "a freed slot must let the next call through"
         );
     }
 }
