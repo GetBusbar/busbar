@@ -416,14 +416,28 @@ pub(crate) async fn rollback_plugin(
         Err(e) => {
             // The rebuild failed AFTER persisting the pin — the live snapshot is unchanged (old plugin
             // still serving, fail-closed), but the pin is now on disk. Roll the pin back so a restart
-            // doesn't come up in a state the running engine rejected.
-            crate::config::overlay::persist_plugin_versions(Some(&overlay_path), &prior_pins);
+            // doesn't come up in a state the running engine rejected. The compensation MUST be robust:
+            // if reverting the pin ALSO fails, a silently-swallowed error would leave a stale
+            // rolled-forward pin on disk that a restart would honor — contradicting the running engine.
+            // Surface that as a distinct, louder error so the operator knows disk is out of sync and can
+            // fix the overlay before restarting.
             audit::AUDIT.record_by(
                 "plugin.rollback",
                 &resource,
                 audit::OUTCOME_REJECTED,
                 &actor,
             );
+            if let Err(revert_err) =
+                crate::config::overlay::try_persist_plugin_versions(Some(&overlay_path), &prior_pins)
+            {
+                tracing::error!(
+                    plugin = %resource, rebuild_error = %e, revert_error = %revert_err,
+                    "plugin rollback rebuild failed AND reverting the persisted version pin failed; \
+                     the running engine still serves the prior plugin, but disk now carries the \
+                     rolled-forward pin — fix the overlay before restarting"
+                );
+                return err_json(&AdminError::Internal);
+            }
             err_json(&AdminError::Validation(e))
         }
     }
@@ -1236,7 +1250,8 @@ pub(crate) async fn reset_overlay_section(
     // 400 (never masked by a header error). Unknown → invalid_request (the taxonomy's 400).
     let Some(section) = OverlaySection::parse(&section) else {
         return err_json(&AdminError::Validation(format!(
-            "unknown overlay section `{section}`: expected `groups`, `hooks`, or `root`"
+            "unknown overlay section `{section}`: expected `groups`, `hooks`, `root`, or \
+             `plugin_versions`"
         )));
     };
     let resource = format!("overlay:{}", section.as_str());
@@ -3203,7 +3218,9 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
                 "responses": {
                     "200": {"description": "`{revoked}` — the id, now denylisted"},
-                    "404": {"description": "Unknown key (error code `not_found`)"}
+                    "400": {"description": "Overlong key id (> 64 chars) (error code `invalid_request`)"},
+                    "404": {"description": "Unknown key (error code `not_found`)"},
+                    "409": {"description": "Governance is not enabled on this server (error code `conflict`)"}
                 }
             }
         }),
@@ -3380,6 +3397,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     // config-plane ops guard on the config-version ETag their reads emit.
     const IF_MATCH_GUARDED: &[(&str, &str)] = &[
         (PATH_HOOKS, "post"),
+        (PATH_GROUPS, "post"),
         ("/hooks/{name}", "put"),
         ("/hooks/{name}", "delete"),
         ("/hooks/{name}/settings", "patch"),
