@@ -490,9 +490,23 @@ impl ProtocolReader for OpenAiReader {
 
         // 3. Text content → close any open thinking block first, then open the text block + a
         //    TextDelta. Text owns index `offset` (0 normally, 1 when a thinking block precedes it).
+        // `delta.refusal` carries a structured-outputs / safety refusal in the SAME incremental
+        // string shape as `delta.content`, and the two are mutually exclusive on a chunk. Route it
+        // through the same text block: Anthropic/Bedrock/Gemini have no distinct refusal part, so a
+        // refusal is plain assistant text there. Reading only `content` produced a stream with no
+        // text at all and an end_turn finish — an empty 200 the client could not tell from a model
+        // that said nothing. `refusal_seen` promotes the stop reason on the terminal frame.
+        let refusal_delta = delta
+            .and_then(|d| d.get("refusal"))
+            .and_then(|c| c.as_str())
+            .filter(|s| !s.is_empty());
+        if refusal_delta.is_some() {
+            state.refusal_seen = true;
+        }
         if let Some(content) = delta
             .and_then(|d| d.get("content"))
             .and_then(|c| c.as_str())
+            .or(refusal_delta)
         {
             if state.thinking_block_open {
                 state.thinking_block_open = false;
@@ -705,7 +719,14 @@ impl ProtocolReader for OpenAiReader {
                 });
                 out.push(IrStreamEvent::BlockStop { index });
             }
-            let stop_reason = Some(read_openai_stop_reason(fr));
+            let stop_reason = match read_openai_stop_reason(fr) {
+                // A refusal reports `finish_reason: "stop"`. Only EndTurn is overridden — a refusal
+                // that also hit the length cap keeps MaxTokens.
+                crate::ir::IrStopReason::EndTurn if state.refusal_seen => {
+                    Some(crate::ir::IrStopReason::Refusal)
+                }
+                other => Some(other),
+            };
             let usage = chunk_usage.unwrap_or(IrUsage {
                 input_tokens: 0,
                 output_tokens: 0,
@@ -830,6 +851,25 @@ impl ProtocolReader for OpenAiReader {
             }
         }
 
+        // A structured-outputs / safety refusal arrives as `content: null` plus a `refusal` string,
+        // with `finish_reason: "stop"` — so neither the content nor the stop reason carries the
+        // signal. Reading only `content` produced an empty IR response, which the cross-protocol
+        // writers emit as a 200 with `content: []`: indistinguishable from a model that returned
+        // nothing, and an index error for any SDK consumer reading `content[0]`. Carry the text as
+        // assistant Text (Anthropic/Bedrock/Gemini have no distinct refusal part) and promote the
+        // stop reason below, matching what the sibling Responses reader already does.
+        let mut saw_refusal = false;
+        if let Some(text) = message_val.get("refusal").and_then(|v| v.as_str()) {
+            if !text.is_empty() {
+                saw_refusal = true;
+                content.push(crate::ir::IrBlock::Text {
+                    text: text.to_string(),
+                    cache_control: None,
+                    citations: Vec::new(),
+                });
+            }
+        }
+
         // Parse tool_calls
         if let Some(tool_calls_val) = message_val.get("tool_calls") {
             if let Some(tc_arr) = tool_calls_val.as_array() {
@@ -871,11 +911,16 @@ impl ProtocolReader for OpenAiReader {
             .get("finish_reason")
             .and_then(|r| r.as_str())
             .unwrap_or("");
-        let stop_reason = if finish_reason.is_empty() {
+        let mut stop_reason = if finish_reason.is_empty() {
             None
         } else {
             Some(read_openai_stop_reason(finish_reason))
         };
+        // A refusal reports `finish_reason: "stop"`, so the signal only survives if it is promoted
+        // here. Only EndTurn is overridden — a refusal that also hit the length cap keeps MaxTokens.
+        if saw_refusal && stop_reason == Some(crate::ir::IrStopReason::EndTurn) {
+            stop_reason = Some(crate::ir::IrStopReason::Refusal);
+        }
 
         // Parse usage. Treat an absent `usage` object leniently — fall back to zero counts rather
         // than hard-erroring. A missing `usage` is an upstream response-format quirk (a

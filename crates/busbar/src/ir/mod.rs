@@ -745,6 +745,10 @@ pub(crate) struct StreamDecodeState {
     pub(crate) reasoning_seen: bool,
     /// Whether the reasoning Thinking block (index 0) is currently open.
     pub(crate) thinking_block_open: bool,
+    /// Set once a `delta.refusal` chunk is seen. A refusal reports `finish_reason: "stop"`, so
+    /// without this latch the terminal frame maps to `EndTurn` and the refusal SIGNAL is lost even
+    /// though the text survived. OpenAI Chat reader only; other readers leave it false.
+    pub(crate) refusal_seen: bool,
     /// Stop reason buffered across two Bedrock stream frames. Native Bedrock ConverseStream splits
     /// the stop reason (`messageStop` frame) from the token usage (a following `metadata` frame). To
     /// emit ONE combined `MessageDelta{stop_reason, usage}` (so a cross-protocol ingress sees the
