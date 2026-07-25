@@ -39,6 +39,23 @@ pub(crate) enum Staged {
     TempFile { path: PathBuf },
 }
 
+impl Staged {
+    /// TEST-ONLY: the private staging file backing this load, or `None` when the load touched no
+    /// disk at all (the Linux memfd path). Tests assert on THIS instance's own artifact rather than
+    /// counting `busbar-plugins-<pid>-*` entries process-wide: the count is both flaky (a
+    /// concurrent test in the same binary stages/releases files between the two samples) and weak
+    /// (`after <= before` still passes while this load's file leaks, if someone else's file went
+    /// away). An exact path is immune to both.
+    #[cfg(test)]
+    pub(crate) fn temp_path(&self) -> Option<&std::path::Path> {
+        match self {
+            #[cfg(target_os = "linux")]
+            Staged::Memfd { .. } => None,
+            Staged::TempFile { path } => Some(path.as_path()),
+        }
+    }
+}
+
 impl Drop for Staged {
     fn drop(&mut self) {
         match self {

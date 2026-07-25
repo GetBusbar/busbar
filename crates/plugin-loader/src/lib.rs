@@ -488,6 +488,15 @@ pub struct DynStore {
 }
 
 impl DynStore {
+    /// TEST-ONLY: the private staging file backing THIS instance, or `None` when the load touched no
+    /// disk (Linux memfd, or a path load with no staging at all). Lets the staging-lifecycle tests
+    /// assert on their own artifact instead of counting process-wide staging entries — see
+    /// [`stage::Staged::temp_path`] for why the count was the wrong instrument.
+    #[cfg(test)]
+    pub(crate) fn staged_path(&self) -> Option<&std::path::Path> {
+        self.raw._backing.as_ref().and_then(stage::Staged::temp_path)
+    }
+
     /// Serialize a request, ship it across the kind-neutral C ABI, decode the response. A THIN wrapper
     /// over [`Self::call_raw_status`] (there is ONE transport path; a status-blind variant can't be
     /// accidentally used): it just discards the semantic kind and surfaces the message as a `StoreError`.
@@ -853,6 +862,18 @@ pub fn load_store_from_bytes(
     display: &str,
     manifest_kind: &str,
 ) -> Result<Box<dyn Store>, String> {
+    load_dyn_store_from_bytes(bytes, cfg_json, display, manifest_kind).map(|s| Box::new(s) as _)
+}
+
+/// [`load_store_from_bytes`] before the trait object boxes it away. Split out so the staging
+/// lifecycle tests can reach [`DynStore::staged_path`] and assert on their OWN artifact; the public
+/// entry point is this plus a `Box`.
+fn load_dyn_store_from_bytes(
+    bytes: &[u8],
+    cfg_json: &str,
+    display: &str,
+    manifest_kind: &str,
+) -> Result<DynStore, String> {
     let (lib, staged) = stage::load_library_from_bytes(bytes, display)?;
     let raw = wire_up_raw(
         lib,
@@ -862,7 +883,7 @@ pub fn load_store_from_bytes(
         manifest_kind,
         Some(staged),
     )?;
-    Ok(Box::new(DynStore { raw }))
+    Ok(DynStore { raw })
 }
 
 /// The platform-native filename for a store plugin built from `crate_name` (e.g. `store_sqlite_plugin`
@@ -1295,6 +1316,13 @@ mod tests {
     /// removed when the store drops — and because `DynStore` declares `_lib` before `_backing`, the
     /// library unloads BEFORE the staged file is removed (the order Windows requires: a mapped
     /// DLL's file cannot be deleted).
+    ///
+    /// Asserts on THIS load's own staged path, not a process-wide count of
+    /// `busbar-plugins-<pid>-*` entries. The count was the wrong instrument twice over: FLAKY,
+    /// because a concurrent test in this binary stages or releases files between the two samples
+    /// (this test failed ~2/5 under a loaded run); and WEAK, because `after <= before` still passes
+    /// while this load's file leaks, as long as some other test's file went away in the same
+    /// window. The exact path is immune to concurrency and actually fails when the artifact leaks.
     #[test]
     fn from_bytes_load_leaves_no_artifact_after_drop() {
         let Some(path) = sqlite_plugin_path() else {
@@ -1302,25 +1330,8 @@ mod tests {
             return;
         };
         let bytes = std::fs::read(&path).expect("read sqlite cdylib");
-        // Count staged library FILES across every busbar-plugins-<ourpid>-* dir before and after.
-        let base = std::env::temp_dir();
-        let prefix = format!("busbar-plugins-{}-", std::process::id());
-        let count_staged = || {
-            std::fs::read_dir(&base)
-                .into_iter()
-                .flatten()
-                .flatten()
-                .filter(|e| {
-                    e.file_name()
-                        .to_str()
-                        .is_some_and(|n| n.starts_with(&prefix))
-                })
-                .flat_map(|e| std::fs::read_dir(e.path()).into_iter().flatten().flatten())
-                .count()
-        };
-        let before = count_staged();
-        {
-            let store = load_store_from_bytes(
+        let staged: Option<std::path::PathBuf> = {
+            let store = load_dyn_store_from_bytes(
                 &bytes,
                 r#"{"db_path": ":memory:"}"#,
                 "no-leak-check",
@@ -1328,13 +1339,48 @@ mod tests {
             )
             .expect("load from bytes");
             assert!(store.list_keys().expect("list").is_empty());
-        } // store drops here -> library unloads, then the staged backing is released.
-        let after = count_staged();
-        assert!(
-            after <= before,
-            "a from-bytes load must leave no staged file behind after the store drops \
-             (before={before}, after={after})"
-        );
+            let staged = store.staged_path().map(std::path::Path::to_path_buf);
+            // While the store is ALIVE the backing must exist — otherwise the post-drop assertion
+            // below would be vacuous (nothing to remove) and would pass on a leak.
+            if let Some(p) = &staged {
+                assert!(
+                    p.is_file(),
+                    "the staged backing must exist while the store is alive: {}",
+                    p.display()
+                );
+            }
+            staged
+        }; // store drops here -> library unloads, then the staged backing is released.
+
+        match staged {
+            // macOS/Windows (and the Linux memfd fallback): the file this load staged is gone.
+            Some(p) => assert!(
+                !p.exists(),
+                "a from-bytes load must remove its OWN staged file when the store drops, but {} \
+                 still exists",
+                p.display()
+            ),
+            // Linux memfd: zero disk files by construction, so there was never a path to remove.
+            None => {
+                let base = std::env::temp_dir();
+                let prefix = format!("busbar-plugins-{}-", std::process::id());
+                let dirs = std::fs::read_dir(&base)
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .filter(|e| {
+                        e.file_name()
+                            .to_str()
+                            .is_some_and(|n| n.starts_with(&prefix))
+                    })
+                    .count();
+                assert_eq!(
+                    dirs, 0,
+                    "a memfd load reports no staged path, so it must have created no staging \
+                     directory either"
+                );
+            }
+        }
     }
 
     /// HOT-SWAP LIFECYCLE (1.5.0): the load-bearing safety property behind a live plugin reload — a
