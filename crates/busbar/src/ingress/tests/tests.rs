@@ -1867,7 +1867,7 @@ fn requests_total_for(scrape: &str, pool: &str, outcome: &str) -> u64 {
         .sum()
 }
 
-/// MED #4 (re-audit, completeness): a JSON-parse failure on a BODY-MODEL ingress (openai) is a
+/// a JSON-parse failure on a BODY-MODEL ingress (openai) is a
 /// PRE-ROUTING error — the model is never resolved. It must still flow through `finish` so it is
 /// counted in `REQUESTS_TOTAL` (and the duration histogram + request-log webhook), with the
 /// bounded `pool="unresolved"` label. The old code early-returned `ingress_error` directly,
@@ -2170,7 +2170,7 @@ async fn timing_gate_hot_path_p50_p99() {
     server.shutdown().await;
 }
 
-/// MED #4 (re-audit, completeness): a MISSING `model` field on a body-model ingress is likewise a
+/// a MISSING `model` field on a body-model ingress is likewise a
 /// pre-routing failure and must flow through `finish` (bounded `pool="unresolved"`), not a silent
 /// early-return. Asserts a strict counter increase, so it fails against the old early-return.
 #[tokio::test]
@@ -2210,7 +2210,7 @@ async fn test_body_model_missing_model_is_observable() {
     handle.abort();
 }
 
-/// MED #4 (re-audit, completeness): a NON-OBJECT body on a PATH-MODEL ingress (bedrock) is a
+/// a NON-OBJECT body on a PATH-MODEL ingress (bedrock) is a
 /// pre-routing failure (`v.as_object_mut()` is `None`) and must flow through `finish` with the
 /// bounded `pool="unresolved"` label. Asserts a strict counter increase; fails against the old
 /// early-return that bypassed `finish`.
@@ -2251,7 +2251,7 @@ async fn test_path_model_non_object_body_is_observable() {
     handle.abort();
 }
 
-/// MED #4 (re-audit, completeness — sibling sweep): an UNSUPPORTED gemini action (e.g.
+/// an UNSUPPORTED gemini action (e.g.
 /// `:countTokens`) rejected in `gemini_ingress` BEFORE `ingress_path_model` runs is the same
 /// pre-routing observability blind spot. It must now flow through `finish` (bounded
 /// `pool="unresolved"`, gemini protocol). Asserts a strict counter increase; fails against the
@@ -5615,7 +5615,7 @@ async fn test_named_by_model_fallback_round_trip_via_router() {
     server.shutdown().await;
 }
 
-// ---- LOW #4 (re-audit, completeness): breaker op_handler-key consistency for by_model routes ----
+// ---- breaker op_handler-key consistency for by_model routes ----
 //
 // A single-model lane (no pool) can be reached two ways:
 // 1. the universal body-model ingress (`/v1/chat/completions` etc.) → `forward_resolved`'s

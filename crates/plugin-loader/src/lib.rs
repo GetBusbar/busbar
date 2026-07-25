@@ -1558,7 +1558,7 @@ mod tests {
         );
     }
 
-    // ── L5 re-audit follow-up: the denylist fallback keys on the OUT-OF-BAND ABI status, not on
+    // ── The denylist fallback keys on the OUT-OF-BAND ABI status, not on
     // plugin-controlled body text ─────────────────────────────────────────────────────────────
     //
     // The regression uses a FAKE `busbar_call` whose returned (status, body) is chosen per-test via a

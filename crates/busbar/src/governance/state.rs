@@ -659,7 +659,7 @@ impl GovState {
     /// * a 1.5.0 SIGNED-TOKEN binding (`key_hash` is a `binding:` marker) gets a fresh binding
     /// GENERATION stamped into the durable row plus a newly-minted token carrying it. Every
     /// token minted before the rotation names the OLD generation and is rejected by
-    /// `verify_token` on every node reading the store. (audit round-5 HIGH-6: rotation used to
+    /// `verify_token` on every node reading the store. (rotation used to
     /// leave the outstanding signed token fully valid — it minted a bearer secret the token path
     /// never consults — so "rotate" revoked nothing at all.)
     /// * a LEGACY hashed-secret key gets a fresh bearer secret whose hash replaces `key_hash`, so

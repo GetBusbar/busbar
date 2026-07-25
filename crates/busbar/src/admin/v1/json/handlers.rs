@@ -2007,7 +2007,7 @@ pub(crate) async fn put_auth(
         &installed.global_hooks,
     );
     // The response IS the resource (the same {configured, modules} shape GET /admin-auth returns,
-    // so a Terraform provider uses the PUT response as post-state — re-audit M5) + apply metadata.
+    // so a Terraform provider uses the PUT response as post-state) + apply metadata.
     with_config_etag(
         ok_json(
             StatusCode::OK,
