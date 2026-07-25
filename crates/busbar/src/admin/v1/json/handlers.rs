@@ -2799,7 +2799,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                     "security": [{"adminToken": []}],
                     "responses": {
                         "200": {"description": "OK"},
-                        "401": {"description": "Missing/invalid admin credential"}
                     }
                 }
             }),
@@ -2818,9 +2817,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "responses": {
                     "201": {"description": "Registered — the name is NEW (body is the hook definition)"},
                     "200": {"description": "Replaced — the name existed (same-grant re-register; body is the hook definition)"},
-                    "400": {"description": "Malformed body or invalid definition (`invalid_request`)"},
-                    "403": {"description": "hooks-register principal may not register a content-seeing (`prompt`/`user`) or `global: true` hook (`forbidden`, §6.3)"},
-                    "409": {"description": "Base-defined hook (edit config.yaml), grant change on an existing hook, or stale `If-Match` (`version_conflict`, §6.4)"}
                 }
             }),
         );
@@ -2838,8 +2834,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "responses": {
                     "201": {"description": "Created — the name is NEW (body is the group definition)"},
                     "200": {"description": "Replaced — the name existed (body is the group definition)"},
-                    "400": {"description": "Invalid tree — dangling/cyclic parent or depth (`invalid_request`)"},
-                    "409": {"description": "Base-defined group (edit config.yaml) or stale `If-Match` (`version_conflict`)"}
                 }
             }),
         );
@@ -2856,8 +2850,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "security": [{"adminToken": []}],
                 "responses": {
                     "201": {"description": "Installed — `{file, name, interface_version, trust, version?, publisher?, note}`"},
-                    "400": {"description": "Malformed body, bad base64, or the library is not a loadable busbar store plugin (`invalid_request`)"},
-                    "409": {"description": "The upload is untrusted and not opted-in (`conflict`) - sign it with an allowlisted publisher, add the publisher to plugins.trust.publishers, or set plugins.trust.allow_unsigned / allow_third_party"}
                 }
             }),
         );
@@ -2883,9 +2875,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "security": [{"adminToken": []}],
                 "responses": {
                     "200": {"description": "`{plugin, version, config_version, plugins}` — rolled back and hot-swapped"},
-                    "400": {"description": "Malformed body, or the target artifact fails structure/trust validation (error code `invalid_request`)"},
-                    "404": {"description": "No such plugin file in the plugins directory (error code `not_found`)"},
-                    "409": {"description": "Stale `If-Match`, or the target is not loadable even with the floor lowered to its own version (error code `version_conflict`/`conflict`)"}
                 }
             }
         }),
@@ -2902,8 +2891,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 }],
                 "responses": {
                     "204": {"description": "Removed"},
-                    "400": {"description": "Invalid plugin filename (`invalid_request`)"},
-                    "404": {"description": "No such plugin file (`not_found`)"}
                 }
             }
         }),
@@ -2921,7 +2908,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 }],
                 "responses": {
                     "200": {"description": "OK"},
-                    "404": {"description": "Unknown hook (error code `not_found`)"}
                 }
             },
             "put": {
@@ -2933,10 +2919,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 }],
                 "responses": {
                     "200": {"description": "The replaced hook"},
-                    "400": {"description": "Invalid definition (error code `invalid_request`)"},
-                    "403": {"description": "A `hooks-register` principal may not replace a hook into a content-seeing (`prompt`/`user`) or `global` form (error code `forbidden`, §6.3)"},
-                    "404": {"description": "Unknown hook (error code `not_found`)"},
-                    "409": {"description": "Base-defined hook, grant change (`conflict`), or stale `If-Match` (`version_conflict`)"}
                 }
             },
             "delete": {
@@ -2948,10 +2930,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 }],
                 "responses": {
                     "204": {"description": "Removed"},
-                    "400": {"description": "Malformed `If-Match` header (error code `invalid_request`)"},
-                    "403": {"description": "A `hooks-register` principal may not delete a content-seeing (`prompt`/`user`) or `global` hook (error code `forbidden`, §6.3)"},
-                    "404": {"description": "Unknown hook (error code `not_found`)"},
-                    "409": {"description": "Base-defined hook — read-only via the API; edit config.yaml (error code `conflict`)"}
                 }
             }
         }),
@@ -2968,7 +2946,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 }],
                 "responses": {
                     "200": {"description": "OK"},
-                    "404": {"description": "Unknown group (error code `not_found`)"}
                 }
             },
             "put": {
@@ -2980,9 +2957,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 }],
                 "responses": {
                     "200": {"description": "The replaced group"},
-                    "400": {"description": "Invalid tree — dangling/cyclic parent or depth (error code `invalid_request`)"},
-                    "404": {"description": "Unknown group (error code `not_found`)"},
-                    "409": {"description": "Base-defined group (edit config.yaml), or stale `If-Match` (`version_conflict`)"}
                 }
             },
             "patch": {
@@ -2994,9 +2968,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 }],
                 "responses": {
                     "200": {"description": "The updated group"},
-                    "400": {"description": "Invalid tree after the merge, or unknown patch field (error code `invalid_request`)"},
-                    "404": {"description": "Unknown group (error code `not_found`)"},
-                    "409": {"description": "Base-defined group, or stale `If-Match` (`version_conflict`)"}
                 }
             },
             "delete": {
@@ -3008,9 +2979,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 }],
                 "responses": {
                     "204": {"description": "Removed"},
-                    "400": {"description": "Malformed `If-Match` header (error code `invalid_request`)"},
-                    "404": {"description": "Unknown group (error code `not_found`)"},
-                    "409": {"description": "Base-defined group, another group still names it as parent, or one or more keys are still bound to it (rebind/delete them first) (error code `conflict`); or a stale `If-Match` (error code `version_conflict`)"}
                 }
             }
         }),
@@ -3027,7 +2995,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 }],
                 "responses": {
                     "200": {"description": "OK"},
-                    "404": {"description": "Unknown pool (error code `not_found`)"}
                 }
             }
         }),
@@ -3044,7 +3011,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 }],
                 "responses": {
                     "200": {"description": "OK"},
-                    "404": {"description": "Unknown group (error code `not_found`)"}
                 }
             }
         }),
@@ -3061,7 +3027,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 }],
                 "responses": {
                     "200": {"description": "OK (`reachable` may be null for webhook/non-unix)"},
-                    "404": {"description": "Unknown hook (error code `not_found`)"}
                 }
             }
         }),
@@ -3078,9 +3043,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 ],
                 "responses": {
                     "200": {"description": "The diff (hooks added/removed/changed + global-wiring delta)"},
-                    "400": {"description": "Missing/non-numeric `from` or `to` (error code `invalid_request`)"},
-                    "404": {"description": "Either version pruned or never recorded (error code `not_found`)"},
-                    "401": {"description": "Missing/invalid admin credential"}
                 }
             }
         }),
@@ -3097,8 +3059,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 }],
                 "responses": {
                     "200": {"description": "The version (metadata + hooks + global_hooks)"},
-                    "400": {"description": "Non-numeric version path segment (error code `invalid_request`)"},
-                    "404": {"description": "Pruned or never recorded (error code `not_found`)"}
                 }
             }
         }),
@@ -3115,10 +3075,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 }],
                 "responses": {
                     "200": {"description": "Acked + committed (the updated hook)"},
-                    "400": {"description": "Hook did not acknowledge (error code `invalid_request`); nothing committed"},
-                    "403": {"description": "A `hooks-register` principal may not push settings to a content-seeing (`prompt`/`user`) or `global` hook (error code `forbidden`, §6.3)"},
-                    "404": {"description": "Unknown hook (error code `not_found`)"},
-                    "409": {"description": "Base-defined hook (`conflict`), a config change landed during the settings push — retry (`conflict`), or stale `If-Match` (`version_conflict`)"}
                 }
             }
         }),
@@ -3135,7 +3091,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 }],
                 "responses": {
                     "200": {"description": "`{name, schema}` (`schema` null when the hook doesn't answer describe)"},
-                    "404": {"description": "Unknown hook (error code `not_found`)"}
                 }
             }
         }),
@@ -3152,7 +3107,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 }],
                 "responses": {
                     "200": {"description": "`{name, desired, reported, drift, metrics, as_of, source}`"},
-                    "404": {"description": "Unknown hook (error code `not_found`)"}
                 }
             }
         }),
@@ -3165,8 +3119,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "security": [{"adminToken": []}],
                 "responses": {
                     "200": {"description": "`{applied, config_version, note}`"},
-                    "400": {"description": "Invalid config (error code `invalid_request`); nothing changed"},
-                    "409": {"description": "Stale `If-Match` (error code `version_conflict` — re-read and retry)"}
                 }
             }
         }),
@@ -3179,7 +3131,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "security": [{"adminToken": []}],
                 "responses": {
                     "200": {"description": "`{reloaded, config_version}`"},
-                    "400": {"description": "Disk config invalid or no config files (error code `invalid_request`); nothing changed"}
                 }
             }
         }),
@@ -3192,7 +3143,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "security": [{"adminToken": []}],
                 "responses": {
                     "200": {"description": "`{applied:false, config_version, settings}` (settings = the current root overrides)"},
-                    "401": {"description": "Missing/invalid admin credential"}
                 }
             },
             "put": {
@@ -3200,8 +3150,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "security": [{"adminToken": []}],
                 "responses": {
                     "200": {"description": "`{applied:true, config_version, settings, reload_to_apply, note}`"},
-                    "400": {"description": "Invalid config after the merge, unknown field, or ephemeral busbar with no disk base (error code `invalid_request`); nothing changed"},
-                    "409": {"description": "Stale `If-Match` (error code `version_conflict` — re-read and retry)"}
                 }
             }
         }),
@@ -3212,8 +3160,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             "security": [{"adminToken": []}],
             "responses": {
                 "200": {"description": "The resource + apply metadata: `{configured, modules, applied, config_version, note}`"},
-                "400": {"description": "Unknown module / malformed body (error code `invalid_request`)"},
-                "409": {"description": "Stale `If-Match` (`version_conflict`), or the new chain would lock the caller out (error code `conflict`)"}
             }
         });
     }
@@ -3225,7 +3171,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "security": [{"adminToken": []}],
                 "responses": {
                     "200": {"description": "`{flushed}` — entries dropped"},
-                    "400": {"description": "Malformed body (error code `invalid_request`)"}
                 }
             }
         }),
@@ -3238,9 +3183,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "security": [{"adminToken": []}],
                 "responses": {
                     "200": {"description": "`{restored_version, config_version}`"},
-                    "404": {"description": "Target version not retained (error code `not_found`)"},
-                    "409": {"description": "Stale `If-Match` (error code `version_conflict` — re-read and retry)"},
-                    "400": {"description": "Snapshot fails re-validation (error code `invalid_request`)"}
                 }
             }
         }),
@@ -3254,8 +3196,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "parameters": [{"name": "section", "in": "path", "required": true, "schema": {"type": "string", "enum": ["groups", "hooks", "root", "plugin_versions"]}}],
                 "responses": {
                     "200": {"description": "`{reset, config_version, changed}` — changed:false when the section had no overlay state"},
-                    "400": {"description": "Unknown section, or ephemeral busbar with no config files to revert to (error code `invalid_request`)"},
-                    "409": {"description": "Stale `If-Match` (error code `version_conflict` — re-read and retry)"}
                 }
             }
         }),
@@ -3268,7 +3208,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "security": [{"adminToken": []}],
                 "responses": {
                     "200": {"description": "Verdict `{ok, errors}` (even for an invalid config)"},
-                    "400": {"description": "Malformed request body (error code `invalid_request`)"}
                 }
             }
         }),
@@ -3285,8 +3224,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "security": [{"adminToken": []}],
                 "responses": {
                     "200": {"description": "`{items, next_cursor}` — the cursor page envelope (next_cursor null at end)"},
-                    "400": {"description": "Malformed/foreign pagination cursor (error code `invalid_request`)"},
-                    "401": {"description": "Missing/invalid admin credential"}
                 }
             },
             "post": {
@@ -3294,8 +3231,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "security": [{"adminToken": []}],
                 "responses": {
                     "201": {"description": "Created (body includes the once-shown secret)"},
-                    "400": {"description": "Malformed body / unknown field / bad `expires_in`|`expires_at` / `parent` without `group` (error code `invalid_request`)"},
-                    "409": {"description": "One of (error code `conflict`): an Idempotency-Key request is already in flight; governance is not enabled; no signing key is configured for signed-token minting; the bound group was deleted concurrently with the mint; or the group is at the `limits.max_keys_per_principal` cap"}
                 }
             }
         }),
@@ -3309,7 +3244,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
                 "responses": {
                     "200": {"description": "Key metadata (+ `ETag` header)"},
-                    "404": {"description": "Unknown key (error code `not_found`)"}
                 }
             },
             "patch": {
@@ -3318,9 +3252,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
                 "responses": {
                     "200": {"description": "Updated metadata"},
-                    "400": {"description": "Malformed body / unknown field (error code `invalid_request`)"},
-                    "404": {"description": "Unknown key (error code `not_found`)"},
-                    "409": {"description": "Governance is not enabled on this server, or a stale `If-Match` ETag (error codes `conflict` / `version_conflict` — re-read and retry the latter)"}
                 }
             },
             "delete": {
@@ -3329,9 +3260,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
                 "responses": {
                     "204": {"description": "Revoked — No Content"},
-                    "400": {"description": "Malformed `If-Match` (error code `invalid_request`)"},
-                    "404": {"description": "Unknown key (error code `not_found`)"},
-                    "409": {"description": "Governance is not enabled on this server, or a stale `If-Match` ETag (error codes `conflict` / `version_conflict` — re-read and retry the latter)"}
                 }
             }
         }),
@@ -3345,7 +3273,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
                 "responses": {
                     "200": {"description": "Budget-window counters + `rate_headroom` (fraction of the tightest RPM/TPM cap left; null = uncapped)"},
-                    "404": {"description": "Unknown key (error code `not_found`)"}
                 }
             }
         }),
@@ -3359,8 +3286,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
                 "responses": {
                     "200": {"description": "Rotated (body includes the once-shown new secret; an Idempotency-Key retry replays it verbatim)"},
-                    "404": {"description": "Unknown key (error code `not_found`)"},
-                    "409": {"description": "Governance is not enabled on this server, or an Idempotency-Key request is already in flight (error code `conflict`)"}
                 }
             }
         }),
@@ -3374,9 +3299,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
                 "responses": {
                     "200": {"description": "`{revoked}` — the id, now denylisted"},
-                    "400": {"description": "Overlong key id (> 64 chars) (error code `invalid_request`)"},
-                    "404": {"description": "Unknown key (error code `not_found`)"},
-                    "409": {"description": "Governance is not enabled on this server (error code `conflict`)"}
                 }
             }
         }),
@@ -3389,11 +3311,42 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "security": [{"adminToken": []}],
                 "responses": {
                     "200": {"description": "`{current_kid, revoke_all, message}` — the rotation intent + revoke-all warning"},
-                    "409": {"description": "No signing key is configured; nothing to rotate (error code `conflict`)"}
                 }
             }
         }),
     );
+
+    use crate::admin::v1::contract::taxonomy;
+
+    // ── THE 4xx RESPONSE SET IS A PROJECTION, NOT PROSE (design D) ────────────────────────────
+    // Every body-specific 400 / 403-escalation / 404 / 409 is ENUMERATED from the ONE declaration
+    // in `contract::taxonomy::declared_errors` — the blocks above carry only their 2xx entries,
+    // their summary and their parameters. Nothing error-shaped is hand-typed beside an endpoint any
+    // more, so an endpoint cannot omit a status it emits (the class-level drift test in
+    // `tests/tests.rs` fails the build) and cannot document one it doesn't. Descriptions come from
+    // `Cond::phrase()`, so the same condition reads identically on every endpoint that declares it.
+    // This runs BEFORE the algorithmic pass below so a declared `403` (the §6.3 hook escalation,
+    // whose phrasing is more specific) wins over the generic under-scope 403's `or_insert`.
+    for (path, methods) in paths.iter_mut() {
+        let Some(obj) = methods.as_object_mut() else {
+            continue;
+        };
+        let rel = path
+            .strip_prefix(crate::admin::v1::contract::ADMIN_PREFIX)
+            .unwrap_or(path)
+            .to_string();
+        for (method, op) in obj.iter_mut() {
+            let Some(tag) = taxonomy::MethodTag::from_op_key(method) else {
+                continue; // an `x-*` path-item extension, not an operation
+            };
+            let Some(responses) = op.get_mut("responses").and_then(|r| r.as_object_mut()) else {
+                continue;
+            };
+            for (status, description) in taxonomy::declared_responses(tag, &rel) {
+                responses.insert(status, json!({ "description": description }));
+            }
+        }
+    }
 
     // Stamp EVERY path+method with its required admin scope (`x-busbar-required-scope`) from the
     // SAME `required_scope` matrix the middleware enforces — the machine-readable authorization
@@ -3421,8 +3374,11 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                     );
                     // The always-possible responses, stamped algorithmically so no hand-written
                     // entry can forget them (re-audit M7): 401 (bad/missing credential), 403
-                    // (authenticated but under-scoped), and 429 on every mutation (the
-                    // per-principal mutation budget).
+                    // (authenticated but under-scoped), 500 (any handler can fail internally), and
+                    // 429 on every mutation (the per-principal mutation budget). These are the
+                    // UNIVERSAL half of the taxonomy — `err_kind_of` classifies exactly these
+                    // `AdminError` variants as algorithmic, so they are not declarable per endpoint
+                    // (listing them per-op would be noise AND a new drift vector).
                     if let Some(responses) = op.get_mut("responses").and_then(|r| r.as_object_mut())
                     {
                         responses.entry("401").or_insert(json!(
@@ -3437,6 +3393,9 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                                 {"description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"}
                             ));
                         }
+                        responses.entry("500").or_insert(json!(
+                            {"description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"}
+                        ));
                     }
                 }
             }
@@ -3542,47 +3501,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                     op.insert("parameters".to_string(), json!(list));
                 }
             }
-        }
-    }
-
-    // 400 causes on the GET list endpoints whose query params can be rejected at the door. The shared
-    // GET template above only declares `{200, 401}`, but each handler DOES emit a `400 invalid_request`
-    // for a bad value of the named param, so document it (verified against the handlers, not phantom):
-    //   /plugins         — `type` is required and must be auth|hooks|store (service.rs)
-    //   /pools           — `detail` must be true|false (handlers.rs)
-    //   /usage           — `window` must parse as a UTC-day bucket epoch (handlers.rs)
-    //   /audit           — `cursor` must be a valid, own opaque cursor (json/mod.rs cursor_offset)
-    //   /config/versions — same opaque-cursor validation
-    const GET_400: &[(&str, &str)] = &[
-        (
-            "/plugins",
-            "Missing or unknown `type` (must be `auth` | `hooks` | `store`) (error code `invalid_request`)",
-        ),
-        (
-            "/pools",
-            "Invalid `detail` (must be `true` | `false`) (error code `invalid_request`)",
-        ),
-        (
-            "/usage",
-            "Non-parseable `window` (expected a UTC-day bucket start epoch) (error code `invalid_request`)",
-        ),
-        (
-            "/audit",
-            "Malformed or foreign pagination `cursor` (error code `invalid_request`)",
-        ),
-        (
-            "/config/versions",
-            "Malformed or foreign pagination `cursor` (error code `invalid_request`)",
-        ),
-    ];
-    for (path, desc) in GET_400 {
-        if let Some(responses) = paths
-            .get_mut(&ap(path))
-            .and_then(|p| p.get_mut("get"))
-            .and_then(|op| op.get_mut("responses"))
-            .and_then(|r| r.as_object_mut())
-        {
-            responses.insert("400".to_string(), json!({ "description": desc }));
         }
     }
 

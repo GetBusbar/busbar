@@ -19,6 +19,7 @@ use axum::{extract::Path, extract::Query, Router};
 use serde::Serialize;
 use serde_json::json;
 
+use super::contract::taxonomy::Cond;
 use super::contract::{AdminError, PATH_ADMIN_AUTH, PATH_CONFIG_VALIDATE, PATH_GROUPS, PATH_HOOKS};
 use super::service::{
     build_with_group, build_with_hook, build_with_registry, build_without_group,
@@ -53,7 +54,8 @@ impl AdminTransport for JsonV1 {
         // from `contract::ADMIN_PREFIX`. Each handler pulls the `Arc<AppHandle>` state, loads the
         // current snapshot into a per-request `AdminService`, and maps the typed result onto the
         // JSON wire.
-        Router::new()
+        #[cfg_attr(not(test), allow(clippy::let_and_return))]
+        let router = Router::new()
             .route("/info", get(info))
             .route("/pools", get(list_pools))
             .route("/pools/{name}", get(get_pool))
@@ -135,8 +137,60 @@ impl AdminTransport for JsonV1 {
             // from the inner MethodRouter and fall unmatched paths through to the data plane's
             // vendor-native shaping (re-audit HIGH-1).
             .fallback(|| async { err_json(&AdminError::NotFound("resource".into())) })
-            .method_not_allowed_fallback(|| async { err_json(&AdminError::MethodNotAllowed) })
+            .method_not_allowed_fallback(|| async { err_json(&AdminError::MethodNotAllowed) });
+        // TEST-ONLY: the taxonomy recording layer. `Router::layer` runs AFTER routing, so it sees
+        // the `MatchedPath` (the operation) alongside the tag `err_json` stamped on the response —
+        // the join `err_json` alone cannot make. Every test in the suite is therefore a driver for
+        // the class-level drift check (see `contract::taxonomy::observed`).
+        #[cfg(test)]
+        let router = router.layer(axum::middleware::from_fn(record_declared_error));
+        router
     }
+}
+
+/// TEST-ONLY recording layer (see `JsonV1::router`). For every response carrying a taxonomy tag it
+/// (a) PANICS when the endpoint's `declared_errors` does not list that `ErrKind` — an UNDER-CLAIM,
+/// failing the very test that triggered it, with no test-ordering dependency — and (b) witnesses the
+/// emission so the class test can prove no declared entry is an OVER-CLAIM.
+#[cfg(test)]
+async fn record_declared_error(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    use crate::admin::v1::contract::taxonomy;
+    let Some(method) = taxonomy::method_tag(req.method()) else {
+        return next.run(req).await;
+    };
+    let matched = req
+        .extensions()
+        .get::<axum::extract::MatchedPath>()
+        .map(|m| m.as_str().to_string());
+    let resp = next.run(req).await;
+    let tag = resp.extensions().get::<taxonomy::observed::Tag>().copied();
+    if let (Some(path), Some(tag)) = (matched, tag) {
+        let rel = path
+            .strip_prefix(crate::admin::v1::contract::ADMIN_PREFIX)
+            .unwrap_or(&path);
+        // UNDER-CLAIM IS FATAL, HERE, NOW. If a handler emitted a declarable kind the endpoint's
+        // declaration does not list, `openapi.json` would under-document the surface — so fail the
+        // test that produced it rather than accumulating a report someone has to read. Every test in
+        // the suite is a driver for this direction; there is no ordering dependency and no way to
+        // add an undocumented error response without turning the build red.
+        assert!(
+            taxonomy::declared_errors(method, rel)
+                .iter()
+                .any(|d| d.kind == tag.kind),
+            "OpenAPI UNDER-CLAIM: {} {rel} emitted {:?} ({}), which contract::taxonomy::\
+             declared_errors does not declare — openapi.json would omit the {} response. Declare it \
+             (with its Cond) or stop emitting it.",
+            method.as_str().to_uppercase(),
+            tag.kind,
+            tag.kind.code(),
+            tag.kind.status(),
+        );
+        taxonomy::observed::record(rel, method, tag);
+    }
+    resp
 }
 
 /// Build a per-request `AdminService` over the CURRENT snapshot loaded from the handle.
@@ -218,13 +272,37 @@ fn ok_json<T: Serialize>(status: StatusCode, view: &T) -> Response {
 /// `{"error":{"code":<stable>,"message":<human>}}` with the error's HTTP status. Tooling branches on
 /// `code`; `message` is human-only.
 pub(crate) fn err_json(e: &AdminError) -> Response {
+    err_json_tagged(e, None)
+}
+
+/// `err_json`, but NAMING the taxonomy [`Cond`] that produced the error. Used at the shared seams
+/// whose condition is fixed (malformed `If-Match`, malformed cursor, the keys surface), so the
+/// class-level drift test can witness the declaration at CONDITION granularity, not just at
+/// `ErrKind` granularity. The wire bytes are identical to `err_json` — the tag is `#[cfg(test)]`.
+pub(crate) fn err_json_cond(e: &AdminError, cond: Cond) -> Response {
+    err_json_tagged(e, Some(cond))
+}
+
+/// The one construction site of the v1 error envelope. In a TEST build it stamps the response with
+/// the taxonomy [`observed::Tag`] so the router's recording layer — which knows the matched route,
+/// which this function does not — can attribute the emission to an operation and check it against
+/// `declared_errors`. In a release build the tag does not exist and this is the plain projection.
+#[cfg_attr(not(test), allow(unused_variables))]
+fn err_json_tagged(e: &AdminError, cond: Option<Cond>) -> Response {
     let status = StatusCode::from_u16(e.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-    (
+    #[cfg_attr(not(test), allow(unused_mut))]
+    let mut resp = (
         status,
         [(CONTENT_TYPE, crate::proxy::APPLICATION_JSON)],
         json!({"error": {"code": e.code(), "message": e.message()}}).to_string(),
     )
-        .into_response()
+        .into_response();
+    #[cfg(test)]
+    if let Some(kind) = crate::admin::v1::contract::taxonomy::err_kind_of(e) {
+        resp.extensions_mut()
+            .insert(crate::admin::v1::contract::taxonomy::observed::Tag { kind, cond });
+    }
+    resp
 }
 
 /// Map a service `Result<View, AdminError>` onto the JSON wire: `ok_json` on success (given status),
@@ -245,9 +323,10 @@ fn cursor_offset(q: &std::collections::HashMap<String, String>) -> Result<usize,
     match q.get("cursor") {
         None => Ok(0),
         Some(c) => crate::admin::v1::contract::decode_offset_cursor(c).ok_or_else(|| {
-            err_json(&AdminError::Validation(
-                "invalid or foreign pagination cursor".into(),
-            ))
+            err_json_cond(
+                &AdminError::Validation("invalid or foreign pagination cursor".into()),
+                Cond::MalformedCursor,
+            )
         }),
     }
 }
@@ -286,11 +365,14 @@ fn if_match_version(headers: &axum::http::HeaderMap) -> Result<Option<u64>, Resp
     let bare = s.strip_prefix("W/").unwrap_or(s); // weak tags compare by value here
     let bare = bare.trim_matches('"');
     bare.parse::<u64>().map(Some).map_err(|_| {
-        err_json(&AdminError::Validation(
-            "malformed If-Match: expected the config-plane ETag (a quoted config version, e.g. \
-             \"42\") or *"
-                .into(),
-        ))
+        err_json_cond(
+            &AdminError::Validation(
+                "malformed If-Match: expected the config-plane ETag (a quoted config version, e.g. \
+                 \"42\") or *"
+                    .into(),
+            ),
+            Cond::MalformedIfMatch,
+        )
     })
 }
 
