@@ -45,8 +45,26 @@ impl MutationClass {
 /// config-apply snapshots — rate state survives every swap); bounded by construction: entries are
 /// per-principal-per-class and a sweep on every check drops past-window entries, so a churn of
 /// principals cannot grow the map unboundedly.
-/// One window entry: (window start, attempts spent in it).
-type Window = (u64, u32);
+/// One window entry: (window start, attempts spent in it, denials already audited in it).
+type Window = (u64, u32, u32);
+
+/// The outcome of one rate check. `Denied` distinguishes the FIRST denial in a window from the
+/// rest, because the caller writes a durable audit record on denial: a client that keeps hammering
+/// past its budget would otherwise drive one blocking store round-trip per REJECTED request, so the
+/// shed path — whose whole job is to stop doing work — would do unbounded work. One record per
+/// principal per class per window says everything the log needs to.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum RateCheck {
+    Admitted,
+    Denied { first_in_window: bool },
+}
+
+impl RateCheck {
+    #[cfg(test)]
+    fn admitted(&self) -> bool {
+        matches!(self, RateCheck::Admitted)
+    }
+}
 
 pub(crate) struct MutationLimiter {
     windows: std::sync::Mutex<Option<HashMap<(String, MutationClass), Window>>>,
@@ -62,21 +80,24 @@ impl MutationLimiter {
     /// Spend one attempt from `principal`'s budget for `class` at time `now` (unix seconds).
     /// Returns `false` when the budget for the current window is exhausted (the caller responds
     /// 429 and audits). Never panics (poisoned lock recovered).
-    pub(crate) fn check(&self, principal: &str, class: MutationClass, now: u64) -> bool {
+    pub(crate) fn check(&self, principal: &str, class: MutationClass, now: u64) -> RateCheck {
         let window = now - (now % MUTATION_RATE_WINDOW_SECS);
         let mut guard = self.windows.lock().unwrap_or_else(|e| e.into_inner());
         let map = guard.get_or_insert_with(HashMap::new);
         // Opportunistic sweep: drop every entry from a PAST window (each principal-class re-inserts
         // on its next attempt), keeping the map proportional to currently-active principals.
-        map.retain(|_, (w, _)| *w == window);
+        map.retain(|_, (w, _, _)| *w == window);
         let entry = map
             .entry((principal.to_string(), class))
-            .or_insert((window, 0));
+            .or_insert((window, 0, 0));
         if entry.1 >= class.limit() {
-            return false;
+            entry.2 += 1;
+            return RateCheck::Denied {
+                first_in_window: entry.2 == 1,
+            };
         }
         entry.1 += 1;
-        true
+        RateCheck::Admitted
     }
 }
 
@@ -91,23 +112,64 @@ mod tests {
         let l = MutationLimiter::new();
         let t = 1_000_000; // window-aligned enough (fixed windows key on now - now%60)
         for _ in 0..10 {
-            assert!(l.check("a", MutationClass::Config, t));
+            assert!(l.check("a", MutationClass::Config, t).admitted());
         }
-        assert!(
-            !l.check("a", MutationClass::Config, t),
+        assert_eq!(
+            l.check("a", MutationClass::Config, t),
+            RateCheck::Denied {
+                first_in_window: true
+            },
             "11th config mutation in the window is limited"
         );
         assert!(
-            l.check("a", MutationClass::Crud, t),
+            l.check("a", MutationClass::Crud, t).admitted(),
             "the other class has its own budget"
         );
         assert!(
-            l.check("b", MutationClass::Config, t),
+            l.check("b", MutationClass::Config, t).admitted(),
             "another principal has its own budget"
         );
         assert!(
-            l.check("a", MutationClass::Config, t + 60),
+            l.check("a", MutationClass::Config, t + 60).admitted(),
             "a new window refills"
+        );
+    }
+
+    /// The denial path writes a durable audit record, which is a blocking store round-trip. Only the
+    /// FIRST denial per (principal, class, window) may do so, or a client that ignores its 429s
+    /// drives unbounded blocking work through the very limiter meant to stop work — and can park the
+    /// one shared store connection that governance and the admin plane both need.
+    #[test]
+    fn only_the_first_denial_in_a_window_is_audited() {
+        let l = MutationLimiter::new();
+        let t = 1_000_000;
+        for _ in 0..10 {
+            assert!(l.check("a", MutationClass::Config, t).admitted());
+        }
+        assert_eq!(
+            l.check("a", MutationClass::Config, t),
+            RateCheck::Denied {
+                first_in_window: true
+            }
+        );
+        for _ in 0..500 {
+            assert_eq!(
+                l.check("a", MutationClass::Config, t),
+                RateCheck::Denied {
+                    first_in_window: false
+                },
+                "a sustained probe must not keep auditing"
+            );
+        }
+        // A fresh window starts a fresh record: the log still shows each window's limiting.
+        for _ in 0..10 {
+            assert!(l.check("a", MutationClass::Config, t + 60).admitted());
+        }
+        assert_eq!(
+            l.check("a", MutationClass::Config, t + 60),
+            RateCheck::Denied {
+                first_in_window: true
+            }
         );
     }
 }

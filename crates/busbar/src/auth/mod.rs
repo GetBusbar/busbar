@@ -1032,16 +1032,22 @@ pub(crate) async fn auth_middleware(
                 .as_ref()
                 .map(|p| p.id.as_str())
                 .unwrap_or("anonymous");
-            if !app
+            if let crate::admin::rate::RateCheck::Denied { first_in_window } = app
                 .mutation_limiter
                 .check(actor, class, crate::store::now())
             {
-                crate::admin::audit::AUDIT.record_by(
-                    "admin.rate_limited",
-                    &format!("{}:{path}", class.label()),
-                    crate::admin::audit::OUTCOME_REJECTED,
-                    actor,
-                );
+                // Audit the first denial of the window only. The durable audit write-through is a
+                // blocking store round-trip, and this is the SHED path — auditing every rejected
+                // attempt would let a client that ignores its 429s drive unbounded blocking work
+                // through the limiter whose entire purpose is to stop doing work.
+                if first_in_window {
+                    crate::admin::audit::AUDIT.record_by(
+                        "admin.rate_limited",
+                        &format!("{}:{path}", class.label()),
+                        crate::admin::audit::OUTCOME_REJECTED,
+                        actor,
+                    );
+                }
                 return Err(rate_limited_response());
             }
         }
