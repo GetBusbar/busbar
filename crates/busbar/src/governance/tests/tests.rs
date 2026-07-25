@@ -2432,4 +2432,105 @@ mod signed_token {
             "the SigV4/legacy-hash admit predicate re-syncs on the same window"
         );
     }
+
+    // ── ROTATION ACTUALLY ROTATES (audit round-5 HIGH-6) ─────────────────────────────────────────
+    //
+    // `POST /keys/{id}/rotate` used to mint a legacy BEARER SECRET and stamp its hash over the
+    // binding marker. Two defects in one line:
+    //   * the outstanding SIGNED TOKEN kept verifying (the token path resolves by `sub` and never
+    //     looked at `key_hash`), so the operation revoked precisely nothing;
+    //   * it ARMED the legacy hashed-secret path on a key deliberately minted without one — a
+    //     second, weaker, non-expiring credential (a downgrade).
+    // Rotation now stamps a fresh binding GENERATION (durable, so every node agrees) and re-mints
+    // the token against it.
+
+    /// The PRE-ROTATION token is rejected immediately after rotate; the re-minted one is accepted;
+    /// the id (and with it the ledger bucket / usage history) is unchanged.
+    #[test]
+    fn rotate_invalidates_the_outstanding_signed_token() {
+        let g = gov();
+        let (binding, old_token) = g
+            .mint_signed(spec("bob", Some("growth"), None), 9_000, 1_000)
+            .expect("mint");
+        assert!(g.verify_token(&old_token, 1_500).is_some(), "valid at mint");
+
+        let rotated = g
+            .rotate_key(&binding.id, 9_000)
+            .expect("rotate")
+            .expect("known id");
+        let crate::governance::RotatedCredential::Token { key, token, .. } = rotated else {
+            panic!("a signed-token binding must rotate its TOKEN, never a bearer secret");
+        };
+
+        assert_eq!(
+            key.id, binding.id,
+            "the subject id is stable across rotation"
+        );
+        assert_eq!(
+            key.group.as_deref(),
+            Some("growth"),
+            "policy carries over untouched"
+        );
+        assert!(
+            g.verify_token(&old_token, 1_500).is_none(),
+            "the PRE-ROTATION token must be rejected immediately after rotate"
+        );
+        assert!(
+            g.verify_token(&token, 1_500).is_some(),
+            "the re-minted token authenticates"
+        );
+    }
+
+    /// Rotation does NOT re-arm the legacy hashed-secret path: the binding row keeps a `binding:`
+    /// marker (which can never equal a SHA-256 digest), so no bearer secret exists to look up.
+    #[test]
+    fn rotate_does_not_arm_the_legacy_hashed_secret_path() {
+        let g = gov();
+        let (binding, _token) = g
+            .mint_signed(spec("bob", None, None), 9_000, 1_000)
+            .expect("mint");
+        g.rotate_key(&binding.id, 9_000)
+            .expect("rotate")
+            .expect("known id");
+
+        let row = g
+            .all_keys()
+            .unwrap()
+            .into_iter()
+            .find(|k| k.id == binding.id)
+            .expect("binding still exists");
+        assert!(
+            crate::governance::is_binding_marker(&row.key_hash),
+            "the rotated row must stay a signed-token BINDING, not become a hashed-secret key: {}",
+            row.key_hash
+        );
+        assert!(
+            crate::governance::binding_generation(&row.key_hash).is_some(),
+            "the rotated binding carries a generation"
+        );
+    }
+
+    /// A LEGACY hashed-secret key still rotates its bearer secret (that is the only credential it
+    /// has): the fresh secret resolves, the old one stops.
+    #[test]
+    fn legacy_hashed_secret_key_still_rotates_its_secret() {
+        let g = gov();
+        let (key, old_secret) = g
+            .create_key(spec("legacy", None, None), 1_000)
+            .expect("mint");
+        assert!(g.lookup(&old_secret).is_some());
+
+        let rotated = g
+            .rotate_key(&key.id, 9_000)
+            .expect("rotate")
+            .expect("known id");
+        let crate::governance::RotatedCredential::Secret { secret, .. } = rotated else {
+            panic!("a hashed-secret key rotates its SECRET");
+        };
+        assert!(g.lookup(&secret).is_some(), "the fresh secret resolves");
+        assert!(
+            g.lookup(&old_secret).is_none(),
+            "the pre-rotation secret stops resolving"
+        );
+    }
 }

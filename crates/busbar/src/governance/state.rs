@@ -134,7 +134,24 @@ impl GovState {
         }
         // Resolve policy by `sub` (the key id). The binding lives in the `by_sub` index.
         match self.lookup_by_sub(&claims.sub) {
-            Some(key) if key.enabled => Some(key),
+            // GENERATION gate: the token must name the binding's CURRENT rotation generation.
+            // `POST /keys/{id}/rotate` stamps a fresh one into the durable binding row, so every
+            // token issued before that rotation stops verifying here — on this node and on every
+            // other node reading the same store — while the subject id (ledger bucket, budgets,
+            // usage history, audit attribution) stays stable.
+            Some(key)
+                if key.enabled
+                    && generation_matches(&key.key_hash, claims.generation.as_deref()) =>
+            {
+                Some(key)
+            }
+            Some(key) if key.enabled => {
+                tracing::debug!(
+                    sub = %claims.sub,
+                    "signed-token rejected: the binding was rotated after this token was minted"
+                );
+                None
+            }
             _ => {
                 tracing::debug!(sub = %claims.sub, "signed-token subject has no enabled binding");
                 None
@@ -212,11 +229,14 @@ impl GovState {
         let mut raw = [0u8; 16];
         getrandom::fill(&mut raw).map_err(|e| StoreError(format!("CSPRNG unavailable: {e}")))?;
         let id = format!("{VK_ID_PREFIX}{}", hex::encode(raw));
+        let generation = generate_binding_generation().store()?;
         let binding = VirtualKey {
             id: id.clone(),
             // Not a credential: signed tokens are stateless. Kept non-empty + unique-per-key so a
             // durable store's UNIQUE(key_hash) constraint is satisfied; never used to authenticate.
-            key_hash: format!("binding:{id}"),
+            // The trailing GENERATION is the rotation epoch (`rotate_key`), carried durably so a
+            // pre-rotation token is rejected by every node reading the same store.
+            key_hash: binding_marker(&id, &generation),
             name: spec.name,
             // C6 intent carried intact from the mint body: None = all pools; Some([]) = none.
             allowed_pools: spec.allowed_pools,
@@ -227,7 +247,7 @@ impl GovState {
         };
         self.store.put_key(&binding)?;
         self.refresh()?;
-        let token = signer.mint(&id, exp);
+        let token = signer.mint(&id, exp, Some(&generation));
         Ok((binding, token))
     }
 
@@ -249,11 +269,12 @@ impl GovState {
         let mut raw = [0u8; 16];
         getrandom::fill(&mut raw).map_err(|e| StoreError(format!("CSPRNG unavailable: {e}")))?;
         let id = format!("{VK_ID_PREFIX}{}", hex::encode(raw));
+        let generation = generate_binding_generation().store()?;
         let access_key_id = generate_aws_access_key_id().store()?;
         let secret_access_key = generate_aws_secret_access_key().store()?;
         let binding = VirtualKey {
             id: id.clone(),
-            key_hash: format!("binding:{id}"),
+            key_hash: binding_marker(&id, &generation),
             name: spec.name,
             allowed_pools: spec.allowed_pools,
             enabled: true,
@@ -270,7 +291,7 @@ impl GovState {
             },
         )?;
         self.refresh()?;
-        let token = signer.mint(&id, exp);
+        let token = signer.mint(&id, exp, Some(&generation));
         Ok((binding, token, access_key_id, secret_access_key))
     }
 
@@ -635,23 +656,55 @@ impl GovState {
         self.refresh()
     }
 
-    /// ROTATE a key's bearer secret in place: a fresh secret is minted, its hash replaces the
-    /// stored `key_hash`, and the OLD secret stops resolving immediately (cache refresh). The key
-    /// `id` stays STABLE — budgets, rate windows, usage history, and audit attribution carry over.
-    /// The id-from-hash-prefix coupling is a MINT-time collision guard only (lookups resolve by the
-    /// full `key_hash`), so a rotated row's id no longer matching its new hash prefix is harmless
-    /// by design. An attached AWS SigV4 credential (if any) is NOT rotated here — it is a separate
-    /// credential with its own lifecycle. Returns `None` for an unknown id; the new secret is shown
-    /// exactly once.
-    pub(crate) fn rotate_key(&self, id: &str) -> StoreResult<Option<(VirtualKey, String)>> {
+    /// ROTATE a key's CREDENTIAL in place. The key `id` stays STABLE — budgets, rate windows, usage
+    /// history and audit attribution carry over — and the previous credential stops authenticating
+    /// IMMEDIATELY and fleet-wide. An attached AWS SigV4 credential (if any) is NOT rotated here;
+    /// it is a separate credential with its own lifecycle. `None` for an unknown id.
+    ///
+    /// The rotation is credential-shaped, i.e. it rotates whatever credential the key actually has:
+    ///
+    ///   * a 1.5.0 SIGNED-TOKEN binding (`key_hash` is a `binding:` marker) gets a fresh binding
+    ///     GENERATION stamped into the durable row plus a newly-minted token carrying it. Every
+    ///     token minted before the rotation names the OLD generation and is rejected by
+    ///     `verify_token` on every node reading the store. (audit round-5 HIGH-6: rotation used to
+    ///     leave the outstanding signed token fully valid — it minted a bearer secret the token path
+    ///     never consults — so "rotate" revoked nothing at all.)
+    ///   * a LEGACY hashed-secret key gets a fresh bearer secret whose hash replaces `key_hash`, so
+    ///     the old secret stops resolving on the next cache refresh. That is the only credential
+    ///     such a key has.
+    ///
+    /// A signed-token binding is NEVER downgraded into a hashed-secret key by rotation (the old
+    /// behaviour did exactly that: it ARMED the weaker legacy path on a key that had deliberately
+    /// been minted without one, adding a second, non-expiring credential). `key_hash` stays a
+    /// `binding:` marker, which can never equal a SHA-256 digest, so the legacy `lookup` path
+    /// remains structurally unreachable for it.
+    ///
+    /// FAIL-CLOSED: rotating a signed-token binding with no signer configured is an error rather
+    /// than a silent fallback to the legacy secret.
+    pub(crate) fn rotate_key(&self, id: &str, exp: u64) -> StoreResult<Option<RotatedCredential>> {
         let Some(mut key) = self.store.get_key(id)? else {
             return Ok(None);
         };
+        if is_binding_marker(&key.key_hash) {
+            let Some(signer) = self.signer.as_ref() else {
+                return Err(StoreError(
+                    "cannot rotate a signed-token key: no signing key is configured (rotation \
+                     re-mints the token; it must never fall back to arming a legacy bearer secret)"
+                        .to_string(),
+                ));
+            };
+            let generation = generate_binding_generation().store()?;
+            key.key_hash = binding_marker(&key.id, &generation);
+            self.store.put_key(&key)?;
+            self.refresh()?;
+            let token = signer.mint(&key.id, exp, Some(&generation));
+            return Ok(Some(RotatedCredential::Token { key, token, exp }));
+        }
         let secret = generate_secret().store()?;
         key.key_hash = crate::sigv4::sha256_hex(secret.as_bytes());
         self.store.put_key(&key)?;
         self.refresh()?;
-        Ok(Some((key, secret)))
+        Ok(Some(RotatedCredential::Secret { key, secret }))
     }
 
     /// Apply a partial update to an existing key. Keys are PURE AUTH (S1), so the mutable surface

@@ -40,6 +40,49 @@ const VK_ID_PREFIX: &str = "vk_";
 const VK_ID_HASH_PREFIX_LEN: usize = 16;
 /// The `"sk-bb-"` prefix for bearer secrets returned by `generate_secret`.
 const SK_SECRET_PREFIX: &str = "sk-bb-";
+/// The `key_hash` MARKER prefix of a 1.5.0 signed-token binding row. A signed-token key has NO
+/// hashed bearer secret: the token is the credential, and the `key_hash` column holds
+/// `binding:<id>:<generation>` purely to satisfy the store's `UNIQUE(key_hash)` constraint and to
+/// carry the rotation generation durably. Because the marker can never equal a SHA-256 hex digest,
+/// a binding row is structurally unreachable from the legacy hashed-secret lookup path.
+pub(crate) const BINDING_MARKER_PREFIX: &str = "binding:";
+
+/// The `key_hash` marker for a signed-token binding at a given rotation generation.
+pub(crate) fn binding_marker(id: &str, generation: &str) -> String {
+    format!("{BINDING_MARKER_PREFIX}{id}:{generation}")
+}
+
+/// The rotation GENERATION carried by a binding row's `key_hash` marker, if any. `None` for a
+/// legacy hashed-secret key (a real digest) AND for a pre-generation binding marker
+/// (`binding:<id>`, minted before rotation carried a generation) — in both cases only a token
+/// likewise carrying no generation may verify.
+pub(crate) fn binding_generation(key_hash: &str) -> Option<&str> {
+    key_hash
+        .strip_prefix(BINDING_MARKER_PREFIX)?
+        .split_once(':')
+        .map(|(_id, generation)| generation)
+}
+
+/// Whether a presented token's generation claim matches the binding row's CURRENT generation —
+/// the rotation gate on the signed-token verify path. Exact equality including the `None` case:
+/// a pre-generation token (`None`) verifies only against a pre-generation binding (`None`), so a
+/// rotation can never be defeated by simply omitting the claim.
+pub(crate) fn generation_matches(key_hash: &str, presented: Option<&str>) -> bool {
+    binding_generation(key_hash) == presented
+}
+
+/// Whether `key_hash` is a signed-token BINDING marker rather than a hashed bearer secret.
+pub(crate) fn is_binding_marker(key_hash: &str) -> bool {
+    key_hash.starts_with(BINDING_MARKER_PREFIX)
+}
+
+/// A fresh unguessable binding GENERATION (128 bits of OS CSPRNG, hex). Fails closed on no entropy,
+/// exactly like every other credential-shaped draw in this module.
+fn generate_binding_generation() -> Result<String, getrandom::Error> {
+    let mut raw = [0u8; 16];
+    getrandom::fill(&mut raw)?;
+    Ok(hex::encode(raw))
+}
 
 // ── AWS-key formats ───────────────────────────────────────────────────────────────────────────────
 /// The literal `"AKIA"` prefix required by AWS SDK validators for long-term AccessKeyIds.
@@ -446,6 +489,30 @@ pub(crate) struct GovState {
     /// has committed, so it can never contain strictly-older store state. Guarded data is `()`;
     /// a poisoned lock is recovered with `into_inner()` (serializing is strictly better than not).
     refresh_lock: std::sync::Mutex<()>,
+}
+
+/// What `POST /keys/{id}/rotate` re-issued — the credential shape the key actually carries. The
+/// once-shown material differs per arm, and the handler renders each accordingly.
+pub(crate) enum RotatedCredential {
+    /// A 1.5.0 signed-token binding: a freshly-minted token at a NEW binding generation. Every
+    /// token issued before the rotation is now rejected by `verify_token`.
+    Token {
+        key: VirtualKey,
+        token: String,
+        exp: u64,
+    },
+    /// A legacy hashed-secret key: a fresh bearer secret (its only credential). The old secret stops
+    /// resolving immediately.
+    Secret { key: VirtualKey, secret: String },
+}
+
+impl RotatedCredential {
+    /// The rotated key's metadata (shared by both arms).
+    pub(crate) fn key(&self) -> &VirtualKey {
+        match self {
+            RotatedCredential::Token { key, .. } | RotatedCredential::Secret { key, .. } => key,
+        }
+    }
 }
 
 /// Parameters for minting a new virtual key (from the management API) - PURE AUTH (S1): identity,

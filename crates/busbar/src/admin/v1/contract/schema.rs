@@ -63,7 +63,9 @@ pub(crate) struct CreatedKeyView {
     pub(crate) aws_secret_access_key: Option<String>,
 }
 
-/// `POST /keys/{id}/rotate` — the key metadata plus the ONCE-shown fresh bearer secret.
+/// `POST /keys/{id}/rotate` — the key metadata plus the ONCE-shown fresh CREDENTIAL. Exactly one of
+/// `token`+`expires_at` (a 1.5.0 signed-token key: a new token at a new binding generation, every
+/// prior token now rejected) or `secret` (a legacy hashed-secret key) is present.
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct RotatedKeyView {
     pub(crate) id: String,
@@ -73,8 +75,15 @@ pub(crate) struct RotatedKeyView {
     pub(crate) enabled: bool,
     pub(crate) created_at: u64,
     pub(crate) labels: std::collections::BTreeMap<String, String>,
-    /// The fresh bearer secret — shown EXACTLY once.
-    pub(crate) secret: String,
+    /// The fresh busbar-SIGNED token — shown EXACTLY once (signed-token keys).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) token: Option<String>,
+    /// Unix-seconds expiry of the re-minted signed token (present with `token`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) expires_at: Option<u64>,
+    /// The fresh bearer secret — shown EXACTLY once (legacy hashed-secret keys only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) secret: Option<String>,
 }
 
 /// `GET /keys/{id}/usage`: the key's all-time attribution counters (a 1.5.0 key bucket accrues in

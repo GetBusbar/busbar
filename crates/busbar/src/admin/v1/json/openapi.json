@@ -1938,7 +1938,7 @@
         "type": "object"
       },
       "RotatedKeyView": {
-        "description": "`POST /keys/{id}/rotate` — the key metadata plus the ONCE-shown fresh bearer secret.",
+        "description": "`POST /keys/{id}/rotate` — the key metadata plus the ONCE-shown fresh CREDENTIAL. Exactly one of\n`token`+`expires_at` (a 1.5.0 signed-token key: a new token at a new binding generation, every\nprior token now rejected) or `secret` (a legacy hashed-secret key) is present.",
         "properties": {
           "allowed_pools": {
             "items": {
@@ -1956,6 +1956,15 @@
           },
           "enabled": {
             "type": "boolean"
+          },
+          "expires_at": {
+            "description": "Unix-seconds expiry of the re-minted signed token (present with `token`).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "group": {
             "type": [
@@ -1976,8 +1985,18 @@
             "type": "string"
           },
           "secret": {
-            "description": "The fresh bearer secret — shown EXACTLY once.",
-            "type": "string"
+            "description": "The fresh bearer secret — shown EXACTLY once (legacy hashed-secret keys only).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "token": {
+            "description": "The fresh busbar-SIGNED token — shown EXACTLY once (signed-token keys).",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -1987,8 +2006,7 @@
           "group",
           "enabled",
           "created_at",
-          "labels",
-          "secret"
+          "labels"
         ],
         "type": "object"
       },
