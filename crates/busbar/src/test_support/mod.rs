@@ -667,6 +667,7 @@ pub(crate) struct TestApp {
     plugins_dir: Option<std::path::PathBuf>,
     plugins_cfg: Option<crate::config::PluginsCfg>,
     hook_env: Option<crate::hooks::HookEnv>,
+    disk_paths: Option<(std::path::PathBuf, std::path::PathBuf)>,
 }
 
 #[allow(dead_code)]
@@ -692,6 +693,7 @@ impl TestApp {
             plugins_dir: None,
             plugins_cfg: None,
             hook_env: None,
+            disk_paths: None,
         }
     }
 
@@ -712,6 +714,18 @@ impl TestApp {
     /// strict disabled default.
     pub(crate) fn plugins_cfg(mut self, cfg: crate::config::PluginsCfg) -> Self {
         self.plugins_cfg = Some(cfg);
+        self
+    }
+
+    /// Give the snapshot DISK TRUTH — the `config.yaml` / `providers.yaml` paths a rebuild reads.
+    /// Without these the app is EPHEMERAL and every rebuild-from-disk path takes its no-disk branch,
+    /// so the failure modes of the rebuild itself are unreachable from a test.
+    pub(crate) fn disk_paths(
+        mut self,
+        config: std::path::PathBuf,
+        providers: std::path::PathBuf,
+    ) -> Self {
+        self.disk_paths = Some((config, providers));
         self
     }
 
@@ -882,8 +896,8 @@ impl TestApp {
             credential_cache: std::sync::Arc::new(crate::auth_cache::CredentialCache::new()),
             auth_scope_caps: std::collections::HashMap::new(),
             role_bindings: crate::config::RoleBindings::new(),
-            config_path: None,
-            providers_path: None,
+            config_path: self.disk_paths.as_ref().map(|(c, _)| c.clone()),
+            providers_path: self.disk_paths.as_ref().map(|(_, p)| p.clone()),
             overlay_path: self.overlay_path,
             config_version: 0,
             max_keys_per_principal: 0,
