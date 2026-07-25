@@ -62,6 +62,46 @@ while IFS= read -r f; do
 done < <(find crates -name '*.rs')
 [ "$loc" -eq 0 ] && note "ok"
 
+# ── Invariant 4: ONE durable-write choke point. Every durable file publish goes through
+#    `crate::durable::write` (crates/busbar/src/durable.rs). Outside the primitive, the ephemeral
+#    plugin-loader staging (no rename-to-publish, no durability intent), and #[cfg(test)] code, NO
+#    source file may hand-roll a `std::fs::rename(` used to publish or a `.sync_all(` for durability.
+#    This is the "no-hack" guarantee: a 5th call-site that re-hand-rolls the atomic-write dance fails
+#    CI instead of silently re-introducing whichever facet (parent fsync / temp cleanup / …) its
+#    author forgets — it must route through the choke point. See crates/busbar/src/durable.rs. ──────
+hdr "one durable-write choke point (no hand-rolled rename-to-publish / sync_all outside durable.rs)"
+# The only files permitted to publish via rename or fsync for durability. Keep this list to the
+# primitive alone; the ephemeral stager uses neither call.
+ALLOW_DURABLE='crates/busbar/src/durable.rs'
+dur=0
+# awk skips lines inside a `#[cfg(test)]`-gated region (tracked by brace depth) and `//` comment
+# lines, then flags a `std::fs::rename(` or `.sync_all(` in the remaining production code.
+scan_durable() { awk '
+  # Enter a #[cfg(test)] region: the NEXT brace-opening line starts a test scope we ignore until it
+  # closes. Track nested braces so we resume exactly when the test module/fn ends.
+  /#\[cfg\(test\)\]/ { pending_test=1 }
+  {
+    line=$0
+    # Count braces to know when a test region ends (`close` is an awk builtin — use `nclose`).
+    nopen=gsub(/\{/, "{", line); nclose=gsub(/\}/, "}", line)
+    if (pending_test && nopen>0) { in_test=1; pending_test=0 }
+    if (in_test) { depth += nopen - nclose; if (depth<=0) { in_test=0; depth=0 }; next }
+  }
+  /^[[:space:]]*\/\// { next }                       # skip whole-line comments (incl doc comments)
+  /std::fs::rename\(/  { printf "%s:%d: hand-rolled rename-to-publish\n", FILENAME, NR }
+  /\.sync_all\(/       { printf "%s:%d: hand-rolled sync_all durability\n", FILENAME, NR }
+' "$1"; }
+while IFS= read -r f; do
+  case "$f" in */tests/*) continue ;; esac          # test files are exempt (name-navigated)
+  [ "$f" = "$ALLOW_DURABLE" ] && continue            # the primitive itself
+  hits=$(scan_durable "$f")
+  if [ -n "$hits" ]; then
+    while IFS= read -r h; do note "DURABLE-BYPASS: $h — route through crate::durable::write"; done <<<"$hits"
+    fail=1; dur=1
+  fi
+done < <(find crates -name '*.rs')
+[ "$dur" -eq 0 ] && note "ok"
+
 hdr "result"
 if [ "$fail" -ne 0 ]; then note "structure-lint FAILED — see docs/code-layout.md"; exit 1; fi
 note "structure-lint passed"
