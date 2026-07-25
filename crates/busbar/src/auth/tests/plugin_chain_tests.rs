@@ -7,7 +7,7 @@
 //! `AuthMiddleware::new`, and prove:
 //!
 //! * a valid token → `Identify` → a mapped `Principal` whose roles resolve to `role_bindings`
-//! policy AND whose admin scope is capped by `auth.chain.<module>.max_admin_scope`;
+//!   policy AND whose admin scope is capped by `auth.chain.<module>.max_admin_scope`;
 //! * an invalid/absent credential → the chain fail-closed-denies (all-`Pass`);
 //! * a MISSING or UNTRUSTED plugin at boot → a LOUD failure (never a silently-open front door);
 //! * `plugins.enabled: false` + a configured auth plugin → boot refuses (`plugins_preflight`).

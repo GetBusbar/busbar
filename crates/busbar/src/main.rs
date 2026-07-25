@@ -1497,15 +1497,15 @@ pub(crate) fn load_config_from_disk(
 /// boot behavior. Fail-closed at every step:
 ///
 /// 1. CONSISTENCY: a non-`memory` `store.module` with `plugins.enabled: false` (or the block
-/// absent) is an error NAMING THE FLAG — a dropped-in tarball is inert until the switch is on.
+///    absent) is an error NAMING THE FLAG — a dropped-in tarball is inert until the switch is on.
 /// 2. POLICY: `plugins.trust` resolves (embedded first-party key + third-party publishers + the
-/// explicit opt-ins + anti-downgrade floors); a malformed key is an error.
+///    explicit opt-ins + anti-downgrade floors); a malformed key is an error.
 /// 3. SCAN: when enabled, every tarball in `plugins.dir` runs the three-phase pipeline
-/// (structural -> trust -> conflict) via [`busbar_plugin_loader::scan_and_validate`]. ANY
-/// invalid tarball/manifest or ANY name/alias conflict aborts with every problem named; an
-/// untrusted plugin is SKIPPED (warn-logged, never `dlopen`ed).
+///    (structural -> trust -> conflict) via [`busbar_plugin_loader::scan_and_validate`]. ANY
+///    invalid tarball/manifest or ANY name/alias conflict aborts with every problem named; an
+///    untrusted plugin is SKIPPED (warn-logged, never `dlopen`ed).
 /// 4. RESOLUTION: the configured `store.module` (alias OR canonical name, resolved against the
-/// manifest registry — never a filename) must resolve to a loadable `kind: store` plugin.
+///    manifest registry — never a filename) must resolve to a loadable `kind: store` plugin.
 ///
 /// Returns the validated registry (empty when plugins are disabled and no plugin is referenced).
 /// NO plugin code runs in this function (manifest-only; `dlopen` happens later, at store open).
@@ -1752,13 +1752,13 @@ pub(crate) fn plugins_preflight(
 ///
 /// FAIL-CLOSED twice over:
 /// * an unresolvable ref refuses boot/apply (a silently-absent token would lock the admin API
-/// while the operator believes it is guarded);
+///   while the operator believes it is guarded);
 /// * a ref that resolves to EMPTY or ALL-WHITESPACE is refused too. The
-/// documented boot guard for this had been lost in the move to secret refs, and the consequence
-/// is worse than the docs described: the digest is computed over the blank string, so
-/// `admin_token_hash` is `Some(sha256(""))` — a REAL credential that an `Authorization: Bearer `
-/// with an empty value satisfies. An env var that expanded to nothing would silently hand the
-/// whole admin surface to an unauthenticated caller.
+///   documented boot guard for this had been lost in the move to secret refs, and the consequence
+///   is worse than the docs described: the digest is computed over the blank string, so
+///   `admin_token_hash` is `Some(sha256(""))` — a REAL credential that an `Authorization: Bearer `
+///   with an empty value satisfies. An env var that expanded to nothing would silently hand the
+///   whole admin surface to an unauthenticated caller.
 fn resolve_admin_token(
     auth: Option<&config::AuthCfg>,
     resolver: &config::secret::SecretResolver,

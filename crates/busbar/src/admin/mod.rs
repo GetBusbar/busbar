@@ -42,11 +42,11 @@ use crate::governance::{NewKeySpec, VirtualKey};
 /// to make either atomic. Two hazards follow, and BOTH are closed by serializing every such section
 /// behind this one async mutex:
 /// - Two concurrent DELETEs of one id would otherwise both observe `Some` and both return 200 (the
-/// second SQL delete no-ops) — a misleading audit trail of two revocations of one row.
+///   second SQL delete no-ops) — a misleading audit trail of two revocations of one row.
 /// - A PATCH interleaved with a DELETE would otherwise RESURRECT the revoked key: the PATCH reads
-/// the row (exists), the DELETE removes it, then the PATCH's `put_key` UPSERT re-inserts it. Under
-/// this gate the PATCH's lookup→put runs to completion before any DELETE (so the row is gone
-/// afterward), or after it (so the PATCH's `get_key` returns `None` → 404 and never re-puts).
+///   the row (exists), the DELETE removes it, then the PATCH's `put_key` UPSERT re-inserts it. Under
+///   this gate the PATCH's lookup→put runs to completion before any DELETE (so the row is gone
+///   afterward), or after it (so the PATCH's `get_key` returns `None` → 404 and never re-puts).
 ///
 /// The proper store-layer fix is an UPDATE-ONLY `put`/`update` (`UPDATE … WHERE id=?` that affects 0
 /// rows when absent, never an upsert) used by `update_key`, which would need no lock at all — but that
@@ -390,12 +390,12 @@ fn key_meta(k: &VirtualKey) -> Value {
 /// Governance-off semantics: ONE rule across the keys surface, chosen so no
 /// status is ambiguous —
 /// - collection READS (`GET /keys`) answer 200 with an EMPTY page (`disabled_empty_list`): with
-/// governance off the keyspace is truthfully empty, and a 404 on a collection reads as a
-/// mount/path error to every REST client;
+///   governance off the keyspace is truthfully empty, and a 404 on a collection reads as a
+///   mount/path error to every REST client;
 /// - single-resource READS keep 404 `not_found` (also truthful — no such key exists);
 /// - WRITES (create/patch/delete/rotate/revoke) answer 409 `conflict` (`disabled_write`): the request
-/// conflicts with the server's configured state, with an actionable message. Previously every
-/// handler returned 404 — making `not_found` mean two different things forever.
+///   conflicts with the server's configured state, with an actionable message. Previously every
+///   handler returned 404 — making `not_found` mean two different things forever.
 fn disabled_write(who: KeyAudit<'_>) -> Response {
     key_err(
         who,
@@ -501,11 +501,11 @@ const UNBOUND_BUCKET_LABEL: &str = "(no group)";
 /// Two round-5 defects die here rather than at N call sites:
 ///
 /// * #18 — the count is of LIVE keys only: a disabled or revoked key holds no usable credential,
-/// so counting it forever made the cap a ONE-WAY RATCHET (a principal that revoked ten keys
-/// could never mint again, and the documented remedy "revoke or delete an existing key" was
-/// simply false for `revoke`). Enabled + not-denylisted is exactly "can still authenticate".
+///   so counting it forever made the cap a ONE-WAY RATCHET (a principal that revoked ten keys
+///   could never mint again, and the documented remedy "revoke or delete an existing key" was
+///   simply false for `revoke`). Enabled + not-denylisted is exactly "can still authenticate".
 /// * #19 — the UNBOUND bucket is counted. A groupless key escapes the whole limit tree, so
-/// exempting it from the key-count cap as well made the ceiling evadable by omitting one field.
+///   exempting it from the key-count cap as well made the ceiling evadable by omitting one field.
 fn check_key_cap(
     gov: &crate::governance::GovState,
     cap: usize,

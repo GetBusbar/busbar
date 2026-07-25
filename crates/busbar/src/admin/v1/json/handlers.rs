@@ -907,11 +907,11 @@ pub(crate) async fn delete_hook(
 ///
 /// - group EXISTS, no `parent` given → bind as-is (`Ok(None)`, nothing to provision).
 /// - group EXISTS, `parent` given → the given parent MUST equal the group's actual parent, else
-/// `409 conflict` (a portal must not silently re-home an existing leaf under a different team).
+///   `409 conflict` (a portal must not silently re-home an existing leaf under a different team).
 /// - group MISSING, `parent` given → return the CANDIDATE `App` that creates it as a leaf under
-/// `parent`, limits stamped from the nearest-ancestor `child_default` (inherit-only when none),
-/// via the SAME `build_with_group` validate-at-the-door path every group write uses (so
-/// validation / cost rebuild / base-shadow guard all hold).
+///   `parent`, limits stamped from the nearest-ancestor `child_default` (inherit-only when none),
+///   via the SAME `build_with_group` validate-at-the-door path every group write uses (so
+///   validation / cost rebuild / base-shadow guard all hold).
 /// - group MISSING, no `parent` → today's `400` (an unknown group with nowhere to root it).
 ///
 /// PURE and SYNCHRONOUS: it decides against the snapshot it is handed and returns a plan. It takes
@@ -1895,9 +1895,9 @@ pub(crate) async fn rollback_config(
 /// - every name must be a compiled-in admin module (a typo can never silently drop auth);
 /// - optimistic concurrency via `If-Match` (409 `version_conflict` when stale — re-read and retry);
 /// - **the D4 DRY-RUN GUARD**: the CALLING request's own credentials are re-evaluated against the
-/// CANDIDATE chain, and unless they would still hold FULL scope under it the change is rejected
-/// with 409 — you cannot lock yourself out with this endpoint. (A chain broken some other way
-/// is fix-config + restart: sub-second, health persists.)
+///   CANDIDATE chain, and unless they would still hold FULL scope under it the change is rejected
+///   with 409 — you cannot lock yourself out with this endpoint. (A chain broken some other way
+///   is fix-config + restart: sub-second, health persists.)
 ///
 /// Applied live and atomically (config-version bump, audited); like `config/apply`, the change is
 /// live until the next reload/restart returns to disk truth — persist by updating config.yaml.

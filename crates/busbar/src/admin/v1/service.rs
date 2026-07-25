@@ -1013,13 +1013,13 @@ impl AdminService {
     /// this endpoint, so pushing a plugin over the API cannot execute it and cannot bypass the
     /// trust model; loading only ever happens through the boot pipeline's same three phases):
     /// 1. Filename sanity — a bare `.tar.gz` filename (no path traversal). Storage only; identity
-    /// comes from the signed manifest.
+    ///    comes from the signed manifest.
     /// 2. STRUCTURAL — the tarball unpacks in memory; the manifest parses, is complete and
-    /// well-formed, the sha256 binds the library bytes, the abi_version is supported. `400`.
+    ///    well-formed, the sha256 binds the library bytes, the abi_version is supported. `400`.
     /// 3. TRUST — signature vs the embedded first-party key / allowlisted publishers, opt-in flags,
-    /// anti-downgrade floors. An untrusted upload is a `409 conflict` (nothing is written).
+    ///    anti-downgrade floors. An untrusted upload is a `409 conflict` (nothing is written).
     /// 4. CONFLICT — the manifest's name/alias must not collide with a DIFFERENT already-installed
-    /// loadable plugin. `409` naming both.
+    ///    loadable plugin. `409` naming both.
     /// 5. Atomic publish — write to a temp name in the same directory, then rename into place.
     pub(crate) fn install_store_plugin(
         &self,

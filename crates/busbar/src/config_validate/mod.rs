@@ -1762,7 +1762,7 @@ fn reject_cidr_metadata_entries(key: &str, entries: &[String], errors: &mut Vec<
 /// unblocks every spelling of an IP the same way a block entry blocks every spelling:
 /// * a hostname entry matches case-insensitively, trailing dot stripped;
 /// * an IP-literal entry matches the parsed connect-host AND its IPv4-mapped/compatible-IPv6 and
-/// alternate-encoding (decimal-int / hex / octal / short-dotted) spellings.
+///   alternate-encoding (decimal-int / hex / octal / short-dotted) spellings.
 ///
 /// Empty / whitespace-only entries never match.
 fn host_matches_any(host: &str, entries: &[String]) -> bool {
@@ -1823,8 +1823,8 @@ fn host_matches_any(host: &str, entries: &[String]) -> bool {
 ///
 /// The hardcoded denylist:
 /// * link-local `169.254.0.0/16` — catches IMDS `169.254.169.254`, AWS ECS task-creds
-/// `169.254.170.2`, Tencent `169.254.0.23`, and any other link-local metadata in one range
-/// (nothing legitimate runs on link-local);
+///   `169.254.170.2`, Tencent `169.254.0.23`, and any other link-local metadata in one range
+///   (nothing legitimate runs on link-local);
 /// * `100.100.100.200` (Alibaba Cloud ECS, inside the otherwise-allowed CGNAT /10);
 /// * `168.63.129.16` (Azure WireServer / platform);
 /// * `192.0.0.192` (Oracle Cloud / OCI IMDS — globally-routable-shaped, so it needs an explicit literal);
@@ -1841,13 +1841,13 @@ fn host_matches_any(host: &str, entries: &[String]) -> bool {
 /// `!allow_all` AND on-denylist(hardcoded ∪ `extra_blocked`) AND NOT in `allow_overrides`.
 ///
 /// * `allow_all` is `security.allow_all_metadata` — the nuclear override; when `true` the guard is
-/// fully disabled and the function always returns `None`.
+///   fully disabled and the function always returns `None`.
 /// * `allow_overrides` is the UNION of the provider's `allow_metadata_hosts` and the global
-/// `security.allow_metadata_hosts` — a surgical carve-out. An entry is matched with the SAME
-/// canonicalization as the block check (an IP entry unblocks all its obfuscated spellings —
-/// decimal-int, IPv4-mapped/compatible IPv6, trailing-dot — mirroring how a block entry blocks
-/// all spellings; a hostname entry matches case-insensitively, trailing dot stripped). Allow
-/// always wins: a host on the denylist that ALSO appears in `allow_overrides` is permitted.
+///   `security.allow_metadata_hosts` — a surgical carve-out. An entry is matched with the SAME
+///   canonicalization as the block check (an IP entry unblocks all its obfuscated spellings —
+///   decimal-int, IPv4-mapped/compatible IPv6, trailing-dot — mirroring how a block entry blocks
+///   all spellings; a hostname entry matches case-insensitively, trailing dot stripped). Allow
+///   always wins: a host on the denylist that ALSO appears in `allow_overrides` is permitted.
 pub(crate) fn ssrf_blocked_host(
     url: &str,
     allow_overrides: &[String],
