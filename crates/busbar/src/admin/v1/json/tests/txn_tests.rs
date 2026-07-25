@@ -210,7 +210,14 @@ async fn slow_store_read_does_not_stall_the_executor() {
     tokio::time::sleep(Duration::from_millis(20)).await;
     worst.store(0, Ordering::SeqCst);
 
-    let status = delete_team(handle.clone()).await;
+    // SPAWNED, not awaited inline: `#[tokio::test]` drives the test body with `block_on` on the
+    // MAIN thread, so an inline await would run the handler off the worker pool and a blocking call
+    // inside it could not stall the single worker the probe lives on. Spawning puts the handler and
+    // the probe on the SAME one worker — which is exactly the condition that makes a synchronous
+    // store call on the async side observable.
+    let status = tokio::spawn(delete_team(handle.clone()))
+        .await
+        .expect("delete joins");
     stop.store(true, Ordering::SeqCst);
     let ticks = probe.await.expect("probe joins");
 
@@ -325,14 +332,21 @@ async fn concurrent_mints_never_bind_a_deleted_group() {
             .build();
         let handle = handle_for(app);
 
+        // The DELETE is launched in the MIDDLE of the mint fan-out, so it lands in the lock queue
+        // between mints that have already loaded a snapshot and mints that have not. That is exactly
+        // the window a pre-lock existence read would bind through.
         let mut minting = Vec::new();
-        for i in 0..6 {
-            let handle = handle.clone();
+        let mut deleting = None;
+        for i in 0..8 {
+            let h = handle.clone();
             minting.push(tokio::spawn(async move {
-                mint(&handle, &format!("k{round}-{i}"), Some("team")).await
+                mint(&h, &format!("k{round}-{i}"), Some("team")).await
             }));
+            if i == 2 {
+                deleting = Some(tokio::spawn(delete_team(handle.clone())));
+            }
         }
-        let deleting = tokio::spawn(delete_team(handle.clone()));
+        let deleting = deleting.expect("delete spawned");
         for m in minting {
             m.await.expect("mint task joins");
         }
