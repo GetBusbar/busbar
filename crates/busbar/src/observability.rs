@@ -550,20 +550,45 @@ static TRACER_PROVIDER: OnceLock<opentelemetry_sdk::trace::SdkTracerProvider> = 
 /// (e.g. a re-init path or a second test) must not mutate global tracing state when the new
 /// subscriber is not actually installed, which would otherwise leave a new provider behind an old
 /// subscriber.
-pub(crate) fn init_logging(otlp_endpoint: Option<&str>) {
-    use tracing_subscriber::layer::SubscriberExt as _;
-    use tracing_subscriber::util::SubscriberInitExt as _;
-
-    // Level filter from RUST_LOG (a bare level word, e.g. `debug`); default `info`.
-    // NOTE: full `EnvFilter` directive syntax (e.g. `busbar=debug,hyper=warn`) would require
-    // enabling the `env-filter` feature on tracing-subscriber in Cargo.toml — see the skipped
-    // finding for this unit.
-    let level = std::env::var("RUST_LOG")
+/// The stderr and OTLP level filters, which are deliberately NOT the same.
+///
+/// stderr takes `RUST_LOG` (a bare level word, e.g. `debug`), default `info`. Full `EnvFilter`
+/// directive syntax (`busbar=debug,hyper=warn`) would require the `env-filter` feature.
+///
+/// OTLP floors at DEBUG, because every request-path span (`forward`, `gemini_ingress`,
+/// `bedrock_converse`, `named`, `adhoc`) is emitted at debug so it costs nothing on the stderr path
+/// at the default level. Exporting at the stderr level meant an operator who configured a collector
+/// received no request trace at all — only the one span that happens to default to INFO, orphaned
+/// from the parent that was never created. The two must be independent: turning traces on must not
+/// require `RUST_LOG=debug`, which would flood stderr with every debug line in the process.
+///
+/// Both are attached PER LAYER. A bare `LevelFilter` added to the registry itself is a GLOBAL
+/// filter that gates callsite enablement for every layer, so an OTLP-specific filter underneath one
+/// is inert.
+fn log_levels() -> (
+    tracing_subscriber::filter::LevelFilter,
+    tracing_subscriber::filter::LevelFilter,
+) {
+    let stderr = std::env::var("RUST_LOG")
         .ok()
         .and_then(|v| v.trim().parse::<tracing::Level>().ok())
         .unwrap_or(tracing::Level::INFO);
-    let filter = tracing_subscriber::filter::LevelFilter::from_level(level);
-    let fmt_layer = tracing_subscriber::fmt::layer().with_target(false);
+    // `Level`'s ordering is by verbosity, so this is "DEBUG, or more verbose if asked for".
+    let otlp = stderr.max(tracing::Level::DEBUG);
+    (
+        tracing_subscriber::filter::LevelFilter::from_level(stderr),
+        tracing_subscriber::filter::LevelFilter::from_level(otlp),
+    )
+}
+
+pub(crate) fn init_logging(otlp_endpoint: Option<&str>) {
+    use tracing_subscriber::layer::SubscriberExt as _;
+    use tracing_subscriber::util::SubscriberInitExt as _;
+    use tracing_subscriber::Layer as _;
+    let (stderr_filter, otlp_filter) = log_levels();
+    let fmt_layer = tracing_subscriber::fmt::layer()
+        .with_target(false)
+        .with_filter(stderr_filter);
 
     // SSRF-validate the OTLP endpoint BEFORE building the exporter, so a config pointing at cloud
     // metadata / an internal service (e.g. `https://169.254.169.254/v1/traces`) is rejected and OTLP
@@ -584,12 +609,11 @@ pub(crate) fn init_logging(otlp_endpoint: Option<&str>) {
     // Decompose into the layer (used to build the subscriber) and the provider (installed on
     // success). `Option<Layer>` is itself a `Layer`, so it composes cleanly when absent.
     let (otel_layer, otel_provider) = match otel {
-        Some((layer, provider)) => (Some(layer), Some(provider)),
+        Some((layer, provider)) => (Some(layer.with_filter(otlp_filter)), Some(provider)),
         None => (None, None),
     };
 
     let initialized = tracing_subscriber::registry()
-        .with(filter)
         .with(fmt_layer)
         .with(otel_layer)
         .try_init()
@@ -1747,5 +1771,79 @@ mod tests {
                 "plaintext http:// to a loopback OTLP collector '{ok}' must stay accepted; got {res:?}"
             );
         }
+    }
+    /// A span-name capture layer, standing in for the OTLP export layer: it records exactly the
+    /// spans a layer at its position would export.
+    #[derive(Clone, Default)]
+    struct SpanCapture(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+    impl<S> tracing_subscriber::Layer<S> for SpanCapture
+    where
+        S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+    {
+        fn on_new_span(
+            &self,
+            attrs: &tracing::span::Attributes<'_>,
+            _id: &tracing::span::Id,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            if let Ok(mut v) = self.0.lock() {
+                v.push(attrs.metadata().name().to_string());
+            }
+        }
+    }
+
+    /// OTLP must export the request-path spans, which are all `debug`, without the operator having
+    /// to set `RUST_LOG=debug` and flood stderr. So the OTLP filter floors at DEBUG and is never
+    /// less verbose than the stderr one.
+    #[test]
+    fn otlp_level_floors_at_debug_and_never_trails_stderr() {
+        let (stderr, otlp) = log_levels();
+        assert!(
+            otlp >= tracing_subscriber::filter::LevelFilter::DEBUG,
+            "OTLP must capture debug spans; got {otlp:?}"
+        );
+        assert!(
+            otlp >= stderr,
+            "OTLP must never be less verbose than stderr; got otlp={otlp:?} stderr={stderr:?}"
+        );
+    }
+
+    /// The filters must be attached PER LAYER. A bare `LevelFilter` added to the registry itself is
+    /// a global filter that gates callsite enablement for every layer, so a more-verbose OTLP filter
+    /// underneath one records nothing. Both halves are asserted: the correct shape exports the debug
+    /// span, and the shape this replaced does not.
+    #[test]
+    fn a_registry_level_filter_gates_the_otlp_layer() {
+        use tracing_subscriber::filter::LevelFilter;
+        use tracing_subscriber::layer::SubscriberExt as _;
+        use tracing_subscriber::Layer as _;
+
+        let per_layer = SpanCapture::default();
+        {
+            let subscriber = tracing_subscriber::registry()
+                .with(SpanCapture::default().with_filter(LevelFilter::INFO))
+                .with(per_layer.clone().with_filter(LevelFilter::DEBUG));
+            let _g = tracing::subscriber::set_default(subscriber);
+            let _s = tracing::debug_span!("forward").entered();
+        }
+        assert_eq!(
+            *per_layer.0.lock().unwrap(),
+            vec!["forward".to_string()],
+            "per-layer filters must let the OTLP layer see debug spans the stderr layer skips"
+        );
+
+        let under_global = SpanCapture::default();
+        {
+            let subscriber = tracing_subscriber::registry()
+                .with(LevelFilter::INFO)
+                .with(under_global.clone().with_filter(LevelFilter::DEBUG));
+            let _g = tracing::subscriber::set_default(subscriber);
+            let _s = tracing::debug_span!("forward").entered();
+        }
+        assert!(
+            under_global.0.lock().unwrap().is_empty(),
+            "a registry-level filter suppresses the callsite for every layer beneath it"
+        );
     }
 }
