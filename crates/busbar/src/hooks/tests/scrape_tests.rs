@@ -206,3 +206,39 @@ fn label_values_are_escaped() {
     let text = render_text(&[("h".to_string(), vec![m])]);
     assert!(text.contains(r#"k="a\"b\\c""#), "{text}");
 }
+
+/// THE SPAWN-STORM GUARD. A scrape fires a refresh for every STALE hook, and staleness does not
+/// clear until the refresh COMPLETES -- so with staleness as the only gate, every scrape that lands
+/// while a refresh is running spawns another one. Each refresh stages a copy of the plugin to disk,
+/// `dlopen`s it, and runs its constructor, so a scrape interval shorter than a slow hook's status
+/// round-trip compounds without bound: N monitoring replicas x every scrape x every hook.
+///
+/// The admission ticket is the in-flight claim. Asserted on the claim itself rather than through a
+/// live scrape, because "how many tasks did a handler spawn" is not otherwise observable.
+#[test]
+fn only_one_refresh_per_hook_can_be_in_flight() {
+    let first = InFlight::claim("busy-hook").expect("the first scrape claims the slot");
+    assert!(
+        InFlight::claim("busy-hook").is_none(),
+        "a second scrape landing mid-refresh must NOT spawn another plugin load"
+    );
+    // A different hook is unaffected -- the gate is per-hook, not a global one.
+    let other = InFlight::claim("other-hook").expect("a different hook claims independently");
+
+    // Releasing lets the next scrape through, so a hook is never wedged out of refreshing.
+    drop(first);
+    let again = InFlight::claim("busy-hook").expect("the slot is free once the refresh finishes");
+    drop(again);
+    drop(other);
+
+    // And a PANICKING refresh must release too: `InFlight` is RAII, so unwinding drops the claim.
+    let claimed = InFlight::claim("panicky");
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let _held = claimed;
+        panic!("refresh blew up mid-load");
+    }));
+    assert!(
+        InFlight::claim("panicky").is_some(),
+        "a refresh that panicked must not wedge its hook out of ever refreshing again"
+    );
+}

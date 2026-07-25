@@ -498,7 +498,7 @@ pub(crate) async fn push_configure(
     let resolved = env
         .resolve_hook_settings(&hook.settings)
         .map_err(|e| format!("hook '{name}' settings: {e}"))?;
-    let Some(transport) = gate_transport_named(name, hook, env, settings_version) else {
+    let Some(transport) = gate_transport_offloaded(name, hook, env, settings_version).await else {
         return Err("hook plugin unresolvable".to_string());
     };
     transport
@@ -512,6 +512,29 @@ pub(crate) async fn push_configure(
         .map_err(|e| e.to_string())
 }
 
+/// Resolve a hook's control-plane transport WITHOUT parking a Tokio worker.
+///
+/// [`gate_transport_named`] is not cheap and it is not async: it resolves secrets, WRITES A STAGING
+/// COPY of the plugin to disk, `dlopen`s it, and runs the plugin's constructor. Every one of those
+/// is synchronous filesystem / dynamic-linker work, and every control-plane read below used to do it
+/// inline on the reactor -- so a slow disk or a slow plugin constructor stalled request serving, on
+/// a path (`GET /metrics/hooks`) that a monitoring system hits on a fixed interval forever.
+///
+/// One offload site for all three readers, so a fourth cannot reintroduce the inline form by
+/// calling `gate_transport_named` from an `async fn`.
+async fn gate_transport_offloaded(
+    name: &str,
+    hook: &crate::config::HookCfg,
+    env: &HookEnv,
+    settings_version: u64,
+) -> Option<Arc<dyn RoutingPolicy>> {
+    let (name, hook, env) = (name.to_string(), hook.clone(), env.clone());
+    tokio::task::spawn_blocking(move || gate_transport_named(&name, &hook, &env, settings_version))
+        .await
+        .ok()
+        .flatten()
+}
+
 /// Fetch a hook's self-reported STATUS (observed settings + metrics) over its transport — the
 /// control-plane read behind `GET /api/v1/admin/hooks/{name}/status`. Fresh transport per call
 /// (never contends the hot request connection); `None` = unsupported/unreachable (fail-open).
@@ -521,7 +544,7 @@ pub(crate) async fn fetch_status(
     settings_version: u64,
     env: &HookEnv,
 ) -> Option<busbar_api::HookStatus> {
-    let transport = gate_transport_named(name, hook, env, settings_version)?;
+    let transport = gate_transport_offloaded(name, hook, env, settings_version).await?;
     transport
         .status(std::time::Duration::from_millis(CONFIGURE_TIMEOUT_MS))
         .await
@@ -535,7 +558,7 @@ pub(crate) async fn fetch_schema(
     settings_version: u64,
     env: &HookEnv,
 ) -> Option<serde_json::Value> {
-    let transport = gate_transport_named(name, hook, env, settings_version)?;
+    let transport = gate_transport_offloaded(name, hook, env, settings_version).await?;
     // `DlopenPolicy::describe` returns the schema member ALREADY EXTRACTED from the plugin's
     // self-description envelope (via the `describe_schema` projector), so the /schema read serves a
     // SINGLE nest (the endpoint adds its own {name, schema} wrapper). No schema member (incl. the
