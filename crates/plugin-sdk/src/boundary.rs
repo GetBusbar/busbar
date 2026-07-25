@@ -136,6 +136,10 @@ pub unsafe fn call_boundary(
     out_len: *mut usize,
     dispatch: impl FnOnce(*mut c_void, &[u8]) -> BoundaryOutcome,
 ) -> i32 {
+    // Both early returns below emit a BARE `STATUS_PROTOCOL` — status only, no out buffer. That empty
+    // buffer is the loader's marker for "caller-protocol violation, and also how a v1-era SDK reported
+    // a caught panic": it must NEVER be read as the old-SDK unsupported signal, which the v1 SDK always
+    // accompanied with a `"malformed request JSON: …"` body. See `plugin-abi`'s `STATUS_PROTOCOL`.
     if handle.is_null() {
         // A null handle is a caller-protocol violation: no user code runs, distinct status, no buffer.
         return STATUS_PROTOCOL;
