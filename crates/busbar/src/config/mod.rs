@@ -1942,7 +1942,6 @@ pub(crate) struct ObservabilityCfg {
     pub(crate) emit_server_timing: bool,
 }
 
-
 impl Default for ObservabilityCfg {
     fn default() -> Self {
         // Route the limit fields through the serde-default fns so the omitted-block path and the
@@ -2377,8 +2376,7 @@ impl LimitsResolved {
             webhook_delivery_timeout_secs: obs.webhook_delivery_timeout_secs,
             // Metrics off (block absent) ⇒ the gauge cap is inert; carry the historical value so
             // nothing downstream has to special-case a disabled collector.
-            key_gauge_limit: metrics
-                .map_or_else(default_key_gauge_limit, |m| m.key_gauge_limit),
+            key_gauge_limit: metrics.map_or_else(default_key_gauge_limit, |m| m.key_gauge_limit),
             rate_sweep_interval: advanced.rate_sweep_interval,
             usage_flush_interval_ms: advanced.usage_flush_interval_ms,
             default_probe_interval_secs: health.default_probe_interval_secs,
@@ -2433,7 +2431,11 @@ pub(crate) fn resolve(
     // the hot path still pays the full recording cost — opted-in metrics that report nothing.
     // Omitting the whole `metrics:` block is how collection is turned OFF; `0` is not that, so it
     // fails boot loudly rather than silently producing an inert collector.
-    if deploy.metrics.as_ref().is_some_and(|m| m.buffer_seconds == 0) {
+    if deploy
+        .metrics
+        .as_ref()
+        .is_some_and(|m| m.buffer_seconds == 0)
+    {
         errors.push(
             "metrics.buffer_seconds: 0 retains no observations, so every scrape would report empty \
              quantiles while still paying the recording cost — name a positive retention window in \

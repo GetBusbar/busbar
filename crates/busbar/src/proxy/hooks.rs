@@ -218,6 +218,13 @@ pub(crate) async fn apply_global_rewrites(
     let mut applied = false;
     for (timeout, hook) in rewrite_hooks {
         // Rebuild the projection from the current body so a later hook sees the earlier rewrite.
+        //
+        // `with_prompt = true` is sound BY CONSTRUCTION, not by assumption: membership of this
+        // slice is decided solely by `hooks::admits_rewrite`, which admits a hook only when its
+        // EFFECTIVE prompt access — the operator grant MEET the plugin's signed-manifest
+        // `needs.prompt` — is `rw`, and `rw` implies read. A hook whose manifest declines the
+        // prompt need never reaches this loop. (Before that gate existed this literal was the
+        // bypass: `prompt: rw` in config was enough, and the manifest was never consulted.)
         let req = build_rewrite_request(v, pool_name, ingress_protocol, wants_stream, true);
         let outcome = hook.transform(&req, *timeout).await;
         drop(req); // end the immutable borrow of `v` before mutating it
