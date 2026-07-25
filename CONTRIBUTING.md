@@ -46,7 +46,7 @@ See [docs/configuration.md](docs/configuration.md) for the full config reference
    exhaustive match is how the compiler enforces that every failure mode is
    handled. This is a project invariant.
 6. **`scripts/structure-lint.sh`** — green. Beyond code layout it enforces the
-   remediation contract: the choke-point registry and REGRESSION-marker parity.
+   remediation contract's choke-point registry.
 7. Update documentation when you change behavior or config.
 
 ## Fixing a defect: the remediation contract

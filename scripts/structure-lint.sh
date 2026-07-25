@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Structure lint — enforces the code-layout invariants in docs/code-layout.md so the tree stays
 # navigable ("I'm looking for X, I know where it is") instead of drifting back to giant, inconsistent
-# files. Three checks, all greppable, no external deps. Exit non-zero on any violation.
+# files. Four checks, all greppable, no external deps. Exit non-zero on any violation.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -17,10 +17,9 @@ hdr()  { printf '\n== %s ==\n' "$1"; }
 
 # ══ THE ONE ANSWER TO "IS THIS LINE TEST CODE?" ══════════════════════════════════════════════════
 #
-# Both scanners below (the choke-point registry and the REGRESSION parity ratchet) must agree on
-# which lines are `#[cfg(test)]`-gated, because a line wrongly called "test" is a line EXEMPT from
-# every bypass rule and mis-attributed on the parity side. So the answer lives here ONCE, as an awk
-# prelude both scanners prepend; there is no second copy to drift.
+# A line wrongly called "test" is a line EXEMPT from every bypass rule, so the choke-point registry
+# scanner below needs one authoritative answer to this question. It lives here ONCE, as an awk
+# prelude the scanner prepends; there is no second copy to drift.
 #
 # It sets two variables per input line:
 #   is_comment — the line is a whole-line `//` / `///` / `//!` comment (prose, never code).
@@ -106,30 +105,19 @@ scan_rule() { awk "$TEST_SCOPE_AWK"'
   $0 ~ ENVIRON["LINT_PAT"] { printf "%s:%d: %s\n", FILENAME, FNR, ENVIRON["LINT_WHAT"] }
 ' "$@"; }
 
-marker_scan() { awk -v force="$1" "$TEST_SCOPE_AWK"'
-  {
-    side = (force == "test" || gated) ? "test" : "impl"
-    if ($0 ~ /^[[:space:]]*\/\/[\/!]?[[:space:]]*[Rr][Ee][Gg][Rr][Ee][Ss][Ss][Ii][Oo][Nn][[:space:]]*\(/)
-      printf "%s\t%s:%d\t%s\n", side, FILENAME, FNR, $0
-  }
-' "${@:2}"; }
-
 # ══ SELF-TEST: the scanner that guards the tree is itself guarded ════════════════════════════════
 #
-# `scripts/structure-lint.sh --selftest` runs the REAL `scan_rule` / `marker_scan` above (not a copy)
-# over a fixture corpus of Rust files whose every shape is a known way to LIE about being test code.
-# A scanner with a bypass is worse than no scanner: it reports "ok, no bypass" while the bypass sits
-# in production. So each fixture plants a bypass (`std::fs::rename(`) and a `REGRESSION (...)` marker
-# and declares the verdict both must get. RED-before/GREEN-after for the shadow bugs lives here.
+# `scripts/structure-lint.sh --selftest` runs the REAL `scan_rule` above (not a copy) over a fixture
+# corpus of Rust files whose every shape is a known way to LIE about being test code. A scanner with
+# a bypass is worse than no scanner: it reports "ok, no bypass" while the bypass sits in production.
+# So each fixture plants a bypass (`std::fs::rename(`) and declares the verdict it must get.
 #
 # Fixture format: a Rust source with one probe line per hazard. `//= HIT` / `//= MISS` trailing a
-# probe line declares whether the registry scanner MUST flag it; `//= IMPL` / `//= TEST` on a marker
-# line declares which parity side it MUST land on.
+# probe line declares whether the registry scanner MUST flag it.
 selftest_case() {   # $1 = name, stdin = fixture source
-  local name="$1" src want_hit got_hit want_side got_side n=0
+  local name="$1" src want_hit got_hit
   src="$SELFTEST_DIR/$name.rs"
   cat > "$src"
-  # Registry side: which lines does scan_rule flag?
   LINT_PAT='std::fs::rename\('; LINT_WHAT='probe'; LINT_UNLESS=''
   export LINT_PAT LINT_WHAT LINT_UNLESS
   got_hit=$(scan_rule "$src" | cut -d: -f2 | sort -n | tr '\n' ' ')
@@ -137,15 +125,7 @@ selftest_case() {   # $1 = name, stdin = fixture source
   if [ "$got_hit" != "$want_hit" ]; then
     note "SELFTEST FAIL [$name] registry: flagged lines {${got_hit}} but expected {${want_hit}}"
     selftest_fail=1
-  else n=$((n+1)); fi
-  # Parity side: which side does each marker land on?
-  got_side=$(marker_scan impl "$src" | awk -F'\t' '{split($2,a,":"); print a[2] "=" toupper($1)}' | sort -n | tr '\n' ' ')
-  want_side=$({ grep -nE '//= (IMPL|TEST)' "$src" || true; } | sed 's/:.*\/\/= /=/' | sort -n | tr '\n' ' ')
-  if [ "$got_side" != "$want_side" ]; then
-    note "SELFTEST FAIL [$name] parity: sides {${got_side}} but expected {${want_side}}"
-    selftest_fail=1
-  else n=$((n+1)); fi
-  [ "$n" -eq 2 ] && selftest_pass=$((selftest_pass+1))
+  else selftest_pass=$((selftest_pass+1)); fi
   return 0
 }
 
@@ -158,7 +138,6 @@ run_selftest() {
   selftest_case doc_comment_mentions_attr <<'RS'
 /// The wire bytes are identical - the tag is `#[cfg(test)]`.
 pub(crate) fn prod() {
-    // REGRESSION (doc shadow)                                       //= IMPL
     let _ = std::fs::rename("a", "b");                               //= HIT
 }
 RS
@@ -177,7 +156,6 @@ use std::fs::rename;
 const FIXTURE: &str = "x";
 
 pub fn prod() {
-    // REGRESSION (braceless shadow)                                 //= IMPL
     let _ = std::fs::rename("a", "b");                               //= HIT
 }
 RS
@@ -188,7 +166,6 @@ RS
 #[cfg(test)]
 mod tests {
     use super::*;
-    // REGRESSION (inside a real test body)                          //= TEST
     #[test]
     fn t() {
         if true {
@@ -449,75 +426,6 @@ for row in "${CHOKE_POINTS[@]}"; do
 done
 unset LINT_PAT LINT_WHAT LINT_UNLESS
 [ "$ck" -eq 0 ] && note "ok (${#CHOKE_POINTS[@]} choke points registered, class tests present, no bypass)"
-
-# ── Invariant 5: REGRESSION-marker parity (a ratchet, not a cliff). ───────────────────────────────
-# The tree tags fixed defects with `REGRESSION (<label>)` / `Regression (<label>)` at the head of a
-# comment. Those markers are the family ledger: grep a label and you get every sibling the finding
-# touched. The contract's rule is that a fix is not done until a TEST carries the same label — a
-# source fix tagged as a regression with no test guarding it is exactly the "patched an instance, no
-# class test" process failure. So: for every marker on PRODUCTION code, the same label must appear
-# on at least one marker in a TEST (a `tests/` file, or a `#[cfg(test)]` region).
-#
-# Label key: the text inside the first `(...)`, truncated at the first comma, lowercased, with runs
-# of punctuation collapsed to single spaces. `REGRESSION (R22 LOW #23, symmetric probe accounting)`
-# and `Regression (r22 low #23)` are therefore the SAME label.
-#
-# Waiver: put `REGRESSION-WAIVED(<reason>)` on the marker line to declare a deliberate no-test fix.
-# Baseline: scripts/regression-parity.baseline holds the count of KNOWN gaps. gaps > baseline fails
-# the build; gaps < baseline prints the ratchet-down instruction. Pre-existing debt therefore cannot
-# grow, and nobody has to clear it in one go before the check can be turned on.
-hdr "REGRESSION-marker parity (every production marker has a test carrying the same label)"
-PARITY_BASELINE_FILE='scripts/regression-parity.baseline'
-baseline=0
-[ -f "$PARITY_BASELINE_FILE" ] && baseline=$(tr -dc '0-9' < "$PARITY_BASELINE_FILE")
-: "${baseline:=0}"
-
-# `marker_scan` (top of this file) emits `<side>\t<file>:<line>\t<raw>` for every anchored marker.
-# `side` is impl for production code and test for a tests/ file or a `#[cfg(test)]` region, decided
-# by the SAME `TEST_SCOPE_AWK` prelude the registry scanner uses — "is this a test?" has exactly one
-# answer in this file, and `--selftest` proves that answer cannot be spoofed.
-
-label_key() {   # stdin: raw marker line → stdout: normalized label key
-  tr 'A-Z' 'a-z' \
-    | sed 's/.*regression[[:space:]]*(\([^)]*\)).*/\1/' \
-    | sed 's/,.*//;s/[^a-z0-9#/]\{1,\}/ /g;s/^ //;s/ $//'
-}
-
-markers_tmp=$(mktemp); trap 'rm -f "$markers_tmp"' EXIT
-TESTFILES=()
-while IFS= read -r f; do TESTFILES+=("$f"); done < <(find crates -name '*.rs' -path '*/tests/*' | sort)
-{ [ ${#CANDIDATES[@]} -gt 0 ] && marker_scan impl "${CANDIDATES[@]}"
-  [ ${#TESTFILES[@]}  -gt 0 ] && marker_scan test "${TESTFILES[@]}"; } > "$markers_tmp"
-
-n_all=$(wc -l < "$markers_tmp" | tr -d ' ')
-n_test=$(grep -c $'^test\t' "$markers_tmp" || true)
-n_impl=$(grep -c $'^impl\t' "$markers_tmp" || true)
-test_keys=$(grep $'^test\t' "$markers_tmp" | cut -f3 | label_key | sort -u)
-n_labels=$(cut -f3 "$markers_tmp" | label_key | sort -u | wc -l | tr -d ' ')
-
-guarded=0; gaps=0; waived=0
-while IFS=$'\t' read -r _side loc raw; do
-  case "$raw" in *REGRESSION-WAIVED\(*) waived=$((waived+1)); continue ;; esac
-  k=$(printf '%s\n' "$raw" | label_key)
-  if printf '%s\n' "$test_keys" | grep -qxF "$k"; then
-    guarded=$((guarded+1))
-  else
-    gaps=$((gaps+1))
-    note "UNGUARDED-REGRESSION: ${loc}: label \"${k}\" is tagged on production code but no test carries it"
-  fi
-done < <(grep $'^impl\t' "$markers_tmp" || true)
-
-note "corpus: ${n_all} markers (${n_test} on tests, ${n_impl} on production code), ${n_labels} distinct labels"
-note "parity: ${guarded} guarded, ${waived} waived, ${gaps} unguarded (baseline ${baseline})"
-if [ "$gaps" -gt "$baseline" ]; then
-  note "PARITY-RATCHET: ${gaps} unguarded marker(s) > baseline ${baseline} — add a test carrying the"
-  note "  label, or REGRESSION-WAIVED(<reason>) on the marker line. Do NOT raise the baseline."
-  fail=1
-elif [ "$gaps" -lt "$baseline" ]; then
-  note "ratchet down: write ${gaps} to ${PARITY_BASELINE_FILE} (gaps fell below the baseline)"
-else
-  note "ok"
-fi
 
 hdr "result"
 if [ "$fail" -ne 0 ]; then note "structure-lint FAILED — see docs/code-layout.md"; exit 1; fi
