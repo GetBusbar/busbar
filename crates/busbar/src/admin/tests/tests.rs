@@ -8575,6 +8575,56 @@ async fn plugin_rollback_reports_missing_and_untrusted_targets() {
     drive_plugin_rollback_errors().await;
 }
 
+/// `POST /plugins/reload` 400s when the on-disk config no longer rebuilds. The operation declared NO
+/// 4xx at all until this driver existed -- `openapi.json` hid a response clients hit, and the
+/// router's under-claim panic could not catch it because nothing produced it.
+#[tokio::test]
+async fn plugin_reload_reports_an_unrebuildable_disk_config() {
+    drive_plugin_reload_errors().await;
+}
+
+/// See the test above. Split out so the class-level over-claim test can drive it directly.
+async fn drive_plugin_reload_errors() {
+    crate::metrics::init();
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-admin-reload-witness-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // DISK TRUTH that does not parse: the rebuild is reached (not the ephemeral branch) and fails.
+    let config = dir.join("config.yaml");
+    let providers = dir.join("providers.yaml");
+    std::fs::write(&config, "this: [is not: valid: yaml\n").unwrap();
+    std::fs::write(&providers, "providers: {}\n").unwrap();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let app = TestApp::new()
+        .governance(gov)
+        .plugins_dir(dir.clone())
+        .disk_paths(config, providers)
+        .build();
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+
+    let r = client
+        .post(format!("http://{addr}/api/v1/admin/plugins/reload"))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap();
+    let status = r.status().as_u16();
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(status, 400, "an unrebuildable disk config: {body}");
+    assert_eq!(body["error"]["code"], "invalid_request");
+
+    server.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// See the test above. Split out so the class-level over-claim test can drive it directly.
 async fn drive_plugin_rollback_errors() {
     crate::metrics::init();
@@ -8702,6 +8752,81 @@ async fn drive_plugin_rollback_errors() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// THE CONDITION-WITNESS DEBT LEDGER — a ratchet, not a suppression.
+///
+/// `declared_error_set_is_exactly_what_the_handlers_emit` requires every declared `(operation,
+/// ErrKind, Cond)` to be witness-backed. Where an operation declares the SAME `ErrKind` under two or
+/// more conditions, an untagged emission proves only that SOME condition fired -- so the emission
+/// has to name its condition (`err_json_cond`) for the declaration to mean anything. These are the
+/// declarations that do not yet.
+///
+/// The entry is enforced in BOTH directions, which is what makes it a ratchet rather than a
+/// suppression list: nothing outside it may be unwitnessed (a NEW ambiguous declaration is rejected
+/// on arrival), and every row in it must still be a live declaration AND still unwitnessed (so a row
+/// cannot be left behind once its emission starts naming its condition, or its declaration is
+/// deleted). The list can only shrink.
+const COND_WITNESS_DEBT: &[(
+    crate::admin::v1::contract::taxonomy::MethodTag,
+    &str,
+    crate::admin::v1::contract::taxonomy::ErrKind,
+    crate::admin::v1::contract::taxonomy::Cond,
+)] = {
+    use crate::admin::v1::contract::taxonomy::Cond::*;
+    use crate::admin::v1::contract::taxonomy::ErrKind::*;
+    use crate::admin::v1::contract::taxonomy::MethodTag::*;
+    &[
+        (Delete, "/groups/{name}", Conflict, BaseDefined),
+        (Delete, "/groups/{name}", Conflict, BoundKeys),
+        (Delete, "/groups/{name}", Conflict, StillParent),
+        (Delete, "/overlay/{section}", Validation, InvalidConfig),
+        (Delete, "/overlay/{section}", Validation, MalformedIfMatch),
+        (Delete, "/overlay/{section}", Validation, NoDiskBase),
+        (Delete, "/overlay/{section}", Validation, UnknownSection),
+        (Patch, "/groups/{name}", Validation, InvalidTree),
+        (Patch, "/groups/{name}", Validation, MalformedBody),
+        (Patch, "/hooks/{name}/settings", Conflict, BaseDefined),
+        (Patch, "/hooks/{name}/settings", Conflict, SettingsPush),
+        (Patch, "/hooks/{name}/settings", Validation, HookNoAck),
+        (Patch, "/hooks/{name}/settings", Validation, MalformedBody),
+        (Post, "/config/apply", Validation, InvalidConfig),
+        (Post, "/config/apply", Validation, MalformedBody),
+        (Post, "/config/apply", Validation, MalformedIfMatch),
+        (Post, "/config/reload", Validation, InvalidConfig),
+        (Post, "/config/reload", Validation, NoDiskBase),
+        (Post, "/config/rollback", Validation, InvalidConfig),
+        (Post, "/config/rollback", Validation, MalformedBody),
+        (Post, "/groups", Validation, InvalidTree),
+        (Post, "/groups", Validation, MalformedBody),
+        (Post, "/hooks", Conflict, BaseDefined),
+        (Post, "/hooks", Conflict, GrantChange),
+        (Post, "/hooks", Validation, MalformedBody),
+        (Post, "/keys", Conflict, AtKeyCap),
+        (Post, "/keys", Conflict, BaseDefined),
+        (Post, "/keys", Conflict, IdempotencyInFlight),
+        (Post, "/keys", Validation, InvalidTree),
+        (Post, "/keys", Validation, Overlong),
+        (Post, "/keys/{id}/rotate", Conflict, IdempotencyInFlight),
+        (Post, "/plugins", Conflict, NameCollision),
+        (Post, "/plugins", Conflict, UntrustedUpload),
+        (Post, "/plugins", Validation, InvalidFilename),
+        (Post, "/plugins", Validation, MalformedBody),
+        (Post, "/plugins", Validation, NotLoadable),
+        (Post, "/plugins/rollback", Validation, InvalidFilename),
+        (Post, "/plugins/rollback", Validation, MalformedBody),
+        (Post, "/plugins/rollback", Validation, NoDiskBase),
+        (Put, "/admin-auth", Validation, MalformedBody),
+        (Put, "/admin-auth", Validation, UnknownModule),
+        (Put, "/config/settings", Validation, InvalidConfig),
+        (Put, "/config/settings", Validation, MalformedBody),
+        (Put, "/config/settings", Validation, NoDiskBase),
+        (Put, "/groups/{name}", Validation, InvalidTree),
+        (Put, "/groups/{name}", Validation, MalformedBody),
+        (Put, "/hooks/{name}", Conflict, BaseDefined),
+        (Put, "/hooks/{name}", Conflict, GrantChange),
+        (Put, "/hooks/{name}", Validation, MalformedBody),
+    ]
+};
+
 /// THE CLASS-LEVEL GUARANTEE (design D §5): for EVERY documented operation, the declared error set
 /// equals the set the handlers can actually emit. The two directions are enforced by two different
 /// mechanisms, both structural:
@@ -8715,6 +8840,14 @@ async fn drive_plugin_rollback_errors() {
 ///   drivers directly — no reliance on other tests having run — and then asserts every declared
 ///   entry was seen. A declared 409 no test can trigger IS an over-claim until proven otherwise.
 ///
+/// The witness is required at **`(operation, ErrKind, Cond)`** granularity, which is what the design
+/// claims and what an `(operation, ErrKind)` check silently did not give: a 409 whose code path had
+/// been deleted (`GroupRaceOnMint`, removed with the mint race) stayed documented indefinitely
+/// because a SIBLING 409 on the same operation kept the check green. Where an operation declares one
+/// condition per kind the untagged witness is unambiguous and still counts; where it declares
+/// several, only a `err_json_cond`-tagged emission distinguishes them, and the declarations not yet
+/// tagged are ledgered in `COND_WITNESS_DEBT`, which only shrinks.
+///
 /// Consequence: the per-endpoint audit that used to find "another missing 4xx" every round is now a
 /// machine set-comparison over every operation at once. There is no endpoint left to be next.
 #[tokio::test]
@@ -8725,28 +8858,62 @@ async fn declared_error_set_is_exactly_what_the_handlers_emit() {
     drive_admin_error_surface().await;
     drive_keys_error_surface().await;
     drive_plugin_rollback_errors().await;
+    drive_plugin_reload_errors().await;
     drive_hook_escalation_errors().await;
 
     let witnessed = crate::admin::v1::contract::taxonomy::observed::snapshot();
-    // Every (operation, ErrKind) the suite has actually produced.
+    // Every (operation, ErrKind) the suite has actually produced, and every (operation, ErrKind,
+    // Cond) TRIPLE for the emissions that named their condition.
     let seen: std::collections::BTreeSet<(String, MethodTag, _)> = witnessed
         .iter()
         .map(|(rel, method, kind, _cond)| (rel.clone(), *method, *kind))
         .collect();
+    let seen_triple: std::collections::BTreeSet<_> = witnessed
+        .iter()
+        .filter_map(|(rel, method, kind, cond)| cond.map(|c| (rel.clone(), *method, *kind, c)))
+        .collect();
 
-    // Walk the DOCUMENTED operations — the openapi paths are the same (rel, method) pairs the
-    // router serves — and require a witness for each declared kind.
+    // Walk the DOCUMENTED operations and require a witness for each declared entry AT CONDITION
+    // GRANULARITY, which is what the design claims and what a `(op, ErrKind)` check does not give.
+    //
+    // The two cases differ in what counts as proof, and the difference is exact, not a concession:
+    //   * the op declares this ErrKind under exactly ONE Cond — then no other condition on this
+    //     operation can produce that kind, so ANY witness of the kind witnesses that condition;
+    //   * the op declares the SAME ErrKind under two or more Conds — then an untagged witness is
+    //     genuinely ambiguous (it proves one of them, and cannot say which), so the emission must
+    //     name its condition via `err_json_cond` for the declaration to be witness-backed at all.
+    // A declared condition that only the ambiguous case can reach is therefore an over-claim until
+    // its emission site says which condition it is: that is precisely how a 409 whose code path was
+    // deleted (`GroupRaceOnMint`, removed with the mint race) went on being documented while a
+    // sibling 409 on the same operation kept the check green.
     let mut over_claimed = Vec::new();
     for (rel, method) in documented_operations() {
-        for de in declared_errors(method, &rel) {
-            if !seen.contains(&(rel.clone(), method, de.kind)) {
+        let declared = declared_errors(method, &rel);
+        for de in declared {
+            let ambiguous = declared.iter().filter(|o| o.kind == de.kind).count() > 1;
+            let proven = if ambiguous {
+                seen_triple.contains(&(rel.clone(), method, de.kind, de.cond))
+            } else {
+                seen.contains(&(rel.clone(), method, de.kind))
+            };
+            if !proven {
+                if COND_WITNESS_DEBT.contains(&(method, rel.as_str(), de.kind, de.cond)) {
+                    continue;
+                }
                 over_claimed.push(format!(
-                    "{} {rel} declares {:?}/{:?} ({} {}) — no test ever produced it",
+                    "{} {rel} declares {:?}/{:?} ({} {}) — {}",
                     method.as_str().to_uppercase(),
                     de.kind,
                     de.cond,
                     de.kind.status(),
                     de.kind.code(),
+                    if ambiguous {
+                        "no test produced it with its CONDITION named (this operation declares \
+                         several conditions for the same kind, so an untagged emission proves \
+                         nothing about which one is reachable — emit it via `err_json_cond`)"
+                    } else {
+                        "no test ever produced it"
+                    },
                 ));
             }
         }
@@ -8760,6 +8927,32 @@ async fn declared_error_set_is_exactly_what_the_handlers_emit() {
         over_claimed.join("\n  ")
     );
 
+    // THE RATCHET'S OTHER DIRECTION: a debt row must still name a LIVE, AMBIGUOUS declaration.
+    // Delete the declaration (as `GroupRaceOnMint` was) or give its kind a single condition, and the
+    // row has to go with it -- otherwise the ledger would quietly become a permanent exemption list
+    // that outlives the thing it exempted.
+    //
+    // Deliberately keyed on the DECLARATION TABLE and not on "was it witnessed": `observed` is a
+    // process-global registry that accumulates whatever tests happened to run, so a witness-based
+    // staleness check would pass or fail depending on the test filter. The declaration table is the
+    // same in every run.
+    let stale: Vec<_> = COND_WITNESS_DEBT
+        .iter()
+        .filter(|(m, rel, k, c)| {
+            let declared = declared_errors(*m, rel);
+            let ambiguous = declared.iter().filter(|o| o.kind == *k).count() > 1;
+            !ambiguous || !declared.iter().any(|d| d.kind == *k && d.cond == *c)
+        })
+        .map(|(m, rel, k, c)| format!("{} {rel} {k:?}/{c:?}", m.as_str().to_uppercase()))
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "COND_WITNESS_DEBT has {} row(s) whose declaration is gone or no longer ambiguous — delete \
+         them; the ledger only shrinks:\n  {}",
+        stale.len(),
+        stale.join("\n  ")
+    );
+
     // Sanity: the drivers really did exercise the surface (a registry that silently stopped
     // recording would make the assertion above vacuously true).
     assert!(
@@ -8770,57 +8963,38 @@ async fn declared_error_set_is_exactly_what_the_handlers_emit() {
     );
 }
 
-/// Every (relative path, method) the admin surface documents — read straight off the router's route
-/// table via the same relative paths `declared_errors` is keyed on. Kept in sync with the router by
-/// construction: `openapi_paths_all_resolve` already proves the doc and the router agree.
+/// Every (relative path, method) the admin surface documents — read off the COMMITTED
+/// `openapi.json`, the exact bytes the runtime serves via `include_str!`.
+///
+/// This used to be a hand-maintained list that nothing tied to anything: an operation could be added
+/// to the router and the doc and simply never appear here, and its declared 4xx set would go
+/// unaudited forever. The committed doc is a projection of the code (`openapi_json_matches_committed_file`
+/// fails the build the moment it drifts) and every path in it is proven mounted
+/// (`test_admin_v1_openapi_paths_all_resolve`), so keying off it closes the loop: router → doc →
+/// this audit.
 fn documented_operations() -> Vec<(String, crate::admin::v1::contract::taxonomy::MethodTag)> {
-    use crate::admin::v1::contract::taxonomy::MethodTag::*;
+    use crate::admin::v1::contract::taxonomy::MethodTag;
+    let doc: serde_json::Value = serde_json::from_str(crate::admin::v1::json::OPENAPI_JSON)
+        .expect("the committed openapi.json parses");
+    let paths = doc["paths"]
+        .as_object()
+        .expect("openapi.json has a paths object");
     let mut ops = Vec::new();
-    for (rel, methods) in [
-        ("/info", &[Get][..]),
-        ("/pools", &[Get]),
-        ("/pools/{name}", &[Get]),
-        ("/models", &[Get]),
-        ("/providers", &[Get]),
-        ("/hooks", &[Get, Post]),
-        ("/hooks/{name}", &[Get, Put, Delete]),
-        ("/hooks/{name}/health", &[Get]),
-        ("/hooks/{name}/schema", &[Get]),
-        ("/hooks/{name}/status", &[Get]),
-        ("/hooks/{name}/settings", &[Patch]),
-        ("/groups", &[Get, Post]),
-        ("/groups/{name}", &[Get, Put, Patch, Delete]),
-        ("/groups/{name}/usage", &[Get]),
-        ("/overlay/{section}", &[Delete]),
-        ("/plugins", &[Get, Post]),
-        ("/plugins/reload", &[Post]),
-        ("/plugins/rollback", &[Post]),
-        ("/plugins/{file}", &[Delete]),
-        ("/auth", &[Get]),
-        ("/auth/cache/flush", &[Post]),
-        ("/admin-auth", &[Get, Put]),
-        ("/usage", &[Get]),
-        ("/config", &[Get]),
-        ("/config/apply", &[Post]),
-        ("/config/reload", &[Post]),
-        ("/config/rollback", &[Post]),
-        ("/config/settings", &[Get, Put]),
-        ("/config/validate", &[Post]),
-        ("/config/versions", &[Get]),
-        ("/config/versions/{v}", &[Get]),
-        ("/config/diff", &[Get]),
-        ("/audit", &[Get]),
-        ("/openapi.json", &[Get]),
-        ("/keys", &[Get, Post]),
-        ("/keys/{id}", &[Get, Patch, Delete]),
-        ("/keys/{id}/usage", &[Get]),
-        ("/keys/{id}/rotate", &[Post]),
-        ("/keys/{id}/revoke", &[Post]),
-        ("/signing-key/rotate", &[Post]),
-    ] {
-        for m in methods {
-            ops.push((rel.to_string(), *m));
+    for (abs, item) in paths {
+        let rel = abs
+            .strip_prefix(crate::admin::v1::contract::ADMIN_PREFIX)
+            .unwrap_or(abs);
+        for key in item.as_object().into_iter().flatten().map(|(k, _)| k) {
+            // `x-*` specification extensions share the path-item object with real operations.
+            if let Some(m) = MethodTag::from_op_key(key) {
+                ops.push((rel.to_string(), m));
+            }
         }
     }
+    assert!(
+        ops.len() >= 40,
+        "only {} operations read out of the committed openapi.json — the projection is broken",
+        ops.len()
+    );
     ops
 }

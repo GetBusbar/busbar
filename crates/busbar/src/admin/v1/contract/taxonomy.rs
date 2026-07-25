@@ -6,9 +6,11 @@
 //! `openapi_doc()` does not author response prose: it ENUMERATES [`declared_errors`] to emit each
 //! operation's 4xx responses, so a status a handler can emit is impossible to omit and a documented
 //! response no handler emits is impossible to keep. A class-level test
-//! (`admin::v1::json::tests`) captures the errors the handlers ACTUALLY emit at the one wire choke
-//! point (`err_json`) and asserts that captured set equals this declaration — under-claim AND
-//! over-claim both fail.
+//! (`admin::tests::declared_error_set_is_exactly_what_the_handlers_emit`) captures the errors the
+//! handlers ACTUALLY emit at the one wire choke point (`err_json`) and asserts that captured set
+//! equals this declaration — under-claim AND over-claim both fail, at `(operation, ErrKind, Cond)`
+//! granularity. The operations it walks are read out of the committed `openapi.json`, so an endpoint
+//! cannot escape the audit by never being added to a hand-maintained list.
 //!
 //! 401 / 403 (generic under-scope) / 405 / 429 / 500 are ALGORITHMIC: stamped on every operation by
 //! `openapi_doc()` because every operation can emit them. They are deliberately NOT declarable here
@@ -141,7 +143,6 @@ pub(crate) enum Cond {
     UnknownSection,
     NameCollision,
     InvalidLabels,
-    GroupRaceOnMint,
 }
 
 impl Cond {
@@ -195,10 +196,6 @@ impl Cond {
             Cond::InvalidLabels => {
                 "invalid mint-time `labels` — a reserved or non-Prometheus label name, or too \
                  many/too long"
-            }
-            Cond::GroupRaceOnMint => {
-                "the bound group was deleted concurrently with the mint; retry against an existing \
-                 group"
             }
             Cond::NameCollision => {
                 "the plugin name/alias collides with an already-installed plugin under a different \
@@ -363,12 +360,11 @@ pub(crate) fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr]
             Conflict / UntrustedUpload,
             Conflict / NameCollision,
         ],
-        // `POST /plugins/reload` CAN 400 when the rebuild-from-disk fails, but that needs an
-        // on-disk config that has gone invalid since boot — no fixture in this suite can drive it,
-        // and an error nothing witnesses is exactly the over-claim this table exists to forbid. It
-        // stays undeclared until a test can produce it: the router's under-claim assertion turns
-        // the build RED the moment any test does, which is what puts the entry back (with its
-        // witness). Declaring it on faith is the failure mode, not the fix.
+        // `POST /plugins/reload` 400s when the rebuild-from-disk fails — an on-disk config that has
+        // gone invalid since boot. This used to be undeclared because no fixture could drive it,
+        // which left `openapi.json` hiding a response clients hit. `TestApp::disk_paths` gives a
+        // snapshot real disk truth, so `drive_plugin_reload_errors` now witnesses it.
+        (Post, "/plugins/reload") => de![Validation / InvalidConfig],
         (Post, "/plugins/rollback") => de![
             Validation / MalformedBody,
             Validation / MalformedIfMatch,
@@ -445,7 +441,6 @@ pub(crate) fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr]
             Conflict / NoSigningKey,
             Conflict / IdempotencyInFlight,
             Conflict / AtKeyCap,
-            Conflict / GroupRaceOnMint,
             Conflict / BaseDefined,
         ],
         (Get, "/keys/{id}") => de![

@@ -5083,7 +5083,7 @@
                 }
               }
             },
-            "description": "`conflict`: governance is not enabled on this server, no signing key is configured for signed-token minting, an `Idempotency-Key` request is already in flight, the group is at the `limits.max_keys_per_principal` cap, the bound group was deleted concurrently with the mint; retry against an existing group, base-defined (edit config.yaml)"
+            "description": "`conflict`: governance is not enabled on this server, no signing key is configured for signed-token minting, an `Idempotency-Key` request is already in flight, the group is at the `limits.max_keys_per_principal` cap, base-defined (edit config.yaml)"
           },
           "429": {
             "content": {
@@ -6108,6 +6108,16 @@
               }
             },
             "description": "`{plugins, note}` — the current dynamic-library inventory"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`invalid_request`: invalid config; nothing changed"
           },
           "401": {
             "content": {
