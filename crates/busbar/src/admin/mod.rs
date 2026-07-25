@@ -565,53 +565,31 @@ pub(crate) async fn create_key(
             );
         }
     }
-    // MINT-TIME group resolution (self-service D2): a bound `group` must exist NOW — a dangling
-    // binding would make every request on the new key fail closed at admission. When it does not
-    // exist AND `parent` is given, AUTO-PROVISION it as a leaf under `parent` (materializing the
-    // `user:<sub>` personal budget bucket on first self-mint) through the SAME validate-at-the-door
-    // group-write path, so validation / cost rebuild / version log / overlay persistence hold. When
-    // it exists and `parent` is given, `parent` must match the actual parent (409 otherwise). A key
-    // with NO group is authed + unlimited (access only) — nothing to resolve.
-    let mut provisioned_group = false;
-    // TOCTOU (audit MEDIUM, mint parity with the `update_key` rebind fix): `resolve_mint_group`
-    // validates/auto-provisions the bound group under `CONFIG_MUTATION_LOCK`, but it RELEASES that
-    // lock on return — so a concurrent group DELETE could land between the resolution and the mint's
-    // store write below, durably binding the freshly minted key to a nonexistent group (which then
-    // fails every request on that key closed at admission). Group create/DELETE run under this SAME
-    // lock (and DELETE refuses while keys are still bound), so once a bound group is resolved we hold
-    // the lock across a fresh re-verification AND the mint: either a racing DELETE lands first (our
-    // re-check sees the group gone → fail closed) or it is blocked until the key is bound (then DELETE
-    // sees the bound key → 409). The guard lives until the end of this function, spanning the mint's
-    // `spawn_blocking`. A groupless key has nothing to bind, so it needs no guard.
-    let mut _config_guard: Option<tokio::sync::MutexGuard<'static, ()>> = None;
-    if let Some(group) = req.group.as_deref() {
-        match crate::admin::v1::json::resolve_mint_group(
-            &handle,
-            group,
-            req.parent.as_deref(),
-            &actor,
-        )
-        .await
-        {
-            Ok(provisioned) => provisioned_group = provisioned,
-            Err(e) => return crate::admin::v1::json::err_json(&e),
-        }
-        // Acquire the mutation lock AFTER resolution (which takes it internally) and re-read the LIVE
-        // App under it: the group must STILL exist right before we bind it. `cost.group_named` is the
-        // enforcement truth every admission uses — the exact check a DELETE removes. Hold the guard
-        // across the mint below so a DELETE cannot slip in between this check and the store write.
-        let guard = crate::admin::v1::json::config_mutation_guard().await;
-        if handle.load().cost.group_named(group).is_none() {
-            return key_err(
-                &AdminError::Conflict(format!(
-                    "group '{group}' was deleted concurrently with this mint; retry against an \
-                     existing group",
-                )),
-                Cond::GroupRaceOnMint,
-            );
-        }
-        _config_guard = Some(guard);
-    } else if req.parent.is_some() {
+    // ── THE MINT TRANSACTION ─────────────────────────────────────────────────────────────────────
+    // Group resolution, the auto-provision swap, the anti-sprawl cap and the key's store write are
+    // ONE `config_transaction` section. Three defect classes die here by construction:
+    //
+    //  * The bound group's existence check and the key's store write share ONE continuous lock hold.
+    //    The old shape resolved the group under the mutation lock, RELEASED it on return, then
+    //    re-acquired the lock and re-verified the group BY HAND — a copied prose contract a third
+    //    bind path would have had to copy again. There is nothing left to re-verify: the lock is
+    //    never released between the check and the bind, so a concurrent group DELETE either lands
+    //    first (this body sees the group gone → fail closed) or is blocked until the key is bound
+    //    (then DELETE's bound-key guard sees it → 409).
+    //  * `max_keys_per_principal` is read from `txn.app()` — the FRESH post-lock snapshot — not from
+    //    the pre-lock extractor `app`. A settings apply landing between the request's snapshot and
+    //    this enforcement can no longer make the mint enforce a stale ceiling: there is no older
+    //    snapshot in scope to read.
+    //  * The cap COUNT and the mint run together in ONE `spawn_blocking` closure under
+    //    `EXISTENCE_GATE`, so N concurrent callers at the boundary are serialized — each sees the
+    //    writes of those before it and only the first `cap - current` mints succeed. `>= cap` is a
+    //    `409` (a retry can't fix it without deleting a key), and a store failure counting keys
+    //    FAILS CLOSED — never mint past a ceiling we could not verify.
+    //
+    // LOCK ORDER: `config_transaction` holds the async config lock across the whole section and
+    // takes `EXISTENCE_GATE` (a std Mutex) only INSIDE the blocking closure, never across an await —
+    // one global acquisition order, no cycle.
+    if req.group.is_none() && req.parent.is_some() {
         // `parent` without `group` has nothing to root — a loud 400 beats silently ignoring it.
         return key_err(
             &AdminError::Validation(
@@ -622,52 +600,20 @@ pub(crate) async fn create_key(
             Cond::ParentWithoutGroup,
         );
     }
-    // ANTI-SPRAWL CAP (audit gap 7 / self-service §6a): `limits.max_keys_per_principal` bounds how
-    // many keys may bind to ONE group. Since a `user:<sub>` leaf IS the principal (§5), this caps a
-    // self-issuing dev's key count. `0` = unlimited (skip). Only meaningful for a bound key — a
-    // groupless key has no principal to cap. An auto-provisioned leaf is brand-new (0 keys), so a
-    // group's FIRST self-mint always passes.
-    //
-    // ATOMICITY (audit: TOCTOU on `max_keys_per_principal`): the count and the mint run TOGETHER
-    // inside ONE `spawn_blocking` under `EXISTENCE_GATE`, so N concurrent callers at the cap
-    // boundary are serialized — each sees the writes of those before it and only the first
-    // `cap - current` mints succeed. A prior version counted in a separate `spawn_blocking`,
-    // released the store lock, `.await`ed, then minted in a second task with no lock spanning the
-    // two — so concurrent callers all read `n < cap` and all minted, overshooting the cap by up to
-    // `N-1`. `>= cap` is a `409` (a retry can't fix it without deleting a key).
-    // Re-read the cap from the LIVE handle rather than the pre-lock `app` snapshot (line 464): a
-    // config apply/reload between that snapshot and acquiring `_config_guard` could change
-    // `max_keys_per_principal`, so a stale cap would be enforced. When a bound group is present we
-    // hold the mutation guard here (line 636), so `handle.load()` reflects any concurrent config
-    // change and cannot itself race a further apply. Mirrors the round-3 mint re-verify. A groupless
-    // key has no principal to cap, so the pre-lock snapshot is harmless there — but re-reading is
-    // uniformly correct and costs nothing.
-    let cap = handle.load().max_keys_per_principal;
-    let cap_group = if cap > 0 { req.group.clone() } else { None };
-    // Keys carry NO inline limits (S1); enforcement flows through the bound group.
-    let spec = NewKeySpec {
-        name: req.name,
-        allowed_pools,
-        group: req.group,
-        labels: req.labels,
-    };
-    // Offload the blocking store write off the Tokio worker thread (matches the request-path
-    // discipline in governance::charge_within_budget_async / offload_store_write).
-    let gov = gov.clone();
-    let issue_aws = req.issue_aws_credential;
-    // Enforce the cap atomically with the mint under `EXISTENCE_GATE`, returning `AtCap` (with the
-    // observed count) when the ceiling is already reached. Shared by both mint variants below.
-    enum MintOutcome<T> {
-        Minted(T),
-        AtCap { group: String, n: usize },
+    /// What the mint's blocking half produced: the key (bearer-only or with AWS credentials), or the
+    /// anti-sprawl ceiling it hit.
+    enum MintOutcome {
+        Bearer(Box<(crate::governance::VirtualKey, String)>),
+        Aws(Box<(crate::governance::VirtualKey, String, String, String)>),
+        AtCap { group: String, n: usize, cap: usize },
     }
+    /// Count the keys bound to `group` and report the ceiling hit. Runs on a blocking thread under
+    /// `EXISTENCE_GATE`, atomically with the mint that follows it. A store failure FAILS CLOSED.
     fn check_cap(
         gov: &crate::governance::GovState,
         cap_group: &Option<String>,
         cap: usize,
     ) -> crate::governance::StoreResult<Option<(String, usize)>> {
-        // A store failure counting keys must FAIL CLOSED — never mint past a cap we could not
-        // verify (the whole point of the cap is a hard ceiling).
         if let Some(group) = cap_group.as_deref() {
             let n = gov
                 .all_keys()?
@@ -680,101 +626,169 @@ pub(crate) async fn create_key(
         }
         Ok(None)
     }
-    let at_cap_response = |group: &str, n: usize| {
-        key_err(
-            &AdminError::Conflict(format!(
-                "group '{group}' already has {n} key(s), at the \
-                 `limits.max_keys_per_principal` cap of {cap}; revoke or delete an existing \
-                 key before minting another",
-            )),
-            Cond::AtKeyCap,
-        )
+    // Keys carry NO inline limits (S1); enforcement flows through the bound group.
+    let spec = NewKeySpec {
+        name: req.name,
+        allowed_pools,
+        group: req.group.clone(),
+        labels: req.labels,
     };
-    // When AWS credentials are requested, mint via `create_key_with_aws` (issues the AccessKeyId +
-    // secret access key alongside the bearer secret). Otherwise the unchanged bearer-only mint.
-    if issue_aws {
-        let res = tokio::task::spawn_blocking(move || {
+    let issue_aws = req.issue_aws_credential;
+    let want_group = req.group.clone();
+    let want_parent = req.parent.clone();
+    let gov = gov.clone();
+    let txn_actor = actor.clone();
+    let res = crate::admin::v1::json::config_transaction(&handle, move |txn| {
+        let current = txn.app();
+        // MINT-TIME group resolution (self-service D2): a bound `group` must exist NOW — a dangling
+        // binding would make every request on the new key fail closed at admission. When it does not
+        // exist AND `parent` is given, AUTO-PROVISION it as a leaf under `parent` (materializing the
+        // `user:<sub>` personal budget bucket on first self-mint) through the SAME
+        // validate-at-the-door group-write path, so validation / cost rebuild / overlay persistence
+        // hold. When it exists and `parent` is given, `parent` must match the actual parent (409
+        // otherwise). A key with NO group is authed + unlimited — nothing to resolve.
+        let provisioned = match want_group.as_deref() {
+            Some(group) => {
+                crate::admin::v1::json::plan_mint_group(
+                    current,
+                    group,
+                    want_parent.as_deref(),
+                    &txn_actor,
+                )?
+            }
+            None => None,
+        };
+        // ANTI-SPRAWL CAP (audit gap 7 / self-service §6a): `limits.max_keys_per_principal` bounds
+        // how many keys may bind to ONE group. Since a `user:<sub>` leaf IS the principal (§5), this
+        // caps a self-issuing dev's key count. `0` = unlimited (skip). Only meaningful for a bound
+        // key. An auto-provisioned leaf is brand-new (0 keys), so a group's FIRST self-mint always
+        // passes. READ FROM THE FRESH SNAPSHOT — this is the stale-cap fix.
+        let cap = current.max_keys_per_principal;
+        let cap_group = if cap > 0 { spec.group.clone() } else { None };
+        let did_provision = provisioned.is_some();
+        // The blocking half: cap count + mint, one `spawn_blocking`, one `EXISTENCE_GATE` hold.
+        let mint = move || {
             let _existence_guard = EXISTENCE_GATE.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some((group, n)) = check_cap(&gov, &cap_group, cap)? {
-                return Ok(MintOutcome::AtCap { group, n });
-            }
-            gov.mint_signed_with_aws(spec, exp, now)
-                .map(MintOutcome::Minted)
-        })
-        .await;
-        match res {
-            Ok(Ok(MintOutcome::AtCap { group, n })) => at_cap_response(&group, n),
-            Ok(Ok(MintOutcome::Minted((key, token, access_key_id, secret_access_key)))) => {
-                audit::AUDIT.record_by(
-                    "key.create",
-                    &format!("key:{}", key.id),
-                    audit::OUTCOME_APPLIED,
-                    &actor,
-                );
-                let mut body = key_meta(&key);
-                // The busbar-SIGNED token IS the key credential (S1), shown exactly once.
-                body["token"] = json!(token);
-                body["expires_at"] = json!(exp);
-                // Tell the caller whether this mint AUTO-PROVISIONED its group leaf (self-service
-                // D2), so a portal can distinguish "bound to an existing bucket" from "created your
-                // personal bucket + bound".
-                body["group_provisioned"] = json!(provisioned_group);
-                // The AccessKeyId is NOT secret (it travels in plaintext in the SigV4 header); the
-                // AWS SECRET access key is shown ONCE here only, mirroring the token.
-                body["aws_access_key_id"] = json!(access_key_id);
-                body["aws_secret_access_key"] = json!(secret_access_key);
-                if let Some(ref ck) = idem_ckey {
-                    app.idempotency_cache
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .insert(ck.clone(), (crate::store::now(), body.clone()));
+            let minted = (|| -> crate::governance::StoreResult<MintOutcome> {
+                if let Some((group, n)) = check_cap(&gov, &cap_group, cap)? {
+                    return Ok(MintOutcome::AtCap { group, n, cap });
                 }
-                if let Some(g) = idem_reservation.as_mut() {
-                    g.committed = true;
+                if issue_aws {
+                    // Issues the AccessKeyId + secret access key alongside the bearer secret.
+                    gov.mint_signed_with_aws(spec, exp, now)
+                        .map(|m| MintOutcome::Aws(Box::new(m)))
+                } else {
+                    gov.mint_signed(spec, exp, now)
+                        .map(|m| MintOutcome::Bearer(Box::new(m)))
                 }
-                json_response(StatusCode::CREATED, body)
+            })()
+            .map_err(|e| {
+                tracing::error!(operation = "create_key", error = %e, "admin store operation failed");
+                AdminError::Internal
+            })?;
+            Ok(crate::admin::v1::json::Outcome::Value((
+                minted,
+                did_provision,
+            )))
+        };
+        match provisioned {
+            // Auto-provision: PERSIST-then-SWAP the new leaf, THEN bind the key to it — both inside
+            // this one guard, so the leaf cannot be deleted between being created and being bound.
+            Some(installed) => {
+                let group = want_group.clone().unwrap_or_default();
+                Ok(crate::admin::v1::json::Outcome::commit_then(
+                    installed.clone(),
+                    crate::admin::v1::json::persist_provisioned_group(
+                        installed,
+                        group,
+                        txn_actor.clone(),
+                    ),
+                    mint,
+                ))
             }
-            Ok(Err(e)) => internal_error("create_key", &e),
-            Err(e) => join_error("create_key", &e),
+            None => Ok(txn.store_write(mint)),
         }
-    } else {
-        let res = tokio::task::spawn_blocking(move || {
-            let _existence_guard = EXISTENCE_GATE.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some((group, n)) = check_cap(&gov, &cap_group, cap)? {
-                return Ok(MintOutcome::AtCap { group, n });
-            }
-            gov.mint_signed(spec, exp, now).map(MintOutcome::Minted)
-        })
-        .await;
-        match res {
-            Ok(Ok(MintOutcome::AtCap { group, n })) => at_cap_response(&group, n),
-            Ok(Ok(MintOutcome::Minted((key, token)))) => {
-                audit::AUDIT.record_by(
-                    "key.create",
-                    &format!("key:{}", key.id),
-                    audit::OUTCOME_APPLIED,
-                    &actor,
-                );
-                let mut body = key_meta(&key);
-                body["token"] = json!(token); // the signed token, shown exactly once
-                body["expires_at"] = json!(exp);
-                // Whether this mint auto-provisioned its group leaf (self-service D2) — see above.
-                body["group_provisioned"] = json!(provisioned_group);
-                if let Some(ref ck) = idem_ckey {
-                    app.idempotency_cache
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .insert(ck.clone(), (crate::store::now(), body.clone()));
-                }
-                if let Some(g) = idem_reservation.as_mut() {
-                    g.committed = true;
-                }
-                json_response(StatusCode::CREATED, body)
-            }
-            Ok(Err(e)) => internal_error("create_key", &e),
-            Err(e) => join_error("create_key", &e),
-        }
+    })
+    .await;
+    let (minted, provisioned_group) = match res {
+        Ok(v) => v,
+        // Fail-closed: an auto-provision that was rejected leaves nothing behind, and a mint that
+        // failed after one committed is reported here. `group.provision`'s own REJECTED row is
+        // written at the two sites that used to write it (a failed build, a failed persist), so the
+        // audit trail is byte-for-byte what the hand-rolled path produced.
+        Err(e) => return crate::admin::v1::json::err_json(&e),
+    };
+    if provisioned_group {
+        // The leaf was created + persisted inside the transaction — audited + versioned exactly like
+        // an explicit `POST /groups`.
+        let group = req.group.clone().unwrap_or_default();
+        audit::AUDIT.record_by(
+            "group.provision",
+            &format!("group:{group}"),
+            audit::OUTCOME_APPLIED,
+            &actor,
+        );
+        let live = handle.load();
+        live.versions.record(
+            live.config_version,
+            &actor,
+            &format!(
+                "group.provision group:{group} (auto, parent {})",
+                req.parent.clone().unwrap_or_default()
+            ),
+            &live.hook_registry,
+            &live.global_hooks,
+        );
     }
+    let (key, token, aws) = match minted {
+        MintOutcome::AtCap { group, n, cap } => {
+            return key_err(
+                &AdminError::Conflict(format!(
+                    "group '{group}' already has {n} key(s), at the \
+                     `limits.max_keys_per_principal` cap of {cap}; revoke or delete an existing \
+                     key before minting another",
+                )),
+                Cond::AtKeyCap,
+            );
+        }
+        MintOutcome::Bearer(b) => {
+            let (key, token) = *b;
+            (key, token, None)
+        }
+        MintOutcome::Aws(b) => {
+            let (key, token, access_key_id, secret_access_key) = *b;
+            (key, token, Some((access_key_id, secret_access_key)))
+        }
+    };
+    audit::AUDIT.record_by(
+        "key.create",
+        &format!("key:{}", key.id),
+        audit::OUTCOME_APPLIED,
+        &actor,
+    );
+    let mut body = key_meta(&key);
+    // The busbar-SIGNED token IS the key credential (S1), shown exactly once.
+    body["token"] = json!(token);
+    body["expires_at"] = json!(exp);
+    // Tell the caller whether this mint AUTO-PROVISIONED its group leaf (self-service D2), so a
+    // portal can distinguish "bound to an existing bucket" from "created your personal bucket + bound".
+    body["group_provisioned"] = json!(provisioned_group);
+    if let Some((access_key_id, secret_access_key)) = aws {
+        // The AccessKeyId is NOT secret (it travels in plaintext in the SigV4 header); the AWS SECRET
+        // access key is shown ONCE here only, mirroring the token.
+        body["aws_access_key_id"] = json!(access_key_id);
+        body["aws_secret_access_key"] = json!(secret_access_key);
+    }
+    if let Some(ref ck) = idem_ckey {
+        app.idempotency_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(ck.clone(), (crate::store::now(), body.clone()));
+    }
+    if let Some(g) = idem_reservation.as_mut() {
+        g.committed = true;
+    }
+    json_response(StatusCode::CREATED, body)
 }
 
 /// Partial update to an existing key. Keys are PURE AUTH (1.5.0, S1), so the mutable surface is
@@ -846,75 +860,81 @@ pub(crate) async fn update_key(
     // VALUE is checked (`Some(Some(name))`); a present `null` (unbind) and an absent field need no
     // check.
     //
-    // TOCTOU (audit MEDIUM): a bare check-then-write let a group be DELETED between validating it here
-    // and persisting the binding — a deleted group could be durably written as a key binding. Group
-    // create/DELETE run under CONFIG_MUTATION_LOCK (and DELETE refuses while keys are still bound), so
-    // hold that SAME lock across BOTH the existence check and the store write, and re-read the LIVE App
-    // under it (the extractor snapshot may predate a concurrent swap). Serialized this way, a rebind and
-    // a group delete cannot interleave: either the rebind lands first (then DELETE sees the bound key →
-    // 409) or the delete lands first (then this check sees the group gone → 400).
-    let _config_guard = crate::admin::v1::json::config_mutation_guard().await;
-    let app = handle.load();
-    let Some(gov) = &app.governance else {
-        return disabled_write();
-    };
-    if let Some(Some(group)) = req.group.as_ref() {
-        if !app.groups_registry.contains_key(group.as_str()) {
-            return key_err(
-                &AdminError::Validation(format!(
-                    "group '{group}' does not exist in the top-level groups block; configure it \
-                     first (e.g. {group}: {{ limits: [ {{ budget: 0, per: month }} ] }})"
-                )),
-                Cond::RebindTargetMissing,
-            );
-        }
-    }
-    let gov = gov.clone();
-    let (enabled, group) = (req.enabled, req.group);
+    // The existence check and the store write are ONE `config_transaction` section, so a group
+    // cannot be DELETED between validating it and persisting the binding: group create/DELETE run
+    // through the SAME choke point (and DELETE refuses while keys are still bound), and the check
+    // reads the FRESH post-lock snapshot rather than the extractor's (possibly pre-swap) one.
+    // Serialized this way a rebind and a group delete cannot interleave: either the rebind lands
+    // first (then DELETE sees the bound key → 409) or the delete lands first (then this check sees
+    // the group gone → 400).
+    //
     // RESURRECTION RACE: `update_key` is a check-then-act (`get_key` → `put_key`, and `put_key`
     // UPSERTs on the PRIMARY KEY, so it INSERTs a missing row rather than no-opping). A PATCH that
     // reads an extant key, then has a concurrent DELETE remove the row before its `put_key` runs,
-    // would re-create the just-revoked key. Hold the same existence gate `delete_key` uses across this
-    // whole lookup→put section so PATCH and DELETE cannot interleave: the PATCH either completes
-    // before the DELETE (row removed afterward) or sees `None` after it (404, no re-put). See
-    // `EXISTENCE_GATE`.
+    // would re-create the just-revoked key. The blocking closure holds the same `EXISTENCE_GATE`
+    // `delete_key` uses across the whole lookup→put section so PATCH and DELETE cannot interleave.
     //
-    // CANCELLATION SAFETY: the gate is locked INSIDE the `spawn_blocking` closure so its
-    // lifetime is bound to the synchronous `gov.update_key` mutation, not to this cancellable async
-    // handler. If the client drops the request, the already-scheduled closure still runs to completion
-    // holding the gate — so a dropped outer future can never release the gate while the lookup→write
-    // is still in flight (which would re-open the resurrection / double-revoke races).
-    // The If-Match compare and the write run TOGETHER under the existence gate, so the record the
-    // ETag was checked against is the same record that gets updated — no concurrent PATCH can slip
-    // between them and defeat the guard (the lost-update the separate pre-read allowed).
+    // CANCELLATION SAFETY: the gate is locked INSIDE the blocking closure so its lifetime is bound
+    // to the synchronous `gov.update_key` mutation, not to this cancellable async handler. If the
+    // client drops the request the already-scheduled closure still runs to completion holding the
+    // gate — a dropped outer future can never release it mid-write. The If-Match compare and the
+    // write run TOGETHER under the gate, so the record the ETag was checked against is the same
+    // record that gets updated.
     enum UpdateOutcome {
         Updated(Box<crate::governance::VirtualKey>),
         NotFound,
         EtagStale,
     }
     let resource = format!("key:{id}");
-    let res =
-        tokio::task::spawn_blocking(move || -> crate::governance::StoreResult<UpdateOutcome> {
-            let _existence_guard = EXISTENCE_GATE.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(tag) = &if_match {
-                match gov.all_keys()?.into_iter().find(|k| k.id == id) {
-                    Some(k) if key_etag(&k) != *tag => return Ok(UpdateOutcome::EtagStale),
-                    None => return Ok(UpdateOutcome::NotFound),
-                    Some(_) => {}
-                }
+    let res = crate::admin::v1::json::config_transaction(&handle, move |txn| {
+        let current = txn.app();
+        let Some(gov) = current.governance.clone() else {
+            // Unreachable in practice — governance is process-lifetime and is reused across every
+            // swap, so the pre-parse fast-fail above already answered. Fail closed anyway.
+            return Err(AdminError::Conflict(
+                "governance is not enabled on this server; enable `governance:` in config.yaml to \
+                 manage virtual keys"
+                    .into(),
+            ));
+        };
+        if let Some(Some(group)) = req.group.as_ref() {
+            if !current.groups_registry.contains_key(group.as_str()) {
+                return Err(AdminError::Validation(format!(
+                    "group '{group}' does not exist in the top-level groups block; configure it \
+                     first (e.g. {group}: {{ limits: [ {{ budget: 0, per: month }} ] }})"
+                )));
             }
-            Ok(match gov.update_key(&id, enabled, group)? {
-                Some(key) => UpdateOutcome::Updated(Box::new(key)),
-                None => UpdateOutcome::NotFound,
-            })
-        })
-        .await;
+        }
+        let (enabled, group) = (req.enabled, req.group);
+        Ok(txn.store_write(move || {
+            let _existence_guard = EXISTENCE_GATE.lock().unwrap_or_else(|e| e.into_inner());
+            let outcome = (|| -> crate::governance::StoreResult<UpdateOutcome> {
+                if let Some(tag) = &if_match {
+                    match gov.all_keys()?.into_iter().find(|k| k.id == id) {
+                        Some(k) if key_etag(&k) != *tag => return Ok(UpdateOutcome::EtagStale),
+                        None => return Ok(UpdateOutcome::NotFound),
+                        Some(_) => {}
+                    }
+                }
+                Ok(match gov.update_key(&id, enabled, group)? {
+                    Some(key) => UpdateOutcome::Updated(Box::new(key)),
+                    None => UpdateOutcome::NotFound,
+                })
+            })()
+            .map_err(|e| {
+                tracing::error!(operation = "update_key", error = %e, "admin store operation failed");
+                AdminError::Internal
+            })?;
+            Ok(crate::admin::v1::json::Outcome::Value(outcome))
+        }))
+    })
+    .await;
     match res {
-        Ok(Ok(UpdateOutcome::Updated(key))) => {
+        Ok(UpdateOutcome::Updated(key)) => {
             audit::AUDIT.record_by("key.patch", &resource, audit::OUTCOME_APPLIED, &actor);
             json_response(StatusCode::OK, key_meta(&key))
         }
-        Ok(Ok(UpdateOutcome::EtagStale)) => {
+        Ok(UpdateOutcome::EtagStale) => {
             audit::AUDIT.record_by("key.patch", &resource, audit::OUTCOME_REJECTED, &actor);
             key_err(
                 &AdminError::VersionConflict(
@@ -924,12 +944,15 @@ pub(crate) async fn update_key(
                 Cond::StaleIfMatch,
             )
         }
-        Ok(Ok(UpdateOutcome::NotFound)) => {
+        Ok(UpdateOutcome::NotFound) => {
             audit::AUDIT.record_by("key.patch", &resource, audit::OUTCOME_REJECTED, &actor);
             key_err(&AdminError::not_found("key"), Cond::UnknownResource)
         }
-        Ok(Err(e)) => internal_error("update_key", &e),
-        Err(e) => join_error("update_key", &e),
+        // The only 400 this body can raise is the dangling rebind target; anything else is the
+        // generic store failure, which carries no condition of its own.
+        Err(e @ AdminError::Validation(_)) => key_err(&e, Cond::RebindTargetMissing),
+        Err(e @ AdminError::Conflict(_)) => key_err(&e, Cond::GovernanceOff),
+        Err(e) => crate::admin::v1::json::err_json(&e),
     }
 }
 

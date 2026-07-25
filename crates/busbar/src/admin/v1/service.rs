@@ -427,7 +427,34 @@ pub(crate) fn build_with_group(
 /// another group still names the removed one as its `parent`, the delete is a `409 conflict` (remove
 /// or re-parent the children first) rather than silently orphaning them. On success the enforcement
 /// projection is rebuilt (the removed group's buckets disappear); the ledger survives the swap.
-pub(crate) fn build_without_group(current: &App, name: &str) -> Result<App, AdminError> {
+/// Count the virtual keys bound to `group` — the BLOCKING half of the group-delete guard, split out
+/// of [`build_without_group`] so the pure tree validation carries no store handle at all.
+///
+/// This is a synchronous `Store::list_keys` round-trip (memory, SQLite plugin, or whatever backend
+/// is loaded), so it may take arbitrarily long. It is called ONLY from inside a
+/// `Txn::read_store`/`Txn::store_write` closure, i.e. on a `spawn_blocking` thread, never on a Tokio
+/// worker. A store failure FAILS CLOSED (`Internal`): a group whose bindings cannot be read is not
+/// deletable.
+pub(crate) fn count_keys_bound_to(app: &App, group: &str) -> Result<usize, AdminError> {
+    let Some(gov) = &app.governance else {
+        return Ok(0);
+    };
+    Ok(gov
+        .all_keys()
+        .map_err(|e| {
+            tracing::error!(group = %group, error = %e, "group delete: cannot read keys to check bindings");
+            AdminError::Internal
+        })?
+        .into_iter()
+        .filter(|k| k.group.as_deref() == Some(group))
+        .count())
+}
+
+pub(crate) fn build_without_group(
+    current: &App,
+    name: &str,
+    bound_keys: usize,
+) -> Result<App, AdminError> {
     if !current.groups_registry.contains_key(name) {
         return Err(AdminError::not_found(format!("group `{name}`")));
     }
@@ -436,23 +463,19 @@ pub(crate) fn build_without_group(current: &App, name: &str) -> Result<App, Admi
     // and a shared durable store means the binding can outlive this node's config. Reject as a state
     // CONFLICT naming the count (re-bind or delete those keys first) rather than silently orphaning
     // them. Mirrors the dangling-parent guard below.
-    if let Some(gov) = &current.governance {
-        let bound = gov
-            .all_keys()
-            .map_err(|e| {
-                tracing::error!(group = %name, error = %e, "group delete: cannot read keys to check bindings");
-                AdminError::Internal
-            })?
-            .into_iter()
-            .filter(|k| k.group.as_deref() == Some(name))
-            .count();
-        if bound > 0 {
-            return Err(AdminError::Conflict(format!(
-                "cannot delete group `{name}`: {bound} key(s) are still bound to it; rebind those \
-                 keys to another group (PATCH /api/v1/admin/keys/{{id}} with `group`) or delete \
-                 them first"
-            )));
-        }
+    //
+    // The COUNT is an ARGUMENT, not something this function reads. Counting requires
+    // `GovState::all_keys()` — a synchronous, possibly plugin-backed store round-trip — and this
+    // builder runs inside the config-mutation critical section. Taking `&GovState` here is what let
+    // an earlier version park a Tokio worker under the async lock; with the count passed in there is
+    // no store handle in scope to call, so the blocking half MUST be done by the caller's
+    // `txn.read_store` closure on `spawn_blocking`. See `count_keys_bound_to`.
+    if bound_keys > 0 {
+        return Err(AdminError::Conflict(format!(
+            "cannot delete group `{name}`: {bound_keys} key(s) are still bound to it; rebind those \
+             keys to another group (PATCH /api/v1/admin/keys/{{id}} with `group`) or delete them \
+             first"
+        )));
     }
     let mut groups = current.groups_registry.clone();
     groups.remove(name);
@@ -2351,7 +2374,7 @@ mod tests {
                 },
             )
             .build();
-        let next = build_without_group(&app, "user:bob").expect("leaf removable");
+        let next = build_without_group(&app, "user:bob", 0).expect("leaf removable");
         assert!(!next.groups_registry.contains_key("user:bob"));
         assert!(next.cost.group_named("user:bob").is_none());
         assert!(next.cost.group_named("team").is_some());
@@ -2376,7 +2399,7 @@ mod tests {
                 },
             )
             .build();
-        let Err(err) = build_without_group(&app, "team") else {
+        let Err(err) = build_without_group(&app, "team", 0) else {
             panic!("deleting a still-referenced parent must conflict");
         };
         assert!(
@@ -2388,7 +2411,7 @@ mod tests {
     #[test]
     fn build_without_group_not_found() {
         let app = team_app();
-        let Err(err) = build_without_group(&app, "ghost") else {
+        let Err(err) = build_without_group(&app, "ghost", 0) else {
             panic!("unknown group must be not_found");
         };
         assert!(matches!(&err, AdminError::NotFound { what: m, .. } if m.contains("ghost")));
@@ -2425,7 +2448,12 @@ mod tests {
             )
             .governance(gov)
             .build();
-        let Err(err) = build_without_group(&app, "team") else {
+        // The COUNT is the caller's job now (it is a blocking store read; see `count_keys_bound_to`,
+        // executed on `spawn_blocking` inside the delete transaction). Drive the pure guard with the
+        // count that helper would have produced for this fixture.
+        let bound = count_keys_bound_to(&app, "team").expect("count readable");
+        assert_eq!(bound, 1, "one key is bound to `team`");
+        let Err(err) = build_without_group(&app, "team", bound) else {
             panic!("deleting a group with bound keys must conflict");
         };
         assert!(

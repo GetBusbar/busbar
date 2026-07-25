@@ -234,25 +234,12 @@ fn hooks_register_escalation(
     None
 }
 
-/// Serializes config-plane MUTATIONS (hook register/replace/delete, config apply/reload/rollback,
-/// settings, auth chain) so each `read current → build next → swap → record` runs atomically with
-/// respect to the others. READS stay lock-free (`handle.load()`), and mutations are rare
-/// admin-only operations, so this never touches request-serving latency. Without it, two
-/// concurrent mutations both read version N, both build N+1, and one swap is silently lost while
-/// the version log gains two divergent N+1 entries; and a settings PATCH could have another
-/// mutation slip in during its (up to 5s) configure-ack await. The lock is held only across the
-/// SYNC build+swap+record — never across a network await (the settings push happens BEFORE the
-/// lock, then the version is re-validated under it).
-static CONFIG_MUTATION_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-/// Acquire the config-plane mutation lock from OUTSIDE this module. Used by the key-rebind PATCH
-/// (`admin::update_key`) so a group rebind is serialized against group create/DELETE: the DELETE's
-/// bound-key check and the swap run under this lock, so validating the rebind target's existence and
-/// persisting the binding under the SAME lock closes the TOCTOU where a group could be deleted between
-/// the check and the write (leaving a durable key bound to a nonexistent group).
-pub(crate) async fn config_mutation_guard() -> tokio::sync::MutexGuard<'static, ()> {
-    CONFIG_MUTATION_LOCK.lock().await
-}
+/// The config-plane mutation choke point. Every mutation — from any transport, in any module — runs
+/// inside `txn::config_transaction`, which owns the (file-private) mutation lock, hands the body a
+/// FRESH post-lock snapshot, forces store/disk work onto `spawn_blocking`, and applies the resulting
+/// plan through `AppHandle::commit_and_swap`. See `txn.rs` for the four guarantees.
+mod txn;
+pub(crate) use txn::{config_transaction, Outcome};
 
 // ── JSON wire helpers (v1) ───────────────────────────────────────────────────────────────────────
 

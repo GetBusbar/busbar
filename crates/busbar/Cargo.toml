@@ -218,3 +218,10 @@ bytes = "1"
 # Generates self-signed server certs + a CA/leaf pair at test runtime so the TLS/mTLS integration
 # tests exercise a real rustls handshake without checked-in key material.
 rcgen = "0.14"
+
+[lints.rust]
+# `cfg(loom)` gates the targeted loom model of the config-mutation swap ordering
+# (admin/v1/json/tests/txn_loom.rs). It is a deliberate opt-in cfg run by `scripts/loom.sh`
+# (`RUSTFLAGS="--cfg loom"`), never by the normal build, so declare it rather than let
+# `unexpected_cfgs` fire.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
