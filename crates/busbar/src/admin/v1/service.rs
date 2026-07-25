@@ -1149,7 +1149,11 @@ impl AdminService {
         if !lib_path.is_file() {
             return Err(AdminError::not_found(format!("plugin `{file}`")));
         }
-        std::fs::remove_file(&lib_path)
+        // `durable::remove`, not a bare `remove_file`: the INSTALL fsyncs the plugins directory so
+        // the new artifact's directory entry survives a power loss, and a removal that skipped it was
+        // the asymmetric half -- a crash right after a delete could resurrect the artifact and load
+        // it on the next boot.
+        crate::durable::remove(&lib_path)
             .map_err(|e| AdminError::Validation(format!("cannot remove plugin: {e}")))?;
         Ok(crate::admin::v1::contract::PluginRemoveView {
             file,
