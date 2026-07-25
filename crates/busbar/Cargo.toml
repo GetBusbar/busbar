@@ -223,6 +223,9 @@ txn-fence-red = []
 # simulated restart — a dev-only dependency (the store itself ships as a droppable plugin, not linked
 # into the release binary).
 busbar-store-sqlite = { path = "../store-sqlite" }
+# `test-util` gives the health-schedule test a PAUSED clock, so it can drive 20 simulated seconds of
+# swap churn against a 10s probe interval without sleeping for 20 real ones.
+tokio = { version = "1", features = ["test-util"] }
 # In-crate #[cfg(test)] harness needs reqwest's json feature + axum http1 server.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
 axum = { version = "0.8", features = ["http1"] }

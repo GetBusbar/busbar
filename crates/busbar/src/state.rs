@@ -197,6 +197,9 @@ pub(crate) struct App {
     pub(crate) tslots: Arc<crate::telemetry::AppSlots>,
     pub(crate) lanes: Vec<Lane>,
     pub(crate) store: Arc<dyn StateStore>,
+    /// The health-probe schedule, shared by every clone-derived snapshot of this lineage so a swap
+    /// does not reset the probe phase. See [`crate::health::ProbeSchedule`].
+    pub(crate) probe_schedule: Arc<crate::health::ProbeSchedule>,
     pub(crate) by_model: HashMap<String, usize>,
     /// Pool members, each carrying a lane index and its configured weight.
     pub(crate) pools: HashMap<String, Vec<WeightedLane>>,
