@@ -35,8 +35,64 @@ static INSTALLED: RwLock<Option<LimitsResolved>> = RwLock::new(None);
 /// Install (or RE-install) the resolved limits process-wide: at boot from `main`'s construction
 /// path, and again on every config apply/reload — the newest install wins, so operator limit
 /// changes are live without restart.
+///
+/// TEST-ONLY. Production installs through [`InstallGuard`], never through this: a config that is
+/// subsequently REJECTED must not leave its limits behind, and an unconditional install is exactly
+/// what made that possible. Tests that want a fixed installed value with no build around it (e.g.
+/// `tls`'s handshake-bound tests) still need a plain setter.
+#[cfg(test)]
 pub(crate) fn install(resolved: &LimitsResolved) {
     *INSTALLED.write().unwrap_or_else(|e| e.into_inner()) = Some(resolved.clone());
+}
+
+/// INSTALL FOR THE DURATION OF A BUILD, AND ROLL BACK UNLESS THE BUILD SUCCEEDS.
+///
+/// `build_app_from_config` installs the candidate limits FIRST — it has to, because the build reads
+/// them through the deep-call-stack accessors above (the store open, the health-probe fallbacks, the
+/// routing policy timeout) — but every step AFTER the install is fallible: semantic validation, the
+/// plugin pre-flight, secret-ref resolution, the store open. Before this guard, a rejected apply
+/// left the REJECTED config's limits installed process-wide while the old `App` kept serving, and no
+/// error path put them back. That broke the surface's central promise that an invalid apply changes
+/// nothing, and it did so in the worst direction: the values `validate_limits` exists to reject —
+/// e.g. a `request_body_max_bytes` below `REQUEST_BODY_MAX_BYTES_FLOOR` — are precisely the ones
+/// that got installed anyway, because the range check runs after the install. A 400-ed
+/// `POST /config/apply` could shrink the live SigV4 auth-middleware buffer and the cross-protocol
+/// translate buffer under a still-running gateway, 401-ing larger Bedrock requests.
+///
+/// So: snapshot, install, and restore on drop unless [`InstallGuard::commit`] is called. Rollback on
+/// the DROP rather than on each `return Err` is what makes it total — a build step added later
+/// cannot forget to unwind, and neither can a `?`.
+#[must_use = "an uncommitted InstallGuard rolls the limits back when dropped"]
+pub(crate) struct InstallGuard {
+    /// What was installed before — `None` when nothing was (boot, or a test process).
+    prior: Option<LimitsResolved>,
+    committed: bool,
+}
+
+impl InstallGuard {
+    /// Snapshot the currently-installed limits and install `resolved` in their place.
+    pub(crate) fn install(resolved: &LimitsResolved) -> Self {
+        let mut slot = INSTALLED.write().unwrap_or_else(|e| e.into_inner());
+        let prior = slot.clone();
+        *slot = Some(resolved.clone());
+        Self {
+            prior,
+            committed: false,
+        }
+    }
+
+    /// The build succeeded: KEEP the installed limits.
+    pub(crate) fn commit(mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for InstallGuard {
+    fn drop(&mut self) {
+        if !self.committed {
+            *INSTALLED.write().unwrap_or_else(|e| e.into_inner()) = self.prior.clone();
+        }
+    }
 }
 
 /// Read the installed value (or `None` when uninstalled — tests / pre-install).
