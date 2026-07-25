@@ -10,6 +10,28 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
+  # LAYOUT GATE — its OWN job, deliberately. It used to be the first step of `check`, ahead of
+  # clippy/build/test, which made it a MASK: any layout violation aborted the job before a single
+  # test ran, and the `Test` step is the only place BUSBAR_TEST_POSTGRES_URL / REDIS_URL are set
+  # against the service containers, so the two 1.5.0 store backends' live-DB coverage — the coverage
+  # the comment on `services:` calls out as load-bearing, hardened to HARD-FAIL rather than skip —
+  # silently stopped executing on every push and PR. A layout debt and a broken test are independent
+  # facts about a commit; ordering them in one job means the second is unobservable until the first
+  # is paid off. Both jobs are required checks, and neither can now hide the other.
+  structure-lint:
+    name: structure lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # The lint's `#[cfg(test)]` scope scanner decides which lines are EXEMPT from every
+      # choke-point bypass rule, so a scanner that can be lied to reports "no bypass" while the
+      # bypass sits in production. Its self-test runs FIRST: never trust the lint's verdict before
+      # proving the lint still works.
+      - name: Structure lint self-test
+        run: scripts/structure-lint.sh --selftest
+      - name: Structure lint
+        run: scripts/structure-lint.sh
+
   check:
     name: fmt · clippy · build · test
     runs-on: ubuntu-latest
@@ -55,16 +77,6 @@ jobs:
 
       - name: Format check
         run: cargo fmt --all -- --check
-
-      # The structure lint's `#[cfg(test)]` scope scanner decides which lines are EXEMPT from every
-      # choke-point bypass rule, so a scanner that can be lied to reports "no bypass" while the
-      # bypass sits in production. Its self-test runs FIRST: never trust the lint's verdict before
-      # proving the lint still works.
-      - name: Structure lint self-test
-        run: scripts/structure-lint.sh --selftest
-
-      - name: Structure lint
-        run: scripts/structure-lint.sh
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings

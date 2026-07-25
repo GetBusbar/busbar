@@ -4799,6 +4799,120 @@ fn test_sanitize_gemini_schema_preserves_clean_and_walks_arrays() {
     );
 }
 
+/// REGRESSION (round-6 audit): the keyword filter is POSITIONAL. Inside a `properties` map the keys
+/// are FIELD NAMES THE CALLER CHOSE, not JSON-Schema keywords, so a tool schema with a property
+/// named `examples` / `const` / `definitions` / `$ref` must survive intact. Before the fix the
+/// walker matched keys at every object level, deleted those properties, and left `required` — which
+/// it never inspects — still naming them: Gemini 400s a `required` entry with no matching property,
+/// so a legal cross-protocol tool definition became a hard request failure. An optional one merely
+/// vanished from the model's view.
+#[test]
+fn test_sanitize_gemini_schema_keeps_user_properties_named_like_keywords() {
+    let schema = serde_json::json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+            "examples": {"type": "array", "items": {"type": "string"}, "const": "drop me"},
+            "const": {"type": "string"},
+            "definitions": {"type": "boolean"},
+            "$ref": {"type": "number"},
+            "query": {"type": "string", "$comment": "drop me"}
+        },
+        "required": ["examples", "const", "definitions", "$ref", "query"]
+    });
+    let out = sanitize_gemini_schema(&schema);
+
+    // The schema-level keyword IS still stripped — the filter did not simply stop working.
+    assert!(
+        out.get("$schema").is_none(),
+        "a real schema-level keyword must still be stripped: {out}"
+    );
+    // Every user property survives, so no `required` entry is left dangling.
+    for name in ["examples", "const", "definitions", "$ref", "query"] {
+        assert!(
+            out.pointer(&format!(
+                "/properties/{}",
+                name.replace('~', "~0").replace('/', "~1")
+            ))
+            .is_some(),
+            "user property `{name}` was deleted by the keyword filter: {out}"
+        );
+    }
+    assert_eq!(
+        out.get("required"),
+        schema.get("required"),
+        "`required` is never rewritten, so every name in it must still be a property"
+    );
+    // …and INSIDE a user property the keys are keywords again, so the filter applies there.
+    assert!(
+        out.pointer("/properties/examples/const").is_none(),
+        "a keyword inside a property's own schema must still be stripped: {out}"
+    );
+    assert!(
+        out.pointer("/properties/query/$comment").is_none(),
+        "a keyword inside a property's own schema must still be stripped: {out}"
+    );
+    assert_eq!(
+        out.pointer("/properties/examples/items/type"),
+        Some(&serde_json::json!("string")),
+        "the property's own schema is otherwise preserved verbatim: {out}"
+    );
+}
+
+/// REGRESSION (round-6 audit): Gemini's THINKING tokens are billed and must be ledgered.
+/// `usageMetadata.thoughtsTokenCount` is a separate ADDITIVE term (Google's own `totalTokenCount` is
+/// prompt + candidates + thoughts), and the reader used to read only `candidatesTokenCount` — so
+/// every reasoning token the 2.5-series models generate (which they do BY DEFAULT, with no
+/// `thinkingConfig` in the request) was billed by Google at the output rate and ledgered by busbar
+/// as zero.
+#[test]
+fn test_gemini_usage_counts_thinking_tokens_as_output() {
+    // The shape a 2.5 model returns: 11 visible answer tokens plus 512 thinking tokens.
+    let with_thoughts = serde_json::json!({
+        "usageMetadata": {
+            "promptTokenCount": 100,
+            "candidatesTokenCount": 11,
+            "thoughtsTokenCount": 512,
+            "totalTokenCount": 623
+        }
+    });
+    let u = gemini_usage(&with_thoughts);
+    assert_eq!(u.input_tokens, 100);
+    assert_eq!(
+        u.output_tokens, 523,
+        "thinking tokens are GENERATED tokens: they belong in output_tokens with the visible answer"
+    );
+    // The IR total now reconciles with the total Google itself reported.
+    assert_eq!(
+        u.billable_tokens(),
+        with_thoughts["usageMetadata"]["totalTokenCount"]
+            .as_u64()
+            .unwrap(),
+        "IR billable total must equal Gemini's own totalTokenCount"
+    );
+
+    // A non-thinking response is unchanged (the field is absent, not zero).
+    let no_thoughts = serde_json::json!({
+        "usageMetadata": {"promptTokenCount": 100, "candidatesTokenCount": 11, "totalTokenCount": 111}
+    });
+    assert_eq!(gemini_usage(&no_thoughts).output_tokens, 11);
+
+    // Cache normalization still holds alongside the new term: promptTokenCount is a TOTAL that
+    // includes the cached prefix, so input_tokens is the UNCACHED remainder.
+    let cached = serde_json::json!({
+        "usageMetadata": {
+            "promptTokenCount": 100,
+            "cachedContentTokenCount": 40,
+            "candidatesTokenCount": 11,
+            "thoughtsTokenCount": 512
+        }
+    });
+    let u = gemini_usage(&cached);
+    assert_eq!(u.input_tokens, 60);
+    assert_eq!(u.cache_read_input_tokens, Some(40));
+    assert_eq!(u.output_tokens, 523);
+}
+
 /// D4: the Gemini stream WRITE path must emit a streamed reasoning part for a `ThinkingDelta`
 /// (`{text, thought:true}`) and carry the signature for a `SignatureDelta`
 /// (`{thought:true, thoughtSignature}`), mirroring the non-stream `write_response` thinking shape.
