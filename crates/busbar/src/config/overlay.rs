@@ -35,46 +35,51 @@ fn default_overlay_version() -> u32 {
 /// additive boot-merge REMOVES it even if it was defined in base `config.yaml`; `deleted_remove` (a
 /// just-registered hook) clears any prior tombstone (a re-add). Read-modify-write so tombstones
 /// accumulate across applies. The path is opt-in via `BUSBAR_CONFIG_OVERLAY` and carried on `App`, so
-/// the default behavior + config schema are unchanged. Best-effort: the live config already swapped, so
-/// the overlay is durability (not correctness) — a write failure is logged, never fatal, never blocks
-/// the request. `None` is a no-op (persistence disabled, the default).
+/// the default behavior + config schema are unchanged. FAIL-CLOSED: returns `Err` on an unreadable
+/// overlay (refuse-to-clobber) or a write failure, so its caller — `AppHandle::commit_and_swap` — does
+/// NOT swap a mutation it could not durably record (a live-applied-but-unpersisted config that a
+/// restart would silently revert). `None` path is a no-op success (persistence disabled, the default).
 pub(crate) fn persist(
     path: Option<&Path>,
     hooks: &HashMap<String, HookCfg>,
     global_hooks: &[String],
     deleted_add: Option<&str>,
     deleted_remove: Option<&str>,
-) {
-    if let Some(p) = path {
-        // Read-modify-WRITE the WHOLE overlay so a hook write preserves the groups section verbatim
-        // (and vice-versa in `persist_groups`). `load_for_rmw` refuses on an unreadable overlay —
-        // starting empty then overwriting would PERMANENTLY drop accumulated tombstones from BOTH
-        // sections and silently resurrect an API-deleted hook/group on restart.
-        let Some(mut doc) = load_for_rmw(p) else {
-            return;
-        };
-        if let Some(name) = deleted_add {
-            if !doc.deleted.iter().any(|n| n == name) {
-                doc.deleted.push(name.to_string());
-            }
-        }
-        if let Some(name) = deleted_remove {
-            doc.deleted.retain(|n| n != name);
-        }
-        doc.hooks = hooks.clone();
-        doc.global_hooks = global_hooks.to_vec();
-        // INVARIANT: a hook present in the registry being persisted can never ALSO be tombstoned —
-        // the boot-merge would insert it then subtract it, silently dropping a live hook. The
-        // explicit `deleted_remove` above covers the register-a-name case; this reconciliation also
-        // covers the WHOLESALE-registry writes (config ROLLBACK, which passes both args `None`):
-        // rollback restores a registry that may contain a name still tombstoned from an earlier
-        // API delete, and without this the rollback would not survive a restart (found: audit c1r5).
-        doc.deleted.retain(|name| !hooks.contains_key(name));
-        doc.version = OVERLAY_VERSION;
-        if let Err(e) = write(p, &doc) {
-            tracing::warn!(error = %e, path = %p.display(), "failed to persist config overlay");
+) -> Result<(), String> {
+    let Some(p) = path else {
+        return Ok(()); // persistence disabled (the default) — a no-op success.
+    };
+    // Read-modify-WRITE the WHOLE overlay so a hook write preserves the groups section verbatim
+    // (and vice-versa in `persist_groups`). `load_for_rmw` refuses on an unreadable overlay —
+    // starting empty then overwriting would PERMANENTLY drop accumulated tombstones from BOTH
+    // sections and silently resurrect an API-deleted hook/group on restart. That REFUSE is now an
+    // `Err` (fail-closed): the caller must NOT swap a mutation it could not durably record.
+    let Some(mut doc) = load_for_rmw(p) else {
+        return Err(format!(
+            "could not read the overlay at '{}' to persist hooks (refusing to overwrite a corrupt \
+             overlay, which would drop deletion tombstones)",
+            p.display()
+        ));
+    };
+    if let Some(name) = deleted_add {
+        if !doc.deleted.iter().any(|n| n == name) {
+            doc.deleted.push(name.to_string());
         }
     }
+    if let Some(name) = deleted_remove {
+        doc.deleted.retain(|n| n != name);
+    }
+    doc.hooks = hooks.clone();
+    doc.global_hooks = global_hooks.to_vec();
+    // INVARIANT: a hook present in the registry being persisted can never ALSO be tombstoned —
+    // the boot-merge would insert it then subtract it, silently dropping a live hook. The
+    // explicit `deleted_remove` above covers the register-a-name case; this reconciliation also
+    // covers the WHOLESALE-registry writes (config ROLLBACK, which passes both args `None`):
+    // rollback restores a registry that may contain a name still tombstoned from an earlier
+    // API delete, and without this the rollback would not survive a restart (found: audit c1r5).
+    doc.deleted.retain(|name| !hooks.contains_key(name));
+    doc.version = OVERLAY_VERSION;
+    write(p, &doc).map_err(|e| format!("overlay write to '{}' failed: {e}", p.display()))
 }
 
 /// Load the existing overlay for a read-modify-WRITE, or `None` to signal REFUSE-to-overwrite.
@@ -100,35 +105,39 @@ fn load_for_rmw(p: &Path) -> Option<OverlayDoc> {
 
 /// Persist the current GROUPS state to the overlay, mirroring `persist` for the `groups:` section:
 /// the API-mutable group registry + its tombstones (`deleted_groups`), read-modify-written so the
-/// HOOKS section and its tombstones are preserved untouched. Same durability (not correctness)
-/// contract: the live config already swapped; a write failure is logged, never fatal. `None` path is a
-/// no-op. `deleted_add`/`deleted_remove` tombstone/untombstone a group name; a wholesale write (both
-/// `None`, e.g. rollback) reconciles away any tombstone for a name the restored registry contains.
+/// HOOKS section and its tombstones are preserved untouched. FAIL-CLOSED (matches `persist`): returns
+/// `Err` on an unreadable overlay or a write failure so `commit_and_swap` does not swap an
+/// unpersistable mutation. `None` path is a no-op success. `deleted_add`/`deleted_remove`
+/// tombstone/untombstone a group name; a wholesale write (both `None`, e.g. rollback) reconciles away
+/// any tombstone for a name the restored registry contains.
 pub(crate) fn persist_groups(
     path: Option<&Path>,
     groups: &BTreeMap<String, GroupCfg>,
     deleted_add: Option<&str>,
     deleted_remove: Option<&str>,
-) {
-    if let Some(p) = path {
-        let Some(mut doc) = load_for_rmw(p) else {
-            return;
-        };
-        if let Some(name) = deleted_add {
-            if !doc.deleted_groups.iter().any(|n| n == name) {
-                doc.deleted_groups.push(name.to_string());
-            }
-        }
-        if let Some(name) = deleted_remove {
-            doc.deleted_groups.retain(|n| n != name);
-        }
-        doc.groups = groups.clone();
-        doc.deleted_groups.retain(|name| !groups.contains_key(name));
-        doc.version = OVERLAY_VERSION;
-        if let Err(e) = write(p, &doc) {
-            tracing::warn!(error = %e, path = %p.display(), "failed to persist config overlay (groups)");
+) -> Result<(), String> {
+    let Some(p) = path else {
+        return Ok(());
+    };
+    let Some(mut doc) = load_for_rmw(p) else {
+        return Err(format!(
+            "could not read the overlay at '{}' to persist groups (refusing to overwrite a corrupt \
+             overlay)",
+            p.display()
+        ));
+    };
+    if let Some(name) = deleted_add {
+        if !doc.deleted_groups.iter().any(|n| n == name) {
+            doc.deleted_groups.push(name.to_string());
         }
     }
+    if let Some(name) = deleted_remove {
+        doc.deleted_groups.retain(|n| n != name);
+    }
+    doc.groups = groups.clone();
+    doc.deleted_groups.retain(|name| !groups.contains_key(name));
+    doc.version = OVERLAY_VERSION;
+    write(p, &doc).map_err(|e| format!("overlay write to '{}' failed: {e}", p.display()))
 }
 
 /// The `root` overlay section (1.5.0 full-config coverage): the API-settable SINGLE-VALUE config
@@ -259,21 +268,24 @@ impl RootSettings {
 /// clobbered). `None` path is a no-op. `settings` is the full desired root state (the merge of the
 /// prior overlay root + this request's fields is computed by the caller, so a `PUT /config/settings`
 /// passes the already-merged desired state here — this fn just stores it).
-pub(crate) fn persist_root(path: Option<&Path>, settings: &RootSettings) {
-    if let Some(p) = path {
-        let Some(mut doc) = load_for_rmw(p) else {
-            return;
-        };
-        doc.root = if settings.is_empty() {
-            None
-        } else {
-            Some(settings.clone())
-        };
-        doc.version = OVERLAY_VERSION;
-        if let Err(e) = write(p, &doc) {
-            tracing::warn!(error = %e, path = %p.display(), "failed to persist config overlay (root)");
-        }
-    }
+pub(crate) fn persist_root(path: Option<&Path>, settings: &RootSettings) -> Result<(), String> {
+    let Some(p) = path else {
+        return Ok(());
+    };
+    let Some(mut doc) = load_for_rmw(p) else {
+        return Err(format!(
+            "could not read the overlay at '{}' to persist root settings (refusing to overwrite a \
+             corrupt overlay)",
+            p.display()
+        ));
+    };
+    doc.root = if settings.is_empty() {
+        None
+    } else {
+        Some(settings.clone())
+    };
+    doc.version = OVERLAY_VERSION;
+    write(p, &doc).map_err(|e| format!("overlay write to '{}' failed: {e}", p.display()))
 }
 
 /// Persist the `plugin_versions` overlay section — the durable half of an explicit plugin ROLLBACK
@@ -349,24 +361,25 @@ impl OverlaySection {
 /// Clear ONE section's entries + tombstones from the persisted overlay, IF persistence is enabled —
 /// the durable half of a per-section reset (`DELETE /api/v1/admin/overlay/{section}`). Read-modify-write
 /// so the OTHER section (its API-applied entries and tombstones) is carried forward verbatim: a
-/// `groups` reset must not resurrect an API-deleted hook, and vice-versa. Same durability (not
-/// correctness) contract as `persist`/`persist_groups`: the live config already reverted, so a write
-/// failure is logged, never fatal. `None` path is a no-op; an unreadable overlay is REFUSED (clearing
-/// it would silently drop the other section's tombstones).
-pub(crate) fn clear_section(path: Option<&Path>, section: OverlaySection) {
-    if let Some(p) = path {
-        let Some(mut doc) = load_for_rmw(p) else {
-            return;
-        };
-        doc.clear_section(section);
-        doc.version = OVERLAY_VERSION;
-        if let Err(e) = write(p, &doc) {
-            tracing::warn!(
-                error = %e, path = %p.display(), section = section.as_str(),
-                "failed to persist config overlay (section reset)"
-            );
-        }
-    }
+/// `groups` reset must not resurrect an API-deleted hook, and vice-versa. FAIL-CLOSED (matches
+/// `persist`/`persist_groups`): returns `Err` on an unreadable overlay (REFUSED — clearing it would
+/// silently drop the other section's tombstones) or a write failure, so `commit_and_swap` does not
+/// swap a reset it could not durably record. `None` path is a no-op success.
+pub(crate) fn clear_section(path: Option<&Path>, section: OverlaySection) -> Result<(), String> {
+    let Some(p) = path else {
+        return Ok(());
+    };
+    let Some(mut doc) = load_for_rmw(p) else {
+        return Err(format!(
+            "could not read the overlay at '{}' to reset the '{}' section (refusing to overwrite a \
+             corrupt overlay)",
+            p.display(),
+            section.as_str()
+        ));
+    };
+    doc.clear_section(section);
+    doc.version = OVERLAY_VERSION;
+    write(p, &doc).map_err(|e| format!("overlay write to '{}' failed: {e}", p.display()))
 }
 
 /// The persisted overlay document: the API-applied hook registry + global-hook wiring, plus TOMBSTONES
@@ -736,12 +749,16 @@ mod tests {
         ));
         let corrupt = b"{ this is not valid json and may hide tombstones";
         std::fs::write(&path, corrupt).unwrap();
-        persist(
+        let err = persist(
             Some(&path),
             &HashMap::from([("newhook".to_string(), gate())]),
             &["newhook".to_string()],
             Some("deleteme"),
             None,
+        );
+        assert!(
+            err.is_err(),
+            "persisting onto a corrupt overlay must FAIL CLOSED (refuse), not silently proceed"
         );
         let raw = std::fs::read(&path).expect("file still present");
         assert_eq!(
@@ -778,7 +795,8 @@ mod tests {
             &["x".to_string()],
             None,
             None,
-        );
+        )
+        .expect("persist");
         let doc = read(&path).expect("read back");
         assert!(
             !doc.deleted.iter().any(|n| n == "x"),
@@ -844,7 +862,8 @@ mod tests {
             &["h".to_string()],
             None,
             None,
-        );
+        )
+        .expect("persist");
         let doc = read(&path).expect("read back");
         assert!(doc.hooks.contains_key("h"), "hook written");
         assert!(
@@ -883,7 +902,8 @@ mod tests {
             &BTreeMap::from([("x".to_string(), group_with_budget())]),
             None,
             None,
-        );
+        )
+        .expect("persist groups");
         let doc = read(&path).expect("read back");
         assert!(
             doc.hooks.contains_key("keepme"),
@@ -983,7 +1003,7 @@ mod tests {
             },
         )
         .unwrap();
-        clear_section(Some(&path), OverlaySection::Groups);
+        clear_section(Some(&path), OverlaySection::Groups).expect("clear groups section");
         let doc = read(&path).expect("read back");
         assert!(
             doc.groups.is_empty() && doc.deleted_groups.is_empty(),
@@ -1013,7 +1033,10 @@ mod tests {
         ));
         let corrupt = b"{ not valid json hiding tombstones";
         std::fs::write(&path, corrupt).unwrap();
-        clear_section(Some(&path), OverlaySection::Groups);
+        assert!(
+            clear_section(Some(&path), OverlaySection::Groups).is_err(),
+            "clearing a section on a corrupt overlay must FAIL CLOSED (refuse), not clobber it"
+        );
         let raw = std::fs::read(&path).expect("still present");
         assert_eq!(
             raw, corrupt,
@@ -1097,7 +1120,7 @@ mod tests {
             },
         )
         .unwrap();
-        persist_root(Some(&path), &sample_root());
+        persist_root(Some(&path), &sample_root()).expect("persist root");
         let doc = read(&path).expect("read back");
         assert!(
             doc.root
@@ -1113,7 +1136,7 @@ mod tests {
             "group tombstones preserved"
         );
         // Storing an empty root clears the section.
-        persist_root(Some(&path), &RootSettings::default());
+        persist_root(Some(&path), &RootSettings::default()).expect("persist empty root");
         let doc = read(&path).expect("read back after clear");
         assert!(doc.root.is_none(), "empty root clears the section");
         assert!(doc.hooks.contains_key("keepme"), "hooks still preserved");
