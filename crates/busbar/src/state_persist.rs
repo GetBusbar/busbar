@@ -61,11 +61,12 @@ pub(crate) fn write(path: &Path, state: &PersistedState) -> Result<(), String> {
     // before the data blocks reach the device would surface a torn/zero-length `busbar-state.json`,
     // contradicting this module's "never a torn read" claim. fsync closes that window for real.
     {
-        let mut f = std::fs::File::create(&tmp)
-            .map_err(|e| format!("create {}: {e}", tmp.display()))?;
+        let mut f =
+            std::fs::File::create(&tmp).map_err(|e| format!("create {}: {e}", tmp.display()))?;
         f.write_all(&bytes)
             .map_err(|e| format!("write {}: {e}", tmp.display()))?;
-        f.flush().map_err(|e| format!("flush {}: {e}", tmp.display()))?;
+        f.flush()
+            .map_err(|e| format!("flush {}: {e}", tmp.display()))?;
         f.sync_all()
             .map_err(|e| format!("fsync {}: {e}", tmp.display()))?;
     }

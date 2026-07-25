@@ -1200,11 +1200,19 @@ mod tests {
         // PER-NAME first-party floor overrides: each pinned name gets exactly its pinned version;
         // there is no global floor, so an unpinned first-party plugin is unaffected (M1).
         assert_eq!(
-            deploy.plugins.first_party_floors.get("acme-store-x").map(String::as_str),
+            deploy
+                .plugins
+                .first_party_floors
+                .get("acme-store-x")
+                .map(String::as_str),
             Some("1.4.0"),
         );
         assert_eq!(
-            deploy.plugins.first_party_floors.get("busbar-store-redis").map(String::as_str),
+            deploy
+                .plugins
+                .first_party_floors
+                .get("busbar-store-redis")
+                .map(String::as_str),
             Some("1.5.0"),
         );
     }

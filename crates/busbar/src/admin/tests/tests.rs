@@ -5906,7 +5906,10 @@ async fn test_max_keys_per_principal_atomic_under_concurrent_mint() {
             ..Default::default()
         },
     )]);
-    let mut app = TestApp::new().governance(gov.clone()).groups_tree(groups).build();
+    let mut app = TestApp::new()
+        .governance(gov.clone())
+        .groups_tree(groups)
+        .build();
     {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
         inner.max_keys_per_principal = 3;

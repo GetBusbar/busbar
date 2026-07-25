@@ -606,6 +606,17 @@ pub(crate) async fn create_key(
     // it exists and `parent` is given, `parent` must match the actual parent (409 otherwise). A key
     // with NO group is authed + unlimited (access only) — nothing to resolve.
     let mut provisioned_group = false;
+    // TOCTOU (audit MEDIUM, mint parity with the `update_key` rebind fix): `resolve_mint_group`
+    // validates/auto-provisions the bound group under `CONFIG_MUTATION_LOCK`, but it RELEASES that
+    // lock on return — so a concurrent group DELETE could land between the resolution and the mint's
+    // store write below, durably binding the freshly minted key to a nonexistent group (which then
+    // fails every request on that key closed at admission). Group create/DELETE run under this SAME
+    // lock (and DELETE refuses while keys are still bound), so once a bound group is resolved we hold
+    // the lock across a fresh re-verification AND the mint: either a racing DELETE lands first (our
+    // re-check sees the group gone → fail closed) or it is blocked until the key is bound (then DELETE
+    // sees the bound key → 409). The guard lives until the end of this function, spanning the mint's
+    // `spawn_blocking`. A groupless key has nothing to bind, so it needs no guard.
+    let mut _config_guard: Option<tokio::sync::MutexGuard<'static, ()>> = None;
     if let Some(group) = req.group.as_deref() {
         match crate::admin::v1::json::resolve_mint_group(
             &handle,
@@ -618,6 +629,22 @@ pub(crate) async fn create_key(
             Ok(provisioned) => provisioned_group = provisioned,
             Err(e) => return err_to_key_response(&e),
         }
+        // Acquire the mutation lock AFTER resolution (which takes it internally) and re-read the LIVE
+        // App under it: the group must STILL exist right before we bind it. `cost.group_named` is the
+        // enforcement truth every admission uses — the exact check a DELETE removes. Hold the guard
+        // across the mint below so a DELETE cannot slip in between this check and the store write.
+        let guard = crate::admin::v1::json::config_mutation_guard().await;
+        if handle.load().cost.group_named(group).is_none() {
+            return error_response(
+                StatusCode::CONFLICT,
+                ERR_TYPE_CONFLICT,
+                format!(
+                    "group '{group}' was deleted concurrently with this mint; retry against an \
+                     existing group",
+                ),
+            );
+        }
+        _config_guard = Some(guard);
     } else if req.parent.is_some() {
         // `parent` without `group` has nothing to root — a loud 400 beats silently ignoring it.
         return error_response(
@@ -701,7 +728,8 @@ pub(crate) async fn create_key(
             if let Some((group, n)) = check_cap(&gov, &cap_group, cap)? {
                 return Ok(MintOutcome::AtCap { group, n });
             }
-            gov.mint_signed_with_aws(spec, exp, now).map(MintOutcome::Minted)
+            gov.mint_signed_with_aws(spec, exp, now)
+                .map(MintOutcome::Minted)
         })
         .await;
         match res {
