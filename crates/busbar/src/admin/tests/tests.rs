@@ -238,7 +238,7 @@ async fn test_admin_v1_topology_reads_pools_models_providers() {
 
 /// `GET /api/v1/admin/pools/{name}` projects each member's LIVE status (usable/cooldown/concurrency/
 /// inflight/tallies) from the store; 404s an unknown pool.
-/// Re-audit HIGH-1: EVERY response under the native-API root speaks the frozen envelope —
+/// EVERY response under the native-API root speaks the frozen envelope —
 /// including unmatched paths (404 `not_found`) and wrong methods (405 `method_not_allowed`),
 /// which previously fell through to the data plane's vendor-native shaping (`error.type`).
 #[tokio::test]
@@ -286,7 +286,7 @@ async fn test_api_root_unmatched_paths_speak_the_admin_envelope() {
     handle.abort();
 }
 
-/// Re-audit HIGH-2: governance-off semantics are UNAMBIGUOUS — collection reads answer the
+/// Governance-off semantics are UNAMBIGUOUS — collection reads answer the
 /// truthful empty page, single reads a truthful 404, and writes a 409 `conflict` with an
 /// actionable message (previously everything was 404, making `not_found` mean two things).
 #[tokio::test]
@@ -5959,7 +5959,7 @@ async fn test_max_keys_per_principal_cap_trips() {
 /// The three refusals the 1.5.0 anti-sprawl work SHIPPED WITHOUT A DRIVER, and what their absence
 /// hid. Split out of the `#[tokio::test]` so the class-level drift test can run it.
 ///
-/// 1. **`PATCH /keys/{id}` rebind into an at-cap group** — the round-5 HIGH-9 fix. Only its pure
+/// 1. **`PATCH /keys/{id}` rebind into an at-cap group**. Only its pure
 /// predicate (`check_key_cap`) was tested; the HANDLER arm that turns it into a 409 had no test
 /// at all, so `contract::taxonomy` never declared `Conflict/AtKeyCap` for that operation and
 /// `openapi.json` documented a `409` that named only `GovernanceOff`. The under-claim guard could

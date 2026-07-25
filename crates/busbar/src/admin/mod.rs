@@ -1090,7 +1090,7 @@ pub(crate) async fn update_key(
                         return Ok(UpdateOutcome::EtagStale);
                     }
                 }
-                // ANTI-SPRAWL CAP ON EVERY PATCH THAT ADDS A LIVE KEY TO A BUCKET (audit round-5
+                // ANTI-SPRAWL CAP ON EVERY PATCH THAT ADDS A LIVE KEY TO A BUCKET
                 // HIGH-9, tightened round-6). `max_keys_per_principal` was enforced only at MINT,
                 // so a PATCH could walk a principal past its own ceiling one rebind at a time —
                 // mint N keys under an empty group, then rebind them all onto the capped one.
@@ -1207,7 +1207,7 @@ pub(crate) async fn list_keys(
     // one pagination grammar across keys/audit/versions/topology.
     // Default 200 / hard cap 1000 — the SAME limit policy as the audit/versions lists (one
     // pagination grammar, one limit policy; an unbounded default response is exactly what
-    // pagination exists to prevent — re-audit M9).
+    // pagination exists to prevent).
     let limit = match q.get("limit") {
         None => crate::admin::v1::contract::LIST_LIMIT_DEFAULT,
         Some(v) => match v.parse::<usize>() {
@@ -1304,7 +1304,7 @@ pub(crate) async fn rotate_key(
         resource: &resource,
         actor: &actor,
     };
-    // IDEMPOTENT ROTATE (optional `Idempotency-Key`, re-audit M10): rotate is the one other
+    // IDEMPOTENT ROTATE (optional `Idempotency-Key`): rotate is the one other
     // destructive, secret-bearing POST — a network-level retry without this mints TWICE and the
     // first (lost) response's secret is silently dead. Same mechanics as create's idempotent mint
     // (principal-scoped cache + in-flight reservation), with the cache key additionally scoped by

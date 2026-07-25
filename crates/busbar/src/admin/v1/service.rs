@@ -1529,7 +1529,7 @@ impl AdminService {
 
 /// Project a `HookCfg` into the ONE wire `HookView` shape, against an explicit global-wiring list —
 /// shared by the live reads (`self.app.global_hooks`) AND the version-history read (the SNAPSHOT's
-/// own wiring), so a hook has exactly one wire representation everywhere (re-audit M6: the versions
+/// own wiring), so a hook has exactly one wire representation everywhere (the versions
 /// endpoint previously serialized the raw `HookCfg` file shape — a second, accidental wire schema).
 /// `global` is true when the hook is named in the wiring list OR declares inline `global: true`.
 pub(crate) fn project_hook_view(name: &str, cfg: &HookCfg, global_hooks: &[String]) -> HookView {

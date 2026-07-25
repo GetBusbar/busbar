@@ -312,7 +312,7 @@ pub(crate) fn valid_metric_name(name: &str) -> bool {
         && bytes.all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'_'))
 }
 
-/// Char-boundary-safe sanitize + cap (re-audit F1: `String::truncate` takes BYTES and panics off a
+/// Char-boundary-safe sanitize + cap (`String::truncate` takes BYTES and panics off a
 /// char boundary; `.chars().take(n)` is panic-free and matches the documented "≤ N chars" rule).
 fn sanitize_cap(raw: &str, n: usize) -> String {
     sanitize_reject_message(raw).chars().take(n).collect()
@@ -675,7 +675,7 @@ pub(crate) fn normalize(parsed: HookResponse, candidates: &[Candidate<'_>]) -> R
 
 #[cfg(test)]
 mod tests {
-    /// Re-audit F1 REGRESSION: a hook-supplied multi-byte help/label/unit must cap at a CHAR
+    /// A hook-supplied multi-byte help/label/unit must cap at a CHAR
     /// boundary, never panic (String::truncate takes bytes — 100 × '€' panicked the admin handler).
     #[test]
     fn status_metric_hints_cap_char_safe() {
