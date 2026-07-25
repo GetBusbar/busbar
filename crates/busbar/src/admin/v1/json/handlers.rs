@@ -380,8 +380,26 @@ pub(crate) async fn rollback_plugin(
     };
     // Persist the pin FIRST, so the rebuild (which re-reads the overlay) derives the lowered floor and
     // loads the prior artifact. Durability precedes the swap: if the process died between here and the
-    // swap, a restart would come up already rolled back (the safe direction).
-    crate::config::overlay::persist_plugin_versions(Some(&overlay_path), &pins);
+    // swap, a restart would come up already rolled back (the safe direction). This persist is the WHOLE
+    // point of the rollback — a swallowed failure would swap the LIVE engine to the prior plugin while
+    // disk still carries the rolled-FORWARD state, so a restart would silently re-upgrade (defeating the
+    // operator's explicit, audited decision) AND the rebuild below re-reads this overlay to derive the
+    // lowered floor, so a non-persisted pin would rebuild against the wrong floor. Use the Result-
+    // returning variant and FAIL CLOSED (nothing swapped) if it did not land.
+    if let Err(e) = crate::config::overlay::try_persist_plugin_versions(Some(&overlay_path), &pins)
+    {
+        tracing::error!(plugin = %resource, error = %e, "plugin rollback: persisting the version pin failed; nothing swapped");
+        audit::AUDIT.record_by(
+            "plugin.rollback",
+            &resource,
+            audit::OUTCOME_REJECTED,
+            &actor,
+        );
+        return err_json(&AdminError::Validation(format!(
+            "plugin rollback could not persist the version pin to the overlay: {e}; nothing was \
+             changed (the running engine still serves the current plugin)"
+        )));
+    }
     match rebuild_app_from_disk(&current) {
         Ok(next) => {
             let installed = Arc::new(next);

@@ -283,16 +283,11 @@ pub(crate) fn persist_root(path: Option<&Path>, settings: &RootSettings) {
 /// pins + this rollback), so an empty map clears the section (every pin lifted). `None` path is a
 /// no-op (persistence disabled). Best-effort: the live policy already swapped, so this is durability
 /// (a restart re-derives the same lowered floor from the persisted pin), never correctness.
-pub(crate) fn persist_plugin_versions(path: Option<&Path>, pins: &BTreeMap<String, String>) {
-    if let Err(e) = try_persist_plugin_versions(path, pins) {
-        tracing::warn!(error = %e, "failed to persist config overlay (plugin_versions)");
-    }
-}
-
-/// Result-returning variant of [`persist_plugin_versions`]. The default caller treats a failed write
-/// as best-effort (warn + continue), but the rollback COMPENSATION path (reverting a pin after a failed
-/// rebuild) must know whether the revert itself failed — a silently-swallowed failure there would leave
-/// a stale rolled-forward pin on disk that a restart would then honor, contradicting the running engine.
+/// Persist the plugin version-pin section (read-modify-WRITE; siblings preserved). Returns whether the
+/// write landed: the rollback path (both the forward persist and the compensating revert after a failed
+/// rebuild) must FAIL CLOSED on a persist error — a silently-swallowed failure would leave disk out of
+/// sync with the running engine (a stale pin a restart would honor, contradicting the live policy), so
+/// every caller propagates the error rather than warning-and-continuing.
 pub(crate) fn try_persist_plugin_versions(
     path: Option<&Path>,
     pins: &BTreeMap<String, String>,
@@ -1254,8 +1249,8 @@ mod tests {
         );
     }
 
-    /// `persist_plugin_versions` round-trips the pin map AND preserves the hooks/groups/root sections;
-    /// storing an empty map clears the section (every pin lifted → the base floors return).
+    /// `try_persist_plugin_versions` round-trips the pin map AND preserves the hooks/groups/root
+    /// sections; storing an empty map clears the section (every pin lifted → the base floors return).
     #[test]
     fn persist_plugin_versions_round_trips_and_preserves_siblings() {
         let dir = std::env::temp_dir();
@@ -1270,7 +1265,7 @@ mod tests {
         )
         .unwrap();
         let pins = BTreeMap::from([("acme-store-x".to_string(), "1.4.0".to_string())]);
-        persist_plugin_versions(Some(&path), &pins);
+        try_persist_plugin_versions(Some(&path), &pins).unwrap();
         let doc = read(&path).expect("read back");
         assert_eq!(
             doc.plugin_versions.get("acme-store-x").map(String::as_str),
@@ -1285,7 +1280,7 @@ mod tests {
         );
 
         // Clearing the pins restores the base floors and preserves siblings.
-        persist_plugin_versions(Some(&path), &BTreeMap::new());
+        try_persist_plugin_versions(Some(&path), &BTreeMap::new()).unwrap();
         let doc = read(&path).expect("read back after clear");
         assert!(doc.plugin_versions.is_empty(), "pins cleared");
         assert!(doc.hooks.contains_key("keepme"), "hooks still preserved");
