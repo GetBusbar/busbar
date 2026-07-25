@@ -1113,3 +1113,156 @@ fn secret_ref_wrong_kind_plugin_fails_at_preflight() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ── CREDENTIAL SecretRefs RE-RESOLVE ON APPLY/RELOAD (audit round-5 HIGH-7) ──────────────────────
+//
+// `GovState` is process-lifetime and REUSED across every config apply/reload (the key cache,
+// ledgers and rate windows must survive one). Its admin-token digest and signing key were resolved
+// ONCE at construction and then frozen, so an operator who rotated the underlying secret behind
+// `auth.admin_auth[admin-tokens].token` or `auth.signing_key` and reloaded got NO effect: the
+// process kept accepting the boot-time credential for the rest of its life, while every signal it
+// gave said the rotation had landed. These drive the REAL `build_app_from_config` apply path.
+
+/// Build a minimal, valid RootCfg whose admin token and signing key are `file:` secret refs, so a
+/// rotation is "write different bytes to the same path".
+fn cfg_with_credentials(
+    token_path: &std::path::Path,
+    key_path: &std::path::Path,
+) -> crate::config::RootCfg {
+    let mut cfg =
+        cfg_with_provider_api_key(crate::config::SecretRef::env("BUSBAR_TEST_NO_SUCH_KEY"));
+    let mut admin_entry = crate::config::AuthChainEntry::bare(crate::config::ADMIN_TOKENS_MODULE);
+    admin_entry.token = Some(crate::config::SecretRef::file(
+        token_path.to_string_lossy().to_string(),
+    ));
+    cfg.auth = Some(crate::config::AuthCfg {
+        signing_key: Some(crate::config::SecretRef::file(
+            key_path.to_string_lossy().to_string(),
+        )),
+        upstream_credentials: crate::auth::UpstreamCreds::Own,
+        chain: vec![],
+        admin_auth: vec![admin_entry],
+        role_bindings: crate::config::RoleBindings::new(),
+    });
+    cfg
+}
+
+fn build_once(
+    cfg: crate::config::RootCfg,
+    prior: Option<&crate::state::App>,
+) -> Result<crate::state::App, String> {
+    crate::build_app_from_config(
+        cfg,
+        crate::config::PluginsCfg::default(),
+        None,
+        std::collections::HashSet::new(),
+        std::collections::HashSet::new(),
+        (None, None),
+        prior,
+    )
+}
+
+/// Rotating the admin-token secret on disk and RE-APPLYING changes the credential the process
+/// accepts. RED without the re-resolution: the digest stays on `tok-v1` forever.
+#[test]
+fn admin_token_secret_ref_re_resolves_on_apply() {
+    crate::metrics::init();
+    let dir = std::env::temp_dir().join(format!("busbar-high7-token-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let token_path = dir.join("admin.token");
+    let key_path = dir.join("signing.key");
+    std::fs::write(&token_path, "tok-v1").unwrap();
+    std::fs::write(&key_path, hex::encode([7u8; 32])).unwrap();
+
+    let prior = build_once(cfg_with_credentials(&token_path, &key_path), None).expect("boot");
+    let gov = prior.governance.clone().expect("governance");
+    assert_eq!(
+        gov.admin_token_hash().as_deref(),
+        Some(crate::sigv4::sha256_hex(b"tok-v1").as_str()),
+        "boot accepts the resolved token"
+    );
+
+    // THE ROTATION: the operator replaces the secret behind the ref, then reloads.
+    std::fs::write(&token_path, "tok-v2").unwrap();
+    let next =
+        build_once(cfg_with_credentials(&token_path, &key_path), Some(&prior)).expect("apply");
+
+    assert!(
+        std::sync::Arc::ptr_eq(next.governance.as_ref().unwrap(), &gov),
+        "the apply REUSES the same GovState (keys/ledgers survive) — the credential is swapped in place"
+    );
+    assert_eq!(
+        gov.admin_token_hash().as_deref(),
+        Some(crate::sigv4::sha256_hex(b"tok-v2").as_str()),
+        "the rotated admin token is the one now accepted"
+    );
+    assert_ne!(
+        gov.admin_token_hash().as_deref(),
+        Some(crate::sigv4::sha256_hex(b"tok-v1").as_str()),
+        "the pre-rotation admin token is no longer accepted"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The same for `auth.signing_key`: after rotating the key material and re-applying, a token minted
+/// under the OLD key no longer verifies and a freshly-minted one does. A resolution FAILURE on
+/// apply is fail-closed — the apply is refused rather than silently keeping the old key.
+#[test]
+fn signing_key_secret_ref_re_resolves_on_apply_and_fails_closed() {
+    crate::metrics::init();
+    let dir = std::env::temp_dir().join(format!("busbar-high7-signing-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let token_path = dir.join("admin.token");
+    let key_path = dir.join("signing.key");
+    std::fs::write(&token_path, "tok").unwrap();
+    std::fs::write(&key_path, hex::encode([7u8; 32])).unwrap();
+
+    let prior = build_once(cfg_with_credentials(&token_path, &key_path), None).expect("boot");
+    let gov = prior.governance.clone().expect("governance");
+    let spec = crate::governance::NewKeySpec {
+        name: "k".into(),
+        allowed_pools: None,
+        group: None,
+        labels: Default::default(),
+    };
+    let now = crate::store::now();
+    let (_binding, old_token) = gov.mint_signed(spec, now + 10_000, now).expect("mint");
+    assert!(
+        gov.verify_token(&old_token, now).is_some(),
+        "valid pre-rotation"
+    );
+
+    // THE ROTATION: new key material behind the same ref, then reload.
+    std::fs::write(&key_path, hex::encode([9u8; 32])).unwrap();
+    build_once(cfg_with_credentials(&token_path, &key_path), Some(&prior)).expect("apply");
+
+    assert!(
+        gov.verify_token(&old_token, now).is_none(),
+        "a token minted under the PRE-rotation signing key must stop verifying after the reload"
+    );
+    let spec2 = crate::governance::NewKeySpec {
+        name: "k2".into(),
+        allowed_pools: None,
+        group: None,
+        labels: Default::default(),
+    };
+    let (_b2, fresh) = gov
+        .mint_signed(spec2, now + 10_000, now)
+        .expect("mint under the new key");
+    assert!(
+        gov.verify_token(&fresh, now).is_some(),
+        "the engine mints AND verifies under the rotated key (signer and verifier swap as one unit)"
+    );
+
+    // FAIL-CLOSED: an unresolvable ref refuses the apply outright.
+    std::fs::remove_file(&key_path).unwrap();
+    let err = match build_once(cfg_with_credentials(&token_path, &key_path), Some(&prior)) {
+        Err(e) => e,
+        Ok(_) => panic!("an unresolvable signing-key ref must refuse the apply"),
+    };
+    assert!(
+        err.contains("signing_key"),
+        "the refusal names the ref: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
