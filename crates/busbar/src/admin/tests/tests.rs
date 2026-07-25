@@ -6705,6 +6705,26 @@ async fn test_signing_key_rotate_reports_kid_and_revoke_all() {
     );
     assert_eq!(body["revoke_all"], true, "rotation is revoke-all by design");
 
+    // The endpoint rotates NOTHING — it reads the current kid and returns instructions. The audit
+    // row must not claim otherwise: `signing_key.rotate`/`applied` told a reader every outstanding
+    // token had been revoked. The row itself stays, because a valid admin token calling this
+    // repeatedly is exactly the probing the log exists to record.
+    let rows = crate::admin::audit::AUDIT.list_filtered(
+        0,
+        crate::admin::audit::MAX_AUDIT_ENTRIES,
+        None,
+        Some("signing-key"),
+    );
+    assert!(
+        rows.iter().any(|e| e.action == "signing_key.report"
+            && e.outcome == crate::admin::audit::OUTCOME_APPLIED),
+        "the report is recorded under a verb that does not claim a mutation"
+    );
+    assert!(
+        !rows.iter().any(|e| e.action == "signing_key.rotate"),
+        "and never under a verb asserting key material changed"
+    );
+
     handle.abort();
 }
 
