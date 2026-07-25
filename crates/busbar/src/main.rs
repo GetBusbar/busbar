@@ -1471,6 +1471,20 @@ pub(crate) fn load_config_from_disk(
             unset_env_vars,
         });
     }
+    // An overlay from a NEWER busbar is refused, not ignored: it is intact and meaningful, so
+    // starting without it would run with the operator's API-registered hooks and groups — security
+    // gates included — silently absent. `--safe-mode` boots on base config alone without touching
+    // the file, so this is a one-flag recovery rather than a brick.
+    if let Some(p) = overlay_path.as_ref() {
+        if let config::overlay::OverlayReadState::VersionTooNew(v) = config::overlay::read_state(p)
+        {
+            return Err(format!(
+                "config overlay '{}' was written by a newer busbar (overlay version {v}; this                  binary understands {}). Starting without it would silently drop API-registered                  hooks and groups. Upgrade busbar, or boot with --safe-mode to run on config.yaml                  alone (the overlay is left untouched).",
+                p.display(),
+                config::overlay::OVERLAY_VERSION
+            ));
+        }
+    }
     let overlay_doc = overlay_path.as_ref().and_then(|p| {
         let doc = config::overlay::read(p);
         if let Some(ref d) = doc {

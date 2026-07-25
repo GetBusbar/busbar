@@ -97,6 +97,15 @@ fn load_for_rmw(p: &Path) -> Option<OverlayDoc> {
             );
             None
         }
+        OverlayReadState::VersionTooNew(v) => {
+            tracing::error!(
+                path = %p.display(), overlay_version = v, understood = OVERLAY_VERSION,
+                "config overlay was written by a NEWER busbar; REFUSING to overwrite it — this \
+                 binary cannot represent everything it holds, so a write would silently discard \
+                 whatever it does not understand. This apply is NOT persisted."
+            );
+            None
+        }
     }
 }
 
@@ -504,6 +513,16 @@ pub(crate) fn read(path: &Path) -> Option<OverlayDoc> {
             );
             None
         }
+        OverlayReadState::VersionTooNew(v) => {
+            // NOT the corrupt path: this overlay is intact and meaningful. Ignoring it would run
+            // without hooks and groups the operator believes are persisted — security gates
+            // included — so the boot caller refuses to start rather than silently disarming them.
+            tracing::error!(
+                path = %path.display(), overlay_version = v, understood = OVERLAY_VERSION,
+                "config overlay was written by a NEWER busbar than this one"
+            );
+            None
+        }
     }
 }
 
@@ -517,13 +536,25 @@ pub(crate) enum OverlayReadState {
     // (clippy `large_enum_variant`). The box keeps the enum pointer-sized.
     Loaded(Box<OverlayDoc>),
     Unreadable,
+    /// Written by a NEWER busbar than this one. Distinct from `Unreadable` on purpose: a corrupt
+    /// overlay has lost its bytes and there is nothing to honour, but this one is intact and
+    /// meaningful — silently ignoring it would run without hooks and groups the operator believes
+    /// are persisted, security gates included.
+    VersionTooNew(u32),
 }
 
 pub(crate) fn read_state(path: &Path) -> OverlayReadState {
     match std::fs::read(path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => OverlayReadState::Absent,
         Err(_) => OverlayReadState::Unreadable,
-        Ok(bytes) => match serde_json::from_slice(&bytes) {
+        Ok(bytes) => match serde_json::from_slice::<Box<OverlayDoc>>(&bytes) {
+            // A newer overlay may have added a section this binary drops, or changed how an existing
+            // one is represented — neither is visible as a parse error, so the version is the only
+            // signal. 1.5.0 is the first release that can refuse one; a binary without this check
+            // never can, whatever number is stamped.
+            Ok(doc) if doc.version > OVERLAY_VERSION => {
+                OverlayReadState::VersionTooNew(doc.version)
+            }
             Ok(doc) => OverlayReadState::Loaded(doc),
             Err(_) => OverlayReadState::Unreadable,
         },
@@ -631,6 +662,55 @@ pub(crate) fn merge_into(cfg: &mut RootCfg, doc: OverlayDoc) {
     }
     for name in &doc.deleted_groups {
         cfg.groups.remove(name);
+    }
+}
+
+#[cfg(test)]
+mod version_gate_tests {
+    use super::*;
+
+    /// An overlay from a NEWER busbar is refused, both for reading and for writing. It is intact and
+    /// meaningful — unlike a corrupt one — so ignoring it would run with the operator's
+    /// API-registered hooks and groups silently absent, security gates included. 1.5.0 is the first
+    /// release that can refuse one at all: a binary without this check never will, whatever version
+    /// a future overlay stamps.
+    #[test]
+    fn an_overlay_from_a_newer_busbar_is_refused_not_ignored() {
+        let dir = std::env::temp_dir().join(format!("busbar-overlay-vgate-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("overlay.json");
+        std::fs::write(
+            &path,
+            serde_json::json!({
+                "version": OVERLAY_VERSION + 1,
+                "hooks": { "gate": { "kind": "gate", "plugin": "x" } }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert!(
+            matches!(read_state(&path), OverlayReadState::VersionTooNew(v) if v == OVERLAY_VERSION + 1),
+            "a newer overlay is classified distinctly from corrupt"
+        );
+        assert!(
+            read(&path).is_none(),
+            "and is not merged onto the resolved config"
+        );
+        assert!(
+            load_for_rmw(&path).is_none(),
+            "and is never overwritten — a write would discard what this binary cannot represent"
+        );
+
+        // The current version still loads, so the gate is a ceiling and not a wall.
+        std::fs::write(
+            &path,
+            serde_json::json!({ "version": OVERLAY_VERSION, "hooks": {} }).to_string(),
+        )
+        .unwrap();
+        assert!(read(&path).is_some(), "the understood version still loads");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
