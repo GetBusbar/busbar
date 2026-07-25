@@ -360,6 +360,7 @@ impl GovState {
         };
         cell.accrue(model, tokens);
         cell.dirty = true;
+        cell.last_touch = now;
     }
 
     /// Record one completed response's RAW consumption into the per-(key, day-bucket, model,
@@ -778,6 +779,10 @@ impl GovState {
                 ledger.billable_requests
             };
             let mut cell = BudgetCell::fresh(window);
+            // Stamp as touched NOW, not 0: an unstamped hydrated cell is instantly older than any
+            // TTL, so the first post-boot sweep would discard every restored key's history before
+            // that key had served a single request.
+            cell.last_touch = now;
             cell.requests = ledger.requests;
             cell.flushed_requests = ledger.requests;
             cell.billable_requests = billable;
@@ -1095,8 +1100,19 @@ impl GovState {
             let mut map = shard.map.write().unwrap_or_else(|p| p.into_inner());
             if sweep_needed {
                 let max_window = 31 * super::SECS_PER_DAY;
-                map.retain(|_, c| {
-                    c.window_start == 0 || c.window_start.saturating_add(max_window) > now
+                map.retain(|id, c| {
+                    if c.window_start != 0 {
+                        return c.window_start.saturating_add(max_window) > now;
+                    }
+                    // The all-time window never rolls, so age these by last use instead. ONLY the
+                    // attribution cells: a `group:` cell in the all-time window holds an ENFORCED
+                    // cap whose spend must not reset, and hydrate is boot-only so it would never
+                    // come back. A key's own bucket is uncapped by construction
+                    // (`cost::chain_for` pins its caps to `None`) and the flush is additive, so
+                    // dropping a clean, long-idle one loses no enforcement and no durable data.
+                    id.starts_with("group:")
+                        || c.dirty
+                        || c.last_touch.saturating_add(max_window) > now
                 });
                 // Bound the per-cell `models` Vec too: a never-rolled cell (the all-time
                 // `window_start == 0` bucket) accumulates a dead `ModelCell` for every model name
@@ -1211,6 +1227,7 @@ impl GovState {
             cell.requests = cell.requests.saturating_add(1);
             cell.billable_requests = cell.billable_requests.saturating_add(1);
             cell.dirty = true;
+            cell.last_touch = now;
         }
         Ok(grant)
     }
