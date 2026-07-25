@@ -7230,3 +7230,515 @@ fn test_config_settings_scope_matrix() {
         "a root reset is a full-scope mutation"
     );
 }
+
+// ── KEYS ERROR SURFACE — BYTE-PARITY LOCK ────────────────────────────────────────────────────────
+//
+// The keys handlers historically spoke their OWN error vocabulary (`error_response` + `ERR_TYPE_*`,
+// re-mapped onto the frozen `code` enum in a second place) while every other v1 handler spoke
+// `AdminError` + `err_json`. Design D route 2 collapses that second vocabulary onto the one
+// taxonomy. The collapse must be INVISIBLE on the wire: this test pins the EXACT status,
+// content-type and body BYTES of every keys error path, so the refactor is provably a no-op for
+// clients and any future divergence between the two surfaces is a red test, not a support ticket.
+//
+// Regenerate deliberately with `UPDATE_KEYS_ERROR_GOLDEN=1 cargo test -p busbar
+// keys_error_surface_is_byte_stable` — a diff in that file is a WIRE CHANGE on a frozen surface.
+
+/// The governance posture a keys error case is exercised against.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum KeysFixture {
+    /// Governance on, signing key present — the normal server.
+    Signing,
+    /// Governance on, NO signing key — mint and signing-key rotate have nothing to sign with.
+    NoSigner,
+    /// Governance off entirely — the whole keys resource is unavailable.
+    Off,
+}
+
+/// One pinned keys error case: a request, and the fixture it runs against.
+struct KeysErrCase {
+    name: &'static str,
+    fixture: KeysFixture,
+    method: &'static str,
+    /// Path relative to `/api/v1/admin`; `{live}` is substituted with the id of a minted key.
+    path: &'static str,
+    headers: &'static [(&'static str, &'static str)],
+    body: Option<&'static str>,
+}
+
+/// The committed byte-for-byte snapshot of the keys error wire.
+const KEYS_ERROR_GOLDEN: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/src/admin/tests/keys_error_wire.json"
+);
+
+/// Serve one fixture, returning its address, the server task, and the id of a live key (empty for
+/// the postures that cannot mint).
+async fn serve_keys_fixture(
+    fixture: KeysFixture,
+) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>, String) {
+    let store: Arc<dyn crate::governance::Store> = Arc::new(MemoryStore::new());
+    let app = match fixture {
+        KeysFixture::Signing => {
+            let gov = gov_with_signer(store, Some("admintok".to_string()));
+            TestApp::new().governance(gov).build()
+        }
+        KeysFixture::NoSigner => {
+            let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
+            TestApp::new().governance(gov).build()
+        }
+        // Governance OFF: there is no governance to hold an operator token, so the fixture uses
+        // the explicit `admin_auth: []` OPEN posture (the documented dev posture) to authenticate.
+        // Otherwise every case would 401 in the middleware and never reach a keys handler.
+        KeysFixture::Off => {
+            let cfg = crate::config::AuthCfg {
+                admin_auth: Vec::new(),
+                ..crate::config::AuthCfg::default_none()
+            };
+            TestApp::new()
+                .auth(Arc::new(crate::auth::AuthMiddleware::new_builtin(&cfg)))
+                .admin_chain(Vec::new())
+                .build()
+        }
+    };
+    let router = crate::build_router(app.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    // A live key id for the stale-ETag cases (only mintable on the signing fixture).
+    let live = if fixture == KeysFixture::Signing {
+        let (key, _) = app
+            .governance
+            .as_ref()
+            .unwrap()
+            .mint_signed(
+                NewKeySpec {
+                    name: "live".into(),
+                    allowed_pools: None,
+                    group: None,
+                    labels: Default::default(),
+                },
+                crate::store::now() + 3600,
+                crate::store::now(),
+            )
+            .unwrap();
+        key.id
+    } else {
+        String::new()
+    };
+    (addr, handle, live)
+}
+
+/// BYTE-PARITY LOCK (design D route 2): every keys error response — status, content-type and body
+/// BYTES — is pinned. The keys surface is frozen v1; collapsing its private error vocabulary onto
+/// `AdminError` + `err_json` may change how the bytes are PRODUCED, never what they ARE.
+#[tokio::test]
+async fn keys_error_surface_is_byte_stable() {
+    crate::metrics::init();
+    // A 65-character id (the cap is 64) and an id that cannot exist.
+    const OVERLONG: &str = "vk_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const MISSING: &str = "vk_0000000000000000";
+    // A well-formed but WRONG key ETag (16 hex chars) — the stale-If-Match guard, not the parser.
+    const STALE_ETAG: &str = "\"00000000000000ff\"";
+    let cases: &[KeysErrCase] = &[
+        // ── GET /keys — the query string is validated at the door ─────────────────────────────
+        c(
+            "list_bad_cursor",
+            KeysFixture::Signing,
+            "GET",
+            "/keys?cursor=%21%21",
+            &[],
+            None,
+        ),
+        c(
+            "list_bad_enabled",
+            KeysFixture::Signing,
+            "GET",
+            "/keys?enabled=maybe",
+            &[],
+            None,
+        ),
+        c(
+            "list_bad_limit",
+            KeysFixture::Signing,
+            "GET",
+            "/keys?limit=lots",
+            &[],
+            None,
+        ),
+        // ── POST /keys ────────────────────────────────────────────────────────────────────────
+        c(
+            "mint_bad_json",
+            KeysFixture::Signing,
+            "POST",
+            "/keys",
+            &[],
+            Some("{"),
+        ),
+        c(
+            "mint_reserved_label",
+            KeysFixture::Signing,
+            "POST",
+            "/keys",
+            &[],
+            Some(r#"{"name":"k","labels":{"key":"v"}}"#),
+        ),
+        c(
+            "mint_both_expiry_fields",
+            KeysFixture::Signing,
+            "POST",
+            "/keys",
+            &[],
+            Some(r#"{"name":"k","expires_in":"1h","expires_at":9999999999}"#),
+        ),
+        c(
+            "mint_bad_duration",
+            KeysFixture::Signing,
+            "POST",
+            "/keys",
+            &[],
+            Some(r#"{"name":"k","expires_in":"1x"}"#),
+        ),
+        c(
+            "mint_expires_in_the_past",
+            KeysFixture::Signing,
+            "POST",
+            "/keys",
+            &[],
+            Some(r#"{"name":"k","expires_at":1}"#),
+        ),
+        c(
+            "mint_parent_without_group",
+            KeysFixture::Signing,
+            "POST",
+            "/keys",
+            &[],
+            Some(r#"{"name":"k","parent":"team"}"#),
+        ),
+        c(
+            "mint_unknown_group_no_parent",
+            KeysFixture::Signing,
+            "POST",
+            "/keys",
+            &[],
+            Some(r#"{"name":"k","group":"nope"}"#),
+        ),
+        c(
+            "mint_unknown_parent",
+            KeysFixture::Signing,
+            "POST",
+            "/keys",
+            &[],
+            Some(r#"{"name":"k","group":"leaf","parent":"nope"}"#),
+        ),
+        c(
+            "mint_no_signing_key",
+            KeysFixture::NoSigner,
+            "POST",
+            "/keys",
+            &[],
+            Some(r#"{"name":"k"}"#),
+        ),
+        c(
+            "mint_governance_off",
+            KeysFixture::Off,
+            "POST",
+            "/keys",
+            &[],
+            Some(r#"{"name":"k"}"#),
+        ),
+        // ── GET /keys/{id} ────────────────────────────────────────────────────────────────────
+        c(
+            "read_overlong_id",
+            KeysFixture::Signing,
+            "GET",
+            "/keys/{overlong}",
+            &[],
+            None,
+        ),
+        c(
+            "read_unknown",
+            KeysFixture::Signing,
+            "GET",
+            "/keys/{missing}",
+            &[],
+            None,
+        ),
+        c(
+            "read_governance_off",
+            KeysFixture::Off,
+            "GET",
+            "/keys/{missing}",
+            &[],
+            None,
+        ),
+        // ── PATCH /keys/{id} ──────────────────────────────────────────────────────────────────
+        c(
+            "patch_overlong_id",
+            KeysFixture::Signing,
+            "PATCH",
+            "/keys/{overlong}",
+            &[],
+            Some("{}"),
+        ),
+        c(
+            "patch_malformed_if_match",
+            KeysFixture::Signing,
+            "PATCH",
+            "/keys/{missing}",
+            &[("if-match", "not-an-etag")],
+            Some("{}"),
+        ),
+        c(
+            "patch_bad_json",
+            KeysFixture::Signing,
+            "PATCH",
+            "/keys/{missing}",
+            &[],
+            Some("{"),
+        ),
+        c(
+            "patch_rebind_target_missing",
+            KeysFixture::Signing,
+            "PATCH",
+            "/keys/{missing}",
+            &[],
+            Some(r#"{"group":"nope"}"#),
+        ),
+        c(
+            "patch_unknown",
+            KeysFixture::Signing,
+            "PATCH",
+            "/keys/{missing}",
+            &[],
+            Some("{}"),
+        ),
+        c(
+            "patch_stale_etag",
+            KeysFixture::Signing,
+            "PATCH",
+            "/keys/{live}",
+            &[("if-match", STALE_ETAG)],
+            Some("{}"),
+        ),
+        c(
+            "patch_governance_off",
+            KeysFixture::Off,
+            "PATCH",
+            "/keys/{missing}",
+            &[],
+            Some("{}"),
+        ),
+        // ── DELETE /keys/{id} ─────────────────────────────────────────────────────────────────
+        c(
+            "delete_overlong_id",
+            KeysFixture::Signing,
+            "DELETE",
+            "/keys/{overlong}",
+            &[],
+            None,
+        ),
+        c(
+            "delete_malformed_if_match",
+            KeysFixture::Signing,
+            "DELETE",
+            "/keys/{missing}",
+            &[("if-match", "not-an-etag")],
+            None,
+        ),
+        c(
+            "delete_unknown",
+            KeysFixture::Signing,
+            "DELETE",
+            "/keys/{missing}",
+            &[],
+            None,
+        ),
+        c(
+            "delete_stale_etag",
+            KeysFixture::Signing,
+            "DELETE",
+            "/keys/{live}",
+            &[("if-match", STALE_ETAG)],
+            None,
+        ),
+        c(
+            "delete_governance_off",
+            KeysFixture::Off,
+            "DELETE",
+            "/keys/{missing}",
+            &[],
+            None,
+        ),
+        // ── GET /keys/{id}/usage ──────────────────────────────────────────────────────────────
+        c(
+            "usage_overlong_id",
+            KeysFixture::Signing,
+            "GET",
+            "/keys/{overlong}/usage",
+            &[],
+            None,
+        ),
+        c(
+            "usage_unknown",
+            KeysFixture::Signing,
+            "GET",
+            "/keys/{missing}/usage",
+            &[],
+            None,
+        ),
+        c(
+            "usage_governance_off",
+            KeysFixture::Off,
+            "GET",
+            "/keys/{missing}/usage",
+            &[],
+            None,
+        ),
+        // ── POST /keys/{id}/rotate ────────────────────────────────────────────────────────────
+        c(
+            "rotate_unknown",
+            KeysFixture::Signing,
+            "POST",
+            "/keys/{missing}/rotate",
+            &[],
+            None,
+        ),
+        c(
+            "rotate_governance_off",
+            KeysFixture::Off,
+            "POST",
+            "/keys/{missing}/rotate",
+            &[],
+            None,
+        ),
+        // ── POST /keys/{id}/revoke ────────────────────────────────────────────────────────────
+        c(
+            "revoke_overlong_id",
+            KeysFixture::Signing,
+            "POST",
+            "/keys/{overlong}/revoke",
+            &[],
+            None,
+        ),
+        c(
+            "revoke_unknown",
+            KeysFixture::Signing,
+            "POST",
+            "/keys/{missing}/revoke",
+            &[],
+            None,
+        ),
+        c(
+            "revoke_governance_off",
+            KeysFixture::Off,
+            "POST",
+            "/keys/{missing}/revoke",
+            &[],
+            None,
+        ),
+        // ── POST /signing-key/rotate ──────────────────────────────────────────────────────────
+        c(
+            "signing_rotate_no_key",
+            KeysFixture::NoSigner,
+            "POST",
+            "/signing-key/rotate",
+            &[],
+            None,
+        ),
+        c(
+            "signing_rotate_governance_off",
+            KeysFixture::Off,
+            "POST",
+            "/signing-key/rotate",
+            &[],
+            None,
+        ),
+    ];
+
+    let client = reqwest::Client::new();
+    let mut observed = serde_json::Map::new();
+    for fixture in [
+        KeysFixture::Signing,
+        KeysFixture::NoSigner,
+        KeysFixture::Off,
+    ] {
+        let (addr, server, live) = serve_keys_fixture(fixture).await;
+        for case in cases.iter().filter(|c| c.fixture == fixture) {
+            let path = case
+                .path
+                .replace("{overlong}", OVERLONG)
+                .replace("{missing}", MISSING)
+                .replace("{live}", &live);
+            let mut req = client
+                .request(
+                    reqwest::Method::from_bytes(case.method.as_bytes()).unwrap(),
+                    format!("http://{addr}/api/v1/admin{path}"),
+                )
+                .header("x-admin-token", "admintok");
+            for (k, v) in case.headers {
+                req = req.header(*k, *v);
+            }
+            if let Some(body) = case.body {
+                req = req
+                    .header("content-type", "application/json")
+                    .body(body.to_string());
+            }
+            let resp = req.send().await.unwrap();
+            let status = resp.status().as_u16();
+            let content_type = resp
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default()
+                .to_string();
+            let body = resp.text().await.unwrap();
+            assert!(
+                (400..600).contains(&status),
+                "{} expected an error response, got {status}: {body}",
+                case.name
+            );
+            observed.insert(
+                case.name.to_string(),
+                serde_json::json!({"status": status, "content_type": content_type, "body": body}),
+            );
+        }
+        server.abort();
+    }
+
+    let fresh = format!(
+        "{}\n",
+        serde_json::to_string_pretty(&serde_json::Value::Object(observed))
+            .expect("serialize keys error wire")
+    );
+    if std::env::var("UPDATE_KEYS_ERROR_GOLDEN").is_ok_and(|v| v == "1") {
+        std::fs::write(KEYS_ERROR_GOLDEN, &fresh)
+            .unwrap_or_else(|e| panic!("write {KEYS_ERROR_GOLDEN}: {e}"));
+        return;
+    }
+    let committed = std::fs::read_to_string(KEYS_ERROR_GOLDEN)
+        .unwrap_or_else(|e| panic!("read {KEYS_ERROR_GOLDEN}: {e}"));
+    assert_eq!(
+        committed, fresh,
+        "the keys error WIRE changed — status/content-type/body bytes on a FROZEN surface. If this \
+         is deliberate, regenerate with `UPDATE_KEYS_ERROR_GOLDEN=1`."
+    );
+}
+
+/// Terse constructor for a [`KeysErrCase`] row.
+const fn c(
+    name: &'static str,
+    fixture: KeysFixture,
+    method: &'static str,
+    path: &'static str,
+    headers: &'static [(&'static str, &'static str)],
+    body: Option<&'static str>,
+) -> KeysErrCase {
+    KeysErrCase {
+        name,
+        fixture,
+        method,
+        path,
+        headers,
+        body,
+    }
+}
