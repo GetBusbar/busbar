@@ -2322,6 +2322,8 @@ fn merge_root_settings(
     mut base: crate::config::overlay::RootSettings,
     req: crate::config::overlay::RootSettings,
 ) -> crate::config::overlay::RootSettings {
+    // WHOLE-VALUE sections: a listen address, a cert bundle, a store definition and a rate card are
+    // atomic units, and `store.settings` is opaque plugin config busbar must not reinterpret.
     if req.listen.is_some() {
         base.listen = req.listen;
     }
@@ -2346,27 +2348,27 @@ fn merge_root_settings(
     if req.store.is_some() {
         base.store = req.store;
     }
-    if req.security.is_some() {
-        base.security = req.security;
+    // PER-FIELD sections: successive PUTs to different fields of one section must accumulate. A
+    // whole-slot swap here would make the second PUT drop the first one's fields from the overlay,
+    // which is the same defect as the apply-side revert, one layer down.
+    macro_rules! merge_section {
+        ($($field:ident),+ $(,)?) => {$(
+            base.$field = match (req.$field, base.$field) {
+                (Some(new), Some(old)) => Some(new.merge(old)),
+                (Some(new), None) => Some(new),
+                (None, old) => old,
+            };
+        )+};
     }
-    if req.limits.is_some() {
-        base.limits = req.limits;
-    }
-    if req.observability.is_some() {
-        base.observability = req.observability;
-    }
-    if req.advanced.is_some() {
-        base.advanced = req.advanced;
-    }
-    if req.metrics.is_some() {
-        base.metrics = req.metrics;
-    }
-    if req.health.is_some() {
-        base.health = req.health;
-    }
-    if req.routing.is_some() {
-        base.routing = req.routing;
-    }
+    merge_section!(
+        security,
+        limits,
+        observability,
+        advanced,
+        metrics,
+        health,
+        routing
+    );
     base
 }
 

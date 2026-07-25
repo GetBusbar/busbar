@@ -17,10 +17,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use super::{
-    AdvancedCfg, DeployCfg, GroupCfg, HealthDefaultsCfg, HookCfg, LimitsCfg, MetricsCfg,
-    ObservabilityCfg, RateEntryCfg, RootCfg, RoutingCfg, SecurityCfg, StoreCfg, TlsCfg,
-};
+use super::{DeployCfg, GroupCfg, HookCfg, RateEntryCfg, RootCfg, StoreCfg, TlsCfg};
 
 /// Current overlay schema version. Stamped on every write; a missing field (a pre-versioning overlay)
 /// reads as `1`, the additive baseline (hooks + the newly-added groups section, both backward
@@ -171,19 +168,19 @@ pub(crate) struct RootSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) store: Option<StoreCfg>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) security: Option<SecurityCfg>,
+    pub(crate) security: Option<crate::config::patch::SecurityPatch>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) limits: Option<LimitsCfg>,
+    pub(crate) limits: Option<crate::config::patch::LimitsPatch>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) observability: Option<ObservabilityCfg>,
+    pub(crate) observability: Option<crate::config::patch::ObservabilityPatch>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) advanced: Option<AdvancedCfg>,
+    pub(crate) advanced: Option<crate::config::patch::AdvancedPatch>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) metrics: Option<MetricsCfg>,
+    pub(crate) metrics: Option<crate::config::patch::MetricsPatch>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) health: Option<HealthDefaultsCfg>,
+    pub(crate) health: Option<crate::config::patch::HealthPatch>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) routing: Option<RoutingCfg>,
+    pub(crate) routing: Option<crate::config::patch::RoutingPatch>,
 }
 
 impl RootSettings {
@@ -238,29 +235,45 @@ impl RootSettings {
         if self.store.is_some() {
             deploy.store = self.store.clone();
         }
-        if self.security.is_some() {
-            deploy.security = self.security.clone();
+        // PER-FIELD from here down. Assigning the whole section instead meant a partial `PUT`
+        // deserialized into a full struct of compiled defaults, so every field the operator did not
+        // name silently reverted — `config.yaml` values included.
+        if let Some(v) = &self.security {
+            v.apply(deploy.security.get_or_insert_with(Default::default));
         }
         if let Some(v) = &self.limits {
-            deploy.limits = v.clone();
+            v.apply(&mut deploy.limits);
         }
-        if self.observability.is_some() {
-            deploy.observability = self.observability.clone();
+        if let Some(v) = &self.observability {
+            v.apply(deploy.observability.get_or_insert_with(Default::default));
         }
         if let Some(v) = &self.advanced {
-            deploy.advanced = v.clone();
+            v.apply(&mut deploy.advanced);
         }
         if let Some(v) = &self.metrics {
-            // `metrics:` is the opt-in switch as well as its own settings, so an overlay that names
-            // the block turns metrics ON for the merged config (and must carry `buffer_seconds`,
-            // which has no default).
-            deploy.metrics = Some(v.clone());
+            // `metrics:` is the opt-in switch as well as its own settings, so an overlay naming the
+            // block turns metrics ON. `buffer_seconds` is REQUIRED and has no default, so a patch
+            // that omits it can only refine an existing block, never create one — turning metrics on
+            // with an unspecified retention window is exactly the inert-collector state the config
+            // layer refuses at boot.
+            match (&mut deploy.metrics, v.buffer_seconds) {
+                (Some(base), _) => v.apply(base),
+                (slot @ None, Some(buffer_seconds)) => {
+                    let mut base = crate::config::MetricsCfg {
+                        buffer_seconds,
+                        key_gauge_limit: crate::config::default_key_gauge_limit(),
+                    };
+                    v.apply(&mut base);
+                    *slot = Some(base);
+                }
+                (None, None) => {}
+            }
         }
         if let Some(v) = &self.health {
-            deploy.health = v.clone();
+            v.apply(&mut deploy.health);
         }
         if let Some(v) = &self.routing {
-            deploy.routing = v.clone();
+            v.apply(&mut deploy.routing);
         }
     }
 }
@@ -1072,7 +1085,20 @@ mod tests {
     fn root_apply_overwrites_only_named_fields() {
         let mut deploy = minimal_deploy();
         let base_admin_listen = deploy.admin_listen.clone();
+        // NON-DEFAULT base values, or this test cannot see the defect it guards: with an
+        // all-defaults base a whole-section clobber is indistinguishable from a per-field merge,
+        // which is why it passed for as long as the bug existed.
+        deploy.limits.upstream_request_timeout_secs = 30;
+        deploy.limits.request_body_max_bytes = 1_048_576;
         sample_root().apply_to_deploy(&mut deploy);
+        assert_eq!(
+            deploy.limits.upstream_request_timeout_secs, 30,
+            "a limits field the overlay never names keeps the operator's value"
+        );
+        assert_eq!(
+            deploy.limits.request_body_max_bytes, 1_048_576,
+            "including a deliberately tightened body cap"
+        );
         assert_eq!(deploy.listen, "0.0.0.0:9000", "listen overridden");
         assert_eq!(deploy.per_request_fee, 7, "fee overridden");
         assert_eq!(
