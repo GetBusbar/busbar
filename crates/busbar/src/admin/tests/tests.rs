@@ -7420,6 +7420,53 @@ async fn test_admin_v1_config_settings_process_level_flagged_reload_to_apply() {
 }
 
 /// PARTIAL UPDATE: a second `PUT` naming only `per_request_fee` preserves the earlier `rate_card`
+/// A store secret reference that does not resolve HERE must not be rejected. The store is
+/// restart-to-apply, so staging a ref whose secret the orchestrator mounts on the next deploy is a
+/// legitimate workflow — and `tls`, the block beside it with the identical failure mode, already
+/// accepts exactly that. The operator gets a loud warn naming the field and the restart
+/// consequence; rejecting instead would make a config they can legally write into `config.yaml`
+/// un-PUT-able.
+#[tokio::test]
+async fn test_admin_v1_config_settings_unresolvable_store_secret_warns_not_rejects() {
+    let (dir, overlay, addr, handle) = settings_test_app("storesecret").await;
+    let client = reqwest::Client::new();
+    let var = format!("BUSBAR_TEST_STORE_SECRET_MISSING_{}", std::process::id());
+    std::env::remove_var(&var);
+
+    let put = client
+        .put(format!("http://{addr}/api/v1/admin/config/settings"))
+        .header("x-admin-token", "admintok")
+        .header("content-type", "application/json")
+        .body(
+            serde_json::json!({
+                "store": { "module": "memory", "settings": { "licenseKey": { "env": var } } }
+            })
+            .to_string(),
+        )
+        .send()
+        .await
+        .unwrap();
+    let st = put.status().as_u16();
+    let body = put.text().await.unwrap_or_default();
+    assert_eq!(
+        st, 200,
+        "an unresolvable store ref is staged, not refused: {body}"
+    );
+
+    // And it is persisted, so the next restart uses it — which is the point of staging.
+    let doc = crate::config::overlay::read(&overlay).expect("overlay written");
+    assert!(
+        doc.root
+            .as_ref()
+            .and_then(|r| r.store.as_ref())
+            .is_some_and(|s| s.settings.contains_key("licenseKey")),
+        "the staged reference reaches the overlay"
+    );
+
+    handle.abort();
+    drop(dir);
+}
+
 /// override (partial-merge semantics, like a group PATCH).
 #[tokio::test]
 async fn test_admin_v1_config_settings_partial_update_preserves_prior() {
