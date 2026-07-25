@@ -216,6 +216,71 @@ pub(crate) fn build_server_config(
     Ok(config)
 }
 
+/// THE ONE ACCEPT-ERROR POLICY, shared by both listener loops below.
+///
+/// `accept()` errors come in two kinds and the difference matters enormously:
+///
+///   * PER-CONNECTION transients -- `ECONNABORTED` (the peer reset between SYN and accept),
+///     `EINTR`. The next `accept()` will very likely succeed, so retrying immediately is right.
+///   * RESOURCE EXHAUSTION -- `EMFILE`/`ENFILE` (fd table full), `ENOBUFS`/`ENOMEM`. These do NOT
+///     clear on their own: `accept()` fails instantly, every time, until something else releases an
+///     fd. An immediate `continue` therefore spins the loop at 100% CPU on a full core, which is
+///     exactly when the process can least afford it -- it starves the very tasks whose completion
+///     would free the fds, turning a transient fd shortage into a wedged server.
+///
+/// So the second kind backs off, exponentially and capped. The cap is deliberately well under a
+/// second: it bounds both the CPU burn and how long a shutdown request can sit behind a sleep.
+struct AcceptBackoff {
+    delay: Option<std::time::Duration>,
+}
+
+impl AcceptBackoff {
+    const FIRST: std::time::Duration = std::time::Duration::from_millis(5);
+    const CAP: std::time::Duration = std::time::Duration::from_millis(250);
+
+    fn new() -> Self {
+        Self { delay: None }
+    }
+
+    /// Clear the backoff after a successful accept.
+    fn reset(&mut self) {
+        self.delay = None;
+    }
+
+    /// How long to wait before the next `accept()`, and advance the schedule. `None` = retry now
+    /// (a per-connection transient). PURE, so the policy is unit-testable without a listener.
+    fn next_delay(&mut self, e: &io::Error) -> Option<std::time::Duration> {
+        if matches!(
+            e.kind(),
+            io::ErrorKind::ConnectionAborted | io::ErrorKind::Interrupted
+        ) {
+            self.delay = None;
+            return None;
+        }
+        let d = match self.delay {
+            None => Self::FIRST,
+            Some(prev) => (prev * 2).min(Self::CAP),
+        };
+        self.delay = Some(d);
+        Some(d)
+    }
+
+    /// Apply the policy: log at the right level and sleep if this error class calls for it.
+    async fn absorb(&mut self, scheme: &'static str, e: &io::Error) {
+        match self.next_delay(e) {
+            None => tracing::debug!(error = %e, "{scheme}: accept error; continuing"),
+            Some(d) => {
+                tracing::warn!(
+                    error = %e,
+                    backoff_ms = d.as_millis() as u64,
+                    "{scheme}: accept is failing persistently (fd exhaustion?); backing off",
+                );
+                tokio::time::sleep(d).await;
+            }
+        }
+    }
+}
+
 /// Serve `router` over TLS on `listener` until `shutdown` resolves, then drain in-flight connections.
 ///
 /// Mirrors `axum::serve(listener, router).with_graceful_shutdown(shutdown)` for the TLS case:
@@ -233,19 +298,17 @@ pub(crate) async fn serve(
     let conn_builder = Arc::new(hardened_conn_builder());
 
     let mut shutdown = std::pin::pin!(shutdown);
+    let mut backoff = AcceptBackoff::new();
 
     loop {
         let (stream, peer) = tokio::select! {
             biased;
             () = &mut shutdown => break,
             accepted = listener.accept() => match accepted {
-                Ok(pair) => pair,
-                Err(e) => {
-                    // A transient accept error (e.g. fd exhaustion, peer reset mid-accept) must not
-                    // kill the loop; log and keep serving.
-                    tracing::debug!(error = %e, "tls: accept error; continuing");
-                    continue;
-                }
+                Ok(pair) => { backoff.reset(); pair }
+                // An accept error must not kill the loop; `absorb` decides whether it is a
+                // per-connection transient (retry now) or persistent exhaustion (back off).
+                Err(e) => { backoff.absorb("tls", &e).await; continue; }
             },
         };
 
@@ -422,17 +485,15 @@ pub(crate) async fn serve_plain(
     let graceful = GracefulShutdown::new();
     let conn_builder = Arc::new(hardened_conn_builder());
     let mut shutdown = std::pin::pin!(shutdown);
+    let mut backoff = AcceptBackoff::new();
 
     loop {
         let (stream, peer) = tokio::select! {
             biased;
             () = &mut shutdown => break,
             accepted = listener.accept() => match accepted {
-                Ok(pair) => pair,
-                Err(e) => {
-                    tracing::debug!(error = %e, "http: accept error; continuing");
-                    continue;
-                }
+                Ok(pair) => { backoff.reset(); pair }
+                Err(e) => { backoff.absorb("http", &e).await; continue; }
             },
         };
 
@@ -528,6 +589,55 @@ mod tests {
     use tokio::sync::oneshot;
 
     use crate::config::TlsCfg;
+
+    /// THE ACCEPT-ERROR POLICY, asserted directly. Both listener loops route every `accept()` error
+    /// through `AcceptBackoff`, so this covers the class rather than one loop.
+    ///
+    /// The hazard is resource exhaustion, not a peer reset: on `EMFILE`/`ENFILE` `accept()` fails
+    /// INSTANTLY and keeps failing until something releases an fd, so a bare `continue` -- which is
+    /// what both loops did -- spins a full core rejecting connections, starving the very tasks whose
+    /// completion would free the fds.
+    #[test]
+    fn accept_backoff_spins_only_on_per_connection_transients() {
+        use std::io::{Error, ErrorKind};
+        let mut b = super::AcceptBackoff::new();
+
+        // A peer that resets between SYN and accept: the next accept will very likely succeed.
+        assert_eq!(
+            b.next_delay(&Error::from(ErrorKind::ConnectionAborted)),
+            None,
+            "a per-connection transient must retry immediately"
+        );
+        assert_eq!(b.next_delay(&Error::from(ErrorKind::Interrupted)), None);
+
+        // fd exhaustion: back off, growing, and CAPPED so shutdown is never parked for long.
+        let emfile = Error::from_raw_os_error(24); // EMFILE
+        let first = b.next_delay(&emfile).expect("exhaustion must back off");
+        assert_eq!(first, super::AcceptBackoff::FIRST);
+        let second = b.next_delay(&emfile).expect("still failing");
+        assert!(
+            second > first,
+            "the backoff must GROW: {first:?} -> {second:?}"
+        );
+        for _ in 0..20 {
+            let d = b.next_delay(&emfile).expect("still failing");
+            assert!(d <= super::AcceptBackoff::CAP, "capped at CAP, got {d:?}");
+        }
+        assert_eq!(b.next_delay(&emfile), Some(super::AcceptBackoff::CAP));
+
+        // A successful accept clears the schedule, so an isolated blip does not leave the listener
+        // permanently slow.
+        b.reset();
+        assert_eq!(b.next_delay(&emfile), Some(super::AcceptBackoff::FIRST));
+
+        // And a transient arriving mid-backoff resets it too -- it is not the exhaustion class.
+        let _ = b.next_delay(&emfile);
+        assert_eq!(
+            b.next_delay(&Error::from(ErrorKind::ConnectionAborted)),
+            None
+        );
+        assert_eq!(b.next_delay(&emfile), Some(super::AcceptBackoff::FIRST));
+    }
 
     /// A trivial router standing in for busbar's real one — the TLS transport is protocol-agnostic,
     /// so a `/healthz` that returns 200 is enough to prove a request completed over the secure hop.
