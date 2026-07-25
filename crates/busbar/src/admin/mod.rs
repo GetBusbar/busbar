@@ -283,6 +283,14 @@ pub(crate) const KEY_RESOURCE_NONE: &str = "key:-";
 /// Folding the audit row in here is the same move for the same reason: one door, one row, no
 /// per-arm remembering. See [`KeyAudit`].
 fn key_err(who: KeyAudit<'_>, e: &AdminError, cond: Cond) -> Response {
+    record_key_refusal(who);
+    crate::admin::v1::json::err_json_cond(e, cond)
+}
+
+/// The audit half of [`key_err`], usable on its own by the one refusal door that cannot name a
+/// [`Cond`]: a failed transaction is `AdminError::Internal`, which `taxonomy::err_kind_of`
+/// classifies as ALGORITHMIC, so there is nothing to declare — but the mutation was still refused.
+fn record_key_refusal(who: KeyAudit<'_>) {
     if let KeyAudit::Mutation {
         verb,
         resource,
@@ -291,7 +299,6 @@ fn key_err(who: KeyAudit<'_>, e: &AdminError, cond: Cond) -> Response {
     {
         audit::AUDIT.record_by(verb, resource, audit::OUTCOME_REJECTED, actor);
     }
-    crate::admin::v1::json::err_json_cond(e, cond)
 }
 
 /// 500 for an internal store/DB failure. The detailed error (which may embed raw SQL fragments,
@@ -884,9 +891,15 @@ pub(crate) async fn create_key(
         Ok(v) => v,
         // Fail-closed: an auto-provision that was rejected leaves nothing behind, and a mint that
         // failed after one committed is reported here. `group.provision`'s own REJECTED row is
-        // written at the two sites that used to write it (a failed build, a failed persist), so the
-        // audit trail is byte-for-byte what the hand-rolled path produced.
-        Err(e) => return crate::admin::v1::json::err_json(&e),
+        // written at the two sites that used to write it (a failed build, a failed persist).
+        //
+        // The refusal row is written HERE rather than via `key_err`, because everything arriving at
+        // this door is either `AdminError::Internal` or a refusal raised inside the transaction —
+        // neither carries a `Cond`, so the envelope stays untagged.
+        Err(e) => {
+            record_key_refusal(who);
+            return crate::admin::v1::json::err_json(&e);
+        }
     };
     // NOTE: the `group.provision` audit + version records are written INSIDE the transaction, at
     // commit time (see `provision_record` above) — not here. Writing them here made them
