@@ -2534,3 +2534,28 @@ mod signed_token {
         );
     }
 }
+
+/// Deleting a key reclaims its budget cell. The cell is attribution-only (the key bucket carries no
+/// caps), so dropping it cannot reset an enforcement limit — a group's cap lives in its own
+/// `group:` cell and is untouched.
+#[test]
+fn delete_key_drops_its_budget_cell() {
+    let store = Arc::new(MemoryStore::new());
+    let gov = GovState::new(store, None).unwrap();
+    let cost = flat_cost(7);
+    let key = sample_key("vk_doomed", "hs-doomed");
+    gov.store.put_key(&key).expect("put");
+    gov.refresh().expect("refresh");
+
+    gov.record_usage(&cost, &key, "prod", "m", &tt(10), 1_700_000_000);
+    assert!(
+        gov.budget.read(&key.id).contains_key(&key.id),
+        "precondition: use accrues an attribution cell"
+    );
+
+    gov.delete_key(&key.id).expect("delete");
+    assert!(
+        !gov.budget.read(&key.id).contains_key(&key.id),
+        "the deleted key's budget cell is reclaimed, not retained for the process lifetime"
+    );
+}
