@@ -102,6 +102,42 @@ while IFS= read -r f; do
 done < <(find crates -name '*.rs')
 [ "$dur" -eq 0 ] && note "ok"
 
+# ── Invariant 5: ONE plugin-export choke point. Every plugin `cdylib` gets its six `extern
+#    "C-unwind"` symbols ONLY from `export_*_plugin!`, which routes them through the boundary wrapper
+#    (null-out-guard-before-alloc, mandatory catch_unwind, total status map — crates/plugin-sdk/
+#    src/boundary.rs). A hand-written `#[no_mangle]` in a plugin crate would skip those guards, so it
+#    is a build failure. Combined with the DUPLICATE-SYMBOL linker error a second `busbar_*` export
+#    triggers, this is the "no-hack" guarantee: a future export CANNOT skip the boundary. The ONLY
+#    file permitted a literal `#[no_mangle]` is the SDK macro that DEFINES the choke point. #[cfg(test)]
+#    and test files are exempt (name-navigated; they never ship in the cdylib's export table). ──────
+hdr "one plugin-export choke point (no hand-rolled #[no_mangle] outside export_*_plugin!)"
+# The macro that stamps the six symbols; it is the choke point, so it alone may name #[no_mangle].
+ALLOW_EXPORT='crates/plugin-sdk/src/lib.rs'
+exp=0
+# awk skips #[cfg(test)]-gated regions (brace-tracked) and comment lines, then flags a bare
+# #[no_mangle] in the remaining production code. Same skipping shape as Invariant 4's scanner.
+scan_export() { awk '
+  /#\[cfg\(test\)\]/ { pending_test=1 }
+  {
+    line=$0
+    nopen=gsub(/\{/, "{", line); nclose=gsub(/\}/, "}", line)
+    if (pending_test && nopen>0) { in_test=1; pending_test=0 }
+    if (in_test) { depth += nopen - nclose; if (depth<=0) { in_test=0; depth=0 }; next }
+  }
+  /^[[:space:]]*\/\// { next }                       # skip whole-line comments (incl doc comments)
+  /#\[no_mangle\]/    { printf "%s:%d: hand-rolled #[no_mangle]\n", FILENAME, NR }
+' "$1"; }
+while IFS= read -r f; do
+  case "$f" in */tests/*) continue ;; esac          # test files are exempt (name-navigated)
+  [ "$f" = "$ALLOW_EXPORT" ] && continue             # the choke-point macro itself
+  hits=$(scan_export "$f")
+  if [ -n "$hits" ]; then
+    while IFS= read -r h; do note "EXPORT-BYPASS: $h — define exports via export_*_plugin!, never by hand"; done <<<"$hits"
+    fail=1; exp=1
+  fi
+done < <(find crates -name '*.rs')
+[ "$exp" -eq 0 ] && note "ok"
+
 hdr "result"
 if [ "$fail" -ne 0 ]; then note "structure-lint FAILED — see docs/code-layout.md"; exit 1; fi
 note "structure-lint passed"
