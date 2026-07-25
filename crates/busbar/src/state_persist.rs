@@ -60,7 +60,10 @@ pub(crate) fn write(path: &Path, state: &PersistedState) -> Result<(), String> {
     // the data in the page cache: a power loss after the rename commits (directory metadata) but
     // before the data blocks reach the device would surface a torn/zero-length `busbar-state.json`,
     // contradicting this module's "never a torn read" claim. fsync closes that window for real.
-    {
+    // On ANY failure writing the temp OR renaming it into place, remove the orphaned temp so a failed
+    // write never leaves a stale `busbar-state.json.tmp` behind to accumulate. `File::create`
+    // truncates+overwrites (not `create_new`), so a leftover from a prior crash never wedges a retry.
+    let write_result = (|| -> Result<(), String> {
         let mut f =
             std::fs::File::create(&tmp).map_err(|e| format!("create {}: {e}", tmp.display()))?;
         f.write_all(&bytes)
@@ -69,8 +72,13 @@ pub(crate) fn write(path: &Path, state: &PersistedState) -> Result<(), String> {
             .map_err(|e| format!("flush {}: {e}", tmp.display()))?;
         f.sync_all()
             .map_err(|e| format!("fsync {}: {e}", tmp.display()))?;
+        drop(f);
+        std::fs::rename(&tmp, path).map_err(|e| format!("rename to {}: {e}", path.display()))
+    })();
+    if let Err(e) = write_result {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
     }
-    std::fs::rename(&tmp, path).map_err(|e| format!("rename to {}: {e}", path.display()))?;
     // fsync the parent directory so the rename (a directory-metadata change) is itself durable.
     // Best-effort: not every platform/filesystem supports opening a directory for fsync, and the
     // file contents are already durable, so a failure here does not fail the write.
@@ -161,6 +169,17 @@ mod tests {
         write(&path, &state).expect("write");
         let got = read(&path, 1_000_100).expect("fresh snapshot restores");
         assert_eq!(got.written_at, 1_000_000);
+        // The atomic temp must not linger after a successful write (rename consumed it, and the
+        // cleanup path never leaves a stale `.json.tmp` to accumulate or wedge a later create).
+        assert!(
+            !path.with_extension("json.tmp").exists(),
+            "no .json.tmp should remain after a successful write"
+        );
+        // A pre-planted stale temp from a prior crashed run must NOT wedge the next write (File::create
+        // truncates+overwrites; the cleanup keeps it gone).
+        std::fs::write(path.with_extension("json.tmp"), b"stale leftover").unwrap();
+        write(&path, &state).expect("write over a pre-existing .json.tmp");
+        assert!(!path.with_extension("json.tmp").exists());
 
         // Too old: dropped whole.
         assert!(

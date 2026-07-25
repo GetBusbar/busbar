@@ -1822,28 +1822,50 @@ fn persist_signing_key(path: &std::path::Path, secret: &[u8; 32]) -> Result<(), 
         use std::os::unix::fs::OpenOptionsExt as _;
         opts.mode(0o600);
     }
-    let mut f = opts
-        .open(&tmp)
-        .map_err(|e| format!("cannot create signing key '{}': {e}", tmp.display()))?;
-    f.write_all(hex.as_bytes())
-        .and_then(|()| f.flush())
-        .and_then(|()| f.sync_all())
-        .map_err(|e| format!("cannot write signing key '{}': {e}", tmp.display()))?;
-    drop(f);
-    // Non-unix platforms cannot set the mode at open; the OS default applies (best-effort, matching
-    // the prior posture on those platforms — the sensitive-key concern is the multi-user unix host).
-    std::fs::rename(&tmp, path)
-        .map_err(|e| format!("cannot install signing key '{}': {e}", path.display()))?;
+    // A leftover `.key.tmp` from a PRIOR crashed/failed run would make `create_new(true)` fail with
+    // AlreadyExists forever, permanently wedging every retry (and boot, since first-boot key
+    // generation runs through here). Remove any stale temp first — the temp is ours, ephemeral, and
+    // never the real key — then `create_new` still refuses to ADOPT one we did not just clear (so the
+    // atomic-0600 anti-pre-plant property holds for the freshly created file). Best-effort: a genuine
+    // race where the temp reappears surfaces below as the create error.
+    let _ = std::fs::remove_file(&tmp);
+    // On ANY failure after the temp is created (write/flush/fsync/rename), remove the orphaned temp so
+    // a failed run never leaves a stale `.key.tmp` behind to wedge the next attempt. Cleanup runs
+    // before returning the error.
+    let install = (|| -> Result<(), String> {
+        let mut f = opts
+            .open(&tmp)
+            .map_err(|e| format!("cannot create signing key '{}': {e}", tmp.display()))?;
+        f.write_all(hex.as_bytes())
+            .and_then(|()| f.flush())
+            .and_then(|()| f.sync_all())
+            .map_err(|e| format!("cannot write signing key '{}': {e}", tmp.display()))?;
+        drop(f);
+        // Non-unix platforms cannot set the mode at open; the OS default applies (best-effort, matching
+        // the prior posture on those platforms — the sensitive-key concern is the multi-user unix host).
+        std::fs::rename(&tmp, path)
+            .map_err(|e| format!("cannot install signing key '{}': {e}", path.display()))
+    })();
+    if let Err(e) = install {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
     // fsync the parent DIRECTORY so the rename (a directory-metadata change) is itself durable. The key
     // bytes are already durable in the file (`sync_all` above), but under power loss the directory entry
     // for the rename could still be lost, leaving the key-minting root of trust missing on the next boot
-    // — silently invalidating every minted key. Mirrors `overlay::write`. Best-effort: not every
+    // — silently invalidating every minted key. Mirrors `overlay::write`. For a RELATIVE `path`,
+    // `path.parent()` is `Some("")` (an empty path that cannot be opened), so resolve an empty parent to
+    // "." — the key lives in the current directory, which is the dir to fsync. Best-effort: not every
     // platform/filesystem supports opening a directory for fsync, and a failure here corrupts nothing
     // (the contents are durable), so don't fail the install over it.
-    if let Some(parent) = path.parent() {
-        if let Ok(dir) = std::fs::File::open(parent) {
-            let _ = dir.sync_all();
-        }
+    let parent = path.parent().unwrap_or_else(|| std::path::Path::new(""));
+    let parent = if parent.as_os_str().is_empty() {
+        std::path::Path::new(".")
+    } else {
+        parent
+    };
+    if let Ok(dir) = std::fs::File::open(parent) {
+        let _ = dir.sync_all();
     }
     Ok(())
 }

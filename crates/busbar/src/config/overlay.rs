@@ -515,23 +515,37 @@ pub(crate) fn write(path: &Path, doc: &OverlayDoc) -> std::io::Result<()> {
     let json = serde_json::to_vec_pretty(doc).map_err(std::io::Error::other)?;
     let tmp = path.with_extension("overlay.tmp");
     // Write + FLUSH + fsync the temp file's contents to disk BEFORE the rename, so the rename can never
-    // publish a name pointing at unwritten (torn/zero-length) data after a crash.
-    {
+    // publish a name pointing at unwritten (torn/zero-length) data after a crash. On ANY failure in this
+    // block (or the rename below) the temp file must not be left behind to accumulate — clean it up. A
+    // pre-existing `.overlay.tmp` from a prior crashed run is truncated+overwritten by `File::create`
+    // (not `create_new`), so a leftover never wedges a retry.
+    let write_result = (|| {
         let mut f = std::fs::File::create(&tmp)?;
         f.write_all(&json)?;
         f.flush()?;
         f.sync_all()?;
+        drop(f);
+        std::fs::rename(&tmp, path)
+    })();
+    if let Err(e) = write_result {
+        // Best-effort cleanup of the orphaned temp (the rename may already have consumed it).
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
     }
-    std::fs::rename(&tmp, path)?;
     // fsync the parent directory so the rename (a directory metadata change) is itself durable — a
-    // power loss right after the rename would otherwise be free to lose the directory entry update.
-    if let Some(parent) = path.parent() {
-        // Best-effort: not every platform/filesystem supports opening a directory for fsync; a failure
-        // here does not corrupt anything (the file contents are already durable), so don't fail the
-        // write over it.
-        if let Ok(dir) = std::fs::File::open(parent) {
-            let _ = dir.sync_all();
-        }
+    // power loss right after the rename would otherwise be free to lose the directory entry update. For
+    // a RELATIVE path `path.parent()` is `Some("")` (an empty path that cannot be opened), so resolve an
+    // empty parent to "." — the file lives in the current directory, which is the dir to fsync.
+    let parent = path.parent().unwrap_or_else(|| Path::new(""));
+    let parent = if parent.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        parent
+    };
+    // Best-effort: not every platform/filesystem supports opening a directory for fsync; a failure here
+    // does not corrupt anything (the file contents are already durable), so don't fail the write over it.
+    if let Ok(dir) = std::fs::File::open(parent) {
+        let _ = dir.sync_all();
     }
     Ok(())
 }
@@ -652,6 +666,16 @@ mod tests {
         let read_back = read(&path).expect("read back");
         assert!(read_back.hooks.contains_key("compress"));
         assert_eq!(read_back.global_hooks, vec!["compress".to_string()]);
+        // The atomic temp must not linger after a successful write (rename consumed it; the cleanup
+        // path never leaves a stale `.overlay.tmp` to accumulate).
+        assert!(
+            !path.with_extension("overlay.tmp").exists(),
+            "no .overlay.tmp should remain after a successful write"
+        );
+        // A pre-existing stale temp from a prior crashed run must NOT wedge the next write.
+        std::fs::write(path.with_extension("overlay.tmp"), b"stale").unwrap();
+        write(&path, &doc).expect("write over a pre-existing .overlay.tmp");
+        assert!(!path.with_extension("overlay.tmp").exists());
         let _ = std::fs::remove_file(&path);
     }
 
