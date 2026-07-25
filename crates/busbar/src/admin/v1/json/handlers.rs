@@ -167,6 +167,13 @@ pub(crate) async fn install_plugin(
             )));
         }
     };
+    // SERIALIZE against `rollback_plugin` (and every other config/plugin mutation): rollback holds
+    // `CONFIG_MUTATION_LOCK` across resolving + rebuilding from an existing tarball, while a
+    // concurrent install writes a tarball for the SAME file. Without a shared lock an install could
+    // swap the tarball between rollback's validate and its rebuild, so rollback would load bytes it
+    // never validated. Taking the same lock here makes install-vs-rollback (and install-vs-install)
+    // atomic. Held across the blocking filesystem work below.
+    let _mlock = CONFIG_MUTATION_LOCK.lock().await;
     // The install itself is in-memory verification + filesystem I/O — run it off the async
     // runtime's worker so a slow disk / large tarball can't stall the reactor.
     let svc_handle = handle.clone();
@@ -1217,7 +1224,22 @@ pub(crate) async fn delete_group(
         audit::AUDIT.record_by("group.delete", &resource, audit::OUTCOME_REJECTED, &actor);
         return err_json(&e);
     }
-    match build_without_group(&current, &name) {
+    // `build_without_group` reads EVERY key from the (possibly plugin-backed, blocking) store via
+    // `gov.all_keys()` to count group bindings — a sync blocking DB call. Run it on a blocking thread
+    // rather than the async worker so it does not stall the reactor for every concurrent request while
+    // we hold `CONFIG_MUTATION_LOCK` (consistent with the other store ops that use spawn_blocking).
+    let build_current = current.clone();
+    let build_name = name.clone();
+    let built =
+        tokio::task::spawn_blocking(move || build_without_group(&build_current, &build_name)).await;
+    let built = match built {
+        Ok(res) => res,
+        Err(_) => {
+            audit::AUDIT.record_by("group.delete", &resource, audit::OUTCOME_REJECTED, &actor);
+            return err_json(&AdminError::Internal);
+        }
+    };
+    match built {
         Ok(next) => {
             let installed = Arc::new(next);
             handle.swap(installed.clone());
