@@ -264,14 +264,20 @@ const GAUGE_IDLE_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
 fn build_recorder(
     bucket: Duration,
 ) -> Result<PrometheusHandle, metrics_exporter_prometheus::BuildError> {
-    PrometheusBuilder::new()
+    recorder_builder(bucket, GAUGE_IDLE_TIMEOUT)?.install_recorder()
+}
+
+/// The builder itself, with the idle timeout as a parameter so a test can drive expiry on a short
+/// window instead of the shipped one. Installing is global and once-per-process; building is not,
+/// which is what makes the reaping behaviour testable at all.
+fn recorder_builder(
+    bucket: Duration,
+    gauge_idle: Duration,
+) -> Result<PrometheusBuilder, metrics_exporter_prometheus::BuildError> {
+    Ok(PrometheusBuilder::new()
         .set_bucket_duration(bucket)?
         .set_bucket_count(SUMMARY_BUCKETS)
-        .idle_timeout(
-            metrics_util::MetricKindMask::GAUGE,
-            Some(GAUGE_IDLE_TIMEOUT),
-        )
-        .install_recorder()
+        .idle_timeout(metrics_util::MetricKindMask::GAUGE, Some(gauge_idle)))
 }
 
 /// Test-only entry point: install the recorder with a retention window long enough that no test's
@@ -1288,6 +1294,74 @@ mod tests {
         assert!(
             !out.contains("sk-bb-"),
             "raw bearer secret prefix must never appear as a label value in the scrape output; got:\n{out}"
+        );
+    }
+    /// A gauge whose subject is gone must stop being exported; one still being refreshed must not.
+    ///
+    /// Per-key gauges are only `set` while iterating LIVE keys, so without an idle timeout a deleted
+    /// key's spend was re-rendered with its final value for the life of the process — `/metrics`
+    /// growing with lifetime key churn, and dashboards showing a deleted key's spend as current.
+    ///
+    /// Driven through a LOCALLY-built recorder: installing is global and once-per-process, but
+    /// building is not, so the reaping behaviour can be exercised on a short window.
+    #[test]
+    fn a_gauge_that_stops_being_refreshed_is_expired() {
+        let idle = Duration::from_millis(60);
+        let recorder = super::recorder_builder(Duration::from_secs(1), idle)
+            .expect("builder")
+            .build_recorder();
+        let handle = recorder.handle();
+
+        metrics::with_local_recorder(&recorder, || {
+            metrics::gauge!("busbar_test_deleted_subject").set(1.0);
+            metrics::gauge!("busbar_test_live_subject").set(1.0);
+        });
+        let before = handle.render();
+        assert!(before.contains("busbar_test_deleted_subject"), "{before}");
+        assert!(before.contains("busbar_test_live_subject"));
+
+        std::thread::sleep(idle * 3);
+        // Only the live subject is refreshed — exactly what `refresh_scrape_gauges` does for the
+        // keys that still exist.
+        metrics::with_local_recorder(&recorder, || {
+            metrics::gauge!("busbar_test_live_subject").set(2.0);
+        });
+
+        let after = handle.render();
+        assert!(
+            !after.contains("busbar_test_deleted_subject"),
+            "a gauge nothing refreshes must stop being exported, got:\n{after}"
+        );
+        assert!(
+            after.contains("busbar_test_live_subject"),
+            "a refreshed gauge must survive, got:\n{after}"
+        );
+    }
+
+    /// Counters and histograms must NOT be reaped: expiring a counter resets it and breaks `rate()`,
+    /// and expiring a histogram discards its summary. Only gauges are in the mask.
+    #[test]
+    fn only_gauges_are_expired() {
+        let idle = Duration::from_millis(60);
+        let recorder = super::recorder_builder(Duration::from_secs(1), idle)
+            .expect("builder")
+            .build_recorder();
+        let handle = recorder.handle();
+
+        metrics::with_local_recorder(&recorder, || {
+            metrics::counter!("busbar_test_idle_counter").increment(7);
+            metrics::histogram!("busbar_test_idle_histogram").record(1.0);
+        });
+        std::thread::sleep(idle * 3);
+
+        let after = handle.render();
+        assert!(
+            after.contains("busbar_test_idle_counter"),
+            "an idle counter must survive — expiring it would reset it and break rate(), got:\n{after}"
+        );
+        assert!(
+            after.contains("busbar_test_idle_histogram"),
+            "an idle histogram must survive, got:\n{after}"
         );
     }
 }
