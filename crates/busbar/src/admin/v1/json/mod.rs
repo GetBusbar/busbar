@@ -102,6 +102,7 @@ impl AdminTransport for JsonV1 {
             .route("/config/diff", get(config_diff))
             .route("/config/rollback", post(rollback_config))
             .route("/config/reload", post(reload_config))
+            .route("/restart", post(restart))
             .route("/auth/cache/flush", post(flush_credential_cache))
             .route("/config/apply", post(apply_config))
             .route(

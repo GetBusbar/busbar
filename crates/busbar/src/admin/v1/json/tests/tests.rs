@@ -501,8 +501,8 @@ fn openapi_every_mutating_operation_declares_a_request_body() {
         "every BODYLESS entry must name a real operation; saw {bodyless_seen:?}"
     );
     assert_eq!(
-        declared, 16,
-        "16 mutating operations take a body; a change here is a deliberate API change"
+        declared, 17,
+        "17 mutating operations take a body; a change here is a deliberate API change"
     );
 }
 

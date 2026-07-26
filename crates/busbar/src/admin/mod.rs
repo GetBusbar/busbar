@@ -325,6 +325,7 @@ fn internal_error(op: &str, e: &crate::governance::StoreError) -> Response {
 // service module.
 pub(crate) mod audit;
 pub(crate) mod rate;
+pub(crate) mod restart;
 pub(crate) mod transport;
 pub(crate) mod v1;
 pub(crate) mod versions;

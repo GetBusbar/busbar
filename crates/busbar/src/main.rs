@@ -864,6 +864,10 @@ async fn run() {
     // graceful shutdown", never a crash), and `shutdown_tracing()` is a no-op when OTLP is off.
     // ONE signal fans out to BOTH listeners (data + admin) so both planes drain together.
     let (shutdown_tx, _keep_open) = tokio::sync::broadcast::channel::<()>(1);
+    // Publish the sender so `POST /admin/restart` can trigger the SAME drain a signal does. A
+    // process-global is the honest home: restarting is a process-wide act, not a property of an
+    // `App` snapshot, and `AppHandle` is built before this channel exists.
+    crate::admin::restart::publish_shutdown(shutdown_tx.clone());
     {
         let shutdown_tx = shutdown_tx.clone();
         let snap_handle = app_handle.clone();

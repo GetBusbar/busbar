@@ -2068,6 +2068,39 @@
         ],
         "type": "object"
       },
+      "RestartReq": {
+        "additionalProperties": false,
+        "description": "The `POST /api/v1/admin/restart` body. Absent is the same as `{}`.",
+        "properties": {
+          "confirm": {
+            "default": false,
+            "description": "Proceed even though no supervisor was detected. Exiting only restarts busbar if something\nrestarts it; without this an undetected supervisor is refused rather than risking the\ngateway staying down.",
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "RestartView": {
+        "description": "`POST /restart` — accepted-and-draining result.",
+        "properties": {
+          "note": {
+            "type": "string"
+          },
+          "restarting": {
+            "type": "boolean"
+          },
+          "supervisor_detected": {
+            "description": "Whether a process supervisor was detected. False means the caller confirmed explicitly.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "restarting",
+          "supervisor_detected",
+          "note"
+        ],
+        "type": "object"
+      },
       "RevokeView": {
         "description": "`POST /keys/{id}/revoke` — the revoked key's id (denylisted without deleting the binding). 1.5.0.",
         "properties": {
@@ -7038,6 +7071,102 @@
         ],
         "summary": "Distinct providers + lane counts",
         "x-busbar-required-scope": "read-only"
+      }
+    },
+    "/api/v1/admin/restart": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RestartReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RestartView"
+                }
+              }
+            },
+            "description": "`{restarting, supervisor_detected, note}` — draining; in-flight requests finish first"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`invalid_request`: malformed body / unknown field"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated but under-scoped: requires `full` (error code `forbidden`)"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`conflict`: no process supervisor was detected, so exiting would leave busbar down; re-send with `confirm: true` if a supervisor will restart it, this process has no shutdown channel, so it cannot restart itself"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Restart busbar to apply the restart-scoped settings (listen, admin_listen, tls, admin_tls, admin_insecure, store). Drains first; the supervisor brings it back",
+        "x-busbar-required-scope": "full"
       }
     },
     "/api/v1/admin/signing-key/rotate": {

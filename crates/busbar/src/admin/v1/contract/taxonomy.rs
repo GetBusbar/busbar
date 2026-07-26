@@ -141,6 +141,10 @@ pub(crate) enum Cond {
     NotLoadable,
     Overlong,
     NothingToRotate,
+    /// A restart was requested but nothing would bring busbar back up.
+    NoSupervisor,
+    /// A restart was requested but the process has no shutdown channel to drain.
+    NotRestartable,
     UnknownSection,
     NameCollision,
     InvalidLabels,
@@ -195,6 +199,13 @@ impl Cond {
             }
             Cond::Overlong => "an id or name exceeds its length cap",
             Cond::NothingToRotate => "no signing key is configured; nothing to rotate",
+            Cond::NoSupervisor => {
+                "no process supervisor was detected, so exiting would leave busbar down; re-send \
+                 with `confirm: true` if a supervisor will restart it"
+            }
+            Cond::NotRestartable => {
+                "this process has no shutdown channel, so it cannot restart itself"
+            }
             Cond::UnknownSection => {
                 "unknown overlay section (expected `groups`|`hooks`|`root`|`plugin_versions`)"
             }
@@ -487,6 +498,11 @@ pub(crate) fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr]
             Conflict / GovernanceOff,
         ],
         (Post, "/signing-key/rotate") => de![Conflict / GovernanceOff, Conflict / NothingToRotate,],
+        (Post, "/restart") => de![
+            Validation / MalformedBody,
+            Conflict / NoSupervisor,
+            Conflict / NotRestartable,
+        ],
         // A templated READ with no arm of its own answers 404 for an unknown resource and nothing
         // else; every other operation carries only the algorithmic responses.
         _ => {

@@ -2190,6 +2190,84 @@ pub(crate) async fn reload_config(
     }
 }
 
+/// The `POST /api/v1/admin/restart` body. Absent is the same as `{}`.
+#[derive(serde::Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
+pub(crate) struct RestartReq {
+    /// Proceed even though no supervisor was detected. Exiting only restarts busbar if something
+    /// restarts it; without this an undetected supervisor is refused rather than risking the
+    /// gateway staying down.
+    #[serde(default)]
+    confirm: bool,
+}
+
+/// `POST /api/v1/admin/restart` — apply the restart-scoped settings (`listen`, `admin_listen`,
+/// `tls`, `admin_tls`, `admin_insecure`, `store`) by restarting, so an operator never needs a shell.
+///
+/// This drains through the SAME path a signal takes, so the final budget flush, the state snapshot
+/// and the tracing shutdown all happen exactly as they do on SIGTERM. It is deliberately not an
+/// in-process rebuild: the durable audit's sequence counters advance only via `fetch_max` so history
+/// cannot be rewound, and only a process boundary resets them.
+///
+/// Responds BEFORE the drain begins. The drain closes the connection carrying this request, so an
+/// operator who got no response could not tell a restart from a crash.
+pub(crate) async fn restart(
+    axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
+    body: axum::body::Bytes,
+) -> Response {
+    let actor = principal.actor_id().to_string();
+    let req: RestartReq = if body.is_empty() {
+        RestartReq::default()
+    } else {
+        match serde_json::from_slice(&body) {
+            Ok(r) => r,
+            Err(e) => {
+                audit::AUDIT.record_by("admin.restart", "process", audit::OUTCOME_REJECTED, &actor);
+                return err_json_cond(
+                    &AdminError::Validation(format!("invalid body: {e}")),
+                    Cond::MalformedBody,
+                );
+            }
+        }
+    };
+
+    let supervised = crate::admin::restart::supervisor_detected();
+    if !supervised && !req.confirm {
+        audit::AUDIT.record_by("admin.restart", "process", audit::OUTCOME_REJECTED, &actor);
+        return err_json_cond(
+            &AdminError::Conflict(
+                "no process supervisor was detected, so exiting would leave busbar down; re-send                  with `confirm: true` if a supervisor will restart it"
+                    .into(),
+            ),
+            Cond::NoSupervisor,
+        );
+    }
+
+    if !crate::admin::restart::can_restart() {
+        audit::AUDIT.record_by("admin.restart", "process", audit::OUTCOME_REJECTED, &actor);
+        return err_json_cond(
+            &AdminError::Conflict("this process cannot restart itself".into()),
+            Cond::NotRestartable,
+        );
+    }
+
+    // Record the INTENT before draining: this entry is the operator's only durable evidence of who
+    // asked and when, and the drain is about to take the connection that would have carried it.
+    audit::AUDIT.record_by("admin.restart", "process", audit::OUTCOME_APPLIED, &actor);
+    crate::admin::restart::begin_drain();
+
+    ok_json(
+        StatusCode::ACCEPTED,
+        &json!({
+            "restarting": true,
+            "supervisor_detected": supervised,
+            "note": "draining now; in-flight requests finish first. The process exits when the \
+                     drain completes and the supervisor restarts it."
+        }),
+    )
+}
+
 /// The `POST /api/v1/admin/config/apply` body: a full proposed config (validate's exact shape).
 /// Optimistic concurrency rides `If-Match` (H3).
 #[derive(serde::Deserialize)]
@@ -3281,6 +3359,18 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         }),
     );
     paths.insert(
+        ap("/restart"),
+        json!({
+            "post": {
+                "summary": "Restart busbar to apply the restart-scoped settings (listen, admin_listen, tls, admin_tls, admin_insecure, store). Drains first; the supervisor brings it back",
+                "security": [{"adminToken": []}],
+                "responses": {
+                    "202": {"description": "`{restarting, supervisor_detected, note}` — draining; in-flight requests finish first"},
+                }
+            }
+        }),
+    );
+    paths.insert(
         ap("/config/settings"),
         json!({
             "get": {
@@ -3843,6 +3933,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     typed!("/config/settings", "get", "200", sview::ConfigSettingsView);
     typed!("/config/settings", "put", "200", sview::ConfigSettingsView);
     typed!("/config/reload", "post", "200", sview::ConfigReloadView);
+    typed!("/restart", "post", "202", sview::RestartView);
     typed!("/config/rollback", "post", "200", sview::ConfigRollbackView);
     typed!(
         "/overlay/{section}",
@@ -3932,6 +4023,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     body!("/plugins", "post", InstallPluginReq);
     body!("/plugins/rollback", "post", PluginRollbackReq);
     body!("/config/rollback", "post", RollbackReq);
+    body!("/restart", "post", RestartReq);
     body!("/hooks/{name}/settings", "patch", PatchSettingsReq);
     body!("/keys", "post", crate::admin::CreateKeyReq);
     body!("/keys/{id}", "patch", crate::admin::UpdateKeyReq);
