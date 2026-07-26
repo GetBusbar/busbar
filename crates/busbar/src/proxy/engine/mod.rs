@@ -190,6 +190,39 @@ pub(crate) async fn forward_with_pool_parsed(
     resp
 }
 
+/// RAII refund for the headers-time `spend_budget` unit across the BUFFERED forward path's
+/// spend→`read_capped(...).await` window (used by both `forward_with_pool_parsed_inner` here and
+/// its `walk.rs` degraded-path twin). A client disconnect / LB reset parked at that await drops the
+/// handler future without resuming it, so a plain local bool consulted only AFTER the await never
+/// runs the refund (#21) — the streaming path has `FirstByteBody::drop` for this; the buffered path
+/// has no such body wrapper, so it needs its own guard.
+///
+/// Mirrors `select::ProbeGuard`: armed by default, refunds on `Drop` unless disarmed first. Every
+/// exit that must KEEP the charge (a delivered completion, or our own translation-cap truncation)
+/// calls `disarm()` before returning; the exits that must refund (a pre-first-byte-equivalent
+/// transport failure, or an untranslatable 2xx) simply leave it armed and let the `return` unwind
+/// through it — replacing the old inline `if budget_spent { refund_budget(i) }` calls, not
+/// supplementing them (calling both would double-refund).
+struct BudgetSpendGuard<'a> {
+    store: &'a dyn crate::store::StateStore,
+    lane: usize,
+    armed: bool,
+}
+
+impl BudgetSpendGuard<'_> {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for BudgetSpendGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.store.refund_budget(self.lane);
+        }
+    }
+}
+
 /// The dispatch core behind [`forward_with_pool_parsed`] (the thin wrapper exists only to fire the
 /// completion-stage taps around the whole request).
 //
@@ -691,6 +724,11 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     .collect();
                 if !filtered.is_empty() {
                     gate_order = Some((filtered, name));
+                } else {
+                    // This gate outranks every earlier one in the chain, and it has abstained: the
+                    // fall-through is the pool's BASE ordering, never a lower-priority gate's stale
+                    // order left over from a previous loop iteration.
+                    gate_order = None;
                 }
             }
         }
@@ -1743,6 +1781,15 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 // is a no-op success there) and `refund_budget` is likewise a no-op there, so an
                 // unlimited lane neither over-counts nor under-counts.
                 let budget_spent = app.store.spend_budget(i);
+                // Guards the buffered path's spend→`read_capped(...).await` window (#21): armed
+                // now, disarmed at every exit below that must KEEP the charge. Disarmed (without
+                // refunding) just before the streaming builder, which hands the same `budget_spent`
+                // value to `FirstByteBody` for its own cancellation-safe refund.
+                let mut budget_guard = BudgetSpendGuard {
+                    store: app.store.as_ref(),
+                    lane: i,
+                    armed: budget_spent,
+                };
                 // RECORD_SUCCESS ends; RESP_BUILD spans everything from here to the returned Response
                 // (usage/CT capture, SSE-vs-buffered branch, FirstByteBody wiring, response builder).
                 drop(_rec);
@@ -1820,12 +1867,10 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                         if tripped {
                             emit_breaker_trip(&app, pool_name, i);
                         }
-                        // Refund ONLY if the headers-spend actually decremented (#21): `refund_budget`
-                        // is an unconditional fetch_add, so refunding a no-op spend would raise the
-                        // budget above its cap.
-                        if budget_spent {
-                            app.store.refund_budget(i);
-                        }
+                        // `budget_guard` is still armed here (nothing has disarmed it): dropping it
+                        // on this `return` refunds ONLY if the headers-spend actually decremented
+                        // (#21) — `refund_budget` is an unconditional fetch_add, so refunding a
+                        // no-op spend would raise the budget above its cap.
                         return ingress_error(
                             ingress_protocol,
                             StatusCode::BAD_GATEWAY,
@@ -1851,6 +1896,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                             "cross-protocol non-stream success body exceeded the translation cap; \
                              cannot translate, not charging tokens, returning ingress-native error"
                         );
+                        budget_guard.disarm();
                         return ingress_error(
                             ingress_protocol,
                             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1891,6 +1937,9 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                         }
                         if let Some(Ok(mut ir)) = decoded {
                             record_resp_usage(&ir, &usage_sink, app.lanes.get(i));
+                            // Tokens are now committed to this key; keep the lane unit too rather
+                            // than refund it out from under an already-billed request.
+                            budget_guard.disarm();
                             ir.prepare_for_ingress(ingress_protocol, now());
                             if let Some(wire) = crate::handlers::request_handler(ingress_protocol)
                                 .and_then(|rh| rh.operation_handler(op.operation))
@@ -1934,6 +1983,9 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                                 // response). No FirstByteBody on this buffered path, so bill here —
                                 // straight from the IR usage the egress reader just decoded (Change A).
                                 record_resp_usage(&ir, &usage_sink, app.lanes.get(i));
+                                // Tokens are now committed to this key; keep the lane unit too
+                                // rather than refund it out from under an already-billed request.
+                                budget_guard.disarm();
                                 // OPERATION-BLIND ingress preparation: the IR reshapes ITSELF for
                                 // delivery in the caller's dialect (chat: native-identity strip, the
                                 // protocol-agnostic `created` boundary signal, tool-id remap — see
@@ -2096,6 +2148,23 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                         "cross-protocol response not translatable; returning ingress-native error \
                          instead of leaking the upstream's native body"
                     );
+                    // The 2xx headers optimistically recorded a breaker SUCCESS, but an undecodable
+                    // body is exactly as much a lane fault as a transport failure — without this, a
+                    // lane returning undecodable 200s forever never trips (unlike its TransportError
+                    // sibling above, which already compensates). Record a transient to reverse it.
+                    let tripped = app.store.record_transient_in(
+                        pool_name,
+                        i,
+                        "untranslatable-2xx",
+                        &breaker_cfg,
+                        None,
+                    );
+                    if tripped {
+                        emit_breaker_trip(&app, pool_name, i);
+                    }
+                    // `budget_guard` is still armed here (nothing on this fallthrough disarmed it):
+                    // dropping it on this `return` refunds the headers-time unit, symmetric with the
+                    // TransportError branch above.
                     return ingress_error(
                         ingress_protocol,
                         StatusCode::INTERNAL_SERVER_ERROR,
@@ -2143,6 +2212,10 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                             .and_then(|p| p.writer().make_array_stream_framer())
                     })
                     .flatten();
+                // Handing the budget-refund decision to `FirstByteBody` (via `budget_spent` below,
+                // Cancellation part of the fix) — disarm the local guard so it does not ALSO refund
+                // when this stack frame unwinds.
+                budget_guard.disarm();
                 // RB_PRE ends; RB_BODY spans the FirstByteBody wiring + response builder + return.
                 drop(_rb_pre);
                 let _rb_body = crate::profile::start(crate::profile::Stage::RbBody);
