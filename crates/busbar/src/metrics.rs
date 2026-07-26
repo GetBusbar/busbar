@@ -244,6 +244,21 @@ const SUMMARY_BUCKETS: std::num::NonZeroU32 = match std::num::NonZeroU32::new(3)
     None => unreachable!(),
 };
 
+/// How long a gauge whose subject no longer exists keeps appearing in the exposition.
+///
+/// Per-key gauges are only `set` while iterating LIVE keys, so a deleted key's series would
+/// otherwise be re-rendered with its final value for the life of the process — `/metrics` grows
+/// with the operator's lifetime key churn, and dashboards show a deleted key's spend as current.
+///
+/// Deliberately its own constant rather than a reuse of the histogram retention window: that window
+/// is sized by raw-sample memory cost, and coupling the two would let a memory-budget choice
+/// silently decide how long a deleted key lingers. GAUGES ONLY — expiring a counter would reset it
+/// and break `rate()`, and expiring a histogram would discard its summary.
+///
+/// A live series can never be caught by this: `refresh_scrape_gauges` runs inside `render`, so every
+/// live gauge is re-set microseconds before it is rendered regardless of the scrape interval.
+const GAUGE_IDLE_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
+
 /// Build the Prometheus recorder with the operator's retention window and install it globally.
 /// Split out of [`init_with`] so the fallible builder chain reads in one place.
 fn build_recorder(
@@ -252,6 +267,10 @@ fn build_recorder(
     PrometheusBuilder::new()
         .set_bucket_duration(bucket)?
         .set_bucket_count(SUMMARY_BUCKETS)
+        .idle_timeout(
+            metrics_util::MetricKindMask::GAUGE,
+            Some(GAUGE_IDLE_TIMEOUT),
+        )
         .install_recorder()
 }
 

@@ -98,6 +98,9 @@ metrics = "0.24.6"
 # second crypto backend (aws-lc-rs). Dropped for the same reason tokio/reqwest/otlp are hand-trimmed:
 # shrink the request-path binary's compile + attack surface.
 metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
+# Only for `MetricKindMask`, naming which metric kinds the recorder's idle timeout may reap. Already
+# in the graph as the exporter's own dependency, so this adds no new external crate.
+metrics-util = { version = "0.20.4", default-features = false }
 opentelemetry = "0.32.0"
 opentelemetry_sdk = "0.32.1"
 # Pin OTLP to the HTTP/proto trace path busbar uses (`SpanExporter::builder().with_http()`). The
