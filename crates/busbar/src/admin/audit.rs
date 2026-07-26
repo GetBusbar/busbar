@@ -385,6 +385,35 @@ impl AuditLog {
         // point — or (b) a watermark that was never seeded, which is a RESTORE bug
         // and is fixed where it belongs, in `load`/`restore_from_store`. Clamping
         // here would paper over (a) and manufacture a false-contiguous durable tail.
+        // SINGLE-WRITER CHECK. The durable audit log has exactly ONE legitimate writer: seqs are
+        // allocated process-locally, so a second busbar pointed at the same store reaches for the
+        // same seqs and the store's keyed upsert destroys whichever row loses. The next boot then
+        // reports the resulting break as tamper evidence. Nothing reads the durable log across
+        // nodes — `GET /audit` serves the RAM ring — so a second writer buys nothing and costs
+        // history.
+        //
+        // A tail ahead of what THIS node last persisted can only be another writer. Checked on
+        // every write-through, not once: the other node may boot at any time. The cost is one small
+        // tail read per admin mutation, on a path that is rate-limited and already does a store
+        // round-trip to append. A read error is not evidence of anything, so it is left to the
+        // existing floor machinery rather than treated as a second writer.
+        let persisted = self.durable_high.load(std::sync::atomic::Ordering::Relaxed);
+        if let Ok(tail) = store.list_audit_tail(1) {
+            let observed = tail.iter().map(|r| r.seq).max().unwrap_or(0);
+            if observed > persisted {
+                tracing::error!(
+                    observed_tail = observed,
+                    this_node_persisted = persisted,
+                    "durable audit log has another writer — detaching this node's durable sink. It \
+                     supports exactly ONE writer; two nodes sharing it overwrite each other's \
+                     entries and break the hash chain, which the next boot reports as tampering. \
+                     This node keeps auditing to its in-memory ring and state snapshot."
+                );
+                *self.sink.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                return;
+            }
+        }
+
         let start = self.durable_high.load(std::sync::atomic::Ordering::Relaxed) + 1;
         if new_seq < start {
             // This entry's seq is BELOW the durable floor — it can only be the mutation that
@@ -1254,6 +1283,57 @@ mod tests {
             persisted.iter().map(|r| r.seq).collect::<Vec<_>>(),
             vec![1],
             "only seq 1 is durable; no entry past the hole leaked into the store"
+        );
+    }
+    /// The durable audit log has exactly ONE legitimate writer. Seqs are allocated process-locally,
+    /// so a second busbar pointed at the same store allocates the SAME seqs, and the store's keyed
+    /// upsert destroys whichever row lost the race — then the next boot reports the resulting break
+    /// as tamper evidence. Nothing reads the durable log across nodes (`GET /audit` serves the RAM
+    /// ring), so a second writer buys nothing and costs history.
+    ///
+    /// Node A boots, adopts the tail and keeps writing. Node B boots later and writes. A's next
+    /// mutation must notice the tail moved without it, detach its sink, and stop — rather than
+    /// overwrite B's rows.
+    #[test]
+    fn a_second_writer_is_detected_and_the_sink_detaches() {
+        let store: Arc<dyn Store> =
+            Arc::new(busbar_store_sqlite::SqliteStore::open_in_memory().unwrap());
+
+        let node_a = AuditLog::new();
+        node_a.set_sink(store.clone());
+        node_a.restore_from_store(store.as_ref()).unwrap();
+        node_a.record_by("hook.register", "hook:from_a", OUTCOME_APPLIED, "admin");
+        let after_a = store.list_audit().unwrap().len();
+        assert_eq!(after_a, 1, "node A's entry is durable");
+
+        // Node B boots against the same store and writes. Its seq floor comes from the same tail,
+        // so it now occupies seqs node A will also reach for.
+        let node_b = AuditLog::new();
+        node_b.set_sink(store.clone());
+        node_b.restore_from_store(store.as_ref()).unwrap();
+        node_b.record_by("hook.register", "hook:from_b", OUTCOME_APPLIED, "admin");
+        let after_b = store.list_audit().unwrap().len();
+
+        // Node A mutates again. Without the check it would append over node B's row.
+        node_a.record_by("hook.delete", "hook:from_a", OUTCOME_APPLIED, "admin");
+
+        assert_eq!(
+            store.list_audit().unwrap().len(),
+            after_b,
+            "node A must not have destroyed or appended over node B's durable history"
+        );
+        assert!(
+            node_a
+                .sink
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_none(),
+            "node A must detach its durable sink once another writer is detected"
+        );
+        // The entry is still audited locally — detaching the durable sink is not losing the record.
+        assert!(
+            node_a.list(10).iter().any(|e| e.action == "hook.delete"),
+            "the mutation stays in the RAM ring and the state snapshot"
         );
     }
 }
