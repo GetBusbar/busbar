@@ -818,19 +818,15 @@ mod tests {
     /// used to start a brand-new interval whose first tick is one full period out. A swap cadence
     /// faster than the probe interval — an onboarding wave auto-provisioning a group per new
     /// subject, or a script applying settings in a loop — therefore replaced every generation before
-    /// it could probe ONCE, and health probing went silently dark while logging that it was enabled.
+    /// it could probe ONCE, and health probing went silently dark while logging it was enabled.
     ///
-    /// The schedule is shared across clone-derived swaps, so the deadline survives them.
-    #[tokio::test(start_paused = true)]
-    async fn swap_churn_does_not_starve_the_probe_schedule() {
-        let state = Arc::new(MockServerState::new());
-        for _ in 0..8 {
-            state.push(MockResponse::Ok {
-                status: StatusCode::OK,
-                body: serde_json::json!({"ok": true}),
-            });
-        }
-        let server = MockServer::new(state).await;
+    /// The property that fixes it: a swap must NOT move the lane's probe deadline. Asserted on the
+    /// schedule directly rather than by waiting for a probe — a probe needs real socket I/O, which
+    /// under a paused clock completes at the runtime's discretion, so asserting on it measures the
+    /// test harness rather than the fix.
+    #[tokio::test]
+    async fn a_swap_does_not_push_the_probe_deadline_out() {
+        let server = MockServer::new(Arc::new(MockServerState::new())).await;
         let app = TestApp::new()
             .lane(
                 LaneSpec::new("l", Protocol::anthropic(), &server.base_url())
@@ -844,23 +840,35 @@ mod tests {
             .pool("p", &[(0, 1)])
             .build();
 
-        let handle = Arc::new(crate::state::AppHandle::new(app.clone()));
         spawn_probers(&app);
+        let first = app.probe_schedule.deadlines[0].load(std::sync::atomic::Ordering::Relaxed);
+        assert_ne!(
+            first,
+            super::UNSCHEDULED,
+            "the first spawn schedules the lane"
+        );
 
-        // Swap every simulated second for 20s — twice the probe interval.
-        for _ in 0..20 {
-            tokio::time::advance(Duration::from_secs(1)).await;
-            handle.swap(Arc::new((*handle.load()).clone()));
-            tokio::task::yield_now().await;
-        }
-        // Let the probe's own I/O settle without advancing far enough to earn another tick.
-        for _ in 0..40 {
-            tokio::task::yield_now().await;
+        // Further generations, as a swap burst would produce. Real time must advance between them:
+        // a deadline RECOMPUTED from "now" only differs from an inherited one once the clock has
+        // moved, so without this the assertion cannot tell the two apart.
+        for _ in 0..5 {
+            std::thread::sleep(Duration::from_millis(6));
+            spawn_probers(&app);
+            assert_eq!(
+                app.probe_schedule.deadlines[0].load(std::sync::atomic::Ordering::Relaxed),
+                first,
+                "a re-spawn must inherit the existing deadline, never restart the interval"
+            );
         }
 
-        assert!(
-            app.store.snapshot(0, now()).ok > 0,
-            "20s of swap churn against a 10s interval must not starve the probe schedule"
+        // And every one of those generations is accounted for, so the stale ones exit rather than
+        // probing alongside the live one.
+        assert_eq!(
+            app.probe_schedule
+                .generation
+                .load(std::sync::atomic::Ordering::Relaxed),
+            6,
+            "each spawn takes its own generation"
         );
         server.shutdown().await;
     }

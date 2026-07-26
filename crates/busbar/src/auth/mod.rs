@@ -1023,6 +1023,8 @@ pub(crate) async fn auth_middleware(
                 // do NOT swap the App, so they stay CRUD.
                 || rel == "/plugins/reload"
                 || rel == "/plugins/rollback"
+                // Restarting ends the process; the 6x looser CRUD budget would be a flood knob.
+                || rel == "/restart"
             {
                 crate::admin::rate::MutationClass::Config
             } else {

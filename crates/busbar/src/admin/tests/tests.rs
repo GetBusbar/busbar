@@ -9412,3 +9412,87 @@ fn documented_operations() -> Vec<(String, crate::admin::v1::contract::taxonomy:
     );
     ops
 }
+
+/// `POST /api/v1/admin/restart` is how the restart-scoped settings get applied without an SSH
+/// session, so its refusals matter as much as its success: exiting is only a RESTART if something
+/// restarts the process, and a test binary has no shutdown channel at all.
+///
+/// Drives all three declared conditions. The success path cannot be driven here — it would end the
+/// test process — which is why the endpoint checks restartability BEFORE recording an applied
+/// restart, so a refusal is never audited as a restart that then failed.
+#[tokio::test]
+async fn test_admin_v1_restart_refuses_when_it_cannot_restart() {
+    crate::metrics::init();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let (addr, _h) = serve_with_gov(gov).await;
+    let client = reqwest::Client::new();
+    let admin = |req: reqwest::RequestBuilder| req.header("x-admin-token", "admintok");
+    let url = format!("http://{addr}/api/v1/admin/restart");
+
+    // A typo'd field is a 400, not a silent restart.
+    let resp = admin(client.post(&url))
+        .header("content-type", "application/json")
+        .body(r#"{"confrim": true}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status().as_u16(),
+        400,
+        "unknown field must not restart"
+    );
+
+    // No supervisor detected and no confirmation: refuse rather than risk leaving busbar down.
+    let unsupervised = std::env::var_os("INVOCATION_ID").is_none()
+        && std::env::var_os("KUBERNETES_SERVICE_HOST").is_none();
+    if unsupervised {
+        let resp = admin(client.post(&url)).send().await.unwrap();
+        assert_eq!(
+            resp.status().as_u16(),
+            409,
+            "an unsupervised restart must be refused unless confirmed"
+        );
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "conflict");
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("confirm"),
+            "the refusal must tell the operator how to proceed: {body}"
+        );
+    }
+
+    // Confirmed, so the supervisor check passes — but a test binary published no shutdown channel,
+    // so the process genuinely cannot restart itself and says so.
+    let resp = admin(client.post(&url))
+        .header("content-type", "application/json")
+        .body(r#"{"confirm": true}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status().as_u16(),
+        409,
+        "a process with no shutdown channel cannot restart itself"
+    );
+
+    // Every refusal is audited — the operator's only evidence, since a real restart takes the
+    // connection that would have carried the response.
+    let entries = crate::admin::audit::AUDIT.list(crate::admin::audit::MAX_AUDIT_ENTRIES);
+    let restarts: Vec<_> = entries
+        .iter()
+        .filter(|e| e.action == "admin.restart")
+        .collect();
+    assert!(
+        restarts.len() >= 2,
+        "each refusal must be audited, got {restarts:?}"
+    );
+    assert!(
+        restarts
+            .iter()
+            .all(|e| e.outcome == crate::admin::audit::OUTCOME_REJECTED),
+        "a refused restart must never be recorded as applied: {restarts:?}"
+    );
+}

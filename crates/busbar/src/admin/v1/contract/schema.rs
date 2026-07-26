@@ -127,6 +127,15 @@ pub(crate) struct ConfigReloadView {
     pub(crate) config_version: u64,
 }
 
+/// `POST /restart` — accepted-and-draining result.
+#[derive(Serialize, JsonSchema)]
+pub(crate) struct RestartView {
+    pub(crate) restarting: bool,
+    /// Whether a process supervisor was detected. False means the caller confirmed explicitly.
+    pub(crate) supervisor_detected: bool,
+    pub(crate) note: String,
+}
+
 /// `POST /config/rollback` — restore-a-retained-version result (the restored version + the NEW
 /// config version the rollback produced).
 #[derive(Serialize, JsonSchema)]
