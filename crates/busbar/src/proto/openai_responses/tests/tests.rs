@@ -6355,3 +6355,159 @@ fn test_responses_usage_carries_all_required_fields() {
         "cache_write_tokens is not a native Responses usage field and must not be emitted: {uc}"
     );
 }
+
+/// Grounding citations were dropped on the way into Responses: the writer hardcoded
+/// `annotations: []`, so an Anthropic web-search or Gemini grounding response arrived at an
+/// OpenAI-dialect client with its sources gone.
+///
+/// The mapping is not 1:1 — `url_citation` wants url, title and a character span, and neither
+/// source carries all three — so the writer fills what it honestly can and omits the rest rather
+/// than inventing offsets or titles. These pin both halves of that policy.
+#[test]
+fn write_response_emits_url_citations_without_inventing_fields() {
+    let cite = |kind: &str,
+                cited_text: Option<&str>,
+                title: Option<&str>,
+                url: Option<&str>,
+                start: Option<i64>,
+                end: Option<i64>| crate::ir::IrCitation {
+        kind: Some(kind.to_string()),
+        cited_text: cited_text.map(str::to_string),
+        title: title.map(str::to_string),
+        url: url.map(str::to_string),
+        document_index: None,
+        start_index: start,
+        end_index: end,
+        encrypted_index: None,
+        raw: None,
+    };
+
+    let text = "The tide turns at dawn. Nothing else is known.";
+    let resp = crate::ir::IrResponse {
+        logprobs: Vec::new(),
+        role: crate::ir::IrRole::Assistant,
+        id: Some("resp_c".to_string()),
+        model: Some("gpt-4o".to_string()),
+        created: Some(1_700_000_000),
+        content: vec![crate::ir::IrBlock::Text {
+            text: text.to_string(),
+            cache_control: None,
+            citations: vec![
+                // Anthropic web search: url + title, NO offsets. Recoverable from the quote.
+                cite(
+                    "web_search_result_location",
+                    Some("The tide turns at dawn."),
+                    Some("Tide Tables"),
+                    Some("https://example.com/tides"),
+                    None,
+                    None,
+                ),
+                // Gemini grounding: url + offsets, NO title. The url stands in for the title.
+                cite(
+                    "web_search_result_location",
+                    None,
+                    None,
+                    Some("https://example.org/almanac"),
+                    Some(24),
+                    Some(45),
+                ),
+                // No url and no recoverable span: a document reference is a different wire shape
+                // keyed by a file_id the IR does not carry, so it is omitted, not mis-shaped.
+                cite(
+                    "char_location",
+                    None,
+                    Some("Internal Memo"),
+                    None,
+                    Some(0),
+                    Some(4),
+                ),
+                // A quote that does not occur in the text: the anchor would have to be guessed.
+                cite(
+                    "web_search_result_location",
+                    Some("no such sentence"),
+                    Some("Ghost"),
+                    Some("https://example.net/ghost"),
+                    None,
+                    None,
+                ),
+            ],
+        }],
+        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+        stop_sequence: None,
+        usage: crate::ir::IrUsage {
+            input_tokens: 1,
+            output_tokens: 1,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: None,
+        },
+        system_fingerprint: None,
+    };
+
+    let writer = ResponsesWriter;
+    let v = writer.write_response(&resp);
+    let anns = v["output"][0]["content"][0]["annotations"]
+        .as_array()
+        .expect("annotations array");
+
+    assert_eq!(
+        anns.len(),
+        2,
+        "only the honestly-mappable citations: {anns:?}"
+    );
+    assert_eq!(anns[0]["type"], "url_citation");
+    assert_eq!(anns[0]["url"], "https://example.com/tides");
+    assert_eq!(anns[0]["title"], "Tide Tables");
+    assert_eq!(anns[0]["start_index"], 0, "span recovered from the quote");
+    assert_eq!(anns[0]["end_index"], 23);
+    assert_eq!(
+        anns[1]["title"], "https://example.org/almanac",
+        "a source with no title falls back to its url, never a placeholder"
+    );
+    assert_eq!(anns[1]["start_index"], 24);
+}
+
+/// The streaming path dropped citations outright: Responses carries them as `annotations` on the
+/// assembled `output_text` part, not as a delta frame, so a `CitationsDelta` had nowhere to go at
+/// arrival time and was discarded instead of buffered until `BlockStop` built that part.
+#[test]
+fn streamed_citations_reach_the_assembled_output_item() {
+    let w = ResponsesWriter;
+    let ev = |e: crate::ir::IrStreamEvent| w.write_response_event(&e);
+
+    let _ = ev(crate::ir::IrStreamEvent::BlockStart {
+        index: 0,
+        block: crate::ir::IrBlockMeta::Text,
+    });
+    let _ = ev(crate::ir::IrStreamEvent::BlockDelta {
+        index: 0,
+        delta: crate::ir::IrDelta::TextDelta("Sourced claim.".into()),
+    });
+    let _ = ev(crate::ir::IrStreamEvent::BlockDelta {
+        index: 0,
+        delta: crate::ir::IrDelta::CitationsDelta(vec![crate::ir::IrCitation {
+            kind: Some("web_search_result_location".into()),
+            cited_text: Some("Sourced claim.".into()),
+            title: Some("A Source".into()),
+            url: Some("https://example.com/s".into()),
+            document_index: None,
+            start_index: None,
+            end_index: None,
+            encrypted_index: None,
+            raw: None,
+        }]),
+    });
+    let (name, frame) =
+        ev(crate::ir::IrStreamEvent::BlockStop { index: 0 }).expect("BlockStop finalizes the item");
+    assert_eq!(name, "response.output_item.done");
+
+    let anns = frame["item"]["content"][0]["annotations"]
+        .as_array()
+        .expect("annotations array");
+    assert_eq!(
+        anns.len(),
+        1,
+        "the streamed citation must survive: {anns:?}"
+    );
+    assert_eq!(anns[0]["url"], "https://example.com/s");
+    assert_eq!(anns[0]["end_index"], 14);
+}

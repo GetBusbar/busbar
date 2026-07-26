@@ -4494,3 +4494,96 @@ fn stream_refusal_deltas_open_a_text_block_and_promote_the_stop_reason() {
         "the terminal frame must carry the promoted Refusal stop reason, got {evs3:?}"
     );
 }
+
+/// Chat Completions has a native `annotations`/`url_citation` shape, and the writer emitted no
+/// annotations key at all — so a grounded Anthropic or Gemini response reached an OpenAI-dialect
+/// client with its sources gone. Chat joins every text block into ONE content string, so a
+/// citation's offsets must be shifted by where its block starts in that join.
+#[test]
+fn write_response_carries_citations_with_join_relative_offsets() {
+    let cite = |quote: &str, title: &str, url: &str| crate::ir::IrCitation {
+        kind: Some("web_search_result_location".into()),
+        cited_text: Some(quote.into()),
+        title: Some(title.into()),
+        url: Some(url.into()),
+        document_index: None,
+        start_index: None,
+        end_index: None,
+        encrypted_index: None,
+        raw: None,
+    };
+    let text_block = |text: &str, citations: Vec<crate::ir::IrCitation>| IrBlock::Text {
+        text: text.into(),
+        cache_control: None,
+        citations,
+    };
+
+    let resp = crate::ir::IrResponse {
+        logprobs: Vec::new(),
+        role: IrRole::Assistant,
+        id: Some("chatcmpl-c".into()),
+        model: Some("gpt-4o".into()),
+        created: Some(1_700_000_000),
+        content: vec![
+            text_block(
+                "First claim. ",
+                vec![cite("First claim.", "A", "https://a.test")],
+            ),
+            text_block(
+                "Second claim.",
+                vec![cite("Second claim.", "B", "https://b.test")],
+            ),
+        ],
+        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+        stop_sequence: None,
+        usage: IrUsage {
+            input_tokens: 1,
+            output_tokens: 1,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: None,
+        },
+        system_fingerprint: None,
+    };
+
+    let v = OpenAiWriter.write_response(&resp);
+    let anns = v["choices"][0]["message"]["annotations"]
+        .as_array()
+        .expect("annotations must be emitted when sources exist");
+    assert_eq!(anns.len(), 2, "{anns:?}");
+    assert_eq!(anns[0]["url"], "https://a.test");
+    assert_eq!(anns[0]["start_index"], 0);
+    assert_eq!(
+        anns[1]["start_index"], 13,
+        "the second block's citation is offset by the first block's length in the joined content"
+    );
+    assert_eq!(anns[1]["end_index"], 26);
+}
+
+/// A completion with no sources must carry NO annotations key. OpenAI omits it when none were
+/// produced, so a hardcoded empty array would be a proxy tell in the other direction.
+#[test]
+fn write_response_omits_annotations_when_there_are_no_citations() {
+    let resp = crate::ir::IrResponse {
+        logprobs: Vec::new(),
+        role: IrRole::Assistant,
+        id: Some("chatcmpl-n".into()),
+        model: Some("gpt-4o".into()),
+        created: Some(1_700_000_000),
+        content: vec![IrBlock::Text {
+            text: "plain".into(),
+            cache_control: None,
+            citations: Vec::new(),
+        }],
+        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+        stop_sequence: None,
+        usage: IrUsage {
+            input_tokens: 1,
+            output_tokens: 1,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: None,
+        },
+        system_fingerprint: None,
+    };
+    let v = OpenAiWriter.write_response(&resp);
+    assert!(v["choices"][0]["message"].get("annotations").is_none());
+}

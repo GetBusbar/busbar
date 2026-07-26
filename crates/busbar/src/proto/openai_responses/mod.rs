@@ -810,6 +810,12 @@ pub(crate) struct ResponsesWriter {
     /// for the same reason as the other fields; a poisoned lock degrades to omitting the accumulated
     /// text (the item then carries empty text) rather than panicking on the request path.
     text_accum: std::sync::Mutex<std::collections::BTreeMap<usize, String>>,
+    /// Per-stream buffer of the citations delivered for the message item at each `output_index`.
+    /// Responses carries citations as `annotations` on the assembled `output_text` part, not as a
+    /// standalone delta frame, so a streamed `CitationsDelta` has nowhere to go at arrival time and
+    /// is accumulated here until `BlockStop` builds that part. Dropping it, as the writer used to,
+    /// lost every grounding source on any cross-protocol stream into Responses.
+    citation_accum: std::sync::Mutex<std::collections::BTreeMap<usize, Vec<crate::ir::IrCitation>>>,
     /// Per-stream buffer of FINALIZED `output[]` items, keyed by `output_index` so the terminal
     /// event emits them in stable index order. A native /v1/responses `response.completed`/
     /// `response.incomplete` event's inner `response.output` is the fully assembled array (each
@@ -872,6 +878,7 @@ pub(crate) const ResponsesWriter: ResponsesWriter = ResponsesWriter {
     item_ids: std::sync::Mutex::new(std::collections::BTreeMap::new()),
     tool_calls: std::sync::Mutex::new(std::collections::BTreeMap::new()),
     text_accum: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+    citation_accum: std::sync::Mutex::new(std::collections::BTreeMap::new()),
     output_items: std::sync::Mutex::new(std::collections::BTreeMap::new()),
     open_reasoning_indices: std::sync::Mutex::new(std::collections::BTreeSet::new()),
     reasoning_accum: std::sync::Mutex::new(std::collections::BTreeMap::new()),
@@ -930,6 +937,13 @@ impl Clone for ResponsesWriter {
             // lock degrades to an empty map.
             text_accum: std::sync::Mutex::new(
                 self.text_accum
+                    .lock()
+                    .map(|m| m.clone())
+                    .unwrap_or_default(),
+            ),
+            // Carry the citation accumulator across the same clone, for the same reason.
+            citation_accum: std::sync::Mutex::new(
+                self.citation_accum
                     .lock()
                     .map(|m| m.clone())
                     .unwrap_or_default(),
@@ -1158,6 +1172,26 @@ impl ResponsesWriter {
         if let Ok(mut map) = self.text_accum.lock() {
             map.entry(index).or_default().push_str(fragment);
         }
+    }
+
+    /// Buffer streamed citations for the message item at `index` until `BlockStop` assembles the
+    /// `output_text` part they annotate. Lock poisoning degrades to a no-op.
+    fn append_citations(&self, index: usize, cits: &[crate::ir::IrCitation]) {
+        if cits.is_empty() {
+            return;
+        }
+        if let Ok(mut map) = self.citation_accum.lock() {
+            map.entry(index).or_default().extend_from_slice(cits);
+        }
+    }
+
+    /// Remove and return the accumulated citations for the message item at `index`.
+    fn take_citation_accum(&self, index: usize) -> Vec<crate::ir::IrCitation> {
+        self.citation_accum
+            .lock()
+            .ok()
+            .and_then(|mut map| map.remove(&index))
+            .unwrap_or_default()
     }
 
     /// Remove and return the accumulated text for the message item at `index`. Returns an empty

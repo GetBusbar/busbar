@@ -822,6 +822,25 @@ impl ProtocolWriter for OpenAiWriter {
             message_obj["tool_calls"] = serde_json::Value::Array(tool_calls_arr);
         }
 
+        // Grounding sources. Chat joins every text block into ONE content string, so a citation's
+        // offsets are shifted by where its block starts in that join. Emitted only when non-empty:
+        // an absent `annotations` key is what OpenAI returns for a completion with no sources, so a
+        // hardcoded `[]` would be a proxy tell in the other direction.
+        let mut base = 0usize;
+        let mut annotations: Vec<serde_json::Value> = Vec::new();
+        for block in &resp.content {
+            if let crate::ir::IrBlock::Text {
+                text, citations, ..
+            } = block
+            {
+                annotations.extend(super::url_annotations(text, base, citations));
+                base += text.len();
+            }
+        }
+        if !annotations.is_empty() {
+            message_obj["annotations"] = serde_json::Value::Array(annotations);
+        }
+
         let mut choices_array: Vec<serde_json::Value> = Vec::new();
         // The OpenAI chat.completion spec requires `finish_reason` to ALWAYS be present in a choice
         // object — a valid enum string ("stop"/"length"/"tool_calls"/...) or JSON `null` when the
