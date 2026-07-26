@@ -74,7 +74,8 @@ static EXISTENCE_GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// 1.4.x fields (max_budget_cents/rpm_limit/tpm_limit/budget_period) fail loudly.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct CreateKeyReq {
+#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
+pub(crate) struct CreateKeyReq {
     name: String,
     /// The `groups:` bucket this key binds to (at most one). A key with NO group is authed +
     /// unlimited (access only). If the named group EXISTS, the key binds to it. If it does NOT
@@ -958,10 +959,14 @@ pub(crate) async fn create_key(
 /// cap fields (`rpm_limit`/`tpm_limit`/`max_budget_cents`) are GONE: limits live on the group.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct UpdateKeyReq {
+#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
+pub(crate) struct UpdateKeyReq {
     #[serde(default)]
     enabled: Option<bool>,
+    /// Rebind or UNBIND the key's group. Absent = unchanged; `null` = unbind. The double `Option`
+    /// is what distinguishes those two, so the schema describes it as a nullable string.
     #[serde(default, deserialize_with = "double_option")]
+    #[cfg_attr(feature = "openapi-schema", schemars(with = "Option<String>"))]
     group: Option<Option<String>>,
 }
 
