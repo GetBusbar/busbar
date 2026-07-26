@@ -942,8 +942,7 @@ impl PromptAccess {
     pub(crate) fn sends_prompt(self) -> bool {
         !matches!(self, PromptAccess::No)
     }
-    /// Whether the hook may return a `rewrite` arm (only `rw`). Wired in the slice-4 seam.
-    #[allow(dead_code)]
+    /// Whether the hook may return a `rewrite` arm (only `rw`).
     pub(crate) fn can_rewrite(self) -> bool {
         matches!(self, PromptAccess::Rw)
     }
