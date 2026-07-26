@@ -267,3 +267,85 @@ async fn least_bad_still_serves_the_only_member_after_it_was_tried() {
     );
     server.shutdown().await;
 }
+
+/// `failover.exclusions` is a PER-POOL member blocklist, and a fallback pool is an independent
+/// membership. Its own blocklist was never consulted, so a member the operator blocklisted there
+/// could still be reached by spilling into the pool — the one path exclusions exist to prevent.
+#[tokio::test]
+async fn a_fallback_pool_applies_its_own_exclusions() {
+    crate::metrics::init();
+    let server_primary = ok_server_for("primary").await;
+    let server_ok = ok_server_for("spare").await;
+    let server_blocked = ok_server_for("blocked").await;
+
+    let app = TestApp::new()
+        .lane(
+            LaneSpec::new(
+                "primary",
+                crate::proto::Protocol::anthropic(),
+                &server_primary.base_url(),
+            )
+            .provider("p"),
+        )
+        .lane(
+            LaneSpec::new(
+                "spare",
+                crate::proto::Protocol::anthropic(),
+                &server_ok.base_url(),
+            )
+            .provider("p"),
+        )
+        .lane(
+            LaneSpec::new(
+                "blocked",
+                crate::proto::Protocol::anthropic(),
+                &server_blocked.base_url(),
+            )
+            .provider("p"),
+        )
+        .pool("pf", &[(0, 1)])
+        .pool_runtime("pf", pool_runtime_with_exclusions(None))
+        .on_exhausted(
+            "pf",
+            crate::config::OnExhausted::FallbackPool("spill".into()),
+        )
+        .fallback_pool("spill", &[(1, 1), (2, 1)])
+        .pool_runtime(
+            "spill",
+            pool_runtime_with_exclusions(Some(vec!["blocked".into()])),
+        )
+        .build();
+
+    // Exhaust the primary so the request spills.
+    app.store.force_open_in("pf", 0, now() + 300);
+
+    for _ in 0..4 {
+        let resp = forward_with_pool(
+            app.clone(),
+            vec![lane(0)],
+            chat_body("pf").into(),
+            None,
+            "pf",
+            None,
+            "anthropic",
+            crate::handlers::CHAT,
+            None,
+        )
+        .await;
+        assert_eq!(resp.status().as_u16(), 200);
+    }
+
+    assert_eq!(
+        app.store.snapshot(2, now()).ok,
+        0,
+        "a member blocklisted by the FALLBACK pool must never serve a spilled request"
+    );
+    assert_eq!(
+        app.store.snapshot(1, now()).ok,
+        4,
+        "the eligible fallback member serves every spilled request"
+    );
+    server_primary.shutdown().await;
+    server_ok.shutdown().await;
+    server_blocked.shutdown().await;
+}

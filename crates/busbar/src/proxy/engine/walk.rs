@@ -910,6 +910,24 @@ pub(crate) async fn handle_fallback_pool(
         }
     };
 
+    // Apply the FALLBACK pool's OWN `failover.exclusions`. Exclusions are a per-pool member
+    // blocklist, and the fallback pool is an independent membership — the primary pool's blocklist
+    // says nothing about it, and its own was never consulted, so a member the operator blocklisted
+    // here could still be reached by spilling into this pool.
+    let fallback_cands = match app
+        .pool_runtime
+        .get(pool_name)
+        .and_then(|r| r.failover.as_ref())
+        .or(app.failover_cfg.as_ref())
+        .and_then(|f| f.exclusions.as_ref())
+    {
+        Some(excl) => fallback_cands
+            .into_iter()
+            .filter(|wl| !excl.iter().any(|m| m == &app.lanes[wl.idx].model))
+            .collect(),
+        None => fallback_cands,
+    };
+
     // Mark before re-entering so a cycle back to this pool is detected.
     request_ctx.mark_pool_visited(pool_name);
 
