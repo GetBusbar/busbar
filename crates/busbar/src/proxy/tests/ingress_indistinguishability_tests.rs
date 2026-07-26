@@ -509,6 +509,105 @@ async fn test_untranslatable_2xx_does_not_charge_tokens() {
     server.shutdown().await;
 }
 
+/// The untranslatable-2xx fallthrough must ALSO refund the headers-time lane budget unit AND record
+/// a breaker transient (the BREAKER half matters more than the budget half: today a lane returning
+/// undecodable 200s forever never trips). Same MockServer shape as
+/// `test_untranslatable_2xx_does_not_charge_tokens` (empty `choices`, so the OpenAI reader's
+/// `read_response` rejects it), but the lane is budget-limited to 1 and the pool's breaker is
+/// configured to trip on a single consecutive failure, so ONE untranslatable response must both
+/// return the unit and flip the cell to Open.
+#[tokio::test]
+async fn test_untranslatable_2xx_refunds_budget_and_trips_breaker() {
+    use crate::store::{BreakerCfg, BreakerState, TripConfig, TripMode};
+    crate::metrics::init();
+    let state = Arc::new(MockServerState::new());
+    state.push(MockResponse::Ok {
+        status: StatusCode::OK,
+        body: json!({
+            "id": "chatcmpl-EMPTY",
+            "object": "chat.completion",
+            "created": 1234567890,
+            "model": "glm-4.5",
+            "choices": [],
+            "usage": {"prompt_tokens": 7, "completion_tokens": 3}
+        }),
+    });
+    let server = MockServer::new(state.clone()).await;
+
+    let app = TestApp::new()
+        .lane(
+            LaneSpec::new(
+                "glm-4.5",
+                crate::proto::Protocol::openai(),
+                &server.base_url(),
+            )
+            .provider("zai")
+            .budget(1),
+        )
+        .pool("pa", &[(0, 1)])
+        .pool_runtime(
+            "pa",
+            crate::state::PoolRuntime {
+                breaker: Some(BreakerCfg {
+                    trip: TripConfig {
+                        mode: TripMode::Consecutive,
+                        consecutive_n: 1,
+                        ..TripConfig::default()
+                    },
+                    ..BreakerCfg::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .build();
+
+    assert_eq!(app.store.lane_budget_remaining(0), Some(1));
+    // A prior optimistic success, exactly as the 2xx-headers path records before this arm runs, so
+    // the pool cell has something for the compensating transient to reverse.
+    app.store.record_success_in("pa", 0);
+    assert!(matches!(
+        app.store.breaker_state_in("pa", 0),
+        BreakerState::Closed
+    ));
+
+    let body = serde_json::to_vec(
+        &json!({"model": "pa", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 50}),
+    )
+    .unwrap();
+    let resp = forward_with_pool(
+        app.clone(),
+        vec![crate::state::WeightedLane {
+            reasoning: None,
+            idx: 0,
+            weight: 1,
+            attempt_timeout_ms: None,
+        }],
+        body.into(),
+        None,
+        "pa",
+        None,
+        "anthropic",
+        crate::handlers::CHAT,
+        None,
+    )
+    .await;
+
+    assert_eq!(resp.status().as_u16(), 500);
+    assert_eq!(
+        app.store.lane_budget_remaining(0),
+        Some(1),
+        "the untranslatable-2xx fallthrough must refund the headers-time spend_budget unit"
+    );
+    assert!(
+        matches!(
+            app.store.breaker_state_in("pa", 0),
+            BreakerState::Open { .. }
+        ),
+        "one consecutive untranslatable 2xx (consecutive_n=1) must trip the pool cell to Open"
+    );
+    server.shutdown().await;
+}
+
 /// A SAME-PROTOCOL NON-STREAM 2xx
 /// `application/json` body whose top-level object splits across transport frames BEFORE its
 /// trailing `usage` must STILL be token-counted. The streaming per-poll `tap.feed` scanner keeps
@@ -628,6 +727,150 @@ async fn test_same_protocol_nonstream_multichunk_counts_usage() {
     assert_eq!(
         tokens, 1000,
         "a multi-chunk same-protocol non-stream body's tail usage MUST be counted (1000 tokens)"
+    );
+}
+
+/// MEDIUM/correctness (M8): the non-stream usage-tap reassembly decision at
+/// `response_body.rs`'s `if this.nonstream_buf.len() < max_translated_body_bytes() { let remaining
+/// = max_translated_body_bytes() - ... }` reads the live-reloadable
+/// `crate::limits::translate_body_max_bytes()` TWICE. `InstallGuard::install` (`limits.rs:74`)
+/// mutates that `RwLock` under a still-running gateway (a config apply/rollback), so a write
+/// landing in the gap between the two reads makes the first read's `if` pass on a HIGH cap while
+/// the second read subtracts against a freshly-LOWERED one — an underflow (`remaining = lo - buf`)
+/// that panics in debug and wraps to ~2^64 in release (silently disabling the cap).
+///
+/// This is a genuine two-statement TOCTOU with NO await point between the reads (`poll_next` is
+/// synchronous), so there is no way to deterministically interleave a config apply between them
+/// without instrumenting production code. This test instead applies RACE PRESSURE: a background
+/// thread hammers `crate::limits::install` between a cap comfortably above `CHUNK1_LEN` and one
+/// below it, at the highest rate the toggling loop can sustain, while the foreground repeatedly
+/// drives a fresh `FirstByteBody` through the exact vulnerable decision (buffer `CHUNK1_LEN` bytes
+/// under the current cap, then poll a second chunk that re-reads the cap). Over enough attempts
+/// the race window is hit. After the fix (`cap` read once into a local) this can NEVER panic
+/// regardless of scheduling, so a passing run after the fix is not luck — it is deterministic.
+#[test]
+fn nonstream_tap_cap_is_read_once_per_decision() {
+    use super::FirstByteBody;
+    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+    use bytes::Bytes;
+    use futures::StreamExt;
+    use std::panic::AssertUnwindSafe;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    crate::metrics::init();
+    const CHUNK1_LEN: usize = 4096;
+    const ATTEMPTS: usize = 20_000;
+
+    let app = TestApp::new()
+        .lane(LaneSpec::new(
+            "m",
+            crate::proto::Protocol::openai(),
+            "http://127.0.0.1:1",
+        ))
+        .pool("pa", &[(0, 1)])
+        .build();
+
+    // A real UsageSink (not just `Some(..)`) so the decision runs the exact production condition
+    // (`taps_nonstream_usage() && usage_sink.is_some()`) that gates this branch — never reached
+    // to completion here (only 2 chunks are polled, never draining to the billing arm), so no
+    // background flush task is required.
+    let store = Arc::new(MemoryStore::new());
+    let gov = Arc::new(GovState::new(store, None).expect("gov"));
+    let cost = Arc::new(crate::cost::CostModel::flat(0));
+    let (key, _secret) = gov
+        .create_key(
+            NewKeySpec {
+                name: "k".to_string(),
+                allowed_pools: None,
+                group: None,
+                labels: Default::default(),
+            },
+            1_700_000_000,
+        )
+        .expect("create key");
+    let sink = Some(UsageSink {
+        gov: gov.clone(),
+        cost: cost.clone(),
+        key: std::sync::Arc::new(key.clone()),
+        pool: std::sync::Arc::from(""),
+        charged_at: 1_700_000_000,
+        admit: None,
+    });
+
+    let chunk1 = Bytes::from(vec![b'a'; CHUNK1_LEN]);
+    let chunk2 = Bytes::from(vec![b'b'; 64]);
+
+    // Race pressure: flip the live cap as fast as possible between a value that lets the first
+    // read's `if` pass (comfortably above CHUNK1_LEN) and one the second read's subtraction cannot
+    // survive (below CHUNK1_LEN) — the exact live-reload race `limits.rs`'s own header documents.
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop2 = stop.clone();
+    let toggler = std::thread::spawn(move || {
+        let hi = crate::config::LimitsResolved {
+            request_body_max_bytes: CHUNK1_LEN * 10,
+            ..crate::config::LimitsResolved::default()
+        };
+        let lo = crate::config::LimitsResolved {
+            request_body_max_bytes: CHUNK1_LEN / 2,
+            ..crate::config::LimitsResolved::default()
+        };
+        while !stop2.load(Ordering::Relaxed) {
+            crate::limits::install(&hi);
+            crate::limits::install(&lo);
+        }
+    });
+
+    let waker = futures::task::noop_waker();
+    let mut cx = std::task::Context::from_waker(&waker);
+    let mut hit = false;
+    for _ in 0..ATTEMPTS {
+        let inner = futures::stream::iter(vec![
+            Ok::<Bytes, reqwest::Error>(chunk1.clone()),
+            Ok::<Bytes, reqwest::Error>(chunk2.clone()),
+        ]);
+        let mut fbb = FirstByteBody::new(
+            inner,
+            false, // is_sse: same-protocol NON-STREAM application/json
+            "openai",
+            crate::handlers::CHAT,
+            (),
+            app.clone(),
+            0,
+            Arc::new(crate::store::BreakerCfg::default()),
+            "pa",
+            None,
+            None,
+            sink.clone(),
+            false,
+        );
+        // Drive chunk 1 to completion (buffers CHUNK1_LEN bytes, whatever the cap happens to be at
+        // that instant — retried by the outer loop if it lands unlucky and truncates early).
+        loop {
+            match fbb.poll_next_unpin(&mut cx) {
+                std::task::Poll::Ready(Some(_)) => break,
+                std::task::Poll::Ready(None) => break,
+                std::task::Poll::Pending => continue,
+            }
+        }
+        // The vulnerable decision: chunk 2 re-reads the cap while the toggler hammers it.
+        let result = std::panic::catch_unwind(AssertUnwindSafe(|| loop {
+            match fbb.poll_next_unpin(&mut cx) {
+                std::task::Poll::Ready(_) => break,
+                std::task::Poll::Pending => continue,
+            }
+        }));
+        if result.is_err() {
+            hit = true;
+            break;
+        }
+    }
+    stop.store(true, Ordering::Relaxed);
+    toggler.join().unwrap();
+
+    assert!(
+        hit,
+        "expected the two-read TOCTOU to eventually underflow `remaining` and panic within \
+         {ATTEMPTS} attempts under continuous race pressure"
     );
 }
 
@@ -2254,6 +2497,74 @@ async fn test_cross_protocol_nonstream_over_cap_body_returns_500_uncharged() {
     server.shutdown().await;
 }
 
+/// REGRESSION (passes before and after the `BudgetSpendGuard` change, not a RED test): the
+/// `ReadEnd::Truncated` arm is a DELIBERATE no-refund policy — the upstream genuinely succeeded, so
+/// the lane DID serve a request and the budget unit must NOT be returned even though the client
+/// gets a 500. Pins that the guard's `disarm()` before this branch's `return` preserves that policy
+/// (a refund-by-default guard would invert it, exactly the mistake ruled out for this class).
+#[tokio::test]
+async fn test_truncated_body_does_not_refund_budget() {
+    crate::metrics::init();
+    let state = Arc::new(MockServerState::new());
+    let huge = "x".repeat(super::max_translated_body_bytes() + 1024);
+    state.push(MockResponse::Ok {
+        status: StatusCode::OK,
+        body: json!({
+            "id": "chatcmpl-huge",
+            "object": "chat.completion",
+            "created": 1234567890,
+            "model": "gpt-4o",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": huge}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 999999}
+        }),
+    });
+    let server = MockServer::new(state.clone()).await;
+    let app = TestApp::new()
+        .lane(
+            LaneSpec::new(
+                "gpt-4o",
+                crate::proto::Protocol::openai(),
+                &server.base_url(),
+            )
+            .provider("openai")
+            .budget(1),
+        )
+        .pool("pc", &[(0, 1)])
+        .build();
+    assert_eq!(app.store.lane_budget_remaining(0), Some(1));
+    let body = serde_json::to_vec(&json!({
+        "model": "pc",
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 16
+    }))
+    .unwrap();
+    let resp = forward_with_pool(
+        app.clone(),
+        vec![crate::state::WeightedLane {
+            reasoning: None,
+            idx: 0,
+            weight: 1,
+            attempt_timeout_ms: None,
+        }],
+        body.into(),
+        None,
+        "pc",
+        None,
+        "anthropic",
+        crate::handlers::CHAT,
+        None,
+    )
+    .await;
+    assert_eq!(resp.status().as_u16(), 500);
+    assert_eq!(
+        app.store.lane_budget_remaining(0),
+        Some(0),
+        "an over-cap (Truncated) body is OUR cap, not an upstream fault, so the headers-time \
+             spend must NOT be refunded"
+    );
+    server.shutdown().await;
+}
+
 /// `read_capped` now pre-reserves a bounded initial buffer capacity
 /// to cut the per-chunk reallocation churn as the buffer grows toward `cap`. The pre-reserve must
 /// NOT change cap ENFORCEMENT: a body that exceeds `cap` is still rejected — the returned buffer
@@ -3007,5 +3318,70 @@ async fn test_cancel_drop_skips_billing_on_aborted_translate() {
         ledgered, 0,
         "a mid-stream drop after a translate ABORT must NOT bill (the Drop's aborted() guard \
              suppresses the charge), inverse of test_cancel_drop_bills_partial_tokens"
+    );
+}
+
+/// Cancellation must refund the headers-time `spend_budget` unit. Unlike
+/// `test_streaming_pre_first_byte_transport_error_refunds_budget` (a TERMINAL error arm, which
+/// already refunds at :396 and sets `ended`), this drops the body mid-stream WITHOUT ever reaching
+/// a terminal poll arm — the shape a client disconnect or LB reset produces. Before the fix, `Drop`
+/// never read `budget_spent`, so the unit was gone forever.
+#[tokio::test]
+async fn test_cancel_drop_mid_stream_refunds_budget() {
+    use super::FirstByteBody;
+    use crate::store::BreakerCfg;
+    use bytes::Bytes;
+    use futures::StreamExt as _;
+
+    // Lane 0: budget-limited with a single remaining unit.
+    let app = TestApp::new()
+        .lane(
+            LaneSpec::new(
+                "m",
+                crate::proto::Protocol::anthropic(),
+                "http://127.0.0.1:1",
+            )
+            .budget(1),
+        )
+        .pool("p", &[(0, 1)])
+        .build();
+
+    // Spend the one unit, exactly as the 2xx-headers path does before streaming.
+    let budget_spent = app.store.spend_budget(0);
+    assert!(budget_spent, "the headers-spend must decrement the unit");
+    assert_eq!(app.store.lane_budget_remaining(0), Some(0));
+
+    // A normal in-band SSE chunk (no error, no terminator) — the stream never reaches a terminal
+    // poll arm before it is dropped, mirroring a client disconnect mid-response.
+    let chunk = b"data: {\"type\":\"content_block_delta\"}\n\n".to_vec();
+    let inner = Box::pin(futures::stream::iter(vec![Ok::<Bytes, reqwest::Error>(
+        Bytes::from(chunk),
+    )]));
+
+    {
+        let body = FirstByteBody::new(
+            inner,
+            true, // is_sse
+            "anthropic",
+            crate::handlers::CHAT,
+            (),
+            app.clone(),
+            0,
+            Arc::new(BreakerCfg::default()),
+            "p",
+            None,
+            None,
+            None,
+            budget_spent,
+        );
+        futures::pin_mut!(body);
+        let _ = body.next().await; // poll once: consume the chunk, no terminal arm reached
+                                   // body dropped here (cancel before stream end) → must refund.
+    }
+
+    assert_eq!(
+        app.store.lane_budget_remaining(0),
+        Some(1),
+        "a mid-stream cancel must refund the headers-time spend_budget unit"
     );
 }

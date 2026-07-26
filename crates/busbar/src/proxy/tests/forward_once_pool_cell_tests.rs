@@ -367,6 +367,121 @@ async fn test_fallback_pool_a_b_a_cycle_terminates_via_guard() {
     server.shutdown().await;
 }
 
+/// The degraded (`forward_once`/walk.rs) untranslatable-2xx fallthrough must ALSO refund the
+/// headers-time lane budget unit AND record a breaker transient against the ROUTING POOL cell —
+/// the identical two omissions as the main-path arm, on the FallbackPool path. Lane 1 (the fb
+/// member) speaks OpenAI while ingress is anthropic (cross-protocol), and returns a 2xx with an
+/// empty `choices` array — the OpenAI reader rejects it, so `forward_once` falls to its
+/// "not translatable" arm. Mirrors `test_forward_once_fallback_transport_error_opens_pool_cell`'s
+/// topology (dead primary -> FallbackPool "fb"), but the fb member succeeds at the transport level
+/// and fails only to translate.
+#[tokio::test]
+async fn test_forward_once_untranslatable_2xx_refunds_budget_and_trips_breaker() {
+    use crate::store::{BreakerCfg, BreakerState, TripConfig, TripMode};
+    let state = Arc::new(MockServerState::new());
+    state.push(MockResponse::Ok {
+        status: StatusCode::OK,
+        body: json!({
+            "id": "chatcmpl-EMPTY",
+            "object": "chat.completion",
+            "created": 1234567890,
+            "model": "glm-4.5",
+            "choices": [],
+            "usage": {"prompt_tokens": 7, "completion_tokens": 3}
+        }),
+    });
+    let server = MockServer::new(state.clone()).await;
+    let t0 = store_now();
+
+    let app = TestApp::new()
+        .lane(
+            LaneSpec::new(
+                "primary",
+                crate::proto::Protocol::anthropic(),
+                "http://127.0.0.1:1",
+            )
+            .dead("administratively down for test"),
+        )
+        .lane(
+            LaneSpec::new(
+                "fbmember",
+                crate::proto::Protocol::openai(),
+                &server.base_url(),
+            )
+            .budget(1),
+        )
+        .pool("primary", &[(0, 1)])
+        .fallback_pool("fb", &[(1, 1)])
+        .on_exhausted(
+            "primary",
+            crate::config::OnExhausted::FallbackPool("fb".into()),
+        )
+        // The 2xx headers optimistically record a SUCCESS before the untranslatable check runs,
+        // which closes the probe-won HalfOpen cell immediately — so the default ErrorRate config
+        // (min_requests: 5) would never trip on the single compensating transient. Consecutive
+        // mode with n=1 makes one transient an observable trip even from Closed, isolating the
+        // discriminator (a transient IS recorded) from unrelated volume thresholds.
+        .pool_runtime(
+            "fb",
+            crate::state::PoolRuntime {
+                breaker: Some(BreakerCfg {
+                    trip: TripConfig {
+                        mode: TripMode::Consecutive,
+                        consecutive_n: 1,
+                        ..TripConfig::default()
+                    },
+                    ..BreakerCfg::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .build();
+
+    app.store.force_open_in("fb", 1, t0.saturating_sub(10));
+    assert_eq!(app.store.lane_budget_remaining(1), Some(1));
+
+    let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
+    let response = forward_with_pool(
+        app.clone(),
+        vec![crate::state::WeightedLane {
+            reasoning: None,
+            idx: 0,
+            weight: 1,
+            attempt_timeout_ms: None,
+        }],
+        req_body.into(),
+        None,
+        "primary",
+        None,
+        "anthropic",
+        crate::handlers::CHAT,
+        None,
+    )
+    .await;
+    assert_eq!(
+        response.status().as_u16(),
+        500,
+        "an untranslatable cross-protocol 2xx on the degraded path must surface an ingress-native 500"
+    );
+    let _ = axum::body::to_bytes(response.into_body(), usize::MAX).await;
+
+    assert_eq!(
+        app.store.lane_budget_remaining(1),
+        Some(1),
+        "the degraded untranslatable-2xx fallthrough must refund the headers-time spend_budget unit"
+    );
+    assert!(
+        matches!(
+            app.store.breaker_state_in("fb", 1),
+            BreakerState::Open { .. }
+        ),
+        "an untranslatable 2xx via forward_once must reopen the fb POOL cell (H1 breaker parity \
+             with the transport-error arm); got {:?}",
+        app.store.breaker_state_in("fb", 1)
+    );
+    server.shutdown().await;
+}
+
 /// The upstream/breaker METRIC pool label must resolve to the ROUTED
 /// MODEL name for the default (`""`) breaker cell — the cell shared by every direct/ad-hoc
 /// (single-model) route via `forward()` — so those series correlate with `REQUESTS_TOTAL`

@@ -236,8 +236,14 @@ where
                         // `MAX_TRANSLATED_BODY_BYTES`; past the cap, drop the overflow with a warn
                         // (matching the buffered `read_capped` guards) — the tail `usage` may then be
                         // missed, but the gap is observable, not a memory leak.
-                        if this.nonstream_buf.len() < max_translated_body_bytes() {
-                            let remaining = max_translated_body_bytes() - this.nonstream_buf.len();
+                        // ONE read of the live-reloadable cap: `INSTALLED` is a `RwLock` a config
+                        // apply can mutate mid-response (`limits.rs:74-96`), so a second read
+                        // between this test and the subtraction could observe a LOWER cap and
+                        // underflow `remaining` (debug panic; release wraps to ~2^64 and silently
+                        // disables the cap for the rest of the response).
+                        let cap = max_translated_body_bytes();
+                        if this.nonstream_buf.len() < cap {
+                            let remaining = cap - this.nonstream_buf.len();
                             if chunk.len() <= remaining {
                                 this.nonstream_buf.extend_from_slice(&chunk);
                             } else {
@@ -249,7 +255,7 @@ where
                                     .increment(1);
                                 tracing::warn!(
                                     buffered = this.nonstream_buf.len(),
-                                    cap = max_translated_body_bytes(),
+                                    cap,
                                     "same-protocol non-stream body exceeded the usage-tap reassembly \
                                      cap; if the tail usage frame fell past the cap, this request's \
                                      tokens are undercounted (TPM/spend may be undercharged)"
@@ -601,6 +607,17 @@ where
 
 impl<S, P> Drop for FirstByteBody<S, P> {
     fn drop(&mut self) {
+        // Cancellation: the stream was dropped before reaching any terminal arm (`ended` is only
+        // set at :300, :403, :518 - the three deliberate no-refund exits, none of which leave
+        // `ended` false). A pre-first-byte or mid-stream client disconnect / LB reset otherwise
+        // leaks the headers-time `spend_budget` unit forever. `budget_spent` both guards against
+        // refunding a no-op spend and against double-refunding :396's own clear of the flag.
+        if !self.ended && self.budget_spent {
+            if let Some(ref app) = self.app {
+                app.store.refund_budget(self.lane_idx);
+            }
+            self.budget_spent = false;
+        }
         // Token-fee billing normally fires in `Poll::Ready(None)` (natural stream end), which TAKES
         // `usage_sink`. So a `None` here means "already billed" and this Drop is a no-op — no
         // double-charge. A `Some` means the body was DROPPED MID-STREAM (client disconnect /
