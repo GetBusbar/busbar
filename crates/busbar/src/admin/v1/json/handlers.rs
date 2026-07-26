@@ -124,6 +124,7 @@ pub(crate) async fn list_plugins(
 /// running `plugins.*` trust posture (the client is never trusted). `file` is the bare `.tar.gz`
 /// filename to store it under (storage only — identity comes from the signed manifest inside).
 #[derive(serde::Deserialize)]
+#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub(crate) struct InstallPluginReq {
     file: String,
     tarball_b64: String,
@@ -1781,8 +1782,29 @@ pub(crate) async fn config_diff(
     ok_json(StatusCode::OK, &body)
 }
 
+/// The `PUT /api/v1/admin/admin-auth` body: the replacement admin auth chain.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
+pub(crate) struct PutAuthBody {
+    /// The ordered admin auth module chain. Empty is the explicit open dev posture.
+    admin_auth: Vec<String>,
+}
+
+/// The `POST /api/v1/admin/auth/cache/flush` body. An absent body (or an absent `module`) flushes
+/// every partition. Deliberately NOT `deny_unknown_fields`: the endpoint has always ignored extra
+/// members, and tightening that would reject a call that works today.
+#[derive(serde::Deserialize)]
+#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
+pub(crate) struct FlushCacheReq {
+    /// The auth module whose cache partition to flush. Omitted = flush all.
+    #[serde(default)]
+    module: Option<String>,
+}
+
 /// The `POST /api/v1/admin/config/rollback` request body. Optimistic concurrency rides `If-Match` (H3).
 #[derive(serde::Deserialize)]
+#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub(crate) struct RollbackReq {
     /// The retained version to restore.
     version: u64,
@@ -1907,11 +1929,6 @@ pub(crate) async fn put_auth(
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    #[derive(serde::Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct PutAuthBody {
-        admin_auth: Vec<String>,
-    }
     let expected = match if_match_version(&headers) {
         Ok(v) => v,
         Err(resp) => return resp,
@@ -2033,23 +2050,19 @@ pub(crate) async fn flush_credential_cache(
     body: axum::body::Bytes,
 ) -> Response {
     let app = handle.load();
-    let module: Option<String> = if body.is_empty() {
-        None
-    } else {
-        match serde_json::from_slice::<serde_json::Value>(&body) {
-            Ok(v) => match v.get("module") {
-                None | Some(serde_json::Value::Null) => None,
-                Some(serde_json::Value::String(m)) => Some(m.clone()),
-                Some(_) => {
-                    return err_json(&AdminError::Validation(
-                        "`module` must be a string (the auth module whose partition to flush)"
-                            .into(),
-                    ))
-                }
-            },
-            Err(_) => return err_json(&AdminError::Validation("body must be JSON".into())),
-        }
-    };
+    let module: Option<String> =
+        if body.is_empty() {
+            None
+        } else {
+            match serde_json::from_slice::<FlushCacheReq>(&body) {
+                Ok(v) => v.module,
+                Err(_) => return err_json(&AdminError::Validation(
+                    "body must be JSON with an optional string `module` (the auth module whose \
+                     partition to flush)"
+                        .into(),
+                )),
+            }
+        };
     let flushed = match module.as_deref() {
         Some(m) => app.credential_cache.flush_module(m),
         None => app.credential_cache.flush_all(),
@@ -2605,6 +2618,7 @@ pub(crate) async fn put_config_settings(
 
 /// The `PATCH /api/v1/admin/hooks/{name}/settings` body. Optimistic concurrency rides `If-Match` (H3).
 #[derive(serde::Deserialize)]
+#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub(crate) struct PatchSettingsReq {
     settings: serde_json::Map<String, serde_json::Value>,
 }
@@ -3701,6 +3715,18 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         .for_serialize()
         .into_generator();
 
+    // A SECOND generator for REQUEST bodies. Responses describe what busbar serializes, requests
+    // what it accepts, and the two differ: `.for_deserialize()` is what makes a `#[serde(default)]`
+    // field OPTIONAL. Generating request bodies off the serialize generator would mark every
+    // defaulted field required — wrong in the opposite direction, and worse than saying nothing.
+    let mut req_gen = schemars::generate::SchemaSettings::draft2020_12()
+        .with(|s| {
+            s.definitions_path = "/components/schemas".into();
+            s.meta_schema = None;
+        })
+        .for_deserialize()
+        .into_generator();
+
     /// Write `content: { application/json: { schema: <schema> } }` onto one operation's `<status>`
     /// response object (creating the response entry if the op didn't already document that status).
     fn set_content(op: &mut serde_json::Value, status: &str, schema: serde_json::Value) {
@@ -3724,6 +3750,31 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             paths.get_mut(&ap($rel)).and_then(|p| p.get_mut($method))
         };
     }
+    /// Attach a REQUEST BODY schema to `<rel>.<method>`. `body!` derives it from a type; `body_raw!`
+    /// takes a hand-written one, for the bodies that are opaque config documents (see below).
+    macro_rules! body {
+        ($rel:expr, $method:literal, $t:ty) => {{
+            let schema = req_gen.subschema_for::<$t>();
+            let schema = serde_json::to_value(schema).unwrap_or_else(|_| json!({}));
+            body_raw!($rel, $method, schema);
+        }};
+    }
+    macro_rules! body_raw {
+        ($rel:expr, $method:literal, $schema:expr) => {{
+            if let Some(op) = op!($rel, $method) {
+                if let Some(obj) = op.as_object_mut() {
+                    obj.insert(
+                        "requestBody".to_string(),
+                        json!({
+                            "required": true,
+                            "content": {"application/json": {"schema": $schema}}
+                        }),
+                    );
+                }
+            }
+        }};
+    }
+
     // Attach the `$ref` schema of type `$t` to `<rel>.<method>.responses.<status>`.
     macro_rules! typed {
         ($rel:expr, $method:literal, $status:literal, $t:ty) => {{
@@ -3871,11 +3922,143 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         }
     }
 
+    // ── REQUEST BODIES ────────────────────────────────────────────────────────────────────────────
+    // Every mutating operation either declares a body here or is listed as bodyless in the drift
+    // test, which fails CI on any that is neither.
+
+    // Derived from the request struct, so the schema cannot drift from what the handler accepts.
+    body!(PATH_ADMIN_AUTH, "put", PutAuthBody);
+    body!("/auth/cache/flush", "post", FlushCacheReq);
+    body!("/plugins", "post", InstallPluginReq);
+    body!("/plugins/rollback", "post", PluginRollbackReq);
+    body!("/config/rollback", "post", RollbackReq);
+    body!("/hooks/{name}/settings", "patch", PatchSettingsReq);
+    body!("/keys", "post", crate::admin::CreateKeyReq);
+    body!("/keys/{id}", "patch", crate::admin::UpdateKeyReq);
+
+    // The config-carrying bodies are declared by HAND, deliberately.
+    //
+    // These embed the config tree, where several types (`LimitCfg`, `HookRefEntry`, `PoolCfg`,
+    // `AuthChainEntry`, `SecretRef`, …) have hand-written `Deserialize` impls whose accepted wire
+    // shape has nothing to do with their field layout — `LimitCfg` parses a map with a DYNAMIC
+    // metric key, `HookRefEntry` accepts either a bare string or a map. A derived schema would
+    // publish the internal representation as though it were the wire contract: a confident lie,
+    // with no compiler-enforced link back to the visitor that would catch the drift.
+    //
+    // So these say what is TRUE and no more: the body carries a config document, and the config
+    // reference is its specification. Honest and stable beats precise and wrong.
+    let config_doc = |what: &str| {
+        json!({
+            "type": "object",
+            "description": format!(
+                "{what} The accepted shape is the config file's own, documented in the \
+                 configuration reference; it is not restated here because several of its types \
+                 parse a wire shape that does not match their field layout."
+            ),
+            "additionalProperties": true
+        })
+    };
+    let config_body = |what: &str| {
+        json!({
+            "type": "object",
+            "properties": {
+                "config": config_doc("A `config.yaml` deploy block, as JSON."),
+                "providers": config_doc("A `providers.yaml` document, as JSON."),
+            },
+            "required": ["config"],
+            "description": what,
+            "additionalProperties": false
+        })
+    };
+    body_raw!(
+        "/config/apply",
+        "post",
+        config_body("Replace the running configuration.")
+    );
+    body_raw!(
+        PATH_CONFIG_VALIDATE,
+        "post",
+        config_body("Validate a configuration without applying it.")
+    );
+    body_raw!(
+        "/config/settings",
+        "put",
+        config_doc("The settings sections to replace, keyed by section name.")
+    );
+    body_raw!(
+        PATH_GROUPS,
+        "post",
+        json!({
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "The group name."},
+                "config": config_doc("A `groups:` entry, as JSON."),
+            },
+            "required": ["name", "config"],
+            "additionalProperties": false
+        })
+    );
+    body_raw!(
+        "/groups/{name}",
+        "put",
+        json!({
+            "type": "object",
+            "properties": {"config": config_doc("A `groups:` entry, as JSON.")},
+            "required": ["config"],
+            "additionalProperties": false
+        })
+    );
+    body_raw!(
+        "/groups/{name}",
+        "patch",
+        json!({
+            "type": "object",
+            "description": "A partial update: only the fields present are changed. `limits` and \
+                            `child_default` REPLACE their whole value when present.",
+            "properties": {
+                "parent": {"type": ["string", "null"]},
+                "enabled": {"type": ["boolean", "null"]},
+                "limits": {"type": ["array", "null"], "items": config_doc("A `limits:` entry.")},
+                "child_default": config_doc("A `child_default:` template."),
+            },
+            "additionalProperties": false
+        })
+    );
+    body_raw!(
+        PATH_HOOKS,
+        "post",
+        json!({
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "The hook name."},
+                "config": config_doc("A `hooks:` entry, as JSON."),
+            },
+            "required": ["name", "config"],
+            "additionalProperties": false
+        })
+    );
+    body_raw!(
+        "/hooks/{name}",
+        "put",
+        json!({
+            "type": "object",
+            "properties": {"config": config_doc("A `hooks:` entry, as JSON.")},
+            "required": ["config"],
+            "additionalProperties": false
+        })
+    );
+
     // The generated component schemas (every `$ref`'d view type), merged with the hand-written
     // `Error` schema. The `Error` schema stays hand-written so its `code` enum is the frozen
     // AdminError taxonomy verbatim (the drift test `openapi_error_enum_matches_admin_error_codes`
     // locks it); schemars fills in every other referenced view.
     let mut schemas = gen.definitions().clone();
+    // Request-body component schemas live in the same `components.schemas` map. The two generators
+    // cannot collide today (no type is both a request struct and a response view) and the drift
+    // test asserts every declared body resolves, which would catch it if one ever were.
+    for (name, schema) in req_gen.definitions() {
+        schemas.insert(name.clone(), schema.clone());
+    }
     schemas.insert(
         "Error".to_string(),
         json!({

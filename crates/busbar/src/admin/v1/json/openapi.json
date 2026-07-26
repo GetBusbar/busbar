@@ -495,6 +495,77 @@
         ],
         "type": "object"
       },
+      "CreateKeyReq": {
+        "additionalProperties": false,
+        "description": "`POST /keys` body (1.5.0 signed-token keys, S1): PURE AUTH + a signed expiring token. A minted\nkey is a busbar-signed `{sub, exp, kid}` token, returned ONCE. No rpm/tpm/budget on a key - all\nenforcement flows through the bound `group`. `#[serde(deny_unknown_fields)]` so the removed\n1.4.x fields (max_budget_cents/rpm_limit/tpm_limit/budget_period) fail loudly.",
+        "properties": {
+          "allowed_pools": {
+            "default": null,
+            "description": "Pools this key may target. OMITTED = ALL pools; an explicit `[]` = NO pools (C6).",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "expires_at": {
+            "default": null,
+            "description": "Token expiry as an absolute Unix-seconds timestamp. Mutually exclusive with `expires_in`.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "expires_in": {
+            "default": null,
+            "description": "Token lifetime as a duration string (`7d`, `24h`, `30m`, `3600s`) - the token's `exp` is\n`now + expires_in`. Mutually exclusive with `expires_at`. Absent (and no `expires_at`) => a\nsane long default (see `DEFAULT_KEY_TTL_SECS`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "group": {
+            "default": null,
+            "description": "The `groups:` bucket this key binds to (at most one). A key with NO group is authed +\nunlimited (access only). If the named group EXISTS, the key binds to it. If it does NOT\nexist, the mint 400s UNLESS `parent` is given — then it is AUTO-PROVISIONED as a leaf under\n`parent` (self-service D2; see `parent`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "issue_aws_credential": {
+            "default": false,
+            "description": "When true, ALSO issue an AWS-style access-key-id + secret access key (the MinIO/S3-compatible\nmodel) so a Bedrock-SDK client can authenticate via inbound SigV4. Both are returned ONCE.",
+            "type": "boolean"
+          },
+          "labels": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": {},
+            "description": "Optional mint-time labels echoed onto this key's metric series; never interpreted by\nenforcement.",
+            "type": "object"
+          },
+          "name": {
+            "type": "string"
+          },
+          "parent": {
+            "default": null,
+            "description": "AUTO-PROVISION target: the EXISTING parent group under which to create\n`group` as a leaf when `group` does not yet exist — the first-self-mint materialization of a\n`user:<sub>` personal budget bucket. The new leaf's limits come from the nearest-ancestor\n`child_default` template (inherit-only when none up the chain), created through the same\nvalidate-at-the-door path as `POST /groups`. If `group` ALREADY exists, `parent` must equal\nits actual parent (else 409) — a mint never re-homes an existing group. Ignored when `group`\nis absent (a key with no group has nothing to provision).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
       "CreatedKeyView": {
         "description": "`POST /keys` (mint) — the key metadata plus the ONCE-shown signed token, and (when an AWS SigV4\ncredential was requested) the AccessKeyId + secret access key. The AWS fields are absent on a\nbearer-only mint.",
         "properties": {
@@ -663,6 +734,20 @@
         "required": [
           "error"
         ],
+        "type": "object"
+      },
+      "FlushCacheReq": {
+        "description": "The `POST /api/v1/admin/auth/cache/flush` body. An absent body (or an absent `module`) flushes\nevery partition. Deliberately NOT `deny_unknown_fields`: the endpoint has always ignored extra\nmembers, and tightening that would reject a call that works today.",
+        "properties": {
+          "module": {
+            "default": null,
+            "description": "The auth module whose cache partition to flush. Omitted = flush all.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
         "type": "object"
       },
       "GroupBucketUsageView": {
@@ -1103,6 +1188,22 @@
           "topology",
           "config_persistence",
           "config_version"
+        ],
+        "type": "object"
+      },
+      "InstallPluginReq": {
+        "description": "The `POST /api/v1/admin/plugins` request body: install a SIGNED plugin tarball. The tarball\nbytes ride as base64 (`tarball_b64`) — a plugin artifact is opaque binary, so base64 keeps it a\nclean JSON field. The engine RE-VERIFIES the contained signed manifest server-side against the\nrunning `plugins.*` trust posture (the client is never trusted). `file` is the bare `.tar.gz`\nfilename to store it under (storage only — identity comes from the signed manifest inside).",
+        "properties": {
+          "file": {
+            "type": "string"
+          },
+          "tarball_b64": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "file",
+          "tarball_b64"
         ],
         "type": "object"
       },
@@ -1571,6 +1672,19 @@
         ],
         "type": "object"
       },
+      "PatchSettingsReq": {
+        "description": "The `PATCH /api/v1/admin/hooks/{name}/settings` body. Optimistic concurrency rides `If-Match` (H3).",
+        "properties": {
+          "settings": {
+            "additionalProperties": true,
+            "type": "object"
+          }
+        },
+        "required": [
+          "settings"
+        ],
+        "type": "object"
+      },
       "PluginInstallView": {
         "description": "The result of installing a dynamic-library store plugin (`POST /api/v1/admin/plugins`). The\nengine RE-VERIFIED the uploaded bytes against the running trust posture (the client is never\ntrusted), validated the ABI handshake, and atomically wrote the library (+ its manifest sidecar)\ninto the plugins directory. `active` takes effect on the next store (re)load — a store change\napplies on restart / `store.module` apply, not as a hot swap (design: store install is\nboot-time/config-apply). Additive-only; never a secret.",
         "properties": {
@@ -1638,6 +1752,19 @@
         "required": [
           "plugins",
           "note"
+        ],
+        "type": "object"
+      },
+      "PluginRollbackReq": {
+        "description": "The `POST /api/v1/admin/plugins/rollback` body: the target library FILENAME to roll DOWN to.",
+        "properties": {
+          "file": {
+            "description": "The plugin tarball FILENAME (in the plugins directory) carrying the prior version to pin to.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file"
         ],
         "type": "object"
       },
@@ -1924,6 +2051,23 @@
         ],
         "type": "object"
       },
+      "PutAuthBody": {
+        "additionalProperties": false,
+        "description": "The `PUT /api/v1/admin/admin-auth` body: the replacement admin auth chain.",
+        "properties": {
+          "admin_auth": {
+            "description": "The ordered admin auth module chain. Empty is the explicit open dev posture.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "admin_auth"
+        ],
+        "type": "object"
+      },
       "RevokeView": {
         "description": "`POST /keys/{id}/revoke` — the revoked key's id (denylisted without deleting the binding). 1.5.0.",
         "properties": {
@@ -1934,6 +2078,21 @@
         },
         "required": [
           "revoked"
+        ],
+        "type": "object"
+      },
+      "RollbackReq": {
+        "description": "The `POST /api/v1/admin/config/rollback` request body. Optimistic concurrency rides `If-Match` (H3).",
+        "properties": {
+          "version": {
+            "description": "The retained version to restore.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version"
         ],
         "type": "object"
       },
@@ -2057,6 +2216,28 @@
           "models",
           "providers"
         ],
+        "type": "object"
+      },
+      "UpdateKeyReq": {
+        "additionalProperties": false,
+        "description": "Partial update to an existing key. Keys are PURE AUTH (1.5.0, S1), so the mutable surface is\nauth-shaped only. Every field is optional; only the present ones change. The credential, name,\nallowed-pools, and labels are immutable here (rotate/recreate for those).\n\n`group` is THREE-STATE via serde double-option (`Option<Option<String>>`):\n- absent (`#[serde(default)]` -> outer `None`): leave the binding unchanged.\n- JSON `null` (`Some(None)`): UNBIND to no group (authed + unlimited).\n- a value (`Some(Some(name))`): REBIND to that group (must exist; mint-parity check).\n\nA single `Option<T>` could not tell absent from present-null, so a binding could never be\ncleared once set. `enabled` is a plain `Option<bool>` (a bool has no clear state). The 1.4.x\ncap fields (`rpm_limit`/`tpm_limit`/`max_budget_cents`) are GONE: limits live on the group.",
+        "properties": {
+          "enabled": {
+            "default": null,
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "group": {
+            "default": null,
+            "description": "Rebind or UNBIND the key's group. Absent = unchanged; `null` = unbind. The double `Option`\nis what distinguishes those two, so the schema describes it as a nullable string.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
         "type": "object"
       },
       "UsageBreakdown": {
@@ -2272,6 +2453,16 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PutAuthBody"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
@@ -2518,6 +2709,16 @@
     },
     "/api/v1/admin/auth/cache/flush": {
       "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FlushCacheReq"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
@@ -2661,6 +2862,33 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "description": "Replace the running configuration.",
+                "properties": {
+                  "config": {
+                    "additionalProperties": true,
+                    "description": "A `config.yaml` deploy block, as JSON. The accepted shape is the config file's own, documented in the configuration reference; it is not restated here because several of its types parse a wire shape that does not match their field layout.",
+                    "type": "object"
+                  },
+                  "providers": {
+                    "additionalProperties": true,
+                    "description": "A `providers.yaml` document, as JSON. The accepted shape is the config file's own, documented in the configuration reference; it is not restated here because several of its types parse a wire shape that does not match their field layout.",
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "config"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
@@ -2928,6 +3156,16 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RollbackReq"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
@@ -3089,6 +3327,18 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "description": "The settings sections to replace, keyed by section name. The accepted shape is the config file's own, documented in the configuration reference; it is not restated here because several of its types parse a wire shape that does not match their field layout.",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
@@ -3175,6 +3425,33 @@
     },
     "/api/v1/admin/config/validate": {
       "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "description": "Validate a configuration without applying it.",
+                "properties": {
+                  "config": {
+                    "additionalProperties": true,
+                    "description": "A `config.yaml` deploy block, as JSON. The accepted shape is the config file's own, documented in the configuration reference; it is not restated here because several of its types parse a wire shape that does not match their field layout.",
+                    "type": "object"
+                  },
+                  "providers": {
+                    "additionalProperties": true,
+                    "description": "A `providers.yaml` document, as JSON. The accepted shape is the config file's own, documented in the configuration reference; it is not restated here because several of its types parse a wire shape that does not match their field layout.",
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "config"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
@@ -3488,6 +3765,32 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "config": {
+                    "additionalProperties": true,
+                    "description": "A `groups:` entry, as JSON. The accepted shape is the config file's own, documented in the configuration reference; it is not restated here because several of its types parse a wire shape that does not match their field layout.",
+                    "type": "object"
+                  },
+                  "name": {
+                    "description": "The group name.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "config"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
@@ -3783,6 +4086,48 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "description": "A partial update: only the fields present are changed. `limits` and `child_default` REPLACE their whole value when present.",
+                "properties": {
+                  "child_default": {
+                    "additionalProperties": true,
+                    "description": "A `child_default:` template. The accepted shape is the config file's own, documented in the configuration reference; it is not restated here because several of its types parse a wire shape that does not match their field layout.",
+                    "type": "object"
+                  },
+                  "enabled": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "limits": {
+                    "items": {
+                      "additionalProperties": true,
+                      "description": "A `limits:` entry. The accepted shape is the config file's own, documented in the configuration reference; it is not restated here because several of its types parse a wire shape that does not match their field layout.",
+                      "type": "object"
+                    },
+                    "type": [
+                      "array",
+                      "null"
+                    ]
+                  },
+                  "parent": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
@@ -3896,6 +4241,27 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "config": {
+                    "additionalProperties": true,
+                    "description": "A `groups:` entry, as JSON. The accepted shape is the config file's own, documented in the configuration reference; it is not restated here because several of its types parse a wire shape that does not match their field layout.",
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "config"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
@@ -4133,6 +4499,32 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "config": {
+                    "additionalProperties": true,
+                    "description": "A `hooks:` entry, as JSON. The accepted shape is the config file's own, documented in the configuration reference; it is not restated here because several of its types parse a wire shape that does not match their field layout.",
+                    "type": "object"
+                  },
+                  "name": {
+                    "description": "The hook name.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "config"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
@@ -4428,6 +4820,27 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "config": {
+                    "additionalProperties": true,
+                    "description": "A `hooks:` entry, as JSON. The accepted shape is the config file's own, documented in the configuration reference; it is not restated here because several of its types parse a wire shape that does not match their field layout.",
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "config"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
@@ -4695,6 +5108,16 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchSettingsReq"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
@@ -5034,6 +5457,16 @@
         "x-busbar-required-scope": "read-only"
       },
       "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateKeyReq"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "201": {
             "content": {
@@ -5329,6 +5762,16 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateKeyReq"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
@@ -6012,6 +6455,16 @@
         "x-busbar-required-scope": "read-only"
       },
       "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InstallPluginReq"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "201": {
             "content": {
@@ -6185,6 +6638,16 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PluginRollbackReq"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {

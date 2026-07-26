@@ -422,3 +422,86 @@ fn declared_errors_is_total_and_well_formed() {
         }
     }
 }
+
+/// The mirror of the response drift test, for REQUEST bodies. Every mutating operation must either
+/// declare a `requestBody` whose schema resolves, or be named in `BODYLESS` — so an operation can
+/// never escape coverage by being silently omitted, which is exactly how all 26 came to document
+/// no body at all.
+#[cfg(feature = "openapi-schema")]
+#[test]
+fn openapi_every_mutating_operation_declares_a_request_body() {
+    /// Operations that take NO body. Each is a pure command: the target rides the path, and
+    /// optimistic concurrency rides `If-Match`.
+    const BODYLESS: &[(&str, &str)] = &[
+        ("post", "/api/v1/admin/config/reload"),
+        ("post", "/api/v1/admin/plugins/reload"),
+        ("post", "/api/v1/admin/signing-key/rotate"),
+        ("post", "/api/v1/admin/keys/{id}/revoke"),
+        ("post", "/api/v1/admin/keys/{id}/rotate"),
+        ("delete", "/api/v1/admin/groups/{name}"),
+        ("delete", "/api/v1/admin/hooks/{name}"),
+        ("delete", "/api/v1/admin/keys/{id}"),
+        ("delete", "/api/v1/admin/overlay/{section}"),
+        ("delete", "/api/v1/admin/plugins/{file}"),
+    ];
+
+    let doc = openapi_doc();
+    let schemas = doc["components"]["schemas"].as_object().expect("schemas");
+    let paths = doc["paths"].as_object().expect("paths");
+    let mut declared = 0usize;
+    let mut bodyless_seen = Vec::new();
+
+    for (path, methods) in paths {
+        for (method, op) in methods.as_object().expect("methods") {
+            if method.starts_with("x-") || method == "get" {
+                continue;
+            }
+            let listed = BODYLESS.contains(&(method.as_str(), path.as_str()));
+            let body = op.get("requestBody");
+            if listed {
+                assert!(
+                    body.is_none(),
+                    "{method} {path} is declared bodyless but documents a requestBody"
+                );
+                bodyless_seen.push((method.clone(), path.clone()));
+                continue;
+            }
+            let body = body.unwrap_or_else(|| {
+                panic!(
+                    "{method} {path} documents no requestBody and is not declared bodyless — a \
+                     client cannot construct a call to it"
+                )
+            });
+            let schema = &body["content"]["application/json"]["schema"];
+            // Either a component `$ref` (derived from the request struct) or an inline object
+            // schema (the config-carrying bodies, which are declared by hand on purpose).
+            if let Some(reference) = schema["$ref"].as_str() {
+                let name = reference
+                    .strip_prefix("#/components/schemas/")
+                    .unwrap_or_else(|| {
+                        panic!("{method} {path} $ref is not a component: {reference}")
+                    });
+                assert!(
+                    schemas.contains_key(name),
+                    "{method} {path} references undefined component {name}"
+                );
+            } else {
+                assert_eq!(
+                    schema["type"], "object",
+                    "{method} {path} requestBody must be a $ref or an object schema"
+                );
+            }
+            declared += 1;
+        }
+    }
+
+    assert_eq!(
+        bodyless_seen.len(),
+        BODYLESS.len(),
+        "every BODYLESS entry must name a real operation; saw {bodyless_seen:?}"
+    );
+    assert_eq!(
+        declared, 16,
+        "16 mutating operations take a body; a change here is a deliberate API change"
+    );
+}
