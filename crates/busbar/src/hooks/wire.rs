@@ -437,7 +437,6 @@ pub(crate) struct HookResponse {
     /// slice-4 step; the reply contract + parser land here first (tested in isolation).
     #[serde(default)]
     #[allow(dead_code)]
-    // consumed when the priority-ordered transform pass is wired (later slice-4 step)
     pub(crate) rewrite: Option<serde_json::Value>,
 }
 
@@ -477,7 +476,6 @@ pub(crate) use busbar_api::RewriteReply;
 /// Parse the untyped `rewrite` value fail-closed. A well-formed rewrite is `{"messages": [...],
 /// "tools"?: [...]}` with a NON-EMPTY messages array; anything else yields `None` (proceed with the
 /// original body). `tools` is optional (defaults empty).
-#[allow(dead_code)] // applied by the priority-ordered transform pass in a later slice-4 step
 pub(crate) fn parse_rewrite(value: &serde_json::Value) -> Option<RewriteReply> {
     let messages: Vec<serde_json::Value> = value.get("messages")?.as_array()?.clone();
     if messages.is_empty() {
