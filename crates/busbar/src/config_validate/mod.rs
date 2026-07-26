@@ -1075,6 +1075,53 @@ pub(crate) fn validate_with_unset(
                     entry.module
                 ));
             }
+            // Rule (ceiling/lattice cross-check): the scope model is a DIAMOND, not a ladder —
+            // `hooks-register` and `mint` are INCOMPARABLE siblings. The two loops above validate
+            // each token in ISOLATION, so a `max_admin_scope:` that is incomparable with an
+            // `admin_scope` bound under the SAME module passes both unchecked, then silently
+            // collapses that binding to `read-only` at runtime (`Grants::capped_by`'s sibling meet)
+            // — an operator writing `max_admin_scope: mint` over a `hooks-register`-bound role,
+            // intending to RAISE the ceiling, instead 403s every registrar with clean validation.
+            // Caught here instead: cross-check every bound `admin_scope` under this module against
+            // this entry's cap once both parse.
+            if let Some(cap) = entry
+                .max_admin_scope
+                .as_deref()
+                .and_then(crate::admin::v1::contract::Scope::parse)
+            {
+                if let Some(roles) = auth.role_bindings.get(&entry.module) {
+                    for (role, binding) in roles {
+                        let Some(bound) = binding
+                            .admin_scope
+                            .as_deref()
+                            .and_then(crate::admin::v1::contract::Scope::parse)
+                        else {
+                            continue;
+                        };
+                        // Incomparable iff NEITHER dominates the other — the true lattice
+                        // relation, not `bound != cap`, so a narrowing cap (e.g. `mint` capped to
+                        // `read-only`) is correctly left alone.
+                        if !cap.allows(bound) && !bound.allows(cap) {
+                            errors.push(format!(
+                                "auth chain entry '{}' sets max_admin_scope: {} which is \
+                                 INCOMPARABLE with role_bindings.{}.{}'s admin_scope: {} \
+                                 (hooks-register and mint are siblings, neither is \"more \
+                                 permissive\"); this silently collapses that role to read-only \
+                                 instead of raising or lowering its ceiling as intended - pick a \
+                                 max_admin_scope that dominates {} (mint or full), or bind {} a \
+                                 comparable admin_scope",
+                                entry.module,
+                                cap.as_str(),
+                                entry.module,
+                                role,
+                                bound.as_str(),
+                                bound.as_str(),
+                                role
+                            ));
+                        }
+                    }
+                }
+            }
         }
     }
 

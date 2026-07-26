@@ -571,13 +571,14 @@ fn extract_admin_header_token(req: &Request<Body>) -> Option<String> {
 #[derive(Debug, Clone)]
 pub(crate) struct AuthPrincipal(pub(crate) Option<Principal>);
 
-/// The EFFECTIVE admin scope resolved by the admin middleware (role_bindings + module ceiling), attached
-/// to admin-path requests so mutation handlers can apply body-derived authorization refinements the
-/// route-level `required_scope` matrix cannot. `None` = no admin grant
-/// (the request would have been 403'd) OR the explicit open posture; a handler treats non-`Full` as
-/// "restricted automation".
+/// The EFFECTIVE admin scope resolved by the admin middleware (role_bindings + module ceiling),
+/// attached to admin-path requests so mutation handlers can apply body-derived authorization
+/// refinements the route-level `required_scope` matrix cannot. A `Grants`, not a single `Scope`,
+/// because a principal can hold two INCOMPARABLE grants (a hooks-register role and a mint role) at
+/// once. Empty = no admin grant — unreachable in a handler, since the middleware 403s before any
+/// handler runs; a handler treats non-`Full` as "restricted automation".
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct AdminScope(pub(crate) Option<crate::admin::v1::contract::Scope>);
+pub(crate) struct AdminScope(pub(crate) crate::admin::v1::contract::Grants);
 
 impl AuthPrincipal {
     /// The attribution handle for audit records: the principal id, or `anonymous` for the
@@ -738,63 +739,69 @@ fn module_admin_scope_cap(
 
 /// D4 DRY-RUN: evaluate what EFFECTIVE admin scope the presented carriers would earn under
 /// `app`'s admin chain (chain verdict → role_bindings resolution → module ceiling), without serving
-/// anything. `None` = denied / no grant. `PUT /api/v1/admin/auth` runs the CALLER through the
-/// CANDIDATE chain with this before committing — a chain that would lock the caller out is
+/// anything. Empty `Grants` = denied / no grant. `PUT /api/v1/admin/auth` runs the CALLER through
+/// the CANDIDATE chain with this before committing — a chain that would lock the caller out is
 /// rejected instead of applied (D4 ruling; restart remains the backstop).
 pub(crate) fn dry_run_admin_scope(
     app: &crate::state::App,
     bearer: Option<&str>,
     header: Option<&str>,
-) -> Option<crate::admin::v1::contract::Scope> {
+) -> crate::admin::v1::contract::Grants {
     let (verdict, cap) = run_admin_chain(app, bearer, header);
     let (module, principal) = match verdict {
         ChainVerdict::Identified { module, principal } => (Some(module), Some(principal)),
         ChainVerdict::Open => (None, None),
-        ChainVerdict::Denied => return None,
+        ChainVerdict::Denied => return crate::admin::v1::contract::Grants::default(),
     };
-    let scope = admin_scope_for(module.as_deref(), principal.as_ref(), &app.role_bindings);
-    match (scope, cap) {
-        (Some(s), Some(c)) => Some(std::cmp::min(s, c)),
-        (s, _) => s,
+    let grants = admin_scope_for(module.as_deref(), principal.as_ref(), &app.role_bindings);
+    match cap {
+        Some(c) => grants.capped_by(c),
+        None => grants,
     }
 }
 
 /// Resolve a principal's ADMIN SCOPE — the authorization half, operator-owned by construction:
 /// the built-in operator token (the `admin-tokens` principal) is FULL by definition (it is the
-/// root credential); any other principal gets the most permissive `admin_scope` its ROLES bind to
-/// in `role_bindings.<identifying module>` (S4: bindings are NESTED BY MODULE - a role asserted by
-/// module A never rides module B's binding; an unbound role grants nothing - fail closed). `None`
-/// principal = the explicit open admin posture (empty `admin_auth:`) - full, dev-only.
+/// root credential); any other principal gets the UNION of what its bound roles grant in
+/// `role_bindings.<identifying module>` (S4: bindings are NESTED BY MODULE - a role asserted by
+/// module A never rides module B's binding; an unbound role grants nothing - fail closed). A
+/// principal can hold two roles bound to INCOMPARABLE scopes at once (a hooks-register role and a
+/// mint role) — `Grants` keeps both rather than collapsing to one (in-tree precedent:
+/// `allowed_pools` already unions across a principal's granting roles). No principal = the explicit
+/// open admin posture (empty `admin_auth:`) - full, dev-only.
 fn admin_scope_for(
     module: Option<&str>,
     principal: Option<&Principal>,
     role_bindings: &crate::config::RoleBindings,
-) -> Option<crate::admin::v1::contract::Scope> {
-    use crate::admin::v1::contract::Scope;
+) -> crate::admin::v1::contract::Grants {
+    use crate::admin::v1::contract::{Grants, Scope};
     let Some(p) = principal else {
-        return Some(Scope::Full);
+        return Grants::of(Scope::Full);
     };
     // The operator credential. Scope is MODULE-intrinsic, keyed off the fixed principal id the
     // admin-tokens module mints — an external module returning `id: "admin"` cannot reach here
     // with it, because role-carrying principals resolve THROUGH role_bindings below only when they
-    // carry roles; a roleless external "admin" id would land Some(Full) - so the id is reserved:
-    // config_validate forbids bindings that could shadow it, and external modules are capped by
-    // `max_admin_scope` when they land. Until external ADMIN modules exist (none are compiled
-    // today), the only producer of a roleless principal on this path is admin-tokens itself.
+    // carry roles; a roleless external "admin" id would land Grants::of(Full) - so the id is
+    // reserved: config_validate forbids bindings that could shadow it, and external modules are
+    // capped by `max_admin_scope` when they land. Until external ADMIN modules exist (none are
+    // compiled today), the only producer of a roleless principal on this path is admin-tokens
+    // itself.
     if p.roles.is_empty() {
         #[cfg(feature = "auth-admin-tokens")]
         if p.id == busbar_auth_admin_tokens::ADMIN_TOKENS_PRINCIPAL_ID {
-            return Some(Scope::Full);
+            return Grants::of(Scope::Full);
         }
-        return None;
+        return Grants::default();
     }
-    let table = module.and_then(|m| role_bindings.get(m))?;
+    let Some(table) = module.and_then(|m| role_bindings.get(m)) else {
+        return Grants::default();
+    };
     p.roles
         .iter()
         .filter_map(|role| table.get(role))
         .filter_map(|b| b.admin_scope.as_deref())
         .filter_map(Scope::parse)
-        .max()
+        .fold(Grants::default(), Grants::with)
 }
 
 /// A 403 in the frozen admin error envelope (`{"error":{"code":"forbidden","message":…}}`),
@@ -963,32 +970,29 @@ pub(crate) async fn auth_middleware(
             ChainVerdict::Denied => return Err(admin_unauthorized_response()),
         };
         // AUTHORIZATION: resolve the principal's admin scope (module-intrinsic for the operator
-        // token; `role_bindings:` for group-carrying principals: most permissive wins, unmapped
-        // groups grant nothing), CAPPED by the identifying module's `max_admin_scope:` ceiling,
-        // and check it against the endpoint's required scope. An identified principal with NO
-        // grant is 403, never 401 — authenticated but not authorized.
+        // token; `role_bindings:` for group-carrying principals: the UNION of what its bound roles
+        // grant, unmapped groups grant nothing), CAPPED by the identifying module's
+        // `max_admin_scope:` ceiling, and check it against the endpoint's required scope. An
+        // identified principal with NO grant is 403, never 401 — authenticated but not authorized.
         let scope = admin_scope_for(id_module.as_deref(), principal.as_ref(), &app.role_bindings);
-        let scope = match (scope, scope_cap) {
-            (Some(s), Some(cap)) => Some(std::cmp::min(s, cap)),
-            (s, _) => s,
+        let scope = match scope_cap {
+            Some(cap) => scope.capped_by(cap),
+            None => scope,
         };
         let required = crate::admin::v1::contract::required_scope(req.method(), &path);
-        match scope {
-            Some(s) if s.allows(required) => {}
-            _ => {
-                // Denied authorization is AUDITED (: failures leave a trail — a credential
-                // probing beyond its scope is exactly what an operator wants to see).
-                crate::admin::audit::AUDIT.record_by(
-                    "admin.forbidden",
-                    &path,
-                    crate::admin::audit::OUTCOME_REJECTED,
-                    principal
-                        .as_ref()
-                        .map(|p| p.id.as_str())
-                        .unwrap_or("anonymous"),
-                );
-                return Err(forbidden_response(required));
-            }
+        if !scope.allows(required) {
+            // Denied authorization is AUDITED (: failures leave a trail — a credential
+            // probing beyond its scope is exactly what an operator wants to see).
+            crate::admin::audit::AUDIT.record_by(
+                "admin.forbidden",
+                &path,
+                crate::admin::audit::OUTCOME_REJECTED,
+                principal
+                    .as_ref()
+                    .map(|p| p.id.as_str())
+                    .unwrap_or("anonymous"),
+            );
+            return Err(forbidden_response(required));
         }
         // MUTATION RATE LIMITS: per-principal fixed windows, spent BEFORE the handler so
         // FAILED attempts count too (anti-enumeration). Config-plane mutations (apply/rollback)

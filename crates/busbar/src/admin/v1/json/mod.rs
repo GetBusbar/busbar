@@ -246,7 +246,7 @@ fn hooks_register_escalation(
     cfg: &crate::config::HookCfg,
 ) -> Option<AdminError> {
     use crate::admin::v1::contract::Scope;
-    if scope.0 == Some(Scope::Full) {
+    if scope.0.contains(Scope::Full) {
         return None;
     }
     if cfg.global

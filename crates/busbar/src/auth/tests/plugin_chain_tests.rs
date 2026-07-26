@@ -257,14 +257,20 @@ fn auth_plugin_role_binding_and_scope_cap_apply() {
         crate::auth::admin_scope_for(Some("static-auth"), Some(&principal), &cfg.role_bindings);
     assert_eq!(
         bound,
-        Some(Scope::Full),
+        crate::admin::v1::contract::Grants::of(Scope::Full),
         "role binds full under the PLUGIN module name"
     );
-    // ..but the module's `max_admin_scope: mint` ceiling caps the effective scope.
-    let capped = std::cmp::min(bound.unwrap(), Scope::Mint);
+    // ..but the module's `max_admin_scope: mint` ceiling caps the effective scope. `run_admin_chain`
+    // dispatches by a closed name match (`admin-tokens` / `test-scope-module` only — see its
+    // REACHABILITY doc comment) and never admits an auth PLUGIN module, so `dry_run_admin_scope`
+    // cannot be driven end-to-end for a plugin name without a production change out of scope here.
+    // Calling the actual `Grants::capped_by` production method (instead of re-implementing the
+    // ceiling with `std::cmp::min`) still proves the real ceiling arithmetic under a plugin module
+    // name, which is what this test's doc comment claims to cover.
+    let capped = bound.capped_by(Scope::Mint);
     assert_eq!(
         capped,
-        Scope::Mint,
+        crate::admin::v1::contract::Grants::of(Scope::Mint),
         "max_admin_scope caps the plugin module"
     );
 

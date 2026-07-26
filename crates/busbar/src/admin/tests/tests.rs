@@ -1324,6 +1324,85 @@ async fn test_admin_v1_scope_ladder_e2e_with_group_mapped_principals() {
     handle.abort();
 }
 
+/// R5 (class-8): the SIBLING ceiling case the ladder-shaped `min` got wrong in the ESCALATION
+/// direction. A role bound `mint`, ceilinged by `max_admin_scope: hooks-register` on its module.
+/// `HooksRegister` and `Mint` are INCOMPARABLE siblings, so the lattice meet is `read-only` — the
+/// principal must get NEITHER sibling's authority, only what both share. Under the old
+/// `std::cmp::min(Mint, HooksRegister)` (Mint > HooksRegister by the deleted ordinal), this used to
+/// yield `HooksRegister` and `POST /hooks` returned 201: a `mint` role inheriting hook-definition
+/// authority its role never granted, purely because the ceiling named an incomparable sibling.
+#[tokio::test]
+async fn test_admin_v1_sibling_ceiling_grants_only_read_e2e() {
+    crate::metrics::init();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let mut app = TestApp::new().governance(gov).build();
+    {
+        let inner = Arc::get_mut(&mut app).expect("sole owner");
+        inner.admin_chain = vec!["test-scope-module".to_string()];
+        let mut table = std::collections::BTreeMap::new();
+        table.insert(
+            "minters".to_string(),
+            crate::config::RoleBindingCfg {
+                admin_scope: Some("mint".to_string()),
+                ..Default::default()
+            },
+        );
+        inner
+            .role_bindings
+            .insert("test-scope-module".to_string(), table);
+        // The ceiling names the SIBLING scope, not a dominating one.
+        inner.auth_scope_caps.insert(
+            "test-scope-module".to_string(),
+            "hooks-register".to_string(),
+        );
+    }
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    let with = |tok: &'static str, req: reqwest::RequestBuilder| {
+        req.header("x-admin-token", tok)
+            .header("content-type", "application/json")
+    };
+
+    // The sibling meet is read-only: reads still work.
+    let r = with(
+        "grp:minters",
+        client.get(format!("http://{addr}/api/v1/admin/info")),
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(r.status().as_u16(), 200, "the meet still allows reads");
+
+    // Registering a hook must be REFUSED: the role never granted hooks-register, and a ceiling
+    // naming an incomparable sibling must not invent it.
+    let hook_body = serde_json::json!({
+        "name": "sibling-ceiling-hook",
+        "config": {"kind": "tap", "plugin": "test-hook"}
+    })
+    .to_string();
+    let r = with(
+        "grp:minters",
+        client.post(format!("http://{addr}/api/v1/admin/hooks")),
+    )
+    .body(hook_body)
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(
+        r.status().as_u16(),
+        403,
+        "an incomparable-sibling ceiling must not invent hook-register authority"
+    );
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "forbidden");
+
+    handle.abort();
+}
+
 /// ESCALATION GUARD: a hooks-register principal may register a shape-only, non-global hook
 /// but NOT one wired into a security-critical path — a `prompt: rw`/`ro` content-seeing gate, a
 /// `user: ro` identity-seeing hook, or an inline `global: true` (chain wiring is full-only). The
@@ -4645,9 +4724,9 @@ fn test_create_key_warns_on_unconfigured_allowed_pool() {
             let r1 = super::create_key(
                 axum::extract::State(handle.clone()),
                 axum::Extension(crate::auth::AuthPrincipal(None)),
-                axum::Extension(crate::auth::AdminScope(Some(
-                    crate::admin::v1::contract::Scope::Full,
-                ))),
+                axum::Extension(crate::auth::AdminScope(
+                    crate::admin::v1::contract::Grants::of(crate::admin::v1::contract::Scope::Full),
+                )),
                 axum::http::HeaderMap::new(),
                 body1,
             )
@@ -4665,9 +4744,9 @@ fn test_create_key_warns_on_unconfigured_allowed_pool() {
             let r2 = super::create_key(
                 axum::extract::State(handle),
                 axum::Extension(crate::auth::AuthPrincipal(None)),
-                axum::Extension(crate::auth::AdminScope(Some(
-                    crate::admin::v1::contract::Scope::Full,
-                ))),
+                axum::Extension(crate::auth::AdminScope(
+                    crate::admin::v1::contract::Grants::of(crate::admin::v1::contract::Scope::Full),
+                )),
                 axum::http::HeaderMap::new(),
                 body2,
             )
