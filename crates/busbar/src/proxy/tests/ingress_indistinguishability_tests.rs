@@ -748,7 +748,17 @@ async fn test_same_protocol_nonstream_multichunk_counts_usage() {
 /// under the current cap, then poll a second chunk that re-reads the cap). Over enough attempts
 /// the race window is hit. After the fix (`cap` read once into a local) this can NEVER panic
 /// regardless of scheduling, so a passing run after the fix is not luck — it is deterministic.
+///
+/// `#[ignore]`: `crate::limits::install` (test-only escape hatch) mutates the SAME process-global
+/// `RwLock` every other test reads through `max_translated_body_bytes()`/`translate_body_max_bytes()`
+/// with no cross-test serialization (see `limits.rs`'s own doc — this is a bare test-only setter,
+/// not scoped). Hammering it from a background thread — required to have any chance of landing the
+/// TOCTOU window — corrupted a concurrently-running sibling
+/// (`test_cross_protocol_nonstream_over_cap_body_returns_500_uncharged`) under the default parallel
+/// `cargo test` runner. Run explicitly and alone to reproduce the RED/GREEN proof:
+/// `cargo test -p busbar --bin busbar -- --ignored --test-threads=1 nonstream_tap_cap_is_read_once_per_decision`.
 #[test]
+#[ignore = "hammers the global limits RwLock; run alone (see doc comment) to avoid corrupting sibling tests"]
 fn nonstream_tap_cap_is_read_once_per_decision() {
     use super::FirstByteBody;
     use crate::governance::{GovState, MemoryStore, NewKeySpec};
