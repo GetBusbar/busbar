@@ -617,11 +617,14 @@ impl ProtocolWriter for ResponsesWriter {
                 &crate::ir::IrDelta::ThinkingDelta(_)
                 | crate::ir::IrDelta::SignatureDelta(_)
                 | crate::ir::IrDelta::RedactedReasoningDelta(_) => None,
-                // L2-5: the Responses streaming surface has no confirmable citation/annotation
-                // delta shape to map this onto, so suppress rather than synthesize one (the
-                // citation stays in the IR and is re-emitted by protocols that model streaming
-                // citations). No panic on this otherwise-unhandled variant.
-                crate::ir::IrDelta::CitationsDelta(_) => None,
+                // Responses carries citations as `annotations` on the assembled `output_text`
+                // part, not as a standalone delta frame — so there is nothing to emit HERE, but the
+                // citations must survive until `BlockStop` builds that part. Buffer them; dropping
+                // them lost every grounding source on a cross-protocol stream into Responses.
+                crate::ir::IrDelta::CitationsDelta(cits) => {
+                    self.append_citations(*index, cits);
+                    None
+                }
                 // Responses streaming logprobs (inside `output_text` events) are out of the 1.2
                 // OpenAI<->Gemini scope; dropped rather than emitted in a non-native shape.
                 crate::ir::IrDelta::LogprobsDelta(_) => None,
@@ -716,13 +719,22 @@ impl ProtocolWriter for ResponsesWriter {
                     // empty content array.
                     let item_id = self.item_id_for(ITEM_ID_PREFIX_MSG, *index);
                     let text = self.take_text_accum(*index);
+                    let annotations = crate::proto::openai_chat::url_annotations(
+                        &text,
+                        0,
+                        &self.take_citation_accum(*index),
+                    );
                     let item = serde_json::json!({
                         "type": ITEM_TYPE_MESSAGE,
                         "id": item_id,
                         "role": "assistant",
                         "status": STATUS_COMPLETED,
                         "content": [
-                            { "type": CONTENT_TYPE_OUTPUT_TEXT, "text": text, "annotations": [] }
+                            {
+                                "type": CONTENT_TYPE_OUTPUT_TEXT,
+                                "text": text,
+                                "annotations": annotations,
+                            }
                         ]
                     });
                     // Record the finalized message item so the terminal event emits the fully
@@ -958,10 +970,14 @@ impl ProtocolWriter for ResponsesWriter {
         let mut output_arr: Vec<serde_json::Value> = Vec::new();
         for block in &resp.content {
             match block {
-                crate::ir::IrBlock::Text { text, .. } => {
+                crate::ir::IrBlock::Text {
+                    text, citations, ..
+                } => {
                     if text.is_empty() {
                         continue;
                     }
+                    let annotations =
+                        crate::proto::openai_chat::url_annotations(text, 0, citations);
                     // Match the native message-item shape the STREAMING `output_item.done` emits: an
                     // item-level `id` (`msg_…`), a `status`, and `annotations: []` on the `output_text`
                     // content part. Omitting them is a proxy tell — a typed SDK reading `item.id` /
@@ -976,7 +992,7 @@ impl ProtocolWriter for ResponsesWriter {
                         "content": [{
                             "type": CONTENT_TYPE_OUTPUT_TEXT,
                             "text": text,
-                            "annotations": []
+                            "annotations": annotations
                         }]
                     }));
                 }

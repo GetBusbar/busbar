@@ -411,6 +411,72 @@ pub(crate) struct OpenAiReader;
 /// such a `Value::String` via `crate::json::to_string` would JSON-encode the string a second time —
 /// emitting an escaped, quoted blob on the wire (double-encoding). Emit a `Value::String` verbatim
 /// so the original argument text round-trips unchanged; any other `Value` is serialized normally.
+/// Build an OpenAI `annotations` array from the IR citations that annotate a span of assistant
+/// text. Shared by the Chat and Responses writers, which use the same `url_citation` shape.
+///
+/// `text` is the ONE block the citations annotate, and `base` is where that block starts inside the
+/// message's full content string — Chat joins every text block into one string, while Responses
+/// keeps one part per block and so always passes `0`. Both the carried offsets and the ones
+/// recovered from a quote are block-relative, so `base` applies uniformly to either.
+///
+/// The wire shape is `url_citation`, which requires `url`, `title`, `start_index` and `end_index`.
+/// The IR's sources do not all carry those: an Anthropic `web_search_result_location` has a url and
+/// a title but NO character offsets, and a Gemini `citationSources[]` entry has offsets but no
+/// title. So a faithful mapping has to choose what to do about the gaps, and the choice here is
+/// deliberate: **never invent a fact.**
+///
+/// - `url` is required outright. A citation without one is a document reference, which is a
+///   different wire shape (`file_citation`) keyed by a `file_id` the IR does not carry — so it is
+///   omitted rather than mis-shaped.
+/// - Offsets are taken from the citation when present, and otherwise RECOVERED by locating the
+///   quoted `cited_text` in the assembled text. A quote that does not appear, or appears more than
+///   once, is ambiguous — omitted rather than guessed.
+/// - `title` falls back to the url. That is the same datum re-presented, not a fabricated one, and
+///   it is what a client renders anyway when a source has no title.
+///
+/// The alternative — emitting `start_index: 0, end_index: 0` or a placeholder title — trades a
+/// silent drop for silent fabrication, which is worse for a translation layer whose claim is
+/// fidelity. What is dropped here is dropped because the source genuinely lacks it.
+pub(crate) fn url_annotations(
+    text: &str,
+    base: usize,
+    citations: &[crate::ir::IrCitation],
+) -> Vec<serde_json::Value> {
+    let mut out = Vec::new();
+    for c in citations {
+        let Some(url) = c.url.as_deref().filter(|u| !u.is_empty()) else {
+            continue;
+        };
+        let span = match (c.start_index, c.end_index) {
+            (Some(s), Some(e)) if s >= 0 && e >= s => Some((s + base as i64, e + base as i64)),
+            // Recover the span from the quote when the source carried no offsets, but only when it
+            // occurs exactly once — two matches make the anchor ambiguous.
+            _ => c
+                .cited_text
+                .as_deref()
+                .filter(|q| !q.is_empty())
+                .and_then(|q| {
+                    let first = text.find(q)?;
+                    if text[first + q.len()..].contains(q) {
+                        return None;
+                    }
+                    Some(((base + first) as i64, (base + first + q.len()) as i64))
+                }),
+        };
+        let Some((start, end)) = span else {
+            continue;
+        };
+        out.push(serde_json::json!({
+            "type": "url_citation",
+            "url": url,
+            "title": c.title.as_deref().filter(|t| !t.is_empty()).unwrap_or(url),
+            "start_index": start,
+            "end_index": end,
+        }));
+    }
+    out
+}
+
 pub(crate) fn tool_arguments_to_string(input: &serde_json::Value) -> String {
     match input {
         serde_json::Value::String(s) => s.clone(),
