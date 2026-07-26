@@ -1217,6 +1217,60 @@ async fn order_last_in_chain_wins() {
     beta.shutdown().await;
 }
 
+/// RECONCILE: the LAST (highest-priority) ordering gate filters to empty against the
+/// post-restrict surviving set ⇒ abstain to the pool's BASE ordering (`mod.rs:715-717`'s own
+/// comment), never a fall-through to a LOWER-priority gate's order. Three lanes: `base`/`low`
+/// survive a restrict, `excluded` does not. The low-priority gate orders `[low]`; the
+/// high-priority gate orders `[excluded]`, which filters to empty post-restrict. Before the
+/// missing-`else` fix, `gate_order` is left holding the low-priority gate's stale value from the
+/// prior loop iteration and `low` serves; after the fix it is cleared and the pool's base
+/// ordering (first healthy candidate, `base`) serves.
+#[tokio::test]
+async fn last_order_gate_filtered_to_empty_abstains_to_base_not_to_a_lower_gate() {
+    let base = mock_lane("base").await;
+    let low = mock_lane("low").await;
+    let mut app = TestApp::new()
+        .lane(LaneSpec::new(
+            "base-lane",
+            crate::proto::Protocol::anthropic(),
+            &base.base_url(),
+        ))
+        .lane(LaneSpec::new(
+            "low-lane",
+            crate::proto::Protocol::anthropic(),
+            &low.base_url(),
+        ))
+        .lane(LaneSpec::new(
+            "excluded-lane",
+            crate::proto::Protocol::anthropic(),
+            "http://127.0.0.1:1/", // dead: never actually reachable, only named by the stale order
+        ))
+        .pool("p", &[(0, 1), (1, 1), (2, 1)])
+        .pool_runtime(
+            "p",
+            pool_runtime_with(&[(0, &["keep"]), (1, &["keep"]), (2, &[])], Vec::new()),
+        )
+        .build();
+    Arc::get_mut(&mut app).expect("sole owner").global_gates = vec![
+        (
+            0u16,
+            canned_gate(Canned::Restrict(vec!["keep".to_string()]), "restrictor"),
+        ),
+        (10u16, canned_gate(Canned::Order(vec![1]), "low-orderer")),
+        (20u16, canned_gate(Canned::Order(vec![2]), "high-orderer")),
+    ];
+    let resp = fire(app, 3).await;
+    assert_eq!(resp.status().as_u16(), 200);
+    assert_eq!(
+        body_model(resp).await,
+        "base",
+        "a filtered-to-empty highest-priority order must abstain to the pool's base ordering, \
+         not fall through to a lower-priority gate's stale order"
+    );
+    base.shutdown().await;
+    low.shutdown().await;
+}
+
 /// RECONCILE: a global gate ORDER is now honored (the previously-deferred arm): a single global
 /// ordering gate reorders dispatch away from config order.
 #[tokio::test]

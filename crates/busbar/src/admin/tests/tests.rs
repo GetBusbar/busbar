@@ -435,6 +435,84 @@ async fn test_admin_v1_pool_detail_live_status() {
     handle.abort();
 }
 
+/// `pool_detail` must report the PER-POOL breaker cell, not the lane-global any-cell/max-cell
+/// aggregate: one lane in two pools, only ONE pool's cell tripped. Before the fix `usable`/
+/// `cooldown_remaining_seconds` came from `store.snapshot` (`lane_usable_any_cell` /
+/// `lane_max_cooldown_remaining`), so BOTH pools reported the tripped pool's numbers — a
+/// dashboard for the untouched pool would show a phantom cooldown, and the tripped pool would show
+/// `usable: true` (any-cell) even though routing in that exact pool will skip the member.
+#[tokio::test]
+async fn test_admin_v1_pool_detail_reports_the_per_pool_breaker_cell() {
+    use crate::test_support::LaneSpec;
+    crate::metrics::init();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let mut app = TestApp::new()
+        .governance(gov)
+        .lane(
+            LaneSpec::new(
+                "m1",
+                crate::proto::Protocol::anthropic(),
+                "http://127.0.0.1:1/",
+            )
+            .provider("p"),
+        )
+        .pool("fast", &[(0, 1)])
+        .pool("cheap", &[(0, 1)])
+        .build();
+    let now = crate::store::now();
+    Arc::get_mut(&mut app)
+        .expect("sole owner")
+        .store
+        .force_open_in("fast", 0, now + 300);
+
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+
+    let fast: serde_json::Value = client
+        .get(format!("http://{addr}/api/v1/admin/pools/fast"))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let fm = &fast["members"][0];
+    assert_eq!(
+        fm["usable"], false,
+        "the tripped pool's OWN cell must report unusable: {fast}"
+    );
+    assert_eq!(
+        fm["cooldown_remaining_seconds"], 300,
+        "the tripped pool must report its own cell's cooldown: {fast}"
+    );
+
+    let cheap: serde_json::Value = client
+        .get(format!("http://{addr}/api/v1/admin/pools/cheap"))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let cm = &cheap["members"][0];
+    assert_eq!(
+        cm["usable"], true,
+        "an untouched pool's own cell must still be usable, not the any-cell aggregate: {cheap}"
+    );
+    assert_eq!(
+        cm["cooldown_remaining_seconds"], 0,
+        "an untouched pool must not inherit another pool's max-cell cooldown: {cheap}"
+    );
+
+    handle.abort();
+}
+
 /// `GET /api/v1/admin/admin-auth` reports the admin-plane guard: with governance + an admin token it
 /// is `configured: true` with the `admin-token` module. Never a secret.
 #[tokio::test]
@@ -3072,6 +3150,113 @@ async fn test_admin_v1_base_hook_is_read_only_via_api() {
     assert!(
         got["transport"].to_string().contains("test-hook"),
         "base hook untouched: {got}"
+    );
+}
+
+/// `DELETE` on a base-config hook must return the TERMINAL `conflict` code even when the caller's
+/// `If-Match` is also stale — the base-hook guard must outrank the retryable staleness check
+/// (matching `put_hook`/`delete_group`'s precedence), not the other way around. Both errors are
+/// HTTP 409, so the assertion MUST be on the frozen `code` field — a status-only check false-passes
+/// both before and after this fix.
+#[tokio::test]
+async fn base_hook_delete_conflict_outranks_a_stale_if_match() {
+    crate::metrics::init();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let base: crate::config::HookCfg = serde_json::from_value(serde_json::json!({
+        "kind": "gate", "plugin": "test-hook", "prompt": "no", "global": true
+    }))
+    .unwrap();
+    let app = TestApp::new()
+        .governance(gov)
+        .base_hook("pii-guard", base)
+        .build();
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let _handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+
+    let del = client
+        .delete(format!("http://{addr}/api/v1/admin/hooks/pii-guard"))
+        .header("x-admin-token", "admintok")
+        .header("if-match", "\"999\"")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(del.status().as_u16(), 409);
+    let body: serde_json::Value = del.json().await.unwrap();
+    assert_eq!(
+        body["error"]["code"], "conflict",
+        "the terminal base-hook conflict must win over the retryable version_conflict: {body}"
+    );
+}
+
+/// The escalation guard must ALSO outrank the staleness check on DELETE: a hooks-register token
+/// that may never delete a `prompt:rw`/`global` hook must see 403, not a 409 that invites a
+/// re-read/retry against a request it can never complete.
+#[tokio::test]
+async fn hook_delete_escalation_outranks_a_stale_if_match() {
+    crate::metrics::init();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let mut app = TestApp::new().governance(gov).build();
+    {
+        let inner = Arc::get_mut(&mut app).expect("sole owner");
+        inner.admin_chain = vec!["test-scope-module".to_string(), "admin-tokens".to_string()];
+        let mut table = std::collections::BTreeMap::new();
+        table.insert(
+            "registrars".to_string(),
+            crate::config::RoleBindingCfg {
+                admin_scope: Some("hooks-register".to_string()),
+                ..Default::default()
+            },
+        );
+        inner
+            .role_bindings
+            .insert("test-scope-module".to_string(), table);
+        inner
+            .auth_scope_caps
+            .insert("test-scope-module".to_string(), "full".to_string());
+    }
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let _handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+
+    // Full admin registers a content-seeing global gate hooks-register can never touch.
+    let created = client
+        .post(format!("http://{addr}/api/v1/admin/hooks"))
+        .header("x-admin-token", "admintok")
+        .header("content-type", "application/json")
+        .body(
+            serde_json::json!({
+                "name": "op-hook",
+                "config": {"kind": "gate", "plugin": "test-hook", "prompt": "rw", "global": true}
+            })
+            .to_string(),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(created.status().as_u16(), 201);
+
+    let del = client
+        .delete(format!("http://{addr}/api/v1/admin/hooks/op-hook"))
+        .header("x-admin-token", "grp:registrars")
+        .header("if-match", "\"0\"")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        del.status().as_u16(),
+        403,
+        "escalation must outrank a stale If-Match, not be masked by a 409"
+    );
+    assert_eq!(
+        del.json::<serde_json::Value>().await.unwrap()["error"]["code"],
+        "forbidden"
     );
 }
 

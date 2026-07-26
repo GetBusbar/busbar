@@ -2277,6 +2277,40 @@ fn test_record_hard_down_all_cells_trips_default_and_every_pool() {
     );
 }
 
+/// A hard-down is a genuine Closed->Open trip and MUST count against the lane's `trips`/
+/// `last_trip_at` — the same signal `record_failure_for` bumps for an organic breaker trip
+/// (`in_memory.rs:1522-1528`). Before the fix `record_hard_down_all_cells` stamped `dead_reason`
+/// and tripped every cell but never touched `trips`, so `/stats`/`pool_detail`'s `trip_count`
+/// stayed 0 for the exact class of trip (credential/billing death) an operator most needs to see.
+#[test]
+fn hard_down_all_cells_records_a_logical_trip() {
+    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    set_now_for_test(9000);
+
+    assert_eq!(store.snapshot(0, 9000).trips, 0, "no trip yet");
+    store.record_hard_down_all_cells(0, "billing / insufficient balance");
+    let snap = store.snapshot(0, 9000);
+    assert_eq!(
+        snap.trips, 1,
+        "a hard-down classification is a genuine Closed->Open trip and must count once"
+    );
+    assert_eq!(
+        snap.last_trip_at, 9000,
+        "last_trip_at must stamp the hard-down's timestamp"
+    );
+
+    // REGRESSION PROOF (passes before and after the fix): a second hard-down classification while
+    // the lane is still Open must NOT re-count — this is what makes the `default_was_closed` gate
+    // load-bearing, not the trip-counting itself.
+    set_now_for_test(9100);
+    store.record_hard_down_all_cells(0, "billing / insufficient balance");
+    assert_eq!(
+        store.snapshot(0, 9100).trips,
+        1,
+        "a re-classification of an already-Open lane must not double-count the trip"
+    );
+}
+
 /// MEDIUM/correctness (store.rs spend_budget): under a concurrent burst, the `max_requests`
 /// lifetime cap must be a HARD ceiling — the CAS gate may never drive the budget negative. The
 /// pre-fix unconditional `fetch_sub` let up to `max_concurrent` extra requests over-spend.

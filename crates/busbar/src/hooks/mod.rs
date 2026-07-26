@@ -289,8 +289,20 @@ pub(crate) fn resolve_pool_ordering(
     if !cfg.base_named {
         if let Some(name) = default_hook {
             if let Some(hook) = hooks.get(name) {
-                // The default gate becomes this pool's base ordering.
-                return resolve_gate_transport(name, hook, hooks, env, settings_version);
+                // Same exclusion both sibling resolvers apply (`resolve_pool_gates`,
+                // `resolve_gate_hooks`): only a non-rewriting `kind: gate` can return an `order`.
+                // A rw/tap/auth hook here would fire per request for a decision it structurally
+                // cannot produce, paying its deadline for nothing. Keyed on the OPERATOR grant
+                // (`can_rewrite`), not `admits_rewrite`, to match the siblings exactly.
+                if hook.kind == crate::config::HookKind::Gate && !hook.prompt.can_rewrite() {
+                    // The default gate becomes this pool's base ordering.
+                    return resolve_gate_transport(name, hook, hooks, env, settings_version);
+                }
+                tracing::warn!(
+                    hook = %name,
+                    "`default: true` hook is not a decision gate; ignored as the base ordering \
+                     (the compiled-in weighted backstop applies)"
+                );
             }
         }
     }

@@ -124,37 +124,52 @@ fn synth_request_id() -> String {
 /// counter at all: a 24-char base62 token is ~142 bits of entropy with a ~2^71 birthday bound, so
 /// pure CSPRNG output is collision-free in practice and every position stays fully random, exactly
 /// like a native Anthropic id. Never panics on the request path.
-fn synth_id_with_prefix(prefix: &str) -> String {
-    // Fill the entire token with CSPRNG bytes mapped into base62 via REJECTION SAMPLING. A bare
-    // `byte % 62` is biased: 256 = 4*62 + 8, so the residues 0..7 are drawn from 5 source bytes and
-    // 8..61 from only 4 — over-representing the low characters by ~25%, a statistical fingerprint
-    // that distinguishes a synthesized id from a native (uniform) one. We therefore reject any byte
-    // >= 248 (the largest multiple of 62 that fits in a u8) and consume only the in-range bytes,
-    // mirroring `openai_chat::synth_completion_id` (the other rejection-sampling base62 synth; the sibling
-    // `synth_anthropic_request_id` reaches a uniform distribution differently, via u128
-    // division). On an entropy failure we leave the remaining '0' fill rather than panic; no counter.
-    // Same ordering-independent reduction cutoff as every other base62 synth (4 * 62 = 248); only
-    // this module's ALPHABET *ordering* (uppercase-first) is intentionally local.
+/// Fill `out` with uniformly-distributed base62 characters drawn from `alphabet`, via REJECTION
+/// SAMPLING. A bare `byte % 62` is biased: 256 = 4*62 + 8, so the residues 0..7 are drawn from 5
+/// source bytes and 8..61 from only 4 — over-representing the low characters by ~25%, a
+/// statistical fingerprint that distinguishes a synthesized id from a native (uniform) one. We
+/// therefore reject any byte >= 248 (the largest multiple of 62 that fits in a u8) and consume
+/// only the in-range bytes — the ONE bias-elimination scheme this module uses, shared by both
+/// `synth_id_with_prefix` and `synth_anthropic_request_id` (mirrors
+/// `openai_chat::synth_completion_id`, the other rejection-sampling base62 synth). Returns `false`
+/// on an entropy failure — callers decide what to do with the partially-filled buffer; `out` is
+/// left with whatever prefix was already written plus its initial contents for the rest.
+fn fill_base62(out: &mut [u8], alphabet: &[u8; 62]) -> bool {
     const BASE62_REJECT_FLOOR: u8 = crate::proto::BASE62_REJECT_THRESHOLD;
-    let mut token = [b'0'; SYNTH_ID_TOKEN_LEN];
+    // Fixed stack buffer, no heap allocation on this hot path — both callers' tokens (24 chars)
+    // fit comfortably; a batch this size draws `len` fresh bytes per retry round, same as before.
+    debug_assert!(
+        out.len() <= 32,
+        "fill_base62 batch buffer is sized for <=32 chars"
+    );
+    let len = out.len();
     let mut filled = 0usize;
-    'outer: while filled < SYNTH_ID_TOKEN_LEN {
-        let mut batch = [0u8; SYNTH_ID_TOKEN_LEN];
-        if getrandom::fill(&mut batch).is_err() {
-            // Near-impossible entropy failure: keep the remaining '0' fill rather than panic.
-            break 'outer;
+    'outer: while filled < len {
+        let mut batch = [0u8; 32];
+        let batch = &mut batch[..len];
+        if getrandom::fill(batch).is_err() {
+            return false;
         }
         for &byte in batch.iter() {
             if byte >= BASE62_REJECT_FLOOR {
                 continue; // biased residue — discard to keep the distribution uniform
             }
-            token[filled] = ANTHROPIC_NATIVE_ALPHABET[(byte % 62) as usize];
+            out[filled] = alphabet[(byte % 62) as usize];
             filled += 1;
-            if filled == SYNTH_ID_TOKEN_LEN {
+            if filled == len {
                 break 'outer;
             }
         }
     }
+    true
+}
+
+fn synth_id_with_prefix(prefix: &str) -> String {
+    // On an entropy failure we leave the remaining '0' fill rather than panic; no counter. Same
+    // ordering-independent reduction cutoff as every other base62 synth (4 * 62 = 248); only this
+    // module's ALPHABET *ordering* (uppercase-first) is intentionally local.
+    let mut token = [b'0'; SYNTH_ID_TOKEN_LEN];
+    fill_base62(&mut token, ANTHROPIC_NATIVE_ALPHABET);
 
     // `token` is ASCII base62 by construction, hence always valid UTF-8; the fallback only guards
     // against an impossible non-ASCII byte and keeps the path panic-free.
@@ -175,29 +190,16 @@ fn synth_id_with_prefix(prefix: &str) -> String {
 /// response-header length is not a fingerprint tell (a 22-char value would be 8 chars short of
 /// native). Returns `None` (caller OMITS the header) only if entropy is unavailable — on the request
 /// path, must never panic. Uses the SHARED `crate::proto::BASE62_ALPHABET` (lowercase-first ordering)
-/// deliberately — NOT this module's local uppercase-first `ANTHROPIC_NATIVE_ALPHABET` — preserving the
-/// exact distribution it had when it lived in `proto::mod`.
+/// deliberately — NOT this module's local uppercase-first `ANTHROPIC_NATIVE_ALPHABET`. The alphabet
+/// ORDERING differs from the sibling synth, but a uniform draw over a permuted alphabet is uniform
+/// over the same character set, so that difference is irrelevant to the distribution.
 pub(crate) fn synth_anthropic_request_id() -> Option<String> {
-    const ALPHABET: &[u8; 62] = crate::proto::BASE62_ALPHABET;
-    // 24 base62 chars (≈143 bits) of CSPRNG entropy, built from two independent 9-byte (72-bit) draws,
-    // each emitting 12 base62 digits (62^12 > 2^71, so 9 bytes fit in 12 digits) — collision-free in
-    // practice and matching the native `req_01` + 24 = 30-char shape. ONE `getrandom::fill` of 18
-    // bytes serves both halves: this runs on the streaming-response hot path (every 2xx that
-    // synthesizes an id), and `getrandom` is a syscall (or vDSO) per call, so drawing both halves in
-    // a single fill halves the per-response entropy cost with an IDENTICAL output distribution (the
-    // two 9-byte windows are still independent CSPRNG bytes, just from one draw).
+    // 24 base62 chars via the SAME rejection-sampling fill `synth_id_with_prefix` uses — the
+    // `Option` contract (omit the header on entropy failure) differs from that sibling's
+    // '0'-fill-on-failure contract, so this stays a separate call rather than delegating to it.
     let mut token = [0u8; 24];
-    let mut rand = [0u8; 18];
-    getrandom::fill(&mut rand).ok()?;
-    for half in 0..2 {
-        // 72 bits → 12 base62 digits.
-        let mut n = rand[half * 9..half * 9 + 9]
-            .iter()
-            .fold(0u128, |acc, &b| (acc << 8) | b as u128);
-        for slot in token[half * 12..half * 12 + 12].iter_mut().rev() {
-            *slot = ALPHABET[(n % 62) as usize];
-            n /= 62;
-        }
+    if !fill_base62(&mut token, crate::proto::BASE62_ALPHABET) {
+        return None;
     }
     // token is ASCII base62, always valid UTF-8.
     let token = std::str::from_utf8(&token).unwrap_or("000000000000000000000000");

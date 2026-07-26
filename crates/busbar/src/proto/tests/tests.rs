@@ -171,6 +171,43 @@ fn test_synth_anthropic_request_id_is_well_formed() {
     assert_ne!(id, id2, "successive ids must differ");
 }
 
+/// MEDIUM/correctness (synth_anthropic_request_id): the two 9-byte (72-bit) draws folded to 12
+/// base62 digits via repeated `% 62` / `/= 62` are NOT uniform — `62^12 ≈ 3.226e21 < 2^72 ≈
+/// 4.722e21`, so the map cannot be injective. The bias concentrates in the MOST-SIGNIFICANT digit
+/// of each half (`token[0]` and `token[12]`, since the fill loop writes `.rev()`): after eleven
+/// divisions the residual is `floor(n / 62^11) in [0, 90]`, so alphabet indices 0..28 get TWO
+/// preimages each and 29..61 get ONE, giving `P(token[msd] in alphabet[0..29]) = 58/91 ≈ 63.7%`
+/// against a uniform `29/62 ≈ 46.8%`. This test asserts positions 0 AND 12 SPECIFICALLY — a test
+/// over all 24 positions would dilute the signal to 2/24 of the bias and could plausibly pass on
+/// the broken code; do not "simplify" it to scan every position.
+#[test]
+fn synth_anthropic_request_id_msd_is_uniform() {
+    const N: usize = 4000;
+    let mut low = 0usize; // token[msd] in alphabet[0..29]
+    let mut total = 0usize;
+    for _ in 0..N {
+        let id = synth_anthropic_request_id().expect("entropy available in test");
+        let token = &id["req_01".len()..];
+        let bytes = token.as_bytes();
+        for &msd in &[bytes[0], bytes[12]] {
+            total += 1;
+            if crate::proto::BASE62_ALPHABET[..29].contains(&msd) {
+                low += 1;
+            }
+        }
+    }
+    let frac = low as f64 / total as f64;
+    // Uniform expectation is 29/62 ≈ 0.468; the pre-fix bias measures ≈0.637, about 30 standard
+    // errors outside a ±4% band at n=8000 (σ ≈ 0.56%) — wide enough to never be flaky, narrow
+    // enough that the ~17-point defect cannot slip through.
+    assert!(
+        (0.468 - 0.04..=0.468 + 0.04).contains(&frac),
+        "token[0]/token[12] must be uniform over the alphabet's first 29 chars \
+         (~46.8% +/- 4%); got {:.4} over {total} draws — non-uniform MSD is a fingerprintable tell",
+        frac
+    );
+}
+
 /// MEDIUM/conformance (GeminiJsonArrayFramer::finish_with_error): the truncation error element must
 /// carry NO busbar-internal vocabulary ("upstream"). A real Gemini API never emits that word, so it
 /// is a fingerprintable tell. The message must read like Gemini's own canonical 500 body.
