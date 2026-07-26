@@ -3392,7 +3392,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 }
             },
             "patch": {
-                "summary": "Update a key's binding (group / allowed_pools / labels / enabled). Optional `If-Match` for optimistic concurrency",
+                "summary": "Enable/disable a key or rebind its group. Optional `If-Match` for optimistic concurrency",
                 "security": [{"adminToken": []}],
                 "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
                 "responses": {
