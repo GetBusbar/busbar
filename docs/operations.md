@@ -158,13 +158,21 @@ Three things are worth understanding before you scale out:
   LB (e.g. by the affinity header / a cookie) so a session lands on the same instance.
 - **Governance state defaults to per-instance memory; enforcement is per-node either
   way.** The default `store: memory` is ephemeral RAM per instance. A cluster-shared
-  store (postgres/redis) genuinely shares keys, the token ledger, and the audit log
-  across N nodes, and each node's write-behind flush ships ADDITIVE per-(model, tier)
-  token deltas so the store converges on the true fleet totals - but the budget hard
+  store (postgres/redis) genuinely shares keys and the token ledger across N nodes (but
+  NOT the durable audit log - see below), and each node's write-behind flush ships
+  ADDITIVE per-(model, tier) token deltas so the store converges on the true fleet
+  totals - but the budget hard
   cap is still checked from each node's in-memory counters, so between flushes N nodes
   splitting traffic can admit up to ~N times a configured cap. For a strict single
   ceiling, run a single instance (scale vertically); the proxy path itself scales
   horizontally without this caveat.
+- **The durable audit log takes exactly ONE writer.** Audit sequence numbers are
+  allocated in-process, so two nodes sharing a store reach for the same numbers and
+  overwrite each other's entries, breaking the hash chain the next boot verifies. A
+  node that detects another writer logs an error and detaches its durable sink,
+  continuing to audit to its in-memory ring and state snapshot rather than corrupting
+  the shared log. Point at most one node at a durable audit store; `GET /audit` is
+  per-instance either way (it serves that node's in-memory ring, never the store).
 
 So: for a gateway without group limits, scale out freely behind an LB. With limits,
 either accept the per-node cap semantics over a shared store, or keep enforcement on
