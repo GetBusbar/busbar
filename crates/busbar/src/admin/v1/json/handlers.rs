@@ -828,32 +828,36 @@ pub(crate) async fn delete_hook(
         if !current.hook_registry.contains_key(&txn_name) {
             return Err(AdminError::not_found(format!("hook `{txn_name}`")));
         }
-        // Optimistic concurrency (H3): DELETE honors `If-Match` like every other config-plane
-        // mutation (it previously had NO guard — the one mutation verb missing it).
-        if let Some(e) = stale_if_match(expected, current.config_version) {
-            return Err(e);
-        }
         // Escalation guard, keyed on the EXISTING hook's grants — a non-Full (hooks-register)
         // principal may not DELETE a content-seeing (`prompt`/`user`) or `global: true` gate. Such a
         // hook can only have been created by a Full admin (register/put block a narrow token from
         // wiring one), and DELETING it TEARS DOWN that admin's security gate — the same escalation
         // register / put / patch already forbid. Without this a hooks-register token could remove an
         // operator's global `pii-guard` gate and reach content by the back door.
+        //
+        // BEFORE the staleness check, matching `put_hook`'s escalation guard (checked before the
+        // transaction even opens): a principal that may never delete this hook must not be told
+        // "retry with a fresher ETag" — 403 is terminal regardless of which version the client held.
         if let Some(existing) = current.hook_registry.get(&txn_name) {
             if let Some(e) = hooks_register_escalation(scope, existing) {
                 return Err(e);
             }
         }
-        // A base-config hook is read-only via the API (consistent with put_hook /
-        // patch_hook_settings). Without this a narrow hooks-register token could DELETE an
-        // operator's base-defined security gate (e.g. `pii-guard`) — an escalation beyond
-        // "register" — and the additive overlay can't durably subtract a base hook anyway. Edit
-        // config.yaml.
+        // Base-config guard BEFORE the If-Match staleness check, matching the precedence `put_hook`
+        // and `delete_group` establish on this resource: a base-config hook can NEVER be deleted via
+        // the API, so that terminal `conflict` must win over the retryable `version_conflict`. The
+        // prior order returned `version_conflict` for a stale-ETag DELETE on a base hook, trapping an
+        // auto-retry-on-conflict client in a re-read/retry loop that never sees the terminal error.
         if current.base_hook_names.contains(&txn_name) {
             return Err(AdminError::Conflict(format!(
                 "hook `{txn_name}` is defined in the base config file; edit config.yaml (the API \
                  cannot silently shadow operator file config)"
             )));
+        }
+        // Optimistic concurrency (H3): DELETE honors `If-Match` like every other config-plane
+        // mutation (it previously had NO guard — the one mutation verb missing it).
+        if let Some(e) = stale_if_match(expected, current.config_version) {
+            return Err(e);
         }
         let installed = Arc::new(build_without_hook(current, &txn_name)?);
         // PERSIST-then-SWAP, fail-closed. Tombstone this name (arg `Some(&name)`) so the deletion

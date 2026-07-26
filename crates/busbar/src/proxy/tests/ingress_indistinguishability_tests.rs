@@ -868,9 +868,10 @@ fn nonstream_tap_cap_is_read_once_per_decision() {
     toggler.join().unwrap();
 
     assert!(
-        hit,
-        "expected the two-read TOCTOU to eventually underflow `remaining` and panic within \
-         {ATTEMPTS} attempts under continuous race pressure"
+        !hit,
+        "the cap decision must read `max_translated_body_bytes()` ONCE: a second read landing \
+         after a concurrent config apply lowered the cap underflowed `remaining` and panicked \
+         (attempt to subtract with overflow) within {ATTEMPTS} attempts under race pressure"
     );
 }
 

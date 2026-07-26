@@ -267,6 +267,48 @@ fn default_hook_resolves_as_base_for_unnamed_pools() {
     );
 }
 
+/// A `default: true` hook that is NOT a non-rewriting decision gate (a `prompt: rw` gate, or a
+/// `tap`) must NOT become a pool's base ordering — it structurally cannot return an `order`
+/// (a rw hook's decision arm normalizes to Abstain; a tap has no decision arm at all). Before the
+/// fix, `resolve_pool_ordering` applied NO filter at all (unlike its siblings
+/// `resolve_pool_gates`/`resolve_gate_hooks`), so every unnamed-base pool paid a per-request
+/// plugin round-trip + DOM materialization for a guaranteed no-op.
+///
+/// HARNESS CAVEAT: like every test in this file, `test_env()` prints a skip and returns green if
+/// the hook cdylib is not built. Run under `cargo test --workspace` and confirm the output does
+/// NOT contain "skip: hook cdylib not built" before trusting this RED proof.
+#[test]
+fn default_rw_hook_is_not_the_base_ordering() {
+    let Some(env) = test_env() else {
+        eprintln!("skip: hook cdylib not built (run under --workspace)");
+        return;
+    };
+
+    // `kind: gate, prompt: rw, default: true` — a rewrite gate, not a decision gate.
+    let mut rw = base_gate();
+    rw.prompt = PromptAccess::Rw;
+    rw.default = true;
+    let hooks = registry("def", rw);
+    let mut unnamed = pool_with_hook("x");
+    unnamed.gates.clear();
+    assert!(
+        resolve_pool_ordering(&unnamed, &hooks, &env, Some("def"), 0).is_none(),
+        "a prompt:rw default hook must not become the base ordering — it can never return an order"
+    );
+
+    // `kind: tap, default: true` — no decision arm at all.
+    let mut tap = base_gate();
+    tap.kind = HookKind::Tap;
+    tap.default = true;
+    let hooks = registry("deftap", tap);
+    let mut unnamed2 = pool_with_hook("x");
+    unnamed2.gates.clear();
+    assert!(
+        resolve_pool_ordering(&unnamed2, &hooks, &env, Some("deftap"), 0).is_none(),
+        "a tap default hook must not become the base ordering — it has no decision arm"
+    );
+}
+
 /// `policy: weighted` (default / absent) collapses to the zero-cost default (`None`).
 #[test]
 fn weighted_policy_resolves_none_zero_cost() {

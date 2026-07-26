@@ -682,14 +682,26 @@ impl AdminService {
         let members = members
             .iter()
             .map(|m| {
-                // `snapshot` is the same release-exposed live summary `/stats` reads (usable / cooldown
-                // / inflight / tallies / dead); `available_permits` + `lane_latency_ms` round it out.
+                // `snapshot` is the same release-exposed live summary `/stats` reads (ok/err/trips/
+                // dead/inflight — genuinely lane-GLOBAL counters); `available_permits` +
+                // `lane_latency_ms` round it out. `usable`/`cooldown_remaining_seconds` are NOT lane
+                // counters, though — routing ranks a member per-POOL (`select_weighted_in`), so this
+                // endpoint reports the per-pool breaker cell via `ready_in`/`cooldown_remaining_in`,
+                // NOT `snapshot`'s any-cell/max-cell lane aggregates (which would mislabel a member
+                // as usable in a pool where its OWN cell is tripped, or vice versa).
                 let snap = self.app.store.snapshot(m.idx, now);
                 PoolMemberStatusView {
                     model: self.app.lanes[m.idx].model.clone(),
                     weight: m.weight,
-                    usable: snap.usable,
-                    cooldown_remaining_seconds: snap.cooldown_remaining_s,
+                    // `ready_in`, NOT `usable_in`: `usable_in` delegates to the MUTATING `usable_for`,
+                    // which can transition an expired-Open cell to HalfOpen and CAS-steal the
+                    // single-flight recovery probe. `ready_in` is `select_weighted_in`'s own
+                    // side-effect-free predicate — exactly what this read-only endpoint must report.
+                    usable: self.app.store.ready_in(name, m.idx, now),
+                    cooldown_remaining_seconds: self
+                        .app
+                        .store
+                        .cooldown_remaining_in(name, m.idx, now),
                     available_concurrency: self.app.store.available_permits(m.idx),
                     inflight: snap.inflight,
                     latency_ms: self.app.store.lane_latency_ms(m.idx),

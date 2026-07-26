@@ -1571,8 +1571,13 @@ impl InMemoryStore {
         // success-recovery and leave the cell Open with a cleared/short cooldown (sticky cooldown
         // dropped) or Closed with the stale sticky cooldown.
         let _tx = lock_recover(cell.transition_lock());
+        let now_secs = Self::now_secs();
+        // Same bool `record_hard_down_all_cells` captures (:1936): a genuine Closed->Open trip,
+        // gating the trip-counter bump below so a persistently-dead lane's recovery-probe cycle
+        // doesn't inflate it once per cycle.
+        let was_closed = cell.breaker_state().load(Ordering::Acquire) == ST_CLOSED;
         cell.cooldown_until().store(
-            Self::now_secs().saturating_add(self.hard_down_cooldown_secs),
+            now_secs.saturating_add(self.hard_down_cooldown_secs),
             Ordering::Release,
         );
         cell.breaker_state().store(ST_OPEN, Ordering::Release);
@@ -1583,6 +1588,11 @@ impl InMemoryStore {
         // Open→HalfOpen but the probe CAS (false→true) fails forever, benching the lane permanently
         // even after the operator fixes the credential/billing. Clearing it keeps hard-down RECOVERABLE.
         cell.probe_in_flight().store(false, Ordering::Release);
+        // Same seam `record_failure_for` bumps at (:1524-1528) — one logical trip, counted once.
+        if was_closed {
+            ls.trips.fetch_add(1, Ordering::Relaxed);
+            ls.last_trip_at.store(now_secs, Ordering::Relaxed);
+        }
     }
 
     pub(crate) fn select_weighted_for(
@@ -1942,6 +1952,13 @@ impl StateStore for InMemoryStore {
         let cells = read_recover(&self.pool_cells);
         for (_, cell) in cells.get(&lane).into_iter().flatten() {
             trip(cell.as_ref());
+        }
+        // Same seam `record_failure_for` bumps at (:1524-1528): a genuine Closed->Open trip counts
+        // once against the lane's MONOTONIC trip counter, gated on the same bool that already keeps
+        // this from inflating once per recovery-probe cycle on a persistently-dead lane.
+        if default_was_closed {
+            ls.trips.fetch_add(1, Ordering::Relaxed);
+            ls.last_trip_at.store(now, Ordering::Relaxed);
         }
         default_was_closed
     }
