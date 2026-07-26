@@ -140,9 +140,9 @@ async fn mint(handle: &Arc<AppHandle>, name: &str, group: Option<&str>) -> Statu
     crate::admin::create_key(
         State(handle.clone()),
         anon(),
-        axum::Extension(crate::auth::AdminScope(Some(
-            crate::admin::v1::contract::Scope::Full,
-        ))),
+        axum::Extension(crate::auth::AdminScope(
+            crate::admin::v1::contract::Grants::of(crate::admin::v1::contract::Scope::Full),
+        )),
         HeaderMap::new(),
         axum::body::Bytes::from(body.to_string()),
     )

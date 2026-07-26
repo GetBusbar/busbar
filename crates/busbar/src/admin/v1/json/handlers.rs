@@ -1981,10 +1981,8 @@ pub(crate) async fn put_auth(
             .and_then(|v| v.to_str().ok())
             .filter(|t| !t.is_empty())
             .map(str::to_string);
-        let survives = matches!(
-            crate::auth::dry_run_admin_scope(&next, bearer.as_deref(), header_tok.as_deref()),
-            Some(crate::admin::v1::contract::Scope::Full)
-        );
+        let survives = crate::auth::dry_run_admin_scope(&next, bearer.as_deref(), header_tok.as_deref())
+            .contains(crate::admin::v1::contract::Scope::Full);
         if !survives {
             return Err(AdminError::Conflict(
                 "the new admin_auth chain would not grant THIS caller full scope — refusing to lock \

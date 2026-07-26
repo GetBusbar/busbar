@@ -349,8 +349,9 @@ pub(crate) struct RoleBindingCfg {
     #[serde(default)]
     pub(crate) group: Option<String>,
     /// The ADMIN scope this role grants: `read-only` | `hooks-register` | `mint` | `full`. Absent =
-    /// no admin access from this role. The most permissive of a principal's bound roles wins (by the
-    /// `Scope` ordinal), ceilinged by the asserting module's `max_admin_scope`.
+    /// no admin access from this role. A principal holds the UNION of what its bound roles grant
+    /// (`hooks-register` and `mint` are incomparable siblings, so holding both keeps both — see
+    /// `Grants` in the contract module), ceilinged by the asserting module's `max_admin_scope`.
     #[serde(default)]
     pub(crate) admin_scope: Option<String>,
 }

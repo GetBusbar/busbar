@@ -72,19 +72,16 @@ pub(crate) const VERSIONS_LIMIT_DEFAULT: usize = 100;
 /// register a hook, and a hooks-register credential cannot mint a key. So `allows` is NOT
 /// `self >= needed` — it encodes the lattice explicitly (see `allows`).
 ///
-/// `Ord` STILL derives from declaration order (low → high), but is used ONLY as an ordinal
-/// PRIVILEGE LEVEL for the `max_admin_scope:` ceiling arithmetic (`min(scope, cap)`) and the
-/// role-binding `max()` — NEVER as the authorization check. The ordinal places `Mint` above
-/// `HooksRegister` purely so that ceiling math stays TOTAL (a lattice `min`/`max` over incomparable
-/// elements is undefined); it does NOT mean mint subsumes hooks-register. The `allows` lattice is
-/// the sole truth for what a scope may DO. Practical consequence: a `max_admin_scope: hooks-register`
-/// ceiling capping a `mint`-granting role yields `hooks-register` (the ordinal floor), i.e. the cap
-/// still strictly narrows; and a `max_admin_scope: mint` ceiling never widens a `hooks-register`
-/// role into hook authority (min keeps it at hooks-register). Both directions are safe.
+/// There is deliberately NO `Ord`/`PartialOrd` on this type. `HooksRegister` and `Mint` are
+/// INCOMPARABLE siblings, so any total order over the four variants would let `.max()`/`.min()`/
+/// `<`/`>=` silently answer a question the lattice cannot answer — that is exactly how this bug
+/// class happens (see `Grants` below, which is what role-aggregation and ceiling arithmetic use
+/// instead). A single `Scope` also cannot represent a principal's EFFECTIVE authority when it holds
+/// two incomparable grants at once (a `hooks-register` role and a `mint` role) — `Grants` is a SET
+/// for exactly that reason.
 ///
 /// The full variant set is the FROZEN authorization contract.
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Scope {
     /// Every read (`GET`) across config, keys, hooks, versions, audit, usage, info.
     ReadOnly,
@@ -146,6 +143,97 @@ impl Scope {
             Scope::HooksRegister => self == Scope::HooksRegister || self == Scope::Full,
             Scope::Mint => self == Scope::Mint || self == Scope::Full,
         }
+    }
+
+    /// Every scope, for the closure operations below. Adding a 5th variant means adding it here too
+    /// (the compiler cannot enforce that — `dominates`/`meet`/`Grants` are all derived by iterating
+    /// this array, not by matching on `Scope`), and `bit`'s `u8` needs to stay wide enough for it.
+    const ALL: [Scope; 4] = [
+        Scope::ReadOnly,
+        Scope::HooksRegister,
+        Scope::Mint,
+        Scope::Full,
+    ];
+
+    /// This scope's bit in a [`Grants`] bitset — its position in `ALL`. Never exposed: callers
+    /// combine scopes through `Grants`, never through the bit pattern directly.
+    fn bit(self) -> u8 {
+        1u8 << Scope::ALL
+            .iter()
+            .position(|s| *s == self)
+            .expect("Scope::ALL enumerates every variant")
+    }
+
+    /// Does holding `self` confer everything holding `other` confers? DERIVED from `allows` (never
+    /// a hand-written table — a second encoding of the lattice is the exact drift hazard `Grants`
+    /// exists to remove): `self` dominates `other` iff every requirement `other` satisfies, `self`
+    /// also satisfies. NOT an ordinal: this is false in BOTH directions for the `HooksRegister`/
+    /// `Mint` siblings, since neither's `allows` table is a subset of the other's.
+    fn dominates(self, other: Scope) -> bool {
+        Scope::ALL
+            .iter()
+            .all(|n| !other.allows(*n) || self.allows(*n))
+    }
+
+    /// The greatest scope conferring no more than EITHER operand — the lattice MEET. This is the
+    /// ceiling operator: for the incomparable siblings it is `ReadOnly`, the two scopes' only common
+    /// authority — never one of the two siblings themselves (that would let the ceiling arithmetic
+    /// pick a side, exactly the S3 defect).
+    fn meet(self, other: Scope) -> Scope {
+        if self.dominates(other) {
+            other
+        } else if other.dominates(self) {
+            self
+        } else {
+            Scope::ReadOnly
+        }
+    }
+}
+
+/// The EFFECTIVE authority of a principal: a SET of scopes, because a principal can hold two
+/// INCOMPARABLE grants (a hooks-register role and a mint role) and no single `Scope` can express
+/// that. Roles UNION into it (`with`); a module ceiling MEETS each member (`capped_by`). Bitset over
+/// `Scope::ALL` — `Copy`, no allocation, and deliberately NOT `Ord`: combining grants is never a
+/// comparison.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct Grants(u8);
+
+impl Grants {
+    /// The single-scope grant.
+    pub(crate) fn of(s: Scope) -> Self {
+        Grants(s.bit())
+    }
+
+    /// UNION — add `s` to the held grants. Replaces `.max()`: folding a principal's role bindings
+    /// with `with` keeps EVERY scope a role grants, so a `hooks-register` role and a `mint` role
+    /// together keep both, instead of an ordinal `max` collapsing to one and losing the other.
+    pub(crate) fn with(self, s: Scope) -> Self {
+        Grants(self.0 | s.bit())
+    }
+
+    /// Pointwise `meet` against a ceiling — replaces `std::cmp::min`. Each held scope is capped
+    /// independently, so a principal capped below one of two incomparable grants doesn't lose the
+    /// other, and a ceiling incomparable with a grant reduces that grant to `ReadOnly` rather than
+    /// inventing or preserving hook/mint authority the ceiling was meant to cut.
+    pub(crate) fn capped_by(self, cap: Scope) -> Self {
+        Scope::ALL
+            .iter()
+            .filter(|s| self.contains(**s))
+            .fold(Grants::default(), |acc, s| acc.with(s.meet(cap)))
+    }
+
+    /// The authorization check: does ANY held scope satisfy `needed`? This is the disjunction
+    /// `allows` was always meant to be evaluated as once a principal can hold more than one grant.
+    pub(crate) fn allows(self, needed: Scope) -> bool {
+        Scope::ALL
+            .iter()
+            .any(|s| self.contains(*s) && s.allows(needed))
+    }
+
+    /// Exact membership — for the few callers that must name one specific scope (the operator-only
+    /// `Full` checks), not "does this authorize X".
+    pub(crate) fn contains(self, s: Scope) -> bool {
+        self.0 & s.bit() != 0
     }
 }
 

@@ -732,12 +732,7 @@ pub(crate) async fn create_key(
     // purpose is self-service issuance INSIDE the tree. Otherwise the narrowest key-issuing scope
     // could hand out uncapped keys, and the anti-sprawl ceiling with it. Refused as a 400 naming the
     // fix, alongside the counting cap enforced below.
-    if req.group.is_none()
-        && !matches!(
-            scope.0,
-            Some(crate::admin::v1::contract::Scope::Full) | None
-        )
-    {
+    if req.group.is_none() && !scope.0.contains(crate::admin::v1::contract::Scope::Full) {
         return key_err(who,
             &AdminError::Validation(
                 "`group` is required: a delegated `mint` credential may only issue keys BOUND to a \

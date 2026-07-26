@@ -46,12 +46,12 @@ fn grp_principal(id: &str, roles: &[&str]) -> Principal {
 }
 
 /// `admin_scope_for`: the operator principal is full; role-carrying principals resolve
-/// through `role_bindings.<identifying module>` (most permissive bound scope wins, unbound
+/// through `role_bindings.<identifying module>` (the UNION of what its bound roles grant, unbound
 /// roles grant nothing); a roleless non-operator principal gets nothing; the open posture
 /// (no principal) is full.
 #[test]
 fn admin_scope_resolution() {
-    use crate::admin::v1::contract::Scope;
+    use crate::admin::v1::contract::{Grants, Scope};
     let rb = bindings_for(
         "test-groups-module",
         &[
@@ -63,7 +63,7 @@ fn admin_scope_resolution() {
     let module = Some("test-groups-module");
 
     // Open posture (no principal): full.
-    assert_eq!(admin_scope_for(None, None, &rb), Some(Scope::Full));
+    assert_eq!(admin_scope_for(None, None, &rb), Grants::of(Scope::Full));
     // The operator principal (admin-tokens): full by definition, no binding required.
     #[cfg(feature = "auth-admin-tokens")]
     assert_eq!(
@@ -74,26 +74,148 @@ fn admin_scope_resolution() {
             )),
             &rb
         ),
-        Some(Scope::Full)
+        Grants::of(Scope::Full)
     );
-    // Role-bound: the most permissive of the principal's bound roles wins.
+    // Role-bound: the union of the principal's bound roles. `with` is a plain bitwise union (never
+    // canonicalized), so `{read-only} ∪ {full}` keeps BOTH bits rather than collapsing to `{full}` —
+    // asserted on `allows`, the actual authorization behaviour, not the raw bit pattern.
     let p = grp_principal("test:alice", &["viewers", "admins"]);
-    assert_eq!(admin_scope_for(module, Some(&p), &rb), Some(Scope::Full));
+    assert!(admin_scope_for(module, Some(&p), &rb).allows(Scope::Full));
     let p = grp_principal("test:alice", &["viewers"]);
     assert_eq!(
         admin_scope_for(module, Some(&p), &rb),
-        Some(Scope::ReadOnly)
+        Grants::of(Scope::ReadOnly)
     );
     // Unbound roles grant nothing (fail closed).
     let p = grp_principal("test:alice", &["strangers"]);
-    assert_eq!(admin_scope_for(module, Some(&p), &rb), None);
+    assert_eq!(admin_scope_for(module, Some(&p), &rb), Grants::default());
     // A role bound WITHOUT an admin_scope grants nothing.
     let p = grp_principal("test:alice", &["no-admin"]);
-    assert_eq!(admin_scope_for(module, Some(&p), &rb), None);
+    assert_eq!(admin_scope_for(module, Some(&p), &rb), Grants::default());
     // A roleless NON-operator principal gets nothing (an external module cannot mint the
     // operator identity by returning a bare id).
     let stranger = Principal::from_id("test:bob");
-    assert_eq!(admin_scope_for(module, Some(&stranger), &rb), None);
+    assert_eq!(
+        admin_scope_for(module, Some(&stranger), &rb),
+        Grants::default()
+    );
+}
+
+/// R1 (class-8): a principal holding TWO roles bound to INCOMPARABLE sibling scopes must keep
+/// BOTH grants. Under the deleted `.max()` fold (ordinal `Mint` > `HooksRegister`), this used to
+/// collapse to `Mint` alone, and `Mint.allows(HooksRegister)` is false — a DENIAL of authority
+/// either role alone would have granted. `Grants::with` unions instead, so both survive.
+#[test]
+fn sibling_roles_union_keeps_both_grants() {
+    use crate::admin::v1::contract::Scope;
+    let rb = bindings_for(
+        "test-groups-module",
+        &[
+            ("registrar", binding(None, None, Some("hooks-register"))),
+            ("minter", binding(None, None, Some("mint"))),
+        ],
+    );
+    let p = grp_principal("test:alice", &["registrar", "minter"]);
+    let grants = admin_scope_for(Some("test-groups-module"), Some(&p), &rb);
+    assert!(
+        grants.allows(Scope::HooksRegister),
+        "the hooks-register role's grant must survive union with an incomparable sibling"
+    );
+    assert!(
+        grants.allows(Scope::Mint),
+        "the mint role's grant must survive union with an incomparable sibling"
+    );
+}
+
+/// R2 (class-8): REGRESSION PROOF, not a RED test — it passes today (there is no `.max()`/`.min()`
+/// path that could yield `Full` for this input) and exists to kill the rejected alternative of
+/// aggregating roles with the lattice JOIN (`join(HooksRegister, Mint) = Full`), which would be a
+/// genuine privilege escalation: the union of two roles' authority is not the join of the lattice.
+#[test]
+fn sibling_roles_union_is_not_full() {
+    use crate::admin::v1::contract::Scope;
+    let rb = bindings_for(
+        "test-groups-module",
+        &[
+            ("registrar", binding(None, None, Some("hooks-register"))),
+            ("minter", binding(None, None, Some("mint"))),
+        ],
+    );
+    let p = grp_principal("test:alice", &["registrar", "minter"]);
+    let grants = admin_scope_for(Some("test-groups-module"), Some(&p), &rb);
+    assert!(
+        !grants.allows(Scope::Full),
+        "the union of two sibling grants must never confer full authority"
+    );
+}
+
+/// R3 (class-8): a role bound `mint`, ceilinged by `max_admin_scope: hooks-register` — the
+/// SIBLING scope. Under the deleted `std::cmp::min(Mint, HooksRegister)` (`Mint` sorted above
+/// `HooksRegister` by the deleted ordinal), this used to yield `HooksRegister`, an ESCALATION: a
+/// mint-only role gaining hook-register authority its role never granted, purely because the
+/// ceiling named its sibling. The lattice meet of two incomparable scopes is `read-only` — neither
+/// sibling's authority survives.
+#[test]
+fn mint_capped_by_hooks_register_grants_only_read() {
+    use crate::admin::v1::contract::Scope;
+    let rb = bindings_for(
+        "test-scope-module",
+        &[("minters", binding(None, None, Some("mint")))],
+    );
+    let mut app = crate::test_support::TestApp::new().build();
+    let a = std::sync::Arc::get_mut(&mut app).expect("freshly built App Arc is unshared");
+    a.admin_chain = vec!["test-scope-module".to_string()];
+    a.role_bindings = rb;
+    a.auth_scope_caps.insert(
+        "test-scope-module".to_string(),
+        "hooks-register".to_string(),
+    );
+    let grants = dry_run_admin_scope(&app, Some("grp:minters"), None);
+    assert!(
+        !grants.allows(Scope::HooksRegister),
+        "a mint role capped by the sibling hooks-register ceiling must not gain hook authority"
+    );
+    assert!(
+        !grants.allows(Scope::Mint),
+        "the mint ceiling cut is real: the incomparable cap must not preserve mint either"
+    );
+    assert!(
+        grants.allows(Scope::ReadOnly),
+        "the siblings' only common authority (read-only) must survive"
+    );
+}
+
+/// R4 (class-8): the mirror of R3 — a role bound `hooks-register`, ceilinged by
+/// `max_admin_scope: mint`. Under the deleted `min`, this ALSO yielded `HooksRegister` (it sorts
+/// lower), so this direction is not an escalation (the result equals the role's own grant) but the
+/// ceiling FAILS TO CUT: a `mint` ceiling must not leave hooks-register authority in place. The
+/// lattice meet is still `read-only`.
+#[test]
+fn hooks_register_capped_by_mint_grants_only_read() {
+    use crate::admin::v1::contract::Scope;
+    let rb = bindings_for(
+        "test-scope-module",
+        &[("registrars", binding(None, None, Some("hooks-register")))],
+    );
+    let mut app = crate::test_support::TestApp::new().build();
+    let a = std::sync::Arc::get_mut(&mut app).expect("freshly built App Arc is unshared");
+    a.admin_chain = vec!["test-scope-module".to_string()];
+    a.role_bindings = rb;
+    a.auth_scope_caps
+        .insert("test-scope-module".to_string(), "mint".to_string());
+    let grants = dry_run_admin_scope(&app, Some("grp:registrars"), None);
+    assert!(
+        !grants.allows(Scope::HooksRegister),
+        "a mint ceiling must cut a hooks-register role's hook authority, not leave it in place"
+    );
+    assert!(
+        !grants.allows(Scope::Mint),
+        "the ceiling must not invent mint authority the role never granted"
+    );
+    assert!(
+        grants.allows(Scope::ReadOnly),
+        "the siblings' only common authority (read-only) must survive"
+    );
 }
 
 /// S4 module scoping: bindings are NESTED BY MODULE, so a role asserted by module A must NOT
@@ -101,24 +223,26 @@ fn admin_scope_resolution() {
 /// principal identified by the test-groups-module.
 #[test]
 fn admin_scope_bindings_are_module_scoped() {
-    use crate::admin::v1::contract::Scope;
+    use crate::admin::v1::contract::{Grants, Scope};
     let rb = bindings_for(
         "other-module",
         &[("admins", binding(None, None, Some("full")))],
     );
     let p = grp_principal("test:alice", &["admins"]);
-    assert_eq!(
-        admin_scope_for(Some("test-groups-module"), Some(&p), &rb),
-        None,
+    assert!(
+        admin_scope_for(Some("test-groups-module"), Some(&p), &rb) == Grants::default(),
         "a role asserted by module A must not ride module B's binding"
     );
     // Control: the SAME principal identified by the binding's own module resolves.
     assert_eq!(
         admin_scope_for(Some("other-module"), Some(&p), &rb),
-        Some(Scope::Full)
+        Grants::of(Scope::Full)
     );
     // A module with no binding table at all grants nothing.
-    assert_eq!(admin_scope_for(Some("unbound-module"), Some(&p), &rb), None);
+    assert_eq!(
+        admin_scope_for(Some("unbound-module"), Some(&p), &rb),
+        Grants::default()
+    );
 }
 
 /// Assert a string is canonical UUID-v4 shaped: five dash-separated lowercase-hex groups of
@@ -3303,7 +3427,7 @@ async fn test_active_governance_persisted_key_is_enforced() {
 ///   - a credential no module identifies is denied outright.
 #[test]
 fn test_admin_scope_cap_ceilings_external_module() {
-    use crate::admin::v1::contract::Scope;
+    use crate::admin::v1::contract::{Grants, Scope};
     crate::metrics::init();
 
     let mk_app = |cap: Option<&str>, bind_module: &str| {
@@ -3322,7 +3446,7 @@ fn test_admin_scope_cap_ceilings_external_module() {
     let app = mk_app(None, "test-scope-module");
     assert_eq!(
         dry_run_admin_scope(&app, Some("grp:ops"), None),
-        Some(Scope::ReadOnly),
+        Grants::of(Scope::ReadOnly),
         "an external module without an explicit cap must be ceilinged to read-only"
     );
 
@@ -3330,20 +3454,19 @@ fn test_admin_scope_cap_ceilings_external_module() {
     let app = mk_app(Some("full"), "test-scope-module");
     assert_eq!(
         dry_run_admin_scope(&app, Some("grp:ops"), None),
-        Some(Scope::Full),
+        Grants::of(Scope::Full),
         "an explicit full cap must let the full binding through"
     );
 
     // Module scoping through the full stack: the binding lives under ANOTHER module's table, so
     // the principal (identified by test-scope-module) earns no scope at all.
     let app = mk_app(Some("full"), "other-module");
-    assert_eq!(
-        dry_run_admin_scope(&app, Some("grp:ops"), None),
-        None,
+    assert!(
+        dry_run_admin_scope(&app, Some("grp:ops"), None) == Grants::default(),
         "a binding under another module's table must grant nothing"
     );
 
     // A credential no chain module identifies: denied (fail closed).
     let app = mk_app(Some("full"), "test-scope-module");
-    assert_eq!(dry_run_admin_scope(&app, Some("not-a-grp"), None), None);
+    assert!(dry_run_admin_scope(&app, Some("not-a-grp"), None) == Grants::default());
 }
