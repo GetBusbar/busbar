@@ -5862,7 +5862,7 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Update a key's binding (group / allowed_pools / labels / enabled). Optional `If-Match` for optimistic concurrency",
+        "summary": "Enable/disable a key or rebind its group. Optional `If-Match` for optimistic concurrency",
         "x-busbar-required-scope": "full"
       }
     },

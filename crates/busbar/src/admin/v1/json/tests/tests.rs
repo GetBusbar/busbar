@@ -505,3 +505,67 @@ fn openapi_every_mutating_operation_declares_a_request_body() {
         "16 mutating operations take a body; a change here is a deliberate API change"
     );
 }
+
+/// An operation summary must not advertise a body field the request schema forbids. The keys PATCH
+/// summary listed `allowed_pools` and `labels`, which are mint-only — `UpdateKeyReq` is
+/// `deny_unknown_fields` over `{enabled, group}`, so a client following the document got a 400.
+/// Now that the operation also publishes a schema, the two would contradict each other in one file.
+#[cfg(feature = "openapi-schema")]
+#[test]
+fn openapi_summaries_do_not_advertise_forbidden_body_fields() {
+    let doc = openapi_doc();
+    let schemas = doc["components"]["schemas"].as_object().expect("schemas");
+    let paths = doc["paths"].as_object().expect("paths");
+
+    // Every field name declared by any closed request schema. A name in this set means something
+    // specific to a client, so naming it in a summary is a promise the schema must keep.
+    let mut known: Vec<String> = Vec::new();
+    for schema in schemas.values() {
+        if schema["additionalProperties"] != serde_json::Value::Bool(false) {
+            continue;
+        }
+        if let Some(props) = schema["properties"].as_object() {
+            known.extend(props.keys().cloned());
+        }
+    }
+    known.sort();
+    known.dedup();
+
+    for (path, methods) in paths {
+        for (method, op) in methods.as_object().expect("methods") {
+            if method.starts_with("x-") {
+                continue;
+            }
+            let Some(reference) = op["requestBody"]["content"]["application/json"]["schema"]
+                ["$ref"]
+                .as_str()
+                .and_then(|r| r.strip_prefix("#/components/schemas/"))
+            else {
+                continue;
+            };
+            let schema = &schemas[reference];
+            if schema["additionalProperties"] != serde_json::Value::Bool(false) {
+                continue;
+            }
+            let declared: Vec<&str> = schema["properties"]
+                .as_object()
+                .map(|p| p.keys().map(String::as_str).collect())
+                .unwrap_or_default();
+            let summary = op["summary"].as_str().unwrap_or("");
+            for name in &known {
+                if declared.contains(&name.as_str()) {
+                    continue;
+                }
+                // Only a word-boundary hit counts, so a summary mentioning `group` does not trip on
+                // a schema that declares `groups`.
+                let named = summary
+                    .split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .any(|w| w == name);
+                assert!(
+                    !named,
+                    "{method} {path} summary advertises `{name}`, which {reference} forbids: {summary}"
+                );
+            }
+        }
+    }
+}
