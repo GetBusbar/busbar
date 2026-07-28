@@ -139,15 +139,28 @@ impl OidcVerifier {
 
         // exp — required, must be in the future (with skew tolerance). A token with no exp is refused
         // (an unbounded credential).
+        //
+        // `saturating_add`, not `checked_add`/reject: `exp` is IdP-signed and already unbounded above
+        // by policy — nothing in this crate imposes a max-lifetime check, so every `exp` below the
+        // overflow band (i64::MAX - CLOCK_SKEW_SECS) is already accepted today, including
+        // effectively-never-expiring values. Rejecting only the top CLOCK_SKEW_SECS values would be
+        // an arbitrary cliff with no security benefit, since an IdP that can set `exp` at all can
+        // trivially pick a value just below it for the identical effect. This guard exists solely to
+        // stop the debug-build overflow panic, not to implement an expiry policy; saturating_add(i64,
+        // i64) here can only saturate to i64::MAX, which still compares `>= now_unix` and verifies —
+        // consistent with the unbounded-above policy already in effect.
         match claims.get("exp").and_then(Value::as_i64) {
-            Some(exp) if exp + CLOCK_SKEW_SECS >= now_unix => {}
+            Some(exp) if exp.saturating_add(CLOCK_SKEW_SECS) >= now_unix => {}
             Some(_) => return Err("token has expired".to_string()),
             None => return Err("token has no 'exp' claim".to_string()),
         }
 
-        // nbf — optional; if present, must not be in the future (with skew tolerance).
+        // nbf — optional; if present, must not be in the future (with skew tolerance). Same
+        // saturating rationale as `exp` above, opposite direction: `nbf` at i64::MIN saturates to
+        // i64::MIN, which is trivially `<= now_unix` and passes — an out-of-range-low `nbf` was
+        // never a meaningful "not yet valid" signal anyway.
         if let Some(nbf) = claims.get("nbf").and_then(Value::as_i64) {
-            if nbf - CLOCK_SKEW_SECS > now_unix {
+            if nbf.saturating_sub(CLOCK_SKEW_SECS) > now_unix {
                 return Err("token is not yet valid (nbf in the future)".to_string());
             }
         }

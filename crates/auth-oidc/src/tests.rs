@@ -9,7 +9,8 @@ use super::*;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use ring::rand::SystemRandom;
 use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_FIXED_SIGNING};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 const ISSUER: &str = "https://login.microsoftonline.com/tenant-guid/v2.0";
 const AUDIENCE: &str = "api://busbar-client-id";
@@ -63,20 +64,43 @@ impl TestKey {
 }
 
 /// A fetcher serving a fixed body, counting fetches (to prove caching + bounded refetch). The body can
-/// be swapped to simulate a key rotation.
+/// be swapped to simulate a key rotation (`set_body`), and `calls` counts every fetch attempt so a
+/// test can assert exactly how many refetches a scenario triggered.
 struct FixtureFetcher {
     body: Mutex<String>,
+    calls: AtomicUsize,
 }
 impl FixtureFetcher {
     fn new(body: String) -> Self {
         Self {
             body: Mutex::new(body),
+            calls: AtomicUsize::new(0),
         }
+    }
+
+    /// Swap the served body in place — simulates the provider rotating its JWKS underneath an
+    /// already-running module, without rebuilding the module (and therefore without resetting the
+    /// cache or the refetch rate-limit clock).
+    fn set_body(&self, body: String) {
+        *self.body.lock().unwrap() = body;
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
     }
 }
 impl JwksFetcher for FixtureFetcher {
     fn fetch(&self, _url: &str) -> Result<String, String> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
         Ok(self.body.lock().unwrap().clone())
+    }
+}
+// `OidcModule::new` takes ownership of a `Box<dyn JwksFetcher>`, but the test needs a live handle to
+// swap the body after construction — so hand the module an `Arc<FixtureFetcher>` through this
+// blanket impl rather than changing `OidcModule::new`'s signature.
+impl JwksFetcher for Arc<FixtureFetcher> {
+    fn fetch(&self, url: &str) -> Result<String, String> {
+        (**self).fetch(url)
     }
 }
 
@@ -201,28 +225,32 @@ fn no_credential_passes() {
 
 #[test]
 fn kid_rotation_triggers_bounded_refetch() {
-    // Cache starts with key "old"; a token signed by "new" misses, forcing a refetch that now serves
-    // the "new" JWKS and succeeds.
+    // ONE module, ONE cache, for the whole scenario — the provider rotates its JWKS underneath the
+    // already-running module, which is what the miss-then-bounded-refetch branch
+    // (`cache.rs::with_key`'s post-first-lookup `refresh`) actually exists to handle. A prior version
+    // of this test rebuilt a second module with a pre-rotated two-key fixture, which meant the FIRST
+    // lookup already found the new key and the refetch branch was never reached.
     let old = TestKey::generate("old-kid");
     let new = TestKey::generate("new-kid");
-    let fetcher = Box::new(FixtureFetcher::new(old.jwks()));
+    let fetcher = Arc::new(FixtureFetcher::new(old.jwks()));
     let m = OidcModule::new(
         &cfg("groups"),
         "https://jwks.test/keys".to_string(),
-        fetcher,
+        Box::new(fetcher.clone()),
     );
+    let t0 = Instant::now();
     let now = 1_700_000_000;
+
     // First, a token from the OLD key verifies (initial fetch, calls == 1).
     let tok_old = old.mint(&base_claims(now));
     assert!(matches!(
-        m.verify(&tok_old, now, Instant::now()),
+        m.verify(&tok_old, now, t0),
         AuthOutcome::Identify(_)
     ));
+    assert_eq!(fetcher.calls(), 1);
 
-    // Now rotate: point the fixture at a JWKS containing BOTH keys, and present a NEW-kid token. The
-    // first lookup misses (cache still has only old); the bounded refetch pulls the updated set and
-    // the new token verifies.
-    // (We rebuild the module with a two-key fixture to represent the provider's post-rotation JWKS.)
+    // Rotate: the provider now serves BOTH keys. The cache still has only "old" cached — nothing
+    // has told it to refetch yet.
     let both = serde_json::json!({
         "keys": [
             serde_json::from_str::<Value>(&old.jwks()).unwrap()["keys"][0].clone(),
@@ -230,18 +258,28 @@ fn kid_rotation_triggers_bounded_refetch() {
         ]
     })
     .to_string();
-    let rotated_fetcher = Box::new(FixtureFetcher::new(both));
-    let m2 = OidcModule::new(
-        &cfg("groups"),
-        "https://jwks.test/keys".to_string(),
-        rotated_fetcher,
-    );
+    fetcher.set_body(both);
+
+    // Present a NEW-kid token past `jwks_min_refetch_secs` (60s, `cfg()` above) so the rate limit
+    // permits the refetch, but well inside `jwks_ttl_secs` (3600s) so the set is NOT TTL-stale — the
+    // ONLY thing that can trigger a fetch here is the miss-then-refetch branch, exactly what this
+    // test claims to exercise.
     let tok_new = new.mint(&base_claims(now));
-    // Use a monotonic clock far enough ahead that the refetch rate-limit permits it.
-    match m2.verify(&tok_new, now, Instant::now()) {
+    match m.verify(&tok_new, now, t0 + Duration::from_secs(61)) {
         AuthOutcome::Identify(p) => assert_eq!(p.id, "oidc:alice@contoso.com"),
         other => panic!("expected Identify after rotation, got {other:?}"),
     }
+    assert_eq!(fetcher.calls(), 2, "exactly one refetch for the rotation");
+
+    // And the bound itself: a THIRD, genuinely-unknown kid arriving inside the rate-limit window
+    // must NOT trigger another fetch — it should be rejected off the set already in hand.
+    let ghost = TestKey::generate("ghost-kid");
+    let tok_ghost = ghost.mint(&base_claims(now));
+    assert!(matches!(
+        m.verify(&tok_ghost, now, t0 + Duration::from_secs(62)),
+        AuthOutcome::Reject
+    ));
+    assert_eq!(fetcher.calls(), 2, "rate limit held off a second refetch");
 }
 
 #[test]
@@ -310,6 +348,27 @@ fn missing_exp_denied() {
     let mut c = base_claims(now);
     c.as_object_mut().unwrap().remove("exp");
     assert!(verifier("groups").validate_claims(&c, now).is_err());
+}
+
+#[test]
+fn an_exp_at_i64_max_does_not_panic() {
+    // `exp + CLOCK_SKEW_SECS` on a wire-supplied i64 must not panic in a debug/test build
+    // (overflow-checks on). `i64::MAX` is the top of the reachable range for a JSON-carried integer.
+    let now = 1_700_000_000;
+    let mut c = base_claims(now);
+    c["exp"] = serde_json::json!(i64::MAX);
+    // Not asserting Ok/Err here — the tie-break verdict is to SATURATE (accept), see lib.rs's
+    // comment at the `checked_add`/saturating_add call site — this test's job is only to prove the
+    // arithmetic no longer panics on an in-range-for-i64-but-overflowing-the-skew-add value.
+    let _ = verifier("groups").validate_claims(&c, now);
+}
+
+#[test]
+fn an_nbf_at_i64_min_does_not_panic() {
+    let now = 1_700_000_000;
+    let mut c = base_claims(now);
+    c["nbf"] = serde_json::json!(i64::MIN);
+    let _ = verifier("groups").validate_claims(&c, now);
 }
 
 #[test]
