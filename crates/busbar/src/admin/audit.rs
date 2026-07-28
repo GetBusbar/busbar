@@ -40,6 +40,20 @@ pub(crate) struct AuditEntry {
     pub(crate) prev_hash: String,
     /// `sha256(prev_hash | seq | ts | action | resource | outcome | principal)` — the tamper-evidence digest.
     pub(crate) hash: String,
+    /// TRUE only for entries THIS process appended via `record_by`. Seeded entries — from the file
+    /// snapshot or from the durable store — are FALSE. This is the ONLY thing that distinguishes an
+    /// entry the durable store already holds from one it has never seen; every seq-threshold proxy
+    /// for it (`seq <= durable_max` and its predecessors) is wrong on some boot path, because the two
+    /// populations are not seq-separable once the sequence counter has been floored to the durable max
+    /// (see `rebase_nondurable_suffix`).
+    ///
+    /// Every site that FILLS the ring asserts this itself: `record_by` sets it true, `from_record`
+    /// (the store-seeding path) sets it false. `#[serde(skip)]` gives the right default (false) on the
+    /// encoded paths, but `load` is ALSO reachable in-process from `export()`, where no encoding
+    /// happens — so `load` clears it explicitly and the attribute is only belt-and-braces. Do not
+    /// delete the clear in `load` on the grounds that serde already handles it.
+    #[serde(skip)]
+    pub(crate) recorded_here: bool,
 }
 
 impl AuditEntry {
@@ -94,6 +108,9 @@ fn from_record(r: busbar_api::AuditRecord) -> AuditEntry {
         principal: r.principal,
         prev_hash: r.prev_hash,
         hash: r.hash,
+        // This is the store-seeding path (`restore_from_store`): the store already held this entry
+        // before this process started, so it is never renumbered by `rebase_nondurable_suffix`.
+        recorded_here: false,
     }
 }
 
@@ -120,13 +137,17 @@ pub(crate) struct AuditLog {
     /// Serializes the write-through (backfill + append) so two concurrent recorders cannot interleave
     /// their catch-up writes and re-introduce a gap or write a seq out of order to the store.
     durable_lock: std::sync::Mutex<()>,
-    /// Set when a boot restore could NOT read the durable log (a transient store error), so the
-    /// durable MAX SEQ — and with it the sequence floor — is UNKNOWN. While it is set the
-    /// write-through refuses to append: the sequence counter may sit below what the store already
-    /// holds, and appending would OVERWRITE existing durable history at those seqs (the durable
-    /// write is keyed on `seq`), silently destroying the append-only guarantee. Each write-through
-    /// first RETRIES the floor read, so the log self-heals the moment the store recovers.
-    durable_floor_unknown: std::sync::atomic::AtomicBool,
+    /// Set when this process's RING is not yet reconciled with the durable tail: either the boot
+    /// restore could not READ the durable log (a transient store error, so the durable max seq is
+    /// unknown), or it read the log but the chain failed VERIFICATION (so the tail it read cannot be
+    /// trusted as the anchor). Either way the sequence floor and the anchor hash for
+    /// `rebase_nondurable_suffix` are not known good, so the write-through refuses to append: the
+    /// sequence counter may sit below what the store already holds, and appending would OVERWRITE
+    /// existing durable history at those seqs (the durable write is keyed on `seq`), silently
+    /// destroying the append-only guarantee. Each write-through first RETRIES the tail read, so the
+    /// log self-heals — reconciling the ring's nondurable suffix onto the recovered tail — the moment
+    /// the store answers with a tail that verifies.
+    durable_unreconciled: std::sync::atomic::AtomicBool,
 }
 
 impl AuditLog {
@@ -137,7 +158,7 @@ impl AuditLog {
             sink: std::sync::Mutex::new(None),
             durable_high: std::sync::atomic::AtomicU64::new(0),
             durable_lock: std::sync::Mutex::new(()),
-            durable_floor_unknown: std::sync::atomic::AtomicBool::new(false),
+            durable_unreconciled: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -179,13 +200,15 @@ impl AuditLog {
                 // We cannot floor to a max we could not read, so instead we SEAL the durable
                 // write-through until the floor is known. `durable_write_through` retries the floor
                 // read on every mutation, so this self-heals as soon as the store answers.
-                self.durable_floor_unknown
+                self.durable_unreconciled
                     .store(true, std::sync::atomic::Ordering::SeqCst);
                 return Err(format!("audit restore read failed: {}", e.0));
             }
         };
-        // The read SUCCEEDED, so the durable floor is known (an empty log floors at 0).
-        self.durable_floor_unknown
+        // The read SUCCEEDED, so the durable floor IS known (an empty log floors at 0) — but the
+        // chain has not been VERIFIED yet, so this clear can still be overwritten by the
+        // verify-fail arms below before this function returns.
+        self.durable_unreconciled
             .store(false, std::sync::atomic::Ordering::SeqCst);
         if records.is_empty() {
             return Ok(0);
@@ -209,6 +232,11 @@ impl AuditLog {
         let mut prev: Option<&str> = None;
         for e in &entries {
             if e.hash != e.compute_hash() {
+                // The floor above is trustworthy (the read succeeded), but the TAIL is not — a
+                // digest mismatch means the caller cannot rely on this entry's hash as the anchor
+                // for `rebase_nondurable_suffix`. Seal until a later read confirms a verifying tail.
+                self.durable_unreconciled
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
                 return Err(format!(
                     "restored audit entry seq {} fails its digest",
                     e.seq
@@ -216,6 +244,10 @@ impl AuditLog {
             }
             if let Some(p) = prev {
                 if e.prev_hash != p {
+                    // Same reasoning: the chain doesn't LINK, so the tail cannot anchor a rebase
+                    // either. Seal until the write-through's retried read finds a verifying tail.
+                    self.durable_unreconciled
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
                     return Err(format!(
                         "restored audit chain breaks at seq {} (prev_hash mismatch)",
                         e.seq
@@ -264,6 +296,8 @@ impl AuditLog {
                 principal: principal.to_string(),
                 prev_hash,
                 hash: String::new(),
+                // THIS process is appending it right now — the one ground-truth site for provenance.
+                recorded_here: true,
             };
             entry.hash = entry.compute_hash();
             while q.len() >= MAX_AUDIT_ENTRIES {
@@ -312,12 +346,33 @@ impl AuditLog {
     /// it behind would break the chain at the join instead of at the skip. Rewriting the whole
     /// suffix in ring order keeps it contiguous by construction.
     ///
+    /// The position itself is `recorded_here`, not a seq comparison: seeded entries (from a file
+    /// snapshot or the durable store) and live entries THIS process appended are not seq-separable
+    /// once the counter has been floored to the durable max — a `seq <= durable_max` predicate matches
+    /// the SEEDED prefix instead of the live suffix and renumbers the wrong entries onto the durable
+    /// range, duplicating them on the next backfill. The ring's invariant makes this well-defined:
+    /// seeded entries are always cleared-then-extended in one shot and live entries are only ever
+    /// `push_back`ed, so the `recorded_here` entries are always a contiguous suffix of the ring, and
+    /// pruning (`pop_front`-only) can only shrink the seeded prefix, never split the suffix.
+    ///
     /// No store I/O happens here — the entries lock is never held across a store call.
     fn rebase_nondurable_suffix(&self, durable_max: u64, anchor_hash: &str) -> Option<u64> {
         let mut q = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-        let first = q.iter().position(|e| e.seq <= durable_max)?;
-        let mut next_seq = durable_max + 1;
-        let mut prev = anchor_hash.to_string();
+        let first = q.iter().position(|e| e.recorded_here)?;
+        // A seq must never move DOWN. `durable_max + 1` alone is right only when the durable tail is
+        // at or above the ring's live head; with an empty or lagging tail (e.g. a seal against a
+        // store that has never been written to) it would renumber a live entry ONTO a seeded seq
+        // still in the ring, breaking the ring's seq-sorted invariant and making the backfill's
+        // `find(|e| e.seq == seq)` ambiguous.
+        let mut next_seq = std::cmp::max(durable_max + 1, q[first].seq);
+        let mut prev = if next_seq == durable_max + 1 {
+            anchor_hash.to_string()
+        } else {
+            // The ring holds `next_seq - 1` (a seeded entry the backfill will persist from this same
+            // ring), so the head's existing link is already correct — overwriting it with the
+            // durable tail's hash would MANUFACTURE a break instead of closing one.
+            q[first].prev_hash.clone()
+        };
         for entry in q.iter_mut().skip(first) {
             entry.seq = next_seq;
             entry.prev_hash = prev.clone();
@@ -332,11 +387,14 @@ impl AuditLog {
 
     fn durable_write_through(&self, store: &dyn busbar_api::Store, mut new_seq: u64) {
         let _serial = self.durable_lock.lock().unwrap_or_else(|e| e.into_inner());
-        // SEALED while the durable floor is unknown (a boot restore whose read failed): appending
-        // now could overwrite durable history at seqs the store already holds. Retry the floor read
-        // first — one small tail read — so the log heals as soon as the store recovers.
+        // SEALED while this process's ring is not yet reconciled with the durable tail (the boot
+        // restore's read failed, or it read but the chain failed verification): appending now could
+        // overwrite durable history at seqs the store already holds, or anchor to a tail that isn't
+        // trustworthy. Retry the tail read first — one small read — so the log heals (and rebases its
+        // nondurable suffix onto the recovered anchor) as soon as the store answers with a tail that
+        // verifies.
         if self
-            .durable_floor_unknown
+            .durable_unreconciled
             .load(std::sync::atomic::Ordering::SeqCst)
         {
             match store.list_audit_tail(1) {
@@ -360,7 +418,7 @@ impl AuditLog {
                     }
                     self.seq
                         .fetch_max(durable_max + 1, std::sync::atomic::Ordering::Relaxed);
-                    self.durable_floor_unknown
+                    self.durable_unreconciled
                         .store(false, std::sync::atomic::Ordering::SeqCst);
                     tracing::info!(
                         durable_max,
@@ -371,9 +429,10 @@ impl AuditLog {
                 Err(e) => {
                     tracing::warn!(
                         error = %e.0,
-                        "durable audit write-through skipped: the durable sequence floor is still \
-                         unknown (the boot restore read failed). The entry is retained in the RAM \
-                         ring + state snapshot; writing now could overwrite durable history."
+                        "durable audit write-through skipped: this process's ring is not yet \
+                         reconciled with the durable tail (the boot restore did not read or verify \
+                         it, and this retry read failed too). The entry is retained in the RAM ring \
+                         + state snapshot; writing now could overwrite durable history."
                     );
                     return;
                 }
@@ -416,10 +475,14 @@ impl AuditLog {
 
         let start = self.durable_high.load(std::sync::atomic::Ordering::Relaxed) + 1;
         if new_seq < start {
-            // This entry's seq is BELOW the durable floor — it can only be the mutation that
-            // triggered the floor recovery just above (its seq was allocated while the floor was
-            // unknown). Writing it would overwrite durable history; it stays in the RAM ring and the
-            // state snapshot, and the next mutation appends above the floor.
+            // This entry's seq is BELOW the durable floor. With `rebase_nondurable_suffix` always
+            // returning a top `>= durable_max + 1` and `start = durable_high + 1` (`durable_high >=
+            // durable_max` once the recovery branch above has run), this is NOT the floor-recovery
+            // mutation itself — that case is already resolved by the rebase. It is the ordinary
+            // concurrent-recorder race: a second recorder allocated a HIGHER seq, won `durable_lock`
+            // first, and its backfill already persisted (and advanced `durable_high` past) THIS
+            // seq — so writing it now would be a redundant, stale keyed upsert. Skipping is correct:
+            // this entry is already durable under its own seq.
             tracing::warn!(
                 seq = new_seq,
                 durable_floor = start,
@@ -478,7 +541,16 @@ impl AuditLog {
     /// snapshot can lag the durable store, and the durable write-through is keyed on `seq` — a
     /// blind store here would rewind the counter below the store's max and the next mutation would
     /// silently OVERWRITE durable history. The snapshot only ever RAISES the counter.
-    pub(crate) fn load(&self, entries: Vec<AuditEntry>) {
+    pub(crate) fn load(&self, mut entries: Vec<AuditEntry>) {
+        // `load` IS the seeding path by definition: whatever it is handed came from OUTSIDE this
+        // process's append stream, even when the `Vec` was produced by this process's OWN `export()`
+        // (the in-process restart-simulation path in tests, and any future in-process reconcile).
+        // `#[serde(skip)]` only clears provenance on an encoded round-trip; this path never encodes,
+        // so it must clear it explicitly or `rebase_nondurable_suffix` would renumber these as if they
+        // were never persisted.
+        for e in &mut entries {
+            e.recorded_here = false;
+        }
         let mut q = self.entries.lock().unwrap_or_else(|e| e.into_inner());
         let max_seq = entries.iter().map(|e| e.seq).max().unwrap_or(0);
         q.clear();
@@ -717,6 +789,9 @@ mod tests {
         // the existing durable entry.
         log2.record_by("hook.register", "hook:c", OUTCOME_APPLIED, "admin");
         let persisted = store.list_audit().unwrap();
+        // The count/seq/untouched-entry assertions below are REGRESSION PROOFS (they already pass at
+        // HEAD via the seq floor at :200-201, unrelated to change B) — kept to show B does not
+        // disturb them.
         assert_eq!(persisted.len(), 4, "durable history grew; nothing replaced");
         assert_eq!(
             persisted.last().unwrap().seq,
@@ -726,6 +801,61 @@ mod tests {
         assert_eq!(
             persisted[2].action, "hook.delete",
             "the pre-existing seq-3 entry is untouched"
+        );
+        // THE RED ASSERTION (change B): the new entry's `prev_hash` must join the STORE's durable
+        // tail, not whatever stale link the seeded ring happened to carry. At HEAD the verify-fail
+        // path never engages the seal, so the recovery branch never runs and the entry chains onto
+        // the stale snapshot's seq-1 hash instead of the store's seq-3 hash — a silent linkage break
+        // reported as tamper on the NEXT boot, not this one.
+        assert_eq!(
+            persisted[3].prev_hash, persisted[2].hash,
+            "the post-restart entry must re-anchor to the durable tail's actual hash, not the stale \
+             snapshot's link"
+        );
+    }
+
+    /// The verify-fail linkage break, with NO snapshot at all — the branch v2 missed entirely. At
+    /// HEAD the ring is empty at record time (nothing was `load`ed), so `record_by`'s `q.back()` is
+    /// `None` and the first post-restart entry's `prev_hash` is `""`, not the durable tail's hash — a
+    /// silent break identical in kind to the with-snapshot case above, just with a different stale
+    /// link (empty instead of the snapshot's).
+    #[test]
+    fn verify_failure_without_a_snapshot_still_anchors_to_the_durable_tail() {
+        let store: Arc<dyn Store> =
+            Arc::new(busbar_store_sqlite::SqliteStore::open_in_memory().unwrap());
+
+        let log1 = AuditLog::new();
+        log1.set_sink(store.clone());
+        log1.record_by("hook.register", "hook:a", OUTCOME_APPLIED, "admin");
+        log1.record_by("hook.register", "hook:b", OUTCOME_APPLIED, "admin");
+        log1.record_by("hook.delete", "hook:a", OUTCOME_APPLIED, "admin");
+
+        // Tamper so the restart's durable restore fails verification. No `load` follows — no
+        // snapshot at all.
+        {
+            let mut tampered = store.list_audit().unwrap();
+            tampered[1].resource = "hook:evil".to_string();
+            store.append_audit(&tampered[1]).unwrap();
+        }
+
+        let log2 = AuditLog::new();
+        log2.set_sink(store.clone());
+        assert!(
+            log2.restore_from_store(store.as_ref()).is_err(),
+            "the tampered chain must fail verification"
+        );
+
+        log2.record_by("hook.register", "hook:c", OUTCOME_APPLIED, "admin");
+        let persisted = store.list_audit().unwrap();
+        assert_eq!(persisted.len(), 4, "durable history grew; nothing replaced");
+        assert_eq!(
+            persisted.last().unwrap().seq,
+            4,
+            "the new entry appended past the durable max"
+        );
+        assert_eq!(
+            persisted[3].prev_hash, persisted[2].hash,
+            "the post-restart entry must anchor to the durable tail's hash, not an empty prev_hash"
         );
     }
 
@@ -965,6 +1095,89 @@ mod tests {
         assert_eq!(restored, 6, "and restores every entry");
     }
 
+    /// THE REPORTED DUPLICATION, via the IN-PROCESS seeding path. `rebase_nondurable_suffix` used to
+    /// pick its suffix by `seq <= durable_max`, which matches index 0 whenever the ring's SEEDED
+    /// prefix (loaded from a file snapshot / `export()`) sits at seqs the store already holds — so it
+    /// renumbers the SEEDED entries instead of the live one behind them, and the backfill re-persists
+    /// them as duplicates. Provenance (`recorded_here`), not a seq comparison, is the only thing that
+    /// tells the two populations apart.
+    ///
+    /// Deliberately NOT a hash-uniqueness assertion: `compute_hash` mixes `seq`, so the renumbered
+    /// duplicates get FRESH hashes and a hash-uniqueness check would pass on the corrupt state. The
+    /// `(action, resource, principal)` triple is the payload identity that must not repeat.
+    #[test]
+    fn audit_ring_seeded_in_process_is_not_renumbered_onto_durable_history() {
+        let inner = busbar_store_sqlite::SqliteStore::open_in_memory().unwrap();
+        let store = Arc::new(FlakyAuditReads {
+            inner,
+            fail_reads: std::sync::atomic::AtomicBool::new(false),
+        });
+
+        // Process 1: 5 durable entries with DISTINCT (action, resource) pairs.
+        let log1 = AuditLog::new();
+        log1.set_sink(store.clone());
+        for i in 0..5 {
+            log1.record_by(
+                "hook.register",
+                &format!("hook:{i}"),
+                OUTCOME_APPLIED,
+                "admin",
+            );
+        }
+        let snapshot = log1.export();
+        assert_eq!(snapshot.len(), 5);
+
+        // Process 2: sink attached, reads fail so the boot restore seals (durable floor unknown),
+        // then the exported ring is seeded IN-PROCESS via `load` — no serde round-trip.
+        let log2 = AuditLog::new();
+        log2.set_sink(store.clone());
+        store
+            .fail_reads
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            log2.restore_from_store(store.as_ref()).is_err(),
+            "the read failure surfaces as a restore error and engages the seal"
+        );
+        log2.load(snapshot);
+
+        // The store recovers; the next mutation resumes the write-through, which recovers the floor
+        // and rebases whatever the ring's nondurable suffix is.
+        store
+            .fail_reads
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        log2.record_by("plugin.install", "plugin:x", OUTCOME_APPLIED, "admin");
+
+        let persisted = store.list_audit().unwrap();
+        assert_eq!(
+            persisted.len(),
+            6,
+            "only the ONE live entry should be added to the 5 already-durable ones"
+        );
+        assert_eq!(
+            persisted.iter().map(|r| r.seq).collect::<Vec<_>>(),
+            vec![1, 2, 3, 4, 5, 6],
+            "seqs are exactly 1..=6, nothing renumbered onto a duplicate range"
+        );
+        let mut triples: Vec<(String, String, String)> = persisted
+            .iter()
+            .map(|r| (r.action.clone(), r.resource.clone(), r.principal.clone()))
+            .collect();
+        triples.sort();
+        triples.dedup();
+        assert_eq!(
+            triples.len(),
+            6,
+            "no (action, resource, principal) triple repeats — nothing was duplicated"
+        );
+
+        let log3 = AuditLog::new();
+        assert_eq!(
+            log3.restore_from_store(store.as_ref())
+                .expect("the durable chain must still verify"),
+            6
+        );
+    }
+
     /// #15 + #24: after a FILE-SNAPSHOT restore (the durable restore did not supply the ring), the
     /// next mutation must still reach the durable sink. Before the fix `durable_high` stayed 0, so
     /// the backfill aimed at seq 1 — a seq the restored (pruned) ring cannot supply — hit the
@@ -1012,6 +1225,64 @@ mod tests {
             log2.restore_from_store(store.as_ref())
                 .expect("the backfilled chain verifies"),
             4
+        );
+    }
+
+    /// REGRESSION PROOF for change C (`max(durable_max + 1, head.seq)`), NOT a RED test against HEAD:
+    /// this is GREEN at HEAD by accident (`position(|e| e.seq <= 0)` is `None` there, so the rebase is
+    /// a no-op whenever the durable tail is empty). Its RED proof is the INTERMEDIATE build — change A
+    /// alone, with a bare `next_seq = durable_max + 1` instead of the `max` — which renumbers a live
+    /// entry BELOW a still-present seeded one and violates the ring's seq-sorted invariant.
+    #[test]
+    fn live_entry_is_never_renumbered_below_a_seeded_one() {
+        let inner = busbar_store_sqlite::SqliteStore::open_in_memory().unwrap();
+        let store = Arc::new(FlakyAuditReads {
+            inner,
+            fail_reads: std::sync::atomic::AtomicBool::new(true),
+        });
+
+        // Seal against an EMPTY store (the read fails before anything is ever written to it).
+        let log = AuditLog::new();
+        log.set_sink(store.clone());
+        assert!(
+            log.restore_from_store(store.as_ref()).is_err(),
+            "the read failure surfaces as a restore error and engages the seal"
+        );
+
+        // A pruned snapshot seeds the ring at seqs 10..=12 (a file snapshot of a ring that had
+        // already dropped its oldest entries).
+        let source = AuditLog::new();
+        for i in 0..12 {
+            source.record_by(
+                "hook.register",
+                &format!("hook:{i}"),
+                OUTCOME_APPLIED,
+                "admin",
+            );
+        }
+        let pruned_snapshot: Vec<AuditEntry> = source.export().into_iter().skip(9).collect(); // seq 10..=12
+        log.load(pruned_snapshot);
+
+        // The store recovers; the mutation below gets seq 13 and triggers the floor-recovery/rebase
+        // path against the now-empty store (`durable_max = 0`).
+        store
+            .fail_reads
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        log.record_by("plugin.install", "plugin:x", OUTCOME_APPLIED, "admin");
+
+        // `export()` is oldest-first (ring insertion order); `list()` is newest-first and would
+        // invert this check.
+        let ring = log.export();
+        let seqs: Vec<u64> = ring.iter().map(|e| e.seq).collect();
+        assert!(
+            seqs.windows(2).all(|w| w[0] < w[1]),
+            "the ring's seq-sorted invariant must hold: {seqs:?}"
+        );
+        let persisted: Vec<u64> = store.list_audit().unwrap().iter().map(|r| r.seq).collect();
+        assert_eq!(
+            persisted,
+            vec![10, 11, 12, 13],
+            "the seeded suffix and the live entry all persist, contiguous and in order"
         );
     }
 
