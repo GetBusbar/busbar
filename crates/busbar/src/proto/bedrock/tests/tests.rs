@@ -1932,6 +1932,32 @@ fn test_write_response_event_total_tokens_saturates() {
     );
 }
 
+/// `bedrock/writer.rs`'s `BlockStop` arm is unconditional even though `BlockStart` suppresses the
+/// `Image` variant (`IrBlockMeta::Image => None`): a `BlockStop` for an index whose `BlockStart` was
+/// suppressed must ALSO be suppressed, exactly as the sibling writers (cohere, gemini, openai_responses)
+/// already do. Otherwise a real ConverseStream client receives `contentBlockStop` for an index it never
+/// saw a `contentBlockStart` for.
+#[test]
+fn bedrock_writer_image_block_stop_is_suppressed() {
+    let writer = BedrockWriter;
+    assert!(
+        writer
+            .write_response_event(&IrStreamEvent::BlockStart {
+                index: 0,
+                block: crate::ir::IrBlockMeta::Image,
+            })
+            .is_none(),
+        "Image BlockStart must stay suppressed"
+    );
+    assert!(
+        writer
+            .write_response_event(&IrStreamEvent::BlockStop { index: 0 })
+            .is_none(),
+        "a BlockStop for an index whose BlockStart was suppressed must ALSO be suppressed, \
+         not emit an orphan contentBlockStop"
+    );
+}
+
 /// `bedrock_response_to_eventstream` (buffered 2xx → synthesized
 /// ConverseStream, used when a Bedrock-streaming client gets a non-streaming cross-protocol 2xx)
 /// must NOT drop a `Thinking` (reasoningContent) block. The old arm skipped it, silently losing
@@ -1980,6 +2006,145 @@ fn eventstream_emits_reasoning_content_for_thinking_block() {
     assert!(
         text.contains("sigblob"),
         "the reasoning signature must ride a signature delta"
+    );
+}
+
+/// `bedrock_response_to_eventstream` derives `contentBlockIndex` from `enumerate()` over ALL
+/// `ir.content` blocks, but `ToolResult`/`Image`/`Json` blocks emit no frames — so a skipped block
+/// burns an index and the synthesized wire is non-contiguous. A native ConverseStream is always
+/// contiguous from 0. `[Image, Text]` must put the Text frames at `contentBlockIndex: 0`, not `1`.
+#[test]
+fn eventstream_content_block_index_is_contiguous_when_a_block_is_skipped() {
+    let resp = crate::ir::IrResponse {
+        logprobs: Vec::new(),
+        role: crate::ir::IrRole::Assistant,
+        content: vec![
+            crate::ir::IrBlock::Image {
+                source: crate::ir::IrImageSource::Base64 {
+                    media_type: "image/png".to_string(),
+                    data: "aGk=".to_string(),
+                },
+                cache_control: None,
+            },
+            crate::ir::IrBlock::Text {
+                text: "answer".to_string(),
+                cache_control: None,
+                citations: Vec::new(),
+            },
+        ],
+        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+        usage: IrUsage {
+            input_tokens: 1,
+            output_tokens: 1,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: None,
+        },
+        model: None,
+        id: None,
+        created: None,
+        system_fingerprint: None,
+        stop_sequence: None,
+    };
+    let mut bytes = bedrock_response_to_eventstream(&resp, Some(5));
+    let frames = crate::eventstream::drain_frames(&mut bytes);
+    let text_start = frames
+        .iter()
+        .find(|(et, _)| et == "contentBlockStart")
+        .map(|(_, payload)| serde_json::from_slice::<serde_json::Value>(payload).unwrap())
+        .expect("Text block must synthesize a contentBlockStart frame");
+    assert_eq!(
+        text_start.get("contentBlockIndex").and_then(|i| i.as_u64()),
+        Some(0),
+        "the Text block is the only one that emits frames; it must land at index 0, \
+         not the enumerate()-derived index 1: {text_start:?}"
+    );
+}
+
+/// REGRESSION PROOF (passes before AND after the `enumerate()` → emitted-count `index` fix): every
+/// emitting arm (Text, ToolUse, Thinking) pushes its own start, delta(s) and stop TOGETHER inside
+/// one match arm, so start/stop balance per index already held even when the index numbering was
+/// wrong. This does not prove contiguity (see
+/// `eventstream_content_block_index_is_contiguous_when_a_block_is_skipped` for that, which IS a RED
+/// proof) — it only proves the fix does not introduce an orphaned start or stop.
+#[test]
+fn eventstream_every_content_block_start_has_exactly_one_stop() {
+    let resp = crate::ir::IrResponse {
+        logprobs: Vec::new(),
+        role: crate::ir::IrRole::Assistant,
+        content: vec![
+            crate::ir::IrBlock::Image {
+                source: crate::ir::IrImageSource::Base64 {
+                    media_type: "image/png".to_string(),
+                    data: "aGk=".to_string(),
+                },
+                cache_control: None,
+            },
+            crate::ir::IrBlock::Thinking {
+                text: "let me think".to_string(),
+                signature: Some("sigblob".to_string()),
+                redacted: false,
+                cache_control: None,
+            },
+            crate::ir::IrBlock::Text {
+                text: "answer".to_string(),
+                cache_control: None,
+                citations: Vec::new(),
+            },
+            crate::ir::IrBlock::ToolUse {
+                id: "toolu_1".to_string(),
+                name: "get_weather".to_string(),
+                input: serde_json::json!({"city": "SF"}),
+                cache_control: None,
+            },
+            crate::ir::IrBlock::ToolResult {
+                tool_use_id: "toolu_1".to_string(),
+                content: vec![crate::ir::IrBlock::Text {
+                    text: "sunny".to_string(),
+                    cache_control: None,
+                    citations: Vec::new(),
+                }],
+                is_error: false,
+                cache_control: None,
+            },
+            crate::ir::IrBlock::Json(serde_json::json!({"k": "v"})),
+        ],
+        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+        usage: IrUsage {
+            input_tokens: 1,
+            output_tokens: 1,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: None,
+        },
+        model: None,
+        id: None,
+        created: None,
+        system_fingerprint: None,
+        stop_sequence: None,
+    };
+    let mut bytes = bedrock_response_to_eventstream(&resp, Some(5));
+    let frames = crate::eventstream::drain_frames(&mut bytes);
+
+    let mut starts: Vec<u64> = Vec::new();
+    let mut stops: Vec<u64> = Vec::new();
+    for (event_type, payload) in &frames {
+        let Ok(v) = serde_json::from_slice::<serde_json::Value>(payload) else {
+            continue;
+        };
+        let Some(idx) = v.get("contentBlockIndex").and_then(|i| i.as_u64()) else {
+            continue;
+        };
+        match event_type.as_str() {
+            "contentBlockStart" => starts.push(idx),
+            "contentBlockStop" => stops.push(idx),
+            _ => {}
+        }
+    }
+    starts.sort_unstable();
+    stops.sort_unstable();
+    assert!(!starts.is_empty(), "expected at least one emitted block");
+    assert_eq!(
+        starts, stops,
+        "every contentBlockStart index must have exactly one contentBlockStop: starts={starts:?} stops={stops:?}"
     );
 }
 
@@ -4592,7 +4757,8 @@ fn consecutive_user_turns_coalesce_for_alternation() {
         response_format: None,
         extra: serde_json::Map::new(),
     };
-    let out = BedrockWriter.write_request(&req);
+    let writer = BedrockWriter;
+    let out = writer.write_request(&req);
     let msgs = out
         .get("messages")
         .and_then(|m| m.as_array())
@@ -4674,7 +4840,8 @@ fn tool_choice_without_tools_emits_no_tool_config() {
     ] {
         let mut req = tool_choice_req(Some(tc.clone()));
         req.tools = vec![]; // tool_choice set, but no tools survived
-        let out = BedrockWriter.write_request(&req);
+        let writer = BedrockWriter;
+        let out = writer.write_request(&req);
         assert!(
             out.get("toolConfig").is_none(),
             "toolConfig must be omitted entirely when tool_choice={tc:?} has no tools: {out}"
@@ -4728,7 +4895,8 @@ fn test_bedrock_tool_choice_any_required_roundtrips() {
     let ir = reader.read_request(&j).expect("read ok");
     assert_eq!(ir.tool_choice, Some(crate::ir::IrToolChoice::Required));
 
-    let out = BedrockWriter.write_request(&ir);
+    let writer = BedrockWriter;
+    let out = writer.write_request(&ir);
     let tc = out
         .get("toolConfig")
         .and_then(|t| t.get("toolChoice"))
@@ -4756,7 +4924,8 @@ fn test_bedrock_tool_choice_specific_tool() {
         })
     );
 
-    let out = BedrockWriter.write_request(&ir);
+    let writer = BedrockWriter;
+    let out = writer.write_request(&ir);
     let tc = out
         .get("toolConfig")
         .and_then(|t| t.get("toolChoice"))
@@ -4769,7 +4938,8 @@ fn test_bedrock_tool_choice_specific_tool() {
 #[test]
 fn test_bedrock_tool_choice_none_omitted_on_write() {
     let req = tool_choice_req(Some(crate::ir::IrToolChoice::None));
-    let out = BedrockWriter.write_request(&req);
+    let writer = BedrockWriter;
+    let out = writer.write_request(&req);
     let tool_config = out
         .get("toolConfig")
         .expect("toolConfig with tools emitted");
@@ -4794,7 +4964,8 @@ fn test_bedrock_tool_choice_absent_is_none() {
     });
     let ir = reader.read_request(&j).expect("read ok");
     assert_eq!(ir.tool_choice, None);
-    let out = BedrockWriter.write_request(&ir);
+    let writer = BedrockWriter;
+    let out = writer.write_request(&ir);
     assert!(
         out.get("toolConfig")
             .and_then(|t| t.get("toolChoice"))
@@ -4838,7 +5009,8 @@ fn test_bedrock_writer_clamps_temperature_above_one() {
         response_format: None,
         extra: serde_json::Map::new(),
     };
-    let out = BedrockWriter.write_request(&ir);
+    let writer = BedrockWriter;
+    let out = writer.write_request(&ir);
     assert_eq!(
         out.pointer("/inferenceConfig/temperature")
             .and_then(|v| v.as_f64()),
@@ -4913,7 +5085,8 @@ fn test_cache_control_on_message_block_emits_cache_point() {
         }],
         vec![],
     );
-    let out = BedrockWriter.write_request(&req);
+    let writer = BedrockWriter;
+    let out = writer.write_request(&req);
     // The cachePoint sits AFTER the first text block (index 1), before the second text (index 2).
     assert_eq!(
         out.pointer("/messages/0/content/0/text")
@@ -4953,7 +5126,8 @@ fn test_cache_control_on_system_block_emits_cache_point() {
         vec![],
         vec![],
     );
-    let out = BedrockWriter.write_request(&req);
+    let writer = BedrockWriter;
+    let out = writer.write_request(&req);
     assert_eq!(
         out.pointer("/system/0/text").and_then(|v| v.as_str()),
         Some("long static preamble"),
@@ -4981,7 +5155,8 @@ fn test_cache_control_on_tool_emits_cache_point() {
             hosted: None,
         }],
     );
-    let out = BedrockWriter.write_request(&req);
+    let writer = BedrockWriter;
+    let out = writer.write_request(&req);
     assert_eq!(
         out.pointer("/toolConfig/tools/0/toolSpec/name")
             .and_then(|v| v.as_str()),
@@ -5085,7 +5260,8 @@ fn test_cache_control_round_trip_via_field_only() {
     // Simulate the cross-protocol seam: drop the busbar-internal positional stash so only the
     // first-class `cache_control` field remains to drive emission.
     ir.extra.clear();
-    let out = BedrockWriter.write_request(&ir);
+    let writer = BedrockWriter;
+    let out = writer.write_request(&ir);
     assert_eq!(
         out.pointer("/messages/0/content/0/text")
             .and_then(|v| v.as_str()),
@@ -5115,7 +5291,8 @@ fn test_same_protocol_cache_point_no_double_emit() {
         ]
     });
     let ir = reader.read_request(&wire).expect("read_request");
-    let out = BedrockWriter.write_request(&ir);
+    let writer = BedrockWriter;
+    let out = writer.write_request(&ir);
     let count = out
         .pointer("/messages/0/content")
         .and_then(|c| c.as_array())
@@ -5139,7 +5316,8 @@ fn test_same_protocol_cache_point_no_double_emit() {
 #[test]
 fn test_tool_choice_none_warns_and_omits() {
     let req = tool_choice_req(Some(crate::ir::IrToolChoice::None));
-    let out = BedrockWriter.write_request(&req);
+    let writer = BedrockWriter;
+    let out = writer.write_request(&req);
     let tool_config = out.get("toolConfig").expect("toolConfig emitted");
     assert!(
         tool_config.get("toolChoice").is_none(),
@@ -5387,7 +5565,8 @@ fn consecutive_tool_result_turns_coalesce_into_single_user_message() {
         ],
         ..Default::default()
     };
-    let out = BedrockWriter.write_request(&req);
+    let writer = BedrockWriter;
+    let out = writer.write_request(&req);
     let msgs = out
         .get("messages")
         .and_then(|m| m.as_array())
@@ -5431,7 +5610,8 @@ fn unknown_stop_reason_maps_to_other_and_degrades_to_end_turn() {
     });
     let resp = BedrockReader.read_response(&body).expect("read_response");
     assert_eq!(resp.stop_reason, Some(crate::ir::IrStopReason::Other));
-    let out = BedrockWriter.write_response(&resp);
+    let writer = BedrockWriter;
+    let out = writer.write_response(&resp);
     assert_eq!(
         out.get("stopReason").and_then(|v| v.as_str()),
         Some("end_turn"),
@@ -5467,7 +5647,8 @@ fn cache_usage_is_additive_input_not_reduced() {
     assert_eq!(resp.usage.billable_tokens(), 1215);
 
     // Round-trip: write re-emits the native additive fields under AWS's spellings.
-    let out = BedrockWriter.write_response(&resp);
+    let writer = BedrockWriter;
+    let out = writer.write_response(&resp);
     assert_eq!(
         out.pointer("/usage/cacheReadInputTokens")
             .and_then(|v| v.as_u64()),
@@ -5507,7 +5688,8 @@ fn write_response_exception_folds_to_stream_union_members() {
         (StatusClass::Network, "InternalServerException"),
     ];
     for (class, expect) in cases {
-        let (name, _msg) = BedrockWriter
+        let writer = BedrockWriter;
+        let (name, _msg) = writer
             .write_response_exception(&mk(class))
             .expect("Bedrock always returns Some for a stream exception");
         assert_eq!(name, expect, "class {class:?} must fold to {expect}");
@@ -5518,7 +5700,8 @@ fn write_response_exception_folds_to_stream_union_members() {
         provider_signal: Some("slow down".to_string()),
         retry_after: None,
     };
-    let (name, msg) = BedrockWriter.write_response_exception(&err).unwrap();
+    let writer = BedrockWriter;
+    let (name, msg) = writer.write_response_exception(&err).unwrap();
     assert_eq!(name, "ThrottlingException");
     assert_eq!(
         msg, "slow down",

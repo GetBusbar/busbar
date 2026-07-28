@@ -105,6 +105,12 @@ pub(crate) struct StreamTranslate {
     /// client uniformly on both the SSE and gemini-json-array paths.
     pending_terminal: Option<(crate::ir::IrStopReason, Option<String>, crate::ir::IrUsage)>,
     pending_stop: bool,
+    /// IR block indices whose BlockStart was TRANSLATED and whose BlockStop has not been. Anything
+    /// still here at the terminal frame was never closed by the egress reader — a truncated upstream,
+    /// or a reader whose terminal branch does not drain every block (cohere `message-end` closes only
+    /// text). Synthesized closes are routed back through `emit_ir_event`, so each ingress writer applies
+    /// its OWN projection and no wire shape is named here.
+    open_blocks: std::collections::BTreeSet<usize>,
 }
 
 impl StreamTranslate {
@@ -168,6 +174,7 @@ impl StreamTranslate {
             terminal_error: None,
             pending_terminal: None,
             pending_stop: false,
+            open_blocks: std::collections::BTreeSet::new(),
         })
     }
 
@@ -296,6 +303,21 @@ impl StreamTranslate {
                         continue;
                     }
                 }
+            }
+
+            // INV-A: close any block the egress reader left open BEFORE the terminal frame goes out.
+            // Placed ahead of the Bedrock two-frame fan-out, the terminal-usage deferral, the post-stop
+            // drop guard and the citation fan-out below — every terminal path, deferred or immediate,
+            // reaches this without duplicating the site. A reader that already closes correctly leaves
+            // `open_blocks` empty, so this is a no-op on every existing exact-sequence stream.
+            if matches!(
+                ev,
+                crate::ir::IrStreamEvent::MessageDelta {
+                    stop_reason: Some(_),
+                    ..
+                } | crate::ir::IrStreamEvent::MessageStop
+            ) {
+                self.close_open_blocks(out);
             }
 
             // Bedrock-INGRESS combined-delta fan-out: the IR carries ONE combined
@@ -516,6 +538,22 @@ impl StreamTranslate {
     /// identity — so this emitter branches only on transport (binary frame vs SSE), never on a wire
     /// event-type or protocol name.
     fn emit_ir_event(&mut self, ev: &crate::ir::IrStreamEvent, out: &mut Vec<u8>) {
+        // Track the IR lifecycle BEFORE the writer runs, NOT after. `write_response_event` returning
+        // `None` does not mean "no block was opened": `gemini/writer.rs`'s ToolUse `BlockStart` arm
+        // returns `None` DELIBERATELY — it buffers (name, args) and emits the single native
+        // `functionCall` part on `BlockStop`. Tracking after the let-else would never record a gemini
+        // tool block, so the terminal drain would never emit its stop, and the buffered call would
+        // never flush: on a truncated cohere->gemini stream the TOOL CALL IS SILENTLY DELETED. Track
+        // the IR intent; let each writer decide the wire projection.
+        match ev {
+            crate::ir::IrStreamEvent::BlockStart { index, .. } => {
+                self.open_blocks.insert(*index);
+            }
+            crate::ir::IrStreamEvent::BlockStop { index } => {
+                self.open_blocks.remove(index);
+            }
+            _ => {}
+        }
         let Some((out_et, mut out_data)) = self.ingress.writer().write_response_event(ev) else {
             return;
         };
@@ -546,6 +584,15 @@ impl StreamTranslate {
                 return;
             }
             out.extend_from_slice(reframe_sse(&out_et, &out_data).as_bytes());
+        }
+    }
+
+    /// Close every block the egress reader left open. `mem::take` FIRST so the re-entrant
+    /// `emit_ir_event` calls cannot re-insert, which also makes this idempotent. `BTreeSet` iterates
+    /// ascending, so closes go out in index order.
+    fn close_open_blocks(&mut self, out: &mut Vec<u8>) {
+        for index in std::mem::take(&mut self.open_blocks) {
+            self.emit_ir_event(&crate::ir::IrStreamEvent::BlockStop { index }, out);
         }
     }
 
@@ -875,6 +922,14 @@ impl StreamTranslate {
         if self.same_proto {
             return out;
         }
+        // INV-A: close any block the egress reader left open going into `finish()` — the truncation
+        // case (no terminal frame ever arrived, so the `translate_event` drain never ran) and the
+        // reader-terminal-branch-does-not-drain-everything case (cohere `message-end` closes only
+        // text; `open_tools` is deliberately never drained, so tool blocks reach here still open).
+        // Unconditional and BEFORE `framing.on_finish()`: v1 placed this at the `pending_terminal`
+        // flush below, which is dead code for this case — `pending_terminal` is only set when
+        // `folds_terminal_usage()` is true, and both bedrock and openai_chat return `false`.
+        self.close_open_blocks(&mut out);
         // FINISH framing seam: if the ingress framing deferred a `metadata` frame that was
         // never resolved (the Bedrock-ingress zero-usage stop with no trailing usage delta — the
         // default OpenAI streaming case), it returns the single best-effort zero-usage event to flush

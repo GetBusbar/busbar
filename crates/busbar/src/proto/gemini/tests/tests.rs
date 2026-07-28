@@ -57,6 +57,108 @@ fn test_stream_tool_block_is_closed() {
     assert_eq!(starts, stops, "unbalanced block events: {events:?}");
 }
 
+/// The `functionCall` arm is the one block-opening arm in this reader that does not close an
+/// open thinking block first (its three siblings — text, citations, logprobs — all do). A
+/// `{thought:true}` part followed by a `functionCall` part in the same turn must therefore close
+/// the thinking block (index 0) BEFORE opening the tool block, not after — Anthropic's documented
+/// stream never has two content blocks open simultaneously.
+#[test]
+fn test_stream_function_call_closes_open_thinking_block() {
+    let events = collect_stream(&[serde_json::json!({
+        "candidates": [{
+            "content": {
+                "role": "model",
+                "parts": [
+                    {"thought": true, "text": "let me think"},
+                    {"functionCall": {"name": "get_weather", "args": {"city": "SF"}}}
+                ]
+            },
+            "finishReason": GEMINI_FINISH_STOP
+        }]
+    })]);
+
+    let thinking_stop_pos = events
+        .iter()
+        .position(|e| matches!(e, IrStreamEvent::BlockStop { index: 0 }))
+        .expect("thinking block (index 0) must be closed: {events:?}");
+    let tool_start_pos = events
+        .iter()
+        .position(|e| {
+            matches!(
+                e,
+                IrStreamEvent::BlockStart {
+                    block: IrBlockMeta::ToolUse { .. },
+                    ..
+                }
+            )
+        })
+        .expect("tool BlockStart must be emitted: {events:?}");
+
+    assert!(
+        thinking_stop_pos < tool_start_pos,
+        "thinking block must be closed BEFORE the tool block opens: {events:?}"
+    );
+}
+
+/// The gemini reader's index allocator had the SAME post-terminal defect as the openai_chat reader
+/// before its fix: `offset + text_base + open_tools.len()` recomputes at EVERY call, so after a
+/// terminal path clears `text_index` (`.take()`) and drains `open_tools` (`mem::take`), a tool_calls
+/// chunk arriving AFTER the finish restarts the formula at 0 and re-claims a slot the client
+/// already has content in. Converted to the same monotone `claim_ir_index()` counter as
+/// openai_chat's fix: a post-finish tool must claim a genuinely FRESH index, colliding with
+/// neither the pre-finish tool nor the text block.
+#[test]
+fn gemini_tool_after_finish_chunk_claims_a_fresh_index() {
+    let events = collect_stream(&[
+        serde_json::json!({"candidates":[{"content":{"role":"model","parts":[
+            {"functionCall": {"name": "get_weather", "args": {}}}
+        ]}}]}),
+        serde_json::json!({"candidates":[{"content":{"role":"model","parts":[
+            {"text": "hi"}
+        ]}}]}),
+        serde_json::json!({"candidates":[{"finishReason": GEMINI_FINISH_STOP}]}),
+        // Arrives AFTER the finish chunk.
+        serde_json::json!({"candidates":[{"content":{"role":"model","parts":[
+            {"functionCall": {"name": "get_time", "args": {}}}
+        ]}}]}),
+    ]);
+
+    let pre_finish_tool_index = events.iter().find_map(|e| match e {
+        IrStreamEvent::BlockStart {
+            index,
+            block: IrBlockMeta::ToolUse { name, .. },
+        } if name == "get_weather" => Some(*index),
+        _ => None,
+    });
+    let text_index = events.iter().find_map(|e| match e {
+        IrStreamEvent::BlockStart {
+            index,
+            block: IrBlockMeta::Text,
+        } => Some(*index),
+        _ => None,
+    });
+    let post_finish_tool_index = events.iter().rev().find_map(|e| match e {
+        IrStreamEvent::BlockStart {
+            index,
+            block: IrBlockMeta::ToolUse { name, .. },
+        } if name == "get_time" => Some(*index),
+        _ => None,
+    });
+
+    assert!(
+        post_finish_tool_index.is_some(),
+        "the post-finish functionCall must still open a block: {events:?}"
+    );
+    assert_ne!(
+        post_finish_tool_index, text_index,
+        "post-finish tool must not collide with text's index: post-finish={post_finish_tool_index:?} text={text_index:?}, events={events:?}"
+    );
+    assert_ne!(
+        post_finish_tool_index, pre_finish_tool_index,
+        "post-finish tool must not collide with the pre-finish tool's index: post-finish={post_finish_tool_index:?} pre-finish={pre_finish_tool_index:?}, events={events:?}"
+    );
+}
+
 /// Regression: a Gemini stream chunk with `candidateCount > 1` (multiple candidates each
 /// carrying their own `finishReason`) MUST still produce EXACTLY ONE terminal sequence —
 /// one MessageDelta and one MessageStop — not one per candidate. The reader previously looped

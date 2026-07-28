@@ -6288,7 +6288,8 @@ fn test_hosted_tools_dropped_cross_protocol() {
     );
 
     // Bedrock egress.
-    let bedrock = crate::proto::bedrock::BedrockWriter.write_request(&ir);
+    let bedrock_writer = crate::proto::bedrock::BedrockWriter;
+    let bedrock = bedrock_writer.write_request(&ir);
     assert!(
         !any_empty_name(&bedrock),
         "Bedrock egress must not emit an empty-name tool: {bedrock}"

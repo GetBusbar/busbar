@@ -824,9 +824,8 @@ impl ProtocolReader for GeminiReader {
                             // of Gemini's part ordering; the index is then stable for the stream.
                             if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
                                 if !text.is_empty() {
-                                    let offset = usize::from(state.reasoning_seen);
                                     let ti =
-                                        state.text_index.unwrap_or(offset + state.open_tools.len());
+                                        state.text_index.unwrap_or_else(|| state.claim_ir_index());
                                     if state.thinking_block_open {
                                         state.thinking_block_open = false;
                                         out.push(IrStreamEvent::BlockStop { index: 0 });
@@ -866,21 +865,28 @@ impl ProtocolReader for GeminiReader {
                                 if !name_val.is_empty()
                                     && state.open_tools.len() < MAX_GEMINI_TOOL_FRAMES
                                 {
-                                    // A tool block claims the next free IR index by order of first
-                                    // appearance: the count of tool blocks already opened, plus 1 iff
-                                    // the text block has ALREADY claimed a slot this stream
-                                    // (`text_index.is_some()`, a PERSISTENT marker — not the live
-                                    // `text_block_open` flag). Keying on the persistent marker keeps a
-                                    // tool-only stream contiguous from 0 while guaranteeing text and
-                                    // tools never collide on an index regardless of arrival order:
-                                    // tool-before-text → tool takes 0, text takes the next slot;
-                                    // text-before-tool → text takes 0, tools take 1.. . Recorded in
-                                    // `open_tools` so the finishReason handler emits a matching
-                                    // BlockStop for every tool block.
-                                    let offset = usize::from(state.reasoning_seen);
+                                    // A tool block claims the next free IR index from the MONOTONE
+                                    // counter, by order of first appearance — never reset for the
+                                    // life of the stream, so a slot claimed pre-terminal cannot be
+                                    // re-claimed by a block that arrives after a terminal path has
+                                    // run (the defect the sibling openai_chat reader had before this
+                                    // same fix; see `claim_ir_index`'s own docs). `text_base` is kept
+                                    // ONLY for `synth_tool_call_id` below (an id-derivation detail,
+                                    // not index arithmetic) — the ID space is unrelated to the IR
+                                    // index space. Recorded in `open_tools` so the finishReason
+                                    // handler emits a matching BlockStop for every tool block.
                                     let text_base = usize::from(state.text_index.is_some());
-                                    let ir_idx = offset + text_base + state.open_tools.len();
+                                    let ir_idx = state.claim_ir_index();
                                     state.open_tools.insert(ir_idx);
+
+                                    // Close a still-open thinking block first (the text-part arm
+                                    // does this too): otherwise the tool block at `ir_idx` opens
+                                    // while index 0 (thinking) is still open, and Anthropic's
+                                    // documented stream never has two content blocks open at once.
+                                    if state.thinking_block_open {
+                                        state.thinking_block_open = false;
+                                        out.push(IrStreamEvent::BlockStop { index: 0 });
+                                    }
 
                                     // A zero-arg Gemini `functionCall` either omits `args` or sends
                                     // `{}`. Default the MISSING case to an empty JSON OBJECT, not
@@ -933,12 +939,11 @@ impl ProtocolReader for GeminiReader {
             // block below. Without this arm a streamed Gemini citation was silently dropped.
             let citations = read_gemini_citations(candidate);
             if !citations.is_empty() {
-                // Offset by the thinking slot (index 0) when a reasoning block is open, exactly
-                // like the text-part arm — otherwise a citation/logprobs delta arriving before the
-                // first answer-text part opens a text block at index 0, colliding with the
-                // thinking block and corrupting cross-protocol block-index mapping.
-                let offset = usize::from(state.reasoning_seen);
-                let ti = state.text_index.unwrap_or(offset + state.open_tools.len());
+                // Claim the text block's index from the monotone counter (see `claim_ir_index`),
+                // exactly like the text-part arm — otherwise a citation/logprobs delta arriving
+                // before the first answer-text part could reuse an index another block already
+                // claimed, colliding and corrupting cross-protocol block-index mapping.
+                let ti = state.text_index.unwrap_or_else(|| state.claim_ir_index());
                 if !state.text_block_open {
                     // Close a still-open thinking block first (the text-part arm does this too);
                     // otherwise two blocks are open at once and the downstream translator sees an
@@ -967,12 +972,11 @@ impl ProtocolReader for GeminiReader {
             // stream can re-emit them as `choices[].logprobs.content[]`.
             let stream_logprobs = read_gemini_logprobs(candidate.get("logprobsResult"));
             if !stream_logprobs.is_empty() {
-                // Offset by the thinking slot (index 0) when a reasoning block is open, exactly
-                // like the text-part arm — otherwise a citation/logprobs delta arriving before the
-                // first answer-text part opens a text block at index 0, colliding with the
-                // thinking block and corrupting cross-protocol block-index mapping.
-                let offset = usize::from(state.reasoning_seen);
-                let ti = state.text_index.unwrap_or(offset + state.open_tools.len());
+                // Claim the text block's index from the monotone counter (see `claim_ir_index`),
+                // exactly like the text-part arm — otherwise a citation/logprobs delta arriving
+                // before the first answer-text part could reuse an index another block already
+                // claimed, colliding and corrupting cross-protocol block-index mapping.
+                let ti = state.text_index.unwrap_or_else(|| state.claim_ir_index());
                 if !state.text_block_open {
                     // Close a still-open thinking block first (the text-part arm does this too);
                     // otherwise two blocks are open at once and the downstream translator sees an
