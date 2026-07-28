@@ -457,24 +457,59 @@ const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
 /// Replay window (seconds, ~10 min) for the idempotency cache; stale entries are swept on use.
 const IDEMPOTENCY_TTL_SECS: u64 = 600;
 
-/// An in-flight idempotency RESERVATION. `create_key` inserts a `Null`-body sentinel under the
-/// cache lock the instant it decides to mint (atomic with the "already cached?" check), so a
-/// concurrent retry with the same `Idempotency-Key` sees the reservation and is rejected instead
-/// of double-minting. This guard clears that sentinel on drop UNLESS the mint committed — so a
-/// request that fails after reserving frees the key for a legitimate retry, while a successful
-/// mint (which replaced the sentinel with its real 201 body and disarmed the guard) keeps it.
+/// The three states an idempotency reservation's lifecycle actually has. A plain bool ("committed
+/// or not") conflated two meanings: "safe to clear because nothing irreversible ran" and "unsafe to
+/// clear because an uncancellable blocking task might already have committed" — the latter only
+/// applies once the mint has been handed to `spawn_blocking`/`config_transaction`'s blocking half,
+/// which (per `txn.rs`) keeps running to completion even after the handler future that awaits it is
+/// DROPPED (a client disconnect/timeout). Collapsing those two into one bool meant a disconnect
+/// mid-mint cleared the sentinel while the mint was still landing, so a client retry saw an empty
+/// slot and minted a SECOND key — the exact double-mint the reservation exists to prevent.
+#[derive(PartialEq, Eq)]
+enum IdemState {
+    /// Reserved, nothing irreversible has happened yet. A drop here MUST clear the sentinel — a
+    /// parse/validation refusal must not leave a stuck in-flight key.
+    Reserved,
+    /// The mint has been handed to the uncancellable blocking task. A drop here is a CLIENT
+    /// DISCONNECT, and the mint may already have committed — dropping the sentinel would let the
+    /// client's retry mint a SECOND key. Leave it; it expires with the 10-min window, and until
+    /// then a retry gets the honest 409 "already in flight".
+    InFlight,
+    /// The response was built and cached. Nothing to clear.
+    Committed,
+}
+
+/// An in-flight idempotency RESERVATION. `create_key`/`rotate_key` insert a `Null`-body sentinel
+/// under the cache lock the instant they decide to mint (atomic with the "already cached?" check),
+/// so a concurrent retry with the same `Idempotency-Key` sees the reservation and is rejected instead
+/// of double-minting. This guard clears that sentinel on drop only while [`IdemState::Reserved`] — see
+/// its variants for why the other two states must NOT clear on drop.
 struct IdemReservation {
     #[allow(clippy::type_complexity)]
     cache: std::sync::Arc<
         std::sync::Mutex<std::collections::HashMap<(String, String), (u64, serde_json::Value)>>,
     >,
     key: (String, String),
-    committed: bool,
+    state: IdemState,
+}
+
+impl IdemReservation {
+    /// Explicitly clear the sentinel from a POST-AWAIT failure exit that is one of the transaction's
+    /// OWN fail-closed outcomes (a store error, a cap rejection, a not-found) — never reached on
+    /// genuine cancellation, so we KNOW nothing committed and it is safe to free the key for retry
+    /// even though `state` is `InFlight` by this point.
+    fn clear(&mut self) {
+        let mut c = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        if matches!(c.get(&self.key), Some((_, v)) if v.is_null()) {
+            c.remove(&self.key);
+        }
+        self.state = IdemState::Committed; // nothing left for Drop to do
+    }
 }
 
 impl Drop for IdemReservation {
     fn drop(&mut self) {
-        if self.committed {
+        if self.state != IdemState::Reserved {
             return;
         }
         let mut c = self.cache.lock().unwrap_or_else(|e| e.into_inner());
@@ -598,7 +633,7 @@ pub(crate) async fn create_key(
     let mut idem_reservation = idem_ckey.as_ref().map(|ck| IdemReservation {
         cache: app.idempotency_cache.clone(),
         key: ck.clone(),
-        committed: false,
+        state: IdemState::Reserved,
     });
     let Some(gov) = &app.governance else {
         return disabled_write(who);
@@ -767,6 +802,12 @@ pub(crate) async fn create_key(
     let want_parent = req.parent.clone();
     let gov = gov.clone();
     let txn_actor = actor.clone();
+    // The mint is about to be handed to `config_transaction`'s uncancellable blocking half — from
+    // here on, a dropped handler future (client disconnect) must NOT clear the sentinel, since the
+    // mint may already be landing. See `IdemState::InFlight`.
+    if let Some(r) = idem_reservation.as_mut() {
+        r.state = IdemState::InFlight;
+    }
     let res = crate::admin::v1::json::config_transaction(&handle, move |txn| {
         let current = txn.app();
         // MINT-TIME group resolution (self-service D2): a bound `group` must exist NOW — a dangling
@@ -882,6 +923,12 @@ pub(crate) async fn create_key(
         // neither carries a `Cond`, so the envelope stays untagged.
         Err(e) => {
             record_key_refusal(who);
+            // The transaction's OWN fail-closed outcome — reached only when the `.await` completed
+            // normally, never on genuine cancellation — so nothing committed and the reservation is
+            // safe to free for a legitimate retry.
+            if let Some(r) = idem_reservation.as_mut() {
+                r.clear();
+            }
             return crate::admin::v1::json::err_json(&e);
         }
     };
@@ -891,6 +938,12 @@ pub(crate) async fn create_key(
     // committed config change ended up with no trail.
     let (key, token, aws) = match minted {
         MintOutcome::AtCap { group, n, cap } => {
+            // Same reasoning as the `Err(e)` arm above: the transaction committed (if it
+            // auto-provisioned) but the mint itself was refused by the cap check — a fail-closed
+            // outcome of the completed await, not a cancellation. Safe to free the reservation.
+            if let Some(r) = idem_reservation.as_mut() {
+                r.clear();
+            }
             return key_err(
                 who,
                 &AdminError::Conflict(format!(
@@ -936,7 +989,7 @@ pub(crate) async fn create_key(
             .insert(ck.clone(), (crate::store::now(), body.clone()));
     }
     if let Some(g) = idem_reservation.as_mut() {
-        g.committed = true;
+        g.state = IdemState::Committed;
     }
     json_response(StatusCode::CREATED, body)
 }
@@ -1212,7 +1265,7 @@ pub(crate) async fn list_keys(
     let limit = match q.get("limit") {
         None => crate::admin::v1::contract::LIST_LIMIT_DEFAULT,
         Some(v) => match v.parse::<usize>() {
-            Ok(n) => n.min(crate::admin::v1::contract::LIST_LIMIT_MAX),
+            Ok(n) => n.clamp(1, crate::admin::v1::contract::LIST_LIMIT_MAX),
             Err(_) => {
                 return key_err(
                     KeyAudit::Read,
@@ -1344,7 +1397,7 @@ pub(crate) async fn rotate_key(
     let mut idem_reservation = idem_ckey.as_ref().map(|ck| IdemReservation {
         cache: app.idempotency_cache.clone(),
         key: ck.clone(),
-        committed: false,
+        state: IdemState::Reserved,
     });
     let Some(gov) = &app.governance else {
         return disabled_write(who);
@@ -1359,6 +1412,11 @@ pub(crate) async fn rotate_key(
     // The re-minted signed token gets the SAME default lifetime a mint with no `expires_in` /
     // `expires_at` would receive (rotate takes no body today).
     let exp = crate::store::now().saturating_add(DEFAULT_KEY_TTL_SECS);
+    // The rotate is about to be handed to `spawn_blocking`'s uncancellable task — from here on, a
+    // dropped handler future (client disconnect) must NOT clear the sentinel. See `IdemState::InFlight`.
+    if let Some(r) = idem_reservation.as_mut() {
+        r.state = IdemState::InFlight;
+    }
     let res = tokio::task::spawn_blocking(move || {
         let _existence_guard = EXISTENCE_GATE.lock().unwrap_or_else(|e| e.into_inner());
         gov.rotate_key(&gid, exp)
@@ -1388,14 +1446,32 @@ pub(crate) async fn rotate_key(
                     .unwrap_or_else(|e| e.into_inner());
                 cache.insert(ck.clone(), (crate::store::now(), body.clone()));
                 if let Some(r) = idem_reservation.as_mut() {
-                    r.committed = true;
+                    r.state = IdemState::Committed;
                 }
             }
             json_response(StatusCode::OK, body)
         }
-        Ok(Ok(None)) => key_err(who, &AdminError::not_found("key"), Cond::UnknownResource),
-        Ok(Err(e)) => internal_error("rotate_key", &e),
-        Err(e) => join_error("rotate_key", &e),
+        // All three arms below are the transaction's OWN fail-closed outcomes, reached only after
+        // the `.await` completed normally (never on genuine cancellation) — safe to free the
+        // reservation for a legitimate retry.
+        Ok(Ok(None)) => {
+            if let Some(r) = idem_reservation.as_mut() {
+                r.clear();
+            }
+            key_err(who, &AdminError::not_found("key"), Cond::UnknownResource)
+        }
+        Ok(Err(e)) => {
+            if let Some(r) = idem_reservation.as_mut() {
+                r.clear();
+            }
+            internal_error("rotate_key", &e)
+        }
+        Err(e) => {
+            if let Some(r) = idem_reservation.as_mut() {
+                r.clear();
+            }
+            join_error("rotate_key", &e)
+        }
     }
 }
 

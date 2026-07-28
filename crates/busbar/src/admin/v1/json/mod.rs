@@ -347,6 +347,10 @@ fn cursor_offset(q: &std::collections::HashMap<String, String>) -> Result<usize,
 /// Given a slice fetched with `limit + 1` starting at `start`, trim it IN PLACE to `limit` and return
 /// the next opaque cursor iff the probe row existed (i.e. a further page remains). The one seam that
 /// gives keys/audit/versions an identical `{items, next_cursor}` continuation.
+///
+/// PRECONDITION: `limit >= 1`. At `limit == 0` the cursor would encode `start + 0 == start` — a
+/// cursor pointing at the exact offset it was just served from, so a cursor-following client loops
+/// forever. Every caller clamps `limit` to at least 1 before reaching here.
 fn page_cursor<T>(items: &mut Vec<T>, start: usize, limit: usize) -> Option<String> {
     if items.len() > limit {
         items.truncate(limit);
