@@ -976,11 +976,15 @@ pub(crate) async fn handle_fallback_pool(
             );
         }
 
-        let Some((i, permit)) =
+        let Some((i, permit, _probe_epoch)) =
             // Fallback-pool selection uses plain SWRR by design: routing POLICY applies to the PRIMARY
             // pool (where it shapes the normal-path lane choice); the fallback pool is the
             // already-degraded overflow path, so it deliberately selects with the unchanged inline SWRR
             // (`policy_order == None`) rather than re-running a policy over the spillover candidates.
+            // The epoch is unused here: this function delegates to `forward_once` (a separate
+            // single-attempt call), whose own `release_probe_in` sites are unowned by design — each
+            // is preceded by an unowned `record_transient_in` that already transitions the cell, so
+            // switching those to owned would change nothing observable (see M6's audit notes).
             pick_among(&app, &fallback_cands, request_ctx, None, pool_name, None).await
         else {
             // Fallback pool itself exhausted — consult ITS on_exhausted config (multi-level

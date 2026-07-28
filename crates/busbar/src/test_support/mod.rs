@@ -93,6 +93,24 @@ pub(crate) enum MockResponse {
         ok_frames: Vec<(&'static str, Vec<u8>)>,
         amzn_request_id: &'static str,
     },
+    /// A non-2xx error response whose BODY delivery is deterministically gated on a
+    /// `tokio::sync::Notify`, rather than the `SseTransportError`/`EventStreamTransportError` idiom's
+    /// fixed `tokio::time::sleep` — a real-clock delay is a race by construction (this crate's own
+    /// comments on those variants note fast-localhost races), which is unacceptable for a test that
+    /// needs to land a second, direct store mutation deterministically WHILE the first request is
+    /// still parked reading this body. On first poll of the body stream this notifies `started` (so
+    /// the test knows the client has begun reading and `read_capped_body`'s `.await` is now parked),
+    /// then awaits `release` before yielding the body once and ending the stream cleanly. Used by
+    /// the M6 (owned single-flight-probe release) proof: the ONE real request that must park mid-body
+    /// read; the "second probe" side is simulated directly on the store, copied from
+    /// `probe_guard_tests.rs`'s `stalled_guard_does_not_release_a_newer_probe` pattern, rather than
+    /// driving a second concurrent HTTP dispatch through the mock server.
+    Gated {
+        status: StatusCode,
+        body: Value,
+        started: std::sync::Arc<tokio::sync::Notify>,
+        release: std::sync::Arc<tokio::sync::Notify>,
+    },
 }
 
 impl Default for MockResponse {
@@ -436,6 +454,25 @@ async fn mock_handler(
                 .status(StatusCode::OK)
                 .header(header::CONTENT_TYPE, "application/vnd.amazon.eventstream")
                 .header("x-amzn-requestid", amzn_request_id)
+                .body(Body::from_stream(s))
+                .unwrap()
+        }
+        MockResponse::Gated {
+            status,
+            body,
+            started,
+            release,
+        } => {
+            let bytes = Bytes::from(body.to_string());
+            let s = stream::unfold(Some((bytes, started, release)), |state| async move {
+                let (bytes, started, release) = state?;
+                started.notify_one();
+                release.notified().await;
+                Some((Ok::<Bytes, std::io::Error>(bytes), None))
+            });
+            Response::builder()
+                .status(status)
+                .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from_stream(s))
                 .unwrap()
         }
