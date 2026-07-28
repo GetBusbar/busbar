@@ -204,11 +204,9 @@ HTTP POSTs; on `kind: hook` plugins they ride `busbar_call` with the same JSON p
   ack = nothing commits (the operator gets a 400); on the connection preamble, no exact ack =
   the connection is not used.
 - **`describe`** (`{"describe": true}`): reply with your self-description ENVELOPE:
-  `{"schema": <settings JSON Schema>, "dashboard"?: {"widgets": [...]}}`. Busbar extracts `schema`
-  and serves it at `GET /api/v1/admin/hooks/{name}/schema`; `dashboard` is your DECLARED widget
-  layout (`{"metric", "label", "viz", "unit"?, "max"?}` per widget; values come from
-  `status.metrics`), so one declaration drives both the config form and the plugin dashboard.
-  Both members optional; don't answer (or `{}`) and the API reports `schema: null`.
+  `{"schema": <settings JSON Schema>}`. Busbar extracts `schema` and serves it at
+  `GET /api/v1/admin/hooks/{name}/schema`. The member is optional; don't answer (or `{}`) and the
+  API reports `schema: null`.
 - **`status`** (`{"status": true}`): the control-plane read: reply your **observed** state,
   `{"status": {"settings_version": N, "settings": {...}, "metrics": [ ... ]}}`, and Busbar surfaces
   it at `GET /api/v1/admin/hooks/{name}/status` with a desired-vs-reported **drift** verdict. The

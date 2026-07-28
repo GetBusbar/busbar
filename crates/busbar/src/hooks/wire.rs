@@ -183,9 +183,6 @@ pub(crate) struct HookContext<'a> {
 pub(crate) struct DescribeReply {
     #[serde(default)]
     pub(crate) schema: Option<serde_json::Value>,
-    #[serde(default)]
-    #[allow(dead_code)] // reserved: consumed by the plugin-dashboard read (post-1.3 additive)
-    pub(crate) dashboard: Option<serde_json::Value>,
 }
 
 /// One hook-reported metric entry — a Prometheus/OpenMetrics-shaped observation (parsed liberally;
@@ -430,17 +427,16 @@ pub(crate) struct HookResponse {
     /// RESTRICT the surviving candidate set to members carrying ANY of these tags
     /// (`{"restrict": {"tags_any": [...]}}`). A compliance gate ("only BAA-covered lanes"). Untyped +
     /// FAIL-CLOSED like `reject`: a malformed restrict must fall to the gate's `on_error`/`on_empty`,
-    /// never silently allow-all. Parsed by `parse_restrict`. Wired into the two-phase decision seam in
-    /// a later slice-4 step; the reply contract + parser land here first (tested in isolation).
+    /// never silently allow-all. Parsed by `parse_restrict`, folded into `RoutingDecision::Restrict`
+    /// by `normalize`, and re-applied on every downstream failover hop by
+    /// `proxy::select::enforce_restricts`.
     #[serde(default)]
     pub(crate) restrict: Option<serde_json::Value>,
     /// REWRITE the request body (`{"rewrite": {"messages": [...], "tools": [...]}}`) — the
     /// compression/redaction arm (Headroom). Untyped + FAIL-CLOSED: a malformed/oversize rewrite must
     /// proceed with the UNMODIFIED body, never a corrupted one. Requires the hook's `prompt: rw` grant.
-    /// Parsed by `parse_rewrite`. Applied by the priority-ordered transform pass wired in a later
-    /// slice-4 step; the reply contract + parser land here first (tested in isolation).
+    /// Parsed by `parse_rewrite` and applied by the priority-ordered transform pass at the `parsed.rewrite` read below.
     #[serde(default)]
-    #[allow(dead_code)]
     pub(crate) rewrite: Option<serde_json::Value>,
 }
 
