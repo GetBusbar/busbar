@@ -1769,7 +1769,7 @@ async fn test_write_behind_flush_serializes_and_counts_exactly_once() {
         assert!(gov.try_admit(&cost, &key, "", at).is_ok());
     }
     let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
-    crate::governance::spawn_budget_flusher(gov.clone(), shutdown_rx);
+    let flusher = crate::governance::spawn_budget_flusher(gov.clone(), shutdown_rx);
 
     // Wait until the first flush is paused inside add_usage.
     tokio::task::spawn_blocking(move || entered_rx.recv().unwrap())
@@ -1780,16 +1780,18 @@ async fn test_write_behind_flush_serializes_and_counts_exactly_once() {
     assert!(gov.try_admit(&cost, &key, "", at).is_ok());
     assert!(gov.try_admit(&cost, &key, "", at).is_ok());
 
-    // Give the flusher time to fire (and SKIP) several overlapping ticks while the first blocks.
-    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    // Yield so any tick that fires while the first flush is pinned takes its SKIP (try_lock) arm
+    // rather than racing it — not asserting how many ticks fired/skipped, only exactly-once below.
+    tokio::task::yield_now().await;
 
     // Release the first (older) flush; it completes writing its 3-request delta.
     release_tx.send(()).unwrap();
 
-    // Shut down: the final flush WAITS for the in-flight flush to drain, then flushes the
-    // remaining 2-request delta.
+    // Shut down and JOIN the flusher's own task instead of guessing a wall-clock duration for its
+    // final flush — this makes the wait for "the final flush COMPLETED" exact rather than a guess
+    // that can come up short under a loaded runner (the final flush is spawn_blocking work).
     shutdown_tx.send(()).unwrap();
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    flusher.await.unwrap();
 
     // The durable ledger holds EXACTLY 5 requests: additive deltas, serialized, exactly once.
     let durable = store.inner.get_usage("k1", 0).unwrap().requests;

@@ -879,7 +879,7 @@ pub(crate) use busbar_store_memory::MemoryStore;
 pub(crate) fn spawn_budget_flusher(
     gov: std::sync::Arc<GovState>,
     mut shutdown: tokio::sync::broadcast::Receiver<()>,
-) {
+) -> tokio::task::JoinHandle<()> {
     let interval = std::time::Duration::from_millis(crate::limits::usage_flush_interval_ms());
     // SERIALIZE flushes: `flush_budgets` snapshots each dirty cell's DELTA against its acked
     // baseline and `add_usage`-accumulates it, advancing the baseline only on success. If a slow
@@ -943,7 +943,7 @@ pub(crate) fn spawn_budget_flusher(
                 }
             }
         }
-    });
+    })
 }
 
 #[cfg(test)]
