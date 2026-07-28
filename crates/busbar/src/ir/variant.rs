@@ -7,10 +7,8 @@
 //! middle sees; each exhaustive `match` is the removability / symmetry gate — adding the next
 //! operation (an 8th, past the current seven Chat..Rerank) is a compile error at every one.
 //!
-//! `affinity_key` and `unmappable_for` (B1) land with the seam wiring (P4/P5), where they can be
-//! verified against the harness for chat-byte-identical behavior; they are intentionally not stubbed
-//! with guessed behavior here.
-#![allow(dead_code)]
+//! `affinity_key` and cross-protocol drop accounting are not built in 1.5.0 — they were never wired
+//! past the request/response IR split done here.
 
 use super::audio::{SpeechReq, SpeechResp, TranscriptionReq, TranscriptionResp};
 use super::embeddings::{EmbeddingsReq, EmbeddingsResp};
@@ -33,7 +31,10 @@ pub(crate) enum IrReq {
 }
 
 impl IrReq {
-    /// Which operation this is (the coarse tag the middle carries).
+    /// Which operation this is (the coarse tag the middle carries). Called only from this module's
+    /// own tests today; kept for the exhaustive-match compile-time guarantee (adding an `IrReq`
+    /// variant without a routing story is a compile error here).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn operation(&self) -> Operation {
         match self {
             IrReq::Chat(_) => Operation::Chat,
@@ -47,6 +48,8 @@ impl IrReq {
     }
 
     /// Did the caller ask to stream? Only chat and audio can (1.2); the JSON ops never stream.
+    /// Called only from this module's own tests today; kept for the exhaustive-match guarantee.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn wants_stream(&self) -> bool {
         match self {
             IrReq::Chat(r) => r.stream,
@@ -359,6 +362,8 @@ impl IrResp {
         }
     }
 
+    /// Called only from this module's own tests today; kept for the exhaustive-match guarantee.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn operation(&self) -> Operation {
         match self {
             IrResp::Chat(_) => Operation::Chat,

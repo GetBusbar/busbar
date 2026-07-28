@@ -531,7 +531,14 @@ impl OperationHandler for OpenAiEmbeddings {
         let input = match &r.input {
             EmbInput::Text(v) if v.len() == 1 => json!(v[0]),
             EmbInput::Text(v) => json!(v),
-            _ => json!([]),
+            other => {
+                tracing::warn!(
+                    dropped = 1,
+                    "openai embeddings input is text-only here; dropping a non-text embeddings \
+                     input ({other:?} kind) with no analog"
+                );
+                json!([])
+            }
         };
         let mut body = json!({ "model": r.model, "input": input });
         if let Some(d) = r.dimensions {
@@ -1031,6 +1038,30 @@ mod tests {
         let out2 = OpenAiEmbeddings.write_request(&ir2);
         let v2: serde_json::Value = serde_json::from_slice(&out2).unwrap();
         assert!(v2.get("encoding_format").is_none());
+    }
+
+    #[test]
+    fn embeddings_write_request_warns_on_dropped_non_text_input() {
+        use crate::test_support::warn_capture::WarnCapture;
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        let ir = crate::ir::variant::IrReq::Embeddings(crate::ir::embeddings::EmbeddingsReq {
+            input: crate::ir::embeddings::EmbInput::Tokens(vec![vec![1, 2, 3]]),
+            ..Default::default()
+        });
+        let cap = WarnCapture::default();
+        let subscriber = tracing_subscriber::registry().with(cap.clone());
+        let out =
+            tracing::subscriber::with_default(subscriber, || OpenAiEmbeddings.write_request(&ir));
+
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["input"], serde_json::json!([]));
+
+        assert!(
+            cap.contains("dropping a non-text embeddings input"),
+            "a dropped non-text embeddings input must warn: {:?}",
+            cap.messages()
+        );
     }
 
     #[test]

@@ -8,7 +8,6 @@
 //! Losslessness crux (from the provider-doc review): a single response can carry MULTIPLE typed
 //! vectors AT ONCE (Cohere/Titan return float AND int8/binary), so vectors are keyed BY ENCODING in
 //! [`EmbeddingItem::vectors`] — a flat `Vec<f32>` would silently drop the others.
-#![allow(dead_code)]
 
 use crate::billing::{Billing, TokenUsage};
 use crate::lossless::SourceScopedExtra;
@@ -39,7 +38,13 @@ pub(crate) enum VectorData {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum EmbInput {
     Text(Vec<String>),
+    /// Cohere/Gemini/Bedrock accept token-array input; no 1.5.0 ingress reader constructs this
+    /// variant yet, but the superset IR must be able to express it once one does.
+    #[allow(dead_code)]
     Tokens(Vec<Vec<u32>>),
+    /// Cohere/Gemini/Bedrock accept image input for embedding; no 1.5.0 ingress reader constructs
+    /// this variant yet, but the superset IR must be able to express it once one does.
+    #[allow(dead_code)]
     Images(Vec<String>), // data-URI / base64 refs
 }
 

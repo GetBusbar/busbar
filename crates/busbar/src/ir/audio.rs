@@ -10,7 +10,6 @@
 //! Both share the [`crate::media::MediaBlob`] payload (audio in / audio out). Split request/response
 //! per. Because audio billing is polymorphic per model, the response stores `Option<Billing>`
 //! directly rather than a token struct.
-#![allow(dead_code)]
 
 use crate::billing::Billing;
 use crate::lossless::SourceScopedExtra;
@@ -19,7 +18,12 @@ use crate::media::MediaBlob;
 /// Timestamp detail requested on a transcription (whisper-1 only; requires verbose_json).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TimestampGranularity {
+    /// whisper-1's `timestamp_granularities` are modelled by the superset IR; no 1.5.0
+    /// transcription reader parses the parameter, so nothing constructs this variant yet.
+    #[allow(dead_code)]
     Word,
+    /// See `Word` above.
+    #[allow(dead_code)]
     Segment,
 }
 
