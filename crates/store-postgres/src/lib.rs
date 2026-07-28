@@ -550,19 +550,20 @@ impl Store for PostgresStore {
             clamp(d.tokens_cache_read),
             clamp(d.tokens_cache_creation),
         );
+        let requests = clamp(d.requests);
         self.lock()
             .execute(
                 "INSERT INTO usage_metering (key_id, bucket, model, provider,
                      tokens_input, tokens_output, tokens_cache_read, tokens_cache_creation, requests)
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,1)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
                  ON CONFLICT (key_id, bucket, model, provider) DO UPDATE SET
                      tokens_input          = usage_metering.tokens_input + EXCLUDED.tokens_input,
                      tokens_output         = usage_metering.tokens_output + EXCLUDED.tokens_output,
                      tokens_cache_read     = usage_metering.tokens_cache_read + EXCLUDED.tokens_cache_read,
                      tokens_cache_creation = usage_metering.tokens_cache_creation + EXCLUDED.tokens_cache_creation,
-                     requests              = usage_metering.requests + 1",
+                     requests              = usage_metering.requests + EXCLUDED.requests",
                 &[
-                    &d.key_id, &bucket, &d.model, &d.provider, &ti, &to, &tcr, &tcc,
+                    &d.key_id, &bucket, &d.model, &d.provider, &ti, &to, &tcr, &tcc, &requests,
                 ],
             )
             .store()?;
@@ -974,6 +975,7 @@ mod tests {
             tokens_output: to,
             tokens_cache_read: tcr,
             tokens_cache_creation: tcc,
+            requests: 1,
         };
         store.add_metering(&delta(10, 5, 2, 1)).unwrap();
         store.add_metering(&delta(30, 15, 4, 3)).unwrap();

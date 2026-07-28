@@ -476,6 +476,14 @@ pub(crate) struct GovState {
     /// stores raw tokens and spend derives at read time, so there is no remainder to carry and no
     /// O(n) carry sweep to amortize.
     budget: Sharded<BudgetCell>,
+    /// Write-behind ACCUMULATOR for metering rows, keyed by the stores' own upsert key
+    /// `(key_id, bucket, model, provider)`. `record_metering` is a hot-path sync fn (no await,
+    /// called from the response tap) so this is a `std::sync::Mutex`, not a tokio one — matches
+    /// `flush_metering`, which runs inside `spawn_blocking` and also never awaits. `flush_metering`
+    /// DRAINS this map (not a baseline like `budget`): metering cells are authoritative for
+    /// nothing — nothing enforces against them, the store is the only consumer — so there is no
+    /// running total to protect and a drained-empty entry needs no reaper or growth cap.
+    pending_metering: std::sync::Mutex<HashMap<(String, u64, String, String), MeterCounts>>,
     /// The busbar SIGNING material (1.5.0, S1/S2) — the mint-side signer paired with the
     /// verify-side public keyset, held together so they can never drift. `Some` once a signing key
     /// is resolved/generated at boot; `None` in the (test) path that constructs GovState without
@@ -823,6 +831,17 @@ pub(crate) use busbar_api::UsageLedger;
 /// per-model aggregation ACROSS keys has one well-defined time base.
 pub(crate) const METERING_BUCKET_SECS: u64 = 86_400;
 
+/// One `pending_metering` entry: the same five counters `MeteringDelta` carries, accumulated
+/// in-memory across every `record_metering` call that lands on this key before the next flush.
+#[derive(Default, Clone, Copy)]
+pub(crate) struct MeterCounts {
+    pub(crate) requests: u64,
+    pub(crate) tokens_input: u64,
+    pub(crate) tokens_output: u64,
+    pub(crate) tokens_cache_read: u64,
+    pub(crate) tokens_cache_creation: u64,
+}
+
 /// Floor an epoch to its UTC-day metering bucket start.
 pub(crate) fn metering_bucket(now: u64) -> u64 {
     now - (now % METERING_BUCKET_SECS)
@@ -847,14 +866,14 @@ impl<T> IntoStoreResult<T> for Result<T, getrandom::Error> {
 // crate::main's store selection + busbar-plugin-loader).
 pub(crate) use busbar_store_memory::MemoryStore;
 
-/// The write-behind budget flusher: on a fixed cadence (and once more on graceful shutdown) push the
-/// dirty in-memory budget cells to the durable store off the request hot path. Mirrors the D3
-/// `state_persist::spawn_snapshotter` shape — a spawned loop that ticks, does the durable write, and
-/// runs one FINAL flush on the shutdown signal so a graceful stop loses nothing. The in-memory cells
-/// stay AUTHORITATIVE for enforcement; this only keeps SQLite eventually-consistent for restart
-/// crash-recovery (`hydrate_budgets`) and the historical/telemetry reads. `flush_budgets` is
-/// best-effort and re-marks a cell dirty on a store error, so a transient write failure is retried on
-/// the next tick rather than lost.
+/// The write-behind flusher: on a fixed cadence (and once more on graceful shutdown) pushes both the
+/// dirty in-memory budget cells AND the accumulated `pending_metering` rows to the durable store off
+/// the request hot path. Mirrors the D3 `state_persist::spawn_snapshotter` shape — a spawned loop
+/// that ticks, does the durable write, and runs one FINAL flush on the shutdown signal so a graceful
+/// stop loses nothing. The in-memory budget cells stay AUTHORITATIVE for enforcement; metering cells
+/// are authoritative for nothing (the store is their only consumer). Both `flush_budgets` and
+/// `flush_metering` are best-effort and re-queue their unwritten data on a store error, so a
+/// transient write failure is retried on the next tick rather than lost.
 pub(crate) fn spawn_budget_flusher(
     gov: std::sync::Arc<GovState>,
     mut shutdown: tokio::sync::broadcast::Receiver<()>,
@@ -891,6 +910,7 @@ pub(crate) fn spawn_budget_flusher(
                     let gov = gov.clone();
                     tokio::task::spawn_blocking(move || {
                         gov.flush_budgets();
+                        gov.flush_metering();
                         drop(guard);
                     });
                 }
@@ -907,6 +927,7 @@ pub(crate) fn spawn_budget_flusher(
                     let gov = gov.clone();
                     let _ = tokio::task::spawn_blocking(move || {
                         gov.flush_budgets();
+                        gov.flush_metering();
                         drop(guard);
                     })
                     .await;

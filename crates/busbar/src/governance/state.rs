@@ -44,6 +44,7 @@ impl GovState {
                     .map(|t| crate::sigv4::sha256_hex(t.as_bytes())),
             ),
             budget: Sharded::new(),
+            pending_metering: std::sync::Mutex::new(HashMap::new()),
             signing: RwLock::new(signer.map(|s| Arc::new(SigningMaterial::new(s)))),
             denylist,
             refresh_lock: std::sync::Mutex::new(()),
@@ -258,34 +259,6 @@ impl GovState {
         self.signing_material().map(|m| m.signer.kid().to_string())
     }
 
-    /// Run a best-effort, FIRE-AND-FORGET store write WITHOUT blocking the async executor thread.
-    ///
-    /// SINGLE OFFLOAD. The op is a SYNCHRONOUS store closure (it calls the sync `Store` trait methods,
-    /// which run the SQL inline via `*_inner` — NO nested `spawn_blocking`). When a runtime is present
-    /// we move it into ONE `tokio::task::spawn_blocking`: the blocking SQL runs on the blocking pool,
-    /// any error is logged (never propagated), and we return immediately (fire-and-forget). This is
-    /// deliberately NOT the `*_async` path: those methods are for the hot blocking-AWAIT gate and would
-    /// here cost a second task — a `tokio::spawn`ed future whose only job is to await a `spawn_blocking`
-    /// (two tasks + extra key-id allocs) — for no benefit, since a fire-and-forget caller never awaits
-    /// the result. Outside a runtime (unit tests that call the accounting methods directly) we run the
-    /// sync op INLINE on the calling thread, so behaviour stays observable synchronously.
-    pub(crate) fn offload_store_write<F>(&self, what: &'static str, key_id: &str, op: F)
-    where
-        F: FnOnce(&dyn Store) -> StoreResult<()> + Send + 'static,
-    {
-        let store = self.store.clone();
-        let key_id = key_id.to_string();
-        if tokio::runtime::Handle::try_current().is_ok() {
-            tokio::task::spawn_blocking(move || {
-                if let Err(e) = op(&*store) {
-                    tracing::warn!(key = %key_id, error = %e, "{what}");
-                }
-            });
-        } else if let Err(e) = op(&*store) {
-            tracing::warn!(key = %key_id, error = %e, "{what}");
-        }
-    }
-
     /// Accrue one completed response's TIER-TOKEN split under `model` to EVERY bucket in the key's
     /// enforcement chain (the key's own bucket + each ancestor budget group, each in ITS OWN
     /// `budget_period` window), plus the raw total to the TPM window. Called once per request at
@@ -369,7 +342,11 @@ impl GovState {
     /// cache-read / cache-creation — each prices differently) so a consumer with its own price
     /// catalog can reconstruct cost from the raw counts; busbar's derived spend is computed at read
     /// time. Zero-token responses still count the request (a flat-fee op is a request against a
-    /// model). Best-effort: the write is offloaded to the blocking pool and errors are logged.
+    /// model). WRITE-BEHIND: this only accumulates into `pending_metering` under a short-held
+    /// `std::sync::Mutex` — no store round-trip and no task spawn on this path. `flush_metering`
+    /// (ridden by the same 100ms-tick flusher that drains budgets) does the actual store write, so
+    /// a response is durably reflected within one `usage_flush_interval_ms` tick, not "eventually,
+    /// whenever the blocking pool gets to it".
     pub(crate) fn record_metering(
         &self,
         key_id: &str,
@@ -378,21 +355,96 @@ impl GovState {
         usage: Option<&crate::ir::IrUsage>,
         now: u64,
     ) {
-        let delta = MeteringDelta {
-            key_id: key_id.to_string(),
-            bucket: metering_bucket(now),
-            model: model.to_string(),
-            provider: provider.to_string(),
-            tokens_input: usage.map(|u| u.input_tokens).unwrap_or(0),
-            tokens_output: usage.map(|u| u.output_tokens).unwrap_or(0),
-            tokens_cache_read: usage.and_then(|u| u.cache_read_input_tokens).unwrap_or(0),
-            tokens_cache_creation: usage
+        let key = (
+            key_id.to_string(),
+            metering_bucket(now),
+            model.to_string(),
+            provider.to_string(),
+        );
+        let mut pending = self
+            .pending_metering
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let entry = pending.entry(key).or_default();
+        entry.requests = entry.requests.saturating_add(1);
+        entry.tokens_input = entry
+            .tokens_input
+            .saturating_add(usage.map(|u| u.input_tokens).unwrap_or(0));
+        entry.tokens_output = entry
+            .tokens_output
+            .saturating_add(usage.map(|u| u.output_tokens).unwrap_or(0));
+        entry.tokens_cache_read = entry
+            .tokens_cache_read
+            .saturating_add(usage.and_then(|u| u.cache_read_input_tokens).unwrap_or(0));
+        entry.tokens_cache_creation = entry.tokens_cache_creation.saturating_add(
+            usage
                 .and_then(|u| u.cache_creation_input_tokens)
                 .unwrap_or(0),
+        );
+    }
+
+    /// Drain `pending_metering` and write each entry to the store as one `MeteringDelta`. A DRAIN,
+    /// not a baseline (contrast `flush_budgets`): nothing in the tree enforces against a metering
+    /// cell, so there is no authoritative running total to protect, and a successfully-flushed
+    /// entry is simply gone — no reaper, no growth cap, cardinality bounded by arrival rate x the
+    /// flush interval. On a store error the entry's counts are merged BACK into whatever
+    /// accumulated meanwhile (saturating add, not overwrite) so the next tick retries the full
+    /// amount exactly once — this is what makes two concurrently-running flushes safe without a
+    /// gate: `std::mem::take` is an atomic full-map swap, so any two calls partition the arrivals
+    /// between them by construction and cannot double-send. Returns the number of deltas written.
+    pub(crate) fn flush_metering(&self) -> usize {
+        let taken: HashMap<(String, u64, String, String), MeterCounts> = {
+            let mut pending = self
+                .pending_metering
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            std::mem::take(&mut *pending)
         };
-        self.offload_store_write("metering record failed", key_id, move |s| {
-            s.add_metering(&delta)
-        });
+        let mut flushed = 0usize;
+        for ((key_id, bucket, model, provider), counts) in taken {
+            if counts.requests == 0
+                && counts.tokens_input == 0
+                && counts.tokens_output == 0
+                && counts.tokens_cache_read == 0
+                && counts.tokens_cache_creation == 0
+            {
+                continue;
+            }
+            let delta = MeteringDelta {
+                key_id: key_id.clone(),
+                bucket,
+                model: model.clone(),
+                provider: provider.clone(),
+                tokens_input: counts.tokens_input,
+                tokens_output: counts.tokens_output,
+                tokens_cache_read: counts.tokens_cache_read,
+                tokens_cache_creation: counts.tokens_cache_creation,
+                requests: counts.requests,
+            };
+            match self.store.add_metering(&delta) {
+                Ok(()) => flushed += 1,
+                Err(e) => {
+                    tracing::warn!(key = %key_id, error = %e, "metering flush failed; will retry next tick");
+                    let mut pending = self
+                        .pending_metering
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    let entry = pending
+                        .entry((key_id, bucket, model, provider))
+                        .or_default();
+                    entry.requests = entry.requests.saturating_add(counts.requests);
+                    entry.tokens_input = entry.tokens_input.saturating_add(counts.tokens_input);
+                    entry.tokens_output = entry.tokens_output.saturating_add(counts.tokens_output);
+                    entry.tokens_cache_read = entry
+                        .tokens_cache_read
+                        .saturating_add(counts.tokens_cache_read);
+                    entry.tokens_cache_creation = entry
+                        .tokens_cache_creation
+                        .saturating_add(counts.tokens_cache_creation);
+                }
+            }
+        }
+        flushed
     }
 
     /// Every metering row for `bucket` (a [`metering_bucket`] day start) — the raw material of the

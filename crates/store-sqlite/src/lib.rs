@@ -350,13 +350,13 @@ impl SqliteStore {
         conn.execute(
             "INSERT INTO usage_metering (key_id, bucket, model, provider,
                  tokens_input, tokens_output, tokens_cache_read, tokens_cache_creation, requests)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,1)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
              ON CONFLICT(key_id, bucket, model, provider) DO UPDATE SET
                  tokens_input          = tokens_input + excluded.tokens_input,
                  tokens_output         = tokens_output + excluded.tokens_output,
                  tokens_cache_read     = tokens_cache_read + excluded.tokens_cache_read,
                  tokens_cache_creation = tokens_cache_creation + excluded.tokens_cache_creation,
-                 requests              = requests + 1",
+                 requests              = requests + excluded.requests",
             params![
                 d.key_id,
                 d.bucket as i64,
@@ -366,6 +366,7 @@ impl SqliteStore {
                 i64::try_from(d.tokens_output).unwrap_or(i64::MAX),
                 i64::try_from(d.tokens_cache_read).unwrap_or(i64::MAX),
                 i64::try_from(d.tokens_cache_creation).unwrap_or(i64::MAX),
+                i64::try_from(d.requests).unwrap_or(i64::MAX),
             ],
         )
         .store()?;

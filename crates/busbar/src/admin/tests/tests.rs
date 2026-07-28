@@ -599,20 +599,12 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
         cache_read_input_tokens: Some(100),
         cache_creation_input_tokens: None,
     };
-    // On a runtime `record_metering` offloads (fire-and-forget) — run the setup writes on a
-    // plain thread (no tokio context → the write happens inline) and join, so the GET below
-    // deterministically sees them.
-    {
-        let gov = gov.clone();
-        let key_id = minted.id.clone();
-        std::thread::spawn(move || {
-            gov.record_metering(&key_id, "gpt-x", "openai", Some(&usage), now);
-            gov.record_metering(&key_id, "gpt-x", "openai", Some(&usage), now);
-            gov.record_metering(&key_id, "claude-z", "anthropic", None, now);
-        })
-        .join()
-        .unwrap();
-    }
+    // `record_metering` only accumulates into `pending_metering` (write-behind); an explicit
+    // `flush_metering()` is required so the GET below deterministically sees them in the store.
+    gov.record_metering(&minted.id, "gpt-x", "openai", Some(&usage), now);
+    gov.record_metering(&minted.id, "gpt-x", "openai", Some(&usage), now);
+    gov.record_metering(&minted.id, "claude-z", "anthropic", None, now);
+    gov.flush_metering();
     let app = TestApp::new().governance(gov).cost(cost).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
