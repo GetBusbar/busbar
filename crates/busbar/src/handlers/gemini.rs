@@ -547,7 +547,14 @@ impl OperationHandler for GeminiEmbeddings {
                 }
                 v.first().cloned().unwrap_or_default()
             }
-            _ => String::new(),
+            other => {
+                tracing::warn!(
+                    dropped = 1,
+                    "Gemini :embedContent takes text input only; dropping a non-text embeddings \
+                     input ({other:?} kind) with no analog"
+                );
+                String::new()
+            }
         };
         // Carry the retrieval/shape controls the reader captures — Gemini `:embedContent` supports
         // them natively. Dropping `outputDimensionality` returned full-width vectors instead of the
@@ -838,6 +845,29 @@ mod tests {
         assert_eq!(v["outputDimensionality"], 256);
         assert_eq!(v["taskType"], "RETRIEVAL_DOCUMENT");
         assert_eq!(v["title"], "doc");
+    }
+
+    #[test]
+    fn embeddings_write_request_warns_on_dropped_non_text_input() {
+        use crate::test_support::warn_capture::WarnCapture;
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        let ir = IrReq::Embeddings(crate::ir::embeddings::EmbeddingsReq {
+            input: EmbInput::Images(vec!["data:image/png;base64,AA==".into()]),
+            ..Default::default()
+        });
+        let cap = WarnCapture::default();
+        let subscriber = tracing_subscriber::registry().with(cap.clone());
+        let out = tracing::subscriber::with_default(subscriber, || EMB.write_request(&ir));
+
+        let v: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["content"]["parts"][0]["text"], json!(""));
+
+        assert!(
+            cap.contains("dropping a non-text embeddings input"),
+            "a dropped non-text embeddings input must warn: {:?}",
+            cap.messages()
+        );
     }
 
     #[test]

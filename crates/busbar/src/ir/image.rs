@@ -10,7 +10,6 @@
 //! (b64 AND url may coexist). Common cross-provider fields are typed; provider-unique knobs (Titan
 //! `controlMode`, SDXL `sampler`/`clip_guidance_preset`, per-prompt weights…) ride source-scoped
 //! `extra`. Billing: `Tokens` for gpt-image-1/Gemini, else `Billing::Images` (per-image, no usage body).
-#![allow(dead_code)]
 
 use crate::billing::{Billing, TokenUsage};
 use crate::lossless::SourceScopedExtra;
@@ -21,7 +20,13 @@ use crate::media::ImageOutput;
 pub(crate) enum ImageOp {
     #[default]
     Generate,
+    /// No 1.5.0 egress writer emits anything but `/v1/images/generations`, so nothing constructs
+    /// this variant yet; kept because the superset IR must be able to express an edit request.
+    #[allow(dead_code)]
     Edit,
+    /// No 1.5.0 egress writer emits anything but `/v1/images/generations`, so nothing constructs
+    /// this variant in production yet; kept for the same reason as `Edit`.
+    #[cfg_attr(not(test), allow(dead_code))]
     Variation,
 }
 

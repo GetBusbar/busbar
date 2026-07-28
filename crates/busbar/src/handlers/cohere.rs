@@ -173,7 +173,14 @@ impl OperationHandler for CohereEmbeddings {
         };
         let texts = match &r.input {
             EmbInput::Text(v) => v.clone(),
-            _ => Vec::new(),
+            other => {
+                tracing::warn!(
+                    dropped = 1,
+                    "Cohere embeddings input is text-only here; dropping a non-text embeddings \
+                     input ({other:?} kind) with no analog"
+                );
+                Vec::new()
+            }
         };
         let input_type = r
             .input_type
@@ -578,6 +585,31 @@ mod rerank_tests {
         let out = CohereEmbeddings.write_request(&ir);
         let v: Value = serde_json::from_slice(&out).unwrap();
         assert_eq!(v["embedding_types"], json!(["float", "base64"]));
+    }
+
+    #[test]
+    fn embeddings_write_request_warns_on_dropped_non_text_input() {
+        use crate::ir::embeddings::EmbeddingsReq;
+        use crate::test_support::warn_capture::WarnCapture;
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        let ir = IrReq::Embeddings(EmbeddingsReq {
+            input: EmbInput::Images(vec!["data:image/png;base64,AA==".into()]),
+            ..Default::default()
+        });
+        let cap = WarnCapture::default();
+        let subscriber = tracing_subscriber::registry().with(cap.clone());
+        let out =
+            tracing::subscriber::with_default(subscriber, || CohereEmbeddings.write_request(&ir));
+
+        let v: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["texts"], json!([]));
+
+        assert!(
+            cap.contains("dropping a non-text embeddings input"),
+            "a dropped non-text embeddings input must warn: {:?}",
+            cap.messages()
+        );
     }
 
     #[test]
