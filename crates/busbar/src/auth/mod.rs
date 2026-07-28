@@ -981,17 +981,34 @@ pub(crate) async fn auth_middleware(
         };
         let required = crate::admin::v1::contract::required_scope(req.method(), &path);
         if !scope.allows(required) {
-            // Denied authorization is AUDITED (: failures leave a trail — a credential
-            // probing beyond its scope is exactly what an operator wants to see).
-            crate::admin::audit::AUDIT.record_by(
-                "admin.forbidden",
-                &path,
-                crate::admin::audit::OUTCOME_REJECTED,
-                principal
-                    .as_ref()
-                    .map(|p| p.id.as_str())
-                    .unwrap_or("anonymous"),
-            );
+            // Denied authorization is AUDITED (a credential probing beyond its scope is exactly what
+            // an operator wants to see) — but at most once per (principal, window). The durable
+            // write-through is a blocking store round-trip under a process-global lock, and this path
+            // returns BEFORE the mutation limiter runs (and a GET never reaches it at all), so an
+            // unbounded audit here is an unmetered I/O amplifier on the reactor. Same bound, same
+            // reason, as the rate-limited audit below.
+            let actor = principal
+                .as_ref()
+                .map(|p| p.id.as_str())
+                .unwrap_or("anonymous");
+            if let crate::admin::rate::RateCheck::Denied {
+                first_in_window: true,
+            } = app.mutation_limiter.check(
+                actor,
+                crate::admin::rate::MutationClass::Forbidden,
+                crate::store::now(),
+            ) {
+                crate::admin::audit::AUDIT.record_by(
+                    "admin.forbidden",
+                    &path,
+                    crate::admin::audit::OUTCOME_REJECTED,
+                    actor,
+                );
+            } else {
+                // Suppressed records still leave a per-request signal, at zero I/O cost.
+                tracing::warn!(principal = %actor, path = %path, required = %required.as_str(),
+                    "admin request forbidden (audit suppressed: already recorded this window)");
+            }
             return Err(forbidden_response(required));
         }
         // MUTATION RATE LIMITS: per-principal fixed windows, spent BEFORE the handler so

@@ -67,6 +67,29 @@ pub(crate) struct ProbeSchedule {
 /// Sentinel for "this lane has no deadline yet" — `0` is a legitimate deadline at `origin`.
 const UNSCHEDULED: u64 = u64::MAX;
 
+/// Advance THIS prober's deadline slot, and only this prober's. Returns the value the caller now
+/// owns.
+///
+/// Must be `compare_exchange`, not `fetch_min` and not `store`:
+///   - `store` (the previous code) would silently revert a clamp that a NEWER generation's
+///     spawn-time `fetch_min` landed between our generation check and here — the newer schedule
+///     would run one cycle stale.
+///   - `fetch_min` would never take, because `next` is always LATER than what we own; the slot would
+///     freeze at a past instant, and every subsequent rebuild would inherit an already-elapsed
+///     deadline and probe immediately. (It would NOT spin: the ticker is built once at
+///     `interval_at` and never re-derived from the slot, and it is set to `MissedTickBehavior::Skip`.)
+///
+/// Spawn-time only ever biases the deadline EARLIER; tick-time only ever moves it LATER. The
+/// asymmetry is why one primitive cannot serve both.
+fn advance_owned_deadline(slot: &std::sync::atomic::AtomicU64, owned: u64, next: u64) -> u64 {
+    use std::sync::atomic::Ordering;
+    match slot.compare_exchange(owned, next, Ordering::Relaxed, Ordering::Relaxed) {
+        Ok(_) => next,
+        // Someone else moved the slot: they own it now, adopt their value.
+        Err(theirs) => theirs,
+    }
+}
+
 impl ProbeSchedule {
     pub(crate) fn new(lane_count: usize) -> Self {
         Self {
@@ -129,18 +152,14 @@ pub(crate) fn spawn_probers(app: &Arc<App>) {
             .elapsed_ms()
             .saturating_add(interval.as_millis() as u64);
         let deadline_ms = match schedule.deadlines.get(i) {
-            Some(slot) => {
-                // A racing generation may schedule it first; take whichever landed.
-                match slot.compare_exchange(
-                    UNSCHEDULED,
-                    first,
-                    Ordering::Relaxed,
-                    Ordering::Relaxed,
-                ) {
-                    Ok(_) => first,
-                    Err(theirs) => theirs,
-                }
-            }
+            // MONOTONE-EARLIEST at spawn time: keep whichever deadline is sooner. `UNSCHEDULED` is
+            // `u64::MAX` precisely so it is the identity for `min` and an unscheduled slot takes
+            // `first`. This both inherits a racing generation's already-landed deadline (never
+            // pushing it out) and makes a SHORTENED `interval_secs` take effect within one new
+            // interval instead of waiting out the old one. Same monotonicity posture as AUDIT's
+            // `fetch_max` seq. Strictly subsumes the old `compare_exchange(UNSCHEDULED, first)`: that
+            // was the `min` identity case.
+            Some(slot) => slot.fetch_min(first, Ordering::Relaxed).min(first),
             // Lane count grew without a rebuild: fall back to an unshared schedule for this lane.
             None => first,
         };
@@ -160,6 +179,9 @@ pub(crate) fn spawn_probers(app: &Arc<App>) {
             let start = schedule.origin + Duration::from_millis(deadline_ms);
             let mut ticker = tokio::time::interval_at(start, interval);
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            // Tracks the deadline THIS prober currently owns, so `advance_owned_deadline`'s
+            // compare_exchange has the right expected value each tick.
+            let mut owned = deadline_ms;
             loop {
                 ticker.tick().await;
                 // A newer generation owns the schedule now — exit rather than probe alongside it.
@@ -167,12 +189,10 @@ pub(crate) fn spawn_probers(app: &Arc<App>) {
                     return;
                 }
                 if let Some(slot) = schedule.deadlines.get(i) {
-                    slot.store(
-                        schedule
-                            .elapsed_ms()
-                            .saturating_add(interval.as_millis() as u64),
-                        Ordering::Relaxed,
-                    );
+                    let next = schedule
+                        .elapsed_ms()
+                        .saturating_add(interval.as_millis() as u64);
+                    owned = advance_owned_deadline(slot, owned, next);
                 }
                 // Upgrade the Weak each tick (holding no strong ref across the sleep). `None` means
                 // this snapshot was replaced by a reload and fully released — this prober is now
@@ -871,5 +891,86 @@ mod tests {
             "each spawn takes its own generation"
         );
         server.shutdown().await;
+    }
+
+    /// class-10b: a SHORTENED `interval_secs` takes effect on an inherited schedule within one new
+    /// interval, rather than waiting out the old (far longer) one. Targets the `fetch_min` clamp
+    /// specifically — deadlines are offsets from each schedule's OWN `origin`, so a numeric
+    /// comparison only discriminates when both spawns share one `Arc` (the state `App::clone`
+    /// produces), which this test establishes by construction rather than assuming.
+    #[tokio::test]
+    async fn a_shortened_interval_takes_effect_on_the_inherited_schedule() {
+        let server = MockServer::new(Arc::new(MockServerState::new())).await;
+        let app = TestApp::new()
+            .lane(
+                LaneSpec::new("l", Protocol::anthropic(), &server.base_url())
+                    .api_key("sk-test")
+                    .health(HealthCfg {
+                        mode: HealthMode::Active,
+                        interval_secs: Some(3600),
+                        timeout_secs: Some(5),
+                    }),
+            )
+            .pool("p", &[(0, 1)])
+            .build();
+
+        spawn_probers(&app);
+        let far = app.probe_schedule.deadlines[0].load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            far >= 3_600_000 && far != super::UNSCHEDULED,
+            "first spawn schedules a ~3600s-out deadline, got {far}"
+        );
+
+        // Build the second generation as `App::clone` would (config apply / reload) — the `Arc`,
+        // and therefore `origin`, is SHARED, which is the precondition the numeric assertion below
+        // depends on.
+        let mut a2 = (*app).clone();
+        a2.lanes[0].health = Some(HealthCfg {
+            mode: HealthMode::Active,
+            interval_secs: Some(10),
+            timeout_secs: Some(5),
+        });
+        let app2 = Arc::new(a2);
+        spawn_probers(&app2);
+
+        assert!(
+            app.probe_schedule.deadlines[0].load(std::sync::atomic::Ordering::Relaxed) <= 11_000,
+            "a shortened interval must clamp the inherited deadline"
+        );
+        assert_eq!(
+            app.probe_schedule
+                .generation
+                .load(std::sync::atomic::Ordering::Relaxed),
+            2
+        );
+
+        server.shutdown().await;
+    }
+
+    /// class-10b: the tick-side owner-checked write. A late-arriving prober's post-tick write must
+    /// NOT revert a newer generation's spawn-time clamp — the deeper reason `advance_owned_deadline`
+    /// is `compare_exchange`, keyed on the value THIS prober last observed itself owning, rather than
+    /// an unconditional `store`. Plain synchronous unit test: no runtime, no clock, nothing for a
+    /// scheduler to race.
+    #[test]
+    fn a_late_tick_write_does_not_revert_a_newer_generations_clamp() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        let slot = AtomicU64::new(3_600_000); // gen 1 owns this deadline
+        let owned = 3_600_000;
+        // A newer generation's spawn-time fetch_min lands a SHORTER deadline while gen 1 is mid-tick.
+        slot.fetch_min(10_000, Ordering::Relaxed);
+        // Gen 1's post-tick write now arrives, late, carrying the value it computed from its OWN
+        // interval — must NOT clobber the newer generation's clamp.
+        let got = advance_owned_deadline(&slot, owned, 3_610_000);
+        assert_eq!(
+            slot.load(Ordering::Relaxed),
+            10_000,
+            "the newer generation's clamp must survive"
+        );
+        assert_eq!(
+            got, 10_000,
+            "and the late prober must adopt it, not its own stale value"
+        );
     }
 }

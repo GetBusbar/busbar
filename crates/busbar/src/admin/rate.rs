@@ -21,6 +21,9 @@ pub(crate) const MUTATION_RATE_WINDOW_SECS: u64 = 60;
 pub(crate) enum MutationClass {
     Config,
     Crud,
+    /// NOT a budget: the FORBIDDEN path uses this class purely for its per-(principal, window)
+    /// "already audited once" counter. The 403 is the answer; the verdict is never used to shed.
+    Forbidden,
 }
 
 impl MutationClass {
@@ -29,6 +32,7 @@ impl MutationClass {
         match self {
             MutationClass::Config => 10,
             MutationClass::Crud => 60,
+            MutationClass::Forbidden => 0,
         }
     }
 
@@ -37,6 +41,7 @@ impl MutationClass {
         match self {
             MutationClass::Config => "config",
             MutationClass::Crud => "crud",
+            MutationClass::Forbidden => "forbidden",
         }
     }
 }

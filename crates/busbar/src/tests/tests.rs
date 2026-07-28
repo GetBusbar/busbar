@@ -1165,6 +1165,58 @@ fn build_once(
     )
 }
 
+/// class-10b: an unchanged lane set must CARRY the probe schedule (same `Arc`) across a rebuild —
+/// otherwise a mutation cadence faster than the probe interval (`/config/settings` metered at
+/// 10/min vs a 30s default interval) resets every generation before its first tick and probing goes
+/// dark while still logging that it is enabled. A lane-set CHANGE must mint a fresh one, because
+/// deadlines are index-keyed.
+///
+/// No clock in this assertion — synchronous pointer identity — so the "21 spawns in the same
+/// millisecond" false-green mode cannot apply here.
+#[test]
+fn a_rebuild_carries_the_probe_schedule() {
+    crate::metrics::init();
+    let no_lane_cfg = || {
+        cfg_with_provider_api_key(crate::config::SecretRef::env(
+            "BUSBAR_TEST_NO_SUCH_KEY_PROBE_SCHEDULE",
+        ))
+    };
+    let one_lane_cfg = || {
+        let mut cfg = no_lane_cfg();
+        cfg.models.insert(
+            "m0".to_string(),
+            crate::config::ModelCfg {
+                reasoning: None,
+                prompt_caching: None,
+                max_requests: -1,
+                provider: "acme".into(),
+                max_concurrent: Some(1),
+                default_max_tokens: None,
+                upstream_model: None,
+                attempt_timeout_ms: None,
+            },
+        );
+        cfg
+    };
+
+    // Positive half: zero lanes both times (the zip is vacuously true), but the buggy code still
+    // mints a fresh `Arc` unconditionally, so this alone discriminates.
+    let prior = build_once(no_lane_cfg(), None).expect("boot");
+    let next = build_once(no_lane_cfg(), Some(&prior)).expect("rebuild, unchanged config");
+    assert!(
+        std::sync::Arc::ptr_eq(&prior.probe_schedule, &next.probe_schedule),
+        "an unchanged lane set must carry the probe schedule across a rebuild"
+    );
+
+    // Negative half: a lane REMOVED must NOT carry — the old indices would mean something else.
+    let prior2 = build_once(one_lane_cfg(), None).expect("boot with one lane");
+    let next2 = build_once(no_lane_cfg(), Some(&prior2)).expect("rebuild with the lane removed");
+    assert!(
+        !std::sync::Arc::ptr_eq(&prior2.probe_schedule, &next2.probe_schedule),
+        "a lane-set change must NOT carry the probe schedule"
+    );
+}
+
 /// Rotating the admin-token secret on disk and RE-APPLYING changes the credential the process
 /// accepts. RED without the re-resolution: the digest stays on `tok-v1` forever.
 #[test]
