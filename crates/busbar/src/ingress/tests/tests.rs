@@ -279,8 +279,8 @@ fn test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx() {
 /// blind `UPDATE` decremented the spend/requests of a PRIOR, legitimately-charged request in the
 /// same window — eroding the hard budget cap (repeatable → unbounded overspend). This drives the
 /// REAL ingress path end-to-end (not just the `finish_rejected` unit).
-// No-runtime `#[test]`: any (buggy) refund via `offload_store_write` runs INLINE here, so a
-// regression is observable synchronously. The `"total"` period ⇒ window 0 regardless of the
+// The budget charge/refund path is synchronous in-memory accounting (no offload of any kind), so
+// a regression is observable synchronously here. The `"total"` period ⇒ window 0 regardless of the
 // internal `charged_at = store::now()`, so the prior charge and any spurious refund hit one row.
 #[test]
 fn test_pre_routing_failure_does_not_refund_prior_charge() {

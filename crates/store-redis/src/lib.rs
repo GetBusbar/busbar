@@ -628,7 +628,7 @@ impl Store for RedisStore {
                 .cmd("HINCRBY")
                 .arg(&row)
                 .arg("requests")
-                .arg(1i64)
+                .arg(clamp(d.requests))
                 .ignore()
                 .hset_multiple(
                     &row,
@@ -1074,6 +1074,7 @@ mod tests {
             tokens_output: 0,
             tokens_cache_read: 0,
             tokens_cache_creation: 0,
+            requests: 1,
         };
         // Clear the bucket rows from a prior run.
         let _ = store.with_conn(|c| {

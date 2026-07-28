@@ -319,6 +319,12 @@ pub struct MeteringDelta {
     pub tokens_output: u64,
     pub tokens_cache_read: u64,
     pub tokens_cache_creation: u64,
+    /// The number of completed responses this delta accumulates. On the wire (not derivable by the
+    /// store) because a delta produced by a write-behind flush can coalesce more than one response
+    /// under the same (key, bucket, model, provider) key — the store cannot infer that count from
+    /// the token fields alone (a zero-token flat-fee response contributes to `requests` but nothing
+    /// else).
+    pub requests: u64,
 }
 
 /// One accumulated metering row read back for a bucket (the raw material of `GET usage` by_model /

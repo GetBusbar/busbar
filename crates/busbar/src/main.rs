@@ -930,6 +930,10 @@ async fn run() {
     if let Some(gov) = app_handle.load().governance.clone() {
         let n = gov.flush_budgets();
         tracing::info!(flushed = n, "budget counters flushed on shutdown");
+        // The flusher task's own shutdown arm also flushes metering, but it is fire-and-forget and
+        // can lose the race with process exit (same reason the budget flush above is inline here).
+        let m = gov.flush_metering();
+        tracing::info!(flushed = m, "metering rows flushed on shutdown");
     }
     // D3: one FINAL state snapshot after the graceful drain, so the freshest health picture is
     // what the next boot restores (the periodic 30s tick could be up to 30s stale).

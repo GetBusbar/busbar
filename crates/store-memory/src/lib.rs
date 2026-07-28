@@ -137,7 +137,7 @@ impl Store for MemoryStore {
         e.tokens_cache_creation = e
             .tokens_cache_creation
             .saturating_add(d.tokens_cache_creation);
-        e.requests = e.requests.saturating_add(1);
+        e.requests = e.requests.saturating_add(d.requests);
         Ok(())
     }
 
@@ -300,6 +300,7 @@ mod tests {
             tokens_output: 5,
             tokens_cache_read: 0,
             tokens_cache_creation: 0,
+            requests: 1,
         };
         s.add_metering(&d).unwrap();
         s.add_metering(&d).unwrap();

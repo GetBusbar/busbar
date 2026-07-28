@@ -421,6 +421,7 @@ fn test_metering_accumulates_split_per_key_model_and_bucket() {
         tokens_output: output,
         tokens_cache_read: 7,
         tokens_cache_creation: 3,
+        requests: 1,
     };
     // Two responses on the same (key, model) accumulate; a different model is its own row.
     s.add_metering(&d("gpt-x", 100, 20)).unwrap();
@@ -452,9 +453,13 @@ fn test_metering_accumulates_split_per_key_model_and_bucket() {
     assert_eq!(rows[1].requests, 1);
 }
 
-/// `GovState::record_metering` end-to-end (no tokio runtime → the offload runs inline): the
-/// IrUsage split lands in the store under the request's day bucket; a `None` usage (flat-fee op)
-/// still counts the request.
+/// `GovState::record_metering` end-to-end, write-behind: `record_metering` only accumulates into
+/// `pending_metering`, so an explicit `flush_metering()` is required before the store reflects it.
+/// The IrUsage split lands in the store under the request's day bucket; a `None` usage (flat-fee
+/// op) still counts the request; and the `requests` count on the store row must survive coalescing
+/// N `record_metering` calls into one flushed `MeteringDelta` (this is what a coalescing bug
+/// destroys — the four stores used to invent a literal `+1` per store call instead of carrying the
+/// real count on the wire).
 #[test]
 fn test_record_metering_from_ir_usage_and_flat() {
     let store = Arc::new(MemoryStore::new());
@@ -468,6 +473,7 @@ fn test_record_metering_from_ir_usage_and_flat() {
     };
     gov.record_metering("vk_m", "claude-z", "anthropic", Some(&usage), now);
     gov.record_metering("vk_m", "claude-z", "anthropic", None, now); // flat-fee op
+    gov.flush_metering();
     let rows = gov.metering_for(metering_bucket(now)).unwrap();
     assert_eq!(rows.len(), 1);
     let r = &rows[0];
@@ -484,7 +490,7 @@ fn test_record_metering_from_ir_usage_and_flat() {
             r.requests
         ),
         (11, 22, 5, 0, 2),
-        "split preserved; the flat-fee response still counted its request"
+        "split preserved; the flat-fee response still counted its request; requests==N survives coalescing"
     );
 }
 
@@ -2694,4 +2700,180 @@ fn test_hydrated_cells_survive_the_first_sweep() {
         Some(43),
         "a hydrated cell must not be swept away before it is first used"
     );
+}
+
+/// A `Store` wrapper that instruments `add_metering` (concurrent-entry high-water mark, and an
+/// optional scripted failure count) and delegates everything else to a `MemoryStore`. Shape copied
+/// from `revocation.rs`'s private `HungDenylistStore` (an `AtomicUsize` counter + delegate-to-
+/// `MemoryStore`), which is not reusable here because it instruments `list_denylist`, not
+/// `add_metering`, and is private to `revocation.rs`'s own test module.
+mod metering_fanout {
+    use super::*;
+    use std::sync::atomic::{AtomicI64, AtomicUsize};
+
+    struct CountingStore {
+        inner: MemoryStore,
+        /// Sampled INSIDE `add_metering`, not derived from task counts — a mark taken outside the
+        /// call would measure scheduling, not concurrency.
+        in_flight: AtomicUsize,
+        high_water: AtomicUsize,
+        total_calls: AtomicUsize,
+        /// Positive: fail this many times before delegating (T3). Decremented via `fetch_sub`
+        /// clamped at 0 by `saturating_sub`-style checked arithmetic.
+        fail_n_times: AtomicI64,
+    }
+
+    impl CountingStore {
+        fn new(fail_n_times: i64) -> Self {
+            Self {
+                inner: MemoryStore::new(),
+                in_flight: AtomicUsize::new(0),
+                high_water: AtomicUsize::new(0),
+                total_calls: AtomicUsize::new(0),
+                fail_n_times: AtomicI64::new(fail_n_times),
+            }
+        }
+    }
+
+    impl Store for CountingStore {
+        fn put_key(&self, k: &VirtualKey) -> StoreResult<()> {
+            self.inner.put_key(k)
+        }
+        fn get_key(&self, id: &str) -> StoreResult<Option<VirtualKey>> {
+            self.inner.get_key(id)
+        }
+        fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
+            self.inner.list_keys()
+        }
+        fn delete_key(&self, id: &str) -> StoreResult<()> {
+            self.inner.delete_key(id)
+        }
+        fn get_usage(&self, id: &str, w: u64) -> StoreResult<UsageLedger> {
+            self.inner.get_usage(id, w)
+        }
+        fn put_usage(&self, id: &str, w: u64, l: &UsageLedger) -> StoreResult<()> {
+            self.inner.put_usage(id, w, l)
+        }
+        fn add_metering(&self, d: &MeteringDelta) -> StoreResult<()> {
+            self.total_calls.fetch_add(1, Ordering::SeqCst);
+            let now_in = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+            self.high_water.fetch_max(now_in, Ordering::SeqCst);
+            // A trivial amount of real work so overlapping calls (if the SUT ever produced any)
+            // have a chance to actually overlap in wall-clock time rather than the mark being an
+            // artifact of two atomics executing back-to-back.
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            let result = loop {
+                let cur = self.fail_n_times.load(Ordering::SeqCst);
+                if cur <= 0 {
+                    break self.inner.add_metering(d);
+                }
+                if self
+                    .fail_n_times
+                    .compare_exchange(cur, cur - 1, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok()
+                {
+                    break Err(StoreError("scripted failure".into()));
+                }
+            };
+            self.in_flight.fetch_sub(1, Ordering::SeqCst);
+            result
+        }
+        fn list_metering(&self, bucket: u64) -> StoreResult<Vec<MeteringRow>> {
+            self.inner.list_metering(bucket)
+        }
+    }
+
+    /// T2 — the metering write fan-out is bounded at 1, not N: with N responses metered
+    /// concurrently on a live runtime, `add_metering` never sees more than one call in flight, and
+    /// all N are eventually accounted once flushed.
+    ///
+    /// RED procedure (documented, not re-run every CI pass): against the pre-fix
+    /// `offload_store_write` per-response fire-and-forget `spawn_blocking`, N concurrent responses
+    /// each spawn their OWN blocking task that calls the store directly, so the high-water mark
+    /// reaches up to N — confirmed by temporarily restoring that call shape in `record_metering`
+    /// and rerunning this test, which failed with `high_water > 1` (observed 8/8 on an 8-response
+    /// run). The fix replaces that fan-out with the accumulate-then-drain flusher below, so exactly
+    /// one thread ever calls `add_metering` at a time (the `flush_metering` loop is sequential).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn metering_write_fanout_is_bounded_at_one() {
+        let store = std::sync::Arc::new(CountingStore::new(0));
+        let gov = std::sync::Arc::new(GovState::new(store.clone(), None).unwrap());
+        let now = 1_700_100_000u64;
+        let n = 8usize;
+        let mut handles = Vec::new();
+        for i in 0..n {
+            let gov = gov.clone();
+            handles.push(tokio::spawn(async move {
+                let usage = crate::ir::IrUsage {
+                    input_tokens: 1,
+                    output_tokens: 1,
+                    cache_read_input_tokens: None,
+                    cache_creation_input_tokens: None,
+                };
+                gov.record_metering(&format!("vk_{i}"), "m", "p", Some(&usage), now);
+            }));
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+        let flushed = gov.flush_metering();
+        assert_eq!(
+            flushed, n,
+            "every distinct key's delta was written on the one flush"
+        );
+        assert!(
+            store.high_water.load(Ordering::SeqCst) <= 1,
+            "add_metering must never see more than one call in flight (observed {})",
+            store.high_water.load(Ordering::SeqCst)
+        );
+        assert_eq!(
+            store.total_calls.load(Ordering::SeqCst),
+            n,
+            "one add_metering call per distinct key, all eventually accounted"
+        );
+    }
+
+    /// T3 — a store error re-queues the entry and neither loses it nor double-counts it. Assert on
+    /// the STORE TOTAL (the discriminator that actually separates re-queue from double-send, per
+    /// the design doc — "the entry exists" does not discriminate: a drain-with-no-add-back makes
+    /// the delta vanish, and a re-queue-without-clearing double-sends. Only a total-count assertion
+    /// across two flushes catches both).
+    #[test]
+    fn a_store_error_requeues_without_double_counting() {
+        let store = std::sync::Arc::new(CountingStore::new(1)); // fail exactly once
+        let gov = GovState::new(store.clone(), None).unwrap();
+        let now = 1_700_200_000u64;
+        let usage = crate::ir::IrUsage {
+            input_tokens: 10,
+            output_tokens: 5,
+            cache_read_input_tokens: None,
+            cache_creation_input_tokens: None,
+        };
+        gov.record_metering("vk_err", "m", "p", Some(&usage), now);
+
+        // Flush 1: the scripted failure fires; the store must be empty and the entry must be back
+        // in `pending_metering` (assert via a successful flush 2, not via internal state).
+        let n1 = gov.flush_metering();
+        assert_eq!(n1, 0, "the failed flush wrote nothing");
+        let rows = gov.metering_for(metering_bucket(now)).unwrap();
+        assert!(rows.is_empty(), "a failed flush must not partially land");
+
+        // Flush 2: the store now holds the FULL amount exactly once.
+        let n2 = gov.flush_metering();
+        assert_eq!(n2, 1, "the requeued entry flushes on the next tick");
+        let rows = gov.metering_for(metering_bucket(now)).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            (rows[0].tokens_input, rows[0].requests),
+            (10, 1),
+            "the full delta landed exactly once, not zero and not twice"
+        );
+
+        // Flush 3: nothing left to write.
+        let n3 = gov.flush_metering();
+        assert_eq!(
+            n3, 0,
+            "a third flush writes nothing — the entry is gone, not duplicated"
+        );
+    }
 }
