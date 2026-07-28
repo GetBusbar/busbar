@@ -234,6 +234,25 @@ impl ProtocolReader for ResponsesReader {
                             // cross-protocol hop. Content can be an array of `input_text` blocks or
                             // a bare string; handle both.
                             if role_str == "system" || role_str == "developer" {
+                                // A `system`/`developer` item can legally appear ANYWHERE in
+                                // `input`, but the IR cannot express a positioned system turn
+                                // (`IrRole` has no such member, and every writer that models
+                                // system content re-folds it to the top — e.g.
+                                // `anthropic/writer.rs`'s Messages API cannot take `role:"system"`
+                                // mid-conversation). So this instruction is hoisted to apply from
+                                // turn 1 regardless of where it appeared — a real semantic change
+                                // when a conversational turn already preceded it. Warn so the
+                                // divergence is visible rather than silently reordering intent.
+                                if !messages.is_empty() {
+                                    tracing::warn!(
+                                        role = role_str,
+                                        "a Responses `{role_str}` item appeared AFTER an earlier \
+                                         conversational turn; busbar hoists it to apply from the \
+                                         start of the conversation (the IR has no positioned \
+                                         system-turn concept), which changes when this instruction \
+                                         takes effect relative to the native Responses behavior"
+                                    );
+                                }
                                 push_system_content(&mut system_blocks, item.get("content"));
                                 continue;
                             }
@@ -299,6 +318,17 @@ impl ProtocolReader for ResponsesReader {
                         // the system prompt and must be accumulated into `system_blocks` rather than
                         // dropped (the prior `_ => continue` lost them on cross-protocol hops).
                         if role_str == "system" || role_str == "developer" {
+                            // Same hoist-visibility warn as the typed `message` arm above.
+                            if !messages.is_empty() {
+                                tracing::warn!(
+                                    role = role_str,
+                                    "a Responses `{role_str}` item appeared AFTER an earlier \
+                                     conversational turn; busbar hoists it to apply from the \
+                                     start of the conversation (the IR has no positioned \
+                                     system-turn concept), which changes when this instruction \
+                                     takes effect relative to the native Responses behavior"
+                                );
+                            }
                             push_system_content(&mut system_blocks, content_val);
                             continue;
                         }
@@ -466,13 +496,20 @@ impl ProtocolReader for ResponsesReader {
             .and_then(crate::ir::IrReasoningEffort::parse)
             .map(crate::ir::IrReasoningAsk::Effort);
 
+        // `/v1/responses` models a top-level `parallel_tool_calls` boolean, identically to Chat
+        // Completions (class-6 6c1 ingress). Previously hardcoded `None`, which — unlike
+        // Bedrock/Gemini/Cohere (whose native dialects genuinely have no such parameter, so `None`
+        // there is the accurate "caller never said") — is total ingress loss for Responses callers
+        // who explicitly set it.
+        let parallel_tool_calls = obj.get("parallel_tool_calls").and_then(|v| v.as_bool());
+
         Ok(crate::ir::IrRequest {
             reasoning,
             reasoning_budgets: None,
             logprobs: None,
             top_logprobs: None,
             user: None,
-            parallel_tool_calls: None,
+            parallel_tool_calls,
             system: system_blocks,
             messages,
             tools,

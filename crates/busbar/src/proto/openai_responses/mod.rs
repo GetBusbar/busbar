@@ -468,6 +468,7 @@ fn responses_modeled_keys() -> &'static std::collections::HashSet<&'static str> 
             "top_p",
             "stream",
             "tool_choice",
+            "parallel_tool_calls",
         ]
         .iter()
         .cloned()
@@ -506,11 +507,26 @@ fn responses_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, 
                 retry_after: None,
             })
         }
-        _ => Err(IrError {
-            class: StatusClass::ClientError,
-            provider_signal: Some(crate::proto::SIGNAL_IR_PARSE.to_string()),
-            retry_after: None,
-        }),
+        // Forward-compatibility: a valid native Responses content-block type the IR does not model
+        // (e.g. `input_file`, or a future type OpenAI adds after this build). The prior bare `Err`
+        // here was swallowed with ZERO log by every caller's `filter_map(..ok())`
+        // (`message_content_blocks` above, and the `function_call_output` content-array reader) —
+        // not just `input_file` but EVERY unknown future Responses content type vanished silently.
+        // Mirror the Anthropic reader's unmodeled-block handling: degrade to an empty Text block
+        // (preserving the turn's position in its parent array) with a WARN naming the type, rather
+        // than disappearing without a trace.
+        other => {
+            tracing::warn!(
+                block_type = other,
+                "skipping unmodeled Responses content-block type during ir parse; degrading to an \
+                 empty text block rather than silently dropping it"
+            );
+            Ok(crate::ir::IrBlock::Text {
+                text: String::new(),
+                cache_control: None,
+                citations: Vec::new(),
+            })
+        }
     }
 }
 

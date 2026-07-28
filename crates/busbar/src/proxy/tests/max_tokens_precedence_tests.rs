@@ -46,6 +46,7 @@ fn per_model_then_global_then_4096() {
         reasoning_allowed: true,
         reasoning_budgets: crate::ir::REASONING_BUDGET_DEFAULTS,
         prompt_caching_allowed: true,
+        cache_control_cap: None,
     };
     let apply = |ir: IrRequest, lane: &Lane, global: u32| -> Option<u32> {
         let mut req = IrReq::Chat(ir);
@@ -93,5 +94,130 @@ fn per_model_then_global_then_4096() {
         ),
         Some(7),
         "an explicit caller max_tokens must be preserved over every default"
+    );
+}
+
+/// class-6 6b1: Anthropic 400s with "A maximum of 4 blocks with cache_control may be provided".
+/// The IR carries breakpoints unbounded, so a cross-protocol request (e.g. Bedrock ingress, whose
+/// reader populates `cache_control` from `cachePoint`) can exceed it. `prepare_for_egress` must
+/// clamp to the egress writer's cap, in Anthropic's own prefix order (system -> messages -> tools),
+/// and warn with the dropped count.
+#[test]
+fn cache_control_breakpoints_clamped_to_four_on_anthropic_egress() {
+    use crate::ir::{CacheControl, CacheKind, IrBlock, IrMessage, IrRole};
+    use crate::test_support::warn_capture::WarnCapture;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let bp = || {
+        Some(CacheControl {
+            kind: CacheKind::Ephemeral,
+        })
+    };
+    let text_with = |t: &str, cc: Option<CacheControl>| IrBlock::Text {
+        text: t.to_string(),
+        cache_control: cc,
+        citations: Vec::new(),
+    };
+
+    // 6 breakpoints total: one on `system`, five spread across two user messages.
+    let ir = IrRequest {
+        system: vec![text_with("sys", bp())],
+        messages: vec![
+            IrMessage {
+                role: IrRole::User,
+                content: vec![
+                    text_with("m1a", bp()),
+                    text_with("m1b", bp()),
+                    text_with("m1c", bp()),
+                ],
+            },
+            IrMessage {
+                role: IrRole::User,
+                content: vec![text_with("m2a", bp()), text_with("m2b", bp())],
+            },
+        ],
+        ..IrRequest::default()
+    };
+
+    let count_breakpoints = |req: &IrRequest| -> usize {
+        req.system
+            .iter()
+            .filter(|b| {
+                matches!(
+                    b,
+                    IrBlock::Text {
+                        cache_control: Some(_),
+                        ..
+                    }
+                )
+            })
+            .count()
+            + req
+                .messages
+                .iter()
+                .flat_map(|m| &m.content)
+                .filter(|b| {
+                    matches!(
+                        b,
+                        IrBlock::Text {
+                            cache_control: Some(_),
+                            ..
+                        }
+                    )
+                })
+                .count()
+    };
+    assert_eq!(count_breakpoints(&ir), 6, "fixture carries 6 breakpoints");
+
+    let prep = EgressPrep {
+        ingress_protocol: "bedrock",
+        egress_requires_max_tokens: true,
+        lane_default_max_tokens: None,
+        global_default_max_tokens: 4096,
+        reasoning_allowed: true,
+        reasoning_budgets: crate::ir::REASONING_BUDGET_DEFAULTS,
+        prompt_caching_allowed: true,
+        cache_control_cap: Some(4),
+    };
+
+    let cap = WarnCapture::default();
+    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    let mut req = IrReq::Chat(ir);
+    tracing::subscriber::with_default(subscriber, || req.prepare_for_egress(&prep));
+    let IrReq::Chat(clamped) = req else {
+        unreachable!()
+    };
+
+    assert_eq!(
+        count_breakpoints(&clamped),
+        4,
+        "exactly 4 breakpoints must survive the Anthropic egress cap"
+    );
+    // Anthropic's own prefix order: system first, so `sys` and the first three message
+    // breakpoints (`m1a`,`m1b`,`m1c`) survive; `m2a`/`m2b` are dropped.
+    assert!(
+        matches!(
+            &clamped.system[0],
+            IrBlock::Text {
+                cache_control: Some(_),
+                ..
+            }
+        ),
+        "the system breakpoint must survive (it is first in prefix order)"
+    );
+    assert!(
+        matches!(
+            &clamped.messages[1].content[0],
+            IrBlock::Text {
+                cache_control: None,
+                ..
+            }
+        ),
+        "m2a must be dropped (past the cap)"
+    );
+    assert!(
+        cap.contains("cap of 4") && cap.contains("dropping 2"),
+        "must warn naming the cap and the dropped count: {:?}",
+        cap.messages()
     );
 }

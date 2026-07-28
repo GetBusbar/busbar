@@ -937,7 +937,13 @@ impl ProtocolReader for GeminiReader {
             // block's index (`state.text_index`, or the next free slot if no text part has appeared
             // yet) and emit the citations delta against it BEFORE the finishReason path closes the
             // block below. Without this arm a streamed Gemini citation was silently dropped.
-            let citations = read_gemini_citations(candidate);
+            //
+            // `anchor_text: None` — DELIBERATELY left as raw byte offsets (class-6 6e1 site 3): a
+            // citation's indices address the FULL response text, which `GeminiStreamState` does not
+            // accumulate (it carries `text_index`, an index, not text). Adding a full-text
+            // accumulator to this hot streaming path for an offset correction would fail the
+            // layering test; the non-stream path (which HAS the full text) does convert.
+            let citations = read_gemini_citations(candidate, None);
             if !citations.is_empty() {
                 // Claim the text block's index from the monotone counter (see `claim_ir_index`),
                 // exactly like the text-part arm — otherwise a citation/logprobs delta arriving
@@ -1214,13 +1220,23 @@ impl ProtocolReader for GeminiReader {
         // a same-protocol Gemini path re-emits them at candidate level). If the candidate has no Text
         // block (e.g. a tool-only turn) there is nothing to anchor them to — Gemini does not emit
         // citations for such turns in practice, so dropping is faithful.
-        let gemini_citations = read_gemini_citations(candidate);
-        if !gemini_citations.is_empty() {
-            if let Some(crate::ir::IrBlock::Text { citations, .. }) = content
-                .iter_mut()
-                .find(|b| matches!(b, crate::ir::IrBlock::Text { .. }))
-            {
-                *citations = gemini_citations;
+        // Resolve the anchor Text block's own text FIRST (before mutating `content`) so
+        // `read_gemini_citations` can convert Gemini's byte offsets into the IR's character
+        // contract against it (class-6 6e1 site 3) — this is the non-stream path, which HAS the
+        // full text, unlike the streaming arm above.
+        let anchor_text = content.iter().find_map(|b| match b {
+            crate::ir::IrBlock::Text { text, .. } => Some(text.clone()),
+            _ => None,
+        });
+        if let Some(anchor_text) = anchor_text {
+            let gemini_citations = read_gemini_citations(candidate, Some(&anchor_text));
+            if !gemini_citations.is_empty() {
+                if let Some(crate::ir::IrBlock::Text { citations, .. }) = content
+                    .iter_mut()
+                    .find(|b| matches!(b, crate::ir::IrBlock::Text { .. }))
+                {
+                    *citations = gemini_citations;
+                }
             }
         }
 

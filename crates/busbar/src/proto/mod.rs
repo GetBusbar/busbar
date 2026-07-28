@@ -31,6 +31,14 @@ pub(crate) const SIGNAL_IR_PARSE: &str = "ir_parse";
 pub(crate) const SSE_DONE_SENTINEL: &str = "[DONE]";
 pub(crate) const SSE_DONE_FRAME: &[u8] = b"data: [DONE]\n\n";
 
+/// A native Anthropic stream emits `event: ping` immediately after `message_start` (and
+/// periodically thereafter); a translated cross-protocol stream never did, which is both a
+/// fingerprintable proxy tell and closes some of the idle-timeout gap a native stream survives.
+/// Injected once, right after the translated `message_start` frame, on any INGRESS-Anthropic
+/// cross-protocol stream (same-protocol Anthropic passthrough is byte-verbatim and already carries
+/// the upstream's own pings, so it never needs this).
+pub(crate) const ANTHROPIC_PING_SSE_FRAME: &[u8] = b"event: ping\ndata: {\"type\":\"ping\"}\n\n";
+
 /// The HTTP `Authorization` header name (lowercase, canonical). Emitted by the bearer/SigV4 auth-header
 /// builders across protocols; named once so no builder re-spells it.
 pub(crate) const HDR_AUTHORIZATION: &str = "authorization";
@@ -391,6 +399,17 @@ pub(crate) trait ProtocolWriter: Send + Sync {
     /// a caller speaking the egress dialect natively gets exactly what a direct call would).
     fn cache_markers_model_gated(&self) -> bool {
         false
+    }
+
+    /// The maximum number of `cache_control` breakpoints this writer's dialect accepts on a single
+    /// request, or `None` when the vendor publishes no fixed cap (Bedrock's cap is model-specific,
+    /// not protocol-wide, so it is deliberately left `None` here rather than guessed). Anthropic
+    /// documents a hard cap of 4 (`"A maximum of 4 blocks with cache_control may be provided"`).
+    /// The IR carries breakpoints as an unbounded per-block `Option<IrCacheControl>`, so a
+    /// cross-protocol request (same-protocol Anthropic is a verbatim passthrough that never reaches
+    /// a writer) can exceed a smaller target's cap; `prepare_for_egress` clamps against this.
+    fn max_cache_control_breakpoints(&self) -> Option<usize> {
+        None
     }
 
     /// Write a response/stream event to wire (event_type, data).
@@ -1638,6 +1657,25 @@ fn scan_json_value_end(bytes: &[u8], start: usize) -> Option<usize> {
             }
         }
     }
+}
+
+/// Truncate `stop` to the egress vendor's published cap. Vendors 400 on an over-length
+/// stop-sequence array and the IR carries an unbounded `Vec` (no protocol enforces a cap on
+/// ingress), so a cross-protocol request can always exceed a smaller target's cap. NON-SILENT:
+/// warns only when it actually truncates, naming `proto` and the cap.
+pub(crate) fn clamp_stop(stop: &[String], cap: usize, proto: &'static str) -> Vec<String> {
+    if stop.len() <= cap {
+        return stop.to_vec();
+    }
+    let provided = stop.len();
+    tracing::warn!(
+        proto,
+        cap,
+        provided,
+        "truncating stop sequences to {proto}'s documented cap of {cap}; the request carried \
+         {provided} more than that vendor allows"
+    );
+    stop[..cap].to_vec()
 }
 
 /// Re-frame an IR-derived `(event_type, data)` as INGRESS SSE bytes. A non-empty `event_type`

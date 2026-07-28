@@ -146,6 +146,61 @@ impl IrReq {
                         );
                     }
                 }
+                // Anthropic cache_control CAP (class-6 6b1): "A maximum of 4 blocks with
+                // cache_control may be provided". Reachable ONLY cross-protocol — same-protocol
+                // Anthropic is a verbatim byte passthrough that never reaches a writer, so this
+                // can never clamp a request that is legal for its own backend. Walk in Anthropic's
+                // own prefix order (system -> every message's content -> every tool), `.take()`ing
+                // every breakpoint past the cap so the writer emits at most `cap` of them, and warn
+                // once with the count actually dropped.
+                if let Some(cap) = prep.cache_control_cap {
+                    let mut seen = 0usize;
+                    let mut dropped = 0usize;
+                    let mut walk_take = |blocks: &mut [crate::ir::IrBlock]| {
+                        for b in blocks {
+                            let cc = match b {
+                                crate::ir::IrBlock::Text { cache_control, .. }
+                                | crate::ir::IrBlock::Thinking { cache_control, .. }
+                                | crate::ir::IrBlock::ToolUse { cache_control, .. }
+                                | crate::ir::IrBlock::ToolResult { cache_control, .. }
+                                | crate::ir::IrBlock::Image { cache_control, .. } => cache_control,
+                                crate::ir::IrBlock::Json(_) => continue,
+                            };
+                            if cc.is_some() {
+                                if seen < cap {
+                                    seen += 1;
+                                } else {
+                                    *cc = None;
+                                    dropped += 1;
+                                }
+                            }
+                        }
+                    };
+                    walk_take(&mut ir.system);
+                    for m in &mut ir.messages {
+                        walk_take(&mut m.content);
+                    }
+                    for t in &mut ir.tools {
+                        if t.cache_control.is_some() {
+                            if seen < cap {
+                                seen += 1;
+                            } else {
+                                t.cache_control = None;
+                                dropped += 1;
+                            }
+                        }
+                    }
+                    if dropped > 0 {
+                        tracing::warn!(
+                            ingress = %prep.ingress_protocol,
+                            cap,
+                            dropped,
+                            "dropping {dropped} cache_control breakpoint(s) past the egress \
+                             dialect's cap of {cap}: the target vendor 400s past this count and \
+                             the IR carries breakpoints unbounded"
+                        );
+                    }
+                }
                 // HOSTED-TOOL cross-protocol drop (R3-B). A Responses hosted tool
                 // (`{"type":"web_search"}` → `IrTool{ name:"", hosted:Some(..) }`) has NO function-tool
                 // analog: ONLY the Responses writer honors `hosted`; every other egress writer projects
@@ -165,6 +220,29 @@ impl IrReq {
                          has no function-tool equivalent for a non-Responses backend; forwarding it \
                          would emit a malformed empty-name function tool the upstream rejects (400). \
                          Route hosted-tool requests to a Responses lane to use them"
+                    );
+                }
+                // class-6 6c2: Gemini `cachedContent` references a server-side context cache at
+                // Google that busbar cannot project into `contents` — it has no handle on the
+                // cached turns' text. `extra` is about to be wiped wholesale below (this is the
+                // cross-protocol-only seam; same-protocol Gemini->Gemini never reaches here), so a
+                // `cachedContent` key silently disappears with TWO invisible consequences: the
+                // backend answers on the VISIBLE history only (the cached turns are ABSENT, not
+                // summarized), and the caller is billed FULL UNCACHED input. Fail-closed here would
+                // be TERMINAL (both `proxy/wire.rs` callers do `Err => return`, pre-empting
+                // failover to a same-pool Gemini lane later), so — matching the two warns just
+                // above that already guard this same clear — degrade with a LOUD warn naming both
+                // consequences; that is the contract this codebase already applies at this seam.
+                if ir.extra.contains_key("cachedContent") {
+                    tracing::warn!(
+                        ingress = %prep.ingress_protocol,
+                        key = "cachedContent",
+                        "dropping Gemini `cachedContent` on the cross-protocol seam: the referenced \
+                         context cache lives server-side at Google and cannot be projected into \
+                         `contents`, so (1) the backend answers on the VISIBLE history only — the \
+                         cached turns are absent, not summarized — and (2) the caller is billed FULL \
+                         UNCACHED input for this request. Route cachedContent requests to a Gemini \
+                         lane."
                     );
                 }
                 ir.extra.clear();
@@ -227,6 +305,11 @@ pub(crate) struct EgressPrep<'a> {
     /// they are CLEARED here with a warn — the one place the gate lives, so no writer can emit a
     /// model-gated cache marker (Bedrock `cachePoint`) to a lane that did not claim it.
     pub(crate) prompt_caching_allowed: bool,
+    /// The egress writer's `max_cache_control_breakpoints()` (`Some(4)` for Anthropic, `None`
+    /// elsewhere — see that method's doc for why Bedrock is deliberately excluded). Anthropic 400s
+    /// past this count; the IR carries breakpoints unbounded, so a cross-protocol request can
+    /// exceed it. `None` means "no cap to enforce here" — the cap walk below is a no-op.
+    pub(crate) cache_control_cap: Option<usize>,
 }
 
 impl IrResp {

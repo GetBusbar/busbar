@@ -1213,6 +1213,48 @@ fn read_request_preserves_sampling_params_in_extra() {
     assert_eq!(out["n"], serde_json::json!(2));
 }
 
+/// class-6 6c3: `reasoning_effort` values `IrReasoningEffort::parse` does not know (`"none"`,
+/// `"xhigh"` — real `gpt-5`-family spellings) must NOT be lost. `reasoning_effort` is a MODELED
+/// key, so it is excluded from the generic `extra` sweep; without a rescue, an unrecognised value
+/// is stripped from BOTH the typed field AND `extra` — total loss, even OpenAI->OpenAI same-lane.
+#[test]
+fn unknown_reasoning_effort_survives_in_extra() {
+    use crate::test_support::warn_capture::WarnCapture;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let body = serde_json::json!({
+        "model": "gpt-5",
+        "messages": [{ "role": "user", "content": "hi" }],
+        "reasoning_effort": "xhigh"
+    });
+
+    let cap = WarnCapture::default();
+    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    let ir = tracing::subscriber::with_default(subscriber, || {
+        OpenAiReader.read_request(&body).expect("parses")
+    });
+
+    assert_eq!(
+        ir.reasoning, None,
+        "an unrecognised value carries no typed reasoning ask"
+    );
+    assert_eq!(
+        ir.extra.get("reasoning_effort"),
+        Some(&serde_json::json!("xhigh")),
+        "the raw value must survive in extra so it is not silently lost: {:?}",
+        ir.extra
+    );
+    assert!(
+        cap.contains("xhigh"),
+        "the unrecognised value must be warned about: {:?}",
+        cap.messages()
+    );
+
+    // And it reaches the upstream body on a same-protocol write via the extra-forwarding loop.
+    let out = OpenAiWriter.write_request(&ir);
+    assert_eq!(out["reasoning_effort"], serde_json::json!("xhigh"));
+}
+
 // --- tool-call-only assistant turn → content: null, not [] ---
 
 #[test]
@@ -3474,6 +3516,7 @@ fn test_openai_tool_choice_required_roundtrips() {
     let body = serde_json::json!({
         "model": "gpt-4o",
         "messages": [{"role": "user", "content": "hi"}],
+        "tools": [{"type": "function", "function": {"name": "get_weather", "parameters": {}}}],
         "tool_choice": "required",
     });
     let ir = OpenAiReader.read_request(&body).expect("parses");
@@ -3489,6 +3532,7 @@ fn test_openai_tool_choice_specific_function() {
     let body = serde_json::json!({
         "model": "gpt-4o",
         "messages": [{"role": "user", "content": "hi"}],
+        "tools": [{"type": "function", "function": {"name": "get_weather", "parameters": {}}}],
         "tool_choice": {"type": TOOL_TYPE_FUNCTION, "function": {"name": "get_weather"}},
     });
     let ir = OpenAiReader.read_request(&body).expect("parses");
@@ -3747,6 +3791,7 @@ fn test_n_gt_1_clamped_to_one_on_cross_protocol_egress() {
             reasoning_allowed: true,
             reasoning_budgets: crate::ir::REASONING_BUDGET_DEFAULTS,
             prompt_caching_allowed: true,
+            cache_control_cap: None,
         }
     }
 
@@ -3795,6 +3840,7 @@ fn test_openai_tool_choice_auto_roundtrips() {
     let body = serde_json::json!({
         "model": "gpt-4o",
         "messages": [{"role": "user", "content": "hi"}],
+        "tools": [{"type": "function", "function": {"name": "get_weather", "parameters": {}}}],
         "tool_choice": "auto",
     });
     let ir = OpenAiReader.read_request(&body).expect("parses");
@@ -3809,6 +3855,7 @@ fn test_openai_tool_choice_none_roundtrips() {
     let body = serde_json::json!({
         "model": "gpt-4o",
         "messages": [{"role": "user", "content": "hi"}],
+        "tools": [{"type": "function", "function": {"name": "get_weather", "parameters": {}}}],
         "tool_choice": "none",
     });
     let ir = OpenAiReader.read_request(&body).expect("parses");
@@ -3840,6 +3887,13 @@ fn test_anthropic_to_openai_tool_choice_directions() {
     for (tc, expected) in cases {
         let ir = crate::ir::IrRequest {
             tool_choice: Some(tc.clone()),
+            tools: vec![crate::ir::IrTool {
+                name: "get_weather".to_string(),
+                description: None,
+                input_schema: serde_json::json!({}),
+                cache_control: None,
+                hosted: None,
+            }],
             ..test_ir_request()
         };
         let out = OpenAiWriter.write_request(&ir);
@@ -4562,6 +4616,122 @@ fn write_response_carries_citations_with_join_relative_offsets() {
     assert_eq!(anns[1]["end_index"], 26);
 }
 
+/// class-6 6e3: `start_index: i64::MAX` (upstream-controlled, only sign-checked) must not panic on
+/// the response path. `cargo test` builds debug, where the un-clamped `+` in the old code panics.
+#[test]
+fn url_annotation_offset_saturates_on_absurd_upstream_index() {
+    let citations = vec![crate::ir::IrCitation {
+        kind: Some("web_search_result_location".into()),
+        cited_text: None,
+        title: Some("T".into()),
+        url: Some("https://example.com".into()),
+        document_index: None,
+        start_index: Some(i64::MAX),
+        end_index: Some(i64::MAX),
+        encrypted_index: None,
+        raw: None,
+    }];
+    // Must not panic.
+    let anns = crate::proto::openai_chat::url_annotations("hi", 5, &citations);
+    assert_eq!(anns.len(), 1, "{anns:?}");
+    assert_eq!(
+        anns[0]["start_index"],
+        serde_json::json!(i64::MAX),
+        "saturating_add on i64::MAX + a small base stays i64::MAX, not wraps: {anns:?}"
+    );
+}
+
+/// class-6 6e1 site 1: the writer's base accumulator must advance in CHARACTERS, not bytes — the
+/// IR citation contract is characters. A non-ASCII first block shifts every citation in block 2+
+/// by its byte-vs-char delta under the old `text.len()` accumulator.
+#[test]
+fn url_annotation_base_accumulates_in_characters() {
+    let cite = |quote: &str, url: &str| crate::ir::IrCitation {
+        kind: Some("web_search_result_location".into()),
+        cited_text: Some(quote.into()),
+        title: None,
+        url: Some(url.into()),
+        document_index: None,
+        start_index: None,
+        end_index: None,
+        encrypted_index: None,
+        raw: None,
+    };
+    // "héllo wörld " has 12 CHARS but 14 BYTES (é and ö are 2 bytes each in UTF-8).
+    let first_block = "héllo wörld ";
+    assert_eq!(first_block.chars().count(), 12);
+    assert_eq!(first_block.len(), 14);
+
+    let resp = crate::ir::IrResponse {
+        logprobs: Vec::new(),
+        role: IrRole::Assistant,
+        id: Some("chatcmpl-c".into()),
+        model: Some("gpt-4o".into()),
+        created: Some(1_700_000_000),
+        content: vec![
+            IrBlock::Text {
+                text: first_block.to_string(),
+                cache_control: None,
+                citations: vec![],
+            },
+            IrBlock::Text {
+                text: "claim.".to_string(),
+                cache_control: None,
+                citations: vec![cite("claim.", "https://b.test")],
+            },
+        ],
+        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+        stop_sequence: None,
+        usage: IrUsage {
+            input_tokens: 1,
+            output_tokens: 1,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: None,
+        },
+        system_fingerprint: None,
+    };
+    let v = OpenAiWriter.write_response(&resp);
+    let anns = v["choices"][0]["message"]["annotations"]
+        .as_array()
+        .expect("annotations must be emitted");
+    assert_eq!(anns.len(), 1, "{anns:?}");
+    assert_eq!(
+        anns[0]["start_index"], 12,
+        "the second block's citation must be offset by the CHARACTER length (12) of the first \
+         block, not its byte length (14): {anns:?}"
+    );
+}
+
+/// class-6 6e1 site 2: the quote-recovery arm's `text.find(q)`/`q.len()` are byte offsets/lengths;
+/// converting to chars at the point of use must report character-based indices even when the
+/// quoted text follows non-ASCII content in the same block.
+#[test]
+fn url_annotation_quote_recovery_reports_character_indices() {
+    let citations = vec![crate::ir::IrCitation {
+        kind: Some("web_search_result_location".into()),
+        cited_text: Some("wörld".into()),
+        title: None,
+        url: Some("https://example.com".into()),
+        document_index: None,
+        start_index: None,
+        end_index: None,
+        encrypted_index: None,
+        raw: None,
+    }];
+    // "héllo " is 6 chars / 7 bytes; "wörld" (the quote) is 5 chars / 6 bytes.
+    let text = "héllo wörld";
+    let anns = crate::proto::openai_chat::url_annotations(text, 0, &citations);
+    assert_eq!(anns.len(), 1, "{anns:?}");
+    assert_eq!(
+        anns[0]["start_index"], 6,
+        "the quote's start must be the CHARACTER offset (6), not the byte offset (7): {anns:?}"
+    );
+    assert_eq!(
+        anns[0]["end_index"], 11,
+        "the quote's end must be the CHARACTER offset (11), not the byte offset (13): {anns:?}"
+    );
+}
+
 /// A completion with no sources must carry NO annotations key. OpenAI omits it when none were
 /// produced, so a hardcoded empty array would be a proxy tell in the other direction.
 #[test]
@@ -4589,4 +4759,90 @@ fn write_response_omits_annotations_when_there_are_no_citations() {
     };
     let v = OpenAiWriter.write_response(&resp);
     assert!(v["choices"][0]["message"].get("annotations").is_none());
+}
+
+/// class-6 6c4: `image_url.detail` is a cost/latency hint no `IrBlock::Image` field can carry
+/// (nested inside `messages`, a modeled key, so it cannot ride `extra` either — and only one
+/// protocol models it, so per owner decision no IR field is added). It must at least be
+/// diagnosable via a warn rather than silently vanishing, even OpenAI->OpenAI same-lane. `"auto"`
+/// is the default and must NOT warn (it is not information loss).
+#[test]
+fn image_detail_warns_on_drop_except_auto() {
+    use crate::test_support::warn_capture::WarnCapture;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let body_high = serde_json::json!({
+        "model": "gpt-4o",
+        "messages": [{
+            "role": "user",
+            "content": [{
+                "type": "image_url",
+                "image_url": {"url": "https://example.com/x.png", "detail": "high"}
+            }]
+        }]
+    });
+    let cap = WarnCapture::default();
+    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    let _ir = tracing::subscriber::with_default(subscriber, || {
+        OpenAiReader.read_request(&body_high).expect("parses")
+    });
+    assert!(
+        cap.contains("detail"),
+        "a non-auto detail must warn on drop: {:?}",
+        cap.messages()
+    );
+
+    let body_auto = serde_json::json!({
+        "model": "gpt-4o",
+        "messages": [{
+            "role": "user",
+            "content": [{
+                "type": "image_url",
+                "image_url": {"url": "https://example.com/x.png", "detail": "auto"}
+            }]
+        }]
+    });
+    let cap2 = WarnCapture::default();
+    let subscriber2 = tracing_subscriber::registry().with(cap2.clone());
+    let _ir2 = tracing::subscriber::with_default(subscriber2, || {
+        OpenAiReader.read_request(&body_auto).expect("parses")
+    });
+    assert!(
+        !cap2.contains("detail"),
+        "the default 'auto' detail is not information loss and must not warn: {:?}",
+        cap2.messages()
+    );
+}
+
+/// REGRESSION PROOF (class-6 6e1 anti-regression, T16): an Anthropic-sourced citation's
+/// `start_char_index`/`end_char_index` are ALREADY characters (the IR contract). The `(Some,Some)`
+/// arm in `url_annotations` must NOT be touched by the byte->char fixes above — converting it again
+/// would DOUBLE-CONVERT and corrupt Anthropic->OpenAI citations on non-ASCII text. This must pass
+/// BEFORE and AFTER the citation fixes; if it fails after, the fix was implemented wrong.
+#[test]
+fn anthropic_sourced_citation_indices_are_not_double_converted() {
+    // Anthropic citations already carry CHARACTER offsets computed over non-ASCII text — e.g. a
+    // quote starting at character 6 of "héllo wörld claim." (which is BYTE offset 7). Simulate
+    // exactly what the Anthropic reader would populate: start_index/end_index already in chars.
+    let citations = vec![crate::ir::IrCitation {
+        kind: Some("web_search_result_location".into()),
+        cited_text: None,
+        title: Some("T".into()),
+        url: Some("https://example.com".into()),
+        document_index: None,
+        start_index: Some(6),
+        end_index: Some(11),
+        encrypted_index: None,
+        raw: None,
+    }];
+    let anns = crate::proto::openai_chat::url_annotations("héllo wörld", 0, &citations);
+    assert_eq!(anns.len(), 1, "{anns:?}");
+    assert_eq!(
+        anns[0]["start_index"], 6,
+        "an already-character offset must pass through UNCHANGED, not be converted again: {anns:?}"
+    );
+    assert_eq!(
+        anns[0]["end_index"], 11,
+        "an already-character offset must pass through UNCHANGED, not be converted again: {anns:?}"
+    );
 }

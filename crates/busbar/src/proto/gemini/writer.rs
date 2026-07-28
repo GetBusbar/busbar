@@ -296,15 +296,37 @@ impl ProtocolWriter for GeminiWriter {
             .cloned()
             .unwrap_or_default();
         if let Some(tc) = &req.tool_choice {
-            tool_config.insert(
-                "functionCallingConfig".to_string(),
-                write_gemini_tool_choice(tc),
-            );
+            // A `functionCallingConfig` with no accompanying `tools` is meaningless (there is
+            // nothing to force/allow) and, like every sibling protocol's equivalent guard, the
+            // reachable case is a cross-protocol request whose hosted tools `prepare_for_egress`
+            // stripped (`ir/variant.rs`) while the tool_choice directive survived. Drop with a warn
+            // rather than emitting a directive over an empty tool set.
+            if req.tools.is_empty() {
+                tracing::warn!(
+                    "dropping tool_choice on Gemini egress: a functionCallingConfig with no \
+                     accompanying tools is meaningless (likely because the hosted tools that \
+                     carried it were stripped on the cross-protocol seam)"
+                );
+            } else {
+                tool_config.insert(
+                    "functionCallingConfig".to_string(),
+                    write_gemini_tool_choice(tc),
+                );
+            }
         }
         if !tool_config.is_empty() {
             out.insert(
                 "toolConfig".to_string(),
                 serde_json::Value::Object(tool_config),
+            );
+        }
+        // class-6 6c1 egress: `generateContent` models no parallelism control at all — `None` is
+        // NOT touched here (owner decision 4: a warn on EVERY request would be noise). The
+        // `is_some()` gate means this can only fire on a request that actually carried the flag.
+        if req.parallel_tool_calls.is_some() {
+            tracing::warn!(
+                "dropping parallel_tool_calls on Gemini egress: generateContent has no parallelism \
+                 control, so the backend's default parallelism applies"
             );
         }
 
@@ -338,7 +360,10 @@ impl ProtocolWriter for GeminiWriter {
             gen_config.insert("topK".to_string(), serde_json::json!(top_k));
         }
         if !req.stop.is_empty() {
-            gen_config.insert("stopSequences".to_string(), serde_json::json!(req.stop));
+            gen_config.insert(
+                "stopSequences".to_string(),
+                serde_json::json!(crate::proto::clamp_stop(&req.stop, 5, "Gemini")),
+            );
         }
         // Promoted sampling controls in Gemini's native generationConfig shape (cross-protocol
         // survival, inverse of the reader's promotion). `n` → `candidateCount` (Gemini's name).
@@ -757,8 +782,16 @@ impl ProtocolWriter for GeminiWriter {
                     if citations.is_empty() {
                         None
                     } else {
-                        let sources: Vec<serde_json::Value> =
-                            citations.iter().map(write_gemini_citation).collect();
+                        // STREAMING egress has no accumulated full response text to convert a
+                        // foreign (non-Gemini-sourced) citation's character offsets back to bytes
+                        // against — the same limitation the streaming READER documents (class-6
+                        // 6e1 site 3 is scoped to the non-stream path on both sides). The `raw`
+                        // short-circuit inside `write_gemini_citation` still makes the common
+                        // same-protocol case byte-exact regardless.
+                        let sources: Vec<serde_json::Value> = citations
+                            .iter()
+                            .map(|c| write_gemini_citation(c, ""))
+                            .collect();
                         Some((
                             "".to_string(),
                             serde_json::json!({
@@ -949,7 +982,7 @@ impl ProtocolWriter for GeminiWriter {
                     text, citations, ..
                 } => {
                     for c in citations {
-                        citation_sources.push(write_gemini_citation(c));
+                        citation_sources.push(write_gemini_citation(c, text));
                     }
                     if !text.is_empty() {
                         parts_arr.push(serde_json::json!({"text": text}));

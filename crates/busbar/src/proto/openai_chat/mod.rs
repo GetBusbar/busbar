@@ -448,7 +448,13 @@ pub(crate) fn url_annotations(
             continue;
         };
         let span = match (c.start_index, c.end_index) {
-            (Some(s), Some(e)) if s >= 0 && e >= s => Some((s + base as i64, e + base as i64)),
+            // `saturating_add` (not `+`): `s`/`e` are upstream-controlled `i64` (only sign-checked
+            // above), so `i64::MAX + base` would panic in debug / wrap in release — an
+            // upstream-triggered crash on the response path. Same cure `billable_tokens` already
+            // establishes for upstream-controlled counts (`ir/mod.rs`).
+            (Some(s), Some(e)) if s >= 0 && e >= s => {
+                Some((s.saturating_add(base as i64), e.saturating_add(base as i64)))
+            }
             // Recover the span from the quote when the source carried no offsets, but only when it
             // occurs exactly once — two matches make the anchor ambiguous.
             _ => c
@@ -456,11 +462,16 @@ pub(crate) fn url_annotations(
                 .as_deref()
                 .filter(|q| !q.is_empty())
                 .and_then(|q| {
+                    // `str::find` and `q.len()` are BYTE offsets/lengths; the IR contract is
+                    // CHARACTERS (class-6 6e1, site 2). `find` always returns a char boundary, so
+                    // the byte slice below stays valid — only the emitted span needs converting.
                     let first = text.find(q)?;
                     if text[first + q.len()..].contains(q) {
                         return None;
                     }
-                    Some(((base + first) as i64, (base + first + q.len()) as i64))
+                    let start_ch = text[..first].chars().count();
+                    let len_ch = q.chars().count();
+                    Some(((base + start_ch) as i64, (base + start_ch + len_ch) as i64))
                 }),
         };
         let Some((start, end)) = span else {
@@ -518,6 +529,21 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock
             // url>`, which the Anthropic writer then emitted as a base64 source whose data was a
             // URL — an invalid Anthropic request. For a `data:<mime>;base64,<payload>` URI we now
             // split out the real MIME type and payload so the cross-protocol image is valid.
+            // class-6 6c4: `image_url.detail` (`low`/`high`/`auto`) is a cost/latency knob ONE
+            // vendor models — `IrBlock::Image` has no field for it (owner decision: an IR field is
+            // added only when at least TWO protocols model a knob; `detail` is OpenAI-family-only),
+            // and it is nested inside `"messages"`, a MODELED key, so it cannot ride `extra` either
+            // the way an unmodeled top-level field can. Warn so the loss is diagnosable rather than
+            // silent, even OpenAI->OpenAI same-lane.
+            if let Some(detail) = image_obj.get("detail").and_then(|v| v.as_str()) {
+                if detail != "auto" {
+                    tracing::warn!(
+                        detail,
+                        "dropping image_url.detail: no cross-protocol carrier exists for this \
+                         cost/latency hint (not even on a same-protocol OpenAI round-trip)"
+                    );
+                }
+            }
             Ok(crate::ir::IrBlock::Image {
                 source: super::parse_image_url(url),
                 cache_control: None,

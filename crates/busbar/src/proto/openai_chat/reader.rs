@@ -368,11 +368,30 @@ impl ProtocolReader for OpenAiReader {
 
         // The reasoning ASK in chat-completions spelling: a top-level `reasoning_effort` word.
         // Promoted so it carries to Anthropic/Gemini thinking budgets via the effort table.
-        let reasoning = obj
-            .get("reasoning_effort")
-            .and_then(|v| v.as_str())
+        let reasoning_effort_raw = obj.get("reasoning_effort").and_then(|v| v.as_str());
+        let reasoning = reasoning_effort_raw
             .and_then(crate::ir::IrReasoningEffort::parse)
             .map(crate::ir::IrReasoningAsk::Effort);
+        // `reasoning_effort` is a MODELED key (in `modeled_request_keys()` below), so it is
+        // excluded from the generic `extra` sweep — an unrecognised value (e.g. a `gpt-5`-family
+        // spelling this build's `IrReasoningEffort::parse` doesn't know, like "none"/"xhigh")
+        // would otherwise be stripped and LOST entirely, even OpenAI->OpenAI same-lane. The
+        // `OnceLock<HashSet>` behind `modeled_request_keys()` cannot be varied per request, so
+        // re-inserting here — the reader's own escape hatch — is the only implementable rescue.
+        if let Some(raw) = reasoning_effort_raw {
+            if reasoning.is_none() {
+                tracing::warn!(
+                    reasoning_effort = raw,
+                    "unrecognised reasoning_effort value; preserving it verbatim in extra so a \
+                     same-protocol OpenAI egress still carries it, though it carries no thinking \
+                     budget on a cross-protocol hop"
+                );
+                extra.insert(
+                    "reasoning_effort".to_string(),
+                    serde_json::Value::String(raw.to_string()),
+                );
+            }
+        }
 
         // Logprobs ask, carried first-class so it reaches a Gemini backend as
         // `generationConfig.responseLogprobs`/`logprobs` (and back).

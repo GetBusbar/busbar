@@ -10,9 +10,12 @@ fn cohere_stop_reason_codec_round_trips_and_never_leaks() {
         read_cohere_stop_reason(COHERE_FINISH_ERROR_TOXIC),
         S::Safety
     );
-    assert_eq!(write_cohere_stop_reason(S::Safety), "ERROR_TOXIC"); // golden wire-contract literal (kept bare on purpose)
-                                                                    // A reason with no Cohere analog (`refusal`) or an unknown native token (`ERROR_LIMIT` →
-                                                                    // Other) degrades to the safe terminal COMPLETE rather than leak an off-spec finish_reason.
+    // `ERROR_TOXIC` is a v1 Generate-API token, not a member of v2 `/v2/chat`'s finish_reason enum
+    // (class-6 6d) — the reader still accepts it as forward-compat, but the writer must never emit
+    // it. `S::Safety` maps to the same `ERROR` as `S::Error`: v2 genuinely cannot distinguish them.
+    assert_eq!(write_cohere_stop_reason(S::Safety), "ERROR"); // golden wire-contract literal (kept bare on purpose)
+                                                              // A reason with no Cohere analog (`refusal`) or an unknown native token (`ERROR_LIMIT` →
+                                                              // Other) degrades to the safe terminal COMPLETE rather than leak an off-spec finish_reason.
     assert_eq!(read_cohere_stop_reason("ERROR_LIMIT"), S::Other);
     assert_eq!(write_cohere_stop_reason(S::Refusal), "COMPLETE"); // golden wire-contract literal (kept bare on purpose)
     assert_eq!(write_cohere_stop_reason(S::Other), "COMPLETE"); // golden wire-contract literal (kept bare on purpose)
@@ -857,13 +860,13 @@ fn test_auth_headers_control_byte_key_omits_header() {
     );
 }
 
-/// A Cohere->Cohere passthrough where the upstream returned
-/// `ERROR_TOXIC` (content-moderation stop) must NOT be downgraded to `ERROR` (infrastructure
-/// failure). The reader normalises `ERROR_TOXIC` to IR `safety`; the writer must map `safety`
-/// back to `ERROR_TOXIC` so the moderation signal round-trips. Covers both the non-streaming
-/// `write_response` and the streaming `message-end` paths.
+/// class-6 6d: `ERROR_TOXIC` is a v1 Generate-API finish token, not a member of Cohere v2's
+/// `/v2/chat` `finish_reason` enum. The writer must emit the v2-legal `ERROR` for `IrStopReason::
+/// Safety` (the reader keeps accepting `ERROR_TOXIC` on the way IN, as v1-dialect forward-compat —
+/// that asymmetry is intentional). Covers both the non-streaming `write_response` and the
+/// streaming `message-end` paths.
 #[test]
-fn test_safety_finish_reason_writes_error_toxic_non_stream() {
+fn test_safety_finish_reason_writes_error_non_stream() {
     let resp = crate::ir::IrResponse {
         logprobs: Vec::new(),
         role: crate::ir::IrRole::Assistant,
@@ -889,20 +892,20 @@ fn test_safety_finish_reason_writes_error_toxic_non_stream() {
     let body = writer.write_response(&resp);
     assert_eq!(
         body.get("finish_reason").and_then(|v| v.as_str()),
-        Some("ERROR_TOXIC"), // golden wire-contract literal (kept bare on purpose)
-        "IR safety must write back as the native content-moderation stop ERROR_TOXIC"
+        Some("ERROR"), // golden wire-contract literal (kept bare on purpose)
+        "IR safety must write back as the v2-legal ERROR, never the v1-only ERROR_TOXIC"
     );
 
-    // Round-trips: ERROR_TOXIC reads back to IR safety (the reader normalises only ERROR_TOXIC
-    // to safety; the generic ERROR is NOT a moderation signal — see the ERROR round-trip test).
+    // Reading it back lands on `Error`, not `Safety` — the distinction is genuinely lost on the v2
+    // wire (S7's documented, accepted collision). This is NOT a round-trip.
     let back = CohereReader
         .read_response(&body)
         .expect("read self-written body");
-    assert_eq!(back.stop_reason, Some(crate::ir::IrStopReason::Safety));
+    assert_eq!(back.stop_reason, Some(crate::ir::IrStopReason::Error));
 }
 
 #[test]
-fn test_safety_finish_reason_writes_error_toxic_stream() {
+fn test_safety_finish_reason_writes_error_stream() {
     let ev = IrStreamEvent::MessageDelta {
         stop_reason: Some(crate::ir::IrStopReason::Safety),
         stop_sequence: None,
@@ -922,8 +925,8 @@ fn test_safety_finish_reason_writes_error_toxic_stream() {
             .get("delta")
             .and_then(|d| d.get("finish_reason"))
             .and_then(|v| v.as_str()),
-        Some("ERROR_TOXIC"), // golden wire-contract literal (kept bare on purpose)
-        "streamed safety stop must emit ERROR_TOXIC, not ERROR"
+        Some("ERROR"), // golden wire-contract literal (kept bare on purpose)
+        "streamed safety stop must emit the v2-legal ERROR, never ERROR_TOXIC"
     );
 }
 
@@ -3893,10 +3896,13 @@ fn ir_with_tool_choice(tc: Option<crate::ir::IrToolChoice>) -> crate::ir::IrRequ
 
 #[test]
 fn test_cohere_tool_choice_required_roundtrips() {
-    // REQUIRED reads into the IR union and re-emits as the native enum string (PF-H1).
+    // REQUIRED reads into the IR union and re-emits as the native enum string (PF-H1). `tools` is
+    // required alongside `tool_choice` (class-6 6b2) — omitting it here would be testing the
+    // guaranteed-400 shape the guard exists to prevent.
     let body = serde_json::json!({
         "model": "command-r",
         "messages": [{"role": "user", "content": "hi"}],
+        "tools": [{"type": "function", "function": {"name": "get_weather", "parameters": {}}}],
         "tool_choice": COHERE_TOOL_CHOICE_REQUIRED
     });
     let ir = CohereReader
@@ -3914,10 +3920,12 @@ fn test_cohere_tool_choice_required_roundtrips() {
 
 #[test]
 fn test_cohere_tool_choice_none() {
-    // NONE round-trips to the IR `None` variant (forbid tools), distinct from omission.
+    // NONE round-trips to the IR `None` variant (forbid tools), distinct from omission. `tools` is
+    // required alongside `tool_choice` (class-6 6b2).
     let body = serde_json::json!({
         "model": "command-r",
         "messages": [{"role": "user", "content": "hi"}],
+        "tools": [{"type": "function", "function": {"name": "get_weather", "parameters": {}}}],
         "tool_choice": COHERE_TOOL_CHOICE_NONE
     });
     let ir = CohereReader
@@ -4200,6 +4208,15 @@ fn tool_choice_maps_to_cohere_native_strings() {
                     cache_control: None,
                     citations: Vec::new(),
                 }],
+            }],
+            // `tools` is required alongside `tool_choice` (class-6 6b2) — omitting it would test
+            // the guaranteed-400 shape the guard exists to prevent.
+            tools: vec![crate::ir::IrTool {
+                name: "f".to_string(),
+                description: None,
+                input_schema: serde_json::json!({}),
+                cache_control: None,
+                hosted: None,
             }],
             ..Default::default()
         };

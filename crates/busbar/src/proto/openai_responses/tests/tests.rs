@@ -1,5 +1,48 @@
 use super::*;
 
+/// class-6 6a2: an `input_file` content block (a legitimate Responses input shape) must not
+/// silently vanish. Before this fix, `responses_block`'s bare `_ => Err(..)` was swallowed by
+/// every caller's `filter_map(..ok())` with ZERO log at any level — not a 400, not a warn, just a
+/// disappeared block. It must now degrade to an empty placeholder AND warn, naming the type.
+#[test]
+fn responses_input_file_degrades_with_warn_not_silent_drop() {
+    use crate::test_support::warn_capture::WarnCapture;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let body = serde_json::json!({
+        "input": [{
+            "type": "message",
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "before"},
+                {"type": "input_file", "file_id": "file-x"},
+                {"type": "input_text", "text": "after"}
+            ]
+        }]
+    });
+
+    let cap = WarnCapture::default();
+    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    let ir = tracing::subscriber::with_default(subscriber, || {
+        ResponsesReader.read_request(&body).expect("read_request")
+    });
+
+    // The turn survives with its position preserved: 3 content blocks, not 2 (a silent drop would
+    // collapse it to 2 — before/after with the file gone, indistinguishable from a well-formed
+    // 2-block message).
+    assert_eq!(
+        ir.messages[0].content.len(),
+        3,
+        "the unmodeled block must not vanish — it must degrade in place: {:?}",
+        ir.messages[0].content
+    );
+    assert!(
+        cap.contains("input_file"),
+        "the drop must be logged, naming the unmodeled type: {:?}",
+        cap.messages()
+    );
+}
+
 /// LOW (lossless-by-target): the Responses create API models no `top_k`. A request carrying
 /// `top_k` must NOT emit a `top_k` field (it would 400 a real `/v1/responses` call) — it is
 /// dropped with a `warn!` (the drop-with-warn branch is exercised here). `top_p`, which the
@@ -5343,6 +5386,7 @@ fn test_responses_tool_choice_required_roundtrips() {
     let json = serde_json::json!({
         "model": "gpt-4o",
         "input": [{"role": "user", "content": "hi"}],
+        "tools": [{"type": "function", "name": "get_weather", "parameters": {}}],
         "tool_choice": "required",
     });
     let reader = ResponsesReader;
@@ -5366,6 +5410,7 @@ fn test_responses_tool_choice_specific_function() {
     let json = serde_json::json!({
         "model": "gpt-4o",
         "input": [{"role": "user", "content": "hi"}],
+        "tools": [{"type": "function", "name": "get_weather", "parameters": {}}],
         "tool_choice": {"type": "function", "name": "get_weather"},
     });
     let reader = ResponsesReader;
@@ -6198,6 +6243,7 @@ fn test_hosted_tools_dropped_cross_protocol() {
         reasoning_allowed: false,
         reasoning_budgets: [0, 0, 0, 0],
         prompt_caching_allowed: true,
+        cache_control_cap: None,
     });
     let crate::ir::variant::IrReq::Chat(ir) = req else {
         panic!("still a chat request");
@@ -6511,4 +6557,72 @@ fn streamed_citations_reach_the_assembled_output_item() {
     );
     assert_eq!(anns[0]["url"], "https://example.com/s");
     assert_eq!(anns[0]["end_index"], 14);
+}
+
+/// class-6 6f: a `developer`/`system` item AFTER an earlier conversational turn is still hoisted
+/// (behavior unchanged — the IR cannot express a positioned system turn), but must now WARN, since
+/// hoisting silently changes when the instruction takes effect relative to native Responses
+/// semantics. The BEFORE-any-turn case must NOT warn (that is the ordinary, non-surprising shape).
+#[test]
+fn mid_conversation_developer_item_is_flagged() {
+    use crate::test_support::warn_capture::WarnCapture;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let body = serde_json::json!({
+        "input": [
+            {"type": "message", "role": "user", "content": "hi"},
+            {"type": "message", "role": "assistant", "content": "hello"},
+            {"type": "message", "role": "developer", "content": "now answer in French"},
+            {"type": "message", "role": "user", "content": "and again"}
+        ]
+    });
+
+    let cap = WarnCapture::default();
+    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    let ir = tracing::subscriber::with_default(subscriber, || {
+        ResponsesReader.read_request(&body).expect("read_request")
+    });
+
+    // Behavior unchanged: the instruction is still hoisted to `system` (IrRequest.system), applying
+    // from turn 1 — this is a REGRESSION PROOF half, not a red proof.
+    assert!(
+        ir.system.iter().any(|b| matches!(
+            b,
+            crate::ir::IrBlock::Text { text, .. } if text.contains("now answer in French")
+        )),
+        "the developer item's text must still be hoisted into system: {:?}",
+        ir.system
+    );
+    assert!(
+        cap.contains("appeared AFTER an earlier conversational turn"),
+        "a developer/system item after a conversational turn must warn about the hoist: {:?}",
+        cap.messages()
+    );
+}
+
+/// Negative half (REGRESSION PROOF): a `developer`/`system` item BEFORE any conversational turn is
+/// the ordinary shape and must NOT warn.
+#[test]
+fn leading_developer_item_does_not_warn() {
+    use crate::test_support::warn_capture::WarnCapture;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let body = serde_json::json!({
+        "input": [
+            {"type": "message", "role": "developer", "content": "be terse"},
+            {"type": "message", "role": "user", "content": "hi"}
+        ]
+    });
+
+    let cap = WarnCapture::default();
+    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    let _ir = tracing::subscriber::with_default(subscriber, || {
+        ResponsesReader.read_request(&body).expect("read_request")
+    });
+
+    assert!(
+        !cap.contains("appeared AFTER an earlier conversational turn"),
+        "a leading developer item must not warn: {:?}",
+        cap.messages()
+    );
 }

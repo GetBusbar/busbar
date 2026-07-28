@@ -296,8 +296,37 @@ impl ProtocolWriter for ResponsesWriter {
 
         // Emit `tool_choice` (PF-H1) in the Responses native shape when present so a forced/targeted
         // directive translated from another protocol does not silently degrade to `auto`.
+        // `/v1/responses` rejects it tool-less identically to Chat Completions — the reachable case
+        // is a cross-protocol request whose hosted tools `prepare_for_egress` stripped
+        // (`ir/variant.rs`) while the tool_choice directive survived.
         if let Some(tc) = &req.tool_choice {
-            out.insert("tool_choice".to_string(), write_responses_tool_choice(tc));
+            if req.tools.is_empty() {
+                tracing::warn!(
+                    "dropping tool_choice on Responses egress: tool_choice is only allowed when \
+                     tools are specified (likely because the hosted tools that carried it were \
+                     stripped on the cross-protocol seam)"
+                );
+            } else {
+                out.insert("tool_choice".to_string(), write_responses_tool_choice(tc));
+            }
+        }
+        // `parallel_tool_calls` (class-6 6c1 egress): `/v1/responses` documents it the same way as
+        // Chat — meaningless (and, empirically, rejected) with no tools. The `is_some()` gate means
+        // this can only fire on a request that actually carried the flag, so it never fires as
+        // per-request noise on the common tool-less case.
+        if let Some(parallel) = req.parallel_tool_calls {
+            if req.tools.is_empty() {
+                tracing::warn!(
+                    "dropping parallel_tool_calls on Responses egress: it has no accompanying \
+                     tools (likely because the hosted tools that carried it were stripped on the \
+                     cross-protocol seam), so the backend's default parallelism applies"
+                );
+            } else {
+                out.insert(
+                    "parallel_tool_calls".to_string(),
+                    serde_json::json!(parallel),
+                );
+            }
         }
 
         if let Some(max_tokens) = req.max_tokens {

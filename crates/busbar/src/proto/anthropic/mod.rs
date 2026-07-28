@@ -59,6 +59,68 @@ const STOP_REFUSAL: &str = "refusal";
 /// Anthropic content block `type` values not covered by the delta sub-type constants above.
 const BLOCK_TYPE_REDACTED_THINKING: &str = "redacted_thinking";
 
+/// `extra` key parking the RAW native content blocks the IR cannot model (e.g. `document`), by
+/// their position in `req.messages` (system-role messages excluded — they never reach this array
+/// on either side, see `read_request`/`write_request`). Each entry is `{"m": <message index>,
+/// "i": <block index>, "block": <raw block JSON>}`. `read_block`'s degrade-to-empty-Text arm holds
+/// the block's SHAPE in the turn (so message/tool-call ordering survives even cross-protocol,
+/// where this sentinel is cleared along with the rest of `extra`); this sentinel additionally lets
+/// an Anthropic-to-Anthropic hop that goes through the IR (not a byte-verbatim same-protocol
+/// passthrough) splice the ORIGINAL block back in place of the placeholder, so the block survives
+/// its own protocol's round-trip instead of being destroyed.
+const ANTHROPIC_UNMODELED_BLOCKS_SENTINEL: &str = "__busbar_anthropic_unmodeled_blocks";
+
+/// The native Anthropic content-block `type` values [`read_block`] models. Anything else degrades
+/// to an empty Text placeholder there; used here to find which raw blocks need parking under
+/// [`ANTHROPIC_UNMODELED_BLOCKS_SENTINEL`] without duplicating `read_block`'s parse logic.
+fn is_modeled_anthropic_block_type(t: &str) -> bool {
+    matches!(
+        t,
+        "text"
+            | "thinking"
+            | STOP_TOOL_USE
+            | "tool_result"
+            | "image"
+            | BLOCK_TYPE_REDACTED_THINKING
+    )
+}
+
+/// Scan a message's RAW `content` array (as read from the wire, BEFORE `read_block` parses it) for
+/// unmodeled blocks, pushing `{"m","i","block"}` sentinel entries for each. `read_block` parses
+/// every raw block 1:1 with no filtering, so a raw-array index always matches the parsed
+/// `IrMessage.content` index at the same position — no separate index bookkeeping needed.
+fn stash_unmodeled_blocks(
+    msg_val: &serde_json::Value,
+    m: usize,
+    sink: &mut Vec<serde_json::Value>,
+) {
+    let Some(content_arr) = msg_val.get("content").and_then(|c| c.as_array()) else {
+        return;
+    };
+    for (i, block_val) in content_arr.iter().enumerate() {
+        let block_type = block_val.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        if !is_modeled_anthropic_block_type(block_type) {
+            sink.push(serde_json::json!({ "m": m, "i": i, "block": block_val }));
+        }
+    }
+}
+
+/// Look up a stashed raw block for position `(m, i)` in the sentinel array (as read back out of
+/// `req.extra`), for [`write_message`] to splice in place of the empty-Text placeholder.
+fn find_stashed_block(
+    sentinel: &[serde_json::Value],
+    m: usize,
+    i: usize,
+) -> Option<serde_json::Value> {
+    sentinel.iter().find_map(|entry| {
+        let em = entry.get("m")?.as_u64()? as usize;
+        let ei = entry.get("i")?.as_u64()? as usize;
+        (em == m && ei == i)
+            .then(|| entry.get("block").cloned())
+            .flatten()
+    })
+}
+
 /// Anthropic error `type` strings used in error envelopes and in-stream error events. Values
 /// shared with the forward/OpenAI-family vocabulary alias their canonical home in
 /// `openai_family.rs`; only `timeout_error` is an Anthropic-specific spelling (the forward layer's
@@ -953,7 +1015,11 @@ fn write_block(block: &crate::ir::IrBlock) -> serde_json::Value {
     }
 }
 
-fn write_message(msg: &crate::ir::IrMessage) -> serde_json::Value {
+fn write_message(
+    msg: &crate::ir::IrMessage,
+    m: usize,
+    unmodeled_sentinel: &[serde_json::Value],
+) -> serde_json::Value {
     let role_str = match msg.role {
         crate::ir::IrRole::User => "user",
         crate::ir::IrRole::Assistant => "assistant",
@@ -983,10 +1049,15 @@ fn write_message(msg: &crate::ir::IrMessage) -> serde_json::Value {
     // drop UNSIGNED PLAINTEXT thinking. Other block types pass through.
     let mut dropped_unsigned_thinking = 0usize;
     let mut dropped_file_id_image = 0usize;
-    let blocks: Vec<&crate::ir::IrBlock> = msg
+    // Original-index `enumerate()` BEFORE the drop filter — `find_stashed_block` keys on the
+    // position `read_request` recorded, which is the RAW pre-filter content index; collapsing
+    // dropped blocks out of the index space here would misalign every stash lookup after the
+    // first drop.
+    let blocks: Vec<serde_json::Value> = msg
         .content
         .iter()
-        .filter(|block| {
+        .enumerate()
+        .filter_map(|(i, block)| {
             if let crate::ir::IrBlock::Thinking {
                 signature: None,
                 redacted: false,
@@ -994,19 +1065,22 @@ fn write_message(msg: &crate::ir::IrMessage) -> serde_json::Value {
             } = block
             {
                 dropped_unsigned_thinking += 1;
-                false
-            } else if let crate::ir::IrBlock::Image { source, .. } = block {
+                return None;
+            }
+            if let crate::ir::IrBlock::Image { source, .. } = block {
                 // A Responses `file_id` / Bedrock `s3Location` image is an unresolvable cross-vendor
                 // reference with no Anthropic projection. SKIP it rather than emit a corrupt block.
                 if super::is_unresolvable_image_ref(source) {
                     dropped_file_id_image += 1;
-                    false
-                } else {
-                    true
+                    return None;
                 }
-            } else {
-                true
             }
+            // A parked unmodeled block (e.g. `document`) at this exact position: splice the
+            // ORIGINAL raw block back rather than emitting `write_block`'s empty-Text placeholder.
+            if let Some(raw) = find_stashed_block(unmodeled_sentinel, m, i) {
+                return Some(raw);
+            }
+            Some(write_block(block))
         })
         .collect();
     if dropped_unsigned_thinking > 0 {
@@ -1031,8 +1105,7 @@ fn write_message(msg: &crate::ir::IrMessage) -> serde_json::Value {
     // is a well-formed message with zero content blocks that the API accepts. This matches the
     // empty-array skeleton `write_response_event` already emits for `message_start.message.content`
     // (a message with no blocks yet). The non-empty branch is unchanged: a populated array of blocks.
-    let content_val: serde_json::Value =
-        serde_json::Value::Array(blocks.into_iter().map(write_block).collect());
+    let content_val: serde_json::Value = serde_json::Value::Array(blocks);
     serde_json::json!({ "role": role_str, "content": content_val })
 }
 

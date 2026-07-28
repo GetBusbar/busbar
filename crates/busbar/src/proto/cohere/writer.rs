@@ -306,17 +306,37 @@ impl ProtocolWriter for CohereWriter {
         // Cohere may pick any tool, not the one the caller named. This is the ONE documented
         // tool_choice degradation in the codebase — lossy-by-target, intentional, and unavoidable
         // until/unless the Cohere v2 API gains a named-tool choice (PF-H1).
+        // Cohere v2 documents `tool_choice` as only meaningful alongside `tools` (there is nothing
+        // to force/forbid otherwise) — the same shape as every sibling protocol's guard. The
+        // reachable case is a cross-protocol request whose hosted tools `prepare_for_egress`
+        // stripped (`ir/variant.rs`) while the tool_choice directive survived.
         if let Some(tc) = &req.tool_choice {
-            let v = match tc {
-                crate::ir::IrToolChoice::Required | crate::ir::IrToolChoice::Tool { .. } => {
-                    Some(COHERE_TOOL_CHOICE_REQUIRED)
+            if req.tools.is_empty() {
+                tracing::warn!(
+                    "dropping tool_choice on Cohere egress: tool_choice has no accompanying tools \
+                     (likely because the hosted tools that carried it were stripped on the \
+                     cross-protocol seam)"
+                );
+            } else {
+                let v = match tc {
+                    crate::ir::IrToolChoice::Required | crate::ir::IrToolChoice::Tool { .. } => {
+                        Some(COHERE_TOOL_CHOICE_REQUIRED)
+                    }
+                    crate::ir::IrToolChoice::None => Some(COHERE_TOOL_CHOICE_NONE),
+                    crate::ir::IrToolChoice::Auto => None,
+                };
+                if let Some(s) = v {
+                    out.insert("tool_choice".to_string(), serde_json::json!(s));
                 }
-                crate::ir::IrToolChoice::None => Some(COHERE_TOOL_CHOICE_NONE),
-                crate::ir::IrToolChoice::Auto => None,
-            };
-            if let Some(s) = v {
-                out.insert("tool_choice".to_string(), serde_json::json!(s));
             }
+        }
+        // class-6 6c1 egress: Cohere v2 `/v2/chat` models no parallelism control. `is_some()` gates
+        // this to requests that actually carried the flag (owner decision 4: no per-request noise).
+        if req.parallel_tool_calls.is_some() {
+            tracing::warn!(
+                "dropping parallel_tool_calls on Cohere egress: /v2/chat has no parallelism \
+                 control, so the backend's default parallelism applies"
+            );
         }
 
         if let Some(max_tokens) = req.max_tokens {
@@ -351,7 +371,10 @@ impl ProtocolWriter for CohereWriter {
             out.insert("k".to_string(), serde_json::json!(top_k));
         }
         if !req.stop.is_empty() {
-            out.insert("stop_sequences".to_string(), serde_json::json!(req.stop));
+            out.insert(
+                "stop_sequences".to_string(),
+                serde_json::json!(crate::proto::clamp_stop(&req.stop, 5, "Cohere")),
+            );
         }
         // Phase 0 sampling/output controls in Cohere v2's native (OpenAI-shaped) names. Emitted
         // before the `extra` overlay (the reader pulled these keys out of extra, so there is no

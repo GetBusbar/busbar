@@ -715,3 +715,165 @@ fn test_bedrock_ingress_ir_usage_carries_real_tokens() {
         "binary output contains the eventstream metadata frame"
     );
 }
+
+/// class-6 6c2: a Gemini `cachedContent` reference is dropped on the cross-protocol seam (no
+/// protocol can project a server-side Google context cache into its own request shape) — but
+/// SILENTLY, unlike the two sibling clears in the same function (prompt-cache breakpoints, hosted
+/// tools) which both warn. The consequences are invisible in the response (truncated history +
+/// full uncached billing), so this must warn LOUDLY, naming both. Same-protocol Gemini->Gemini
+/// must NOT warn (regression proof: `extra` is never cleared on that path).
+#[test]
+fn gemini_cached_content_warns_naming_truncation_and_billing() {
+    use crate::ir::variant::{EgressPrep, IrReq};
+    use crate::test_support::warn_capture::WarnCapture;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let body = serde_json::json!({
+        "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+        "cachedContent": "projects/p/locations/l/cachedContents/c"
+    });
+    let ir = GeminiReader.read_request(&body).expect("parses");
+    assert_eq!(
+        ir.extra.get("cachedContent").and_then(|v| v.as_str()),
+        Some("projects/p/locations/l/cachedContents/c"),
+        "cachedContent must ride extra (unmodeled key)"
+    );
+
+    let prep = EgressPrep {
+        ingress_protocol: "gemini",
+        egress_requires_max_tokens: false,
+        lane_default_max_tokens: None,
+        global_default_max_tokens: 4096,
+        reasoning_allowed: true,
+        reasoning_budgets: crate::ir::REASONING_BUDGET_DEFAULTS,
+        prompt_caching_allowed: true,
+        cache_control_cap: None,
+    };
+
+    let cap = WarnCapture::default();
+    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    let mut req = IrReq::Chat(ir);
+    tracing::subscriber::with_default(subscriber, || req.prepare_for_egress(&prep));
+
+    assert!(
+        cap.contains("VISIBLE history") && cap.contains("UNCACHED"),
+        "the warn must name BOTH consequences (truncated history AND full billing): {:?}",
+        cap.messages()
+    );
+
+    // Negative half: a request with no cachedContent must not warn about it.
+    let body2 = serde_json::json!({
+        "contents": [{"role": "user", "parts": [{"text": "hi"}]}]
+    });
+    let ir2 = GeminiReader.read_request(&body2).expect("parses");
+    let cap2 = WarnCapture::default();
+    let subscriber2 = tracing_subscriber::registry().with(cap2.clone());
+    let mut req2 = IrReq::Chat(ir2);
+    tracing::subscriber::with_default(subscriber2, || req2.prepare_for_egress(&prep));
+    assert!(
+        !cap2.contains("cachedContent"),
+        "a request without cachedContent must not warn about dropping it: {:?}",
+        cap2.messages()
+    );
+}
+
+/// class-6 6e1 site 3: Google's `CitationSource.startIndex`/`endIndex` are documented measured in
+/// BYTES; the IR's `IrCitation::start_index`/`end_index` contract is CHARACTERS. The reader must
+/// convert byte->char on the way in (non-stream path, which has the full response text to convert
+/// against).
+#[test]
+fn gemini_citation_byte_indices_convert_to_characters() {
+    // "héllo " is 6 chars / 7 bytes (é is 2 bytes in UTF-8). A citation spanning the word after it
+    // ("wörld", chars 6..11) starts at BYTE 7 (Google's units) but CHAR 6 (the IR's units).
+    let text = "héllo wörld";
+    let byte_start = text.find("wörld").unwrap() as i64; // 7
+    let byte_end = byte_start + "wörld".len() as i64; // 7 + 6 = 13
+
+    let body = serde_json::json!({
+        "candidates": [{
+            "content": {"role": "model", "parts": [{"text": text}]},
+            "finishReason": "STOP",
+            "citationMetadata": {
+                "citationSources": [{
+                    "startIndex": byte_start,
+                    "endIndex": byte_end,
+                    "uri": "https://example.com"
+                }]
+            }
+        }]
+    });
+    let ir = GeminiReader.read_response(&body).expect("parses");
+    let citations = ir
+        .content
+        .iter()
+        .find_map(|b| match b {
+            crate::ir::IrBlock::Text { citations, .. } => Some(citations),
+            _ => None,
+        })
+        .expect("text block with citations");
+    assert_eq!(citations.len(), 1, "{citations:?}");
+    assert_eq!(
+        citations[0].start_index,
+        Some(6),
+        "byte offset 7 must convert to CHAR offset 6: {citations:?}"
+    );
+    assert_eq!(
+        citations[0].end_index,
+        Some(11),
+        "byte offset 13 must convert to CHAR offset 11: {citations:?}"
+    );
+}
+
+/// class-6 6e1 site 3 (writer inverse, corrected per review 10a): `write_gemini_citation`
+/// short-circuits to the verbatim `raw` object whenever the citation carries a Gemini-shaped `raw`
+/// (uri/startIndex/endIndex present) — so a Gemini->Gemini round trip NEVER reaches the neutral
+/// build path this inverse conversion lives in (that half of the original T15 design was a false
+/// green). The inverse is only exercised by a FOREIGN citation (no Gemini-shaped `raw`, e.g.
+/// translated from Anthropic) reaching a Gemini egress — build one with `raw: None` directly.
+#[test]
+fn gemini_writer_reemits_char_indices_as_bytes_for_foreign_citations() {
+    let text = "héllo wörld";
+    let citation = crate::ir::IrCitation {
+        kind: Some("web_search_result_location".into()),
+        cited_text: None,
+        title: Some("T".into()),
+        url: Some("https://example.com".into()),
+        document_index: None,
+        start_index: Some(6), // CHAR offset (the IR contract)
+        end_index: Some(11),
+        encrypted_index: None,
+        raw: None, // FOREIGN: no Gemini-shaped raw, so the neutral build path runs.
+    };
+    let resp = crate::ir::IrResponse {
+        logprobs: Vec::new(),
+        role: IrRole::Assistant,
+        content: vec![crate::ir::IrBlock::Text {
+            text: text.to_string(),
+            cache_control: None,
+            citations: vec![citation],
+        }],
+        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+        stop_sequence: None,
+        usage: crate::ir::IrUsage {
+            input_tokens: 1,
+            output_tokens: 1,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: None,
+        },
+        model: Some("gemini-1.5-pro".into()),
+        id: None,
+        created: None,
+        system_fingerprint: None,
+    };
+    let gemini_writer = GeminiWriter;
+    let out = gemini_writer.write_response(&resp);
+    let src = &out["candidates"][0]["citationMetadata"]["citationSources"][0];
+    assert_eq!(
+        src["startIndex"], 7,
+        "CHAR offset 6 must convert back to BYTE offset 7: {src:?}"
+    );
+    assert_eq!(
+        src["endIndex"], 13,
+        "CHAR offset 11 must convert back to BYTE offset 13: {src:?}"
+    );
+}
