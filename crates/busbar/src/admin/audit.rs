@@ -82,6 +82,26 @@ pub(crate) const OUTCOME_REJECTED: &str = "rejected";
 /// than a hand-picked page size that silently truncates once a filter matches more rows.
 pub(crate) const MAX_AUDIT_ENTRIES: usize = 1000;
 
+/// The pressure valve threshold in `record_by`: once the un-persisted tail (`seq - durable_high`)
+/// reaches this many entries, the recorder stops trusting the periodic write-behind flusher and
+/// pays the store round-trip INLINE again — restoring, exactly where the ring is at risk of pruning
+/// an entry the store never saw, the backpressure that an unconditional inline write applies
+/// everywhere today.
+///
+/// Sized as `MAX_AUDIT_ENTRIES / 4` (750, leaving a 250-entry reserve) so it comfortably exceeds the
+/// number of threads that can be simultaneously PAST the valve check and still in flight toward
+/// `record_by`'s ring push before the trip re-arms blocking — since `record_by` blocks on
+/// `durable_lock` (a real `std::sync::Mutex`, which PARKS the calling Tokio worker OS thread rather
+/// than yielding) once tripped, that population is bounded by the number of Tokio worker OS threads,
+/// not by concurrent admin-request count (the admin surface itself has no concurrency cap — see
+/// `main.rs`'s `MAX_WORKER_THREADS` clamp, the actual enforced bound this reserve depends on).
+/// busbar is single-operator (PIPELINE-BRIEF: no multi-tenant trust boundary, no per-caller
+/// concurrency limit on the admin surface), so there is no adversarial population that could scale
+/// concurrent `record_by` callers toward this reserve — a single operator's console/CLI/automation
+/// realistically tops out at low tens of concurrent admin mutations, and the worker-thread clamp
+/// below keeps the hard ceiling at 128, well under 250.
+const WRITE_THROUGH_HEADROOM: u64 = (MAX_AUDIT_ENTRIES - MAX_AUDIT_ENTRIES / 4) as u64;
+
 /// Convert an in-memory [`AuditEntry`] to the store-seam [`busbar_api::AuditRecord`] (same fields).
 /// The store persists records verbatim — the hash chain is computed here, in the engine.
 fn to_record(e: &AuditEntry) -> busbar_api::AuditRecord {
@@ -314,9 +334,29 @@ impl AuditLog {
         // logged and swallowed - an audit-store hiccup must NEVER fail the admin mutation it records
         // (the RAM ring already holds it, and the periodic snapshot is a second net). No sink (memory
         // default) ⇒ no-op, ephemeral as before.
+        //
+        // OFF THE REACTOR IN THE COMMON CASE: the periodic write-behind flusher
+        // (`governance::spawn_budget_flusher`, which now also calls `flush_durable`) owns this write
+        // by default, so `record_by` returns immediately instead of blocking a Tokio worker on a
+        // synchronous store round-trip. The PRESSURE VALVE below re-arms the inline write exactly
+        // where skipping it would be unsafe.
         let sink = self.sink.lock().unwrap_or_else(|e| e.into_inner()).clone();
         if let Some(store) = sink {
-            self.durable_write_through(store.as_ref(), record.seq);
+            let unpersisted = record
+                .seq
+                .saturating_sub(self.durable_high.load(std::sync::atomic::Ordering::Relaxed));
+            // No runtime (unit tests without a `#[tokio::test]`, `--validate`, or a boot-time caller
+            // before the flusher is spawned) means no flusher will ever drain this ring, so the
+            // recorder must do the write itself or the entry is never durable at all. This is a
+            // proxy for "is a flusher currently draining this ring", verified by inspection of
+            // today's call graph (nothing calls `record_by` with a `Handle` but no flusher spawned)
+            // rather than an invariant this check itself enforces — see WRITE_THROUGH_HEADROOM.
+            let no_flusher = tokio::runtime::Handle::try_current().is_err();
+            if no_flusher || unpersisted >= WRITE_THROUGH_HEADROOM {
+                self.durable_write_through(store.as_ref(), record.seq);
+            }
+            // Otherwise: headroom remains, the write-behind flusher owns this seq. Return immediately
+            // without touching the store.
         }
     }
 
@@ -383,6 +423,29 @@ impl AuditLog {
         self.seq
             .fetch_max(next_seq, std::sync::atomic::Ordering::Relaxed);
         Some(next_seq - 1)
+    }
+
+    /// Drain every pending (not-yet-durable) entry up to the ring's current head in ONE
+    /// write-through call. Called from the periodic write-behind flusher
+    /// (`governance::spawn_budget_flusher`) instead of inline from `record_by` — see the pressure
+    /// valve in `record_by` for why this is safe: `durable_write_through`'s unit of work is already
+    /// a RANGE (`durable_high + 1 ..= new_seq`), so one call here persists every seq the flusher
+    /// missed since the last tick, exactly like `flush_budgets`/`flush_metering` coalesce their own
+    /// deltas. A no-op when there is no sink (ephemeral `store: memory`) or nothing pending.
+    pub(crate) fn flush_durable(&self) {
+        let sink = self.sink.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let Some(store) = sink else {
+            return;
+        };
+        let top = self
+            .entries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .back()
+            .map(|e| e.seq);
+        if let Some(top) = top {
+            self.durable_write_through(store.as_ref(), top);
+        }
     }
 
     fn durable_write_through(&self, store: &dyn busbar_api::Store, mut new_seq: u64) {
@@ -1605,6 +1668,198 @@ mod tests {
         assert!(
             node_a.list(10).iter().any(|e| e.action == "hook.delete"),
             "the mutation stays in the RAM ring and the state snapshot"
+        );
+    }
+
+    // ── finding #5: durable write-through offload (write-behind flusher + pressure valve) ────────
+
+    /// A `Store` decorator that sleeps on `append_audit` — the FIRST call only, then runs at full
+    /// speed — a stand-in for a slow durable store's write round-trip. All other methods delegate.
+    struct SlowAuditStore {
+        inner: busbar_store_sqlite::SqliteStore,
+        delay: std::time::Duration,
+        fired: std::sync::atomic::AtomicBool,
+    }
+    impl Store for SlowAuditStore {
+        fn put_key(&self, key: &busbar_api::VirtualKey) -> busbar_api::StoreResult<()> {
+            self.inner.put_key(key)
+        }
+        fn get_key(&self, id: &str) -> busbar_api::StoreResult<Option<busbar_api::VirtualKey>> {
+            self.inner.get_key(id)
+        }
+        fn list_keys(&self) -> busbar_api::StoreResult<Vec<busbar_api::VirtualKey>> {
+            self.inner.list_keys()
+        }
+        fn delete_key(&self, id: &str) -> busbar_api::StoreResult<()> {
+            self.inner.delete_key(id)
+        }
+        fn get_usage(
+            &self,
+            bucket_id: &str,
+            window_start: u64,
+        ) -> busbar_api::StoreResult<busbar_api::UsageLedger> {
+            self.inner.get_usage(bucket_id, window_start)
+        }
+        fn put_usage(
+            &self,
+            bucket_id: &str,
+            window_start: u64,
+            ledger: &busbar_api::UsageLedger,
+        ) -> busbar_api::StoreResult<()> {
+            self.inner.put_usage(bucket_id, window_start, ledger)
+        }
+        fn add_metering(&self, delta: &busbar_api::MeteringDelta) -> busbar_api::StoreResult<()> {
+            self.inner.add_metering(delta)
+        }
+        fn list_metering(
+            &self,
+            bucket: u64,
+        ) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
+            self.inner.list_metering(bucket)
+        }
+        fn append_audit(&self, entry: &busbar_api::AuditRecord) -> busbar_api::StoreResult<()> {
+            if !self.fired.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                std::thread::sleep(self.delay);
+            }
+            self.inner.append_audit(entry)
+        }
+        fn list_audit(&self) -> busbar_api::StoreResult<Vec<busbar_api::AuditRecord>> {
+            self.inner.list_audit()
+        }
+        fn list_audit_tail(
+            &self,
+            limit: u64,
+        ) -> busbar_api::StoreResult<Vec<busbar_api::AuditRecord>> {
+            self.inner.list_audit_tail(limit)
+        }
+    }
+
+    /// THE RED PROOF FOR FINDING #5 ITSELF: today's `record_by` does the durable write-through
+    /// INLINE and SYNCHRONOUSLY, so a slow store round-trip parks whatever thread called it — a
+    /// Tokio worker for the ~30 `async fn` admin handler sites. `current_thread` flavor is
+    /// LOAD-BEARING: on the default multi-thread runtime a second worker would pick up the second
+    /// task and this test would false-green. This is a REAL thread sleep (not paused time — a
+    /// blocking `std::thread::sleep` inside `record_by` is invisible to Tokio's time-auto-advance,
+    /// which only fires while the runtime is idle; see `hooks/mod.rs`'s `offload_bounded_with_deadline`
+    /// docs for the same trap).
+    #[tokio::test(flavor = "current_thread")]
+    async fn durable_audit_write_through_does_not_park_the_reactor() {
+        let store = std::sync::Arc::new(SlowAuditStore {
+            inner: busbar_store_sqlite::SqliteStore::open_in_memory().unwrap(),
+            delay: std::time::Duration::from_millis(500),
+            fired: std::sync::atomic::AtomicBool::new(false),
+        });
+        let log = std::sync::Arc::new(AuditLog::new());
+        log.set_sink(store);
+
+        let recorder = {
+            let log = log.clone();
+            tokio::spawn(async move {
+                log.record_by("hook.register", "hook:x", OUTCOME_APPLIED, "admin");
+            })
+        };
+        // A second task's short sleep must complete promptly. If `record_by` parked the single
+        // `current_thread` worker for the store's 500ms, this 50ms sleep cannot be polled in time.
+        let start = std::time::Instant::now();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let elapsed = start.elapsed();
+        recorder.await.unwrap();
+        assert!(
+            elapsed < std::time::Duration::from_millis(300),
+            "a 50ms sleep took {elapsed:?} — the reactor was parked by the durable write-through"
+        );
+    }
+
+    /// Regression proof (passes before and after the valve exists): `flush_durable` drains the
+    /// WHOLE pending range in one call, including entries recorded with NO runtime present (which
+    /// always go inline, per the `no_flusher` check) and entries recorded under a runtime but below
+    /// `WRITE_THROUGH_HEADROOM` (which the flusher owns).
+    #[tokio::test]
+    async fn flush_durable_drains_the_whole_pending_range() {
+        let store =
+            std::sync::Arc::new(busbar_store_sqlite::SqliteStore::open_in_memory().unwrap());
+        let log = AuditLog::new();
+        log.set_sink(store.clone());
+
+        // Below the headroom threshold, recorded under a runtime: the flusher owns these, so
+        // nothing should be durable yet.
+        for i in 0..3 {
+            log.record_by(
+                "hook.register",
+                &format!("hook:{i}"),
+                OUTCOME_APPLIED,
+                "admin",
+            );
+        }
+        assert_eq!(
+            store.list_audit().unwrap().len(),
+            0,
+            "below headroom, the recorder must not touch the store itself"
+        );
+
+        log.flush_durable();
+        let persisted = store.list_audit().unwrap();
+        assert_eq!(
+            persisted.len(),
+            3,
+            "flush_durable must drain the whole pending range"
+        );
+        let mut seqs: Vec<u64> = persisted.iter().map(|r| r.seq).collect();
+        seqs.sort_unstable();
+        assert_eq!(seqs, vec![1, 2, 3], "contiguous, no seq skipped");
+    }
+
+    /// Regression proof (passes before and after — labeled per the design doc as
+    /// RED-against-the-alternative, not RED-against-HEAD, since today's unconditional inline write
+    /// already keeps this invariant): a burst that outruns one slow store round-trip must never
+    /// prune an unpersisted seq. Demonstrates the pressure valve's safety property directly rather
+    /// than by building-then-discarding the REFUTED bare-admission-gate design.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_burst_outrunning_store_latency_never_prunes_an_unpersisted_seq() {
+        let store = std::sync::Arc::new(SlowAuditStore {
+            inner: busbar_store_sqlite::SqliteStore::open_in_memory().unwrap(),
+            delay: std::time::Duration::from_millis(20),
+            fired: std::sync::atomic::AtomicBool::new(false),
+        });
+        let log = std::sync::Arc::new(AuditLog::new());
+        log.set_sink(store.clone());
+
+        let total = MAX_AUDIT_ENTRIES + 200;
+        let mut handles = Vec::new();
+        for i in 0..total {
+            let log = log.clone();
+            handles.push(tokio::spawn(async move {
+                log.record_by(
+                    "hook.register",
+                    &format!("hook:{i}"),
+                    OUTCOME_APPLIED,
+                    "admin",
+                );
+            }));
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+        log.flush_durable();
+
+        assert!(
+            log.durable_high.load(std::sync::atomic::Ordering::Relaxed) >= 1,
+            "the durable tail must not be pinned at 0"
+        );
+        let persisted = store.list_audit().unwrap();
+        let mut seqs: Vec<u64> = persisted.iter().map(|r| r.seq).collect();
+        seqs.sort_unstable();
+        for w in seqs.windows(2) {
+            assert_eq!(
+                w[1],
+                w[0] + 1,
+                "the durable chain must stay contiguous: {seqs:?}"
+            );
+        }
+        assert_eq!(
+            seqs.first().copied(),
+            Some(1),
+            "durable history starts at seq 1"
         );
     }
 }

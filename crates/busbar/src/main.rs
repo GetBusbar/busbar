@@ -594,6 +594,8 @@ fn main() {
     // the normal default path). `TOKIO_WORKER_THREADS` is read as a back-compat fallback so an operator
     // who pinned it on 1.3.0 keeps the same pool size. (1.4.0 audit.) `eprintln!` because this runs
     // before the tracing subscriber is installed.
+    // See the `.min(MAX_WORKER_THREADS)` call below for why this exists.
+    const MAX_WORKER_THREADS: usize = 128;
     fn worker_threads_from_env(name: &str) -> Option<usize> {
         match std::env::var(name) {
             Ok(v) => match v.trim().parse::<usize>() {
@@ -617,7 +619,16 @@ fn main() {
             std::thread::available_parallelism()
                 .map(|n| n.get())
                 .unwrap_or(1)
-        });
+        })
+        // A SANE CEILING. Nothing else in the process bounds concurrent admin requests (the admin
+        // router deliberately carries no `GlobalConcurrencyLimitLayer` — see `build_split_routers_
+        // with_limits`), so worker-thread count is the actual, if informal, upper bound a few
+        // capacity arguments elsewhere lean on (e.g. `admin::audit::WRITE_THROUGH_HEADROOM`'s
+        // pressure-valve reserve). An unclamped `available_parallelism()` on very large hardware, or
+        // an operator fat-fingering `BUSBAR_WORKER_THREADS`, would otherwise leave that bound
+        // unenforced. 128 is far above any realistic core count this process is deployed on and far
+        // above what those capacity arguments need.
+        .min(MAX_WORKER_THREADS);
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(worker_threads)
         .enable_all()
