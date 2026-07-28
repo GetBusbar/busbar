@@ -47,7 +47,10 @@ use std::time::{Duration, Instant};
 /// wires an HTTPS-fetching implementor; tests wire a fixture.
 pub trait JwksFetcher: Send + Sync {
     /// GET the JWKS document body from the configured `jwks_uri`. Returns the raw JSON text or an
-    /// error message. MUST be bounded (a timeout) — a hung provider must not hang auth.
+    /// error message. MUST be bounded both in TIME (a timeout — a hung provider must not hang auth)
+    /// and in BODY SIZE (the real implementation caps at `reqwest_fetcher::MAX_JWKS_BYTES`, since
+    /// the fetch also runs under this cache's single-flight gate and would otherwise park every
+    /// cold-cache caller behind one unbounded read).
     fn fetch(&self, url: &str) -> Result<String, String>;
 }
 
