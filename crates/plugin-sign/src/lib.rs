@@ -371,8 +371,31 @@ fn version_components(v: &str) -> [u64; 3] {
 }
 
 /// True when `have` is greater-than-or-equal-to `floor` under [`version_components`] ordering.
+///
+/// A NON-EMPTY `floor` that is not [`valid_semver`] is UNSATISFIABLE — this returns `false` for every
+/// `have`. `version_components` truncates at the first non-numeric component, so an unparsable floor
+/// like `"v1.6.0"` would otherwise read as `0.0.0`, which every version satisfies: the anti-downgrade
+/// control would silently invert into a no-op exactly when the operator believed it was armed. An
+/// EMPTY floor is the documented "no floor" spelling and still admits everything.
 pub fn version_at_least(have: &str, floor: &str) -> bool {
+    if !floor.is_empty() && !valid_semver(floor) {
+        return false;
+    }
     version_components(have) >= version_components(floor)
+}
+
+/// Explanatory suffix for a floor rejection: empty for a well-formed floor, and for a malformed one a
+/// clause that names the real cause. Without it an operator with `min_versions: v1.6.0` reads
+/// "version 1.6.0 is below the pinned minimum v1.6.0" and concludes busbar is broken.
+fn floor_note(floor: &str) -> &'static str {
+    if floor.is_empty() || valid_semver(floor) {
+        ""
+    } else {
+        " — NOTE: this floor is not a valid MAJOR.MINOR.PATCH version (no leading 'v', e.g. \
+         '1.6.0'), so nothing can satisfy it. An unparsable floor used to read as 0.0.0, which \
+         every version satisfies, silently disarming this control; it now refuses instead. Fix or \
+         remove the entry."
+    }
 }
 
 /// Is `s` a well-formed plugin name/alias: non-empty lowercase `[a-z0-9-]+`, no leading/trailing
@@ -569,8 +592,11 @@ pub fn evaluate(
                 RejectKind::AntiDowngrade,
                 format!(
                     "first-party plugin '{}' version {} is below the required first-party floor {} \
-                     (automatic first-party anti-downgrade)",
-                    manifest.name, manifest.version, floor
+                     (automatic first-party anti-downgrade){}",
+                    manifest.name,
+                    manifest.version,
+                    floor,
+                    floor_note(floor)
                 ),
             ));
         }
@@ -591,8 +617,11 @@ pub fn evaluate(
                 return Err(Rejected::new(
                     RejectKind::AntiDowngrade,
                     format!(
-                        "plugin '{}' version {} is below the pinned minimum {floor} (anti-downgrade)",
-                        manifest.name, manifest.version
+                        "plugin '{}' version {} is below the pinned minimum {floor} \
+                         (anti-downgrade){}",
+                        manifest.name,
+                        manifest.version,
+                        floor_note(floor)
                     ),
                 ));
             }
@@ -602,8 +631,9 @@ pub fn evaluate(
                     format!(
                         "plugin '{}' has a pinned minimum version {floor} but the load could not \
                          prove it meets the floor (not signed by a trusted key); a trusted manifest \
-                         at or above the floor is required (anti-downgrade)",
-                        manifest.name
+                         at or above the floor is required (anti-downgrade){}",
+                        manifest.name,
+                        floor_note(floor)
                     ),
                 ));
             }
@@ -1193,6 +1223,65 @@ mod tests {
             evaluate(artifact, &cur, &pol).unwrap(),
             Verdict::Trusted { .. }
         ));
+    }
+
+    /// class-12 D2: a MALFORMED `min_versions` floor (no leading `v`, so it fails [`valid_semver`])
+    /// must be UNSATISFIABLE, not silently void. Before the fix, `version_components("v2.0.0")` ==
+    /// `[0,0,0]`, so `version_at_least("1.0.0", "v2.0.0")` was `true` and the old artifact evaluated
+    /// `Verdict::Trusted` — the exact silent admission F2 describes. RED, load-bearing: revert only
+    /// the `version_at_least` hunk and this goes back to `Ok(..)`.
+    #[test]
+    fn garbage_min_version_floor_is_unsatisfiable_not_void() {
+        let acme = test_key(2);
+        let artifact = b"older vulnerable build";
+        let mut old = manifest("acme-store-dynamo", "dynamo", "acme");
+        old.version = "1.0.0".into();
+        let old = sign(&acme, old, artifact);
+
+        let mut pol = policy(None, &[("acme", &acme.verifying_key())], false, false);
+        pol.min_versions
+            .insert("acme-store-dynamo".to_string(), "v2.0.0".to_string());
+
+        let err = evaluate(artifact, &old, &pol).unwrap_err();
+        assert_eq!(err.kind, RejectKind::AntiDowngrade);
+        assert!(
+            err.reason.contains("v2.0.0"),
+            "reason must name the malformed floor: {}",
+            err.reason
+        );
+    }
+
+    /// class-12 D2: a malformed `first_party_floors` override must NOT erase the automatic
+    /// `binary_version` floor it REPLACES — the sharpest case in F2, because the override makes a
+    /// plugin the automatic floor alone would have refused instead get ADMITTED, i.e. strictly LESS
+    /// protection than configuring nothing at all. RED: before the fix, the override reads as
+    /// `[0,0,0]`, which every version satisfies.
+    #[test]
+    fn garbage_first_party_floor_does_not_erase_the_binary_floor() {
+        let release = test_key(1);
+        let artifact = b"old first-party build";
+        let mut old = manifest("busbar-store-redis", "redis", FIRST_PARTY_PUBLISHER);
+        old.version = "1.0.0".into(); // below `binary_version` ("1.5.0", set by `policy()`)
+        let old = sign(&release, old, artifact);
+
+        let mut pol = policy(Some(&release), &[], false, false);
+        pol.first_party_floors
+            .insert("busbar-store-redis".to_string(), "v9.9.9".to_string());
+
+        let err = evaluate(artifact, &old, &pol).unwrap_err();
+        assert_eq!(err.kind, RejectKind::AntiDowngrade);
+    }
+
+    /// class-12 D2: `floor_note`'s operator-facing wording, pinned by a test rather than by review.
+    /// LABEL: guard unit test on a NEW helper — it cannot go red against pre-fix source, because the
+    /// helper does not exist there. Not a RED proof.
+    #[test]
+    fn malformed_floor_reason_says_the_floor_is_malformed() {
+        assert_eq!(floor_note("1.6.0"), "");
+        assert_eq!(floor_note(""), "");
+        let note = floor_note("v1.6.0");
+        assert!(!note.is_empty());
+        assert!(note.contains("MAJOR.MINOR.PATCH"));
     }
 
     /// The embedded-release-key accessor parses a build-time hex key. In this test build the env is

@@ -2124,3 +2124,23 @@ fn to_policy_honors_runtime_first_party_floor_override() {
         Some("0.9.0")
     );
 }
+
+/// class-12 D2 REGRESSION PROOF: a malformed `min_versions` floor does NOT fail `to_policy` — the
+/// comparator (`version_at_least`), not config validation, is where a malformed floor is refused
+/// (§3.2 v3: fail closed at the comparator, don't refuse the boot). Passes before AND after; it is
+/// the anti-regression guard against reaching for the superseded v2 design (`to_policy` returning
+/// `Err` for this case), which this design deliberately does NOT do. If this test goes red, the
+/// builder implemented the superseded design.
+#[test]
+fn to_policy_still_returns_ok_for_a_malformed_floor() {
+    let mut cfg = PluginsCfg {
+        enabled: true,
+        ..Default::default()
+    };
+    cfg.min_versions
+        .insert("p".to_string(), "v1.6.0".to_string());
+    assert!(
+        cfg.to_policy().is_ok(),
+        "a malformed floor must not fail the boot — it is refused at the comparator instead"
+    );
+}
