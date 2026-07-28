@@ -437,6 +437,17 @@ fn wire_up_raw(
             // allocation the plugin owns — free it (the old `err_len == 0` short-circuit leaked it).
             free_guarded(free, &display, err, err_len);
             format!("status {status}")
+        } else if !open_err_is_readable(err.is_null(), err_len) {
+            // The plugin declared an `err_len` this large as its OWN failure message — apply the
+            // same cap `busbar_call` already applies to `out_len` via `response_len_ok` before its
+            // `from_raw_parts` (`:181-188`). Skipping it here made a buggy plugin's `err_len` an
+            // unsound `from_raw_parts` on an unchecked plugin-supplied length. Still free the
+            // buffer (the plugin owns it) rather than reading it.
+            free_guarded(free, &display, err, err_len);
+            format!(
+                "status {status} (error text omitted: {err_len} bytes exceeds the \
+                 {MAX_PLUGIN_RESPONSE_LEN}-byte cap)"
+            )
         } else {
             let m = String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(err, err_len) })
                 .into_owned();
@@ -548,6 +559,15 @@ fn response_len_ok(out_len: usize, path: &str) -> Result<(), String> {
     } else {
         Ok(())
     }
+}
+
+/// True when a `busbar_open` failure's plugin-declared `err_len` is safe to hand to
+/// `from_raw_parts` — non-null, non-empty, and within [`MAX_PLUGIN_RESPONSE_LEN`]. Pure so the
+/// bound is unit-testable without a live plugin, mirroring [`response_len_ok`]: `busbar_open`'s
+/// `err_len` output is the same shape of plugin-supplied length as `busbar_call`'s `out_len`, but
+/// historically skipped the cap `busbar_call` already applies before its own `from_raw_parts`.
+fn open_err_is_readable(err_is_null: bool, err_len: usize) -> bool {
+    !err_is_null && err_len > 0 && err_len <= MAX_PLUGIN_RESPONSE_LEN
 }
 
 /// The plugin returned a response variant that doesn't match the request — a contract violation.
@@ -1244,6 +1264,37 @@ mod tests {
         let err = response_len_ok(MAX_PLUGIN_RESPONSE_LEN + 1, "sqlite").unwrap_err();
         assert!(err.contains("oversized response"), "got {err}");
         assert!(err.contains("sqlite"), "names the offending plugin: {err}");
+    }
+
+    /// GUARD unit test on a NEW helper (`open_err_is_readable` does not exist on `main` yet, so
+    /// this cannot go RED against current source — it pins the bound rather than proving a fix).
+    /// The claim it supports is "the length cap is applied on both the `busbar_call` AND
+    /// `busbar_open` error paths", not "an oversized open error is survived in production" — there
+    /// is no fake-open seam (`dyn_store_with_fake_call` only patches `call` on an already-opened
+    /// `DynStore`), so an over-the-ABI RED test is not attempted; its failure mode would be an
+    /// out-of-bounds read, not a clean assertion failure.
+    #[test]
+    fn open_err_is_readable_refuses_an_oversized_length() {
+        assert!(
+            !open_err_is_readable(false, MAX_PLUGIN_RESPONSE_LEN + 1),
+            "an over-cap length must be refused"
+        );
+        assert!(
+            !open_err_is_readable(true, 64),
+            "a null err pointer is never readable"
+        );
+        assert!(
+            !open_err_is_readable(false, 0),
+            "a zero length carries no message"
+        );
+        assert!(
+            open_err_is_readable(false, 64),
+            "a sane, non-null, in-cap length is readable"
+        );
+        assert!(
+            open_err_is_readable(false, MAX_PLUGIN_RESPONSE_LEN),
+            "the exact cap is allowed, matching response_len_ok"
+        );
     }
 
     /// TOCTOU-safe load: `load_store_from_bytes` loads EXACTLY the bytes handed to it — the same bytes
