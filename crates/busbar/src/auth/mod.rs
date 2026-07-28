@@ -1153,6 +1153,28 @@ pub(crate) async fn auth_middleware(
             .map(|p| p.reader().uses_sigv4_ingress_auth())
             .unwrap_or(false);
         if ingress_uses_sigv4 && has_sigv4_authorization(&req) {
+            // STRUCTURAL GATE, before buffering: require the Authorization header to actually parse
+            // as SigV4 (`has_sigv4_authorization` only checked the algorithm-token prefix) and the
+            // `x-amz-content-sha256`/`x-amz-date` headers to be present. This is a HOIST of work
+            // `verify_bedrock_sigv4` already does below (its own parse, and its own presence checks
+            // on these same two headers) — a reordering, not a new check — so it removes the trivial
+            // `AWS4-HMAC-SHA256 x` attacker (who reaches the buffer today) before a single body byte
+            // is read. All three conditions are STRUCTURAL and attacker-known (the attacker can
+            // trivially satisfy all three), so this is not an oracle: it never depends on whether an
+            // AccessKeyId is valid — gating on that would leak validity through a read/no-read signal
+            // and reintroduce the enumeration oracle `verify_bedrock_sigv4` spends a dummy secret to
+            // avoid.
+            let auth_value = req
+                .headers()
+                .get(AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            let structurally_valid = crate::sigv4::parse_authorization_header(auth_value).is_ok()
+                && req.headers().contains_key(X_AMZ_CONTENT_SHA256)
+                && req.headers().contains_key(X_AMZ_DATE);
+            if !structurally_valid {
+                return Err(unauthorized_response(&path));
+            }
             // BODY INTEGRITY: a SigV4 signature only binds the payload if we re-hash the actual bytes
             // and confirm they match the signed `x-amz-content-sha256` (which the signature covers).
             // Verifying the signature alone leaves a MitM free to tamper the body in transit while the

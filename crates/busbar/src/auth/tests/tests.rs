@@ -3470,3 +3470,87 @@ fn test_admin_scope_cap_ceilings_external_module() {
     let app = mk_app(Some("full"), "test-scope-module");
     assert!(dry_run_admin_scope(&app, Some("not-a-grp"), None) == Grants::default());
 }
+
+/// The structural SigV4 gate (class-4b) rejects a malformed `AWS4-HMAC-SHA256` Authorization header
+/// WITHOUT reading the request body. Discriminator: the client announces a `Content-Length` and then
+/// sends ZERO body bytes. If the gate rejects on headers alone, the 403 arrives immediately; if the
+/// (pre-fix) code buffers the body first (`axum::body::to_bytes`), the server blocks waiting for
+/// bytes that never arrive, and the client's read hangs (this test drives `axum::serve` directly,
+/// with no `TimeoutBody`/read-timeout wrapper, specifically so an unbounded hang is the only
+/// alternative to an immediate response - there is no third outcome to confuse the result).
+#[tokio::test]
+async fn structural_sigv4_gate_rejects_without_reading_the_body() {
+    use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    crate::metrics::init();
+
+    let state = Arc::new(MockServerState::new());
+    let server = MockServer::new(state).await;
+    let auth_cfg = chain_cfg(&["test-groups-module"]);
+    // The inbound-SigV4 verify branch runs only when governance is enabled with an admin token
+    // configured (`auth/mod.rs`'s `app.governance.filter(|g| g.admin_token_hash().is_some())`) - a
+    // deploy with no admin token can never have a virtual key to resolve against. Without this the
+    // request falls through the plain bearer-token path instead, which never touches the SigV4
+    // structural gate at all (and rejects just as fast, defeating the discriminator).
+    let gov = std::sync::Arc::new(
+        crate::governance::GovState::new(
+            std::sync::Arc::new(crate::governance::MemoryStore::new()),
+            Some("admintok".to_string()),
+        )
+        .unwrap(),
+    );
+    let app = TestApp::new()
+        .lane(
+            LaneSpec::new(
+                "test-model",
+                crate::proto::Protocol::anthropic(),
+                &server.base_url(),
+            )
+            .api_key("busbar-upstream-key"),
+        )
+        .pool("pa", &[(0, 1)])
+        .auth(Arc::new(AuthMiddleware::new_builtin(&auth_cfg)))
+        .governance(gov)
+        .build();
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let mut sock = tokio::net::TcpStream::connect(addr).await.unwrap();
+    // Malformed: `AWS4-HMAC-SHA256` with no Credential/SignedHeaders/Signature at all, and no
+    // x-amz-content-sha256/x-amz-date headers either - fails `parse_authorization_header` AND the
+    // header-presence checks, so both gate conditions independently reject it. A large
+    // Content-Length is announced; NO body bytes are ever sent.
+    sock.write_all(
+        b"POST /model/anthropic.claude/converse HTTP/1.1\r\n\
+          Host: localhost\r\n\
+          Authorization: AWS4-HMAC-SHA256\r\n\
+          Content-Length: 1000000\r\n\
+          \r\n",
+    )
+    .await
+    .unwrap();
+    sock.flush().await.unwrap();
+
+    let mut buf = [0u8; 512];
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(2), sock.read(&mut buf))
+        .await
+        .expect(
+            "the structural gate did NOT reject before reading the body: the connection hung \
+             waiting for body bytes that were never sent, meaning `to_bytes` was called first",
+        )
+        .unwrap();
+    assert!(outcome > 0, "expected a response, got EOF");
+    let resp = String::from_utf8_lossy(&buf[..outcome]);
+    assert!(
+        resp.starts_with("HTTP/1.1 403"),
+        "expected an immediate 403 from the structural gate: {resp}"
+    );
+
+    handle.abort();
+    server.shutdown().await;
+}
