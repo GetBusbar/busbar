@@ -215,16 +215,32 @@ fn restore_does_not_clobber_new_limit_with_unlimited_sentinel() {
 fn test_floor_prevents_trip() {
     let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
 
-    // Set a fixed time for testing
     set_now_for_test(1000);
 
-    // min_requests is 5 by default; only record 4 errors (below floor)
+    // Drive the real path (which evaluates should_trip), matching test_trip_on_error_rate below —
+    // record_outcome_error_with_time only seeds the window and never trips, so it cannot prove the
+    // floor did anything. Default cfg: error-rate, min_requests=5, threshold=0.5.
+    let cfg = BreakerCfg::default();
     for _ in 0..4 {
-        store.record_outcome_error_with_time(0, 1000);
+        store.record_transient(0, "5xx", &cfg, None);
     }
+    // 4/4 = 1.0 >= threshold, but 4 < min_requests(5): the fraction must not be consulted at all.
+    // (Not asserting `usable()` here: each sub-threshold failure still arms a soft exponential-
+    // backoff cooldown on the Closed cell — deliberate anti-thundering-herd jitter, unrelated to
+    // the trip floor — so a Closed lane at this fixed `now` is not necessarily usable.)
+    assert_eq!(
+        store.breaker_state(0),
+        BreakerState::Closed,
+        "below min_requests the fraction is not consulted at all — 4 errors must not trip"
+    );
 
-    // Still usable because below err threshold (simplified check)
-    assert!(store.usable(0, 1000), "should remain usable below floor");
+    // The boundary: the FIFTH error crosses the floor and trips, proving the Closed assertion
+    // above was one request away from tripping rather than vacuously true.
+    store.record_transient(0, "5xx", &cfg, None);
+    assert!(
+        matches!(store.breaker_state(0), BreakerState::Open { .. }),
+        "the request that meets min_requests must trip at fraction 1.0"
+    );
 }
 
 #[test]
@@ -875,15 +891,32 @@ fn test_client_fault_never_trips() {
 
     set_now_for_test(1000);
 
-    // ClientFault records nothing (success doesn't increment err)
+    // Drive the actual client-fault path. record_outcome_success_with_time records a SUCCESS,
+    // which never touches err/client_fault by construction and cannot prove this property.
     for _ in 0..100 {
-        store.record_outcome_success_with_time(0, 1000);
+        store.record_client_fault(0);
     }
 
-    assert!(store.usable(0, 1000), "should remain usable");
-
     let snap = store.snapshot(0, 1000);
-    assert_eq!(snap.err, 0, "client faults should not increment err");
+    assert_eq!(
+        snap.client_fault, 100,
+        "every client fault is counted for observability"
+    );
+    assert_eq!(snap.err, 0, "a client fault is NOT an upstream error");
+    assert_eq!(
+        snap.streak, 0,
+        "a client fault must not extend the consecutive-failure streak"
+    );
+    assert_eq!(
+        snap.cooldown_remaining_s, 0,
+        "a client fault must not schedule a cooldown"
+    );
+    assert_eq!(
+        store.breaker_state(0),
+        BreakerState::Closed,
+        "100 client faults — 20x the min_requests floor — must leave the breaker Closed"
+    );
+    assert!(store.usable(0, 1000));
 }
 
 #[test]
@@ -3276,14 +3309,29 @@ fn test_swrr_no_open_selection() {
     let candidates: Vec<usize> = vec![0, 1, 2];
     let weights: Vec<u32> = vec![w0, w1, w2];
 
-    // Run many selections and verify member 1 is never picked while Open
+    // Run many selections, counting rather than merely observing — an empty healthy set (a
+    // regression that made every candidate look unhealthy) would let all 500 iterations take the
+    // `None` arm and assert nothing, so a non-abstaining pick is itself asserted below.
+    let mut picks = [0usize; 3];
     for _ in 0..500 {
-        if let Some(picked) = store.select_weighted(&candidates, &weights, 1000) {
-            assert_ne!(picked, 1, "Open member should never be selected");
-        }
+        let picked = store
+            .select_weighted(&candidates, &weights, 1000)
+            .expect("two healthy members remain — selection must never abstain");
+        assert_ne!(picked, 1, "an Open member must never be selected");
+        picks[picked] += 1;
     }
-
-    // Member 0 and 2 should both get picked (renormalized to 10:3 ratio)
+    assert_eq!(
+        picks[0] + picks[2],
+        500,
+        "every selection landed on a healthy member"
+    );
+    assert_eq!(picks[1], 0);
+    // `make_lane_data_with_weight` assigns weight = id + 1, so lane 0 carries weight 1 and lane 2
+    // carries weight 3 (the `max_permits` argument does not affect weight). SWRR renormalises over
+    // the HEALTHY subset only: 1:3, not 1:2:3. Deterministic under the held shard lock, so this is
+    // an exact count, not a tolerance window.
+    assert_eq!(picks[0], 500 / 4);
+    assert_eq!(picks[2], 500 - picks[0]);
 }
 
 // All-down - when every member is Open, select_weighted returns None

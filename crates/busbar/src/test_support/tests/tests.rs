@@ -3627,15 +3627,22 @@ mod disposition_matrix_tests {
         // Should get 400 from lane 0
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
-        // Lane 1 should NOT have been called (no requests to server1)
-        // We verify by checking state1 is empty (pop consumed nothing)
-        {
-            let responses = state1.responses.lock().unwrap();
-            assert!(
-                responses.is_empty(),
-                "Lane 1 should NOT be hit on client fault from lane 0"
-            );
-        }
+        // Lane 1 must NOT be dispatched to: a 4xx client fault is the CLIENT's error and must not
+        // be retried against a second upstream. `responses` is the queue of canned responses THIS
+        // test supplied, not a record of received requests — it starts empty regardless of whether
+        // lane 1 was hit, so it cannot discriminate. `get_last_request_path` is the actual hit
+        // witness, recorded unconditionally on every request the mock handler receives.
+        assert!(
+            state1.get_last_request_path().is_none(),
+            "lane 1 must not receive a request: a 4xx client fault is the CLIENT's error and must \
+             not be retried against a second upstream"
+        );
+        // Positive control: lane 0 WAS hit, so the negative above is about failover, not about the
+        // request never leaving busbar at all.
+        assert!(
+            state0.get_last_request_path().is_some(),
+            "lane 0 was dispatched to"
+        );
 
         server0.shutdown().await;
         server1.shutdown().await;
