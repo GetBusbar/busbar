@@ -230,6 +230,7 @@ dependencies = [
  "hmac",
  "http-body",
  "http-body-util",
+ "httpdate",
  "hyper",
  "hyper-rustls",
  "hyper-util",

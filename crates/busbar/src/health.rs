@@ -350,11 +350,7 @@ pub(crate) async fn probe_lane(app: &Arc<App>, i: usize, timeout: Duration) {
             // forwarding path does, capturing the Retry-After header the body-only extractor can't
             // see so the cooldown floor is honored.
             let status = r.status();
-            let retry_after_secs = r
-                .headers()
-                .get(axum::http::header::RETRY_AFTER)
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.trim().parse::<u64>().ok());
+            let retry_after_secs = crate::breaker::parse_retry_after(r.headers());
             let body = read_capped_error_body(r).await;
             let mut raw: RawUpstreamError = lane.protocol.reader().extract_error(status, &body);
             raw.retry_after_secs = retry_after_secs;
