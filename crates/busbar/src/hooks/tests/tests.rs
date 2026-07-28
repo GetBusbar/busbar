@@ -1562,3 +1562,68 @@ async fn dlopen_configure_nack_does_not_commit() {
         "a hook that refuses to ack must fail the configure push (no commit)"
     );
 }
+
+// ── offload_bounded (class-9 §1.5/§1.6: bound the transport resolve, name a swallowed JoinError) ──
+
+/// UNIT TEST of the new bound (NOT a red proof of the old unbounded `.await` — there is no fixture
+/// that makes a real `dlopen`/constructor hang, so the "no timeout today" claim is established by
+/// reading `gate_transport_offloaded`, not by a test). `spawn_blocking` runs the closure on a real OS
+/// thread, which a paused tokio clock cannot accelerate (a live blocking thread never reports the
+/// runtime "idle", so time auto-advance never fires) — so this drives the deadline-parameterized
+/// core directly with a short REAL deadline instead, making the timeout arm deterministic and fast.
+#[test]
+fn offload_bounded_returns_none_when_the_work_outlives_the_deadline() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let out: Option<()> = offload_bounded_with_deadline(
+            "slow-hook",
+            std::time::Duration::from_millis(20),
+            || {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                Some(())
+            },
+        )
+        .await;
+        assert!(
+            out.is_none(),
+            "work that outlives the deadline must resolve to None, not block the caller forever"
+        );
+    });
+}
+
+/// UNIT TEST of the new bound's panic arm — but WRITABLE NOW, unlike the timeout arm: the closure
+/// itself can panic without needing a real plugin. Pins the fix for the swallowed `JoinError`
+/// (§1.6): a panicking blocking task must not unwind the caller, and must be named in a captured
+/// warn distinctly from an ordinary "no resolvable transport" `None`.
+#[test]
+fn offload_bounded_logs_when_the_blocking_task_panics() {
+    use crate::test_support::warn_capture::WarnCapture;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let cap = WarnCapture::default();
+    let subscriber = tracing_subscriber::registry().with(cap.clone());
+
+    let out: Option<()> = tracing::subscriber::with_default(subscriber, || {
+        rt.block_on(offload_bounded("panicky-hook", || {
+            panic!("plugin constructor blew up");
+        }))
+    });
+
+    assert!(
+        out.is_none(),
+        "a panicking resolve must still resolve to None, not propagate the panic to the caller"
+    );
+    assert!(
+        cap.contains("panicky-hook") && cap.contains("panicked"),
+        "the panic must be logged, naming the hook and distinct from the ordinary unresolvable \
+         case: {:?}",
+        cap.messages()
+    );
+}

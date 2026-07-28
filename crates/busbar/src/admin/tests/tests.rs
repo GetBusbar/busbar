@@ -1,58 +1,7 @@
 use crate::governance::{GovState, MemoryStore, NewKeySpec};
+use crate::test_support::warn_capture::WarnCapture;
 use crate::test_support::TestApp;
 use std::sync::Arc;
-
-/// A `tracing::Layer` that records the messages of WARN-level events it sees, so a test can
-/// assert a particular `tracing::warn!` fired (mirrors the established pattern in config.rs /
-/// config_validate.rs / eventstream.rs).
-#[derive(Clone, Default)]
-struct WarnCapture(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
-
-impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for WarnCapture {
-    fn on_event(
-        &self,
-        event: &tracing::Event<'_>,
-        _ctx: tracing_subscriber::layer::Context<'_, S>,
-    ) {
-        if *event.metadata().level() != tracing::Level::WARN {
-            return;
-        }
-        // Capture the rendered message AND every other field (e.g. the structured `pool` /
-        // `key_name` on create_key's diagnostic) so a test can assert on a field value, not just
-        // the static message text. Fields are flattened into one `key=value` string per event.
-        #[derive(Default)]
-        struct Vis {
-            message: String,
-            fields: String,
-        }
-        impl Vis {
-            fn record(&mut self, field: &tracing::field::Field, rendered: String) {
-                if field.name() == "message" {
-                    self.message = rendered;
-                } else {
-                    if !self.fields.is_empty() {
-                        self.fields.push(' ');
-                    }
-                    self.fields
-                        .push_str(&format!("{}={}", field.name(), rendered));
-                }
-            }
-        }
-        impl tracing::field::Visit for Vis {
-            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-                self.record(field, format!("{value:?}"));
-            }
-            fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
-                self.record(field, value.to_string());
-            }
-        }
-        let mut vis = Vis::default();
-        event.record(&mut vis);
-        if let Ok(mut msgs) = self.0.lock() {
-            msgs.push(format!("{} {}", vis.message, vis.fields));
-        }
-    }
-}
 
 /// Build a `GovState` that CAN mint 1.5.0 signed-token keys: it carries a deterministic
 /// `TokenSigner` (fixed key bytes + the default kid) so `POST /keys` issues a `bbk_` token instead
@@ -4766,7 +4715,7 @@ fn test_create_key_warns_on_unconfigured_allowed_pool() {
         "a configured allowed_pool creates the key"
     );
 
-    let msgs = cap.0.lock().unwrap();
+    let msgs = cap.messages();
     // Exactly one warning, naming the typo'd pool — "smart" (configured) must NOT warn.
     let pool_warns: Vec<&String> = msgs
         .iter()
@@ -7859,6 +7808,166 @@ async fn test_admin_v1_config_settings_reset_reverts_to_base() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The reset pre-flight probe (`overlay_empty`) must NOT treat a CORRUPT overlay as "no overlay
+/// state" — that short-circuits to a `200 changed:false` + `OUTCOME_APPLIED` audit row without ever
+/// running the fail-closed `clear_section`, which every sibling durable-write path on an unreadable
+/// overlay refuses. Write a non-empty root override first (so the overlay exists), then corrupt the
+/// file bytes and reset — the corruption must be REFUSED (400), not silently reported as an
+/// idempotent no-op.
+#[tokio::test]
+async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_corrupt() {
+    let (dir, overlay, addr, handle) = settings_test_app("reset-corrupt").await;
+    let client = reqwest::Client::new();
+    let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
+
+    admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
+        .header("content-type", "application/json")
+        .body(serde_json::json!({ "per_request_fee": 42 }).to_string())
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        crate::config::overlay::read(&overlay)
+            .and_then(|d| d.root)
+            .is_some(),
+        "root override present before corrupting the overlay"
+    );
+
+    std::fs::write(&overlay, b"{ not json").unwrap();
+
+    let reset = admin(client.delete(format!("http://{addr}/api/v1/admin/overlay/root")))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        reset.status().as_u16(),
+        400,
+        "a reset probe over a corrupt overlay must refuse, not report a false no-op: {:?}",
+        reset.text().await
+    );
+
+    let rows = crate::admin::audit::AUDIT.list_filtered(
+        0,
+        crate::admin::audit::MAX_AUDIT_ENTRIES,
+        None,
+        Some("overlay:root"),
+    );
+    assert!(
+        rows.iter()
+            .any(|e| e.action == "overlay.reset"
+                && e.outcome == crate::admin::audit::OUTCOME_REJECTED),
+        "the corrupt-overlay reset must be audited as REJECTED, never APPLIED: {rows:?}"
+    );
+    assert!(
+        !rows
+            .iter()
+            .any(|e| e.action == "overlay.reset"
+                && e.outcome == crate::admin::audit::OUTCOME_APPLIED),
+        "a corrupt-overlay reset must never be recorded as a successful apply: {rows:?}"
+    );
+
+    handle.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Same probe, the OTHER non-`Absent` classification: an overlay written by a NEWER busbar than
+/// this one is intact and meaningful (unlike `Unreadable`), and `load_config_from_disk` already
+/// refuses to boot on one (`main.rs`). The reset pre-flight probe must not paper over that refusal
+/// with a false `changed:false`.
+#[tokio::test]
+async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_too_new() {
+    let (dir, overlay, addr, handle) = settings_test_app("reset-too-new").await;
+    let client = reqwest::Client::new();
+    let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
+
+    admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
+        .header("content-type", "application/json")
+        .body(serde_json::json!({ "per_request_fee": 42 }).to_string())
+        .send()
+        .await
+        .unwrap();
+    let mut doc: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&overlay).unwrap()).unwrap();
+    doc["version"] = serde_json::json!(crate::config::overlay::OVERLAY_VERSION + 1);
+    std::fs::write(&overlay, serde_json::to_vec(&doc).unwrap()).unwrap();
+
+    let reset = admin(client.delete(format!("http://{addr}/api/v1/admin/overlay/root")))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        reset.status().as_u16(),
+        400,
+        "a reset probe over a too-new overlay must refuse: {:?}",
+        reset.text().await
+    );
+
+    handle.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `GET /config/settings` on a corrupt/unreadable overlay renders `settings: {}` (the honest
+/// "no overrides visible" answer given the fail-soft `read`), but the misreport must be
+/// ATTRIBUTABLE to THIS read — a generic `overlay.rs` warn is not enough, because a reader can't
+/// tell which of the many overlay-reading endpoints produced it. Drives the handler directly
+/// (not over HTTP) so the thread-local `WarnCapture` subscriber sees the synchronous warn.
+#[test]
+fn test_get_config_settings_warns_when_overlay_is_unreadable() {
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-get-settings-corrupt-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let overlay = dir.join("overlay.json");
+    std::fs::write(&overlay, b"{ not json").unwrap();
+
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let mut app = TestApp::new()
+        .governance(gov)
+        .overlay_path(overlay.clone())
+        .build();
+    {
+        let inner = Arc::get_mut(&mut app).expect("sole owner");
+        inner.config_path = None;
+        inner.providers_path = None;
+    }
+    let handle = std::sync::Arc::new(crate::state::AppHandle::new(app));
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let cap = WarnCapture::default();
+    let subscriber = tracing_subscriber::registry().with(cap.clone());
+
+    let resp = tracing::subscriber::with_default(subscriber, || {
+        rt.block_on(crate::admin::v1::json::get_config_settings(
+            axum::extract::State(handle),
+        ))
+    });
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "a corrupt overlay must not brick the read; it renders no overrides"
+    );
+
+    assert!(
+        cap.contains("/config/settings"),
+        "GET /config/settings on a corrupt overlay must emit a warn naming THIS endpoint, not just \
+         overlay.rs's generic boot-time warn: {:?}",
+        cap.messages()
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// ETAG / If-Match: a stale `If-Match` on the PUT is a 409 version_conflict that changes nothing.
 #[tokio::test]
 async fn test_admin_v1_config_settings_stale_if_match_conflicts() {
@@ -7912,6 +8021,215 @@ async fn test_admin_v1_config_settings_unknown_field_400() {
 
     handle.abort();
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Same fixture as `settings_test_app`, but with NO overlay configured (`BUSBAR_CONFIG_OVERLAY`
+/// unset) — the default deployment — while config/providers files still exist on disk (so the
+/// separate ephemeral-mode guard does not fire first).
+async fn settings_test_app_no_overlay(
+    tag: &str,
+) -> (
+    std::path::PathBuf,
+    std::net::SocketAddr,
+    tokio::task::JoinHandle<()>,
+) {
+    crate::metrics::init();
+    let (dir, config_path, providers_path) = write_reset_fixture(&format!("settings-no-ov-{tag}"));
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let mut app = TestApp::new().governance(gov).build();
+    {
+        let inner = Arc::get_mut(&mut app).expect("sole owner");
+        inner.config_path = Some(config_path.clone());
+        inner.providers_path = Some(providers_path.clone());
+    }
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    (dir, addr, handle)
+}
+
+/// Case 2 of the `persist` matrix (§3.3.3): with no overlay configured, a PUT still applies live
+/// (200) but must report TRUTHFULLY that nothing was stored — `reload_to_apply` empty and a note
+/// saying IN MEMORY ONLY — instead of the old unconditional "stored in the overlay" claim.
+#[tokio::test]
+async fn test_admin_v1_config_settings_put_without_persistence_reports_in_memory_only() {
+    let (dir, addr, handle) = settings_test_app_no_overlay("truthful").await;
+    let client = reqwest::Client::new();
+    let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
+
+    let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
+        .header("content-type", "application/json")
+        .body(serde_json::json!({ "listen": "127.0.0.1:0" }).to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(put.status().as_u16(), 200, "{:?}", put.text().await);
+    let body: serde_json::Value = put.json().await.unwrap();
+    let reload_to_apply = body["reload_to_apply"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        reload_to_apply.is_empty(),
+        "no overlay ⇒ nothing was durably stored, so reload_to_apply must be empty: {body}"
+    );
+    let note = body["note"].as_str().unwrap_or_default();
+    assert!(
+        note.contains("IN MEMORY ONLY"),
+        "the note must say the change is in memory only: {note}"
+    );
+    assert!(
+        !note.contains("stored in the overlay"),
+        "the note must not claim durable storage that did not happen: {note}"
+    );
+
+    handle.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Case 4 of the `persist` matrix: `"persist": true` with no overlay configured must REFUSE (400)
+/// rather than silently apply in memory while claiming success. THE STATUS ALONE DOES NOT
+/// DISCRIMINATE — `RootSettings`'s `deny_unknown_fields` 400s this exact body TODAY for a different
+/// reason (`unknown field \`persist\``), so the assertion must be on the message.
+#[tokio::test]
+async fn test_admin_v1_config_settings_put_refuses_when_persistence_is_explicitly_requested_and_unavailable(
+) {
+    let (dir, addr, handle) = settings_test_app_no_overlay("refuse").await;
+    let client = reqwest::Client::new();
+    let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
+
+    let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
+        .header("content-type", "application/json")
+        .body(serde_json::json!({ "listen": "127.0.0.1:0", "persist": true }).to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(put.status().as_u16(), 400, "{:?}", put.text().await);
+    let body: serde_json::Value = put.json().await.unwrap();
+    let msg = body["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        msg.contains("BUSBAR_CONFIG_OVERLAY"),
+        "the refusal must name BUSBAR_CONFIG_OVERLAY as the missing precondition, not just be a \
+         generic 400: {body}"
+    );
+    assert!(
+        !msg.contains("unknown field"),
+        "this must be the NEW persist-unavailable refusal, not the OLD deny_unknown_fields 400 \
+         that fires on this body today: {body}"
+    );
+
+    handle.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The positive half of case 3: `"persist": true` WITH an overlay present must still persist
+/// exactly as an implicit persist does today.
+#[tokio::test]
+async fn test_admin_v1_config_settings_put_with_persist_true_still_persists_when_overlay_exists() {
+    let (dir, overlay, addr, handle) = settings_test_app("persist-true").await;
+    let client = reqwest::Client::new();
+    let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
+
+    let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
+        .header("content-type", "application/json")
+        .body(serde_json::json!({ "per_request_fee": 7, "persist": true }).to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(put.status().as_u16(), 200, "{:?}", put.text().await);
+    let on_disk = crate::config::overlay::read(&overlay)
+        .and_then(|d| d.root)
+        .expect("root section persisted");
+    assert_eq!(
+        on_disk.per_request_fee,
+        Some(7),
+        "persist:true with an overlay present stores the value on disk"
+    );
+
+    handle.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `"persist"` rejects a non-boolean — the message must name it, discriminating from the OLD
+/// `unknown field` 400 the same body triggers today (status alone does not discriminate here
+/// either, since both are 400s).
+#[tokio::test]
+async fn test_admin_v1_config_settings_put_rejects_a_non_boolean_persist() {
+    let (dir, addr, handle) = settings_test_app_no_overlay("nonbool").await;
+    let client = reqwest::Client::new();
+    let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
+
+    let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
+        .header("content-type", "application/json")
+        .body(serde_json::json!({ "persist": "yes" }).to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(put.status().as_u16(), 400, "{:?}", put.text().await);
+    let body: serde_json::Value = put.json().await.unwrap();
+    let msg = body["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        msg.contains("persist") && msg.contains("boolean"),
+        "the refusal must name `persist` as needing a boolean: {body}"
+    );
+
+    handle.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// REGRESSION PROOF (passes before AND after): stripping `persist` before the typed parse must NOT
+/// weaken `deny_unknown_fields` — a TYPO of the control key is still a loud 400, which is the whole
+/// justification (§3.3.2) for choosing a body field over a query param (the in-tree
+/// `Query<HashMap<String,String>>` idiom drops unknown keys silently).
+#[tokio::test]
+async fn test_admin_v1_config_settings_put_still_rejects_an_unknown_field_including_persist_typo() {
+    let (dir, addr, handle) = settings_test_app_no_overlay("typo").await;
+    let client = reqwest::Client::new();
+    let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
+
+    let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
+        .header("content-type", "application/json")
+        .body(serde_json::json!({ "persits": true }).to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(put.status().as_u16(), 400, "{:?}", put.text().await);
+    let body: serde_json::Value = put.json().await.unwrap();
+    let msg = body["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        msg.contains("unknown field"),
+        "a typo of `persist` must still be an unknown-field 400, not a silently-ignored request: \
+         {body}"
+    );
+
+    handle.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `persist_root(None, ..)` (the default-deployment no-op) must log — the last piece of owner
+/// requirement (iii). Driven directly (not over HTTP) so the thread-local `WarnCapture` subscriber
+/// sees it.
+#[test]
+fn test_persist_root_without_an_overlay_logs() {
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let cap = WarnCapture::default();
+    let subscriber = tracing_subscriber::registry().with(cap.clone());
+
+    let result = tracing::subscriber::with_default(subscriber, || {
+        crate::config::overlay::persist_root(None, &crate::config::overlay::RootSettings::default())
+    });
+    assert!(
+        result.is_ok(),
+        "a None path is a documented no-op, not an error"
+    );
+    assert!(
+        cap.contains("in memory only"),
+        "persist_root(None, ..) must log the in-memory-only outcome: {:?}",
+        cap.messages()
+    );
 }
 
 /// SCOPE: `PUT /config/settings` is a FULL-scope mutation (the config-plane fallthrough), `GET` is

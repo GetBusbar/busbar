@@ -344,7 +344,7 @@
         "type": "object"
       },
       "ConfigSettingsView": {
-        "description": "`GET`/`PUT /config/settings` (1.5.0 full-config coverage) — the API-settable single-value config\noverlay (`root` section) and, on a PUT, the apply metadata. `settings` is the CURRENT effective\nroot override (the merge of prior overlay + this request), overlay-persisted so it survives a\nrestart. `reload_to_apply` names the fields whose new value is DURABLY STORED but not yet LIVE:\nthe process-level binds (`listen`/`admin_listen` socket, `tls`/`admin_tls` bind, `admin_insecure`)\nare read once at process start, and the durable `store` backend is reused across a hot reload —\nnone can hot-swap, so they take effect on the next RESTART. Everything else\n(`rate_card`/`per_request_fee`/`security`/`limits`/`observability`/`advanced`/`metrics`/`health`/\n`routing`) is LIVE on the swap.",
+        "description": "`GET`/`PUT /config/settings` (1.5.0 full-config coverage) — the API-settable single-value config\noverlay (`root` section) and, on a PUT, the apply metadata. `settings` is the CURRENT effective\nroot override (the merge of prior overlay + this request). It is overlay-persisted so it survives\na restart WHEN a config overlay is configured (`BUSBAR_CONFIG_OVERLAY`) — a busbar with none\napplies the change live only, and `note` says so; `PUT` with `\"persist\": true` makes storage\nmandatory, refusing (`400`) rather than silently applying in memory when no overlay exists.\n`reload_to_apply` names the fields whose new value is DURABLY STORED but not yet LIVE: the\nprocess-level binds (`listen`/`admin_listen` socket, `tls`/`admin_tls` bind, `admin_insecure`) are\nread once at process start, and the durable `store` backend is reused across a hot reload — none\ncan hot-swap, so they take effect on the next RESTART. It is always EMPTY when nothing was\ndurably stored (no overlay); `note` names the affected fields instead. Everything else\n(`rate_card`/`per_request_fee`/`security`/`limits`/`observability`/`advanced`/`metrics`/`health`/\n`routing`) is LIVE on the swap.",
         "properties": {
           "applied": {
             "description": "`true` on a PUT that stored + swapped; `false` on a GET (a pure read).",
@@ -3365,7 +3365,7 @@
             "application/json": {
               "schema": {
                 "additionalProperties": true,
-                "description": "The settings sections to replace, keyed by section name. The accepted shape is the config file's own, documented in the configuration reference; it is not restated here because several of its types parse a wire shape that does not match their field layout.",
+                "description": "The settings sections to replace, keyed by section name. The optional top-level boolean `persist` asserts the change MUST be stored in the config overlay: with `persist: true` a busbar that has no overlay refuses with `400 invalid_request` instead of applying the change in memory only. Omitted or `false` means the change is applied and stored where storage is available, and applied in memory only where it is not (the response `note` says which); `false` never suppresses storage. Every other top-level key must be a known settings section — an unknown key is a 400. The accepted shape is the config file's own, documented in the configuration reference; it is not restated here because several of its types parse a wire shape that does not match their field layout.",
                 "type": "object"
               }
             }

@@ -1449,9 +1449,36 @@ pub(crate) async fn reset_overlay_section(
             // pipeline. This reads the overlay FILE, which is why it lives on the blocking side.
             let overlay_empty = match snapshot.overlay_path.as_deref() {
                 None => true,
-                Some(p) => crate::config::overlay::read(p)
-                    .map(|doc| doc.section_is_empty(section))
-                    .unwrap_or(true),
+                Some(p) => match crate::config::overlay::read_state(p) {
+                    crate::config::overlay::OverlayReadState::Absent => true,
+                    crate::config::overlay::OverlayReadState::Loaded(doc) => {
+                        doc.section_is_empty(section)
+                    }
+                    // A corrupt or too-new overlay is NOT "no overlay state". Reporting
+                    // `changed:false` would claim this section already equals base while the live
+                    // App may still carry it, and would skip the fail-closed `clear_section`
+                    // entirely (the asymmetry `rollback_plugin` and every persist path already
+                    // refuse on).
+                    crate::config::overlay::OverlayReadState::Unreadable => {
+                        return Err(AdminError::Validation(format!(
+                            "the config overlay at '{}' is present but unreadable/corrupt; refusing \
+                             to reset section `{}` (a reset probe over corrupt state cannot tell \
+                             whether this section still carries live overrides). Fix or remove the \
+                             overlay file, or restore it from backup, before resetting",
+                            p.display(),
+                            section.as_str()
+                        )));
+                    }
+                    crate::config::overlay::OverlayReadState::VersionTooNew(v) => {
+                        return Err(AdminError::Validation(format!(
+                            "the config overlay at '{}' was written by a NEWER busbar (version {v}) \
+                             than this one; refusing to reset section `{}` rather than silently \
+                             ignoring overrides this process cannot understand",
+                            p.display(),
+                            section.as_str()
+                        )));
+                    }
+                },
             };
             if overlay_empty {
                 return Ok(Outcome::Value((snapshot.config_version, None)));
@@ -2493,13 +2520,44 @@ fn reload_to_apply_fields(req: &crate::config::overlay::RootSettings) -> Vec<Str
 /// Read the current overlay `root` section (the operator's API-set single-value overrides), or an
 /// empty `RootSettings` when persistence is disabled / the overlay is absent or carries no root
 /// section. Shared by the GET/PUT `/config/settings` handlers.
+///
+/// A corrupt or too-new overlay renders as an empty `RootSettings` — "the operator has set no
+/// overrides" — which is NOT wrong (nothing is mutated on this read), but a reader of the response
+/// alone cannot tell "no overrides" from "overrides exist but this read couldn't see them".
+/// `overlay::read`'s own warn/error already logs the cause, but genericly — it does not say which
+/// endpoint's answer it is misreporting. `endpoint` attributes the misreport to THIS specific read.
 fn current_root_settings(
     overlay_path: Option<&std::path::Path>,
+    endpoint: &str,
 ) -> crate::config::overlay::RootSettings {
-    overlay_path
-        .and_then(crate::config::overlay::read)
-        .and_then(|doc| doc.root)
-        .unwrap_or_default()
+    let Some(p) = overlay_path else {
+        return crate::config::overlay::RootSettings::default();
+    };
+    match crate::config::overlay::read_state(p) {
+        crate::config::overlay::OverlayReadState::Absent => {
+            crate::config::overlay::RootSettings::default()
+        }
+        crate::config::overlay::OverlayReadState::Loaded(doc) => doc.root.unwrap_or_default(),
+        crate::config::overlay::OverlayReadState::Unreadable => {
+            tracing::warn!(
+                endpoint,
+                path = %p.display(),
+                "{endpoint} read the config overlay while it was unreadable/corrupt; reporting NO \
+                 root overrides, which may not reflect what is actually stored on disk"
+            );
+            crate::config::overlay::RootSettings::default()
+        }
+        crate::config::overlay::OverlayReadState::VersionTooNew(v) => {
+            tracing::warn!(
+                endpoint,
+                path = %p.display(),
+                overlay_version = v,
+                "{endpoint} read the config overlay while it was from a NEWER busbar; reporting NO \
+                 root overrides, which may not reflect what is actually stored on disk"
+            );
+            crate::config::overlay::RootSettings::default()
+        }
+    }
 }
 
 /// `GET /api/v1/admin/config/settings` — read the API-set single-value config overlay (the `root`
@@ -2510,7 +2568,7 @@ fn current_root_settings(
 /// not raw key bytes).
 pub(crate) async fn get_config_settings(State(handle): State<Arc<AppHandle>>) -> Response {
     let current = handle.load();
-    let root = current_root_settings(current.overlay_path.as_deref());
+    let root = current_root_settings(current.overlay_path.as_deref(), "GET /config/settings");
     let settings = serde_json::to_value(&root).unwrap_or_else(|_| json!({}));
     with_config_etag(
         ok_json(
@@ -2539,6 +2597,13 @@ pub(crate) async fn get_config_settings(State(handle): State<Arc<AppHandle>>) ->
 /// concurrency; audited (every attempt) + versioned; overlay-persisted so it survives a restart.
 /// Requires config files on disk (the base to merge onto); an ephemeral busbar has none, so this is a
 /// `400 invalid_request` there, exactly like `config/reload`.
+/// The one request-scoped control key on the `/config/settings` PUT body. Reserved: it is REMOVED
+/// before the typed `RootSettings` parse, so `RootSettings`'s `deny_unknown_fields` still rejects
+/// every other unknown key — including a typo of this one, which is the point (a silently-ignored
+/// persistence request is the exact defect this field exists to fix; a query param would have hit
+/// the in-tree `Query<HashMap<String,String>>` idiom, which drops an unknown key silently).
+const PERSIST_FIELD: &str = "persist";
+
 pub(crate) async fn put_config_settings(
     State(handle): State<Arc<AppHandle>>,
     axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
@@ -2550,7 +2615,25 @@ pub(crate) async fn put_config_settings(
         Ok(v) => v,
         Err(resp) => return resp,
     };
-    let req: crate::config::overlay::RootSettings = match serde_json::from_slice(&body) {
+    let mut raw: serde_json::Value = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(e) => {
+            return err_json(&AdminError::Validation(format!(
+                "malformed config settings body: {e}"
+            )))
+        }
+    };
+    let requested_persist = match raw.as_object_mut().and_then(|o| o.remove(PERSIST_FIELD)) {
+        None => false,
+        Some(serde_json::Value::Bool(b)) => b,
+        Some(other) => {
+            return err_json(&AdminError::Validation(format!(
+                "config settings '{PERSIST_FIELD}' must be a boolean (got {other}); it asserts the \
+                 change must be stored in the config overlay"
+            )))
+        }
+    };
+    let req: crate::config::overlay::RootSettings = match serde_json::from_value(raw) {
         Ok(r) => r,
         Err(e) => {
             return err_json(&AdminError::Validation(format!(
@@ -2564,6 +2647,19 @@ pub(crate) async fn put_config_settings(
         let current = txn.app();
         if let Some(e) = stale_if_match(expected, current.config_version) {
             return Err(e);
+        }
+        // The caller EXPLICITLY required durability. `persist_root` on a `None` overlay path is a
+        // silent no-op `Ok` (`overlay.rs`), so honouring the request is impossible and reporting
+        // success would be the lie this endpoint used to tell. Refuse — the same precondition, and
+        // the same reasoning, as `plugins/rollback`.
+        if requested_persist && current.overlay_path.is_none() {
+            return Err(AdminError::Validation(
+                "\"persist\": true was requested, but this busbar has no config overlay \
+                 (BUSBAR_CONFIG_OVERLAY is unset), so the change cannot be stored and would not \
+                 survive a restart. Set BUSBAR_CONFIG_OVERLAY and retry, or omit \"persist\" to \
+                 apply the change in memory only, or use POST /config/apply for a live-only change."
+                    .into(),
+            ));
         }
         // Everything below reads the overlay file and re-runs the disk-load pipeline, so it is
         // queued onto `spawn_blocking` — under the guard, off the reactor.
@@ -2581,7 +2677,7 @@ pub(crate) async fn put_config_settings(
             };
             // Merge the partial request onto the CURRENT overlay root (partial-update semantics).
             let merged = merge_root_settings(
-                current_root_settings(snapshot.overlay_path.as_deref()),
+                current_root_settings(snapshot.overlay_path.as_deref(), "PUT /config/settings"),
                 want,
             );
             let merged_for_build = merged.clone();
@@ -2659,15 +2755,42 @@ pub(crate) async fn put_config_settings(
                 &actor,
             );
             record_group_version(&installed, &actor, "config.settings (root section applied)");
-            let note = if reload_to_apply.is_empty() {
-                "applied live".to_string()
+            // `installed.overlay_path` is the SAME path the request started with — the reset/PUT
+            // paths preserve it verbatim across a rebuild — so it is the authoritative answer to
+            // "was there anywhere to persist this?" for the response we are about to build.
+            let (reload_to_apply, note) = if installed.overlay_path.is_none() {
+                // No overlay: `persist_root` was a no-op (it warns; see `overlay::persist_root`).
+                // `reload_to_apply`'s published meaning is "durably stored but not yet live" — since
+                // NOTHING was stored, listing fields there would be the precise lie this fix exists
+                // to remove. Its own field names move into the note instead.
+                let note = if reload_to_apply.is_empty() {
+                    "applied live, IN MEMORY ONLY: this busbar has no config overlay \
+                     (BUSBAR_CONFIG_OVERLAY is unset), so nothing was stored and every field here \
+                     reverts on the next restart or POST /config/reload. Set BUSBAR_CONFIG_OVERLAY \
+                     and re-send with \"persist\": true to store the change durably."
+                        .to_string()
+                } else {
+                    format!(
+                        "applied live, IN MEMORY ONLY: this busbar has no config overlay \
+                         (BUSBAR_CONFIG_OVERLAY is unset), so nothing was stored and every field \
+                         here reverts on the next restart or POST /config/reload. Fields {} cannot \
+                         take effect without a restart, and a restart discards them. Set \
+                         BUSBAR_CONFIG_OVERLAY and re-send with \"persist\": true to store the \
+                         change durably.",
+                        reload_to_apply.join(", ")
+                    )
+                };
+                (Vec::new(), note)
+            } else if reload_to_apply.is_empty() {
+                (reload_to_apply, "applied live".to_string())
             } else {
-                format!(
+                let note = format!(
                     "applied live except {} — stored in the overlay, effective on the next RESTART (a \
                      socket rebind / TLS bind is read once at process start, and the store backend is \
                      reused across a hot reload; none can hot-swap)",
                     reload_to_apply.join(", ")
-                )
+                );
+                (reload_to_apply, note)
             };
             let settings = serde_json::to_value(&merged).unwrap_or_else(|_| json!({}));
             with_config_etag(
@@ -4077,7 +4200,15 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     body_raw!(
         "/config/settings",
         "put",
-        config_doc("The settings sections to replace, keyed by section name.")
+        config_doc(
+            "The settings sections to replace, keyed by section name. The optional top-level \
+             boolean `persist` asserts the change MUST be stored in the config overlay: with \
+             `persist: true` a busbar that has no overlay refuses with `400 invalid_request` \
+             instead of applying the change in memory only. Omitted or `false` means the change is \
+             applied and stored where storage is available, and applied in memory only where it is \
+             not (the response `note` says which); `false` never suppresses storage. Every other \
+             top-level key must be a known settings section — an unknown key is a 400."
+        )
     );
     body_raw!(
         PATH_GROUPS,

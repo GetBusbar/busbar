@@ -2850,36 +2850,7 @@ fn test_anthropic_streaming_safety_stop_reason_maps_to_end_turn() {
 // ---- Phase 0 fidelity items (Anthropic egress): sampling-param OMIT, response_format-drop
 // warn, and native thinking-block round-trip with signature. ----
 
-/// Minimal WARN-capturing tracing layer, kept local to this test module (mirrors the helper in
-/// auth.rs / config_validate.rs). Records each WARN event's `message` field so a test can assert
-/// a particular `tracing::warn!` fired without a global subscriber.
-#[derive(Clone, Default)]
-struct WarnCapture(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
-
-impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for WarnCapture {
-    fn on_event(
-        &self,
-        event: &tracing::Event<'_>,
-        _ctx: tracing_subscriber::layer::Context<'_, S>,
-    ) {
-        if *event.metadata().level() != tracing::Level::WARN {
-            return;
-        }
-        struct Vis(String);
-        impl tracing::field::Visit for Vis {
-            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-                if field.name() == "message" {
-                    self.0 = format!("{value:?}");
-                }
-            }
-        }
-        let mut vis = Vis(String::new());
-        event.record(&mut vis);
-        if let Ok(mut msgs) = self.0.lock() {
-            msgs.push(vis.0);
-        }
-    }
-}
+use crate::test_support::warn_capture::WarnCapture;
 
 /// SAMPLING (Phase 0): Anthropic's Messages API does NOT support `frequency_penalty`,
 /// `presence_penalty`, `seed`, or `n`. A cross-protocol IR carrying every one of them (e.g. read
@@ -3046,7 +3017,7 @@ fn write_request_warns_and_drops_response_format_on_cross_protocol_egress() {
         !out.as_object().unwrap().contains_key("response_format"),
         "Anthropic egress must NOT emit `response_format` (no native field); got {out}"
     );
-    let msgs = cap.0.lock().unwrap();
+    let msgs = cap.messages();
     assert!(
         msgs.iter().any(|m| m.contains("response_format")),
         "a response_format-drop warning must fire on cross-protocol Anthropic egress; got {msgs:?}"
@@ -3091,7 +3062,7 @@ fn write_request_warns_and_drops_json_tool_result_block() {
         !wire.contains("tool_result_json"),
         "a json-tool-result sentinel must NOT leak onto the Anthropic wire; got {wire}"
     );
-    let msgs = cap.0.lock().unwrap();
+    let msgs = cap.messages();
     assert!(
         msgs.iter().any(|m| m.contains("json tool-result")),
         "a json-tool-result drop warning must fire on Anthropic egress; got {msgs:?}"
@@ -3121,7 +3092,7 @@ fn write_request_no_response_format_warning_when_absent() {
     let subscriber = tracing_subscriber::registry().with(cap.clone());
     let _ = tracing::subscriber::with_default(subscriber, || AnthropicWriter.write_request(&req));
 
-    let msgs = cap.0.lock().unwrap();
+    let msgs = cap.messages();
     assert!(
         !msgs.iter().any(|m| m.contains("response_format")),
         "no response_format warning must fire when the directive is absent; got {msgs:?}"
