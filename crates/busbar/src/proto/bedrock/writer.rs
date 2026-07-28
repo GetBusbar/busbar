@@ -694,30 +694,39 @@ impl ProtocolWriter for BedrockWriter {
                 // this event to initialize its per-block streaming decoder; omitting it for text
                 // blocks leaves the following `contentBlockDelta`s orphaned (no preceding start),
                 // which strict SDK parsers discard or reject — and is a detectable proxy tell.
-                crate::ir::IrBlockMeta::Text => Some((
-                    ET_CONTENT_BLOCK_START.to_string(),
-                    serde_json::json!({ "contentBlockIndex": index, "start": {} }),
-                )),
-                crate::ir::IrBlockMeta::ToolUse { id, name } => Some((
-                    ET_CONTENT_BLOCK_START.to_string(),
-                    serde_json::json!({
-                        "contentBlockIndex": index,
-                        "start": { "toolUse": { "toolUseId": id, "name": name } }
-                    }),
-                )),
+                crate::ir::IrBlockMeta::Text => {
+                    self.mark_block_open(*index);
+                    Some((
+                        ET_CONTENT_BLOCK_START.to_string(),
+                        serde_json::json!({ "contentBlockIndex": index, "start": {} }),
+                    ))
+                }
+                crate::ir::IrBlockMeta::ToolUse { id, name } => {
+                    self.mark_block_open(*index);
+                    Some((
+                        ET_CONTENT_BLOCK_START.to_string(),
+                        serde_json::json!({
+                            "contentBlockIndex": index,
+                            "start": { "toolUse": { "toolUseId": id, "name": name } }
+                        }),
+                    ))
+                }
                 // A reasoning (extended-thinking) block opens with a `contentBlockStart` whose
                 // `start` carries an (empty) `reasoningContent` object — the inverse of the reader's
                 // lazy-open. Without this the streamed reasoning deltas were orphaned and the block
                 // dropped on Bedrock egress; mirror the buffered `write_response` reasoningContent
                 // re-emit on the streaming path. (Image has no streaming-start projection on Bedrock
                 // — image blocks are not streamed as `contentBlock*` frames — so it stays None.)
-                crate::ir::IrBlockMeta::Thinking => Some((
-                    ET_CONTENT_BLOCK_START.to_string(),
-                    serde_json::json!({
-                        "contentBlockIndex": index,
-                        "start": { "reasoningContent": {} }
-                    }),
-                )),
+                crate::ir::IrBlockMeta::Thinking => {
+                    self.mark_block_open(*index);
+                    Some((
+                        ET_CONTENT_BLOCK_START.to_string(),
+                        serde_json::json!({
+                            "contentBlockIndex": index,
+                            "start": { "reasoningContent": {} }
+                        }),
+                    ))
+                }
                 crate::ir::IrBlockMeta::Image => None,
             },
 
@@ -776,10 +785,18 @@ impl ProtocolWriter for BedrockWriter {
                 crate::ir::IrDelta::LogprobsDelta(_) => None,
             },
 
-            IrStreamEvent::BlockStop { index } => Some((
-                ET_CONTENT_BLOCK_STOP.to_string(),
-                serde_json::json!({ "contentBlockIndex": index }),
-            )),
+            // An untracked index is a block whose start had no Bedrock projection (Image); closing
+            // it would orphan a `contentBlockStop` a real client never saw a start for (finding 7.2).
+            IrStreamEvent::BlockStop { index } => {
+                if self.take_block_open(*index) {
+                    Some((
+                        ET_CONTENT_BLOCK_STOP.to_string(),
+                        serde_json::json!({ "contentBlockIndex": index }),
+                    ))
+                } else {
+                    None
+                }
+            }
 
             // The native Bedrock ConverseStream wire carries `stopReason` in a `messageStop` frame
             // and token `usage` in a SEPARATE `metadata` frame that FOLLOWS it. The IR, however,

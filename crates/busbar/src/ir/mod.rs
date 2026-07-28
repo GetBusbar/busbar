@@ -766,6 +766,24 @@ pub(crate) struct StreamDecodeState {
     /// `text_index` directly and never recompute a divergent base). Keyed by `oai_idx` so it tracks
     /// `open_tools` one-for-one.
     pub(crate) tool_ir_index: std::collections::BTreeMap<usize, usize>,
+    /// Monotone next-free IR block index, for readers that allocate slots by ORDER OF FIRST
+    /// APPEARANCE. NEVER reset for the life of the stream. The terminal branch's `mem::take` of
+    /// `open_tools`/`tool_ir_index` (openai_chat reader) clears WHO IS OPEN — it must not also be
+    /// read as clearing WHICH SLOTS ARE SPENT: a chunk arriving after a finish chunk would then
+    /// re-claim an index the client already has content in, reintroducing a block-index collision
+    /// on the post-terminal path. OpenAI Chat reader only; other readers leave it 0.
+    pub(crate) next_ir_index: usize,
+}
+
+impl StreamDecodeState {
+    /// Claim the next free IR block index. `reasoning_seen` reserves index 0 for the thinking block
+    /// (the OpenAI reader emits that one with a hardcoded 0), so the first claim after reasoning
+    /// starts at 1.
+    pub(crate) fn claim_ir_index(&mut self) -> usize {
+        let idx = self.next_ir_index.max(usize::from(self.reasoning_seen));
+        self.next_ir_index = idx + 1;
+        idx
+    }
 }
 
 #[cfg(test)]

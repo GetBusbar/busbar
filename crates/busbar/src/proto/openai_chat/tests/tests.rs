@@ -2033,9 +2033,11 @@ fn write_response_maps_finish_reason_enum_values() {
 
 #[test]
 fn stream_tool_call_index_u64_max_does_not_panic_or_wrap() {
-    // A crafted/proxied chunk with `"index": u64::MAX` must not panic (debug) or wrap to a
-    // near-zero IR index (release). The index is clamped to MAX_TOOL_INDEX before the
-    // `oai_idx + text_base + offset` arithmetic, so the emitted BlockStart index stays bounded.
+    // A crafted/proxied chunk with `"index": u64::MAX` must not panic (debug) or wrap. The IR
+    // block index is now claimed from the monotone `next_ir_index` counter (never derived from
+    // `oai_idx`), so it is structurally bounded by the number of blocks the stream actually opens
+    // regardless of how large the upstream `index` is; `MAX_TOOL_INDEX` still clamps `oai_idx`
+    // itself (a map/set key), which is what this test guards against panicking/wrapping.
     let reader = OpenAiReader;
     let mut st = crate::ir::StreamDecodeState::default();
     let evs = reader.read_response_events(
@@ -2056,8 +2058,8 @@ fn stream_tool_call_index_u64_max_does_not_panic_or_wrap() {
         }),
         &mut st,
     );
-    // A BlockStart is emitted with a bounded index (clamped 127, no text block so text_base=0,
-    // no thinking offset), never wrapping to a tiny value.
+    // A BlockStart is emitted with the first claimed IR index (0 — this is the only block the
+    // stream has opened), never a value derived from the huge upstream `index`.
     let start_idx = evs
         .iter()
         .find_map(|e| match e {
@@ -2065,7 +2067,7 @@ fn stream_tool_call_index_u64_max_does_not_panic_or_wrap() {
             _ => None,
         })
         .expect("clamped tool-call still opens a block");
-    assert_eq!(start_idx, MAX_TOOL_INDEX as usize);
+    assert_eq!(start_idx, 0);
     // The matching argument delta routes to the same bounded index.
     let delta_idx = evs.iter().find_map(|e| match e {
         IrStreamEvent::BlockDelta {
@@ -2079,8 +2081,9 @@ fn stream_tool_call_index_u64_max_does_not_panic_or_wrap() {
 
 #[test]
 fn stream_tool_call_index_close_does_not_overflow_on_finish() {
-    // The finish-path close loop computes the same `oai_idx + text_base + offset`; with a
-    // clamped index it must close at the matching bounded IR index without panicking/wrapping.
+    // The finish-path close loop replays the IR index recorded in `tool_ir_index` at open time
+    // (the monotone counter's claimed slot), so a huge clamped `oai_idx` key must still close at
+    // the SAME bounded IR index the BlockStart used, without panicking/wrapping.
     let reader = OpenAiReader;
     let mut st = crate::ir::StreamDecodeState::default();
     let _ = reader.read_response_events(
@@ -2118,7 +2121,7 @@ fn stream_tool_call_index_close_does_not_overflow_on_finish() {
             _ => None,
         })
         .expect("open tool block is closed on finish");
-    assert_eq!(stop_idx, MAX_TOOL_INDEX as usize);
+    assert_eq!(stop_idx, 0);
 }
 
 /// C3: when a tool opens BEFORE any text, then text arrives, a later tool-argument delta must be

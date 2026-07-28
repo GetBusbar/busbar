@@ -72,6 +72,7 @@ fn every_writer_emits_only_valid_native_finish_tokens() {
     let cohere_writer = CohereWriter;
     let gemini_writer = GeminiWriter;
     let responses_writer = ResponsesWriter;
+    let bedrock_writer = BedrockWriter;
     for r in ALL {
         let o = OpenAiWriter.write_response(&resp(r));
         let fr = o["choices"][0]["finish_reason"].as_str().unwrap();
@@ -88,7 +89,7 @@ fn every_writer_emits_only_valid_native_finish_tokens() {
         let gr = g["candidates"][0]["finishReason"].as_str().unwrap();
         assert!(gemini_ok.contains(&gr), "gemini leaked {gr:?} for {r:?}");
 
-        let b = BedrockWriter.write_response(&resp(r));
+        let b = bedrock_writer.write_response(&resp(r));
         let br = b["stopReason"].as_str().unwrap();
         assert!(bedrock_ok.contains(&br), "bedrock leaked {br:?} for {r:?}");
 
