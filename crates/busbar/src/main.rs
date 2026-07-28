@@ -913,7 +913,12 @@ async fn run() {
     // once here (not on config apply/reload — the reused `Arc<GovState>` keeps its live cells and its
     // already-running flusher). No-op when governance is disabled.
     if let Some(gov) = app_handle.load().governance.clone() {
-        crate::governance::spawn_budget_flusher(gov, shutdown_tx.subscribe());
+        // Handle intentionally dropped (not awaited): the flusher runs for the process lifetime and
+        // exits its own loop on the shutdown broadcast; nothing here needs to join it.
+        std::mem::drop(crate::governance::spawn_budget_flusher(
+            gov,
+            shutdown_tx.subscribe(),
+        ));
     }
 
     // Data plane on `listen`, admin plane on its own `admin_listen`, served concurrently — each with

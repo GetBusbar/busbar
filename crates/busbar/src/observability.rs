@@ -511,29 +511,36 @@ pub(crate) fn fire_request_log(payload: Value) {
             .await
         {
             Ok(resp) if resp.status().is_success() => {}
-            Ok(resp) => {
-                // Mask any embedded userinfo in the logged URL - parity with the OTLP path. An
-                // operator may embed `user:pass@` in the webhook URL (RFC 3986 §3.2.1); logging it
-                // raw on every delivery failure would leak the credential into the log.
-                tracing::warn!(
-                    webhook_url = mask_userinfo(url.as_str()),
-                    status = resp.status().as_u16(),
-                    "request-log webhook delivery returned a non-2xx status; this log was dropped"
-                );
-            }
-            Err(e) => {
-                // A reqwest error carries the request URL (WITH any userinfo) in its own `Display`, so
-                // `%e` is a second leak vector alongside the explicit field. `without_url()` strips the
-                // URL from the error so its Display can never carry the credential; the URL is logged
-                // once, userinfo-masked, in the dedicated field.
-                tracing::warn!(
-                    webhook_url = mask_userinfo(url.as_str()),
-                    error_kind = %e.without_url(),
-                    "request-log webhook delivery failed (transport error); this log was dropped"
-                );
-            }
+            Ok(resp) => warn_webhook_delivery_failed(url.as_str(), Ok(resp.status())),
+            Err(e) => warn_webhook_delivery_failed(url.as_str(), Err(e)),
         }
     });
+}
+
+/// The webhook delivery-failure warn, factored into ONE place so the userinfo masking cannot be
+/// reintroduced as a leak on only one of the two failure arms (non-2xx vs. transport error). Kept
+/// separate from `fire_request_log` so a test can drive the exact statement production emits
+/// without needing the process-wide `WEBHOOK_URL`/`CLIENT` `OnceLock`s to be set.
+fn warn_webhook_delivery_failed(url: &str, outcome: Result<reqwest::StatusCode, reqwest::Error>) {
+    match outcome {
+        // Mask any embedded userinfo in the logged URL - parity with the OTLP path. An operator
+        // may embed `user:pass@` in the webhook URL (RFC 3986 §3.2.1); logging it raw on every
+        // delivery failure would leak the credential into the log.
+        Ok(status) => tracing::warn!(
+            webhook_url = mask_userinfo(url),
+            status = status.as_u16(),
+            "request-log webhook delivery returned a non-2xx status; this log was dropped"
+        ),
+        // A reqwest error carries the request URL (WITH any userinfo) in its own `Display`, so `%e`
+        // is a second leak vector alongside the explicit field. `without_url()` strips the URL from
+        // the error so its Display can never carry the credential; the URL is logged once,
+        // userinfo-masked, in the dedicated field.
+        Err(e) => tracing::warn!(
+            webhook_url = mask_userinfo(url),
+            error_kind = %e.without_url(),
+            "request-log webhook delivery failed (transport error); this log was dropped"
+        ),
+    }
 }
 
 /// Retained `SdkTracerProvider` handle so its batched span buffer can be flushed/shut down on
@@ -1006,8 +1013,9 @@ mod tests {
     /// The request-log webhook DELIVERY-FAILURE warn must mask any
     /// embedded userinfo in BOTH the `webhook_url` field AND the reqwest error's Display (`error_kind`).
     /// The OTLP path was hardened; this one was not - a webhook URL with `user:pass@` was logged
-    /// verbatim on every delivery failure. This drives a real delivery against an unroutable userinfo
-    /// URL, captures the emitted warn fields, and asserts the credential never appears.
+    /// verbatim on every delivery failure. This drives `warn_webhook_delivery_failed` — the SAME
+    /// function `fire_request_log` calls in production, not a hand-copy of its body — for BOTH
+    /// failure arms, and asserts the credential never appears in either.
     #[tokio::test]
     async fn test_request_log_delivery_failure_masks_userinfo() {
         use tracing_subscriber::layer::SubscriberExt as _;
@@ -1016,11 +1024,10 @@ mod tests {
         let subscriber = tracing_subscriber::registry().with(cap.clone());
         let _guard = tracing::subscriber::set_default(subscriber);
 
-        // A userinfo URL whose host is guaranteed unroutable (RFC 5737 TEST-NET-1) so the POST fails
-        // fast with a transport error - the branch under test. We call the delivery inline (not via
-        // the global-`OnceLock` `fire_request_log`) so the test is isolated from other tests that set
-        // the process-wide webhook, while exercising the SAME masked log statement.
         let url = "https://user:hunter2@192.0.2.1/log";
+
+        // Transport-error arm: a real POST against a host guaranteed unroutable (RFC 5737
+        // TEST-NET-1) so it fails fast with a genuine reqwest::Error.
         let client = reqwest::Client::builder()
             .timeout(Duration::from_millis(200))
             .build()
@@ -1031,13 +1038,11 @@ mod tests {
             .send()
             .await
             .expect_err("post to an unroutable host must fail");
+        warn_webhook_delivery_failed(url, Err(err));
 
-        // Reproduce the exact masked log statement from `fire_request_log`'s Err arm.
-        tracing::warn!(
-            webhook_url = mask_userinfo(url),
-            error_kind = %err.without_url(),
-            "request-log webhook delivery failed (transport error); this log was dropped"
-        );
+        // Non-2xx arm: no network needed — this branch had NO coverage at all before this fix, not
+        // even the fake-in-test-body kind.
+        warn_webhook_delivery_failed(url, Ok(reqwest::StatusCode::INTERNAL_SERVER_ERROR));
 
         let events = cap.0.lock().unwrap().join("\n");
         assert!(
@@ -1574,13 +1579,18 @@ mod tests {
     async fn test_inflight_guard_releases_slot_on_drop() {
         // The RAII guard returns its semaphore slot on Drop. Mirror the production acquire/forget
         // pattern, then drop the guard and confirm the slot is reusable (no leak).
+        //
+        // Asserted as a round-trip DELTA bracketing the whole acquire/forget/drop block, not as a
+        // `before - 1` snapshot mid-flight: `webhook_inflight()` is a process-global semaphore, and
+        // any concurrent test that fires a webhook delivery (or drops its own InflightGuard) between
+        // two reads shifts the absolute count out from under a mid-flight assertion. The delta is
+        // the actual contract this test is named for and is concurrency-safe by construction.
         let before = webhook_inflight().available_permits();
         {
             let permit = webhook_inflight()
                 .try_acquire()
                 .expect("a slot should be free");
             permit.forget();
-            assert_eq!(webhook_inflight().available_permits(), before - 1);
             let _guard = InflightGuard; // drops at end of scope -> add_permits(1)
         }
         assert_eq!(
