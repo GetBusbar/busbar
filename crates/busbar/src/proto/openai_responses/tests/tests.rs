@@ -5590,6 +5590,40 @@ fn reasoning_input_item_round_trips_through_request() {
     assert_eq!(reasoning["encrypted_content"], "ENC_IN_42");
 }
 
+/// F5 role guard: a `reasoning` INPUT item asserts "this is the model's own prior reasoning" —
+/// only an Assistant-role message can truthfully carry that. A Thinking block attached to a
+/// User-role message (reachable today from an upstream reader that does not check role, e.g. the
+/// Gemini reader's `thought: true` parts on any `Content`) must NOT be re-emitted as a top-level
+/// `reasoning` item, or the caller's own content is presented back to the model as if it were the
+/// model's prior reasoning.
+#[test]
+fn user_role_thinking_is_not_emitted_as_a_reasoning_item() {
+    let req = crate::ir::IrRequest {
+        messages: vec![crate::ir::IrMessage {
+            role: crate::ir::IrRole::User,
+            content: vec![crate::ir::IrBlock::Thinking {
+                text: "user-authored text masquerading as reasoning".to_string(),
+                signature: None,
+                redacted: false,
+                cache_control: None,
+            }],
+        }],
+        ..Default::default()
+    };
+    let writer = ResponsesWriter;
+    let out = writer.write_request(&req);
+    // A dropped Thinking block leaves the User message with no content at all, so `input` may be
+    // entirely absent (not just empty) — `write_request` only inserts it when non-empty (:277-279).
+    let has_reasoning_item = out
+        .get("input")
+        .and_then(|v| v.as_array())
+        .is_some_and(|arr| arr.iter().any(|i| i["type"] == "reasoning")); // golden wire-contract literal (kept bare on purpose)
+    assert!(
+        !has_reasoning_item,
+        "a User-role Thinking block must never be emitted as a `reasoning` input item: {out}"
+    );
+}
+
 // H6: `usage.input_tokens_details.cached_tokens` must read into the IR `cache_read_input_tokens`
 // and write back to the same nested Responses location (the Bedrock-shared cache-read field).
 #[test]

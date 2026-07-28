@@ -149,12 +149,19 @@ impl ProtocolWriter for ResponsesWriter {
                             // egress. Mirrors the `write_response` reasoning item shape: a REDACTED
                             // reasoning block holds opaque encrypted bytes with no plaintext analog
                             // on the Responses surface, so it is dropped rather than leaked.
+                            // ROLE GUARD: a `reasoning` input item asserts to the model "this is my
+                            // own prior reasoning". Only an Assistant message can truthfully carry
+                            // that — a Thinking block attached to a User message (possible from an
+                            // upstream reader that does not check role, e.g. the Gemini reader's
+                            // `thought: true` parts) must NOT be re-emitted as the model's own past
+                            // reasoning, or the caller's content is presented back to the model
+                            // with false provenance.
                             crate::ir::IrBlock::Thinking {
                                 text,
                                 signature,
                                 redacted,
                                 ..
-                            } if !*redacted => {
+                            } if !*redacted && msg.role == crate::ir::IrRole::Assistant => {
                                 let emit_sig = signature.as_deref();
                                 // A wholly-empty reasoning block (no text, no signature) emits no item.
                                 if !text.is_empty() || emit_sig.is_some() {
@@ -185,6 +192,17 @@ impl ProtocolWriter for ResponsesWriter {
                                     }
                                     reasoning_items.push(serde_json::Value::Object(item));
                                 }
+                            }
+                            // Non-Assistant Thinking (role guard above) — drop-with-warn, the
+                            // file's convention for a block with no analog on the target surface
+                            // (see the foreign-vendor-image and json-tool-result arms above), so
+                            // the loss is visible rather than silent.
+                            crate::ir::IrBlock::Thinking { redacted, .. } if !*redacted => {
+                                tracing::warn!(
+                                    "dropping non-Assistant Thinking block on Responses egress: a \
+                                     `reasoning` input item asserts it is the model's own prior \
+                                     reasoning, which only an Assistant-role message can carry"
+                                );
                             }
                             // A REDACTED reasoning block (opaque encrypted bytes, no plaintext
                             // analog on Responses) is dropped rather than leaked as `reasoning_text`.
