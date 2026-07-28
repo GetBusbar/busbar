@@ -989,7 +989,14 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         }
 
         let _pick = crate::profile::start(crate::profile::Stage::LanePick);
-        let (i, permit) = match pick_among(
+        // `probe_epoch`: the owner token for whatever single-flight probe this pick won, captured
+        // synchronously by `pick_among` before any await. Every `release_probe_in` call below this
+        // point runs AFTER `read_capped_body(r).await` — a yield point where a successor request
+        // could have already recorded an outcome and won a NEWER probe on this same cell — so they
+        // must release via the OWNER-CHECKED `release_probe_owned_in(pool_name, i, probe_epoch)`,
+        // never the unowned `release_probe_in`, which would revert whichever probe is live at
+        // release time regardless of which one this attempt actually won.
+        let (i, permit, probe_epoch) = match pick_among(
             &app,
             &cands,
             &mut request_ctx,
@@ -1455,7 +1462,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                             // failing — no breaker penalty — so no failure outcome is recorded to
                             // clear `probe_in_flight`. If this lane won the recovery probe, release
                             // it before relaying or the lane stays wedged HalfOpen.
-                            app.store.release_probe_in(pool_name, i);
+                            app.store.release_probe_owned_in(pool_name, i, probe_epoch);
                             // Reshape via the shared finalizer so the kind→native-envelope mapping
                             // (401→authentication_error, 403→permission_error, …) is identical on the
                             // main path, the degraded path, and the ClientFault branch below.
@@ -1464,7 +1471,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                         // Probe class guard (same-protocol passthrough 401/403): caller-key auth
                         // failure carries no breaker penalty, so nothing clears `probe_in_flight`.
                         // Release the won probe before the verbatim relay or the lane wedges HalfOpen.
-                        app.store.release_probe_in(pool_name, i);
+                        app.store.release_probe_owned_in(pool_name, i, probe_epoch);
                         use axum::body::Body;
                         let mut rb = Response::builder().status(status);
                         if let Some(ct) = ct {
@@ -1516,7 +1523,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                             // probe — leaving the recovering lane wedged HalfOpen until the slow
                             // out-of-band prober resets it. Release it once here, before either exit,
                             // so the lane is immediately re-probeable on the next cooldown.
-                            app.store.release_probe_in(pool_name, i);
+                            app.store.release_probe_owned_in(pool_name, i, probe_epoch);
                             // Same-protocol passthrough relays the upstream 4xx body + CT verbatim
                             // (it is already in the client's native shape). Cross-protocol must
                             // RESHAPE the error into the ingress protocol's native envelope —
@@ -1742,7 +1749,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                             // recovery probe, this `continue` would abandon it set, wedging the lane
                             // HalfOpen until the slow out-of-band prober rescues it. Release it so the
                             // lane is immediately probe-eligible again for normal-size requests.
-                            app.store.release_probe_in(pool_name, i);
+                            app.store.release_probe_owned_in(pool_name, i, probe_epoch);
                             last_failure = Some(DISPOSITION_CONTEXT_LENGTH);
                             drop(permit);
                             continue;
