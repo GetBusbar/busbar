@@ -881,8 +881,13 @@ async fn run() {
             // snapshot never runs. Bounding the drain instead would truncate healthy streams and
             // trip breakers against a lane that did nothing wrong.
             if let Some(ref sf) = snap_file {
-                let app = snap_handle.load();
-                if let Err(e) = state_persist::write(sf, &state_persist::capture(&app)) {
+                // OFFLOADED for the same reason the periodic snapshotter is: this task runs on the
+                // SAME runtime as the in-flight drain below, and an inline fsync parks whichever
+                // worker runs it for the disk round-trip WHILE streaming responses are still
+                // draining. On a stalled volume that worker is gone for seconds, eating the
+                // orchestrator's SIGKILL grace period and making the SIGKILL race this snapshot
+                // exists to WIN more likely, not less.
+                if let Err(e) = state_persist::write_snapshot_blocking(&snap_handle, sf).await {
                     tracing::warn!(path = %sf.display(), error = %e,
                         "shutdown-signal state snapshot failed");
                 }
@@ -936,10 +941,13 @@ async fn run() {
         tracing::info!(flushed = m, "metering rows flushed on shutdown");
     }
     // D3: one FINAL state snapshot after the graceful drain, so the freshest health picture is
-    // what the next boot restores (the periodic 30s tick could be up to 30s stale).
+    // what the next boot restores (the periodic 30s tick could be up to 30s stale). Routed through
+    // the SAME gate as the at-signal write above: both write the same file, and once the at-signal
+    // write is offloaded to the blocking pool the two are no longer ordered by program order alone
+    // — the gate is what guarantees THIS, the newer snapshot, is the one left on disk. (Not for
+    // blocking: nothing is left to block after `tokio::join!` has returned.)
     if let Some(ref sf) = state_file {
-        let app = app_handle.load();
-        if let Err(e) = state_persist::write(sf, &state_persist::capture(&app)) {
+        if let Err(e) = state_persist::write_snapshot_blocking(&app_handle, sf).await {
             tracing::warn!(path = %sf.display(), error = %e, "final state snapshot failed");
         } else {
             tracing::info!(path = %sf.display(), "state snapshot written on shutdown");
@@ -2932,12 +2940,39 @@ pub(crate) fn build_app_from_config(
         apply();
     }
 
+    // The probe schedule is live state, not config-derived: it carries each lane's next-probe deadline
+    // and the prober generation. `App::clone` shares it (Arc), so an in-place mutation swap keeps the
+    // phase; a REBUILD must do the same, or a mutation cadence faster than the probe interval —
+    // /config/settings meters at 10/min, the default interval is 30s — replaces every generation before
+    // its first tick and probing goes dark while still logging that it is enabled. Carried ONLY when the
+    // lane set is identical, because deadlines are indexed by lane: a changed lane set makes the old
+    // indices mean something else, and a genuine lane change SHOULD re-establish probing.
+    //
+    // zip ≡ set-equality HERE, not in general: `cfg.models` is a `HashMap<String, ModelCfg>`, so model
+    // names are UNIQUE keys, and both lane vectors are built by sorting those keys before reaching this
+    // point. Two vectors built from the same unique-key set via the same deterministic sort are
+    // identical element-for-element, so an elementwise compare and a set compare accept exactly the
+    // same configs. Do NOT reuse this shortcut for a lane source that is not sorted-from-a-unique-key-
+    // set: there the zip would start accepting a shifted-index pairing.
+    let probe_schedule = match prior {
+        Some(p)
+            if p.lanes.len() == lanes.len()
+                && p.lanes
+                    .iter()
+                    .zip(lanes.iter())
+                    .all(|(a, b)| a.model == b.model && a.provider == b.provider) =>
+        {
+            p.probe_schedule.clone()
+        }
+        _ => Arc::new(crate::health::ProbeSchedule::new(lanes.len())),
+    };
+
     let app = App {
         // Telemetry-bank slot table for this generation, registered BEFORE the config-derived
         // collections move into the snapshot. Identical label sets across applies re-intern to the
         // same slots, so hot-path counters accumulate monotonically across config generations.
         tslots: Arc::new(telemetry::AppSlots::build(&lanes, &pools, &by_model)),
-        probe_schedule: Arc::new(crate::health::ProbeSchedule::new(lanes.len())),
+        probe_schedule,
         lanes,
         store,
         by_model,

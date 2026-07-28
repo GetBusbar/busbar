@@ -91,6 +91,35 @@ pub(crate) fn read(path: &Path, now: u64) -> Option<PersistedState> {
     Some(state)
 }
 
+/// Serializes every snapshot write in the process. Three call sites write the SAME file: the
+/// periodic snapshotter, the at-signal shutdown write, and the post-drain shutdown write. Once the
+/// first two are offloaded to the blocking pool they no longer complete in the order they were
+/// issued — an at-signal write queued behind a busy pool could rename its OLDER `written_at`
+/// document over the post-drain write's newer one, and `read` only gates on AGE, so the next boot
+/// would take the stale snapshot as authoritative. Same single-permit shape, and the same reason, as
+/// `governance::spawn_budget_flusher`'s `flush_gate`.
+static SNAPSHOT_GATE: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+/// Capture + write off the reactor, through the ONE gate and the ONE `spawn_blocking` seam. AWAITED,
+/// not fire-and-forget: the periodic caller's retry/warn bookkeeping needs the `Result`. A panic
+/// inside serde/`durable::write` is folded into the `Result` rather than propagated, so a poisoned
+/// blocking-pool task can never end persistence — same posture as an I/O error.
+pub(crate) async fn write_snapshot_blocking(
+    handle: &crate::state::AppHandle,
+    path: &Path,
+) -> Result<(), String> {
+    let _gate = SNAPSHOT_GATE.lock().await;
+    // Capture UNDER the gate: `written_at` is stamped in `capture`, so capturing outside it would
+    // let a writer serialize an older reading and still land last.
+    let app = handle.load();
+    let p = path.to_path_buf();
+    match tokio::task::spawn_blocking(move || write(&p, &capture(&app))).await {
+        Ok(res) => res,
+        Err(e) => Err(format!("snapshot task panicked: {e}")),
+    }
+}
+
 /// Capture the current process state from a live `App`.
 pub(crate) fn capture(app: &crate::state::App) -> PersistedState {
     PersistedState {
@@ -130,8 +159,7 @@ pub(crate) fn spawn_snapshotter_with_interval(
         let mut last_success = crate::store::now();
         loop {
             tick.tick().await;
-            let app = handle.load();
-            match write(&path, &capture(&app)) {
+            match write_snapshot_blocking(&handle, &path).await {
                 Ok(()) => {
                     if consecutive > 0 {
                         tracing::info!(
@@ -321,5 +349,203 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// class-10c: the SNAPSHOT_GATE guarantees the LAST snapshot ISSUED is the one left on disk, even
+    /// when the two writes race on the blocking pool. `written_at` is second-granularity
+    /// (`crate::store::now()`), too coarse to trust as the discriminator over a sub-second race, so
+    /// this identifies the winner by CONTENT instead: write A carries a large version history (a slow
+    /// `spawn_blocking` write — serialize + fsync + rename of a bigger document), write B carries one
+    /// distinctive marker entry and is issued 20ms after A starts. Without the gate, A being issued
+    /// FIRST but finishing LAST (it is the bigger payload) is the common case, and its rename lands on
+    /// top of B's — the OLDER document ends up authoritative. With the gate, B cannot even `capture`
+    /// until A's rename has completed, so the on-disk document is always B's.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_last_snapshot_written_is_the_last_one_issued() {
+        let dir = std::env::temp_dir().join(format!("busbar-order-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+
+        // Write A: a version snapshot carrying a large hook registry (padded `settings`, NOT
+        // version COUNT — `VersionLog` caps retained history at `MAX_VERSIONS = 100`, so bulk
+        // record() calls alone do not grow the persisted payload), so its capture+serialize+fsync+
+        // rename is comparatively slow on the blocking pool.
+        let mut big_registry = std::collections::HashMap::new();
+        for i in 0..400 {
+            let mut settings = serde_json::Map::new();
+            settings.insert(
+                "pad".to_string(),
+                serde_json::Value::String("x".repeat(4096)),
+            );
+            big_registry.insert(
+                format!("hook-{i}"),
+                crate::config::HookCfg {
+                    kind: crate::config::HookKind::Tap,
+                    plugin: "test-hook".to_string(),
+                    timeout_ms: 1,
+                    on_error: "weighted".to_string(),
+                    prompt: crate::config::PromptAccess::Ro,
+                    user: crate::config::UserAccess::Ro,
+                    priority: 0,
+                    at: None,
+                    settings,
+                    on_empty: None,
+                    global: false,
+                    default: false,
+                },
+            );
+        }
+        let app_a = crate::test_support::TestApp::new().build();
+        app_a
+            .versions
+            .record(1, "admin", "hook.register hook:bulk", &big_registry, &[]);
+        let handle_a = std::sync::Arc::new(crate::state::AppHandle::new(app_a));
+
+        // Write B: a single, distinctive marker entry — small and fast — issued strictly AFTER A.
+        let app_b = crate::test_support::TestApp::new().build();
+        app_b.versions.record(
+            1,
+            "admin",
+            "hook.register hook:MARKER-B",
+            &app_b.hook_registry,
+            &[],
+        );
+        let handle_b = std::sync::Arc::new(crate::state::AppHandle::new(app_b));
+
+        let path_a = path.clone();
+        let path_b = path.clone();
+        let wa = tokio::spawn(async move { write_snapshot_blocking(&handle_a, &path_a).await });
+        // A must be ISSUED (and its capture underway) before B is issued, so "B is the last one
+        // issued" is unambiguous.
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let wb = tokio::spawn(async move { write_snapshot_blocking(&handle_b, &path_b).await });
+
+        let (ra, rb) = tokio::join!(wa, wb);
+        ra.unwrap().expect("write A must succeed");
+        rb.unwrap().expect("write B must succeed");
+
+        let on_disk = read(&path, crate::store::now()).expect("a snapshot must be on disk");
+        assert!(
+            on_disk
+                .versions
+                .iter()
+                .any(|v| v.summary.contains("MARKER-B")),
+            "the LAST-issued write (B) must be the one on disk, not the earlier, bigger write (A)"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// class-10c §4.6 — DEMONSTRATION, NOT A GATING RED PROOF. Per PIPELINE-BRIEF: there is no
+    /// non-flaky RED proof that a write left the reactor — blocking-pool threads share the worker
+    /// thread-name prefix, `write` is a free function with no injection seam, and every timing
+    /// threshold is machine-dependent in the direction that breaks the suite. Following the in-tree
+    /// `2b545ae` precedent (the M8 TOCTOU proof): ship an `#[ignore]`d demonstration carrying its
+    /// repro command, with the precondition expressed as an early SKIP rather than a failing assert.
+    ///
+    /// Shape: time one SYNCHRONOUS `write` of a large payload as `W`. Then run the periodic
+    /// snapshotter (which now offloads via `write_snapshot_blocking`) on a SINGLE-WORKER runtime
+    /// alongside a 1ms probe loop measuring the largest gap between successive wakeups. If the
+    /// snapshot write ran ON the reactor (the pre-offload behaviour), it would starve the probe loop
+    /// — sharing the runtime's ONE worker — for roughly `W`; offloaded, the probe loop's gaps stay
+    /// near the 1ms tick regardless of `W`.
+    ///
+    /// Repro: `cargo test -p busbar --bin busbar -- --ignored \
+    /// state_persist::tests::snapshot_write_does_not_block_the_reactor --test-threads=1 --nocapture`
+    #[test]
+    #[ignore = "timing-dependent demonstration, not a gating RED proof — see doc comment; repro: \
+                cargo test -p busbar --bin busbar -- --ignored \
+                state_persist::tests::snapshot_write_does_not_block_the_reactor \
+                --test-threads=1 --nocapture"]
+    fn snapshot_write_does_not_block_the_reactor() {
+        let big_registry = {
+            let mut m = std::collections::HashMap::new();
+            for i in 0..2000 {
+                let mut settings = serde_json::Map::new();
+                settings.insert(
+                    "pad".to_string(),
+                    serde_json::Value::String("x".repeat(4096)),
+                );
+                m.insert(
+                    format!("hook-{i}"),
+                    crate::config::HookCfg {
+                        kind: crate::config::HookKind::Tap,
+                        plugin: "test-hook".to_string(),
+                        timeout_ms: 1,
+                        on_error: "weighted".to_string(),
+                        prompt: crate::config::PromptAccess::Ro,
+                        user: crate::config::UserAccess::Ro,
+                        priority: 0,
+                        at: None,
+                        settings,
+                        on_empty: None,
+                        global: false,
+                        default: false,
+                    },
+                );
+            }
+            m
+        };
+
+        let dir = std::env::temp_dir().join(format!("busbar-reactor-block-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+
+        let app = crate::test_support::TestApp::new().build();
+        app.versions
+            .record(1, "admin", "hook.register hook:bulk", &big_registry, &[]);
+        let state = capture(&app);
+
+        // Baseline: time ONE synchronous write to establish `W`.
+        let t0 = std::time::Instant::now();
+        write(&path, &state).expect("baseline write");
+        let w = t0.elapsed();
+
+        if w < std::time::Duration::from_millis(20) {
+            // SKIP, not fail: on a fast disk `W` itself is too close to scheduling noise to be a
+            // trustworthy signal either way. Per the brief, withdraw rather than tune a failing
+            // assertion into passing.
+            eprintln!(
+                "SKIP: baseline write W={w:?} is too fast on this machine to distinguish a \
+                 reactor-blocked write from ordinary scheduling jitter"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+
+        // A SINGLE-WORKER runtime: the offloaded write and the probe loop only share the reactor's
+        // scheduling if the write actually lands there instead of on the blocking pool.
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let max_gap = rt.block_on(async move {
+            let handle = std::sync::Arc::new(crate::state::AppHandle::new(app));
+            spawn_snapshotter_with_interval(handle, path, std::time::Duration::from_millis(1));
+
+            let mut max_gap = std::time::Duration::ZERO;
+            let mut last = std::time::Instant::now();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            while std::time::Instant::now() < deadline {
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                let now = std::time::Instant::now();
+                let gap = now.duration_since(last);
+                if gap > max_gap {
+                    max_gap = gap;
+                }
+                last = now;
+            }
+            max_gap
+        });
+
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            max_gap < w / 2,
+            "the probe loop's largest gap ({max_gap:?}) approached the synchronous write time \
+             ({w:?}) — the snapshot write appears to have run on the reactor instead of the \
+             blocking pool"
+        );
     }
 }

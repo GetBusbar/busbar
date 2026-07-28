@@ -1939,6 +1939,68 @@ async fn test_admin_blank_header_token_rejected() {
     handle.abort();
 }
 
+/// The `admin.forbidden` audit (class-10a) is bounded by the SAME per-(principal, window) counter
+/// the mutation rate limiter already uses, not written unconditionally. Drives 50 forbidden GETs
+/// (an UNBOUND role, so `admin_scope_for` returns `Grants::default()` and even a read is 403) from
+/// ONE principal and asserts the durable-write-through only fired once or twice, not 50 times.
+#[tokio::test]
+async fn forbidden_admin_requests_audit_once_per_window() {
+    use crate::test_support::TestApp;
+
+    crate::metrics::init();
+
+    // Unique per test run so concurrently-running tests sharing the process-global `AUDIT` ring
+    // cannot be counted here, and this test's own records cannot be miscounted by a sibling.
+    let unique = format!(
+        "unbound-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let principal_id = format!("test:{unique}");
+
+    let app = TestApp::new()
+        .admin_chain(vec!["test-scope-module".to_string()])
+        .build();
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    let url = format!("http://{addr}/api/v1/admin/keys");
+
+    for _ in 0..50 {
+        let r = client
+            .get(&url)
+            .bearer_auth(format!("grp:{unique}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            r.status().as_u16(),
+            403,
+            "an unbound role must be forbidden even on a GET (Grants::default() never allows \
+             ReadOnly), got {}",
+            r.status()
+        );
+    }
+
+    let n = crate::admin::audit::AUDIT
+        .export()
+        .iter()
+        .filter(|e| e.action == "admin.forbidden" && e.principal == principal_id)
+        .count();
+    assert!(
+        (1..=2).contains(&n),
+        "expected 1 or 2 durable audit records for 50 forbidden requests from one principal \
+         (bounded by the per-(principal, window) counter, with <=2 absorbing a window-boundary \
+         straddle), got {n}"
+    );
+
+    handle.abort();
+}
+
 /// Regression for the admin-token carrier-level timing oracle (MEDIUM/security): the two admin
 /// carriers (Authorization: Bearer and x-admin-token) are combined with a bitwise-OR fold, NOT a
 /// short-circuiting `||`. Behaviorally this means EITHER carrier alone authorizes, AND a request
