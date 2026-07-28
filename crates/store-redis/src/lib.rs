@@ -1382,7 +1382,20 @@ mod tests {
     /// (a healthy v2 namespace whose marker was evicted under `maxmemory allkeys-*`) must REFUSE to
     /// boot - never silently WIPE. And the inverse: a genuinely legacy-shaped namespace (a
     /// `busbar:usage:*` HASH carrying the pre-v2 `spend_cents` field) IS wiped and re-marked.
+    ///
+    /// `#[ignore]`: this test's SUBJECT is `migrate()`'s destructive wipe path, which SCAN+DELETEs
+    /// the ENTIRE `busbar:*` namespace on `live_store()` — a real Redis reached via `REDIS_URL`,
+    /// shared by every test in this crate (no per-test key prefix, no dedicated DB index). Any
+    /// sibling redis test running concurrently against the same instance has its keys destroyed
+    /// mid-assertion, and this test's own setup can equally be destroyed by a sibling. Isolating by
+    /// key-prefix or DB index would require either a production change (`migrate()` hardcodes the
+    /// `busbar:*` SCAN pattern) or a `SELECT` capability CI's Redis is not guaranteed to have; both
+    /// are more invasive than the value of default-suite coverage for a test already gated behind an
+    /// opt-in env var most environments skip. Run explicitly and alone against a REDIS_URL instance
+    /// safe to wipe: `REDIS_URL=... cargo test -p busbar-store-redis -- --ignored --test-threads=1
+    /// migrate_refuses_to_wipe_non_legacy_namespace_with_missing_marker`.
     #[test]
+    #[ignore = "wipes the shared live namespace; run alone"]
     fn migrate_refuses_to_wipe_non_legacy_namespace_with_missing_marker() {
         let Some(store) = live_store() else { return };
         // Simulate a v2 namespace whose marker was evicted: v2-shaped usage data, no busbar:schema.

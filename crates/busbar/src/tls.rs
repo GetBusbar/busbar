@@ -1018,20 +1018,27 @@ mod tests {
     /// serve loop (same `BodyTimeoutService` seam the TLS loop uses) over a raw socket: send a POST
     /// with a `Content-Length` but NO body, and assert the server closes the connection promptly
     /// (well inside a generous deadline) rather than hanging forever. A short body-read timeout is
-    /// installed process-wide for the test; only that one non-default limit is set, so the other
-    /// limits-accessor tests (which assert defaults for OTHER fields) are unaffected.
+    /// installed process-wide for the test, through `InstallGuard` so it is restored to whatever was
+    /// there before when the test ends — `install` REPLACES the whole struct behind the shared
+    /// `RwLock`, not just the one field named here, so an unguarded install would leave this
+    /// non-default value behind for every other test in the binary that reads limits afterward.
     #[tokio::test]
     async fn body_read_timeout_trips_on_stalled_body() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         let _guard = LIMITS_TEST_LOCK.lock().await;
-        // Install a SHORT body-read timeout (1s) so the test is fast; leave every other limit at its
-        // historical default so no other limits test is perturbed.
+        // Install a SHORT body-read timeout (1s) so the test is fast, through the RAII guard rather
+        // than the bare test-only setter: `install` REPLACES the whole struct behind the
+        // process-global RwLock with no restore, so a bare install here would leave this
+        // non-default value behind for every OTHER test in the binary reading limits after this one
+        // — LIMITS_TEST_LOCK only serializes the four installers in THIS file against each other,
+        // not against every reader elsewhere. The guard restores whatever was installed before it
+        // (never committed, so it always rolls back) when it drops at the end of this test.
         let limits = crate::config::LimitsResolved {
             request_body_read_timeout_secs: 1,
             ..crate::config::LimitsResolved::default()
         };
-        crate::limits::install(&limits);
+        let _limits_guard = crate::limits::InstallGuard::install(&limits);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();

@@ -335,13 +335,20 @@ fn fault_parents_fsynced() -> Vec<std::path::PathBuf> {
 mod tests {
     use super::{
         create_dir_all, fault_arm, fault_parent_fsynced, fault_parents_fsynced, fault_reset,
-        plant_decoy_arm, write, write_with, DurableOpts, FaultStep,
+        holding_dir, plant_decoy_arm, write, write_with, DurableOpts, FaultStep,
     };
     use std::path::{Path, PathBuf};
 
     // Linux ENOSPC=28, EIO=5; macOS shares these values. Injected via `from_raw_os_error`.
     const ENOSPC: i32 = 28;
     const EIO: i32 = 5;
+
+    /// Serializes the ONE test in this file that mutates process-global CWD
+    /// (`success_relative_path_fsyncs_dot`) against itself. MUST be module-level, not
+    /// function-local — a function-local `static` is scoped to that function and contends with
+    /// nothing (the bug this lock previously had). Still not sufficient on its own: no test
+    /// OUTSIDE this file that resolves a relative path takes this lock. See that test's doc comment.
+    static CWD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// A private scratch directory, removed on drop, so each case is hermetic and leaves nothing.
     struct Scratch {
@@ -452,13 +459,37 @@ mod tests {
         assert!(!sc.has_durable_temp("cfg.json"));
     }
 
+    /// The primitive `holding_dir` uses to resolve a RELATIVE path's parent to "." — the pure,
+    /// deterministic form of the property `success_relative_path_fsyncs_dot` below also exercises
+    /// through a real CWD round-trip. Covers it with NO filesystem/CWD mutation at all, so it can
+    /// never be a cross-test hazard.
+    #[test]
+    fn holding_dir_resolves_a_relative_path_to_dot() {
+        assert_eq!(holding_dir(Path::new("relative.json")), Path::new("."));
+        assert_eq!(
+            holding_dir(Path::new("a/b/relative.json")),
+            Path::new("a/b")
+        );
+        assert_eq!(
+            holding_dir(Path::new("/abs/relative.json")),
+            Path::new("/abs")
+        );
+    }
+
     /// Success on a RELATIVE path round-trips AND the parent fsync was attempted on the
     /// resolved "." — the assertion that would have caught D2 (relative-path parent fsync skipped).
-    /// Serialized behind a mutex because it mutates process-global CWD.
+    ///
+    /// `CWD_LOCK` MUST be a module-level (not function-local) static: a `static` declared inside a
+    /// function body is scoped to that function and contends with nothing, which is the same defect
+    /// `store::now_for_test`'s doc (see its own "CRITICAL #1" note) documents elsewhere in this
+    /// crate. Even hoisted, this lock only serializes CWD mutation AGAINST ITSELF — no OTHER test in
+    /// this binary that resolves a relative path takes it, so the window between `set_current_dir`
+    /// calls below is still a real (if currently unexercised) cross-file hazard. The deterministic
+    /// fix is `holding_dir_resolves_a_relative_path_to_dot` above, which needs no CWD mutation at
+    /// all; this test is kept because it also proves the write()/fsync ROUND TRIP that caught D2 in
+    /// the first place, which the pure unit test above does not cover.
     #[test]
     fn success_relative_path_fsyncs_dot() {
-        use std::sync::Mutex;
-        static CWD_LOCK: Mutex<()> = Mutex::new(());
         let _g = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
         let sc = Scratch::new("rel");
