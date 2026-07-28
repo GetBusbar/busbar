@@ -71,28 +71,12 @@ pub mod kind {
     pub const HOOK: &str = "hook";
 }
 
-/// The store-plugin ABI version this crate defines. Bumped only on a breaking change to the wire
-/// (the request/response shape or the C signatures); additive changes keep the version.
-///
-/// v2 (1.5.0, pre-release): the scalar `Usage { spend_cents, tokens, requests }` counter became the
-/// per-(model, tier) TOKEN LEDGER (`UsageLedger`/`UsageDelta`) and `Get/Put/AddUsage` re-keyed from
-/// `key_id` to `bucket_id` (key buckets and budget-group buckets share the shape). A breaking wire
-/// change, so the version bumps: a v1 plugin is refused at load, never mis-called. 1.5.0 is
-/// unreleased, so no v1 plugin exists in the wild.
-///
-/// v3 (1.5.0, pre-release): KEYS ARE PURE AUTH. `VirtualKey` (which crosses this ABI as JSON in
-/// the key CRUD messages) dropped its inline limits (`max_budget_cents` / `budget_period` /
-/// `rpm_limit` / `tpm_limit`), renamed `budget_group` to `group`, and re-encoded `allowed_pools`
-/// as an Option (`null` = all pools, `[]` = NO pools - C6). A breaking wire change to a message
-/// payload, so the version bumps; still no earlier plugin exists in the wild.
-///
-/// v4 (1.5.0, pre-release): the usage ledger SPLIT its request count. `UsageLedger`/`UsageDelta`
-/// (which cross this ABI as JSON in the `Get/Put/AddUsage` messages) gained `billable_requests`
-/// alongside `requests`: `requests` stays the admission count (never refunded, the requests-limit
-/// truth), `billable_requests` is admitted minus non-2xx refunds (the fee base for the 2xx-only
-/// charge). The field is serde-default, so an older plugin's payload still deserializes; still a
-/// wire-shape change to a message payload, so the version bumps in the same unreleased cycle.
-pub const ABI_VERSION: u32 = 4;
+/// The store-plugin PAYLOAD schema version (the signed manifest's `abi_version` for `kind: store`).
+/// Bumped only on a breaking change to the wire — the request/response shape or the C signatures;
+/// additive changes (e.g. a new serde-default field) keep the version. The engine refuses a plugin
+/// whose manifest `abi_version` falls outside the supported range at load, never mis-calling a
+/// mismatched plugin.
+pub const ABI_VERSION: u32 = 1;
 
 /// The exported-symbol names the engine resolves after `dlopen`/`LoadLibrary`. A plugin of ANY kind
 /// MUST export all SIX with these exact (kind-NEUTRAL) names and the signatures in the `*Fn` type
@@ -447,9 +431,9 @@ mod tests {
     }
 
     #[test]
-    fn abi_version_is_two() {
-        // v4 = the billable-requests ledger split (1.5.0). A mismatched plugin is refused at the
-        // handshake.
-        assert_eq!(ABI_VERSION, 4);
+    fn abi_version_is_one() {
+        // 1.5.0 is the first release to carry the store plugin ABI. A mismatched plugin is
+        // refused at the handshake.
+        assert_eq!(ABI_VERSION, 1);
     }
 }
