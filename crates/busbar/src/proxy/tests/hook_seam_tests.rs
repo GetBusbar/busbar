@@ -1518,6 +1518,103 @@ async fn send_user_falls_back_to_synthesized_group_key_identity() {
     assert_eq!(key_name.as_deref(), Some("eng-oncall"));
 }
 
+/// class-11 D3 (correctness, not a work reduction): auth's admission decision is authoritative.
+/// `auth/mod.rs` installs `GovCtx.key` from a legacy hashed-secret `lookup` only under
+/// `Some(key) if key.enabled`; a DISABLED key is rejected there and auth falls through to a
+/// SYNTHESIZED principal key instead (carried here as `resolved_gov_key`). `decide_policy_order`'s
+/// own raw `g.lookup(tok)` applies no `enabled`/`is_revoked` filter, so if it were tried FIRST it
+/// would resolve `identity`/`rate_headroom` against the disabled key auth already rejected — a
+/// caller admitted under the synthesized identity would be policy-ranked under the wrong one.
+/// This seeds `by_hash` with a DISABLED key for the token (so the two orders can disagree — an
+/// EMPTY `by_hash` cannot discriminate them, since `lookup` would miss either way) and asserts the
+/// resolved identity is the synthesized key's, matching what auth actually authorized.
+#[tokio::test]
+async fn send_user_prefers_resolved_key_over_disabled_legacy_lookup() {
+    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+    let store = std::sync::Arc::new(MemoryStore::new());
+    let gov = std::sync::Arc::new(GovState::new(store, None).expect("gov state"));
+    let (disabled_key, secret) = gov
+        .create_key(
+            NewKeySpec {
+                name: "legacy-disabled".to_string(),
+                allowed_pools: None,
+                group: None,
+                labels: Default::default(),
+            },
+            1,
+        )
+        .expect("create key");
+    gov.update_key(&disabled_key.id, Some(false), None)
+        .expect("disable key")
+        .expect("key exists");
+
+    let app = TestApp::new()
+        .lane(LaneSpec::new(
+            "m0",
+            crate::proto::Protocol::anthropic(),
+            "http://localhost",
+        ))
+        .pool("p", &[(0, 1)])
+        .governance(gov)
+        .build();
+    let seen = Arc::new(StdMutex::new(None));
+    let resolved = ResolvedPolicy::Policy {
+        policy: Arc::new(CapturingPolicy {
+            seen: seen.clone(),
+            reject: None,
+        }),
+        on_error: crate::config::PolicyOnError::default(),
+        on_error_chain: Vec::new(),
+        timeout: std::time::Duration::from_millis(500),
+        send_prompt: false,
+        send_user: true,
+        on_empty: crate::config::PolicyOnError::Reject,
+    };
+    let cands = vec![WeightedLane {
+        reasoning: None,
+        idx: 0,
+        weight: 1,
+        attempt_timeout_ms: None,
+    }];
+    // The key auth ACTUALLY installed for this request: NOT the disabled `by_hash` hit, a
+    // different synthesized principal key (exactly what a fallthrough from `Some(key) if
+    // key.enabled` produces for a disabled-key caller re-admitted via a group binding).
+    let synth = std::sync::Arc::new(crate::governance::VirtualKey {
+        id: "synthesized-principal".to_string(),
+        key_hash: "principal:synthesized-principal".to_string(),
+        name: "synthesized-principal".to_string(),
+        allowed_pools: None,
+        enabled: true,
+        created_at: 0,
+        group: None,
+        labels: Default::default(),
+    });
+    let rc = RequestCtx::new(60);
+    let v = body();
+    decide_policy_order(
+        &app,
+        &resolved,
+        &cands,
+        &rc,
+        &v,
+        "p",
+        "anthropic",
+        false,
+        Some(&secret), // the RAW token, which DOES hash-match the disabled key in `by_hash`
+        Some(&synth),
+    )
+    .await;
+    let captured = seen.lock().unwrap().clone().expect("policy called");
+    let (key_id, key_name, _user) = captured.identity.expect("identity present");
+    assert_eq!(
+        key_id.as_deref(),
+        Some("synthesized-principal"),
+        "must resolve to the key auth actually authorized (the synthesized key), \
+         not the disabled legacy key a raw `lookup` would hit"
+    );
+    assert_eq!(key_name.as_deref(), Some("synthesized-principal"));
+}
+
 /// The named / ad-hoc anthropic routes go through `forward_with_pool`,
 /// which carries NO resolved key — so the c1r10 fallback never fired there and a group principal
 /// on `/{pool}/v1/messages` was still routing-signal-blind. `forward_with_pool_keyed` threads
