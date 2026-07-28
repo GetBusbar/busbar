@@ -40,16 +40,48 @@ fn test_egress_accept_matches_native_sdk() {
 /// returns a non-empty, plausibly-versioned UA.
 #[test]
 fn test_egress_ua_versions_are_pinned_and_present() {
-    // Each known egress protocol maps to its named constant — drift can only happen by editing
-    // the constant (which trips this assertion), never silently.
-    assert_eq!(egress_user_agent("anthropic"), super::EGRESS_UA_ANTHROPIC);
-    assert_eq!(egress_user_agent("openai"), super::EGRESS_UA_OPENAI);
-    assert_eq!(egress_user_agent("responses"), super::EGRESS_UA_OPENAI);
-    assert_eq!(egress_user_agent("gemini"), super::EGRESS_UA_GEMINI);
-    assert_eq!(egress_user_agent("bedrock"), super::EGRESS_UA_BEDROCK);
-    assert_eq!(egress_user_agent("cohere"), super::EGRESS_UA_COHERE);
+    // GOLDEN WIRE LITERALS — the exact bytes a native SDK sends. Comparing against the
+    // `EGRESS_UA_*` constants themselves is a tautology (both sides move together when the
+    // constant is edited); pinning the literal here means changing a constant is a deliberate,
+    // reviewed act that must touch BOTH this table and the constant, so it can never happen
+    // silently. Copied verbatim from the current `EGRESS_UA_*` values in egress.rs — this fix pins
+    // the status quo, it does not change any wire value.
+    assert_eq!(
+        egress_user_agent("anthropic"),
+        "Anthropic/Python 0.39.0",
+        "anthropic egress UA drifted from the pinned native-SDK string"
+    );
+    assert_eq!(
+        egress_user_agent("openai"),
+        "OpenAI/Python 1.54.0",
+        "openai egress UA drifted from the pinned native-SDK string"
+    );
+    assert_eq!(
+        egress_user_agent("responses"),
+        "OpenAI/Python 1.54.0",
+        "responses egress UA drifted from the pinned native-SDK string"
+    );
+    assert_eq!(
+        egress_user_agent("gemini"),
+        "google-genai-sdk/0.8.0 gl-python/3.11",
+        "gemini egress UA drifted from the pinned native-SDK string"
+    );
+    assert_eq!(
+        egress_user_agent("bedrock"),
+        "Boto3/1.35.0 md/Botocore#1.35.0",
+        "bedrock egress UA drifted from the pinned native-SDK string"
+    );
+    assert_eq!(
+        egress_user_agent("cohere"),
+        "cohere-python/5.11.0",
+        "cohere egress UA drifted from the pinned native-SDK string"
+    );
     // Foreign/unknown egress still gets a present, plausible UA (never empty / never absent).
-    assert_eq!(egress_user_agent("mystery"), super::EGRESS_UA_DEFAULT);
+    assert_eq!(
+        egress_user_agent("mystery"),
+        "okhttp/4.12.0",
+        "mystery/default egress UA drifted from the pinned literal"
+    );
     for p in [
         "anthropic",
         "openai",
