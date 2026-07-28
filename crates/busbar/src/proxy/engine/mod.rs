@@ -1403,11 +1403,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     // `extract_error` only sees the body, so the cooldown floor would otherwise be
                     // silently dropped on a 429 carrying an explicit retry hint.
                     let ct = r.headers().get(CONTENT_TYPE).cloned();
-                    let retry_after_secs = r
-                        .headers()
-                        .get(axum::http::header::RETRY_AFTER)
-                        .and_then(|v| v.to_str().ok())
-                        .and_then(|s| s.trim().parse::<u64>().ok());
+                    let retry_after_secs = crate::breaker::parse_retry_after(r.headers());
                     // A real AWS Bedrock endpoint sends `x-amzn-requestid` and `x-amzn-errortype` on
                     // EVERY response, including 4xx. First-party AWS SDKs read `x-amzn-errortype`
                     // BEFORE the body `__type` for typed-exception dispatch; their absence on a

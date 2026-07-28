@@ -164,6 +164,9 @@ async-trait = "0.1"
 # auto::Builder, mirroring exactly what `axum::serve` does internally. `GracefulShutdown` reproduces
 # `.with_graceful_shutdown(...)`'s drain semantics. Both crates are already in the graph (axum/server
 # stack); they're named here only to pull the `server-auto`/`server-graceful` surface directly.
+# Parses the HTTP-date form of `Retry-After` (RFC 9110 §10.2.3), which the integer-only parse used
+# to silently drop. Zero new supply-chain surface: already in the lock as a `hyper` dependency.
+httpdate = "1.0"
 hyper = { version = "1", default-features = false, features = ["server", "http1"] }
 hyper-util = { version = "0.1", default-features = false, features = [
     "server-auto",
