@@ -280,22 +280,43 @@ impl AuthMiddleware {
             return ChainVerdict::Open;
         }
         let now = crate::store::now();
+        // `Pass` puts are BUFFERED, not admitted, until the chain identifies. An all-`Pass` chain
+        // ends `Denied` (below), so admitting them eagerly let an unauthenticated caller fill the
+        // cache with entries that then evict real `Identify` rows under the oldest-inserted
+        // eviction rule (`auth_cache.rs:106-119`). Committing only on the `Identified` return means
+        // unauthenticated traffic causes no admissions at all. A cache HIT is never re-`put`: doing
+        // so would refresh its TTL and quietly extend the revocation window.
+        let mut pending_pass: Vec<&str> = Vec::new();
         for module in &self.chain {
             let cache_here = match (cache, candidate) {
                 (Some(c), Some(cred)) if module.cacheable() => Some((c, cred)),
                 _ => None,
             };
-            let outcome = cache_here
-                .and_then(|(c, cred)| c.get(module.name(), cred, now))
-                .unwrap_or_else(|| {
+            let outcome = match cache_here.and_then(|(c, cred)| c.get(module.name(), cred, now)) {
+                Some(hit) => hit,
+                None => {
                     let o = module.authenticate(candidate);
-                    if let Some((c, cred)) = cache_here {
-                        c.put(module.name(), cred, &o, now);
+                    if cache_here.is_some() && matches!(o, AuthOutcome::Pass) {
+                        pending_pass.push(module.name());
                     }
                     o
-                });
+                }
+            };
             match outcome {
                 AuthOutcome::Identify(principal) => {
+                    if let (Some(c), Some(cred)) = (cache, candidate) {
+                        for name in &pending_pass {
+                            c.put(name, cred, &AuthOutcome::Pass, now);
+                        }
+                        if cache_here.is_some() {
+                            c.put(
+                                module.name(),
+                                cred,
+                                &AuthOutcome::Identify(principal.clone()),
+                                now,
+                            );
+                        }
+                    }
                     // No per-module role filter: the NESTED role_bindings table IS the allowlist
                     // (S4) - a role this module asserts grants nothing unless
                     // `role_bindings.<this module>.<role>` binds it.

@@ -512,3 +512,170 @@ fn an_in_process_chain_is_not_offloaded() {
         "an in-process chain must keep identifying exactly as before"
     );
 }
+
+// ── PASS ADMISSION IS CHAIN-OUTCOME-CONDITIONED (F1) ─────────────────────────────
+//
+// `TestGroupsModule` (used above) leaves `cacheable()` at the trait default `false`
+// (`api/src/auth.rs:67-69`), so it cannot exercise the cache. These two purpose-built modules are
+// `cacheable() -> true`, mirroring `BlockingModule`'s pattern above but for the caching path
+// instead of the offload path.
+
+/// Always `Pass`es, and is cacheable — the shape of a `cacheable` introspection/directory module
+/// that does not recognize a given credential.
+struct CacheablePass;
+impl busbar_api::AuthModule for CacheablePass {
+    fn name(&self) -> &'static str {
+        "cacheable-pass-module"
+    }
+    fn authenticate(&self, _candidate: Option<&str>) -> busbar_api::AuthOutcome {
+        busbar_api::AuthOutcome::Pass
+    }
+    fn cacheable(&self) -> bool {
+        true
+    }
+}
+
+/// Always `Reject`s, and is cacheable (cacheability is irrelevant to `Reject`, which
+/// `auth_cache.rs:104` never caches regardless — included so the chain-position test is honest).
+struct CacheableReject;
+impl busbar_api::AuthModule for CacheableReject {
+    fn name(&self) -> &'static str {
+        "cacheable-reject-module"
+    }
+    fn authenticate(&self, _candidate: Option<&str>) -> busbar_api::AuthOutcome {
+        busbar_api::AuthOutcome::Reject
+    }
+    fn cacheable(&self) -> bool {
+        true
+    }
+}
+
+/// `Identify`s any candidate that equals `"good"`, else `Pass`es. Cacheable.
+struct CacheableIdentify;
+impl busbar_api::AuthModule for CacheableIdentify {
+    fn name(&self) -> &'static str {
+        "cacheable-identify-module"
+    }
+    fn authenticate(&self, candidate: Option<&str>) -> busbar_api::AuthOutcome {
+        match candidate {
+            Some("good") => busbar_api::AuthOutcome::Identify(crate::auth::Principal {
+                id: "test:good".to_string(),
+                name: None,
+                roles: vec![],
+                ttl_secs: None,
+            }),
+            _ => busbar_api::AuthOutcome::Pass,
+        }
+    }
+    fn cacheable(&self) -> bool {
+        true
+    }
+}
+
+/// RED: an unauthenticated caller (a chain that never identifies) must leave NO trace in the
+/// cache. Today `run_chain_cached` (`auth/mod.rs:293`) `put`s a fresh `Pass` immediately, so
+/// `flush_all()` observes 1 — that `Pass` is exactly the entry the finding shows displacing a real
+/// `Identify` under the oldest-inserted eviction rule (`auth_cache.rs:111-114`).
+#[test]
+fn an_unauthenticated_chain_admits_nothing_to_the_cache() {
+    let auth = AuthMiddleware::from_chain_for_test(
+        vec![Box::new(CacheablePass)],
+        /* has_plugin_module = */ false,
+    );
+    let cache = crate::auth_cache::CredentialCache::new();
+
+    let verdict = auth.run_chain_cached(Some("junk-token"), Some(&cache));
+
+    assert_eq!(verdict, ChainVerdict::Denied);
+    assert_eq!(
+        cache.flush_all(),
+        0,
+        "an all-Pass chain must admit nothing to the cache"
+    );
+}
+
+/// RED: a chain that `Pass`es through a leading module and is then `Reject`ed must also admit
+/// nothing — the leading `Pass` must not be committed before the `Reject` short-circuits the
+/// chain. This is the case the old `MAX_PASS_ENTRIES` partition design never addressed at all: it
+/// still admitted this leading `Pass`.
+#[test]
+fn a_rejected_chain_admits_nothing_to_the_cache() {
+    let auth = AuthMiddleware::from_chain_for_test(
+        vec![Box::new(CacheablePass), Box::new(CacheableReject)],
+        /* has_plugin_module = */ false,
+    );
+    let cache = crate::auth_cache::CredentialCache::new();
+
+    let verdict = auth.run_chain_cached(Some("junk-token"), Some(&cache));
+
+    assert_eq!(verdict, ChainVerdict::Denied);
+    assert_eq!(
+        cache.flush_all(),
+        0,
+        "a chain that ends in Reject must admit nothing to the cache, including the leading Pass"
+    );
+}
+
+/// RED: the finding's own end-to-end scenario. A real `Identify` is cached first (the entry the
+/// eviction rule must protect); then an unauthenticated caller runs the chain `MAX_ENTRIES` times
+/// with distinct junk credentials at the SAME `now`, so `retain`'s expiry sweep reclaims nothing
+/// and every `put` must fall through to `min_by_key(inserted_seq)`. Today's unconditional-`Pass`-put
+/// admits each of those, and because the `Identify` was inserted first it has the lowest
+/// `inserted_seq` and is evicted FIRST (`auth_cache.rs:111-114`).
+#[test]
+fn pass_churn_cannot_evict_an_identity() {
+    let auth = AuthMiddleware::from_chain_for_test(
+        vec![Box::new(CacheablePass)],
+        /* has_plugin_module = */ false,
+    );
+    let cache = crate::auth_cache::CredentialCache::new();
+    let now = 1_000_000u64;
+
+    cache.put(
+        "real-identity-module",
+        "real-credential",
+        &busbar_api::AuthOutcome::Identify(crate::auth::Principal {
+            id: "real:identity".to_string(),
+            name: None,
+            roles: vec![],
+            ttl_secs: Some(3600),
+        }),
+        now,
+    );
+
+    for i in 0..4096u64 {
+        let junk = format!("junk-{i}");
+        let _ = auth.run_chain_cached(Some(&junk), Some(&cache));
+    }
+
+    assert!(
+        matches!(
+            cache.get("real-identity-module", "real-credential", now),
+            Some(busbar_api::AuthOutcome::Identify(_))
+        ),
+        "unauthenticated Pass churn must not evict a real identity from the cache"
+    );
+}
+
+/// REGRESSION PROOF (passes before and after): the buffering must not be over-broad. An
+/// authenticated multi-module chain — a leading module that `Pass`es, followed by one that
+/// `Identify`s — must keep caching BOTH entries exactly as it does today, so the leading module's
+/// round-trip is still saved on the next request. If this goes red, the commit-on-identify path is
+/// wrong.
+#[test]
+fn an_identified_chain_still_caches_the_leading_pass() {
+    let auth = AuthMiddleware::from_chain_for_test(
+        vec![Box::new(CacheablePass), Box::new(CacheableIdentify)],
+        /* has_plugin_module = */ false,
+    );
+    let cache = crate::auth_cache::CredentialCache::new();
+
+    let verdict = auth.run_chain_cached(Some("good"), Some(&cache));
+
+    assert!(matches!(verdict, ChainVerdict::Identified { .. }));
+    assert_eq!(
+        cache.flush_all(),
+        2,
+        "an identified chain must still cache both the leading Pass and the Identify"
+    );
+}
