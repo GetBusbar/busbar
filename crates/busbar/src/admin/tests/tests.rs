@@ -1955,6 +1955,140 @@ async fn test_admin_v1_idempotency_reservation_frees_on_failure() {
     handle.abort();
 }
 
+/// A `Store` wrapper that sleeps on the FIRST `put_key` only, then runs at full speed — a stand-in
+/// for a slow durable store's write round-trip, used to widen the window between "the mint has been
+/// handed to the uncancellable blocking task" and "the mint actually lands" so a client disconnect
+/// can be landed deterministically inside it.
+struct SlowKeyStore {
+    inner: Arc<dyn crate::governance::Store>,
+    delay: std::time::Duration,
+    fired: std::sync::atomic::AtomicBool,
+}
+impl crate::governance::Store for SlowKeyStore {
+    fn put_key(&self, key: &busbar_api::VirtualKey) -> crate::governance::StoreResult<()> {
+        if !self.fired.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            std::thread::sleep(self.delay);
+        }
+        self.inner.put_key(key)
+    }
+    fn get_key(&self, id: &str) -> crate::governance::StoreResult<Option<busbar_api::VirtualKey>> {
+        self.inner.get_key(id)
+    }
+    fn list_keys(&self) -> crate::governance::StoreResult<Vec<busbar_api::VirtualKey>> {
+        self.inner.list_keys()
+    }
+    fn delete_key(&self, id: &str) -> crate::governance::StoreResult<()> {
+        self.inner.delete_key(id)
+    }
+    fn get_usage(
+        &self,
+        bucket_id: &str,
+        window_start: u64,
+    ) -> crate::governance::StoreResult<busbar_api::UsageLedger> {
+        self.inner.get_usage(bucket_id, window_start)
+    }
+    fn put_usage(
+        &self,
+        bucket_id: &str,
+        window_start: u64,
+        ledger: &busbar_api::UsageLedger,
+    ) -> crate::governance::StoreResult<()> {
+        self.inner.put_usage(bucket_id, window_start, ledger)
+    }
+    fn add_metering(
+        &self,
+        delta: &crate::governance::MeteringDelta,
+    ) -> crate::governance::StoreResult<()> {
+        self.inner.add_metering(delta)
+    }
+    fn list_metering(
+        &self,
+        bucket: u64,
+    ) -> crate::governance::StoreResult<Vec<crate::governance::MeteringRow>> {
+        self.inner.list_metering(bucket)
+    }
+}
+
+/// The double-mint reachable via an ordinary client-side timeout shorter than a slow store's write:
+/// the handler future is DROPPED mid-`config_transaction` (a client disconnect/timeout), but the
+/// mint keeps running to completion on the uncancellable blocking task and DOES write the key. A
+/// retry with the same `Idempotency-Key` must see the reservation still held (not an empty slot it
+/// can double-mint into).
+#[tokio::test]
+async fn an_idempotency_key_survives_a_client_disconnect_mid_mint() {
+    crate::metrics::init();
+    let inner = Arc::new(MemoryStore::new());
+    let slow_store: Arc<dyn crate::governance::Store> = Arc::new(SlowKeyStore {
+        inner,
+        delay: std::time::Duration::from_millis(500),
+        fired: std::sync::atomic::AtomicBool::new(false),
+    });
+    let gov = gov_with_signer(slow_store, Some("admintok".to_string()));
+    let app = TestApp::new().governance(gov).build();
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+
+    // A short client-side timeout (100ms) vs. the store's 500ms write — a 5x margin, both real
+    // sleeps (per the design's timing caution).
+    let short_timeout_client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(100))
+        .build()
+        .unwrap();
+    let post = |client: &reqwest::Client| {
+        client
+            .post(format!("http://{addr}/api/v1/admin/keys"))
+            .header("x-admin-token", "admintok")
+            .header("content-type", "application/json")
+            .header("idempotency-key", "dc-1")
+            .body(r#"{"name": "disconnector"}"#)
+            .send()
+    };
+
+    // First request: the client times out and errors BEFORE the 500ms store write completes,
+    // dropping the server-side handler future mid-mint.
+    let first = post(&short_timeout_client).await;
+    assert!(first.is_err(), "the short client timeout must fire first");
+
+    // Give the (uncancellable) blocking mint time to actually land.
+    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+
+    // Retry with the SAME Idempotency-Key, no timeout this time.
+    let normal_client = reqwest::Client::new();
+    let retry = post(&normal_client).await.unwrap();
+    // Either outcome is correct under the fix: a 409 "already in flight" (if `dc-1`'s TTL window is
+    // still open and the reservation was never cleared) or — since the mint already landed and the
+    // cache slot may have been replaced by the real committed body before this retry runs — a replay
+    // of that same committed response. What must NOT happen is a fresh 201 that mints a SECOND key.
+    assert_ne!(
+        retry.status().as_u16(),
+        201,
+        "a disconnect mid-mint must never let a retry mint a SECOND key"
+    );
+
+    let keys: serde_json::Value = normal_client
+        .get(format!("http://{addr}/api/v1/admin/keys"))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let items = keys["items"].as_array().unwrap();
+    let disconnector_count = items
+        .iter()
+        .filter(|k| k["name"].as_str() == Some("disconnector"))
+        .count();
+    assert_eq!(
+        disconnector_count, 1,
+        "exactly one key must exist after a client disconnect mid-mint + retry, got: {items:?}"
+    );
+
+    handle.abort();
+}
+
 /// Key ROTATION: the new secret works, the old stops resolving, the id + settings are
 /// unchanged; unknown ids 404. And keys pagination: limit/offset over the id-sorted set with a
 /// stable total.
@@ -10112,4 +10246,101 @@ async fn test_admin_v1_restart_refuses_when_it_cannot_restart() {
             .all(|e| e.outcome == crate::admin::audit::OUTCOME_REJECTED),
         "a refused restart must never be recorded as applied: {restarts:?}"
     );
+}
+
+/// `?limit=0` must never produce a self-referential cursor: `page_cursor` truncates the page to
+/// zero items and would otherwise emit `next_cursor = encode(start + 0) == start`, so a
+/// cursor-following client that keeps requesting `limit=0` loops forever on the same offset.
+/// Covers all THREE parse sites — `get_audit`/`list_config_versions` (through the shared
+/// `page_cursor`) and `list_keys` (its own match arm, a different code path to the same hole).
+#[tokio::test]
+async fn limit_zero_does_not_produce_a_self_referential_cursor() {
+    crate::metrics::init();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let app = TestApp::new().governance(gov).build();
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    let admin = |req: reqwest::RequestBuilder| req.header("x-admin-token", "admintok");
+
+    // Seed rows for all three lists: minting keys produces audit entries AND `list_keys` rows;
+    // registering + deleting a hook produces config-version rows.
+    for n in ["ka", "kb"] {
+        let resp = admin(client.post(format!("http://{addr}/api/v1/admin/keys")))
+            .header("content-type", "application/json")
+            .body(serde_json::json!({"name": n}).to_string())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 201);
+    }
+    let created = admin(client.post(format!("http://{addr}/api/v1/admin/hooks")))
+        .header("content-type", "application/json")
+        .body(
+            serde_json::json!({"name": "lz-hook", "config": {"kind": "tap", "plugin": "test-hook"}})
+                .to_string(),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(created.status().as_u16(), 201);
+    let deleted = admin(client.delete(format!("http://{addr}/api/v1/admin/hooks/lz-hook")))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(deleted.status().as_u16(), 204);
+
+    // A self-referential cursor decodes to the SAME offset the request was served at (0, since no
+    // `?cursor=` was supplied). Anything else — null, or an offset strictly greater than 0 — proves
+    // the client would make forward progress.
+    let assert_not_self_referential = |label: &str, body: &serde_json::Value| {
+        let next = body.get("next_cursor").and_then(|c| c.as_str());
+        match next {
+            None => {} // no further page — fine
+            Some(c) => {
+                let decoded = crate::admin::v1::contract::decode_offset_cursor(c)
+                    .unwrap_or_else(|| panic!("{label}: cursor did not decode: {c}"));
+                assert!(
+                    decoded > 0,
+                    "{label}: limit=0 produced a self-referential cursor (offset {decoded}): {body}"
+                );
+            }
+        }
+    };
+
+    let audit_body: serde_json::Value =
+        admin(client.get(format!("http://{addr}/api/v1/admin/audit?limit=0")))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+    assert_not_self_referential("get_audit", &audit_body);
+
+    let versions_body: serde_json::Value = admin(client.get(format!(
+        "http://{addr}/api/v1/admin/config/versions?limit=0"
+    )))
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    assert_not_self_referential("list_config_versions", &versions_body);
+
+    let keys_body: serde_json::Value =
+        admin(client.get(format!("http://{addr}/api/v1/admin/keys?limit=0")))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+    assert_not_self_referential("list_keys", &keys_body);
+
+    handle.abort();
 }

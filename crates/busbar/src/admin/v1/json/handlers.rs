@@ -1659,7 +1659,7 @@ pub(crate) async fn get_audit(
         .get("limit")
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(crate::admin::v1::contract::LIST_LIMIT_DEFAULT)
-        .min(crate::admin::v1::contract::LIST_LIMIT_MAX);
+        .clamp(1, crate::admin::v1::contract::LIST_LIMIT_MAX);
     let start = match cursor_offset(&q) {
         Ok(n) => n,
         Err(resp) => return resp,
@@ -1685,7 +1685,7 @@ pub(crate) async fn list_config_versions(
         .get("limit")
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(crate::admin::v1::contract::VERSIONS_LIMIT_DEFAULT)
-        .min(crate::admin::v1::contract::LIST_LIMIT_MAX);
+        .clamp(1, crate::admin::v1::contract::LIST_LIMIT_MAX);
     let start = match cursor_offset(&q) {
         Ok(n) => n,
         Err(resp) => return resp,
