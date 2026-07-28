@@ -13,8 +13,8 @@
 //!   at once (dall-e URL, Vertex `gcsUri`, everyone-else base64), and losslessness requires keeping
 //!   every form present — so optionals, never a one-of.
 //!
-//! Foundation types; `dead_code` allowed until the IR wiring lands.
-#![allow(dead_code)]
+//! Foundation types for the operations rebuild; wired into the IR as `MediaBlob`/`ImageOutput`
+//! payloads throughout the handlers (e.g. `handlers/gemini.rs`, `ir/audio.rs`).
 
 use bytes::Bytes;
 
@@ -81,12 +81,11 @@ pub(crate) fn base64_decode(input: &str) -> Option<Bytes> {
 }
 
 /// Audio payload — exactly ONE representation, enforced. `B64` is the lossless common denominator
-/// across providers; `Bytes` is the raw OpenAI binary response; `Uri` covers reference forms.
+/// across providers; `Bytes` is the raw OpenAI binary response.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum MediaPayload {
     Bytes(Bytes),
     B64(String),
-    Uri(String),
 }
 
 /// Sample parameters for headerless raw PCM (`audio/L16;codec=pcm;rate=24000`, OpenAI `pcm`), where
@@ -110,7 +109,9 @@ pub(crate) struct MediaBlob {
 impl MediaBlob {
     /// Well-formedness: PCM parameters are present iff the MIME type denotes headerless raw PCM.
     /// Guards against an OperationHandler that forgets the params on `audio/L16`/`pcm` (silently lossy) or attaches
-    /// them to a self-describing container (meaningless).
+    /// them to a self-describing container (meaningless). No runtime path currently calls this; the
+    /// invariant is documented and self-tested but not enforced on real data.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn is_well_formed(&self) -> bool {
         let raw_pcm = self.mime_type.contains("L16")
             || self.mime_type.ends_with("/pcm")
@@ -134,7 +135,9 @@ pub(crate) struct ImageOutput {
 
 impl ImageOutput {
     /// At least one representation must be present — an image output with neither `b64` nor `url` is
-    /// meaningless (and would silently drop the image).
+    /// meaningless (and would silently drop the image). No runtime path currently calls this; the
+    /// invariant is documented and self-tested but not enforced on real data.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn has_payload(&self) -> bool {
         self.b64.is_some() || self.url.is_some()
     }

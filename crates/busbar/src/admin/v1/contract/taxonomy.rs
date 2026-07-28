@@ -15,15 +15,17 @@
 //! 401 / 403 (generic under-scope) / 405 / 429 / 500 are ALGORITHMIC: stamped on every operation by
 //! `openapi_doc()` because every operation can emit them. They are deliberately NOT declarable here
 //! (see [`err_kind_of`], which classifies them as `None`).
-#![allow(dead_code)]
+//!
+//! WHICH items are live here depends on TWO independent cfgs: `openapi-schema` (the CI-only feature
+//! that compiles the generator) selects the declaration + phrasing + projection, and `test` selects
+//! the emission tagging, the recording layer, and the class-level drift audit's own inputs. The
+//! SHIPPED binary needs neither — it serves the pre-generated `openapi.json` — so items gated on
+//! `any(test, feature = "openapi-schema")` or `feature = "openapi-schema"` alone are genuinely ABSENT
+//! from a release build, not merely suppressed. `Cond` itself stays UNGATED: `err_json_cond`, a real
+//! production function, takes one as a parameter, so the enum is live in every build; only its
+//! `phrase()` method (openapi-schema doc prose) is gated.
 
-// WHICH items are live here depends on TWO independent cfgs: `openapi-schema` (the CI-only feature
-// that compiles the generator) selects the declaration + phrasing + projection, and `test` selects
-// the emission tagging and the recording layer's inputs. The SHIPPED binary needs neither — it
-// serves the pre-generated `openapi.json` — so in a release build this module is a pure declaration
-// with no caller, BY DESIGN (zero runtime cost). A per-item cfg matrix over those two axes would be
-// noise on every item, so the whole module opts out of the dead-code lint once.
-
+#[cfg(any(test, feature = "openapi-schema"))]
 use super::{AdminError, Scope};
 
 // ── ERROR TAXONOMY → OpenAPI PROJECTION (design D) ───────────────────────────────────────────────
@@ -40,6 +42,7 @@ use super::{AdminError, Scope};
 /// scope/`MethodNotAllowed`/`RateLimited`/`Internal`) are classified as `Algorithmic` by the
 /// `ErrKind ↔ AdminError` exhaustiveness bridge (`err_kind_of`), which FAILS TO COMPILE if a new
 /// `AdminError` variant is added without a decision here.
+#[cfg(any(test, feature = "openapi-schema"))]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub(crate) enum ErrKind {
     /// A named resource does not exist (`not_found`, 404).
@@ -55,6 +58,7 @@ pub(crate) enum ErrKind {
     Forbidden,
 }
 
+#[cfg(any(test, feature = "openapi-schema"))]
 impl ErrKind {
     /// A representative `AdminError` for this kind — used only to READ its frozen `code`/`http_status`
     /// (payloads are empty; the doc dimension carries no message).
@@ -87,6 +91,10 @@ impl ErrKind {
 /// variant WON'T COMPILE until it is classified here — so the taxonomy can never grow a code the doc
 /// dimension doesn't know about. This subsumes and strengthens
 /// `openapi_error_enum_matches_admin_error_codes`.
+// Only reached from #[cfg(test)] call sites (err_json_tagged's test-only tag stamp) — unlike
+// declared_responses/declared_errors, it is never called from openapi_doc's body, so it needs no
+// feature alternative.
+#[cfg(test)]
 pub(crate) fn err_kind_of(e: &AdminError) -> Option<ErrKind> {
     match e {
         AdminError::NotFound { .. } => Some(ErrKind::NotFound),
@@ -106,6 +114,12 @@ pub(crate) fn err_kind_of(e: &AdminError) -> Option<ErrKind> {
 /// reusable across endpoints (e.g. `StaleIfMatch` reads identically everywhere), so descriptions stop
 /// being retyped-and-drifting prose. A `Cond` is a CLOSED enum — an endpoint cannot invent a bogus
 /// condition, and its phrasing can never contradict its `ErrKind`'s status.
+/// Named in the production signature `err_json_cond(e: &AdminError, cond: Cond)`, so the enum type
+/// itself is always live — but most individual variants are only CONSTRUCTED inside `declared_errors`
+/// (gated: `any(test, feature = "openapi-schema")`), so a release build without either cfg on sees
+/// most variants as unconstructed. Narrow suppression rather than deleting the enum's dead_code
+/// visibility entirely, since the type stays real in every build.
+#[cfg_attr(not(any(test, feature = "openapi-schema")), allow(dead_code))]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub(crate) enum Cond {
     StaleIfMatch,
@@ -153,6 +167,7 @@ pub(crate) enum Cond {
 impl Cond {
     /// The single canonical human phrasing for this condition — written ONCE. Every endpoint that
     /// declares a `(kind, cond)` renders identically.
+    #[cfg(feature = "openapi-schema")]
     pub(crate) fn phrase(self) -> &'static str {
         match self {
             Cond::StaleIfMatch => "stale `If-Match` (re-read and retry)",
@@ -224,6 +239,7 @@ impl Cond {
 /// A documentable failure: which `AdminError` kind (→ frozen code + status) and the endpoint-specific
 /// CONDITION that triggers it. Both are enums, so a declaration can neither invent a status nor drift
 /// into prose that contradicts the code.
+#[cfg(any(test, feature = "openapi-schema"))]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub(crate) struct DocErr {
     pub(crate) kind: ErrKind,
@@ -231,6 +247,7 @@ pub(crate) struct DocErr {
 }
 
 /// Method tag for the `declared_errors` match (the doc dimension only cares about the verb).
+#[cfg(any(test, feature = "openapi-schema"))]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub(crate) enum MethodTag {
     Get,
@@ -240,20 +257,11 @@ pub(crate) enum MethodTag {
     Delete,
 }
 
+#[cfg(any(test, feature = "openapi-schema"))]
 impl MethodTag {
-    /// The lowercase OpenAPI operation key for this verb.
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            MethodTag::Get => "get",
-            MethodTag::Post => "post",
-            MethodTag::Put => "put",
-            MethodTag::Patch => "patch",
-            MethodTag::Delete => "delete",
-        }
-    }
-
     /// Parse an OpenAPI operation key (`"get"`, `"post"`, …) back into a tag. `None` for the `x-*`
-    /// specification extensions that share the path-item object with real operations.
+    /// specification extensions that share the path-item object with real operations. Called from
+    /// `openapi_doc`'s own body, so it is reachable under `feature = "openapi-schema"` alone.
     pub(crate) fn from_op_key(key: &str) -> Option<MethodTag> {
         Some(match key {
             "get" => MethodTag::Get,
@@ -266,8 +274,26 @@ impl MethodTag {
     }
 }
 
+// The lowercase OpenAPI operation key for this verb. Only called from #[cfg(test)] sites
+// (the taxonomy drift audit in json/mod.rs and admin/tests/tests.rs) — unlike `from_op_key`, never
+// from openapi_doc's own body — so it needs no feature alternative.
+#[cfg(test)]
+impl MethodTag {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            MethodTag::Get => "get",
+            MethodTag::Post => "post",
+            MethodTag::Put => "put",
+            MethodTag::Patch => "patch",
+            MethodTag::Delete => "delete",
+        }
+    }
+}
+
 /// Classify an HTTP method into a `MethodTag`. `None` for a verb the admin surface never routes —
-/// such a request can only be the router's 405 fallback, which is algorithmic, not declarable.
+/// such a request can only be the router's 405 fallback, which is algorithmic, not declarable. Only
+/// reached from the test-only recording layer (`json/mod.rs::record_declared_error`).
+#[cfg(test)]
 pub(crate) fn method_tag(m: &axum::http::Method) -> Option<MethodTag> {
     use axum::http::Method;
     Some(match *m {
@@ -291,6 +317,7 @@ pub(crate) fn method_tag(m: &axum::http::Method) -> Option<MethodTag> {
 /// NOT listed here (and not listable): 401, the generic under-scope 403, 405, 429 and 500 — every
 /// operation can emit them, so `openapi_doc()` stamps them algorithmically. A `Forbidden` entry IS
 /// declared where the hook-escalation refusal needs its own, more specific phrasing.
+#[cfg(any(test, feature = "openapi-schema"))]
 pub(crate) fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr] {
     use Cond::*;
     use ErrKind::*;
@@ -523,7 +550,7 @@ pub(crate) fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr]
 ///
 /// This is the ONLY producer of 4xx response text in the document. `openapi_doc()` calls it and
 /// writes the result verbatim; there is no per-endpoint prose left to drift.
-#[cfg_attr(not(any(test, feature = "openapi-schema")), allow(dead_code))]
+#[cfg(feature = "openapi-schema")]
 pub(crate) fn declared_responses(method: MethodTag, rel: &str) -> Vec<(String, String)> {
     let declared = declared_errors(method, rel);
     // Status → ordered list of (code, phrase), de-duplicated, in declaration order.

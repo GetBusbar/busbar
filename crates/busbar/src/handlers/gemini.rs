@@ -178,7 +178,6 @@ impl OperationHandler for GeminiTranscription {
                 let d = match &blob.payload {
                     MediaPayload::B64(s) => s.clone(),
                     MediaPayload::Bytes(b) => base64_encode(b),
-                    MediaPayload::Uri(_) => String::new(),
                 };
                 (blob.mime_type.clone(), d)
             }
@@ -366,7 +365,6 @@ impl OperationHandler for GeminiSpeech {
                 let d = match &blob.payload {
                     MediaPayload::B64(s) => s.clone(),
                     MediaPayload::Bytes(b) => base64_encode(b),
-                    MediaPayload::Uri(_) => String::new(),
                 };
                 (d, blob.mime_type.clone())
             }
