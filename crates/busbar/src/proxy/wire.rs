@@ -124,6 +124,32 @@ pub(crate) fn ingress_error(ingress: &str, status: StatusCode, kind: &str, msg: 
     resp
 }
 
+/// Project an [`crate::handlers::IngressReject`] into the caller-dialect error response
+/// (`ingress_error`). The one place that decides what each reject arm renders as, so the two
+/// `read_request`/`read_request_value` call sites (the opaque-body branch and the JSON branch)
+/// cannot drift on shape: `BadRequest` is today's generic 400; `UnsupportedSubOp` is the m3 second
+/// 404 (`ImageIr.op` unsupported for `model`), distinct from the no-handler 404 and naming both the
+/// operation and the model so the caller knows what to stop asking for.
+pub(crate) fn ingress_reject_response(
+    ingress_protocol: &str,
+    reject: &crate::handlers::IngressReject,
+) -> Response {
+    match reject {
+        crate::handlers::IngressReject::BadRequest(_) => ingress_error(
+            ingress_protocol,
+            StatusCode::BAD_REQUEST,
+            KIND_INVALID_REQUEST,
+            "We could not process the content of your request.",
+        ),
+        crate::handlers::IngressReject::UnsupportedSubOp { op, model } => ingress_error(
+            ingress_protocol,
+            StatusCode::NOT_FOUND,
+            KIND_NOT_FOUND,
+            &format!("{op:?} is not supported for model \"{model}\"."),
+        ),
+    }
+}
+
 /// CANONICAL mapping from an upstream HTTP status to the protocol-agnostic error `kind`, for shaping
 /// a CROSS-PROTOCOL non-2xx upstream response into the ingress protocol's native error envelope.
 /// Shared by BOTH the main forward loop (`forward_with_pool`) and the degraded last-resort path
@@ -323,13 +349,8 @@ pub(crate) fn translate_request_cross_protocol(
             };
             let mut ir_req = match ih.read_request(hop_bytes, req_content_type) {
                 Ok(ir) => ir,
-                Err(_) => {
-                    return Err(Box::new(ingress_error(
-                        ingress_protocol,
-                        StatusCode::BAD_REQUEST,
-                        KIND_INVALID_REQUEST,
-                        "We could not process the content of your request.",
-                    )))
+                Err(reject) => {
+                    return Err(Box::new(ingress_reject_response(ingress_protocol, &reject)))
                 }
             };
             ir_req.prepare_for_egress(&crate::ir::variant::EgressPrep {
@@ -436,13 +457,8 @@ pub(crate) fn translate_request_cross_protocol(
                 // must serialize the rewritten `Value`, never short-circuit to the original bytes.
                 pristine = false;
             }
-            Err(_) => {
-                return Err(Box::new(ingress_error(
-                    ingress_protocol,
-                    StatusCode::BAD_REQUEST,
-                    KIND_INVALID_REQUEST,
-                    "We could not process the content of your request.",
-                )));
+            Err(reject) => {
+                return Err(Box::new(ingress_reject_response(ingress_protocol, &reject)));
             }
         }
     }

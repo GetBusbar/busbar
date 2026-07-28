@@ -19,7 +19,6 @@
 //!
 //! Adding a protocol: a Router ID line, a `RequestHandler` impl here, its OperationHandlers. Adding an
 //! operation: an OperationHandler + a line in each `RequestHandler` that speaks it. Nothing else moves.
-#![allow(dead_code)]
 
 pub(crate) mod anthropic;
 pub(crate) mod bedrock;
@@ -218,7 +217,12 @@ pub(crate) trait OperationHandler: Send + Sync {
 
 /// A protocol's dialect + its OperationHandlers (one impl per protocol).
 pub(crate) trait RequestHandler: Send + Sync {
-    /// Stable protocol identity (matches `proto::Protocol::name()`).
+    /// Stable protocol identity (matches `proto::Protocol::name()`). Called only from this crate's
+    /// own tests (`contract_tests.rs`, `registry_tests.rs`) — it is the registry-key/impl-identity
+    /// binding that `registry_tests.rs` asserts (`request_handler()` is a string-keyed registry;
+    /// nothing in the type system otherwise binds an impl to the key it is filed under). A
+    /// legitimate test hook whose purpose is being a test hook.
+    #[cfg_attr(not(test), allow(dead_code))]
     fn protocol_name(&self) -> &'static str;
 
     /// This protocol's row of the support matrix. `None` ⇒ the protocol does not serve the operation
