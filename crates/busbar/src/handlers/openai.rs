@@ -309,7 +309,6 @@ impl OperationHandler for OpenAiTranscription {
             let bytes = match &blob.payload {
                 MediaPayload::Bytes(b) => b.clone(),
                 MediaPayload::B64(s) => decode_ir_b64(s),
-                MediaPayload::Uri(_) => Bytes::new(),
             };
             // Sanitize at the EGRESS boundary too: mime_type can enter the IR from ANY ingress
             // reader (e.g. Gemini inline_data), not just the OpenAI multipart parser, so sanitizing
@@ -449,7 +448,6 @@ impl OperationHandler for OpenAiSpeech {
         let bytes = match &blob.payload {
             MediaPayload::Bytes(b) => b.clone(),
             MediaPayload::B64(s) => decode_ir_b64(s),
-            MediaPayload::Uri(_) => Bytes::new(),
         };
         WireBody::typed(bytes, &blob.mime_type)
     }
@@ -643,6 +641,23 @@ impl OperationHandler for OpenAiImage {
     fn read_request(&self, body: &[u8], _content_type: &str) -> Result<IrReq, IngressReject> {
         let wire: Value =
             serde_json::from_slice(body).map_err(|e| IngressReject::BadRequest(e.to_string()))?;
+        let model = wire
+            .get("model")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        // `read_request` sees the body + content-type, never the PATH — so `/v1/images/edits` vs
+        // `/v1/images/generations` (both resolve to `Operation::Image`, handlers/openai.rs:79) is
+        // distinguished by BODY SHAPE, not the route: an `image` reference names an edit
+        // (`mask` present) or variation sub-op. No 1.5.0 egress writer emits anything but
+        // `/v1/images/generations` (`upstream_path`, below), so every edit/variation request is
+        // unsupported today — the m3 second 404 site, not a missing route.
+        if wire.get("image").is_some() {
+            return Err(IngressReject::UnsupportedSubOp {
+                op: Operation::Image,
+                model,
+            });
+        }
         let size = wire.get("size").and_then(Value::as_str).and_then(|s| {
             if s == "auto" {
                 Some(ImageSize::Auto)
@@ -657,11 +672,7 @@ impl OperationHandler for OpenAiImage {
         });
         Ok(IrReq::Image(ImageReq {
             op: ImageOp::Generate,
-            model: wire
-                .get("model")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
+            model,
             prompt: wire
                 .get("prompt")
                 .and_then(Value::as_str)
@@ -1390,6 +1401,26 @@ mod tests {
             panic!("expected image IR")
         };
         assert_eq!(r.size, Some(ImageSize::Auto));
+    }
+
+    #[test]
+    fn openai_images_edit_request_is_rejected_as_unsupported_sub_op() {
+        // `/v1/images/edits` and `/v1/images/generations` both resolve to `Operation::Image`
+        // (handlers/openai.rs:79); read_request sees only body+content-type, so the edit/variation
+        // sub-op is distinguished by the body naming an `image` to edit, not by the path. No 1.5.0
+        // egress writer emits anything but generations, so this must be the m3 second 404, not a
+        // silent fall-through to Generate.
+        let body = br#"{"model":"dall-e-2","image":"data:image/png;base64,AA==","mask":"data:image/png;base64,BB==","prompt":"add a hat"}"#;
+        let err = OpenAiImage
+            .read_request(body, "multipart/form-data")
+            .expect_err("an edit body must be rejected, not silently treated as a generation");
+        assert_eq!(
+            err,
+            IngressReject::UnsupportedSubOp {
+                op: Operation::Image,
+                model: "dall-e-2".into(),
+            }
+        );
     }
 
     #[test]

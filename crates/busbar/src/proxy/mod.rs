@@ -203,3 +203,7 @@ mod hook_opt_in_projection_tests;
 #[cfg(test)]
 #[path = "tests/hook_seam_tests.rs"]
 mod hook_seam_tests;
+
+#[cfg(test)]
+#[path = "tests/ingress_reject_response_tests.rs"]
+mod ingress_reject_response_tests;

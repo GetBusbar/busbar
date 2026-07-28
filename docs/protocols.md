@@ -355,6 +355,14 @@ Each protocol keeps its own real wire surface for each operation, exactly as its
 
 The dots in the matrix are real gaps: some backends do not implement some operations. Calling one anyway (image generation against an Anthropic lane, for example) returns a clean, well-formed 404 in the caller's own protocol dialect. It never crashes, never leaks an upstream error shape, and never affects the lane's health for other traffic. In a pool, a backend without the operation is simply not a candidate for that request.
 
+### Image edits and variations are a supported operation, unsupported sub-op
+
+`/v1/images/edits` and `/v1/images/variations` route as `Operation::Image`, same as
+`/v1/images/generations` — but every egress writer in this release emits only
+`/v1/images/generations`. A request naming an `image` to edit or vary (an edit/variation body, not a
+plain generation) returns a 404 naming the operation and the model, distinct from the no-backend 404
+above: the operation IS supported, this particular sub-op is not.
+
 ## Body-model vs path-model ingress
 
 The six protocols split into two groups based on where the target model (or pool name) lives in the request:
