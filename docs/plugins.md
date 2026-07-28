@@ -9,7 +9,7 @@ dropped into a directory. Lightweight by default, extend when needed.
 A plugin is a plugin: store, secret, auth, and hook plugins share ONE artifact format, ONE trust model, ONE
 loader, and ONE inventory (`busbar --list-plugins`). The manifest `kind` field is the only
 discriminator; it selects which C ABI the cdylib exports and which engine subsystem consumes it.
-The engine itself never sees any of this machinery. It receives a `dyn Store` (or a `dyn Secret` /
+The engine itself never sees any of this machinery. It receives a `dyn Store` (or a `dyn SecretModule` /
 `dyn AuthModule` / `dyn HookHandler`) trait object through the `busbar-api` contract, exactly as if
 the backend had been compiled in. The engine cannot tell a dynamic plugin from a built-in, and the
 crate boundaries enforce it: all plugin discovery, unpacking, verification, and loading lives in
@@ -140,21 +140,41 @@ form, `{ module: <secret-plugin>, settings: {...} }`, so a reference resolves fr
 secrets backend (a vault, a cloud secret manager) through the same signed-plugin trust pipeline.
 This is the plugin you reach for when key material must never sit in an env var or an on-disk file.
 
-A secret plugin implements `busbar_api::Secret` (`resolve(key) -> SecretBytes`). Busbar resolves
-every reference **once at boot** (and on each hot config-apply), before the value crosses any other
-ABI, so a raw secret is never logged and never written back to the overlay — only the reference is
-persisted. An unresolvable reference is a fatal boot / config-apply error naming the reference.
+A secret plugin implements `busbar_api::SecretModule` (`resolve(&self, settings: &Map<String,
+Value>) -> SecretResult<Vec<u8>>`). Note it is `settings`, not a single `key` — `resolve` is
+STATELESS per call: one module instance serves every reference naming it, each carrying its own
+`settings` map (the `{ module: vault, settings: {...} }` shape above), not a value baked in at
+`open` time. Busbar resolves every reference **once at boot** (and on each hot config-apply), before
+the value crosses any other ABI, so a raw secret is never logged and never written back to the
+overlay — only the reference is persisted. An unresolvable reference is a fatal boot / config-apply
+error naming the reference.
 
 ```rust
 // crate-type = ["cdylib"]; deps: busbar-api, busbar-plugin-sdk, serde_json
-use busbar_api::Secret;
+use busbar_api::{SecretError, SecretModule, SecretResult};
 
-fn open(cfg: &str) -> Result<Box<dyn Secret>, String> {
-    // `cfg` is the secret module's own `settings:` map (e.g. the vault address + auth), verbatim JSON.
+struct MyVault { /* connection state built once at `open` */ }
+
+impl SecretModule for MyVault {
+    fn resolve(&self, settings: &serde_json::Map<String, serde_json::Value>) -> SecretResult<Vec<u8>> {
+        let path = settings.get("path").and_then(|v| v.as_str())
+            .ok_or_else(|| SecretError("missing `path` in secret reference settings".to_string()))?;
+        self.fetch(path).map_err(|e| SecretError(e.to_string()))
+    }
+}
+
+fn open(cfg: &str) -> Result<Box<dyn SecretModule>, String> {
+    // `cfg` is the MODULE's own open-time `settings:` map (e.g. the vault address + auth), verbatim
+    // JSON — distinct from the per-REFERENCE `settings` `resolve` receives above.
     Ok(Box::new(MyVault::connect(cfg)?))
 }
 busbar_plugin_sdk::export_secret_plugin!(open);
 ```
+
+A complete, compiling reference implementation (a fixed in-memory map, no network) lives at
+`crates/secret-example-plugin` and is exercised end-to-end over the real C ABI by
+`busbar-plugin-loader`'s `load_and_exercise_secret_example_plugin` test — this doc example is kept
+honest against it, not written once and left to drift.
 
 Reference it from any secret field — for example a provider credential pulled from a vault:
 

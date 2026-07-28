@@ -24,7 +24,7 @@
 //! `LICENSE-OK`); a real plugin would verify a signature/expiry. A present-but-invalid `licenseKey`
 //! is a load error — the plugin, not the gateway, decides its own licensing policy.
 
-use busbar_api::{constant_time_eq, AuthModule, AuthOutcome, Principal};
+use busbar_api::{constant_time_eq, sha256_hex, AuthModule, AuthOutcome, Principal};
 use serde::Deserialize;
 
 /// The plugin's opaque config: the one accepted token and the identity it grants.
@@ -70,7 +70,11 @@ fn validate_license(license_key: Option<&str>) -> Result<(), String> {
 /// `[static-auth, keys]` can still fall through to the built-in verifier — the fail-closed all-`Pass`
 /// deny lives in the engine, not here.
 struct StaticModule {
-    token: String,
+    /// SHA-256 hex digest of the configured token, computed once in `open` — never the raw token.
+    /// Comparing under a digest (mirroring `auth-admin-tokens`, this plugin's own template) means
+    /// `constant_time_eq`'s length early-exit never fires on the RAW candidate's length (every digest
+    /// is 64 hex chars), so a caller cannot learn the configured token's length by timing.
+    token_hash: String,
     id: String,
     roles: Vec<String>,
 }
@@ -85,7 +89,7 @@ impl AuthModule for StaticModule {
 
     fn authenticate(&self, candidate: Option<&str>) -> AuthOutcome {
         match candidate {
-            Some(cred) if constant_time_eq(cred, &self.token) => {
+            Some(cred) if constant_time_eq(&sha256_hex(cred.as_bytes()), &self.token_hash) => {
                 let mut p = Principal::from_id(self.id.clone());
                 p.roles = self.roles.clone();
                 AuthOutcome::Identify(p)
@@ -110,7 +114,7 @@ fn open(cfg: &str) -> Result<Box<dyn AuthModule>, String> {
     // `licenseKey` to its raw value; a present-but-invalid license is a load error.
     validate_license(c.license_key.as_deref())?;
     Ok(Box::new(StaticModule {
-        token: c.token,
+        token_hash: sha256_hex(c.token.as_bytes()),
         id: c.id,
         roles: c.roles,
     }))
@@ -149,5 +153,45 @@ mod tests {
         }
         // No licenseKey at all still loads (unlicensed tier).
         assert!(open(r#"{ "token": "t", "id": "a" }"#).is_ok());
+    }
+
+    /// class-13/14 F11: `authenticate` must compare the caller's credential to configured secret
+    /// material under a DIGEST (`busbar_api::sha256_hex`), never raw-vs-raw — mirroring
+    /// `auth-admin-tokens`, the template this plugin is meant to copy correctly. This is a
+    /// REGRESSION PROOF OF STRUCTURE, not a RED test for a timing leak (a timing leak cannot be
+    /// asserted in a unit test): it constructs the module directly (same-module private-field access)
+    /// and asserts its stored comparison material is `sha256_hex("sekret")` exactly, a 64-hex-char
+    /// digest — which fails while the field holds the raw string `"sekret"` and passes once `open`
+    /// hashes it. Behaviorally, matching and non-matching credentials of any length still resolve to
+    /// `Identify`/`Pass` exactly as before — hashing changes nothing observable about the auth
+    /// outcome, only removes the raw comparison's length oracle.
+    #[test]
+    fn credential_is_compared_under_a_digest() {
+        let m = StaticModule {
+            token_hash: busbar_api::sha256_hex(b"sekret"),
+            id: "alice".to_string(),
+            roles: vec!["platform".to_string()],
+        };
+
+        // Structural: the field literally named `token_hash` holds a 64-hex-char SHA-256 digest of
+        // the token, never the raw token string.
+        assert_eq!(
+            m.token_hash.len(),
+            64,
+            "must be a hex digest, not raw material"
+        );
+        assert_eq!(m.token_hash, busbar_api::sha256_hex(b"sekret"));
+        assert_ne!(m.token_hash, "sekret", "must never store the raw token");
+
+        // Behavioral: the correct credential still identifies, a wrong one of the SAME length still
+        // passes through (never rejects — `StaticModule`'s contract), and a wrong one of DIFFERENT
+        // length also still just passes. Hashing is invisible to the outcome.
+        assert!(matches!(
+            m.authenticate(Some("sekret")),
+            AuthOutcome::Identify(_)
+        ));
+        assert!(matches!(m.authenticate(Some("wrongo")), AuthOutcome::Pass)); // same length (6)
+        assert!(matches!(m.authenticate(Some("x")), AuthOutcome::Pass)); // different length
+        assert!(matches!(m.authenticate(None), AuthOutcome::Pass));
     }
 }

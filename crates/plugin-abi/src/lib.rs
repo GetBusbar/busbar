@@ -219,15 +219,25 @@ pub enum StoreResponse {
 }
 
 // ── SECRET-plugin wire (`kind: secret`) ─────────────────────────────────────────────────────────
-// A secret plugin rides the SAME five-symbol C shape as a store plugin (version/open/call/free/
-// close; JSON payloads over ptr+len), under its own symbol names and its own tiny request enum. A
-// plugin is a plugin: the tarball/manifest/signature/trust pipeline is IDENTICAL - only the
-// manifest `kind` (and therefore which engine seam consumes it) differs.
+// A secret plugin rides the SAME six-symbol C shape as a store plugin (busbar_abi/
+// busbar_plugin_kind/busbar_open/busbar_call/busbar_free/busbar_close; JSON payloads over ptr+len),
+// under the SAME kind-neutral symbol names ([`symbol`]) — NOT its own — distinguished only by its
+// signed manifest's `kind` and its own tiny request enum. A plugin is a plugin: the
+// tarball/manifest/signature/trust pipeline is IDENTICAL - only the manifest `kind` (and therefore
+// which engine seam consumes it) differs.
 
 /// The secret-plugin PAYLOAD schema version (the signed manifest's `abi_version` for `kind: secret`).
 /// v1 (1.5.0): the initial `Resolve` wire. This is the per-kind payload axis, NOT the transport axis
 /// — a secret plugin exports the SAME six neutral symbols ([`symbol`]) as every other kind.
 pub const SECRET_ABI_VERSION: u32 = 1;
+
+/// The auth-plugin PAYLOAD schema version (the signed manifest's `abi_version` for `kind: auth`).
+/// v1 (1.5.0): the initial wire. Named the same way `SECRET_ABI_VERSION` and `hook::HOOK_ABI_VERSION`
+/// are — auth was the one kind still floor-checked against a bare `&[1, 1]` literal duplicated in
+/// `plugin-loader::registry` AND `plugin-sdk`, with no compiler link between the two halves of the
+/// handshake; the other two kinds already share a named const, so a bump there is caught at compile
+/// time. This closes that gap without changing the value.
+pub const AUTH_ABI_VERSION: u32 = 1;
 
 /// A [`busbar_api::SecretModule`] operation, serialized as the secret `call` request payload.
 #[derive(Debug, Serialize, Deserialize)]

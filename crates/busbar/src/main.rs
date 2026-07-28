@@ -837,8 +837,8 @@ async fn run() {
     // swap sites) so reloaded lanes get probed and the old generation exits.
     health::spawn_probers(&app);
 
-    // Build the two routers with the operator-configured ingress body cap + optional inbound-
-    // concurrency layer (0 = unlimited / no layer, the default). The admin surface is built onto its
+    // Build the two routers with the operator-configured ingress body cap + the inbound-concurrency
+    // layer (installed by default; `limits.max_inbound_concurrent: 0` opts out — no layer). The admin surface is built onto its
     // OWN router (ABSENT from the data router) and served on `admin_listen` below; the data router
     // serves the protocols. Both share one `app_handle`, so config-apply hot-swaps reach both planes.
     // Grab the secret resolver before `app` is moved into the router builder - the TLS listeners
@@ -3215,12 +3215,13 @@ fn build_split_routers_with_limits(
     (data, admin, handle)
 }
 
-/// OUTERMOST inbound-concurrency cap. `max_inbound_concurrent == 0` (the default) returns the router
-/// UNCHANGED — NO layer is added, a true no-op so nothing changes unless an operator opts in. When
-/// `> 0`, a tower `GlobalConcurrencyLimitLayer` (ONE shared semaphore across ALL requests) wraps the
-/// whole router: requests beyond the cap queue for a permit rather than overrunning. Applied as the
-/// last `.layer()` so it is outermost (it must admission-control before any inner work, including body
-/// buffering). Factored out so the add-only-when-`>0` rule is unit-testable in isolation.
+/// OUTERMOST inbound-concurrency cap. `max_inbound_concurrent == 0` disables the layer entirely (a
+/// true no-op) — but `0` is NOT the default; `DEFAULT_MAX_INBOUND_CONCURRENT` is `8192`, so the layer
+/// IS installed out of the box and an operator opts OUT with `0`, not in. When `> 0` (including the
+/// default), a tower `GlobalConcurrencyLimitLayer` (ONE shared semaphore across ALL requests) wraps
+/// the whole router: requests beyond the cap queue for a permit rather than overrunning. Applied as
+/// the last `.layer()` so it is outermost (it must admission-control before any inner work, including
+/// body buffering). Factored out so the add-only-when-`>0` rule is unit-testable in isolation.
 fn apply_inbound_concurrency_limit(router: Router, max_inbound_concurrent: usize) -> Router {
     if max_inbound_concurrent > 0 {
         router.layer(tower::limit::GlobalConcurrencyLimitLayer::new(

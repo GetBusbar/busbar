@@ -158,9 +158,11 @@ pub type AuthHandle = Box<dyn busbar_api::AuthModule>;
 type BoxedAuth = AuthHandle;
 
 /// The auth PAYLOAD schema version this SDK builds against (the manifest `abi_version` a `kind: auth`
-/// plugin declares). NOT the transport version — see [`transport_version`].
+/// plugin declares). NOT the transport version — see [`transport_version`]. Mirrors
+/// `secret_abi_version()`/`hook_abi_version()` below: reads the shared const rather than a bare
+/// literal, so `plugin-loader::registry`'s floor and this SDK's declared version cannot drift apart.
 pub fn auth_abi_version() -> u32 {
-    1
+    busbar_plugin_abi::AUTH_ABI_VERSION
 }
 
 /// Run one [`busbar_plugin_abi::auth::AuthRequest`] against an `AuthModule` — the single match that
@@ -1029,5 +1031,16 @@ mod tests {
             assert_eq!(msg, "nope");
             free_impl(err, err_len);
         }
+    }
+
+    /// class-13/14 F4: `auth_abi_version()` now reads `busbar_plugin_abi::AUTH_ABI_VERSION` instead
+    /// of a bare literal, mirroring `secret_abi_version()`/`hook_abi_version()`. This is a
+    /// COMPILE-TIME GUARD, not a RED test: the two sides were already numerically equal (both `1`)
+    /// before this change, so no runtime assertion here can distinguish "wired to the const" from
+    /// "still a coincidentally-matching literal" — the property this fix buys is that a future bump
+    /// of `AUTH_ABI_VERSION` now propagates here automatically instead of silently drifting.
+    #[test]
+    fn auth_abi_version_reads_the_shared_const() {
+        assert_eq!(auth_abi_version(), busbar_plugin_abi::AUTH_ABI_VERSION);
     }
 }

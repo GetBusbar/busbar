@@ -7644,6 +7644,49 @@ async fn test_admin_v1_config_settings_process_level_flagged_reload_to_apply() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// class-13/14 T2: `main.rs`'s `UpstreamClients` is REUSED across a config apply (warm connection
+/// pools are deliberately kept) — its `else` builder arm is the ONLY place
+/// `pool_max_idle_per_host` / `pool_idle_timeout_secs` / `upstream_request_timeout_secs` are read, so
+/// changing them via `PUT /config/settings` is silently boot-scoped. `reload_to_apply_fields` did not
+/// flag them, so the endpoint returned `reload_to_apply: []` and a `note` saying "applied live" for a
+/// change that changes nothing at runtime — a false success. Assert the field IS flagged (dotted,
+/// since `limits` is a nested `Option` section, not a top-level one — flagging bare `"limits"` would
+/// wrongly also mark the genuinely-live `request_body_max_bytes` as restart-scoped).
+#[tokio::test]
+async fn test_admin_v1_config_settings_boot_scoped_limits_flagged_reload_to_apply() {
+    let (dir, _overlay, addr, handle) = settings_test_app("bootscopedlimits").await;
+    let client = reqwest::Client::new();
+    let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
+
+    let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
+        .header("content-type", "application/json")
+        .body(
+            serde_json::json!({
+                "limits": { "pool_max_idle_per_host": 16 }
+            })
+            .to_string(),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(put.status().as_u16(), 200, "{:?}", put.text().await);
+    let body: serde_json::Value = put.json().await.unwrap();
+    let flagged: Vec<&str> = body["reload_to_apply"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert!(
+        flagged.contains(&"limits.pool_max_idle_per_host"),
+        "a boot-scoped UpstreamClients field must be flagged reload-to-apply, not silently \
+         'applied live': {flagged:?}"
+    );
+
+    handle.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// PARTIAL UPDATE: a second `PUT` naming only `per_request_fee` preserves the earlier `rate_card`
 /// A store secret reference that does not resolve HERE must not be rejected. The store is
 /// restart-to-apply, so staging a ref whose secret the orchestrator mounts on the next deploy is a

@@ -1953,4 +1953,69 @@ mod tests {
         let m = TransportError::from_status(STATUS_PROTOCOL, "", "libstore.so").message;
         assert!(m.contains("libstore.so") && m.contains("-1"), "{m}");
     }
+
+    /// class-13/14 F1: `kind: secret` was the only plugin kind with ZERO over-the-ABI test coverage
+    /// (`grep -rn export_secret_plugin crates/` found only the macro's own definition). Locate the
+    /// hermetic `busbar-secret-example-plugin` cdylib, mirroring `sqlite_plugin_path` above — CI
+    /// (`cargo test --workspace`) always builds it, so a missing cdylib there is a hard failure, not
+    /// a silent skip.
+    fn secret_example_plugin_path() -> Option<std::path::PathBuf> {
+        let candidate = (|| {
+            let exe = std::env::current_exe().ok()?;
+            let profile_dir = exe.parent()?.parent()?;
+            let name = plugin_library_filename("busbar_secret_example_plugin");
+            let candidate = profile_dir.join(&name);
+            candidate.exists().then_some(candidate)
+        })();
+        if candidate.is_none() && std::env::var_os("CI").is_some() {
+            panic!(
+                "the secret example plugin cdylib is not built under CI: `cargo test --workspace` \
+                 must build busbar_secret_example_plugin. Refusing to silently skip the only \
+                 over-the-ABI coverage of the DynSecret dlopen seam."
+            );
+        }
+        candidate
+    }
+
+    /// End-to-end: load the REAL secret-example-plugin cdylib over the C ABI and exercise
+    /// `SecretModule::resolve` through the `DynSecret` wrapper — a hit, a miss (fail-closed, never an
+    /// empty `Ok`), and a reference whose `settings` carries no `key` at all.
+    #[test]
+    fn load_and_exercise_secret_example_plugin() {
+        let Some(path) = secret_example_plugin_path() else {
+            eprintln!("skip: secret example plugin cdylib not built (run under --workspace)");
+            return;
+        };
+        let bytes = std::fs::read(&path).expect("read secret example plugin cdylib");
+        let module = load_secret_from_bytes(
+            &bytes,
+            r#"{"map": {"db-password": "hunter2"}}"#,
+            "secret-example",
+            "secret",
+        )
+        .expect("load secret example plugin over the ABI");
+
+        let mut settings = serde_json::Map::new();
+        settings.insert(
+            "key".to_string(),
+            serde_json::Value::String("db-password".into()),
+        );
+        let bytes = module.resolve(&settings).expect("known key resolves");
+        assert_eq!(bytes, b"hunter2");
+
+        let mut miss = serde_json::Map::new();
+        miss.insert(
+            "key".to_string(),
+            serde_json::Value::String("no-such-key".into()),
+        );
+        assert!(
+            module.resolve(&miss).is_err(),
+            "an unknown key must fail closed, never resolve empty"
+        );
+
+        assert!(
+            module.resolve(&serde_json::Map::new()).is_err(),
+            "settings with no `key` field must fail closed"
+        );
+    }
 }

@@ -69,10 +69,15 @@ pub trait AuthModule: Send + Sync {
     }
 }
 
-/// Constant-time string comparison to avoid leaking how much of a token matches via timing.
-/// `#[inline(never)]` + `black_box` keep the optimizer from turning the accumulation loop into
-/// an early-exit branch (which would reintroduce a timing signal). The length check is a
-/// deliberate fast-path: token *length* is not treated as secret.
+/// Constant-time comparison of the CONTENTS once lengths already match, to avoid leaking how much
+/// of a token matches via timing. `#[inline(never)]` + `black_box` keep the optimizer from turning
+/// the accumulation loop into an early-exit branch (which would reintroduce a timing signal for the
+/// contents). The length check IS an early exit, and is only safe to apply to raw secret material
+/// when the material's length is not itself sensitive — which a raw token generally is NOT expected
+/// to be, but a caller comparing genuinely secret raw bytes directly (rather than through
+/// [`sha256_hex`] below) still leaks whether the two lengths matched. Prefer hashing both sides
+/// first (see `sha256_hex`'s doc) so length never enters the comparison at all; this primitive alone
+/// does not guarantee that for its caller.
 #[inline(never)]
 pub fn constant_time_eq(a: &str, b: &str) -> bool {
     let a_bytes = a.as_bytes();
@@ -92,7 +97,11 @@ pub fn constant_time_eq(a: &str, b: &str) -> bool {
 }
 
 /// Lowercase hex SHA-256 of `data` — THE digest facility credentials are compared under (a module
-/// hashes both sides before [`constant_time_eq`], so candidate length leaks nothing).
+/// hashes both sides before [`constant_time_eq`]: every digest is 64 hex chars, so
+/// `constant_time_eq`'s length early-exit never fires on a length difference driven by the raw
+/// candidate, and candidate length leaks nothing). This is the pattern every auth module SHOULD
+/// follow when comparing a caller-supplied credential against configured secret material — compare
+/// raw only when the material's length is not itself sensitive.
 pub fn sha256_hex(data: &[u8]) -> String {
     hex::encode(Sha256::digest(data))
 }

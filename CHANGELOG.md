@@ -279,6 +279,11 @@ the release's security headline: 1.x keys never expired; 1.5.0 keys are signed t
   **restart-to-apply** (listen/admin_listen socket binds, tls/admin_tls binds, admin_insecure,
   store backend — bound once at process start, store reused across hot reloads; stored durably but
   take effect on next restart).
+- **`POST /api/v1/admin/restart`** applies the restart-to-apply settings above without a shell:
+  drains through the same path a signal takes (final budget flush, state snapshot, tracing
+  shutdown), responds `202` before the drain begins, then exits. Body is optional (`{"confirm":
+  bool?}`; absent = `{}`); refuses with `409 conflict` when no process supervisor is detected and
+  `confirm` was not set, or when the process cannot restart itself. Full scope.
 - **Hot plugin reload + explicit rollback.** `POST /api/v1/admin/plugins/reload` is now a live hot
   swap: re-runs the fail-closed plugin pipeline from disk+overlay, rebuilds the registry and
   `kind: hook` transports, and old libraries drain then unmap — no restart. Fail-closed: a bad
