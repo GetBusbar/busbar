@@ -38,8 +38,12 @@ static INSTALLED: RwLock<Option<LimitsResolved>> = RwLock::new(None);
 ///
 /// TEST-ONLY. Production installs through [`InstallGuard`], never through this: a config that is
 /// subsequently REJECTED must not leave its limits behind, and an unconditional install is exactly
-/// what made that possible. Tests that want a fixed installed value with no build around it (e.g.
-/// `tls`'s handshake-bound tests) still need a plain setter.
+/// what made that possible. `tls`'s handshake-bound tests moved to `InstallGuard` (it restores the
+/// prior value on drop, which a bare install cannot). The remaining consumer is
+/// `nonstream_tap_cap_is_read_once_per_decision` (`#[ignore]`d — see its own doc comment), whose
+/// SUBJECT is racing the live cap by re-installing it in a hot loop with no rollback between
+/// iterations; `InstallGuard` cannot serve that (a guard restores on drop, but the test wants the
+/// value to keep flipping mid-run).
 #[cfg(test)]
 pub(crate) fn install(resolved: &LimitsResolved) {
     *INSTALLED.write().unwrap_or_else(|e| e.into_inner()) = Some(resolved.clone());
@@ -212,6 +216,14 @@ mod tests {
         assert_eq!(
             webhook_delivery_timeout_secs(),
             DEFAULT_WEBHOOK_DELIVERY_TIMEOUT_SECS
+        );
+        // Discharges the warning two paragraphs up: `tls.rs`'s body-read-timeout test now installs
+        // its NON-default value through `InstallGuard` (restores on drop) instead of the bare
+        // `install`, so this assertion is safe to add — if a future test regresses back to a bare
+        // install that leaks its value, this fails hard instead of silently depending on run order.
+        assert_eq!(
+            request_body_read_timeout_secs(),
+            crate::config::DEFAULT_REQUEST_BODY_READ_TIMEOUT_SECS
         );
     }
 }
