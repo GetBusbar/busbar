@@ -757,7 +757,18 @@ mod tests {
     ///
     /// The cap must therefore (a) sit far below the pool, and (b) make a saturated plugin fail on
     /// the caller's own deadline rather than wait for a slot indefinitely.
+    /// `#[ignore]`: this test's SUBJECT is `HOOK_CALL_SLOTS` (`hook.rs`), a crate-global
+    /// `Semaphore::const_new(MAX_INFLIGHT_HOOK_CALLS)` acquired by every hook call
+    /// (`DlopenPolicy::call`). Draining all of it for the test's duration makes any
+    /// concurrently-running sibling hook test in this binary (the transform/status/decide tests,
+    /// `dlopen_plugin_panic_is_fail_closed_err`, …) take the caller-deadline timeout branch and fail
+    /// on a fail-closed `Err`/`None` it did not expect — for a reason unrelated to what it tests. The
+    /// pool being process-global is load-bearing production behaviour (it protects Tokio's shared
+    /// blocking pool across every loaded plugin), not something a test can inject around without
+    /// weakening that guarantee. Run explicitly and alone to reproduce:
+    /// `cargo test -p busbar-plugin-loader -- --ignored --test-threads=1 hook_calls_are_capped_and_saturation_fails_on_the_caller_deadline`.
     #[tokio::test]
+    #[ignore = "drains the global hook-call semaphore; run alone"]
     async fn hook_calls_are_capped_and_saturation_fails_on_the_caller_deadline() {
         // The cap must leave most of Tokio's 512-thread blocking pool to the rest of the process.
         const _: () = assert!(MAX_INFLIGHT_HOOK_CALLS < 256);

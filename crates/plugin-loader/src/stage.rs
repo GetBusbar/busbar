@@ -135,7 +135,7 @@ fn release_temp_file(path: &PathBuf) {
 }
 
 /// Monotonic per-process staging-file sequence (concurrent loads never collide on a name).
-fn next_seq() -> u64 {
+pub(crate) fn next_seq() -> u64 {
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(0);
     SEQ.fetch_add(1, Ordering::Relaxed)
