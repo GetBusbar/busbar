@@ -63,7 +63,7 @@ Each block with its own guide: [Hooks](/docs/hooks/) for the selection strategie
 
 ## Multi-protocol pools
 
-**Multi-protocol pools**: members can span different providers and protocols. Busbar translates through its superset IR on cross-protocol hops (see [Protocols and translation](/docs/protocols/#cross-protocol-translation)). A warning is logged at startup for heterogeneous pools because the IR models a common superset: same-protocol requests are byte-exact passthrough, but cross-protocol hops drop source-only fields that have no analog on the target (e.g. `logprobs`, `n`). For pools where all members speak the same protocol, there is no translation overhead and no field loss.
+**Multi-protocol pools**: members can span different providers and protocols. Busbar translates through its superset IR on cross-protocol hops (see [Protocols and translation](/docs/protocols/#cross-protocol-translation)). A warning is logged at startup for heterogeneous pools because the IR models a common superset: same-protocol requests are byte-exact on the wire (the client sees the upstream's bytes verbatim, with the request side byte-for-byte only when it already names the lane's exact wire model), but cross-protocol hops drop source-only fields that have no analog on the target (e.g. `logprobs`, `n`). For pools where all members speak the same protocol there is no field loss and no re-encoding — but responses still pay a per-frame IR decode as a usage side-channel; that cost is not translation overhead in the field-loss sense, but it is not zero either.
 
 ## Recipes
 

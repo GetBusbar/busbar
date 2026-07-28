@@ -1059,10 +1059,11 @@ impl GovState {
     ///
     /// SYNCHRONOUS and INFALLIBLE (in-memory cells; no store round-trip, no await). The flat fee
     /// is charged HERE (as +1 request per bucket; spend derives), so the caller must NOT re-charge
-    /// in `finish`; a non-2xx outcome refunds via [`GovState::refund_request`]. Zero heap
-    /// allocation on the admit path (fixed scratch arrays; the grant's gauge Vec is empty for the
-    /// common no-concurrent-cap chain; the rejection variant (cold) allocates its group-name
-    /// String).
+    /// in `finish`; a non-2xx outcome refunds via [`GovState::refund_request`]. This allocates a
+    /// handful of chain-sized scratch `Vec`s per call (`chain_for`'s two Vecs, the collected bucket
+    /// slice, the shard-index/order/guard Vecs sized to the chain depth) — there are no fixed
+    /// scratch arrays; every one of these is a fresh heap allocation. What IS true: no store
+    /// round-trip and no `await` anywhere on this path.
     pub(crate) fn try_admit(
         &self,
         cost: &crate::cost::CostModel,

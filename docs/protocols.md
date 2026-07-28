@@ -424,7 +424,7 @@ Busbar reassembles frames that arrive split across TCP chunks, threads per-reque
 
 ### Same-protocol passthrough
 
-When ingress and egress protocols match, the IR round-trip is still used, but `StreamTranslate::new_same_proto` runs a byte-exact passthrough: the translator re-emits the original frame bytes verbatim instead of re-serializing from IR. This keeps same-protocol traffic lossless and just as cheap as native passthrough while using the same code path as cross-protocol traffic.
+When ingress and egress protocols match, the IR round-trip is still used — `StreamTranslate::new_same_proto` decodes each response frame through the reader into IR purely as a usage side-channel — but the translator re-emits the ORIGINAL frame bytes verbatim instead of re-serializing from IR. The bytes the client receives are the upstream's bytes; busbar never re-encodes them, and every field, annotation and vendor extension survives on the wire. That is not the same claim as "as cheap as native passthrough": each frame still pays a JSON decode to extract usage (the two token counts), and the decoded value is otherwise discarded. On the Anthropic same-protocol path this decode is elided for every frame except `message_start`/`message_delta`/`error`; every other same-protocol pair still decodes every frame. The request side is byte-for-byte only when the client named the lane's exact wire model — a pool-alias route rewrites the model and re-serializes (see the `claude-sonnet` example below).
 
 A `busbar_translations_total{from, to}` Prometheus counter is incremented per cross-protocol hop and is not touched for same-protocol requests.
 
@@ -524,7 +524,7 @@ Fields that the ingress reader encounters but does not model as first-class IR f
 
 ### Same-protocol note
 
-On same-protocol routes, none of the above applies. The request body is forwarded byte-for-byte; the response body is streamed byte-for-byte. Every field, every annotation, every vendor extension survives because nothing is parsed.
+On same-protocol routes, none of the above applies. The request body is forwarded byte-for-byte when the client named the lane's exact wire model (a pool-alias route rewrites the model and re-serializes instead); the response body is streamed byte-for-byte in every case. Every field, every annotation, every vendor extension survives on the wire, because busbar never re-encodes them — but the response side still decodes each frame into IR as a usage side-channel and discards the result; "byte-for-byte" describes what reaches the client, not how much work busbar does to get there. See "Same-protocol passthrough" above.
 
 ---
 
@@ -720,7 +720,7 @@ When SWRR selects the `gemini-flash` lane (roughly a quarter of the time at thes
 - Busbar constructs the upstream URL `POST <gemini base_url>/v1beta/models/<lane model>:generateContent` with `x-goog-api-key: <GEMINI_KEY>`.
 - Gemini responds in its own format; the Gemini reader parses it; the Anthropic writer produces an Anthropic Messages response. The Anthropic SDK receives it and sees a valid `Message` object. `message.content[0].text` holds the response.
 
-When SWRR selects the `claude-sonnet` lane (the rest of the time), the ingress and egress protocols are both `anthropic`, no translation; the body passes through byte-for-byte, with the model field rewritten and the `x-api-key` header injected.
+When SWRR selects the `claude-sonnet` lane (the rest of the time), the ingress and egress protocols are both `anthropic`, no translation — but this specific example passes `model="ignored"`, so busbar must rewrite the model field to the lane's wire model; that rewrite is exactly what takes the request OFF the byte-for-byte fast path, so the body is materialized and re-serialized with the model corrected and the `x-api-key` header injected. A request that already names the lane's exact wire model stays byte-for-byte.
 
 The application code is identical in both cases.
 
@@ -739,7 +739,7 @@ The IR is a superset every reader maps into and every writer maps out of, and th
 | `responses` | translated | translated | translated | translated | passthrough | translated |
 | `cohere` | translated | translated | translated | translated | translated | passthrough |
 
-"Passthrough" means the request and response bodies are forwarded byte-for-byte with no IR round-trip. "Translated" means the request and each response frame passes through the IR. Both paths produce valid wire output in the ingress protocol.
+"Passthrough" means the request and response bodies are forwarded byte-for-byte on the wire — nothing is re-encoded before it reaches the client. It does NOT mean no IR round-trip: as "Same-protocol passthrough" above describes, the response side still decodes each frame through the IR as a usage side-channel; only the re-encode is skipped. "Translated" means the request and each response frame passes through the IR AND is re-serialized from it. Both paths produce valid wire output in the ingress protocol.
 
 A heterogeneous pool (members spanning more than one egress protocol) emits a warning at startup. The warning is informational, the pool works, but tells you that some requests through it will translate and some will not, depending on which lane SWRR picks.
 

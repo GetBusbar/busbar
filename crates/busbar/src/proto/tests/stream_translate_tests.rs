@@ -4005,3 +4005,41 @@ fn anthropic_cross_protocol_stream_emits_ping_after_message_start() {
         &out[ping_pos..]
     );
 }
+
+/// class-11 D1': on the Anthropic same-proto verbatim path, only the two usage-bearing event types
+/// (`message_start`, `message_delta`) plus `error` may reach the `crate::json::parse_str` DOM parse —
+/// every other frame (here, five `content_block_delta`s and a `content_block_start`/`_stop` pair) must
+/// skip it entirely, because the Anthropic reader is stateless and the framing seams it would feed are
+/// constant-false defaults for this egress. Bytes must still round-trip verbatim regardless.
+#[test]
+fn same_proto_anthropic_skips_decode_for_non_usage_frames() {
+    let mut t = StreamTranslate::new_same_proto("anthropic").expect("translator");
+    let frames = concat!(
+        "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"role\":\"assistant\",\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n",
+        "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+        "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"a\"}}\n\n",
+        "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"b\"}}\n\n",
+        "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"c\"}}\n\n",
+        "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"d\"}}\n\n",
+        "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"e\"}}\n\n",
+        "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+        "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\n\n",
+    );
+    let out = t.feed(frames.as_bytes());
+    // Bytes stay verbatim regardless of which frames were decoded.
+    assert_eq!(
+        out,
+        frames.as_bytes(),
+        "same-proto Anthropic bytes must round-trip verbatim"
+    );
+    assert_eq!(
+        t.decode_calls.get(),
+        2,
+        "only message_start and message_delta should reach the DOM parse; \
+         content_block_start/delta/stop must be skipped entirely"
+    );
+    // Usage from both usage-bearing frames must still have been captured despite the skip.
+    let usage = t.usage().expect("terminal usage must still be captured");
+    assert_eq!(usage.input_tokens, 10);
+    assert_eq!(usage.output_tokens, 5);
+}

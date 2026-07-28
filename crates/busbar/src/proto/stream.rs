@@ -111,6 +111,12 @@ pub(crate) struct StreamTranslate {
     /// text). Synthesized closes are routed back through `emit_ir_event`, so each ingress writer applies
     /// its OWN projection and no wire shape is named here.
     open_blocks: std::collections::BTreeSet<usize>,
+    /// Test-only instrumentation: counts frames that reached the `crate::json::parse_str` DOM parse
+    /// in the SSE loop. Proves the D1' same-proto Anthropic event-type gate actually elides the parse
+    /// for non-usage-bearing frames, rather than asserting a tautology about the diff. Compiled out
+    /// entirely in non-test builds — zero production cost.
+    #[cfg(test)]
+    pub(super) decode_calls: std::cell::Cell<usize>,
 }
 
 impl StreamTranslate {
@@ -175,6 +181,8 @@ impl StreamTranslate {
             pending_terminal: None,
             pending_stop: false,
             open_blocks: std::collections::BTreeSet::new(),
+            #[cfg(test)]
+            decode_calls: std::cell::Cell::new(0),
         })
     }
 
@@ -190,11 +198,11 @@ impl StreamTranslate {
     /// Translate one egress event `(event_type, payload)` into ingress wire bytes, advancing the
     /// decode state. Shared by the SSE and event-stream feed paths.
     fn translate_event(&mut self, event_type: &str, data: &serde_json::Value, out: &mut Vec<u8>) {
-        // Ingress protocol name for the tool-id remap below. Captured up front (owned) because
-        // `Protocol::name(&self) -> &str` returns a reference with `self`'s lifetime (elided), not
-        // `&'static`, so holding it would conflict with the mutable `self.tool_id_remap` borrow in
-        // `remap_event` below. The copy of a short static name is cheap and breaks the borrow.
-        let ingress_name = self.ingress.name().to_string();
+        // Ingress protocol name for the tool-id remap below. `name_static(&self) -> &'static str`
+        // does not borrow `self`, so holding it does not conflict with the mutable
+        // `self.tool_id_remap` borrow in `remap_event` below — unlike `Protocol::name(&self) -> &str`,
+        // whose return borrows `self`'s (elided) lifetime and so would collide. No allocation per frame.
+        let ingress_name = self.ingress.name_static();
         for mut ev in self
             .egress
             .reader()
@@ -203,7 +211,7 @@ impl StreamTranslate {
             // CROSS-PROTOCOL tool-id native remap: reshape the egress `tool_use` id on a `BlockStart`
             // to the ingress client's native shape (see `StreamTranslate::tool_id_remap`). Done before
             // identity-strip/usage-backfill so the rest of the pipeline sees the client-facing id.
-            self.tool_id_remap.remap_event(&ingress_name, &mut ev);
+            self.tool_id_remap.remap_event(ingress_name, &mut ev);
             // Cross-protocol stream identity strip: a `StreamTranslate` only exists when
             // ingress != egress (`new` returns None otherwise), so every event here crosses a
             // protocol boundary. Clear the foreign-format `MessageStart` `id`/`created` so the INGRESS
@@ -712,9 +720,13 @@ impl StreamTranslate {
         // only ABOVE that floor, so `feed()` stays linear without looping.
         let mut consumed = 0usize;
         // SAME-PROTOCOL verbatim re-emit cursor (R3-A-b): the start of the not-yet-flushed verbatim
-        // region. The common case flushes `[0..consumed]` in one shot at the end (a single bulk copy);
-        // it only splits when a frame must be SUPPRESSED (the OpenAI opted-out trailing usage chunk),
-        // in which case the run BEFORE the suppressed frame is flushed and the frame's bytes skipped.
+        // region. It splits on a SUPPRESSED frame (the OpenAI opted-out trailing usage chunk) and
+        // also on a STRIPPED frame — and for an opted-out OpenAI same-proto stream the strip fires
+        // on EVERY content frame carrying `usage` (a real OpenAI upstream stamps `"usage":null` on
+        // all of them once busbar forces `include_usage` upstream to bill), not only on the one
+        // suppressed trailing chunk. So `[0..consumed]` in a single bulk copy at the end is the
+        // Anthropic/Gemini/Cohere same-proto case; the dominant OpenAI same-proto case splits on
+        // most frames.
         let mut emit_from = 0usize;
         loop {
             let search_from = self
@@ -741,6 +753,26 @@ impl StreamTranslate {
                         // this frame, but its bytes are still re-emitted verbatim in same_proto mode).
                         continue;
                     }
+                    if self.same_proto
+                        && self.egress.name_static() == crate::proto::PROTO_ANTHROPIC
+                        && !matches!(
+                            event_type.as_str(),
+                            "message_start" | "message_delta" | "error"
+                        )
+                    {
+                        // D1' (class-11): the Anthropic same-proto reader is stateless
+                        // (`AnthropicReader::read_response_events` takes an unused `_state`) and
+                        // Anthropic's same-proto framing seams (`suppress_same_proto_frame` /
+                        // `strip_same_proto_usage`) are the constant-`false` defaults, so nothing
+                        // downstream of this egress needs a decoded `data` for any event except the
+                        // two that carry usage plus the terminal error. Skip the DOM parse, the IR
+                        // event `Vec`, and the per-token `String` allocation for the ~99% of frames
+                        // that are `content_block_*` — the bytes still reach the client verbatim via
+                        // the `[emit_from..]` bulk copy below, which never touched `data`.
+                        continue;
+                    }
+                    #[cfg(test)]
+                    self.decode_calls.set(self.decode_calls.get() + 1);
                     let Ok(data) = crate::json::parse_str::<serde_json::Value>(&data_str) else {
                         continue; // malformed data JSON — skip the frame rather than abort
                     };
@@ -796,11 +828,12 @@ impl StreamTranslate {
             }
         }
         // SAME-PROTOCOL verbatim re-emit: append the remaining un-flushed verbatim region (every
-        // complete frame the loop consumed and did NOT suppress, including the keepalive/`[DONE]`/
-        // non-`data:` frames the cross-proto path drops), BEFORE the consumed prefix is reclaimed below
-        // - so the client sees the upstream SSE stream byte-for-byte, with the IR pipeline acting purely
-        // as the usage side-channel above. In the common (no-suppression) case `emit_from == 0`, so this
-        // is the single bulk copy of `[0..consumed]` the prior code did.
+        // complete frame the loop consumed and did NOT suppress/strip, including the keepalive/
+        // `[DONE]`/non-`data:` frames the cross-proto path drops), BEFORE the consumed prefix is
+        // reclaimed below - so the client sees the upstream SSE stream byte-for-byte, with the IR
+        // pipeline acting purely as the usage side-channel above. `emit_from == 0` (the single bulk
+        // copy of `[0..consumed]`) holds for Anthropic/Gemini/Cohere same-proto streams; a same-proto
+        // OpenAI stream with an opted-out client instead splits repeatedly, once per stripped frame.
         if self.same_proto && consumed > emit_from {
             out.extend_from_slice(&self.buf[emit_from..consumed]);
         }
