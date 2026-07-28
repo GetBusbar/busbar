@@ -1400,26 +1400,19 @@ mod tests {
             return;
         };
         let bytes = std::fs::read(&path).expect("read sqlite cdylib");
-        let base = std::env::temp_dir();
-        let prefix = format!("busbar-plugins-{}-", std::process::id());
-        let count_staged = || {
-            std::fs::read_dir(&base)
-                .into_iter()
-                .flatten()
-                .flatten()
-                .filter(|e| {
-                    e.file_name()
-                        .to_str()
-                        .is_some_and(|n| n.starts_with(&prefix))
-                })
-                .flat_map(|e| std::fs::read_dir(e.path()).into_iter().flatten().flatten())
-                .count()
-        };
-        let baseline = count_staged();
 
         // The OLD instance is serving; write a key so we can prove instance IDENTITY across the swap.
-        let old = load_store_from_bytes(&bytes, r#"{"db_path": ":memory:"}"#, "old-gen", "store")
-            .expect("load OLD");
+        // Load via `load_dyn_store_from_bytes` (as the fixed sibling
+        // `from_bytes_load_leaves_no_artifact_after_drop` does) so each generation's OWN
+        // `staged_path()` is reachable — asserting on it, not a process-wide directory count that a
+        // concurrent test in this binary can shift in either direction between samples.
+        let old =
+            load_dyn_store_from_bytes(&bytes, r#"{"db_path": ":memory:"}"#, "old-gen", "store")
+                .expect("load OLD");
+        let old_path = old.staged_path().map(std::path::Path::to_path_buf);
+        if let Some(p) = &old_path {
+            assert!(p.is_file(), "OLD's staged backing must exist while alive");
+        }
         let key = busbar_api::VirtualKey {
             id: "vk_old".into(),
             key_hash: "h".into(),
@@ -1434,16 +1427,44 @@ mod tests {
 
         // Load the NEW instance ALONGSIDE the old — both libraries are mapped simultaneously. On
         // macOS/Windows this is two staged files at once; on Linux two memfds (no disk).
-        let new = load_store_from_bytes(&bytes, r#"{"db_path": ":memory:"}"#, "new-gen", "store")
-            .expect("load NEW alongside OLD");
+        let new =
+            load_dyn_store_from_bytes(&bytes, r#"{"db_path": ":memory:"}"#, "new-gen", "store")
+                .expect("load NEW alongside OLD");
+        let new_path = new.staged_path().map(std::path::Path::to_path_buf);
+        if let (Some(op), Some(np)) = (&old_path, &new_path) {
+            assert!(
+                op.is_file() && np.is_file(),
+                "both generations must be simultaneously mapped: old={} new={}",
+                op.display(),
+                np.display()
+            );
+            assert_ne!(op, np, "each generation stages its OWN file");
+        }
         // The NEW instance is a DISTINCT backend (fresh :memory: db): it does NOT see the old key.
         assert!(
             new.get_key("vk_old").expect("new get").is_none(),
             "the new instance is a separate backend, proving a real second load — not an alias"
         );
 
-        // Drop the OLD instance (the old snapshot drained): its library unmaps, its staged file goes.
+        // Drop the OLD instance (the old snapshot drained): its library unmaps, its staged file
+        // goes — and ONLY its file: the new one must be untouched, which a process-wide count could
+        // never express (a leaked old file would be indistinguishable from a released one as long
+        // as some unrelated concurrent test released a file in the same window).
         drop(old);
+        if let Some(p) = &old_path {
+            assert!(
+                !p.exists(),
+                "OLD's staged file must be removed on drop: {}",
+                p.display()
+            );
+        }
+        if let Some(p) = &new_path {
+            assert!(
+                p.is_file(),
+                "NEW's staged file must be UNTOUCHED by OLD's drop: {}",
+                p.display()
+            );
+        }
 
         // The NEW instance keeps serving with no restart — its library was untouched by the old drop.
         new.put_key(&busbar_api::VirtualKey {
@@ -1465,14 +1486,15 @@ mod tests {
             "vk_new"
         );
 
-        // Drop the NEW instance too: everything is released back to the baseline (no leak).
+        // Drop the NEW instance too: its own file goes as well.
         drop(new);
-        let after = count_staged();
-        assert!(
-            after <= baseline,
-            "after both generations drop, no staged library file may remain (baseline={baseline}, \
-             after={after})"
-        );
+        if let Some(p) = &new_path {
+            assert!(
+                !p.exists(),
+                "NEW's staged file must be removed on drop: {}",
+                p.display()
+            );
+        }
     }
 
     /// NO LEAK ACROSS REPEATED RELOADS (1.5.0): loading + dropping a from-bytes instance many times
@@ -1487,24 +1509,13 @@ mod tests {
             return;
         };
         let bytes = std::fs::read(&path).expect("read sqlite cdylib");
-        let base = std::env::temp_dir();
-        let prefix = format!("busbar-plugins-{}-", std::process::id());
-        let count_staged = || {
-            std::fs::read_dir(&base)
-                .into_iter()
-                .flatten()
-                .flatten()
-                .filter(|e| {
-                    e.file_name()
-                        .to_str()
-                        .is_some_and(|n| n.starts_with(&prefix))
-                })
-                .flat_map(|e| std::fs::read_dir(e.path()).into_iter().flatten().flatten())
-                .count()
-        };
-        let baseline = count_staged();
+        // Per-cycle own path, not a process-wide count: a concurrent test staging or releasing a
+        // file in this binary between samples can move the count in either direction, hiding a real
+        // leak or reporting a false one. Collect this run's own paths and assert each is gone after
+        // its own drop, and that no two cycles reused the same path.
+        let mut seen = std::collections::HashSet::new();
         for i in 0..16 {
-            let s = load_store_from_bytes(
+            let s = load_dyn_store_from_bytes(
                 &bytes,
                 r#"{"db_path": ":memory:"}"#,
                 &format!("reload-{i}"),
@@ -1512,14 +1523,27 @@ mod tests {
             )
             .unwrap_or_else(|e| panic!("reload {i} load: {e}"));
             assert!(s.list_keys().expect("list").is_empty());
+            let staged = s.staged_path().map(std::path::Path::to_path_buf);
+            if let Some(p) = &staged {
+                assert!(
+                    p.is_file(),
+                    "cycle {i}'s staged backing must exist while alive"
+                );
+                assert!(
+                    seen.insert(p.clone()),
+                    "cycle {i} reused a staged path from an earlier cycle: {}",
+                    p.display()
+                );
+            }
             drop(s);
-            // Each cycle returns to baseline: the just-dropped generation left nothing behind.
-            assert!(
-                count_staged() <= baseline,
-                "reload cycle {i} leaked a staged library (baseline={baseline})"
-            );
+            if let Some(p) = &staged {
+                assert!(
+                    !p.exists(),
+                    "reload cycle {i} leaked its staged library: {}",
+                    p.display()
+                );
+            }
         }
-        assert!(count_staged() <= baseline, "no net leak after 16 reloads");
     }
 
     /// On Linux the from-bytes load is a MEMFD load: it must not create ANY file in the temp base
@@ -1532,29 +1556,18 @@ mod tests {
             return;
         };
         let bytes = std::fs::read(&path).expect("read sqlite cdylib");
-        let base = std::env::temp_dir();
-        let prefix = format!("busbar-plugins-{}-", std::process::id());
-        let staged_dirs = || {
-            std::fs::read_dir(&base)
-                .into_iter()
-                .flatten()
-                .flatten()
-                .filter(|e| {
-                    e.file_name()
-                        .to_str()
-                        .is_some_and(|n| n.starts_with(&prefix))
-                })
-                .count()
-        };
-        let before = staged_dirs();
+        // The actual claim ("a memfd load reports no staged path"), not a directory census: a
+        // process-wide count is quiet here only because the common Linux path never touches disk in
+        // the first place, but the instrument is the same flawed one the sibling tests above moved
+        // away from — a concurrent test staging a file on the non-memfd fallback path between the
+        // two samples would have made this assertion fail for a reason unrelated to THIS load.
         let store =
-            load_store_from_bytes(&bytes, r#"{"db_path": ":memory:"}"#, "memfd-check", "store")
+            load_dyn_store_from_bytes(&bytes, r#"{"db_path": ":memory:"}"#, "memfd-check", "store")
                 .expect("memfd load");
         assert!(store.list_keys().expect("list").is_empty());
-        assert_eq!(
-            staged_dirs(),
-            before,
-            "a Linux memfd load must not create any staging directory/file"
+        assert!(
+            store.staged_path().is_none(),
+            "a Linux memfd load must report no staged path"
         );
     }
 

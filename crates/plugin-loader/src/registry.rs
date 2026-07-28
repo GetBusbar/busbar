@@ -614,13 +614,15 @@ mod tests {
     }
 
     fn tmpdir(tag: &str) -> PathBuf {
+        // `pid + tag` is already unique across today's 13 call sites (each passes a distinct
+        // literal tag), but a clock read is not a monotonic ticket — two threads on two cores can
+        // observe the same `SystemTime::now()` value, and routinely do on a coarse-clock platform.
+        // `crate::stage::next_seq()` is the in-tree fix for exactly this shape (already applied to
+        // `stage.rs`'s own staging-file naming); reuse it here instead of a second, weaker idiom.
         let d = std::env::temp_dir().join(format!(
             "busbar-registry-{}-{tag}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            crate::stage::next_seq()
         ));
         std::fs::create_dir_all(&d).unwrap();
         d
