@@ -251,6 +251,24 @@ fn served_openapi_equals_committed_file() {
     assert_eq!(super::OPENAPI_JSON, committed);
 }
 
+/// class-13/14 R2: `POST /restart`'s handler explicitly treats an absent body as `RestartReq::default()`
+/// (`handlers.rs`'s own doc comment on `restart()` — "Absent is the same as `{}`"), but `body_raw!`
+/// hardcodes `"required": true` on every attached request body, so the openapi contract asserts the
+/// no-body call (the common one — an operator with a supervisor never needs `confirm`) is invalid. A
+/// generated client honouring `required: true` would refuse to emit the call the server supports.
+#[cfg(feature = "openapi-schema")]
+#[test]
+fn restart_request_body_is_documented_optional() {
+    let doc = openapi_doc();
+    let required = &doc["paths"]["/api/v1/admin/restart"]["post"]["requestBody"]["required"];
+    assert_eq!(
+        required.as_bool(),
+        Some(false),
+        "POST /restart's body must be documented optional, matching the handler's \
+         absent-body-is-default() behavior; got: {required:?}"
+    );
+}
+
 /// COVERAGE LOCK: 100% of operations carry a typed success-response BODY schema. Every operation
 /// (each method under each path, excluding `x-*` path-item extensions) must have — for its success
 /// status (204 No Content excepted — it has no body) — a `content.application/json.schema` that is a

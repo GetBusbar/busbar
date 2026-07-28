@@ -1210,7 +1210,7 @@ pub(crate) fn validate_with_unset(
     // Operational-limit sanity checks (NEVER CODED CAPS). A 0 or absurd value here would break the
     // gateway rather than tune it; reject loudly at boot. Deliberately permissive — only the few
     // values where 0/absurd is a foot-gun are constrained (e.g. `max_inbound_concurrent` accepts ANY
-    // usize incl. 0, the unlimited default).
+    // usize incl. 0, the explicit unlimited posture — the DEFAULT is 8192, not 0).
     validate_limits(&cfg.limits, &mut errors);
 
     // A model maps to ONE lane, so its `context_max` must be single-valued across every pool that
@@ -1369,7 +1369,7 @@ fn validate_limits(limits: &crate::config::LimitsResolved, errors: &mut Vec<Stri
         );
     }
     // NOTE: `max_inbound_concurrent` is intentionally UNCONSTRAINED — any usize including 0 (the
-    // unlimited default) is valid.
+    // explicit unlimited posture; the DEFAULT is 8192, not 0) is valid.
 }
 
 // NOTE: a long doc comment used to sit here describing a BLANK-ADMIN-TOKEN boot

@@ -190,10 +190,14 @@ pub(crate) struct SigningKeyRotateView {
 /// `reload_to_apply` names the fields whose new value is DURABLY STORED but not yet LIVE: the
 /// process-level binds (`listen`/`admin_listen` socket, `tls`/`admin_tls` bind, `admin_insecure`) are
 /// read once at process start, and the durable `store` backend is reused across a hot reload — none
-/// can hot-swap, so they take effect on the next RESTART. It is always EMPTY when nothing was
-/// durably stored (no overlay); `note` names the affected fields instead. Everything else
-/// (`rate_card`/`per_request_fee`/`security`/`limits`/`observability`/`advanced`/`metrics`/`health`/
-/// `routing`) is LIVE on the swap.
+/// can hot-swap, so they take effect on the next RESTART (or a supervisor restart), NEVER on a
+/// `POST /config/reload` — a reload re-reads disk and rebuilds the `App` but does not rebind sockets,
+/// rebuild the TLS acceptor, or re-open the store. It is always EMPTY when nothing was durably stored
+/// (no overlay); `note` names the affected fields instead. Everything else
+/// (`rate_card`/`per_request_fee`/`security`/`observability`/`advanced`/`metrics`/`health`/`routing`)
+/// is LIVE on the swap; `limits` is live EXCEPT its three boot-scoped fields
+/// (`upstream_request_timeout_secs`/`pool_max_idle_per_host`/`pool_idle_timeout_secs`, see
+/// `reload_to_apply_fields`), which the reused `UpstreamClients` only reads once at boot.
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct ConfigSettingsView {
     /// `true` on a PUT that stored + swapped; `false` on a GET (a pure read).
@@ -202,8 +206,11 @@ pub(crate) struct ConfigSettingsView {
     /// The current effective root-section overlay (only the fields the operator has set; base
     /// `config.yaml` stands for the rest). An arbitrary JSON object (the `RootSettings` projection).
     pub(crate) settings: serde_json::Value,
-    /// Fields that were stored but are RELOAD-TO-APPLY (a `POST /config/reload` or restart makes them
-    /// live). Empty when the PUT touched only live-swappable fields (or on a GET).
+    /// Fields that were stored durably but are RESTART-TO-APPLY: a socket rebind, a TLS acceptor
+    /// build and a store open all happen once at process start, so a `POST /config/reload` does NOT
+    /// make them live — `POST /restart` (or a supervisor restart) does. Empty when the PUT touched
+    /// only live-swappable fields (or on a GET). The field NAME is frozen wire; only this description
+    /// changed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) reload_to_apply: Vec<String>,
     /// A human note describing the live-vs-reload split (absent on a GET).

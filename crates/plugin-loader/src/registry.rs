@@ -49,7 +49,10 @@ pub fn supported_abi(kind: &str) -> &'static [u32] {
         ],
         // A `kind: auth` plugin is a first-class identity provider (the engine's auth chain consumes
         // `Box<dyn AuthModule>` via `open_auth`). Payload schema v1.
-        "auth" => &[1, 1],
+        "auth" => &[
+            busbar_plugin_abi::AUTH_ABI_VERSION,
+            busbar_plugin_abi::AUTH_ABI_VERSION,
+        ],
         // A `kind: hook` plugin is an in-process routing policy (the engine's routing/hook chains
         // consume `Arc<dyn RoutingPolicy>` via `open_hook`). The 1.5.0 replacement for the retired
         // out-of-process socket/webhook hook transport. Payload schema v1.
@@ -1128,5 +1131,19 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// class-13/14 F4: `supported_abi("auth")` now reads `busbar_plugin_abi::AUTH_ABI_VERSION`
+    /// instead of the bare literal `&[1, 1]`, matching `"secret"`/`"hook"`. COMPILE-TIME GUARD, not a
+    /// RED test — see the identical note on `plugin-sdk`'s `auth_abi_version_reads_the_shared_const`.
+    #[test]
+    fn auth_supported_abi_reads_the_shared_const() {
+        assert_eq!(
+            supported_abi("auth"),
+            &[
+                busbar_plugin_abi::AUTH_ABI_VERSION,
+                busbar_plugin_abi::AUTH_ABI_VERSION
+            ]
+        );
     }
 }

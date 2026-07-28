@@ -464,12 +464,22 @@ durably through ADDITIVE flushes, so the shared store converges on the true flee
 between flushes N nodes splitting traffic can admit up to ~N times a configured cap. The caps are
 not a synchronous cluster-wide gate.
 
+**Metering retention (ALL backends, not just Redis):** `usage_metering` rows are one per (key,
+metering-bucket day, model, provider), accumulated forever — Busbar has no prune path on any store
+backend (sqlite, postgres, redis, or a third-party plugin), because metering is observability only,
+never consulted for enforcement (`add_metering`'s own doc comment, `crates/api/src/store.rs`). Row
+CARDINALITY is bounded by your config (keys × buckets × models × providers), but the TIME dimension
+is not, so the table grows without bound unless you retain it yourself. `list_metering(bucket)` reads
+exactly one day, so deleting rows for buckets older than N days is safe and cannot affect admission,
+billing, or any other enforcement path — it is a plain `DELETE` against your store's own schema, on
+your own retention horizon; Busbar does not choose one for you.
+
 **Backend caveats:** the Redis store supports TLS (`rediss://`), transparent reconnect, and atomic
 multi-key cascades (MULTI/EXEC), and scrubs the URL password from error strings; it writes WITHOUT
-TTLs (usage/metering/audit grow unboundedly by design: apply your own retention). The Postgres
-store currently connects `NoTls` and without automatic reconnect: run it over a trusted network
-segment (or a TLS-terminating proxy such as pgbouncer/stunnel) and let your supervisor restart
-Busbar on a persistent connection loss.
+TTLs (usage/metering/audit grow unboundedly by design: apply your own retention, per the metering
+note above). The Postgres store currently connects `NoTls` and without automatic reconnect: run it
+over a trusted network segment (or a TLS-terminating proxy such as pgbouncer/stunnel) and let your
+supervisor restart Busbar on a persistent connection loss.
 
 ---
 
@@ -936,7 +946,7 @@ Members without `context_max` set are always eligible for context-length failove
 
 ### `limits`
 
-Optional. Exposes eleven operational limits (mostly previously hardcoded, plus `max_inbound_concurrent`, `pool_idle_timeout_secs`, and `request_body_read_timeout_secs`) so operators can tune them without rebuilding. All fields default to their historical values, so omitting this block is a no-op.
+Optional. Exposes thirteen operational limits (mostly previously hardcoded, plus `max_inbound_concurrent`, `pool_idle_timeout_secs`, and `request_body_read_timeout_secs`) so operators can tune them without rebuilding. All fields default to their historical values, so omitting this block is a no-op.
 
 ```yaml
 limits:
@@ -959,11 +969,11 @@ limits:
 |---|---|---|---|
 | `max_inbound_concurrent` | integer | `8192` | Global inbound concurrency cap, applied outermost (before request bodies are buffered), so it is the global bound on peak request memory: worst case is this limit times `request_body_max_bytes`. `0` = unlimited (no cap layer installed, the pre-1.5.0 posture). |
 | `request_body_max_bytes` | integer | `33554432` | Maximum inbound request body size (bytes). Exceeding this returns a protocol-native 413. |
-| `upstream_request_timeout_secs` | integer | `300` | Per-upstream-request wall-clock timeout. Applies to both the connect and the full response. |
+| `upstream_request_timeout_secs` | integer | `300` | Per-upstream-request wall-clock timeout. Applies to both the connect and the full response. **Restart-to-apply**: the upstream `reqwest::Client` is built once at boot and reused across config applies (warm connection pools are kept deliberately), so a live `PUT` changes the stored value but not the running client — `reload_to_apply` flags `limits.upstream_request_timeout_secs` when set. |
 | `tls_handshake_timeout_secs` | integer | `10` | Wall-clock cap on each inbound TLS handshake; prevents slowloris / handshake-flood. Ignored when `tls:` is absent. |
 | `request_body_read_timeout_secs` | integer | `30` | Maximum time allowed between inbound request-body frames before the connection is dropped. Closes the slow-loris body gap the header-read timeout does not cover. |
-| `pool_max_idle_per_host` | integer | `1024` | HTTP connection pool idle connection limit per upstream host. |
-| `pool_idle_timeout_secs` | integer | `300` | How long an idle keep-alive connection stays in the upstream pool before being closed. The 300s default keeps the warm working set alive across inter-burst gaps (TCP keepalive validates idle sockets in the meantime); lower it to shed idle sockets sooner. |
+| `pool_max_idle_per_host` | integer | `1024` | HTTP connection pool idle connection limit per upstream host. **Restart-to-apply** (same boot-scoped `UpstreamClients` reuse as above; `reload_to_apply` flags `limits.pool_max_idle_per_host`). |
+| `pool_idle_timeout_secs` | integer | `300` | How long an idle keep-alive connection stays in the upstream pool before being closed. The 300s default keeps the warm working set alive across inter-burst gaps (TCP keepalive validates idle sockets in the meantime); lower it to shed idle sockets sooner. **Restart-to-apply** (same boot-scoped `UpstreamClients` reuse; `reload_to_apply` flags `limits.pool_idle_timeout_secs`). The connect timeout (10s) and TCP keepalive (60s) baked into the same client builder are not configurable at all. |
 | `hard_down_cooldown_secs` | integer | `1800` | Sticky cooldown for `auth`/`billing` breaker dispositions (hard-down). Recovering these lanes requires a successful health probe. |
 | `upstream_error_body_max_bytes` | integer | `262144` | Maximum bytes buffered from a non-2xx upstream response body for error classification. |
 | `max_honored_retry_after_secs` | integer | `86400` | Maximum value honored from an upstream `Retry-After` header (to prevent overflow). |

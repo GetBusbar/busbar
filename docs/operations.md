@@ -103,9 +103,29 @@ clients.
 
 ### Certificate rotation
 
-Certs are loaded once at startup. To rotate, replace the PEM files on disk and
-restart Busbar (e.g. `systemctl restart busbar`). The graceful-shutdown path drains
-in-flight requests first, so a restart on rotation does not drop live traffic.
+Certs are loaded once at startup, so rotation always needs a restart — but it does not need a
+shell. Push the new cert/key/CA through the admin API, then restart in-product:
+
+```bash
+curl -X PUT http://localhost:8081/api/v1/admin/config/settings \
+  -H "x-admin-token: $ADMIN_TOKEN" -H 'content-type: application/json' \
+  --data '{"tls": {"cert": "...", "key": "...", "ca": "..."}}'
+# -> {"reload_to_apply": ["tls"], "note": "... takes effect on the next restart ..."}
+
+curl -X POST http://localhost:8081/api/v1/admin/restart \
+  -H "x-admin-token: $ADMIN_TOKEN"
+```
+
+The `PUT` stores the new material durably (overlay-persisted) and reports `tls` under
+`reload_to_apply` — restart-scoped, per the [`PUT /config/settings`](/docs/admin-api/#the-config-plane)
+table. `POST /restart` then applies it: it drains through the same graceful-shutdown path a signal
+takes (in-flight requests finish first), which is exactly why a restart on rotation is safe under
+live traffic — the same guarantee this section always relied on, now reachable without shelling in.
+If no process supervisor is detected, the endpoint refuses with `409 conflict` unless the request
+sets `confirm: true` (an unsupervised exit would leave Busbar down).
+
+Without admin API access (or without a config overlay configured), the file-level fallback still
+works: replace the PEM files on disk and restart Busbar directly (e.g. `systemctl restart busbar`).
 
 **Reverse proxy alternative.** A TLS-terminating reverse proxy (nginx, Caddy,
 Envoy) in front of a plain-HTTP Busbar still works if you prefer to manage certs

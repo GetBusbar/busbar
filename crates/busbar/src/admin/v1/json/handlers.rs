@@ -2514,6 +2514,27 @@ fn reload_to_apply_fields(req: &crate::config::overlay::RootSettings) -> Vec<Str
     push(req.admin_tls.is_some(), "admin_tls");
     push(req.admin_insecure.is_some(), "admin_insecure");
     push(req.store.is_some(), "store");
+    // `main.rs` REUSES the prior `UpstreamClients` across a config apply (the warm connection pools
+    // are deliberately kept — rebuilding them on every apply would cold-start every upstream on a
+    // rate-card tweak). Its `else` builder arm is the ONLY place these four fields are read, so a PUT
+    // that touches them changes the STORED config but not the live `reqwest::Client` — flag them
+    // individually (dotted, since `limits` is a nested `Option<LimitsPatch>`, not a top-level
+    // `Option`) rather than the whole `limits` section, which would also mis-flag the genuinely-live
+    // `request_body_max_bytes`/`max_inbound_concurrent`/etc.
+    if let Some(limits) = req.limits.as_ref() {
+        push(
+            limits.upstream_request_timeout_secs.is_some(),
+            "limits.upstream_request_timeout_secs",
+        );
+        push(
+            limits.pool_max_idle_per_host.is_some(),
+            "limits.pool_max_idle_per_host",
+        );
+        push(
+            limits.pool_idle_timeout_secs.is_some(),
+            "limits.pool_idle_timeout_secs",
+        );
+    }
     out
 }
 
@@ -3989,6 +4010,29 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             }
         }};
     }
+    /// Sibling of `body!` for the one endpoint whose handler genuinely treats an absent body as the
+    /// type's `Default` — `POST /restart` (see its doc comment: "Absent is the same as `{}`"). Every
+    /// OTHER body-taking endpoint's handler requires the body, so `body!`/`body_raw!` stay
+    /// `"required": true`; this macro exists so a future genuinely-optional body has somewhere to go
+    /// without re-auditing every other call site's handler (an out-of-scope pass — see the class-13/14
+    /// design's open question).
+    macro_rules! body_optional {
+        ($rel:expr, $method:literal, $t:ty) => {{
+            let schema = req_gen.subschema_for::<$t>();
+            let schema = serde_json::to_value(schema).unwrap_or_else(|_| json!({}));
+            if let Some(op) = op!($rel, $method) {
+                if let Some(obj) = op.as_object_mut() {
+                    obj.insert(
+                        "requestBody".to_string(),
+                        json!({
+                            "required": false,
+                            "content": {"application/json": {"schema": schema}}
+                        }),
+                    );
+                }
+            }
+        }};
+    }
 
     // Attach the `$ref` schema of type `$t` to `<rel>.<method>.responses.<status>`.
     macro_rules! typed {
@@ -4148,7 +4192,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     body!("/plugins", "post", InstallPluginReq);
     body!("/plugins/rollback", "post", PluginRollbackReq);
     body!("/config/rollback", "post", RollbackReq);
-    body!("/restart", "post", RestartReq);
+    body_optional!("/restart", "post", RestartReq);
     body!("/hooks/{name}/settings", "patch", PatchSettingsReq);
     body!("/keys", "post", crate::admin::CreateKeyReq);
     body!("/keys/{id}", "patch", crate::admin::UpdateKeyReq);
