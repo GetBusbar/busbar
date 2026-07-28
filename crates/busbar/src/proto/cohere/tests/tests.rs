@@ -257,23 +257,39 @@ fn test_stream_fanout() {
     // content-delta x2
     let evs = reader.read_response_events("", &serde_json::json!({"type": ET_CONTENT_DELTA, "index": 0, "delta": {"message": {"content": "he"}}}), &mut state);
     assert_eq!(evs.len(), 1);
-    if let crate::ir::IrStreamEvent::BlockDelta {
-        index: 0,
+    let crate::ir::IrStreamEvent::BlockDelta {
+        index,
         delta: crate::ir::IrDelta::TextDelta(ref t),
     } = &evs[0]
-    {
-        assert_eq!(t, "he");
-    }
+    else {
+        panic!(
+            "content-delta must decode to a TEXT delta, got {:?}",
+            evs[0]
+        );
+    };
+    assert_eq!(
+        *index, 0,
+        "the delta must carry the block index cohere sent"
+    );
+    assert_eq!(t, "he");
 
     let evs = reader.read_response_events("", &serde_json::json!({"type": ET_CONTENT_DELTA, "index": 0, "delta": {"message": {"content": "llo"}}}), &mut state);
     assert_eq!(evs.len(), 1);
-    if let crate::ir::IrStreamEvent::BlockDelta {
-        index: 0,
+    let crate::ir::IrStreamEvent::BlockDelta {
+        index,
         delta: crate::ir::IrDelta::TextDelta(ref t),
     } = &evs[0]
-    {
-        assert_eq!(t, "llo");
-    }
+    else {
+        panic!(
+            "content-delta must decode to a TEXT delta, got {:?}",
+            evs[0]
+        );
+    };
+    assert_eq!(
+        *index, 0,
+        "the delta must carry the block index cohere sent"
+    );
+    assert_eq!(t, "llo");
 
     // content-end
     let evs = reader.read_response_events(
@@ -290,15 +306,20 @@ fn test_stream_fanout() {
     // message-end with usage
     let evs = reader.read_response_events("", &serde_json::json!({"type": ET_MESSAGE_END, "delta": {"finish_reason": COHERE_FINISH_COMPLETE, "usage": {"tokens": {"input_tokens": 10, "output_tokens": 5}}}}), &mut state);
     assert_eq!(evs.len(), 2);
-    if let crate::ir::IrStreamEvent::MessageDelta {
-        stop_reason: Some(ref s),
+    let crate::ir::IrStreamEvent::MessageDelta {
+        stop_reason,
         ref usage,
         ..
     } = &evs[0]
-    {
-        assert_eq!(*s, crate::ir::IrStopReason::EndTurn);
-        assert_eq!(usage.input_tokens, 10);
-    }
+    else {
+        panic!(
+            "message-end must emit a MessageDelta first, got {:?}",
+            evs[0]
+        );
+    };
+    assert_eq!(*stop_reason, Some(crate::ir::IrStopReason::EndTurn));
+    assert_eq!(usage.input_tokens, 10);
+    assert_eq!(usage.output_tokens, 5);
     assert!(matches!(evs[1], crate::ir::IrStreamEvent::MessageStop));
 }
 

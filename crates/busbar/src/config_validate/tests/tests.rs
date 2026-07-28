@@ -1723,8 +1723,9 @@ fn test_validate_passthrough_no_warn_when_all_keys_empty() {
     assert!(result.is_ok(), "passthrough with empty keys must validate");
     let msgs = cap.messages();
     assert!(
-        !msgs.iter().any(|m| m.contains("credential-leak")),
-        "no credential-leak warning must fire when every api_key_env resolves empty; got: {msgs:?}"
+        !msgs.iter().any(|m| m.contains("inert dead config")),
+        "no inert-configured-key warning may fire when every api_key_env resolves empty — the guard \
+         keys off the RESOLVED value, not the presence of passthrough mode; got: {msgs:?}"
     );
 }
 
