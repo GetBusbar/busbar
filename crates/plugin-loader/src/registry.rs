@@ -34,8 +34,8 @@ use std::path::{Path, PathBuf};
 /// axis: every kind exports the SAME six kind-neutral C symbols at `busbar_abi() == TRANSPORT_VERSION`;
 /// `kind` only selects which payload schema (and engine seam) the cdylib speaks. The range is its
 /// endpoints; contiguity is the contract (every value between is speakable), so an additive schema
-/// bump stays in range and an old plugin of the same kind keeps loading. Store churned its PAYLOAD to
-/// v4 (all payload, zero transport); it is `[4, 4]` until an additive bump widens the floor.
+/// bump stays in range and an old plugin of the same kind keeps loading. Store's PAYLOAD starts at
+/// `[1, 1]` (1.5.0 is the first release to carry it) until an additive bump widens the floor.
 pub fn supported_abi(kind: &str) -> &'static [u32] {
     match kind {
         "store" => &[
@@ -826,9 +826,9 @@ mod tests {
         let dir = tmpdir("kind");
         let mut m = manifest("busbar-hook-ranker", "ranker", "busbar");
         m.kind = "hook".into();
-        // Hook plugins are still on ABI v1 (the store wire bumped to v2 with the token ledger);
-        // stamp the hook-supported version so the scan admits it and the KIND gate is what rejects.
-        m.abi_version = 1;
+        // Stamp the hook-supported ABI version so the scan admits it and the KIND gate (not the
+        // ABI gate) is what rejects.
+        m.abi_version = busbar_plugin_abi::hook::HOOK_ABI_VERSION;
         let m = sign(&release, m, b"hook lib");
         write_tarball(&dir, "hook.tar.gz", &m, b"hook lib");
         let reg = scan_and_validate(&dir, &policy(&release)).expect("scan");
