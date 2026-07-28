@@ -985,6 +985,80 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// class-12 D2: a malformed `min_versions` floor SKIPS just the one floored plugin — the boot is
+    /// NOT killed — and the graduated escalation ladder (`registry.rs:374-389`'s "a rejection here is
+    /// a SKIP, unless referenced") already surfaces it: `skipped()` names the reason, and
+    /// `--list-plugins`/the admin catalog show a `REJECTED:` row. All four asserted in one test
+    /// because the graduated escalation IS the design. RED: before the fix the floor is a no-op, so
+    /// the plugin loads, `skipped()` is empty, and the index panics.
+    #[test]
+    fn a_malformed_floor_skips_the_plugin_and_keeps_the_boot_alive() {
+        let release = key(1);
+        let dir = tmpdir("malformed-floor");
+        let m = sign(
+            &release,
+            manifest("busbar-store-redis", "redis", "busbar"),
+            b"lib",
+        );
+        write_tarball(&dir, "redis.tar.gz", &m, b"lib");
+
+        let mut pol = policy(&release);
+        pol.min_versions
+            .insert("busbar-store-redis".to_string(), "v9.9.9".to_string());
+
+        let reg =
+            scan_and_validate(&dir, &pol).expect("scan must succeed — the boot is not killed");
+        assert!(
+            reg.resolve("redis").is_none(),
+            "the malformed-floor plugin must not be loadable"
+        );
+        assert!(
+            reg.skipped()[0].reason.contains("v9.9.9"),
+            "the skip reason must name the malformed floor: {}",
+            reg.skipped()[0].reason
+        );
+        let rows = inventory(&dir, &pol);
+        assert!(
+            rows[0].status.starts_with("REJECTED:"),
+            "--list-plugins / the admin catalog must show the rejection: {}",
+            rows[0].status
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// class-12 D2: the escalation's top rung — a REFERENCED plugin (e.g. `store.module`) with a
+    /// malformed floor fails the boot LOUDLY, with the reason attached, via `unresolved_reason` (the
+    /// same string `main.rs`'s hard boot error interpolates for a referenced module). Proves the
+    /// reason is available and correct; the `main.rs` interpolation itself is verified by reading
+    /// source, not by a test (no in-tree harness boots the binary).
+    #[test]
+    fn a_referenced_plugin_with_a_malformed_floor_fails_the_boot_loudly() {
+        let release = key(1);
+        let dir = tmpdir("malformed-floor-referenced");
+        let m = sign(
+            &release,
+            manifest("busbar-store-redis", "redis", "busbar"),
+            b"lib",
+        );
+        write_tarball(&dir, "redis.tar.gz", &m, b"lib");
+
+        let mut pol = policy(&release);
+        pol.min_versions
+            .insert("busbar-store-redis".to_string(), "v9.9.9".to_string());
+
+        let reg = scan_and_validate(&dir, &pol).expect("scan");
+        let reason = reg
+            .unresolved_reason("redis")
+            .expect("a malformed-floor plugin must be reportable as unresolved")
+            .reason
+            .clone();
+        assert!(
+            reason.contains("v9.9.9"),
+            "the reason `main.rs` interpolates into its hard boot error must name the floor: {reason}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// AUDIT REGRESSION (LOW): the `--list-plugins` signature label is derived from the STRUCTURED
     /// reject verdict (`SkippedPlugin.kind`), NOT a substring of the plugin-controlled reason. A
     /// third-party plugin whose author crafts `publisher: "anti-downgrade-bypass"` (so the rejection

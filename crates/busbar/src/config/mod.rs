@@ -1797,6 +1797,34 @@ impl PluginsCfg {
                 .map_err(|e| format!("plugins.trust.publishers['{}']: {e}", p.name))?;
             publishers.insert(p.name.clone(), key);
         }
+        // A malformed floor is not a config error (it does not stop the boot — `version_at_least`
+        // fails closed at the comparator, refusing just the one floored plugin, per class-12 D2) but
+        // it IS worth telling the operator about early, before an artifact is even present: an
+        // unparsable floor silently disarms the anti-downgrade control, so an operator who believes
+        // it is armed should not have to discover that from a missing `--list-plugins` row.
+        for (name, floor) in &self.min_versions {
+            if !floor.is_empty() && !busbar_plugin_sign::valid_semver(floor) {
+                tracing::warn!(
+                    key = %format!("plugins.min_versions['{name}']"),
+                    value = %floor,
+                    "anti-downgrade floor is not a valid MAJOR.MINOR.PATCH version (no leading \
+                     'v'); it cannot be satisfied, so this plugin will be refused. Fix or remove \
+                     the entry."
+                );
+            }
+        }
+        for (name, floor) in &self.first_party_floors {
+            if !floor.is_empty() && !busbar_plugin_sign::valid_semver(floor) {
+                tracing::warn!(
+                    key = %format!("plugins.first_party_floors['{name}']"),
+                    value = %floor,
+                    "anti-downgrade floor is not a valid MAJOR.MINOR.PATCH version (no leading \
+                     'v'); it cannot be satisfied, so this plugin will be refused — and this pin \
+                     REPLACES the binary-version floor, so the plugin is refused unconditionally \
+                     until this is fixed. Fix or remove the entry."
+                );
+            }
+        }
         Ok(busbar_plugin_sign::TrustPolicy {
             first_party_key: busbar_plugin_sign::embedded_release_pubkey(),
             binary_version: binary_version.to_string(),
