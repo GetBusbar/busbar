@@ -350,6 +350,9 @@ pub(crate) fn parse_status_metrics(raw: &[serde_json::Value]) -> Vec<HookMetric>
                 .collect()
         });
         // Quantiles: keys parse to a probability in [0,1], values finite; drop the map if empty.
+        // Capped like labels and buckets: the [0,1] filter does NOT bound the count — "0.5", "0.50",
+        // "0.500" are all distinct keys that all parse in range — and the scrape renders one line per
+        // quantile per metric, so an uncapped map defeats `scrape.rs`'s stated BOUNDED property.
         m.quantiles = m
             .quantiles
             .map(|q| {
@@ -357,6 +360,7 @@ pub(crate) fn parse_status_metrics(raw: &[serde_json::Value]) -> Vec<HookMetric>
                     .filter(|(k, val)| {
                         val.is_finite() && k.parse::<f64>().is_ok_and(|p| (0.0..=1.0).contains(&p))
                     })
+                    .take(MAX_METRIC_LABELS)
                     .collect::<std::collections::BTreeMap<_, _>>()
             })
             .filter(|q| !q.is_empty());
@@ -748,6 +752,29 @@ mod tests {
         assert_eq!(by(3).estimated, Some(true));
         assert_eq!((by(3).ci_low, by(3).ci_high), (Some(27.7), Some(35.7)));
         assert_eq!((by(4).ci_low, by(4).ci_high), (None, None));
+    }
+
+    /// Unlike labels/buckets, the `[0,1]` filter on quantile keys does not bound the COUNT —
+    /// "0.5001", "0.5002", ... are all distinct strings that all parse in range. A hostile or buggy
+    /// hook could otherwise mint an unbounded quantile map, defeating `scrape.rs`'s stated BOUNDED
+    /// scrape-output property (one Prometheus line per quantile per metric).
+    #[test]
+    fn status_metrics_caps_the_quantile_count() {
+        let mut quantiles = serde_json::Map::new();
+        for i in 1..=500 {
+            quantiles.insert(format!("0.{i:04}"), serde_json::json!(1.0));
+        }
+        let m = [
+            serde_json::json!({"name":"h","type":"histogram","value":1.0,
+                                     "quantiles": quantiles}),
+        ];
+        let parsed = super::parse_status_metrics(&m);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(
+            parsed[0].quantiles.as_ref().unwrap().len(),
+            super::MAX_METRIC_LABELS,
+            "quantile count must be capped exactly like labels and buckets"
+        );
     }
 
     /// Native histogram `buckets` are validated like quantiles: a key must be `+Inf` or parse as a

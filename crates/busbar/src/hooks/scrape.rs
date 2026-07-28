@@ -23,8 +23,9 @@
 //!   an ASYNC refresh (stale-while-revalidate) — a slow or dead hook yields stale-then-absent series
 //!   (fail-open), never a stalled `/metrics/hooks`. Zero work when nobody scrapes; self-tunes to the
 //!   scrape rate.
-//! * BOUNDED. `parse_status_metrics` already caps entries (64) + labels (8) and sanitizes every name/
-//!   label/value, so a hostile hook cannot flood or exfiltrate through the scrape.
+//! * BOUNDED. `parse_status_metrics` already caps entries (64) + labels (8) + quantiles (8) +
+//!   buckets (64) and sanitizes every name/label/value, so a hostile hook cannot flood or
+//!   exfiltrate through the scrape.
 
 use super::wire::HookMetric;
 use std::collections::HashMap;
