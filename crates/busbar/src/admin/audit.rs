@@ -1651,10 +1651,30 @@ mod tests {
         // Node A mutates again. Without the check it would append over node B's row.
         node_a.record_by("hook.delete", "hook:from_a", OUTCOME_APPLIED, "admin");
 
+        // `append_audit` is a keyed upsert on `seq`: node A and node B both restored from the same
+        // tail, so both allocate seq 2. If the second-writer check were removed, node A's
+        // `hook.delete` row would OVERWRITE node B's `hook.register` row in place — seq 2 is still
+        // one row, so `len()` alone would stay `after_b` either way and cannot see the corruption.
+        // Assert on the CONTENT of that row instead.
+        let rows = store.list_audit().unwrap();
         assert_eq!(
-            store.list_audit().unwrap().len(),
+            rows.len(),
             after_b,
-            "node A must not have destroyed or appended over node B's durable history"
+            "no row was added — node A's second write must not append"
+        );
+        let b_row = rows
+            .iter()
+            .find(|r| r.seq == 2)
+            .expect("node B's seq-2 row is still present");
+        assert_eq!(
+            b_row.resource, "hook:from_b",
+            "node B's row must survive verbatim — a keyed upsert would overwrite it IN PLACE and \
+             leave the row count unchanged, so the count alone cannot see this"
+        );
+        assert_eq!(b_row.action, "hook.register");
+        assert!(
+            !rows.iter().any(|r| r.action == "hook.delete"),
+            "node A's post-detection mutation must not have reached the durable store at all"
         );
         assert!(
             node_a
