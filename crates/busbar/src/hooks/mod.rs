@@ -567,6 +567,65 @@ pub(crate) async fn push_configure(
         .map_err(|e| e.to_string())
 }
 
+/// The deadline for RESOLVING a hook transport. `gate_transport_named` stages a copy of the plugin
+/// to disk, `dlopen`s it and runs its constructor; none of that is cancellable, so this bounds the
+/// CALLER, not the work. A timed-out `spawn_blocking` thread is abandoned (bounded at one per hook
+/// by the scrape's `InFlight` claim) — the alternative is a control-plane request that never returns
+/// and a `/metrics/hooks` slot that is never freed for the life of the process.
+const TRANSPORT_RESOLVE_TIMEOUT_MS: u64 = CONFIGURE_TIMEOUT_MS;
+
+/// Run a blocking closure with a deadline, collapsing "ran out of time" and "panicked" into the same
+/// `None` the caller already treats as "unresolvable" — but LOGGING each distinctly first, so a
+/// panicking plugin constructor (a security gate silently disarmed) is no longer indistinguishable
+/// from an ordinary absent-transport `None`. Pure so the bound is unit-testable without a live
+/// plugin (the same justification `response_len_ok` gives for its own shape).
+async fn offload_bounded<T: Send + 'static>(
+    what: &str,
+    f: impl FnOnce() -> Option<T> + Send + 'static,
+) -> Option<T> {
+    offload_bounded_with_deadline(
+        what,
+        std::time::Duration::from_millis(TRANSPORT_RESOLVE_TIMEOUT_MS),
+        f,
+    )
+    .await
+}
+
+/// The testable core of [`offload_bounded`]: `spawn_blocking` runs the closure on a REAL OS thread,
+/// so a paused-clock test runtime cannot make a genuinely-sleeping closure return early (auto-advance
+/// only fires while the runtime is idle, and a live blocking thread never reports idle). Taking the
+/// deadline as a parameter lets a test use a real but SHORT deadline instead, so the timeout arm is
+/// exercised deterministically in well under a second rather than needing paused time to work around
+/// real blocking-thread sleep.
+async fn offload_bounded_with_deadline<T: Send + 'static>(
+    what: &str,
+    deadline: std::time::Duration,
+    f: impl FnOnce() -> Option<T> + Send + 'static,
+) -> Option<T> {
+    let task = tokio::task::spawn_blocking(f);
+    match tokio::time::timeout(deadline, task).await {
+        Ok(Ok(v)) => v,
+        // The blocking task PANICKED. Distinct from "no resolvable transport", which is what the
+        // swallowed JoinError used to look like: a panicking plugin constructor silently disarmed a
+        // gate. The two EXPECTED failures already warn inside `gate_transport_named`.
+        Ok(Err(e)) => {
+            tracing::warn!(
+                hook = %what, error = %e,
+                "hook transport resolution panicked; the hook is treated as unresolvable"
+            );
+            None
+        }
+        Err(_) => {
+            tracing::warn!(
+                hook = %what, timeout_ms = deadline.as_millis() as u64,
+                "hook transport resolution timed out; the hook is treated as unresolvable and the \
+                 blocking thread is abandoned"
+            );
+            None
+        }
+    }
+}
+
 /// Resolve a hook's control-plane transport WITHOUT parking a Tokio worker.
 ///
 /// [`gate_transport_named`] is not cheap and it is not async: it resolves secrets, WRITES A STAGING
@@ -583,11 +642,11 @@ async fn gate_transport_offloaded(
     env: &HookEnv,
     settings_version: u64,
 ) -> Option<Arc<dyn RoutingPolicy>> {
-    let (name, hook, env) = (name.to_string(), hook.clone(), env.clone());
-    tokio::task::spawn_blocking(move || gate_transport_named(&name, &hook, &env, settings_version))
-        .await
-        .ok()
-        .flatten()
+    let (name_owned, hook, env) = (name.to_string(), hook.clone(), env.clone());
+    offload_bounded(name, move || {
+        gate_transport_named(&name_owned, &hook, &env, settings_version)
+    })
+    .await
 }
 
 /// Fetch a hook's self-reported STATUS (observed settings + metrics) over its transport — the

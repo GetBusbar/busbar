@@ -1912,6 +1912,55 @@ async fn test_body_model_parse_error_is_observable() {
     handle.abort();
 }
 
+/// `bedrock_invoke` (the `POST /model/{id}/invoke` InvokeModel ingress) returns a bare
+/// `ingress_error` when the body matches none of the recognized InvokeModel shapes
+/// (`inputText` / `textToImageParams` / the Cohere `{query,documents}` pair) — a pre-routing
+/// reject that, like the JSON-parse case above, must still flow through `finish_rejected` so it
+/// is counted. This asserts the SAME strict-increase discriminator as
+/// `test_body_model_parse_error_is_observable`, on the sibling early-return the class-9 audit
+/// found unrouted.
+#[tokio::test]
+async fn test_bedrock_invoke_unresolvable_body_is_observable() {
+    crate::metrics::init();
+    let app = TestApp::new()
+        .lane(
+            LaneSpec::new(
+                "foo",
+                crate::proto::Protocol::openai(),
+                "http://127.0.0.1:1",
+            )
+            .provider("zai"),
+        )
+        .pool("foo", &[(0, 1)])
+        .build();
+    let (addr, handle) = serve(app).await;
+
+    let before = requests_total_for(&crate::metrics::render(), "unresolved", "client_error"); // golden wire-contract literal (kept bare on purpose)
+
+    let resp = reqwest::Client::new()
+        .post(format!(
+            "http://{addr}/model/amazon.titan-embed-text-v1/invoke"
+        ))
+        .bearer_auth("t")
+        .body(json!({"nonsense": 1}).to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status().as_u16(),
+        400,
+        "an InvokeModel body matching no recognized shape is a 400"
+    );
+
+    let after = requests_total_for(&crate::metrics::render(), "unresolved", "client_error"); // golden wire-contract literal (kept bare on purpose)
+    assert!(
+        after > before,
+        "an unresolvable InvokeModel body must increment REQUESTS_TOTAL \
+             (pool=unresolved,outcome=client_error): before={before} after={after}"
+    );
+    handle.abort();
+}
+
 /// The SUCCESS half of the observability contract the pre-routing regressions lock for
 /// failures: ONE served 200 strictly increments `REQUESTS_TOTAL{outcome="ok"}`, the request
 /// duration histogram's count, AND `UPSTREAM_ATTEMPTS_TOTAL` for the dispatched lane — all

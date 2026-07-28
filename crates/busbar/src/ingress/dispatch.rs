@@ -439,14 +439,27 @@ pub(crate) async fn bedrock_invoke(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    // Mirror `operation_ingress`'s pre-routing accounting (`dispatch.rs:52-53`): every pre-charge
+    // exit — including this one — must flow through `finish_rejected`, or the request is invisible
+    // to Prometheus/the webhook (the invariant stated at `ingress/mod.rs:319`/`:612-615`).
+    let started = Instant::now();
+    let charged_at = crate::store::now();
     let Some(operation) = crate::handlers::request_handler(PROTO_BEDROCK)
         .and_then(|rh| rh.resolve_operation(uri.path(), &body))
     else {
-        return ingress_error(
+        return finish_rejected(
+            &app,
+            &gov,
             PROTO_BEDROCK,
-            StatusCode::BAD_REQUEST,
-            crate::proxy::KIND_INVALID_REQUEST,
-            "InvokeModel body is not a supported operation (expected inputText or textToImageParams).",
+            crate::proxy::POOL_LABEL_UNRESOLVED,
+            started,
+            charged_at,
+            ingress_error(
+                PROTO_BEDROCK,
+                StatusCode::BAD_REQUEST,
+                crate::proxy::KIND_INVALID_REQUEST,
+                "InvokeModel body is not a supported operation (expected inputText or textToImageParams).",
+            ),
         );
     };
     operation_ingress(

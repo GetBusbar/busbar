@@ -295,6 +295,14 @@ impl RootSettings {
 /// passes the already-merged desired state here — this fn just stores it).
 pub(crate) fn persist_root(path: Option<&Path>, settings: &RootSettings) -> Result<(), String> {
     let Some(p) = path else {
+        // A no-op persist is the DEFAULT deployment (BUSBAR_CONFIG_OVERLAY unset), not an error —
+        // but the silent `Ok` is what let callers report durable storage that never happened. One
+        // line so the in-memory-only outcome is on the record even when the caller ignores the
+        // response.
+        tracing::warn!(
+            "config overlay is not configured (BUSBAR_CONFIG_OVERLAY unset); root settings were \
+             applied in memory only and will not survive a restart"
+        );
         return Ok(());
     };
     let Some(mut doc) = load_for_rmw(p) else {

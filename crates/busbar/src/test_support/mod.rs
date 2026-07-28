@@ -1034,6 +1034,8 @@ fn weighted(members: &[(usize, u32)]) -> Vec<crate::state::WeightedLane> {
         .collect()
 }
 
+pub(crate) mod warn_capture;
+
 #[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;

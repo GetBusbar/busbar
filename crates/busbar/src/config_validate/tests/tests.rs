@@ -1625,36 +1625,7 @@ models:
     );
 }
 
-/// A `tracing::Layer` that records the messages of WARN-level events it sees, so a test can
-/// assert a particular `tracing::warn!` fired (mirrors the helper in `config.rs`). The structured
-/// fields (`provider`, `api_key_env`) are recorded into the message-or-field buffer.
-#[derive(Clone, Default)]
-struct WarnCapture(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
-
-impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for WarnCapture {
-    fn on_event(
-        &self,
-        event: &tracing::Event<'_>,
-        _ctx: tracing_subscriber::layer::Context<'_, S>,
-    ) {
-        if *event.metadata().level() != tracing::Level::WARN {
-            return;
-        }
-        struct Vis(String);
-        impl tracing::field::Visit for Vis {
-            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-                // Append every field's debug rendering so both the `message` and the structured
-                // `provider`/`api_key_env` fields are searchable by the assertion.
-                self.0.push_str(&format!(" {}={value:?}", field.name()));
-            }
-        }
-        let mut vis = Vis(String::new());
-        event.record(&mut vis);
-        if let Ok(mut msgs) = self.0.lock() {
-            msgs.push(vis.0);
-        }
-    }
-}
+use crate::test_support::warn_capture::WarnCapture;
 
 #[test]
 fn test_validate_passthrough_warns_on_nonempty_configured_key() {
@@ -1708,7 +1679,7 @@ fn test_validate_passthrough_warns_on_nonempty_configured_key() {
         "passthrough + non-empty key is a warning, not a hard error; got: {result:?}"
     );
 
-    let msgs = cap.0.lock().unwrap();
+    let msgs = cap.messages();
     assert!(
         msgs.iter()
             .any(|m| m.contains("inert dead config") && m.contains("leaky")),
@@ -1750,7 +1721,7 @@ fn test_validate_passthrough_no_warn_when_all_keys_empty() {
     let result = tracing::subscriber::with_default(subscriber, || validate(&cfg));
 
     assert!(result.is_ok(), "passthrough with empty keys must validate");
-    let msgs = cap.0.lock().unwrap();
+    let msgs = cap.messages();
     assert!(
         !msgs.iter().any(|m| m.contains("credential-leak")),
         "no credential-leak warning must fire when every api_key_env resolves empty; got: {msgs:?}"

@@ -183,11 +183,15 @@ pub(crate) struct SigningKeyRotateView {
 
 /// `GET`/`PUT /config/settings` (1.5.0 full-config coverage) — the API-settable single-value config
 /// overlay (`root` section) and, on a PUT, the apply metadata. `settings` is the CURRENT effective
-/// root override (the merge of prior overlay + this request), overlay-persisted so it survives a
-/// restart. `reload_to_apply` names the fields whose new value is DURABLY STORED but not yet LIVE:
-/// the process-level binds (`listen`/`admin_listen` socket, `tls`/`admin_tls` bind, `admin_insecure`)
-/// are read once at process start, and the durable `store` backend is reused across a hot reload —
-/// none can hot-swap, so they take effect on the next RESTART. Everything else
+/// root override (the merge of prior overlay + this request). It is overlay-persisted so it survives
+/// a restart WHEN a config overlay is configured (`BUSBAR_CONFIG_OVERLAY`) — a busbar with none
+/// applies the change live only, and `note` says so; `PUT` with `"persist": true` makes storage
+/// mandatory, refusing (`400`) rather than silently applying in memory when no overlay exists.
+/// `reload_to_apply` names the fields whose new value is DURABLY STORED but not yet LIVE: the
+/// process-level binds (`listen`/`admin_listen` socket, `tls`/`admin_tls` bind, `admin_insecure`) are
+/// read once at process start, and the durable `store` backend is reused across a hot reload — none
+/// can hot-swap, so they take effect on the next RESTART. It is always EMPTY when nothing was
+/// durably stored (no overlay); `note` names the affected fields instead. Everything else
 /// (`rate_card`/`per_request_fee`/`security`/`limits`/`observability`/`advanced`/`metrics`/`health`/
 /// `routing`) is LIVE on the swap.
 #[derive(Serialize, JsonSchema)]

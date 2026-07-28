@@ -1010,39 +1010,7 @@ mod tests {
         );
     }
 
-    /// A `tracing::Layer` that records the messages of WARN-level events it sees, so a test can
-    /// assert a particular `tracing::warn!` fired.
-    #[derive(Clone, Default)]
-    struct WarnCapture(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
-
-    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for WarnCapture {
-        fn on_event(
-            &self,
-            event: &tracing::Event<'_>,
-            _ctx: tracing_subscriber::layer::Context<'_, S>,
-        ) {
-            if *event.metadata().level() != tracing::Level::WARN {
-                return;
-            }
-            struct Vis(String);
-            impl tracing::field::Visit for Vis {
-                fn record_debug(
-                    &mut self,
-                    field: &tracing::field::Field,
-                    value: &dyn std::fmt::Debug,
-                ) {
-                    if field.name() == "message" {
-                        self.0 = format!("{value:?}");
-                    }
-                }
-            }
-            let mut vis = Vis(String::new());
-            event.record(&mut vis);
-            if let Ok(mut msgs) = self.0.lock() {
-                msgs.push(vis.0);
-            }
-        }
-    }
+    use crate::test_support::warn_capture::WarnCapture;
 
     /// When an oversized `:event-type` makes
     /// `push_string_header` reject the header, `encode_frame` drops the frame — but that drop MUST be
@@ -1071,7 +1039,7 @@ mod tests {
             frame.is_empty(),
             "oversized :event-type still drops the frame"
         );
-        let msgs = cap.0.lock().unwrap();
+        let msgs = cap.messages();
         assert!(
             msgs.iter().any(|m| m.contains(":event-type")), // golden wire-contract literal (kept bare on purpose)
             "dropping an oversized :event-type frame must emit an observable warn!, got: {msgs:?}"
@@ -1096,7 +1064,7 @@ mod tests {
             frame.is_empty(),
             "oversized :exception-type still drops the frame"
         );
-        let msgs = cap.0.lock().unwrap();
+        let msgs = cap.messages();
         assert!(
             msgs.iter().any(|m| m.contains(":exception-type")), // golden wire-contract literal (kept bare on purpose)
             "dropping an oversized :exception-type frame must emit an observable warn!, got: {msgs:?}"
