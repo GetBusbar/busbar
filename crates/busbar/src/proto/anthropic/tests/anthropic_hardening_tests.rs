@@ -1423,6 +1423,61 @@ fn read_block_unmodeled_document_type_degrades_not_400() {
     }
 }
 
+/// class-6 6a1: the empty-Text degrade above holds the TURN's shape (so message/block ordering
+/// survives), but it also DESTROYS the block on its own protocol's round-trip — the corollary the
+/// Bedrock reader upholds (its unmodeled `document`/`video` blocks park verbatim under a
+/// positional `extra` sentinel) but the Anthropic reader did not. This drives a FULL
+/// `read_request` -> `write_request` round trip (not just `read_block` in isolation) and asserts
+/// the ORIGINAL `document` block reaches the Anthropic writer's output, verbatim, at its original
+/// position — not the empty-Text placeholder.
+#[test]
+fn anthropic_unmodeled_document_survives_same_protocol_round_trip() {
+    let body = serde_json::json!({
+        "model": "claude", "max_tokens": 16,
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "before"},
+                {
+                    "type": "document",
+                    "source": {"type": "base64", "media_type": "application/pdf", "data": "JVBERi0="}
+                },
+                {"type": "text", "text": "after"}
+            ]
+        }]
+    });
+    let ir = AnthropicReader.read_request(&body).expect("read_request");
+    assert!(
+        ir.extra
+            .contains_key(super::ANTHROPIC_UNMODELED_BLOCKS_SENTINEL),
+        "the unmodeled document block must be parked in extra: {:?}",
+        ir.extra
+    );
+
+    let out = AnthropicWriter.write_request(&ir);
+    let content = out["messages"][0]["content"]
+        .as_array()
+        .expect("content array");
+    assert_eq!(
+        content.len(),
+        3,
+        "all three original blocks survive: {content:?}"
+    );
+    assert_eq!(content[0]["type"], "text");
+    assert_eq!(content[0]["text"], "before");
+    assert_eq!(
+        content[1],
+        serde_json::json!({
+            "type": "document",
+            "source": {"type": "base64", "media_type": "application/pdf", "data": "JVBERi0="}
+        }),
+        "the document block must survive VERBATIM at its original position, not degrade to empty \
+         text: {content:?}"
+    );
+    assert_eq!(content[2]["type"], "text");
+    assert_eq!(content[2]["text"], "after");
+}
+
 /// The STREAMING reader must not drop a `redacted_thinking` block. The
 /// opaque `data` rides inline on `content_block_start` (no deltas follow), so the reader emits a
 /// `Thinking` BlockStart + a `RedactedReasoningDelta` carrying the bytes; the later
@@ -1637,7 +1692,7 @@ fn write_message_drops_unsigned_thinking_block() {
             },
         ],
     };
-    let out = write_message(&msg);
+    let out = write_message(&msg, 0, &[]);
     let content = out
         .get("content")
         .and_then(|c| c.as_array())
@@ -1690,7 +1745,7 @@ fn write_message_emits_empty_array_when_all_blocks_dropped() {
             },
         ],
     };
-    let out = write_message(&msg);
+    let out = write_message(&msg, 0, &[]);
     let content = out.get("content").expect("content key present");
     assert!(
             !content.is_string(),
@@ -1718,7 +1773,7 @@ fn write_message_emits_array_for_surviving_block() {
             citations: Vec::new(),
         }],
     };
-    let out = write_message(&msg);
+    let out = write_message(&msg, 0, &[]);
     let arr = out
         .get("content")
         .and_then(|c| c.as_array())
@@ -2469,7 +2524,7 @@ fn write_message_system_role_does_not_emit_system() {
             citations: Vec::new(),
         }],
     };
-    let out = write_message(&msg);
+    let out = write_message(&msg, 0, &[]);
     assert_ne!(
         out.get("role").and_then(|r| r.as_str()),
         Some("system"),
@@ -2488,6 +2543,7 @@ fn tool_choice_any_required_roundtrips() {
     // Anthropic {type:"any"} == "must call some tool" == IR Required; round-trips back to {any}.
     let ir = read_anthropic_request(serde_json::json!({
         "model": "claude", "max_tokens": 16, "messages": [],
+        "tools": [{"name": "get_weather", "input_schema": {"type": "object"}}],
         "tool_choice": {"type": "any"}
     }));
     assert_eq!(ir.tool_choice, Some(crate::ir::IrToolChoice::Required));
@@ -2499,6 +2555,7 @@ fn tool_choice_any_required_roundtrips() {
 fn tool_choice_specific_tool_roundtrips() {
     let ir = read_anthropic_request(serde_json::json!({
         "model": "claude", "max_tokens": 16, "messages": [],
+        "tools": [{"name": "get_weather", "input_schema": {"type": "object"}}],
         "tool_choice": {"type": "tool", "name": "get_weather"}
     }));
     assert_eq!(
@@ -2522,6 +2579,7 @@ fn tool_choice_auto_and_none_roundtrip() {
     ] {
         let ir = read_anthropic_request(serde_json::json!({
             "model": "c", "max_tokens": 16, "messages": [],
+            "tools": [{"name": "get_weather", "input_schema": {"type": "object"}}],
             "tool_choice": {"type": native_type}
         }));
         assert_eq!(ir.tool_choice, Some(variant));
@@ -2737,7 +2795,8 @@ fn test_openai_to_anthropic_tool_choice_directions() {
     ];
     for (tc, expected) in cases {
         let mut ir = read_anthropic_request(serde_json::json!({
-            "model": "c", "max_tokens": 16, "messages": []
+            "model": "c", "max_tokens": 16, "messages": [],
+            "tools": [{"name": "get_weather", "input_schema": {"type": "object"}}]
         }));
         ir.tool_choice = Some(tc.clone());
         let out = AnthropicWriter.write_request(&ir);
@@ -3777,7 +3836,7 @@ fn write_message_keeps_redacted_thinking_block() {
             },
         ],
     };
-    let out = write_message(&msg);
+    let out = write_message(&msg, 0, &[]);
     let content = out
         .get("content")
         .and_then(|c| c.as_array())

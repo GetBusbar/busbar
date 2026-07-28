@@ -78,6 +78,7 @@ fn translate_request_a2o(body: &str) -> Vec<u8> {
         reasoning_allowed: true,
         reasoning_budgets: crate::ir::REASONING_BUDGET_DEFAULTS,
         prompt_caching_allowed: true,
+        cache_control_cap: None,
     });
     let IrReq::Chat(ir) = req else { unreachable!() };
     let mut out = openai.writer().write_request(&ir);

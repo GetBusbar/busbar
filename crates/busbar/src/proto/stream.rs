@@ -460,7 +460,17 @@ impl StreamTranslate {
                 }
             }
 
+            let is_message_start = matches!(ev, crate::ir::IrStreamEvent::MessageStart { .. });
             self.emit_ir_event(&ev, out);
+            // A native Anthropic stream emits `event: ping` right after `message_start`; a
+            // translated one didn't, which is both a fingerprintable proxy tell (see the writer's
+            // own comments on `message_start`) and closes part of the idle-timeout gap a native
+            // stream survives. `translate_event` only runs cross-protocol (`ingress != egress`,
+            // enforced by `new`) — same-protocol Anthropic passthrough takes the verbatim branch
+            // and already carries the upstream's own pings, so this cannot double-emit there.
+            if is_message_start && ingress_name == crate::proto::PROTO_ANTHROPIC {
+                out.extend_from_slice(crate::proto::ANTHROPIC_PING_SSE_FRAME);
+            }
         }
     }
 

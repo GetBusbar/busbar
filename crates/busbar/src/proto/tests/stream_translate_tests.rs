@@ -3977,3 +3977,31 @@ fn same_proto_openai_opted_out_preserves_usage_text_in_content() {
         "message content containing the literal `usage:null` text must survive:\n{out}"
     );
 }
+
+/// class-6 6g: a translated cross-protocol Anthropic-INGRESS stream must emit `event: ping`
+/// immediately after `message_start` — a native Anthropic stream always does, and its absence is
+/// both a fingerprintable proxy tell and closes part of the idle-timeout gap a native stream
+/// survives. Driven with an OpenAI EGRESS so the assertion is purely about the ingress-side framing.
+#[test]
+fn anthropic_cross_protocol_stream_emits_ping_after_message_start() {
+    let mut t = StreamTranslate::new("anthropic", "openai").expect("translator");
+    let out = String::from_utf8(t.feed(
+        b"data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"hi\"}}]}\n\n",
+    ))
+    .unwrap();
+    let start_pos = out
+        .find("event: message_start")
+        .expect("a message_start frame must be emitted; got {out}");
+    let ping_pos = out
+        .find("event: ping")
+        .expect("a translated Anthropic-ingress stream must emit event: ping; got: {out}");
+    assert!(
+        ping_pos > start_pos,
+        "the ping must come AFTER message_start; got: {out}"
+    );
+    assert!(
+        out[ping_pos..].starts_with("event: ping\ndata: {\"type\":\"ping\"}\n\n"),
+        "the ping frame must be Anthropic's native shape; got: {}",
+        &out[ping_pos..]
+    );
+}

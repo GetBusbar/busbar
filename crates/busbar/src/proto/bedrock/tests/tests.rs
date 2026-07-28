@@ -4933,6 +4933,39 @@ fn test_bedrock_tool_choice_specific_tool() {
     assert_eq!(tc, &serde_json::json!({"tool": {"name": "get_weather"}}));
 }
 
+/// class-6 6b3: `toolChoice.tool` (force a SPECIFIC tool) is documented Anthropic-Claude-only on
+/// Converse, but `write_request` receives no model (Bedrock carries it in the URL, not the IR) so
+/// it cannot gate the emission. The writer still emits it (the common Claude-on-Bedrock case is
+/// unaffected) but must now WARN, so a non-Claude target's guaranteed ValidationException is at
+/// least diagnosable.
+#[test]
+fn bedrock_specific_tool_choice_warns_it_is_claude_only() {
+    use crate::test_support::warn_capture::WarnCapture;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let req = tool_choice_req(Some(crate::ir::IrToolChoice::Tool {
+        name: "get_weather".to_string(),
+    }));
+    let writer = BedrockWriter;
+
+    let cap = WarnCapture::default();
+    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    let out = tracing::subscriber::with_default(subscriber, || writer.write_request(&req));
+
+    // Behavior unchanged (regression half): the directive is still emitted.
+    let tc = out
+        .get("toolConfig")
+        .and_then(|t| t.get("toolChoice"))
+        .expect("toolChoice still emitted");
+    assert_eq!(tc, &serde_json::json!({"tool": {"name": "get_weather"}}));
+
+    assert!(
+        cap.contains("Claude-only") || cap.contains("Claude"),
+        "emitting toolChoice.tool must warn that it is Claude-only on Bedrock: {:?}",
+        cap.messages()
+    );
+}
+
 /// PF-H1: `IrToolChoice::None` has no native Bedrock representation, so the writer must omit
 /// `toolChoice` entirely (rather than emit an invalid shape) while still emitting the tools.
 #[test]

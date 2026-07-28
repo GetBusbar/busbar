@@ -604,6 +604,14 @@ impl ProtocolWriter for BedrockWriter {
                 serde_json::Value::Object(tool_config),
             );
         }
+        // class-6 6c1 egress: Bedrock Converse models no parallelism control. `is_some()` gates this
+        // to requests that actually carried the flag (owner decision 4: no per-request noise).
+        if req.parallel_tool_calls.is_some() {
+            tracing::warn!(
+                "dropping parallel_tool_calls on Bedrock egress: Converse has no parallelism \
+                 control, so the backend's default parallelism applies"
+            );
+        }
 
         // Emit `top_k` (PF-H1 fidelity fix). Bedrock's Converse API has no `inferenceConfig` slot for
         // top_k; it rides in the model-specific `additionalModelRequestFields` escape hatch. OVERLAY

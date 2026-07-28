@@ -231,6 +231,15 @@ fn read_cohere_stop_reason(token: &str) -> crate::ir::IrStopReason {
 /// enum and a strict client rejects; such reasons degrade to the SDK-safe terminal `COMPLETE`.
 /// EXHAUSTIVE: a reason with no Cohere analog (`refusal`, `pause_turn`, `other`) also falls back to
 /// `COMPLETE`.
+///
+/// `S::Safety` maps to the SAME `ERROR` token as `S::Error`, deliberately: `ERROR_TOXIC` is a v1
+/// Generate-API value, not a member of v2 `/v2/chat`'s `finish_reason` enum
+/// (`COMPLETE|STOP_SEQUENCE|MAX_TOKENS|TOOL_CALL|ERROR`), and emitting it would be exactly the
+/// off-spec-token bug `IrStopReason` exists to prevent. This DOES cost a Cohere-dialect client the
+/// ability to distinguish a content-filter stop from an infra error on egress — accepted, because
+/// the v2 enum genuinely cannot express the distinction and an off-spec token a strict client
+/// rejects is strictly worse. The reader's `ERROR_TOXIC`→`S::Safety` stays asymmetric on purpose
+/// (forward-compat for a v1-dialect upstream); do not "fix" it back to match this writer arm.
 fn write_cohere_stop_reason(reason: crate::ir::IrStopReason) -> &'static str {
     use crate::ir::IrStopReason as S;
     match reason {
@@ -238,7 +247,7 @@ fn write_cohere_stop_reason(reason: crate::ir::IrStopReason) -> &'static str {
         S::StopSequence => COHERE_FINISH_STOP_SEQUENCE,
         S::MaxTokens => COHERE_FINISH_MAX_TOKENS,
         S::ToolUse => COHERE_FINISH_TOOL_CALL,
-        S::Safety => COHERE_FINISH_ERROR_TOXIC,
+        S::Safety => COHERE_FINISH_ERROR,
         S::Error => COHERE_FINISH_ERROR,
         S::Refusal | S::PauseTurn | S::Other => COHERE_FINISH_COMPLETE,
     }

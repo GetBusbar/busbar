@@ -343,6 +343,10 @@ pub(crate) fn translate_request_cross_protocol(
                 // model-gated (Bedrock) must assert `prompt_caching` to receive breakpoints.
                 prompt_caching_allowed: app.lanes[i].prompt_caching
                     || !app.lanes[i].protocol.writer().cache_markers_model_gated(),
+                cache_control_cap: app.lanes[i]
+                    .protocol
+                    .writer()
+                    .max_cache_control_breakpoints(),
             });
             ir_req.set_model(app.lanes[i].wire_model());
             return Ok(eh.write_request(&ir_req));
@@ -404,6 +408,10 @@ pub(crate) fn translate_request_cross_protocol(
                     reasoning_budgets: app.reasoning_effort_budgets,
                     prompt_caching_allowed: app.lanes[i].prompt_caching
                         || !app.lanes[i].protocol.writer().cache_markers_model_gated(),
+                    cache_control_cap: app.lanes[i]
+                        .protocol
+                        .writer()
+                        .max_cache_control_breakpoints(),
                 });
                 let Some(eh) = egress_handler else {
                     return Err(Box::new(ingress_error(

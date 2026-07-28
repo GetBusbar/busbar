@@ -60,12 +60,14 @@ fn every_writer_emits_only_valid_native_finish_tokens() {
         "stop_sequence",
         "content_filtered",
     ];
+    // NOTE: "ERROR_TOXIC" is deliberately absent — it is a v1 Generate-API finish token, not a
+    // valid Cohere v2 `/v2/chat` value (COMPLETE|STOP_SEQUENCE|MAX_TOKENS|TOOL_CALL|ERROR). The
+    // writer must never emit it, even for IrStopReason::Safety.
     let cohere_ok = [
         "COMPLETE",
         "STOP_SEQUENCE",
         "MAX_TOKENS",
         "TOOL_CALL",
-        "ERROR_TOXIC",
         "ERROR",
     ];
     let responses_ok = ["completed", "incomplete"];

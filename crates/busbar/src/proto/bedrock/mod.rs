@@ -681,7 +681,22 @@ fn write_bedrock_tool_choice(tc: &crate::ir::IrToolChoice) -> Option<serde_json:
     match tc {
         crate::ir::IrToolChoice::Auto => Some(serde_json::json!({"auto": {}})),
         crate::ir::IrToolChoice::Required => Some(serde_json::json!({"any": {}})),
-        crate::ir::IrToolChoice::Tool { name } => Some(serde_json::json!({"tool": {"name": name}})),
+        crate::ir::IrToolChoice::Tool { name } => {
+            // AWS documents `toolChoice.tool` (force this SPECIFIC tool) as Anthropic-Claude-only
+            // on Converse — Titan/Llama/other model families reject it. The writer cannot gate on
+            // the model: `write_request(&self, req: &IrRequest)` receives only the IR, which has no
+            // `model` field (Bedrock carries the model in the URL, not the body). A real fix needs
+            // new `EgressPrep` capability plumbing — out of scope here; emit it (the common case,
+            // Claude-on-Bedrock, is unaffected) and warn so a non-Claude target's guaranteed
+            // ValidationException is at least diagnosable from the logs.
+            tracing::warn!(
+                "emitting toolChoice.tool (force a SPECIFIC tool) on Bedrock egress: this directive \
+                 is documented Anthropic-Claude-only on Converse and Bedrock model families that are \
+                 not Claude will reject it; the writer has no way to know which model this request \
+                 targets"
+            );
+            Some(serde_json::json!({"tool": {"name": name}}))
+        }
         crate::ir::IrToolChoice::None => None,
     }
 }

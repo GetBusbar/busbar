@@ -426,15 +426,53 @@ fn coerce_tool_args(input: &serde_json::Value) -> serde_json::Value {
     }
 }
 
+/// Convert a Gemini `startIndex`/`endIndex` BYTE offset (Google's `CitationSource` is documented
+/// measured in bytes) into a CHARACTER offset — the IR's `IrCitation::start_index`/`end_index`
+/// contract (`ir/mod.rs`; class-6 6e1 site 3). `byte_idx` is clamped to `text.len()` so an
+/// out-of-range upstream value degrades to "end of text" rather than panicking on a non-boundary
+/// slice.
+fn gemini_byte_offset_to_char(text: &str, byte_idx: i64) -> i64 {
+    let clamped = byte_idx.max(0) as usize;
+    let boundary = clamped.min(text.len());
+    // A byte index that lands mid-codepoint (a malformed/adversarial upstream value) has no valid
+    // char count at that exact point; fall back to the nearest earlier boundary rather than panic.
+    let safe_boundary = (0..=boundary)
+        .rev()
+        .find(|&b| text.is_char_boundary(b))
+        .unwrap_or(0);
+    text[..safe_boundary].chars().count() as i64
+}
+
+/// The inverse of [`gemini_byte_offset_to_char`]: a CHARACTER offset (the IR contract) back to the
+/// BYTE offset Gemini's wire format expects. `char_idx` is clamped to the text's char count.
+fn gemini_char_offset_to_byte(text: &str, char_idx: i64) -> i64 {
+    let clamped = char_idx.max(0) as usize;
+    match text.char_indices().nth(clamped) {
+        Some((byte_idx, _)) => byte_idx as i64,
+        None => text.len() as i64,
+    }
+}
+
 /// L2: map a Gemini candidate's `citationMetadata.citationSources[]` → neutral
 /// [`crate::ir::IrCitation`]s. A Gemini citation source is a grounding/web-search reference carrying
-/// `startIndex`/`endIndex` (character offsets into the response text), `uri`, `title`, and `license`.
-/// We project it onto the neutral fields (uri→url, indices→start/end, title→title) and stash the
-/// source object verbatim in `raw` so a same-protocol Gemini path could re-emit it. The neutral
-/// `kind` is `web_search_result_location` — a grounding source IS a URL reference, which is also the
-/// Anthropic variant a cross-protocol Anthropic egress synthesizes for it. Returns empty when the
-/// candidate has no citation metadata.
-fn read_gemini_citations(candidate: &serde_json::Value) -> Vec<crate::ir::IrCitation> {
+/// `startIndex`/`endIndex` — measured in BYTES per Google's `CitationSource` reference, converted to
+/// CHARACTERS here (class-6 6e1 site 3) since the IR's contract is characters — plus `uri`, `title`,
+/// and `license`. We project it onto the neutral fields (uri→url, indices→start/end, title→title)
+/// and stash the source object verbatim in `raw` so a same-protocol Gemini path can re-emit the
+/// UNCONVERTED original (see `write_gemini_citation`'s raw short-circuit). The neutral `kind` is
+/// `web_search_result_location` — a grounding source IS a URL reference, which is also the Anthropic
+/// variant a cross-protocol Anthropic egress synthesizes for it. Returns empty when the candidate has
+/// no citation metadata.
+///
+/// `anchor_text` is the response text these offsets index into (needed for the byte->char
+/// conversion). NON-STREAM PATH ONLY: the streaming reader (`read_response_events`) has no
+/// accumulated full-response text to convert against (`GeminiStreamState` carries only an index, not
+/// text) — adding one for an offset correction would put a full-text accumulator on a hot streaming
+/// path, so the streaming arm is left with byte offsets and a comment stating why.
+fn read_gemini_citations(
+    candidate: &serde_json::Value,
+    anchor_text: Option<&str>,
+) -> Vec<crate::ir::IrCitation> {
     let sources = candidate
         .get("citationMetadata")
         .and_then(|m| m.get("citationSources"))
@@ -444,19 +482,32 @@ fn read_gemini_citations(candidate: &serde_json::Value) -> Vec<crate::ir::IrCita
     };
     sources
         .iter()
-        .map(|src| crate::ir::IrCitation {
-            kind: Some("web_search_result_location".to_string()),
-            cited_text: None,
-            title: src
-                .get("title")
-                .and_then(|v| v.as_str())
-                .map(str::to_string),
-            url: src.get("uri").and_then(|v| v.as_str()).map(str::to_string),
-            document_index: None,
-            start_index: src.get("startIndex").and_then(|v| v.as_i64()),
-            end_index: src.get("endIndex").and_then(|v| v.as_i64()),
-            encrypted_index: None,
-            raw: Some(src.clone()),
+        .map(|src| {
+            let raw_start = src.get("startIndex").and_then(|v| v.as_i64());
+            let raw_end = src.get("endIndex").and_then(|v| v.as_i64());
+            let (start_index, end_index) = match anchor_text {
+                Some(text) => (
+                    raw_start.map(|b| gemini_byte_offset_to_char(text, b)),
+                    raw_end.map(|b| gemini_byte_offset_to_char(text, b)),
+                ),
+                // Streaming path: no accumulated text to convert against. Leave as the raw wire
+                // value (bytes) rather than silently mislabeling it as characters.
+                None => (raw_start, raw_end),
+            };
+            crate::ir::IrCitation {
+                kind: Some("web_search_result_location".to_string()),
+                cited_text: None,
+                title: src
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+                url: src.get("uri").and_then(|v| v.as_str()).map(str::to_string),
+                document_index: None,
+                start_index,
+                end_index,
+                encrypted_index: None,
+                raw: Some(src.clone()),
+            }
         })
         .collect()
 }
@@ -464,10 +515,14 @@ fn read_gemini_citations(candidate: &serde_json::Value) -> Vec<crate::ir::IrCita
 /// L2: map a neutral [`crate::ir::IrCitation`] → a Gemini `citationSources[]` entry.
 ///
 /// SAME-PROTOCOL FIDELITY: when `raw` is present AND it is a Gemini citation source (has a `uri` or
-/// the Gemini index fields), re-emit it verbatim so a Gemini→IR→Gemini path is byte-exact. A `raw`
-/// from a FOREIGN protocol (e.g. an Anthropic citation object on an Anthropic→Gemini hop) would not
-/// be a valid Gemini source, so we ignore it and BUILD a Gemini source from the neutral fields.
-fn write_gemini_citation(c: &crate::ir::IrCitation) -> serde_json::Value {
+/// the Gemini index fields), re-emit it verbatim so a Gemini→IR→Gemini path is byte-exact — `raw`
+/// already carries the ORIGINAL byte offsets, so no conversion runs on that path. A `raw` from a
+/// FOREIGN protocol (e.g. an Anthropic citation object on an Anthropic→Gemini hop, or no `raw` at
+/// all) would not be a valid Gemini source, so we ignore it and BUILD a Gemini source from the
+/// neutral fields — which are CHARACTERS (the IR contract) and must be converted back to the BYTES
+/// Gemini's wire format expects (class-6 6e1 site 3, the inverse of `gemini_byte_offset_to_char`),
+/// against `text` (this block's own text, the same anchor the reader converted against).
+fn write_gemini_citation(c: &crate::ir::IrCitation, text: &str) -> serde_json::Value {
     if let Some(raw) = &c.raw {
         if raw.get("uri").is_some()
             || raw.get("startIndex").is_some()
@@ -476,12 +531,23 @@ fn write_gemini_citation(c: &crate::ir::IrCitation) -> serde_json::Value {
             return raw.clone();
         }
     }
+    // `text.is_empty()` marks "no anchor text available" (the streaming egress call site — see its
+    // caller comment): converting against an empty string would collapse every offset to 0, which
+    // is worse than the pre-fix behavior. Pass the value through UNCONVERTED there rather than
+    // corrupt it; the non-stream call site always supplies the real anchor text.
+    let convert = |v: i64| {
+        if text.is_empty() {
+            v
+        } else {
+            gemini_char_offset_to_byte(text, v)
+        }
+    };
     let mut obj = serde_json::Map::new();
     if let Some(s) = c.start_index {
-        obj.insert("startIndex".to_string(), serde_json::json!(s));
+        obj.insert("startIndex".to_string(), serde_json::json!(convert(s)));
     }
     if let Some(e) = c.end_index {
-        obj.insert("endIndex".to_string(), serde_json::json!(e));
+        obj.insert("endIndex".to_string(), serde_json::json!(convert(e)));
     }
     if let Some(u) = &c.url {
         obj.insert("uri".to_string(), serde_json::json!(u));

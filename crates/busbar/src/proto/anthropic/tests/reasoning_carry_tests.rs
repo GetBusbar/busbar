@@ -190,6 +190,7 @@ fn seam_gate_clears_or_stamps() {
         reasoning_allowed: allowed,
         reasoning_budgets: [1024, 2048, 3072, 4096],
         prompt_caching_allowed: true,
+        cache_control_cap: None,
     };
     let ir = crate::proto::openai_chat::OpenAiReader
         .read_request(&openai_effort_body("high"))
