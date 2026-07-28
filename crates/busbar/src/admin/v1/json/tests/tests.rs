@@ -117,17 +117,40 @@ fn emit_openapi_artifact() {
 #[cfg(feature = "openapi-schema")]
 #[test]
 fn openapi_paths_annotate_required_scope() {
+    // Re-derives `required_scope`'s decision INDEPENDENTLY (not by calling it) so a change to the
+    // production matrix moves only the annotation side, not this expectation — `required_scope` is
+    // the single producer that stamps BOTH the OpenAPI annotation (`handlers.rs`'s stamping loop)
+    // and enforces the auth middleware, so comparing the annotation against a call to that same
+    // function is a tautology: editing the matrix moves both sides together and can never fail.
+    fn expected_scope(method: &str, path: &str) -> &'static str {
+        use crate::admin::v1::contract::{
+            ADMIN_PREFIX, PATH_CONFIG_VALIDATE, PATH_HOOKS, PATH_KEYS,
+        };
+        if method == "get" || method == "head" {
+            return "read-only";
+        }
+        let is_mutation = matches!(method, "post" | "put" | "patch" | "delete");
+        let rel = path.strip_prefix(ADMIN_PREFIX).unwrap_or(path);
+        if rel == PATH_CONFIG_VALIDATE {
+            return "read-only";
+        }
+        if is_mutation && (rel == PATH_HOOKS || rel.starts_with("/hooks/")) {
+            return "hooks-register";
+        }
+        if method == "post" && rel == PATH_KEYS {
+            return "mint";
+        }
+        "full"
+    }
+
     let doc = openapi_doc();
     let paths = doc["paths"].as_object().expect("paths object");
     assert!(!paths.is_empty());
+    let mut checked = 0usize;
     for (path, methods) in paths {
         for (method, op) in methods.as_object().expect("methods") {
-            let m = match method.as_str() {
-                "get" => axum::http::Method::GET,
-                "post" => axum::http::Method::POST,
-                "put" => axum::http::Method::PUT,
-                "patch" => axum::http::Method::PATCH,
-                "delete" => axum::http::Method::DELETE,
+            match method.as_str() {
+                "get" | "post" | "put" | "patch" | "delete" => {}
                 // Path-item `x-*` specification extensions (e.g. `x-busbar-error-envelope`) are
                 // valid OpenAPI and are not operations — they carry no scope annotation.
                 ext if ext.starts_with("x-") => continue,
@@ -136,10 +159,15 @@ fn openapi_paths_annotate_required_scope() {
             let annotated = op["x-busbar-required-scope"]
                 .as_str()
                 .unwrap_or_else(|| panic!("{method} {path} missing scope annotation"));
-            let enforced = crate::admin::v1::contract::required_scope(&m, path).as_str();
-            assert_eq!(annotated, enforced, "{method} {path} annotation drifted");
+            let golden = expected_scope(method, path);
+            assert_eq!(
+                annotated, golden,
+                "{method} {path} annotation drifted from the independently-derived golden scope"
+            );
+            checked += 1;
         }
     }
+    assert!(checked > 0, "no operations were checked");
 }
 
 /// CONTRACT LOCK: the openapi Error-schema `code` enum must EXACTLY match the frozen `AdminError`

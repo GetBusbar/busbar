@@ -5454,13 +5454,21 @@ async fn test_cancelled_patch_keeps_gate_held_for_full_store_mutation() {
             .as_u16()
     });
 
-    // Give the DELETE time to either complete (old) or wedge on the gate (fixed).
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    assert!(
-        !delete_task.is_finished(),
-        "a cancelled PATCH must keep the EXISTENCE_GATE held for its full blocking mutation; the \
-             DELETE must remain blocked on the gate (old async-guard code releases it on cancel)"
-    );
+    // Poll (rather than one sample at a fixed delay) for the DELETE completing during the window:
+    // a single late sample can MISS an early completion that happened and then quiesced before the
+    // sample, which is a false-pass in exactly the direction load makes worse (more time between
+    // dispatch and sample, not less). Polling for "never finished" over the whole window is
+    // strictly stronger than one sample and no slower in the happy (still-blocked) case.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(300);
+    while std::time::Instant::now() < deadline {
+        assert!(
+            !delete_task.is_finished(),
+            "a cancelled PATCH must keep the EXISTENCE_GATE held for its full blocking mutation; \
+             the DELETE must remain blocked on the gate (old async-guard code releases it on \
+             cancel)"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
 
     // Release the parked PATCH put_key so the gate frees and the DELETE can finish — proves no
     // deadlock and lets the task drain cleanly.
@@ -7048,6 +7056,12 @@ async fn test_signing_key_rotate_reports_kid_and_revoke_all() {
     // row must not claim otherwise: `signing_key.rotate`/`applied` told a reader every outstanding
     // token had been revoked. The row itself stays, because a valid admin token calling this
     // repeatedly is exactly the probing the log exists to record.
+    //
+    // Scoped by resource ("signing-key") only, over the whole 1000-entry ring: the negative
+    // assertion below (no `signing_key.rotate` row) holds only because no OTHER test currently
+    // emits that action against this resource, and a large concurrent audit-writing burst could in
+    // principle evict this test's own `signing_key.report` row before the read. Latent; accepted —
+    // bracketing by seq would narrow the window but not defeat eviction.
     let rows = crate::admin::audit::AUDIT.list_filtered(
         0,
         crate::admin::audit::MAX_AUDIT_ENTRIES,
@@ -9750,9 +9764,17 @@ async fn plugin_reload_reports_an_unrebuildable_disk_config() {
 /// See the test above. Split out so the class-level over-claim test can drive it directly.
 async fn drive_plugin_reload_errors() {
     crate::metrics::init();
+    // `pid` alone collides: this helper is called from TWO `#[tokio::test]`s in the same binary
+    // (`plugin_reload_reports_an_unrebuildable_disk_config` and
+    // `declared_error_set_is_exactly_what_the_handlers_emit`), which can run concurrently and would
+    // otherwise `remove_dir_all` / overwrite each other's fixture mid-request. A per-CALL monotonic
+    // ticket makes every call's directory unique, matching the `stage.rs::next_seq` idiom (pid+tag
+    // is not enough here because it's the SAME tag from two call sites, not distinct ones).
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let dir = std::env::temp_dir().join(format!(
-        "busbar-admin-reload-witness-{}",
-        std::process::id()
+        "busbar-admin-reload-witness-{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -9792,9 +9814,13 @@ async fn drive_plugin_reload_errors() {
 /// See the test above. Split out so the class-level over-claim test can drive it directly.
 async fn drive_plugin_rollback_errors() {
     crate::metrics::init();
+    // Same per-call collision as `drive_plugin_reload_errors` above (two callers, same pid) — see
+    // that function's comment.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let dir = std::env::temp_dir().join(format!(
-        "busbar-admin-rollback-witness-{}",
-        std::process::id()
+        "busbar-admin-rollback-witness-{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -10174,6 +10200,15 @@ fn documented_operations() -> Vec<(String, crate::admin::v1::contract::taxonomy:
 #[tokio::test]
 async fn test_admin_v1_restart_refuses_when_it_cannot_restart() {
     crate::metrics::init();
+    // Bracket by seq, not just by action: `AUDIT` is a process-wide ring every admin mutation in
+    // the binary writes to, unscoped by principal (every admin-token test shares the SAME fixed
+    // operator principal id, so scoping by principal would not distinguish this test's rows from a
+    // concurrent sibling's). Rows from THIS test's own restart attempts are bracketed by seq.
+    let baseline_seq = crate::admin::audit::AUDIT
+        .list(1)
+        .first()
+        .map(|e| e.seq)
+        .unwrap_or(0);
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let (addr, _h) = serve_with_gov(gov).await;
@@ -10216,7 +10251,10 @@ async fn test_admin_v1_restart_refuses_when_it_cannot_restart() {
     }
 
     // Confirmed, so the supervisor check passes — but a test binary published no shutdown channel,
-    // so the process genuinely cannot restart itself and says so.
+    // so the process genuinely cannot restart itself and says so. There are TWO distinct 409 exits
+    // (NoSupervisor above, NotRestartable here); a bare status code can't tell them apart, and a
+    // regression that ignored `confirm` (e.g. a serde-default flip) would still land on the FIRST
+    // 409 and this assertion would not notice. Check the message instead.
     let resp = admin(client.post(&url))
         .header("content-type", "application/json")
         .body(r#"{"confirm": true}"#)
@@ -10228,13 +10266,25 @@ async fn test_admin_v1_restart_refuses_when_it_cannot_restart() {
         409,
         "a process with no shutdown channel cannot restart itself"
     );
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "conflict");
+    let msg = body["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        msg.contains("cannot restart itself"),
+        "with `confirm: true` the supervisor gate must be PASSED and the refusal must come from \
+         the no-shutdown-channel gate, not the supervisor gate: {body}"
+    );
+    assert!(
+        !msg.contains("confirm"),
+        "a confirmed request must never be refused for lack of confirmation: {body}"
+    );
 
     // Every refusal is audited — the operator's only evidence, since a real restart takes the
     // connection that would have carried the response.
     let entries = crate::admin::audit::AUDIT.list(crate::admin::audit::MAX_AUDIT_ENTRIES);
     let restarts: Vec<_> = entries
         .iter()
-        .filter(|e| e.action == "admin.restart")
+        .filter(|e| e.action == "admin.restart" && e.seq > baseline_seq)
         .collect();
     assert!(
         restarts.len() >= 2,

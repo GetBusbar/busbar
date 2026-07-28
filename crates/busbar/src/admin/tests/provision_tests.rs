@@ -204,6 +204,13 @@ async fn mint_failure_after_the_provision_commit_still_records_the_committed_gro
 
     // THE RETRY IS IDEMPOTENT: the group exists now, so a second attempt takes the no-provision
     // path (it still fails on the store, but it does not re-provision or double-record).
+    //
+    // Scoped by resource (PROVISION_FAIL_RESOURCE), which removes cross-test contamination, but
+    // NOT by seq — `AUDIT` is a 1000-entry ring (`MAX_AUDIT_ENTRIES`), and a large enough
+    // concurrent admin-mutation burst between the two reads below could evict this test's own rows
+    // before the second read. Latent: nothing in this suite currently drives that many concurrent
+    // audit writes. Accepted rather than bracketed by seq, which would narrow the window but not
+    // defeat eviction.
     let audit_rows_before = crate::admin::audit::AUDIT
         .list_filtered(
             0,

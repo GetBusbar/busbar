@@ -39,6 +39,11 @@ pub(crate) fn begin_drain() {
     }
 }
 
+/// The environment markers a process supervisor is known to stamp. Single source of truth for both
+/// `supervisor_detected` and its test — a marker added here is immediately covered by the test's own
+/// literal-list assertion instead of needing a matching hand-edit in a re-implementation.
+const SUPERVISOR_MARKERS: [&str; 2] = ["INVOCATION_ID", "KUBERNETES_SERVICE_HOST"];
+
 /// Whether a process supervisor will bring busbar back up.
 ///
 /// Exiting is only a RESTART if something restarts it. systemd stamps `INVOCATION_ID` and Kubernetes
@@ -46,8 +51,14 @@ pub(crate) fn begin_drain() {
 /// of absence — which is why an undetected supervisor asks for confirmation rather than refusing
 /// outright.
 pub(crate) fn supervisor_detected() -> bool {
-    std::env::var_os("INVOCATION_ID").is_some()
-        || std::env::var_os("KUBERNETES_SERVICE_HOST").is_some()
+    supervisor_detected_in(|k| std::env::var_os(k).is_some())
+}
+
+/// The decision, separated from the environment read. Testable by injecting a closure over a
+/// fixture set — no environment mutation (which would race every other test reading the SAME two
+/// vars in this shared-process test binary), no `unsafe`.
+fn supervisor_detected_in(present: impl Fn(&str) -> bool) -> bool {
+    SUPERVISOR_MARKERS.iter().any(|k| present(k))
 }
 
 #[cfg(test)]
