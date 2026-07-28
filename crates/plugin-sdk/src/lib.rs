@@ -31,7 +31,10 @@ use std::os::raw::c_void;
 pub mod boundary;
 pub use boundary::BoundaryOutcome;
 
-// Re-export so a plugin's `export_store_plugin!` expansion can name the trait via `$crate`.
+// Convenience alias for out-of-tree store plugins that want to name the trait without also
+// depending on `busbar-api` directly. `export_store_plugin!` does NOT use this alias (it expands
+// to `store_dispatch`/`StoreHandle`, never `StoreTrait`) — this is frozen SDK surface kept for
+// callers outside this repo, not for anything internal to the macro.
 pub use busbar_api::Store as StoreTrait;
 
 /// The handle type behind the opaque `*mut c_void` for a store plugin (a boxed trait object). Named at
@@ -42,7 +45,8 @@ pub type StoreHandle = Box<dyn Store>;
 type BoxedStore = StoreHandle;
 
 /// Return the store PAYLOAD schema version this SDK builds against (the manifest `abi_version` a
-/// `kind: store` plugin declares). NOT the transport version — see [`transport_version`].
+/// `kind: store` plugin declares). NOT the transport version — see [`transport_version`]. See
+/// `docs/plugins.md`'s `abi_version` manifest field for the engine-side boot-time check against it.
 pub fn abi_version() -> u32 {
     ABI_VERSION
 }
@@ -161,6 +165,7 @@ type BoxedAuth = AuthHandle;
 /// plugin declares). NOT the transport version — see [`transport_version`]. Mirrors
 /// `secret_abi_version()`/`hook_abi_version()` below: reads the shared const rather than a bare
 /// literal, so `plugin-loader::registry`'s floor and this SDK's declared version cannot drift apart.
+/// See `docs/plugins.md`'s `abi_version` manifest field for the engine-side boot-time check.
 pub fn auth_abi_version() -> u32 {
     busbar_plugin_abi::AUTH_ABI_VERSION
 }
@@ -233,7 +238,8 @@ pub type SecretHandle = Box<dyn busbar_api::SecretModule>;
 /// The secret handle behind the opaque `*mut c_void`: a boxed [`busbar_api::SecretModule`].
 type BoxedSecret = SecretHandle;
 
-/// Return the SECRET ABI version this SDK builds against (`busbar_secret_abi_version`).
+/// Return the SECRET ABI version this SDK builds against (`busbar_secret_abi_version`). See
+/// `docs/plugins.md`'s `abi_version` manifest field for the engine-side boot-time check against it.
 pub fn secret_abi_version() -> u32 {
     busbar_plugin_abi::SECRET_ABI_VERSION
 }
@@ -328,6 +334,7 @@ pub type HookHandle = Box<dyn HookHandler>;
 type BoxedHook = HookHandle;
 
 /// Return the HOOK PAYLOAD schema version this SDK builds against (`busbar_plugin_kind() == "hook"`).
+/// See `docs/plugins.md`'s `abi_version` manifest field for the engine-side boot-time check against it.
 pub fn hook_abi_version() -> u32 {
     busbar_plugin_abi::hook::HOOK_ABI_VERSION
 }
