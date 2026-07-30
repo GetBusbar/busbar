@@ -39,6 +39,16 @@ static CLIENT: OnceLock<Client> = OnceLock::new();
 /// `observability.max_inflight_webhook_deliveries`. `webhook_inflight()` initializes it to the
 /// installed limit on first touch and falls back to the historical default (64) otherwise, preserving
 /// the `'static`-permit RAII design (`InflightGuard`).
+///
+/// KNOWN GAP, tracked for post-1.5.0 (not fixed here — see the `reload_to_apply` gap-sweep for
+/// `limits.max_inbound_concurrent` / `observability.emit_server_timing` /
+/// `observability.request_log_webhook_url`, all of which ARE flagged): unlike those three, this
+/// field is frozen on FIRST WEBHOOK DELIVERY, not necessarily at boot — so whether a live `PUT` to
+/// `max_inflight_webhook_deliveries` takes effect depends on process history (has a delivery fired
+/// yet?) that `reload_to_apply`'s stateless, request-only classifier cannot observe. Flagging it
+/// unconditionally restart-scoped would be a lie in the cases it is still live, so it is
+/// intentionally left UNFLAGGED and documented only (`docs/configuration.md`), same triage class as
+/// `limits.request_body_max_bytes`'s half-live inbound/egress split.
 static WEBHOOK_INFLIGHT: OnceLock<Semaphore> = OnceLock::new();
 
 fn webhook_inflight() -> &'static Semaphore {
