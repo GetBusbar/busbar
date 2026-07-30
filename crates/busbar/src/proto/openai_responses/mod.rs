@@ -86,12 +86,16 @@ const STATUS_FAILED: &str = "failed";
 const STATUS_INCOMPLETE: &str = "incomplete";
 
 /// Output item `type` values on the `/v1/responses` wire.
-const ITEM_TYPE_FUNCTION_CALL: &str = "function_call";
+// `pub(crate)`: also read by `proxy/hooks.rs`'s block-text dispatch (`block_text`), which must
+// enumerate the SAME Responses item-type vocabulary the reader uses rather than re-inventing
+// string literals — two independent copies of "what item types exist" is how a hook-visibility
+// gap recurs.
+pub(crate) const ITEM_TYPE_FUNCTION_CALL: &str = "function_call";
 const ITEM_TYPE_MESSAGE: &str = "message";
-const ITEM_TYPE_REASONING: &str = "reasoning";
+pub(crate) const ITEM_TYPE_REASONING: &str = "reasoning";
 
 /// Content part `type` values on the `/v1/responses` wire.
-const CONTENT_TYPE_OUTPUT_TEXT: &str = "output_text";
+pub(crate) const CONTENT_TYPE_OUTPUT_TEXT: &str = "output_text";
 const CONTENT_TYPE_REASONING_TEXT: &str = "reasoning_text";
 const CONTENT_TYPE_INPUT_TEXT: &str = "input_text";
 
@@ -565,7 +569,11 @@ fn responses_input_image_block(item: &serde_json::Value) -> Option<crate::ir::Ir
 /// this module uses for fragment reassembly), preferring nothing — a real item carries one or the
 /// other, and concatenating both is lossless when only one is present (the other contributes nothing).
 /// Returns an empty string when neither array carries text, so the caller can skip an empty item.
-fn read_reasoning_text(item: &serde_json::Value) -> String {
+///
+/// `pub(crate)`: also called from `proxy/hooks.rs`'s `block_text` dispatch for the Responses
+/// summary-only-reasoning hook-visibility fix — the hook seam must walk `content[]`/`summary[]`
+/// with the EXACT SAME accept/skip rules the reader uses, not a second hand-rolled copy.
+pub(crate) fn read_reasoning_text(item: &serde_json::Value) -> String {
     let mut text = String::new();
     for (arr_key, type_key) in [
         ("content", CONTENT_TYPE_REASONING_TEXT),

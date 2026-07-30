@@ -19,7 +19,8 @@ use serde_json::Value;
 use crate::breaker::{classify as classify_disposition, normalize_raw_error, Disposition};
 use crate::config::OnExhausted;
 use crate::proto::{
-    convert_headers, openai_family, StatusClass, PROTO_BEDROCK, PROTO_GEMINI, PROTO_RESPONSES,
+    convert_headers, openai_family, StatusClass, PROTO_ANTHROPIC, PROTO_BEDROCK, PROTO_COHERE,
+    PROTO_GEMINI, PROTO_OPENAI, PROTO_RESPONSES,
 };
 use crate::state::{App, WeightedLane};
 use crate::store::{now, Permit};
