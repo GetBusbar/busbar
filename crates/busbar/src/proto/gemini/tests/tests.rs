@@ -4854,9 +4854,12 @@ fn test_write_request_strips_rejected_schema_keywords() {
         params.get("$schema").is_none(),
         "$schema must be stripped: {wire}"
     );
-    assert!(
-        params.get("additionalProperties").is_none(),
-        "top-level additionalProperties must be stripped: {wire}"
+    // additionalProperties is a BOOLEAN here (`false`) -- the live Gemini API genuinely accepts
+    // that form (google-gemini/gemini-cli#13694), so it must survive, not be stripped.
+    assert_eq!(
+        params.get("additionalProperties"),
+        Some(&serde_json::json!(false)),
+        "boolean additionalProperties is accepted by Gemini and must survive: {wire}"
     );
     // Survivors preserved.
     assert_eq!(params.get("type"), Some(&serde_json::json!("object")));
@@ -4865,12 +4868,11 @@ fn test_write_request_strips_rejected_schema_keywords() {
         params.pointer("/properties/loc/type"),
         Some(&serde_json::json!("string"))
     );
-    // Recursion: nested additionalProperties stripped, nested properties kept.
-    assert!(
-        params
-            .pointer("/properties/nested/additionalProperties")
-            .is_none(),
-        "nested additionalProperties must be stripped recursively: {wire}"
+    // Recursion: nested BOOLEAN additionalProperties also survives.
+    assert_eq!(
+        params.pointer("/properties/nested/additionalProperties"),
+        Some(&serde_json::json!(true)),
+        "nested boolean additionalProperties must survive recursively: {wire}"
     );
     assert_eq!(
         params.pointer("/properties/nested/type"),
@@ -4958,6 +4960,98 @@ fn test_sanitize_gemini_schema_keeps_user_properties_named_like_keywords() {
         out.pointer("/properties/examples/items/type"),
         Some(&serde_json::json!("string")),
         "the property's own schema is otherwise preserved verbatim: {out}"
+    );
+}
+
+/// A realistic Pydantic/Zod-generated nested-model schema: a top-level `address` property is a
+/// `$ref` into a `$defs` entry, and that entry is itself an object with its own typed properties
+/// and `required` list -- exactly the shape every JSON-Schema-emitting SDK produces for a nested
+/// model. Before the fix, `$ref` and `$defs` were both in `GEMINI_SCHEMA_REJECTED_KEYS` and simply
+/// deleted, so `address` collapsed to a bare `{}` with no `type` at all -- the model received an
+/// untyped opaque parameter (or Gemini 400s the request outright, depending on what else is in the
+/// schema). The fix resolves `$ref` against `$defs` and inlines the real subschema, so the nested
+/// structure survives.
+#[test]
+fn test_sanitize_gemini_schema_inlines_nested_ref_against_defs() {
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "name": {"type": "string"},
+            "address": {"$ref": "#/$defs/Address"}
+        },
+        "required": ["name", "address"],
+        "$defs": {
+            "Address": {
+                "type": "object",
+                "properties": {
+                    "street": {"type": "string"},
+                    "zip": {"type": "string"}
+                },
+                "required": ["street", "zip"]
+            }
+        }
+    });
+    let out = sanitize_gemini_schema(&resolve_gemini_schema_refs(&schema));
+
+    // The nested property must be real, typed structure -- not a bare `{}`.
+    assert_eq!(
+        out.pointer("/properties/address/type"),
+        Some(&serde_json::json!("object")),
+        "a $ref'd nested model must be inlined into a real typed object, not collapsed to {{}}: {out}"
+    );
+    assert_eq!(
+        out.pointer("/properties/address/properties/street/type"),
+        Some(&serde_json::json!("string")),
+        "the referenced model's own properties must survive inlining: {out}"
+    );
+    assert_eq!(
+        out.pointer("/properties/address/properties/zip/type"),
+        Some(&serde_json::json!("string"))
+    );
+    assert_eq!(
+        out.pointer("/properties/address/required"),
+        Some(&serde_json::json!(["street", "zip"])),
+        "the referenced model's own `required` list must survive inlining: {out}"
+    );
+    // No leftover $ref/$defs/definitions anywhere in the sanitized output.
+    assert!(out.get("$defs").is_none());
+    assert!(out.pointer("/properties/address/$ref").is_none());
+}
+
+/// `additionalProperties` is only rejected by the live Gemini API when it carries a SCHEMA (the
+/// `dict[str, Model]` shape Pydantic/Zod emit as `{"additionalProperties": {"$ref": ...}}`) --
+/// google-gemini/gemini-cli#13694 shows the backend 400ing with "Expected boolean, received
+/// object" on exactly that shape. The boolean form (`true`/`false`) is genuinely accepted, so it
+/// must survive sanitization instead of being stripped.
+#[test]
+fn test_sanitize_gemini_schema_keeps_boolean_additional_properties_strips_schema_form() {
+    let schema = serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "tags": {
+                "type": "object",
+                "additionalProperties": true
+            },
+            "meta": {
+                "type": "object",
+                "additionalProperties": {"type": "string"}
+            }
+        }
+    });
+    let out = sanitize_gemini_schema(&resolve_gemini_schema_refs(&schema));
+    assert_eq!(
+        out.get("additionalProperties"),
+        Some(&serde_json::json!(false)),
+        "boolean additionalProperties is genuinely supported and must survive: {out}"
+    );
+    assert_eq!(
+        out.pointer("/properties/tags/additionalProperties"),
+        Some(&serde_json::json!(true))
+    );
+    assert!(
+        out.pointer("/properties/meta/additionalProperties").is_none(),
+        "schema-valued additionalProperties is rejected by the live API and must still be stripped: {out}"
     );
 }
 
