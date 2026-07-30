@@ -784,14 +784,107 @@ mod tests {
     use busbar_api::Store;
     use std::sync::Arc;
 
-    /// WRITE-THROUGH + RESTORE across a simulated restart, over the REAL SQLite store. A first process
+    /// TEST-ONLY durable-audit double. `busbar_store_memory::MemoryStore` deliberately makes
+    /// `append_audit`/`list_audit` no-ops — `store: memory` is documented and relied upon elsewhere
+    /// (main.rs's boot-restore path, docs/configuration.md, docs/migration-1.5.md) as genuinely
+    /// EPHEMERAL, including its audit log, so implementing real audit persistence there would
+    /// silently change that product contract just to suit these tests. These tests need a store
+    /// that DOES persist audit records within the process, so a fresh `AuditLog` attached to the
+    /// SAME live `Arc<dyn Store>` handle can simulate "process 2" restoring from "process 1" left
+    /// off. This wraps a real `MemoryStore` for every other `Store` method (key/usage/metering/
+    /// denylist all behave exactly like the production RAM default) and backs ONLY
+    /// `append_audit`/`list_audit`/`list_audit_tail` with its own in-memory ledger keyed by `seq`
+    /// (an upsert-on-seq map, mirroring a real durable backend's `INSERT OR REPLACE` semantics) —
+    /// "durable" for exactly as long as this test process lives, never across a real restart.
+    struct DurableTestStore {
+        inner: busbar_store_memory::MemoryStore,
+        audit: std::sync::Mutex<std::collections::BTreeMap<u64, busbar_api::AuditRecord>>,
+    }
+
+    impl DurableTestStore {
+        fn new() -> Self {
+            Self {
+                inner: busbar_store_memory::MemoryStore::new(),
+                audit: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+            }
+        }
+    }
+
+    impl Store for DurableTestStore {
+        fn put_key(&self, key: &busbar_api::VirtualKey) -> busbar_api::StoreResult<()> {
+            self.inner.put_key(key)
+        }
+        fn get_key(&self, id: &str) -> busbar_api::StoreResult<Option<busbar_api::VirtualKey>> {
+            self.inner.get_key(id)
+        }
+        fn list_keys(&self) -> busbar_api::StoreResult<Vec<busbar_api::VirtualKey>> {
+            self.inner.list_keys()
+        }
+        fn delete_key(&self, id: &str) -> busbar_api::StoreResult<()> {
+            self.inner.delete_key(id)
+        }
+        fn get_usage(
+            &self,
+            bucket_id: &str,
+            window_start: u64,
+        ) -> busbar_api::StoreResult<busbar_api::UsageLedger> {
+            self.inner.get_usage(bucket_id, window_start)
+        }
+        fn put_usage(
+            &self,
+            bucket_id: &str,
+            window_start: u64,
+            ledger: &busbar_api::UsageLedger,
+        ) -> busbar_api::StoreResult<()> {
+            self.inner.put_usage(bucket_id, window_start, ledger)
+        }
+        fn add_metering(&self, delta: &busbar_api::MeteringDelta) -> busbar_api::StoreResult<()> {
+            self.inner.add_metering(delta)
+        }
+        fn list_metering(
+            &self,
+            bucket: u64,
+        ) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
+            self.inner.list_metering(bucket)
+        }
+        fn append_audit(&self, entry: &busbar_api::AuditRecord) -> busbar_api::StoreResult<()> {
+            self.audit
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(entry.seq, entry.clone());
+            Ok(())
+        }
+        fn list_audit(&self) -> busbar_api::StoreResult<Vec<busbar_api::AuditRecord>> {
+            Ok(self
+                .audit
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .values()
+                .cloned()
+                .collect())
+        }
+        fn list_audit_tail(
+            &self,
+            limit: u64,
+        ) -> busbar_api::StoreResult<Vec<busbar_api::AuditRecord>> {
+            let limit = limit as usize;
+            let audit = self.audit.lock().unwrap_or_else(|e| e.into_inner());
+            let len = audit.len();
+            Ok(audit
+                .values()
+                .skip(len.saturating_sub(limit))
+                .cloned()
+                .collect())
+        }
+    }
+
+    /// WRITE-THROUGH + RESTORE across a simulated restart, over an in-memory store. A first process
     /// records N mutations with the store attached as the sink (each write-through persisted); a fresh
     /// process (fresh `AuditLog`, SAME store) restores from it — the chain verifies, the entries are
     /// intact, and the sequence resumes after the max restored seq. This is the durable roundtrip.
     #[test]
     fn durable_write_through_and_restore_roundtrip() {
-        let store: Arc<dyn Store> =
-            Arc::new(busbar_store_sqlite::SqliteStore::open_in_memory().unwrap());
+        let store: Arc<dyn Store> = Arc::new(DurableTestStore::new());
 
         // Process 1: record through the sink.
         let log1 = AuditLog::new();
@@ -836,8 +929,7 @@ mod tests {
     /// even when chain verification fails, and `load` only ever raises the counter.
     #[test]
     fn rewound_seq_cannot_overwrite_durable_history() {
-        let store: Arc<dyn Store> =
-            Arc::new(busbar_store_sqlite::SqliteStore::open_in_memory().unwrap());
+        let store: Arc<dyn Store> = Arc::new(DurableTestStore::new());
 
         // Process 1: three durable entries (seq 1..=3).
         let log1 = AuditLog::new();
@@ -908,8 +1000,7 @@ mod tests {
     /// link (empty instead of the snapshot's).
     #[test]
     fn verify_failure_without_a_snapshot_still_anchors_to_the_durable_tail() {
-        let store: Arc<dyn Store> =
-            Arc::new(busbar_store_sqlite::SqliteStore::open_in_memory().unwrap());
+        let store: Arc<dyn Store> = Arc::new(DurableTestStore::new());
 
         let log1 = AuditLog::new();
         log1.set_sink(store.clone());
@@ -952,8 +1043,7 @@ mod tests {
     /// store retains everything.
     #[test]
     fn durable_store_keeps_history_beyond_the_ram_cap() {
-        let store: Arc<dyn Store> =
-            Arc::new(busbar_store_sqlite::SqliteStore::open_in_memory().unwrap());
+        let store: Arc<dyn Store> = Arc::new(DurableTestStore::new());
         let log = AuditLog::new();
         log.set_sink(store.clone());
         let total = MAX_AUDIT_ENTRIES + 25;
@@ -1019,9 +1109,9 @@ mod tests {
     // durable log permanently stuck.
 
     /// A store whose AUDIT READS can be made to fail on demand (a transient backend blip), while
-    /// writes and everything else delegate to a real SQLite store.
+    /// writes and everything else delegate to a real in-memory store.
     struct FlakyAuditReads {
-        inner: busbar_store_sqlite::SqliteStore,
+        inner: DurableTestStore,
         fail_reads: std::sync::atomic::AtomicBool,
     }
 
@@ -1094,7 +1184,7 @@ mod tests {
     /// appends resume ABOVE the durable max.
     #[test]
     fn transient_restore_read_failure_cannot_rewind_the_durable_seq() {
-        let inner = busbar_store_sqlite::SqliteStore::open_in_memory().unwrap();
+        let inner = DurableTestStore::new();
         let store = Arc::new(FlakyAuditReads {
             inner,
             fail_reads: std::sync::atomic::AtomicBool::new(false),
@@ -1194,7 +1284,7 @@ mod tests {
     /// `(action, resource, principal)` triple is the payload identity that must not repeat.
     #[test]
     fn audit_ring_seeded_in_process_is_not_renumbered_onto_durable_history() {
-        let inner = busbar_store_sqlite::SqliteStore::open_in_memory().unwrap();
+        let inner = DurableTestStore::new();
         let store = Arc::new(FlakyAuditReads {
             inner,
             fail_reads: std::sync::atomic::AtomicBool::new(false),
@@ -1283,8 +1373,7 @@ mod tests {
         }
         let pruned_snapshot: Vec<AuditEntry> = source.export().into_iter().skip(9).collect(); // seq 10..=12
 
-        let store: Arc<dyn Store> =
-            Arc::new(busbar_store_sqlite::SqliteStore::open_in_memory().unwrap());
+        let store: Arc<dyn Store> = Arc::new(DurableTestStore::new());
         let log = AuditLog::new();
         log.set_sink(store.clone());
         log.load(pruned_snapshot);
@@ -1322,7 +1411,7 @@ mod tests {
     /// entry BELOW a still-present seeded one and violates the ring's seq-sorted invariant.
     #[test]
     fn live_entry_is_never_renumbered_below_a_seeded_one() {
-        let inner = busbar_store_sqlite::SqliteStore::open_in_memory().unwrap();
+        let inner = DurableTestStore::new();
         let store = Arc::new(FlakyAuditReads {
             inner,
             fail_reads: std::sync::atomic::AtomicBool::new(true),
@@ -1400,8 +1489,7 @@ mod tests {
     /// error rather than silently loading a broken chain.
     #[test]
     fn restore_rejects_a_tampered_durable_chain() {
-        let store: Arc<dyn Store> =
-            Arc::new(busbar_store_sqlite::SqliteStore::open_in_memory().unwrap());
+        let store: Arc<dyn Store> = Arc::new(DurableTestStore::new());
         let log = AuditLog::new();
         log.set_sink(store.clone());
         log.record_by("hook.register", "hook:a", OUTCOME_APPLIED, "admin");
@@ -1427,12 +1515,12 @@ mod tests {
 
     // ── transient-failure durability + bounded restore ───────────────────────────────────────────
 
-    /// A `Store` decorator over a real SQLite store that FAILS `append_audit` for a configured set of
+    /// A `Store` decorator over a real in-memory store that FAILS `append_audit` for a configured set of
     /// seqs (simulating a TRANSIENT durable-write hiccup), then behaves normally once those seqs are
     /// cleared. All reads delegate to the inner store. Used to prove the write-through backfill heals a
     /// gap rather than leaving the durable chain permanently corrupt.
     struct FlakyAuditStore {
-        inner: busbar_store_sqlite::SqliteStore,
+        inner: DurableTestStore,
         fail_seqs: std::sync::Mutex<std::collections::HashSet<u64>>,
     }
 
@@ -1501,7 +1589,7 @@ mod tests {
     #[test]
     fn transient_append_failure_is_backfilled_and_chain_survives_restart() {
         let store = std::sync::Arc::new(FlakyAuditStore {
-            inner: busbar_store_sqlite::SqliteStore::open_in_memory().unwrap(),
+            inner: DurableTestStore::new(),
             fail_seqs: std::sync::Mutex::new([2u64].into_iter().collect()),
         });
         let log = AuditLog::new();
@@ -1543,11 +1631,10 @@ mod tests {
     /// BOUNDED RESTORE READ: with a durable history far larger than the RAM ring, `restore_from_store`
     /// must read only the bounded tail (`list_audit_tail`), never materialize the whole log. We record
     /// more than `MAX_AUDIT_ENTRIES`, then restore and assert the ring holds exactly the cap and the
-    /// restored tail verifies - proving the read is bounded (the SQLite `LIMIT` tail query backs it).
+    /// restored tail verifies - proving the read is bounded (the store's bounded tail-read backs it).
     #[test]
     fn restore_read_is_bounded_to_the_ring() {
-        let store: Arc<dyn Store> =
-            Arc::new(busbar_store_sqlite::SqliteStore::open_in_memory().unwrap());
+        let store: Arc<dyn Store> = Arc::new(DurableTestStore::new());
         let log = AuditLog::new();
         log.set_sink(store.clone());
         let total = MAX_AUDIT_ENTRIES + 50;
@@ -1600,7 +1687,7 @@ mod tests {
     #[test]
     fn pruned_gap_halts_durable_catch_up_and_does_not_advance_past_the_hole() {
         let store = std::sync::Arc::new(FlakyAuditStore {
-            inner: busbar_store_sqlite::SqliteStore::open_in_memory().unwrap(),
+            inner: DurableTestStore::new(),
             fail_seqs: std::sync::Mutex::new([2u64].into_iter().collect()), // seq 2 fails forever
         });
         let log = AuditLog::new();
@@ -1654,8 +1741,7 @@ mod tests {
     /// overwrite B's rows.
     #[test]
     fn a_second_writer_is_detected_and_the_sink_detaches() {
-        let store: Arc<dyn Store> =
-            Arc::new(busbar_store_sqlite::SqliteStore::open_in_memory().unwrap());
+        let store: Arc<dyn Store> = Arc::new(DurableTestStore::new());
 
         let node_a = AuditLog::new();
         node_a.set_sink(store.clone());
@@ -1720,7 +1806,7 @@ mod tests {
     /// A `Store` decorator that sleeps on `append_audit` — the FIRST call only, then runs at full
     /// speed — a stand-in for a slow durable store's write round-trip. All other methods delegate.
     struct SlowAuditStore {
-        inner: busbar_store_sqlite::SqliteStore,
+        inner: DurableTestStore,
         delay: std::time::Duration,
         fired: std::sync::atomic::AtomicBool,
     }
@@ -1789,7 +1875,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn durable_audit_write_through_does_not_park_the_reactor() {
         let store = std::sync::Arc::new(SlowAuditStore {
-            inner: busbar_store_sqlite::SqliteStore::open_in_memory().unwrap(),
+            inner: DurableTestStore::new(),
             delay: std::time::Duration::from_millis(500),
             fired: std::sync::atomic::AtomicBool::new(false),
         });
@@ -1837,7 +1923,7 @@ mod tests {
             );
         }
         let store = std::sync::Arc::new(SlowAuditStore {
-            inner: busbar_store_sqlite::SqliteStore::open_in_memory().unwrap(),
+            inner: DurableTestStore::new(),
             delay: std::time::Duration::from_millis(500),
             fired: std::sync::atomic::AtomicBool::new(false),
         });
@@ -1883,8 +1969,7 @@ mod tests {
     /// `WRITE_THROUGH_HEADROOM` (which the flusher owns).
     #[tokio::test]
     async fn flush_durable_drains_the_whole_pending_range() {
-        let store =
-            std::sync::Arc::new(busbar_store_sqlite::SqliteStore::open_in_memory().unwrap());
+        let store = std::sync::Arc::new(DurableTestStore::new());
         let log = AuditLog::new();
         log.set_sink(store.clone());
 
@@ -1924,7 +2009,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_burst_outrunning_store_latency_never_prunes_an_unpersisted_seq() {
         let store = std::sync::Arc::new(SlowAuditStore {
-            inner: busbar_store_sqlite::SqliteStore::open_in_memory().unwrap(),
+            inner: DurableTestStore::new(),
             delay: std::time::Duration::from_millis(20),
             fired: std::sync::atomic::AtomicBool::new(false),
         });

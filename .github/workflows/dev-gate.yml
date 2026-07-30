@@ -61,6 +61,23 @@ jobs:
           path: webrequest-hook
         continue-on-error: true
 
+      # store-sqlite now lives entirely in its own repo (fully extracted, same-repo 2-crate
+      # workspace) — this checkout is what `crates/plugin-loader`'s loader-mechanism tests
+      # (TOCTOU-safe loading, hot-swap, staged-file lifecycle, denylist-fallback classification)
+      # build a REAL cdylib from, since there is no in-tree kind:store plugin left to test the
+      # loader's generic mechanics against. See store_fixture_plugin_path()'s doc comment.
+      - name: Checkout store-sqlite (first-party plugin source)
+        uses: actions/checkout@v7
+        with:
+          repository: GetBusbar/store-sqlite
+          path: store-sqlite
+        continue-on-error: true
+
+      - name: Build the store-sqlite-plugin cdylib from the sibling checkout
+        run: cargo build --release -p busbar-store-sqlite-plugin
+        working-directory: store-sqlite
+        continue-on-error: true
+
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -72,4 +89,10 @@ jobs:
 
       - name: Run the real end-to-end release gate
         run: ./scripts/release-check.sh
+        working-directory: busbarAI
+
+      - name: Run the loader-mechanism tests against the real sibling-built store-sqlite-plugin
+        env:
+          DEV_GATE: "1"
+        run: cargo test --release -p busbar-plugin-loader
         working-directory: busbarAI
