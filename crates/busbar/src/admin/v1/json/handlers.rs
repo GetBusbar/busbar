@@ -2514,26 +2514,116 @@ fn reload_to_apply_fields(req: &crate::config::overlay::RootSettings) -> Vec<Str
     push(req.admin_tls.is_some(), "admin_tls");
     push(req.admin_insecure.is_some(), "admin_insecure");
     push(req.store.is_some(), "store");
-    // `main.rs` REUSES the prior `UpstreamClients` across a config apply (the warm connection pools
-    // are deliberately kept — rebuilding them on every apply would cold-start every upstream on a
-    // rate-card tweak). Its `else` builder arm is the ONLY place these four fields are read, so a PUT
-    // that touches them changes the STORED config but not the live `reqwest::Client` — flag them
+    // Four `limits.*` fields are boot-frozen, via TWO independent mechanisms — flag them
     // individually (dotted, since `limits` is a nested `Option<LimitsPatch>`, not a top-level
-    // `Option`) rather than the whole `limits` section, which would also mis-flag the genuinely-live
-    // `request_body_max_bytes`/`max_inbound_concurrent`/etc.
+    // `Option`) rather than the whole `limits` section, which would also mis-flag the
+    // genuinely-live rest of `limits` (e.g. `tls_handshake_timeout_secs`).
+    //
+    // Mechanism 1 — `main.rs` REUSES the prior `UpstreamClients` across a config apply (the warm
+    // connection pools are deliberately kept — rebuilding them on every apply would cold-start
+    // every upstream on a rate-card tweak). Its `else` builder arm is the ONLY place these three
+    // fields are read, so a PUT that touches them changes the STORED config but not the live
+    // `reqwest::Client`.
+    //
+    // Mechanism 2 — `max_inbound_concurrent` is captured ONCE in `main()` and baked into a
+    // `tower::limit::GlobalConcurrencyLimitLayer` on the DATA ROUTER at process start. A config
+    // apply swaps only `Arc<App>` (`AppHandle::swap`); the router — and the semaphore's permit
+    // count — is never rebuilt, so this field is frozen independently of the `UpstreamClients`
+    // reuse above.
+    //
+    // DRIFT GUARD, same idiom as `config::patch::tests::every_patch_mirrors_every_field_of_its_section`:
+    // this is an EXHAUSTIVE destructure of `LimitsPatch` (no `..`), so a field added there — which
+    // itself cannot compile without appearing here — must be explicitly named BOOT-FROZEN (pushed
+    // below) or GENUINELY LIVE (bound `_`, with a one-line reason) before this crate builds. That is
+    // exactly the bug class `max_inbound_concurrent` fell into: a boot-frozen field silently absent
+    // from a hand-maintained push list. A new boot-frozen field can no longer go unflagged by
+    // omission; the compiler forces a decision.
     if let Some(limits) = req.limits.as_ref() {
+        let crate::config::patch::LimitsPatch {
+            upstream_request_timeout_secs,
+            pool_max_idle_per_host,
+            pool_idle_timeout_secs,
+            max_inbound_concurrent,
+            // GENUINELY LIVE — read per-request/per-connection off the `INSTALLED` snapshot that
+            // `InstallGuard::install` refreshes on every apply (see `limits.rs`), or off the swapped
+            // `Arc<App>` directly. NOT boot-captured, so a live `PUT` takes effect without a restart.
+            request_body_max_bytes: _, // HALF-live: the egress translate cap is live via the
+            // `INSTALLED` snapshot, but the inbound `DefaultBodyLimit` 413 threshold is boot-frozen
+            // the same way as `max_inbound_concurrent` (`main.rs:3184`, in `apply_common_layers`,
+            // reachable only from the boot/test-only router builders). Tracked as a known post-1.5.0
+            // gap (documented, not flagged here — see docs/configuration.md) rather than fixed now:
+            // fixing the coupling touches the request path and router layer stack, and flagging it
+            // dotted would mis-state that the WHOLE field is stored-not-live when three of its four
+            // consumers are live.
+            max_keys_per_principal: _,
+            max_auto_provisioned_groups: _,
+            hard_down_cooldown_secs: _,
+            upstream_error_body_max_bytes: _,
+            tls_handshake_timeout_secs: _,
+            request_body_read_timeout_secs: _,
+            max_honored_retry_after_secs: _,
+            default_max_tokens: _,
+            reasoning_effort_budgets: _,
+        } = limits;
         push(
-            limits.upstream_request_timeout_secs.is_some(),
+            upstream_request_timeout_secs.is_some(),
             "limits.upstream_request_timeout_secs",
         );
         push(
-            limits.pool_max_idle_per_host.is_some(),
+            pool_max_idle_per_host.is_some(),
             "limits.pool_max_idle_per_host",
         );
         push(
-            limits.pool_idle_timeout_secs.is_some(),
+            pool_idle_timeout_secs.is_some(),
             "limits.pool_idle_timeout_secs",
         );
+        push(
+            max_inbound_concurrent.is_some(),
+            "limits.max_inbound_concurrent",
+        );
+    }
+    // Three `observability.*` fields are boot-frozen — same class as `limits.max_inbound_concurrent`
+    // above, different mechanisms:
+    //
+    // `emit_server_timing` is captured ONCE in `main()` and baked as fixed middleware state into
+    // `apply_common_layers` (via `from_fn_with_state`) when the router is built at process start; a
+    // config apply never rebuilds the router.
+    //
+    // `request_log_webhook_url` is captured ONCE in `main()` and seeds a process-global
+    // `OnceLock<Arc<String>>` (`observability::configure_webhook`) — `OnceLock::set` silently no-ops
+    // on every call after the first, so the webhook target cannot change for the life of the process.
+    //
+    // `otlp_url` is captured ONCE in `main()` and passed to `observability::init_logging`, a one-shot
+    // `tracing_subscriber::registry().try_init()` — a second call is a structural no-op (logs
+    // "already initialized" and drops the new exporter).
+    //
+    // DRIFT GUARD, same idiom as above: an EXHAUSTIVE destructure of `ObservabilityPatch` (no `..`).
+    // `max_inflight_webhook_deliveries` is NOT cleanly classifiable as boot-frozen (its `OnceLock`
+    // is sized from config on FIRST webhook delivery, whichever moment that is post-boot, not
+    // necessarily at boot — so an operator's PUT sometimes does take effect, if no delivery has
+    // fired yet, and sometimes doesn't; flagging it unconditionally restart-scoped would be wrong in
+    // the cases it IS still live). Left unflagged and undocumented as a known, lower-severity gap
+    // rather than guessed at here; see docs/configuration.md.
+    if let Some(observability) = req.observability.as_ref() {
+        let crate::config::patch::ObservabilityPatch {
+            emit_server_timing,
+            request_log_webhook_url,
+            otlp_url,
+            // GENUINELY LIVE — read fresh on every call via `crate::limits::webhook_delivery_timeout_secs()`,
+            // backed by the `INSTALLED` snapshot refreshed on every apply. Not cached, not boot-captured.
+            webhook_delivery_timeout_secs: _,
+            // See the doc comment above: state-dependent, neither cleanly live nor cleanly frozen.
+            max_inflight_webhook_deliveries: _,
+        } = observability;
+        push(
+            emit_server_timing.is_some(),
+            "observability.emit_server_timing",
+        );
+        push(
+            request_log_webhook_url.is_some(),
+            "observability.request_log_webhook_url",
+        );
+        push(otlp_url.is_some(), "observability.otlp_url");
     }
     out
 }
