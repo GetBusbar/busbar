@@ -23,6 +23,12 @@
 
 use serde_yaml::{Mapping, Value};
 
+/// 1.4.x's real default `governance.db_path` (`DEFAULT_GOVERNANCE_DB` in the retired v1.4.1
+/// schema) -- what an operator's SQLite governance database is really at when they never set
+/// `db_path` explicitly. Migration must reproduce this exact default, not a 1.5.0-side one, so a
+/// config that omitted `db_path` still finds its real, existing database file after migration.
+const DEFAULT_GOVERNANCE_DB_1_4: &str = "busbar-governance.db";
+
 /// The named boot error for a detected 1.x config (P9.3). Every marker is listed so the operator
 /// sees the full scope before running the migrator.
 pub(crate) fn legacy_config_error(markers: &[String]) -> String {
@@ -194,10 +200,19 @@ fn migrate_governance(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
     };
     let mut gov = as_map(gov);
 
-    // store + db_path -> store: { module, settings }.
-    let store_module = take(&mut gov, "store").and_then(|v| v.as_str().map(str::to_string));
+    // 1.4.x's ONLY durable governance backend was SQLite at `governance.db_path` (default
+    // "busbar-governance.db") -- `GovernanceCfg` never had a `store` module-selector field (verified
+    // against the real v1.4.1 schema), so gating this migration on a `store:` key that no real 1.4.x
+    // config could ever contain silently dropped `db_path` for EVERY real config and left the
+    // migrated document with no `store:` section at all -- which defaults to the EPHEMERAL in-memory
+    // store, silently orphaning every existing key/budget/audit row in the operator's real database on
+    // first restart. Tolerate a stray `store:` key if a hand-edited/forward-compat config has one, but
+    // never let its ABSENCE suppress the migration: presence of `governance:` (this function already
+    // returned early if absent) with 1.4.x's real, always-SQLite semantics is what must drive this.
+    let stray_module = take(&mut gov, "store").and_then(|v| v.as_str().map(str::to_string));
     let db_path = take(&mut gov, "db_path").and_then(|v| v.as_str().map(str::to_string));
-    if let Some(module) = store_module {
+    let module = stray_module.unwrap_or_else(|| "sqlite".to_string());
+    {
         let mut store = Mapping::new();
         store.insert("module".into(), module.clone().into());
         let mut settings = Mapping::new();
@@ -205,6 +220,10 @@ fn migrate_governance(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
             ("memory", _) => {}
             ("sqlite", Some(p)) => {
                 settings.insert("db_path".into(), p.into());
+            }
+            // No explicit db_path: 1.4.x's real default was "busbar-governance.db", not memory.
+            ("sqlite", None) => {
+                settings.insert("db_path".into(), DEFAULT_GOVERNANCE_DB_1_4.into());
             }
             (_, Some(p)) => {
                 settings.insert("url".into(), p.into());
@@ -218,7 +237,7 @@ fn migrate_governance(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
             store.insert("settings".into(), Value::Mapping(settings));
         }
         root.insert("store".into(), Value::Mapping(store));
-        changes.push("governance.store/db_path -> store: { module, settings }".into());
+        changes.push("governance.db_path -> store: { module: sqlite, settings: { db_path } } (1.4.x's only durable backend was SQLite)".into());
     }
 
     if let Some(card) = take(&mut gov, "rate_card") {
