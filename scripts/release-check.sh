@@ -4,8 +4,10 @@
 #
 # WHAT THIS TESTS
 #   Everything the unit/integration test suite cannot: that the ACTUAL signed-shape plugin
-#   tarballs a user downloads (built + packed exactly the way .github/workflows/release.yml's
-#   `store-plugins` / `auth-plugins` jobs do it) load into a REAL busbar binary, that busbar
+#   tarballs a user downloads (built + packed this script's own Phase 0b, in the same shape each
+#   plugin's own standalone-repo release workflow packs it — busbarAI's release.yml no longer
+#   builds or uploads store/auth plugin tarballs itself; see the "Store/auth plugin releases moved
+#   out" comment in .github/workflows/release.yml) load into a REAL busbar binary, that busbar
 #   serves REAL HTTP traffic through each backend exactly the way docs/getting-started.md and
 #   docs/configuration.md tell an operator to configure it, and that keys/usage genuinely
 #   SURVIVE A PROCESS RESTART against sqlite, postgres, and redis. It builds real artifacts,
@@ -200,8 +202,10 @@ PACK_BIN="${REPO_ROOT}/target/release/busbar-plugin-pack"
 ok "busbar binary: $BUSBAR_BIN"
 ok "busbar-plugin-pack: $PACK_BIN"
 
-# ── Build + pack every store plugin + the auth-oidc plugin, mirroring release.yml's
-#    store-plugins/auth-plugins jobs' EXACT build + pack invocations (host-native, unsigned). ──────
+# ── Build + pack every store plugin + the auth-oidc plugin, in the same host-native/unsigned
+#    shape each plugin's own standalone-repo release workflow packs it (busbarAI's release.yml
+#    itself no longer builds or packs these — it only ships the busbar binary + the bundled hook
+#    plugins now; see the "Store/auth plugin releases moved out" comment there). ──────────────────
 phase "Phase 0b: build + pack store-sqlite / store-postgres / store-redis / auth-oidc plugin tarballs"
 cargo build --release \
   -p busbar-store-sqlite-plugin -p busbar-store-postgres-plugin -p busbar-store-redis-plugin \
