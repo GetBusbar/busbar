@@ -207,6 +207,101 @@ fn label_values_are_escaped() {
     assert!(text.contains(r#"k="a\"b\\c""#), "{text}");
 }
 
+/// A per-call unique hook name. `IN_FLIGHT` (`hooks/scrape.rs`) is process-global and keyed by hook
+/// name, so a literal shared with any concurrently-running test in this binary makes an "the slot is
+/// taken"/"the slot is free" assertion depend on test interleaving. A monotonic ticket -- not a clock
+/// read, which is not monotonic under coarse timer resolution -- makes each claim this test makes
+/// unambiguously its own.
+fn unique_hook(base: &str) -> String {
+    static TICKET: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    format!(
+        "{base}-{}",
+        TICKET.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
+}
+
+/// `unique_hook` must actually be unique per call, and always prefixed by its base -- the
+/// deterministic proof that the ticket mechanism does what `only_one_refresh_per_hook_can_be_in_flight`
+/// (below) relies on to never collide with a sibling test running concurrently in this binary.
+#[test]
+fn unique_hook_never_repeats() {
+    let a = unique_hook("x");
+    let b = unique_hook("x");
+    assert_ne!(a, b, "two calls must never return the same name");
+    assert!(a.starts_with("x-") && b.starts_with("x-"), "{a} / {b}");
+}
+
+/// THE MANUFACTURED-COLLISION PROOF. `IN_FLIGHT` (`hooks/scrape.rs`) is one process-global set
+/// keyed by hook name -- so two INDEPENDENT callers (in production: two scrapes; in this test
+/// binary: two `#[test]` functions that happen to be scheduled concurrently) sharing the SAME
+/// literal name genuinely interfere with each other's claim, even though each believes it owns an
+/// exclusive slot. Force that interference deterministically with two threads and a barrier
+/// (rather than hoping cargo's test scheduler happens to overlap two functions), then show
+/// `unique_hook` makes the same two "callers" independent by construction.
+#[test]
+fn manufactured_collision_proves_the_shared_literal_hazard_and_the_fix() {
+    use std::sync::{Arc, Barrier};
+
+    // Part 1 -- THE HAZARD: two callers sharing one literal key DO interfere. This is exactly what
+    // would happen if two separate #[test] functions each hardcoded "busy-hook" and the test
+    // harness happened to run them at the same time -- one call's "I claimed the slot" assertion
+    // would spuriously fail because a totally unrelated caller got there first.
+    // A short HOLD after claiming (before releasing) forces genuine overlap regardless of
+    // scheduling jitter around the barrier -- without it, a fast claim+release on one thread could
+    // fully complete before the other even starts, hiding the very interference this test exists
+    // to demonstrate.
+    let hold = std::time::Duration::from_millis(100);
+
+    let shared_key = "manufactured-collision-shared-literal";
+    let barrier = Arc::new(Barrier::new(2));
+    let results: Vec<bool> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..2)
+            .map(|_| {
+                let barrier = barrier.clone();
+                scope.spawn(move || {
+                    barrier.wait();
+                    let claim = InFlight::claim(shared_key);
+                    let won = claim.is_some();
+                    std::thread::sleep(hold);
+                    drop(claim);
+                    won
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    assert_eq!(
+        results.iter().filter(|&&ok| ok).count(),
+        1,
+        "two callers racing on the SAME literal key must interfere -- exactly one claim wins: {results:?}"
+    );
+
+    // Part 2 -- THE FIX: the same two "callers", each through `unique_hook`, never share a key, so
+    // neither can observe the other's claim -- both win independently, by construction.
+    let barrier = Arc::new(Barrier::new(2));
+    let results: Vec<bool> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..2)
+            .map(|_| {
+                let barrier = barrier.clone();
+                scope.spawn(move || {
+                    let key = unique_hook("manufactured-collision-caller");
+                    barrier.wait();
+                    let claim = InFlight::claim(&key);
+                    let won = claim.is_some();
+                    std::thread::sleep(hold);
+                    drop(claim);
+                    won
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    assert!(
+        results.iter().all(|&ok| ok),
+        "two callers on DISTINCT unique_hook keys must never interfere: {results:?}"
+    );
+}
+
 /// THE SPAWN-STORM GUARD. A scrape fires a refresh for every STALE hook, and staleness does not
 /// clear until the refresh COMPLETES -- so with staleness as the only gate, every scrape that lands
 /// while a refresh is running spawns another one. Each refresh stages a copy of the plugin to disk,
@@ -215,30 +310,38 @@ fn label_values_are_escaped() {
 ///
 /// The admission ticket is the in-flight claim. Asserted on the claim itself rather than through a
 /// live scrape, because "how many tasks did a handler spawn" is not otherwise observable.
+///
+/// Keys are `unique_hook(..)`, not literals: `IN_FLIGHT` is one process-global set shared by every
+/// test in this binary, so a literal claimed here could collide with the same literal claimed by a
+/// concurrently-running sibling test and make these assertions depend on interleaving.
 #[test]
 fn only_one_refresh_per_hook_can_be_in_flight() {
-    let first = InFlight::claim("busy-hook").expect("the first scrape claims the slot");
+    let busy = unique_hook("busy-hook");
+    let other = unique_hook("other-hook");
+    let panicky = unique_hook("panicky");
+
+    let first = InFlight::claim(&busy).expect("the first scrape claims the slot");
     assert!(
-        InFlight::claim("busy-hook").is_none(),
+        InFlight::claim(&busy).is_none(),
         "a second scrape landing mid-refresh must NOT spawn another plugin load"
     );
     // A different hook is unaffected -- the gate is per-hook, not a global one.
-    let other = InFlight::claim("other-hook").expect("a different hook claims independently");
+    let other_claim = InFlight::claim(&other).expect("a different hook claims independently");
 
     // Releasing lets the next scrape through, so a hook is never wedged out of refreshing.
     drop(first);
-    let again = InFlight::claim("busy-hook").expect("the slot is free once the refresh finishes");
+    let again = InFlight::claim(&busy).expect("the slot is free once the refresh finishes");
     drop(again);
-    drop(other);
+    drop(other_claim);
 
     // And a PANICKING refresh must release too: `InFlight` is RAII, so unwinding drops the claim.
-    let claimed = InFlight::claim("panicky");
+    let claimed = InFlight::claim(&panicky);
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
         let _held = claimed;
         panic!("refresh blew up mid-load");
     }));
     assert!(
-        InFlight::claim("panicky").is_some(),
+        InFlight::claim(&panicky).is_some(),
         "a refresh that panicked must not wedge its hook out of ever refreshing again"
     );
 }
