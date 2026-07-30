@@ -1,0 +1,51 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (C) 2026 Busbar Inc and contributors
+#
+# The DEFAULT config.yaml baked into the getbusbar/busbar Docker image (see ../Dockerfile). It is
+# what a user gets from a plain
+#
+#   docker run -d -p 8080:8080 -e ANTHROPIC_KEY -e BUSBAR_ADMIN_TOKEN getbusbar/busbar
+#
+# with no `-v .../config.yaml:/etc/busbar/config.yaml` mount at all: one provider (anthropic), one
+# pool, and the first-party `busbar-headroom` hook plugin PRE-INSTALLED (tarball baked into
+# /etc/busbar/plugins by the Dockerfile) and pre-wired as a global rewrite gate — so prompt
+# compression works out of the box with no plugin setup.
+#
+# This is a minimal quickstart default, not a production template: `auth.chain: []` is an open
+# data-plane relay (loud startup warning; fine for a local/trusted-network trial). For anything
+# beyond a quickstart, mount your own config.yaml over this path — see ../config.yaml for the full
+# annotated walkthrough (providers, pools, auth, groups, hooks) to build one from. A mounted
+# config.yaml REPLACES this file entirely (standard Docker bind-mount override): if you want
+# headroom wired into your own config, copy the `plugins:` and `global_hooks:` blocks below into it
+# — the tarball at /etc/busbar/plugins/busbar-headroom.tar.gz is still there either way.
+#
+# webrequest-hook is NOT pre-installed or pre-wired here: it forwards to an operator-chosen URL, so
+# it has no zero-config default (see docs/plugins.md).
+
+listen: "0.0.0.0:8080"
+
+auth:
+  chain: []                                            # open data-plane relay — see the note above
+  admin_auth:
+    - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }
+
+providers:
+  anthropic:
+    api_key: { env: ANTHROPIC_KEY }
+
+models:
+  claude:
+    provider: anthropic
+
+pools:
+  default:
+    hooks:
+      - { module: busbar-headroom, kind: gate, prompt: rw, timeout_ms: 50 }
+    members:
+      - model: claude
+
+# Pre-installed first-party hook plugin (see the Dockerfile: the signed tarball is copied to
+# /etc/busbar/plugins/busbar-headroom.tar.gz at build time). `dir` matches that path exactly.
+plugins:
+  enabled: true
+  dir: /etc/busbar/plugins
