@@ -1426,6 +1426,56 @@ fn cohere_tool_ids_pass_through_verbatim_no_decode() {
     assert_eq!(remap.native_for("cohere", "bb161626364"), "bb161626364");
 }
 
+/// `clamp_stop`'s warning must report how many sequences were DROPPED, not the total provided —
+/// "carried 8 more than that vendor allows" overstates the excess by the cap (with 8 provided and
+/// a cap of 5, only 3 were actually dropped).
+#[test]
+fn clamp_stop_warn_reports_the_dropped_count_not_the_total() {
+    use crate::test_support::warn_capture::WarnCapture;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let stop: Vec<String> = (0..8).map(|i| format!("s{i}")).collect();
+    let cap = WarnCapture::default();
+    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    let out = tracing::subscriber::with_default(subscriber, || {
+        crate::proto::clamp_stop(&stop, 5, "OpenAI")
+    });
+
+    assert_eq!(
+        out,
+        stop[..5],
+        "clamp_stop must still truncate to the cap, unaffected by the fix"
+    );
+
+    let msgs = cap.messages();
+    assert!(
+        msgs.iter().any(|m| m.contains("dropped=3")),
+        "the warning must report the actually-dropped count: {msgs:?}"
+    );
+    assert!(
+        !msgs.iter().any(|m| m.contains("8 more")),
+        "the warning must not overstate the excess as the total minus zero: {msgs:?}"
+    );
+}
+
+/// CHARACTERIZATION (not a RED test — this passes before and after `write_sse_frame` by
+/// construction, since it is pinning byte-for-byte output rather than a behavior change). The
+/// real guard for the `reframe_sse` → `write_sse_frame` refactor (String-per-frame allocation →
+/// append-in-place) is the byte-parity golden wall
+/// (`proto/tests/translate_parity_golden_tests.rs`), which must stay green across this change.
+#[test]
+fn write_sse_frame_pins_both_framings_byte_for_byte() {
+    let data = serde_json::json!({"a": 1});
+
+    let mut out = Vec::new();
+    crate::proto::write_sse_frame(&mut out, "x", &data);
+    assert_eq!(out, b"event: x\ndata: {\"a\":1}\n\n");
+
+    let mut out = Vec::new();
+    crate::proto::write_sse_frame(&mut out, "", &data);
+    assert_eq!(out, b"data: {\"a\":1}\n\n");
+}
+
 #[cfg(test)]
 mod ir_property_tests {
     use super::*;

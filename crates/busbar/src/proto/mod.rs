@@ -1662,30 +1662,47 @@ fn scan_json_value_end(bytes: &[u8], start: usize) -> Option<usize> {
 /// Truncate `stop` to the egress vendor's published cap. Vendors 400 on an over-length
 /// stop-sequence array and the IR carries an unbounded `Vec` (no protocol enforces a cap on
 /// ingress), so a cross-protocol request can always exceed a smaller target's cap. NON-SILENT:
-/// warns only when it actually truncates, naming `proto` and the cap.
+/// warns only when it actually truncates, naming `proto`, the cap, and how many sequences were
+/// dropped.
 pub(crate) fn clamp_stop(stop: &[String], cap: usize, proto: &'static str) -> Vec<String> {
     if stop.len() <= cap {
         return stop.to_vec();
     }
     let provided = stop.len();
+    // `stop.len() > cap` is guaranteed by the early return above, so this cannot underflow;
+    // `saturating_sub` would only imply a doubt that isn't there.
+    let dropped = provided - cap;
     tracing::warn!(
         proto,
         cap,
         provided,
+        dropped,
         "truncating stop sequences to {proto}'s documented cap of {cap}; the request carried \
-         {provided} more than that vendor allows"
+         {provided}, so {dropped} were dropped"
     );
     stop[..cap].to_vec()
 }
 
-/// Re-frame an IR-derived `(event_type, data)` as INGRESS SSE bytes. A non-empty `event_type`
-/// yields Anthropic-style `event:`/`data:` frames; an empty one yields OpenAI-style bare `data:`.
-fn reframe_sse(event_type: &str, data: &serde_json::Value) -> String {
-    if event_type.is_empty() {
-        format!("data: {data}\n\n")
-    } else {
-        format!("event: {event_type}\ndata: {data}\n\n")
+/// Append an IR-derived `(event_type, data)` to `out` as INGRESS SSE bytes. A non-empty
+/// `event_type` yields Anthropic-style `event:`/`data:` frames; an empty one yields OpenAI-style
+/// bare `data:`. Writes THROUGH the caller's buffer, not into a returned `String`: this is the
+/// per-chunk streaming path (`stream.rs`'s `emit_ir_event`), and every call site immediately threw
+/// the returned `String` away into its own `out: &mut Vec<u8>` — one allocation per translated
+/// frame for nothing. Serializes via `crate::json::to_vec` (the sonic seam), not `Value`'s
+/// `Display`-via-`format!`: this function used to bypass that seam even though `json.rs`'s own
+/// module doc claims every body-JSON path, including the SSE-event paths, goes through it.
+fn write_sse_frame(out: &mut Vec<u8>, event_type: &str, data: &serde_json::Value) {
+    if !event_type.is_empty() {
+        out.extend_from_slice(b"event: ");
+        out.extend_from_slice(event_type.as_bytes());
+        out.push(b'\n');
     }
+    out.extend_from_slice(b"data: ");
+    // `unwrap_or_default()` matches the identical decision already made one call site up
+    // (`stream.rs`'s `crate::json::to_vec(&out_data).unwrap_or_default()`): a `Value` that fails to
+    // serialise is not a condition this emitter can report, and diverging here would be gratuitous.
+    out.extend_from_slice(&crate::json::to_vec(data).unwrap_or_default());
+    out.extend_from_slice(b"\n\n");
 }
 
 /// Anthropic reader implementation.
