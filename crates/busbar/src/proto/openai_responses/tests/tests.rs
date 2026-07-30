@@ -6710,3 +6710,108 @@ fn responses_output_text_annotations_read_into_ir_citations() {
         "offsets must stay None until the byte-vs-character unit is established: {c:?}"
     );
 }
+
+// Performance follow-up (no behavior change): `read_reasoning_text` returns `Cow<'_, str>`
+// instead of an owned `String` so `total_text_chars` (which only needs a char count and
+// immediately discards the text) does not pay an allocation on the common single-part case.
+// These tests pin the Cow discipline itself, which a plain `assert_eq!(text, "...")` would not
+// catch (an `Owned` regression still compares equal to a `Borrowed` value of the same content).
+
+/// Exactly one text-bearing part — whether it lives in `content[]` alone or `summary[]` alone —
+/// must borrow straight from the item, not allocate.
+#[test]
+fn read_reasoning_text_single_part_borrows() {
+    let content_only = serde_json::json!({
+        "type": "reasoning",
+        "content": [{"type": "reasoning_text", "text": "one part"}]
+    });
+    assert!(matches!(
+        read_reasoning_text(&content_only),
+        std::borrow::Cow::Borrowed("one part")
+    ));
+
+    let summary_only = serde_json::json!({
+        "type": "reasoning",
+        "summary": [{"type": "summary_text", "text": "just a summary"}]
+    });
+    assert!(matches!(
+        read_reasoning_text(&summary_only),
+        std::borrow::Cow::Borrowed("just a summary")
+    ));
+}
+
+/// Two `content[]` parts + one `summary[]` part must still allocate and concatenate in order —
+/// `content[]` fully, then `summary[]` — with NO separator between parts (the existing,
+/// deliberately separator-less concat behavior; this test only pins the Cow variant, not a new
+/// separator).
+#[test]
+fn read_reasoning_text_multi_part_concatenates() {
+    let item = serde_json::json!({
+        "type": "reasoning",
+        "content": [
+            {"type": "reasoning_text", "text": "first "},
+            {"type": "reasoning_text", "text": "second "}
+        ],
+        "summary": [{"type": "summary_text", "text": "third"}]
+    });
+    let text = read_reasoning_text(&item);
+    assert!(matches!(text, std::borrow::Cow::Owned(_)));
+    assert_eq!(text.as_ref(), "first second third");
+}
+
+/// Cross-array edge cases: exactly one accepted part in EITHER array alone still borrows; one in
+/// each array must allocate and concatenate BOTH (not silently drop one).
+#[test]
+fn read_reasoning_text_cross_array_borrow_vs_allocate() {
+    let content_one_summary_zero = serde_json::json!({
+        "type": "reasoning",
+        "content": [{"type": "reasoning_text", "text": "C"}],
+        "summary": []
+    });
+    assert!(matches!(
+        read_reasoning_text(&content_one_summary_zero),
+        std::borrow::Cow::Borrowed("C")
+    ));
+
+    let content_zero_summary_one = serde_json::json!({
+        "type": "reasoning",
+        "content": [],
+        "summary": [{"type": "summary_text", "text": "S"}]
+    });
+    assert!(matches!(
+        read_reasoning_text(&content_zero_summary_one),
+        std::borrow::Cow::Borrowed("S")
+    ));
+
+    let one_in_each = serde_json::json!({
+        "type": "reasoning",
+        "content": [{"type": "reasoning_text", "text": "C"}],
+        "summary": [{"type": "summary_text", "text": "S"}]
+    });
+    let text = read_reasoning_text(&one_in_each);
+    assert!(matches!(text, std::borrow::Cow::Owned(_)));
+    assert_eq!(
+        text.as_ref(),
+        "CS",
+        "must concatenate both, not drop either"
+    );
+}
+
+/// Empty-case discipline: no accepted part in either array must return `Cow::Borrowed("")`, never
+/// `Cow::Owned(String::new())` — a caller that only wants a length (`total_text_chars`) must not
+/// pay an allocation for zero text. `assert_eq!(text, "")` alone would not catch a regression to
+/// `Owned` here, since both compare equal to the empty string.
+#[test]
+fn read_reasoning_text_empty_case_borrows_not_owns() {
+    let no_arrays = serde_json::json!({"type": "reasoning"});
+    assert!(matches!(
+        read_reasoning_text(&no_arrays),
+        std::borrow::Cow::Borrowed("")
+    ));
+
+    let empty_arrays = serde_json::json!({"type": "reasoning", "content": [], "summary": []});
+    assert!(matches!(
+        read_reasoning_text(&empty_arrays),
+        std::borrow::Cow::Borrowed("")
+    ));
+}

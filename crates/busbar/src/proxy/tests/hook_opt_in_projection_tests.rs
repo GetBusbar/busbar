@@ -468,6 +468,53 @@ fn prompt_projection_responses_reasoning_prefers_text_over_encrypted_content() {
     assert!(!p.messages[0].1.contains("ENC_BLOB_123"));
 }
 
+/// Perf follow-up (no behavior change): `block_text`'s Responses reasoning arm no longer wraps
+/// `read_reasoning_text`'s result in `Cow::Owned` — a single text-bearing part (in EITHER
+/// `content[]` or `summary[]` alone) must come through `block_text` still borrowed.
+#[test]
+fn responses_single_part_reasoning_text_borrows() {
+    let content_only = serde_json::json!({
+        "type": "reasoning",
+        "content": [{"type": "reasoning_text", "text": "one part"}]
+    });
+    assert!(matches!(
+        block_text(&content_only, "responses"),
+        BlockText::Text(std::borrow::Cow::Borrowed(_))
+    ));
+
+    let summary_only = serde_json::json!({
+        "type": "reasoning",
+        "summary": [{"type": "summary_text", "text": "just a summary"}]
+    });
+    assert!(matches!(
+        block_text(&summary_only, "responses"),
+        BlockText::Text(std::borrow::Cow::Borrowed(_))
+    ));
+}
+
+/// Two `content[]` parts + one `summary[]` part must still allocate through `block_text` — and
+/// concatenate content-array-then-summary-array, with NO separator (the pre-existing, deliberate
+/// separator-less concat `read_reasoning_text` uses — verified unchanged by this fix).
+#[test]
+fn responses_multi_part_reasoning_text_concatenates() {
+    let item = serde_json::json!({
+        "type": "reasoning",
+        "content": [
+            {"type": "reasoning_text", "text": "first "},
+            {"type": "reasoning_text", "text": "second "}
+        ],
+        "summary": [{"type": "summary_text", "text": "third"}]
+    });
+    match block_text(&item, "responses") {
+        BlockText::Text(t) => {
+            assert!(matches!(t, std::borrow::Cow::Owned(_)));
+            assert_eq!(t.as_ref(), "first second third");
+        }
+        BlockText::Redacted => panic!("expected BlockText::Text, got Redacted"),
+        BlockText::None => panic!("expected BlockText::Text, got None"),
+    }
+}
+
 /// Role-inference bug: a Responses `reasoning` item is assistant-authored (the reader already
 /// maps it to a standalone assistant `IrMessage`, `responses/reader.rs`), but the old `_ => "user"`
 /// fallback attributed it to the caller. Isolated from the summary-only test above by using a

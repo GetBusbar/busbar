@@ -292,7 +292,7 @@ impl ProtocolReader for ResponsesReader {
                                 messages.push(crate::ir::IrMessage {
                                     role: crate::ir::IrRole::Assistant,
                                     content: vec![crate::ir::IrBlock::Thinking {
-                                        text,
+                                        text: text.into_owned(),
                                         signature,
                                         redacted: false,
                                         cache_control: None,
@@ -1272,7 +1272,7 @@ impl ProtocolReader for ResponsesReader {
                         // rather than emitting a blank Thinking block.
                         if !text.is_empty() || signature.is_some() {
                             content.push(crate::ir::IrBlock::Thinking {
-                                text,
+                                text: text.into_owned(),
                                 signature,
                                 redacted: false,
                                 cache_control: None,
