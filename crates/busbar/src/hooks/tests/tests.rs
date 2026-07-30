@@ -89,41 +89,6 @@ fn empty_env() -> HookEnv {
     )
 }
 
-/// B1 (fail-closed): a hook whose SecretRef setting cannot resolve must make `preresolve_hook_secrets`
-/// return `Err` (aborting boot/reload CLOSED), matching the store/auth paths — NOT be silently dropped
-/// from the routing chain. A hook whose settings all resolve returns `Ok`.
-#[test]
-fn preresolve_hook_secrets_fails_closed_on_unresolvable_secret() {
-    let env = empty_env();
-    // A hook carrying a SecretRef (`{ env: <unset var> }`) — the resolver (`builtins_only`) cannot
-    // resolve an unset env var, so this MUST fail the pre-resolve pass.
-    let mut settings = serde_json::Map::new();
-    settings.insert(
-        "licenseKey".to_string(),
-        serde_json::json!({ "env": "BUSBAR_TEST_DEFINITELY_UNSET_SECRET_B1" }),
-    );
-    let mut hook = base_gate();
-    hook.settings = settings;
-    let mut hooks = HashMap::new();
-    hooks.insert("compliance-gate".to_string(), hook);
-    let err = env
-        .preresolve_hook_secrets(&hooks)
-        .expect_err("an unresolvable hook secret must fail the pre-resolve pass CLOSED");
-    assert!(
-        err.contains("compliance-gate"),
-        "the error names the offending hook: {err}"
-    );
-
-    // A hook with NO secret refs (plain settings) resolves cleanly — the pass is Ok.
-    let mut plain = base_gate();
-    plain
-        .settings
-        .insert("mode".to_string(), serde_json::json!("strict"));
-    let mut ok_hooks = HashMap::new();
-    ok_hooks.insert("plain-gate".to_string(), plain);
-    assert!(env.preresolve_hook_secrets(&ok_hooks).is_ok());
-}
-
 /// A pool with a native ranking strategy and no gate.
 fn pool_policy(policy: PoolPolicy) -> crate::config::PoolCfg {
     crate::config::PoolCfg {
@@ -264,48 +229,6 @@ fn default_hook_resolves_as_base_for_unnamed_pools() {
     assert!(
         resolve_pool_ordering(&unnamed, &HashMap::new(), &env, None, 0).is_none(),
         "no default hook ⇒ the compiled-in weighted backstop (None)"
-    );
-}
-
-/// A `default: true` hook that is NOT a non-rewriting decision gate (a `prompt: rw` gate, or a
-/// `tap`) must NOT become a pool's base ordering — it structurally cannot return an `order`
-/// (a rw hook's decision arm normalizes to Abstain; a tap has no decision arm at all). Before the
-/// fix, `resolve_pool_ordering` applied NO filter at all (unlike its siblings
-/// `resolve_pool_gates`/`resolve_gate_hooks`), so every unnamed-base pool paid a per-request
-/// plugin round-trip + DOM materialization for a guaranteed no-op.
-///
-/// HARNESS CAVEAT: like every test in this file, `test_env()` prints a skip and returns green if
-/// the hook cdylib is not built. Run under `cargo test --workspace` and confirm the output does
-/// NOT contain "skip: hook cdylib not built" before trusting this RED proof.
-#[test]
-fn default_rw_hook_is_not_the_base_ordering() {
-    let Some(env) = test_env() else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
-
-    // `kind: gate, prompt: rw, default: true` — a rewrite gate, not a decision gate.
-    let mut rw = base_gate();
-    rw.prompt = PromptAccess::Rw;
-    rw.default = true;
-    let hooks = registry("def", rw);
-    let mut unnamed = pool_with_hook("x");
-    unnamed.gates.clear();
-    assert!(
-        resolve_pool_ordering(&unnamed, &hooks, &env, Some("def"), 0).is_none(),
-        "a prompt:rw default hook must not become the base ordering — it can never return an order"
-    );
-
-    // `kind: tap, default: true` — no decision arm at all.
-    let mut tap = base_gate();
-    tap.kind = HookKind::Tap;
-    tap.default = true;
-    let hooks = registry("deftap", tap);
-    let mut unnamed2 = pool_with_hook("x");
-    unnamed2.gates.clear();
-    assert!(
-        resolve_pool_ordering(&unnamed2, &hooks, &env, Some("deftap"), 0).is_none(),
-        "a tap default hook must not become the base ordering — it has no decision arm"
     );
 }
 
@@ -553,75 +476,6 @@ fn resolve_rewrite_hooks_admits_only_prompt_rw_gates() {
         1,
         "only the prompt:rw GATE is a rewrite hook; ro/no gates + the tap are excluded"
     );
-}
-
-/// CLASS INVARIANT (round-6 #04): REWRITE admission goes through the SAME belt-and-suspenders meet
-/// as the read projections — `hooks::effective_access`. A `prompt: rw` OPERATOR grant is not
-/// sufficient on its own; the plugin's SIGNED manifest must also declare `needs: { prompt: rw }`.
-///
-/// One assertion covers BOTH halves of the bypass, because admission is what carries them:
-///  * CONFIDENTIALITY — a hook admitted to a rewrite chain is handed the FULL flattened prompt
-///    projection (`proxy::hooks::apply_global_rewrites` passes `with_prompt = true`
-///    unconditionally, which is sound ONLY because of this gate);
-///  * INTEGRITY — an admitted hook may return a `RewriteReply` that is spliced into the upstream
-///    request body (messages replaced, `tools` appended).
-///
-/// The matrix is {manifest need} × {both rewrite resolvers}, with the operator grant pinned at `rw`
-/// throughout, so the signed intent is the only variable. Pre-fix, both resolvers keyed admission
-/// on `hook.prompt.can_rewrite()` alone and every row admitted.
-#[test]
-fn rewrite_admission_requires_the_signed_manifest_rewrite_need() {
-    use busbar_plugin_sign::{HookNeeds, NeedLevel};
-
-    for (need, admitted) in [
-        (NeedLevel::No, false),
-        (NeedLevel::Ro, false),
-        (NeedLevel::Rw, true),
-    ] {
-        let needs = HookNeeds {
-            prompt: need,
-            user: NeedLevel::No,
-        };
-        let Some(env) = test_env_needs("test-hook", needs) else {
-            eprintln!("skip: hook cdylib not built (run under --workspace)");
-            return;
-        };
-        // The operator's grant is the MAXIMUM rung on every row — only the manifest varies.
-        let mut rw = base_gate();
-        rw.prompt = PromptAccess::Rw;
-        rw.global = true;
-        let hooks = registry("rw", rw);
-
-        let global = resolve_rewrite_hooks(&hooks, &["rw".to_string()], &env, 0);
-        assert_eq!(
-            !global.is_empty(),
-            admitted,
-            "global rewrite chain: `prompt: rw` + manifest `needs.prompt: {need:?}` must \
-             {} admit — the operator grant alone is not the ticket",
-            if admitted { "" } else { "NOT " }
-        );
-        let pool = resolve_pool_rewrites(&pool_with_hook("rw"), &hooks, &env, 0);
-        assert_eq!(
-            !pool.is_empty(),
-            admitted,
-            "pool rewrite chain: `prompt: rw` + manifest `needs.prompt: {need:?}` must {} admit \
-             — the per-pool resolver is a SIBLING of the global one and must not diverge",
-            if admitted { "" } else { "NOT " }
-        );
-
-        // The read half is derived from the SAME meet, so admission and projection can never
-        // disagree: anything admitted to a rewrite chain is, by the ladder, allowed to read.
-        let (send_prompt, _) = projection_grants("rw", hooks.get("rw").unwrap(), &env);
-        assert!(
-            !admitted || send_prompt,
-            "an admitted rewrite hook must also be cleared to READ the prompt it rewrites"
-        );
-        assert_eq!(
-            send_prompt,
-            need.wants_read(),
-            "the read half stays the meet of grant and manifest, unchanged by this fix"
-        );
-    }
 }
 
 /// `resolve_gate_hooks` admits the GLOBAL DECISION gates: `kind: gate` that is NOT a rewrite
@@ -1560,70 +1414,5 @@ async fn dlopen_configure_nack_does_not_commit() {
     assert!(
         push_configure(&hook, "h", 7, &env).await.is_err(),
         "a hook that refuses to ack must fail the configure push (no commit)"
-    );
-}
-
-// ── offload_bounded (class-9 §1.5/§1.6: bound the transport resolve, name a swallowed JoinError) ──
-
-/// UNIT TEST of the new bound (NOT a red proof of the old unbounded `.await` — there is no fixture
-/// that makes a real `dlopen`/constructor hang, so the "no timeout today" claim is established by
-/// reading `gate_transport_offloaded`, not by a test). `spawn_blocking` runs the closure on a real OS
-/// thread, which a paused tokio clock cannot accelerate (a live blocking thread never reports the
-/// runtime "idle", so time auto-advance never fires) — so this drives the deadline-parameterized
-/// core directly with a short REAL deadline instead, making the timeout arm deterministic and fast.
-#[test]
-fn offload_bounded_returns_none_when_the_work_outlives_the_deadline() {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    rt.block_on(async {
-        let out: Option<()> = offload_bounded_with_deadline(
-            "slow-hook",
-            std::time::Duration::from_millis(20),
-            || {
-                std::thread::sleep(std::time::Duration::from_millis(500));
-                Some(())
-            },
-        )
-        .await;
-        assert!(
-            out.is_none(),
-            "work that outlives the deadline must resolve to None, not block the caller forever"
-        );
-    });
-}
-
-/// UNIT TEST of the new bound's panic arm — but WRITABLE NOW, unlike the timeout arm: the closure
-/// itself can panic without needing a real plugin. Pins the fix for the swallowed `JoinError`
-/// (§1.6): a panicking blocking task must not unwind the caller, and must be named in a captured
-/// warn distinctly from an ordinary "no resolvable transport" `None`.
-#[test]
-fn offload_bounded_logs_when_the_blocking_task_panics() {
-    use crate::test_support::warn_capture::WarnCapture;
-    use tracing_subscriber::layer::SubscriberExt as _;
-
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    let cap = WarnCapture::default();
-    let subscriber = tracing_subscriber::registry().with(cap.clone());
-
-    let out: Option<()> = tracing::subscriber::with_default(subscriber, || {
-        rt.block_on(offload_bounded("panicky-hook", || {
-            panic!("plugin constructor blew up");
-        }))
-    });
-
-    assert!(
-        out.is_none(),
-        "a panicking resolve must still resolve to None, not propagate the panic to the caller"
-    );
-    assert!(
-        cap.contains("panicky-hook") && cap.contains("panicked"),
-        "the panic must be logged, naming the hook and distinct from the ordinary unresolvable \
-         case: {:?}",
-        cap.messages()
     );
 }

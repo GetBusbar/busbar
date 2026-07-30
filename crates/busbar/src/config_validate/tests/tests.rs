@@ -22,7 +22,6 @@ fn make_root_cfg(
         rate_card: None,
         per_request_fee: 0,
         store: None,
-        secrets: std::collections::BTreeMap::new(),
         global_hooks: Vec::new(),
         blocked_metadata_hosts: Vec::new(),
         allow_metadata_hosts: Vec::new(),
@@ -391,7 +390,7 @@ fn test_validate_rejects_unknown_member_ref() {
 #[test]
 fn test_validate_token_url_ssrf_and_scheme() {
     // token_url carries the client secret in the POST body, so it must clear BOTH the https
-    // requirement (case-INSENSITIVELY) and the SSRF/metadata denylist — same as base_url.
+    // requirement (case-INSENSITIVELY) and the SSRF/metadata denylist — same as base_url. (audit H1.)
     let build = |token_url: &str| -> Vec<String> {
         let mut providers = HashMap::new();
         let mut entra = make_provider("openai", "https://myres.openai.azure.com", "API_KEY");
@@ -1119,7 +1118,7 @@ fn test_validate_rejects_bad_breaker_params() {
             "max_cooldown_secs",
         ),
         (
-            // A zero base cooldown yields a degenerate breaker that re-admits
+            // Regression (MED #9): a zero base cooldown yields a degenerate breaker that re-admits
             // a tripped backend immediately — must fail loud, mirroring the trip.* zero-floor guards.
             "base_cooldown 0",
             make_breaker(
@@ -1130,7 +1129,7 @@ fn test_validate_rejects_bad_breaker_params() {
             "base_cooldown_secs must be >= 1",
         ),
         (
-            // The max-cooldown twin of the above.
+            // Regression (MED #9): the max-cooldown twin of the above.
             "max_cooldown 0",
             make_breaker(
                 0,
@@ -1183,7 +1182,7 @@ fn test_validate_accepts_good_breaker_params() {
 
 #[test]
 fn test_validate_rejects_zero_cooldown_breaker() {
-    // A breaker with base_cooldown_secs == 0 or max_cooldown_secs == 0
+    // Regression (MED #9): a breaker with base_cooldown_secs == 0 or max_cooldown_secs == 0
     // passes the inversion check (0 <= 0) yet is degenerate — when it trips open it re-admits the
     // failing backend immediately because the cooldown window is zero seconds, defeating the
     // back-off the breaker exists to provide. This is the cooldown-axis twin of the trip.* zero-
@@ -1269,7 +1268,7 @@ fn test_validate_accepts_positive_failover_deadline_and_zero_cap() {
 
 #[test]
 fn test_validate_rejects_unknown_failover_exclusion() {
-    // A `failover.exclusions` entry is a member model name benched
+    // Regression (MEDIUM, re-audit): a `failover.exclusions` entry is a member model name benched
     // from the pool's candidate set at runtime; the runtime matches it against member targets. A
     // misspelled / stale entry resolves to nothing and silently fails to bench the intended
     // member, so it must fail loud at boot (mirroring the dangling-fallback-pool rule).
@@ -1417,20 +1416,18 @@ fn test_validate_admin_tokens_secret_module_checked() {
         validate(&cfg)
     };
 
-    // A NON-built-in secret module (a `kind: secret` plugin reference, e.g. `vault`) is the marquee
-    // 1.5.0 "secrets are plugins" feature. `validate` runs BEFORE the plugin registry exists, so it
-    // can no longer distinguish an installed vault plugin from a typo — the module-EXISTENCE check is
-    // DEFERRED to the plugin pre-flight (`validate_secret_refs`, exercised by the main.rs integration
-    // tests). Here `validate` must NOT reject a plugin-backed module on structural grounds alone (the
-    // structural `env`/`file` shape checks below still fire); a real typo is caught downstream.
+    // Unknown secret module: fail-closed, with a paste-ready `{ env: ... }` stub.
+    let errs = build(config::SecretRef {
+        module: "vault".to_string(),
+        settings: serde_json::Map::new(),
+    })
+    .expect_err("an unknown secret module on the admin token must fail validation");
     assert!(
-        build(config::SecretRef {
-            module: "vault".to_string(),
-            settings: serde_json::Map::new(),
-        })
-        .is_ok(),
-        "a plugin-backed secret module must not be rejected by `validate` (existence is checked \
-         against the registry at plugin pre-flight, not here)"
+        errs.iter()
+            .any(|e| e.contains("auth.admin_auth admin-tokens token")
+                && e.contains("secret module 'vault'")
+                && e.contains("{ env: MY_SECRET_VAR }")),
+        "expected an unknown-secret-module error with the env stub; got: {errs:?}"
     );
 
     // env module WITHOUT settings.key: the ref can never resolve; must fail naming the shape.
@@ -1625,11 +1622,40 @@ models:
     );
 }
 
-use crate::test_support::warn_capture::WarnCapture;
+/// A `tracing::Layer` that records the messages of WARN-level events it sees, so a test can
+/// assert a particular `tracing::warn!` fired (mirrors the helper in `config.rs`). The structured
+/// fields (`provider`, `api_key_env`) are recorded into the message-or-field buffer.
+#[derive(Clone, Default)]
+struct WarnCapture(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for WarnCapture {
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        if *event.metadata().level() != tracing::Level::WARN {
+            return;
+        }
+        struct Vis(String);
+        impl tracing::field::Visit for Vis {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                // Append every field's debug rendering so both the `message` and the structured
+                // `provider`/`api_key_env` fields are searchable by the assertion.
+                self.0.push_str(&format!(" {}={value:?}", field.name()));
+            }
+        }
+        let mut vis = Vis(String::new());
+        event.record(&mut vis);
+        if let Ok(mut msgs) = self.0.lock() {
+            msgs.push(vis.0);
+        }
+    }
+}
 
 #[test]
 fn test_validate_passthrough_warns_on_nonempty_configured_key() {
-    // In passthrough mode the proxy engine selects the upstream key as
+    // Regression (LOW #10): in passthrough mode the proxy engine selects the upstream key as
     // `caller_token.unwrap_or("")` (NOT `lane.api_key` - that was hardened per LOW #15), so under
     // passthrough the configured `api_key` is NEVER forwarded: it is inert dead config. Its presence
     // means the operator likely wanted static-key gating (`upstream_credentials: own`) but wired
@@ -1679,7 +1705,7 @@ fn test_validate_passthrough_warns_on_nonempty_configured_key() {
         "passthrough + non-empty key is a warning, not a hard error; got: {result:?}"
     );
 
-    let msgs = cap.messages();
+    let msgs = cap.0.lock().unwrap();
     assert!(
         msgs.iter()
             .any(|m| m.contains("inert dead config") && m.contains("leaky")),
@@ -1721,11 +1747,10 @@ fn test_validate_passthrough_no_warn_when_all_keys_empty() {
     let result = tracing::subscriber::with_default(subscriber, || validate(&cfg));
 
     assert!(result.is_ok(), "passthrough with empty keys must validate");
-    let msgs = cap.messages();
+    let msgs = cap.0.lock().unwrap();
     assert!(
-        !msgs.iter().any(|m| m.contains("inert dead config")),
-        "no inert-configured-key warning may fire when every api_key_env resolves empty — the guard \
-         keys off the RESOLVED value, not the presence of passthrough mode; got: {msgs:?}"
+        !msgs.iter().any(|m| m.contains("credential-leak")),
+        "no credential-leak warning must fire when every api_key_env resolves empty; got: {msgs:?}"
     );
 }
 
@@ -1782,7 +1807,7 @@ fn test_ssrf_blocks_metadata_denylist_by_default() {
         "https://169.254.43518/", // 3-part inet_aton of 169.254.169.254
         "https://169.16689662/",  // 2-part inet_aton of 169.254.169.254
     ] {
-        // Assert the ACTUAL returned host is a non-empty string (so a bug returning
+        // M2: assert the ACTUAL returned host is a non-empty string (so a bug returning
         // Some("") / Some("garbage") cannot pass). The returned host is the normalized authority.
         let got = ssrf_blocked_host(blocked, &[], false, &[]);
         let host = got.as_deref().unwrap_or_else(|| {
@@ -1797,7 +1822,7 @@ fn test_ssrf_blocks_metadata_denylist_by_default() {
 
 #[test]
 fn test_ssrf_blocked_returns_exact_host_string() {
-    // Pin the EXACT host string `ssrf_blocked_host` returns for representative targets, so a
+    // M2: pin the EXACT host string `ssrf_blocked_host` returns for representative targets, so a
     // regression returning `Some("")` / `Some("garbage")` (which `.is_some()` would accept) fails.
     assert_eq!(
         ssrf_blocked_host("https://169.254.169.254/latest", &[], false, &[]).as_deref(),
@@ -1820,7 +1845,7 @@ fn test_ssrf_blocked_returns_exact_host_string() {
 
 #[test]
 fn test_expand_alternate_ipv4_imds_obfuscations() {
-    // DIRECT unit tests for the inet_aton canonicalizer. The 1-, 2-, and 3-part obfuscated
+    // H5: DIRECT unit tests for the inet_aton canonicalizer. The 1-, 2-, and 3-part obfuscated
     // forms of the IMDS address all canonicalize to 169.254.169.254. (0xA9FEA9FE = 2852039166.)
     let imds: std::net::Ipv4Addr = "169.254.169.254".parse().unwrap();
     assert_eq!(
@@ -1907,7 +1932,7 @@ fn test_expand_alternate_ipv4_imds_hex_octal_forms() {
 
 #[test]
 fn test_reject_cidr_metadata_entries() {
-    // A `/`-bearing entry in any metadata host-list is a no-op (these lists match by EXACT
+    // F1: a `/`-bearing entry in any metadata host-list is a no-op (these lists match by EXACT
     // IP/hostname), so validate() must REJECT it at boot with a clear, key+value-naming error.
 
     // Global blocked list.
@@ -1978,7 +2003,7 @@ fn test_reject_cidr_metadata_entries() {
 
 #[test]
 fn test_global_allow_overrides_blocked_metadata_hosts() {
-    // global security.allow_metadata_hosts must override an entry in blocked_metadata_hosts
+    // M3: global security.allow_metadata_hosts must override an entry in blocked_metadata_hosts
     // (allow always wins) — both at the guard level and through full validate().
     let blocked = vec!["10.77.77.77".to_string()];
     let allow = vec!["10.77.77.77".to_string()];
@@ -2008,7 +2033,7 @@ fn test_global_allow_overrides_blocked_metadata_hosts() {
 
 #[test]
 fn test_allow_all_metadata_beats_nonempty_blocked_list() {
-    // allow_all_metadata: true wins even with a NON-EMPTY blocked_metadata_hosts — the nuclear
+    // M3: allow_all_metadata: true wins even with a NON-EMPTY blocked_metadata_hosts — the nuclear
     // override disables the guard wholesale.
     let blocked = vec!["10.0.0.7".to_string(), "metadata.x.example".to_string()];
     for base in [
@@ -2073,7 +2098,7 @@ fn test_ssrf_allows_private_and_loopback_by_default() {
 
 #[test]
 fn test_ssrf_blocks_backslash_authority_bypass() {
-    // `https` is a WHATWG special scheme, so reqwest's `url` crate
+    // Regression (HIGH, re-audit): `https` is a WHATWG special scheme, so reqwest's `url` crate
     // rewrites every `\` to `/` while parsing — terminating the authority at the FIRST `\`. A
     // hand-parser that split only on `['/', '?', '#']` saw the whole `10.0.0.1\x.allowed.com` as
     // the host (passing every internal/metadata check) while reqwest connected to `10.0.0.1` /
@@ -2116,46 +2141,8 @@ fn test_ssrf_blocks_backslash_authority_bypass() {
 }
 
 #[test]
-fn test_ssrf_blocks_embedded_tab_newline_bypass() {
-    // The WHATWG URL spec's basic parser strips ALL ASCII tab (0x09), LF (0x0A), and CR (0x0D)
-    // bytes from the ENTIRE input as its very first step, before scheme/authority parsing even
-    // begins — not just leading/trailing whitespace. reqwest's `url` crate implements this. A tab
-    // is a legal byte inside a YAML double-quoted scalar, so an operator-editable `base_url` like
-    // `"https://169.254.169\t.254/"` is a real, reachable config shape. Without mirroring the
-    // strip, the guard sees the non-IP, non-metadata-matching host `169.254.169\t.254` (passes
-    // every check) while the connecting stack deletes the tab and connects to the actual IMDS
-    // address `169.254.169.254` — an SSRF bypass.
-    for blocked in [
-        "https://169.254.169\t.254/v1/messages",
-        "https://169.254.169.254\t/v1/messages",
-        "https://169.254\n.169.254/v1/messages",
-        "https://169.254.169\r.254/v1/messages",
-    ] {
-        assert!(
-            ssrf_blocked_host(blocked, &[], false, &[]).is_some(),
-            "expected '{blocked}' to be flagged: stripping the embedded tab/newline/CR (as \
-                 the WHATWG parser and reqwest's `url` crate do) reveals the real metadata host"
-        );
-    }
-    // A full validate() pass must reject a base_url using the embedded-tab trick to reach a
-    // metadata host.
-    let mut providers = HashMap::new();
-    providers.insert(
-        "p".to_string(),
-        make_provider("anthropic", "https://169.254.169\t.254", "API_KEY"),
-    );
-    let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
-    let errs = validate(&cfg).expect_err("embedded-tab base_url must fail validation");
-    assert!(
-        errs.iter()
-            .any(|e| e.contains("blocked cloud-metadata host") && e.contains("169.254.169.254")),
-        "expected a metadata-host error naming the real metadata host; got: {errs:?}"
-    );
-}
-
-#[test]
 fn test_validate_rejects_path_override_host_fusion() {
-    // A provider `path` override is appended to base_url VERBATIM
+    // Regression (MEDIUM, re-audit): a provider `path` override is appended to base_url VERBATIM
     // at request time (`format!("{base}{wire_path}")`), and the composed string chooses the
     // connect host. base_url validation alone misses this: a path NOT starting with '/' fuses
     // into the authority — base_url `https://api.example.com` + path `.evil.com/v1` connects to
@@ -2551,7 +2538,8 @@ fn test_validate_accepts_session_affinity_mode() {
     );
 }
 
-/// The provider `base_url` scheme check is CASE-INSENSITIVE (RFC 3986 §3.1) — an uppercase `HTTPS://` (which reqwest lowercases and accepts) must validate, not be
+/// REGRESSION (audit c2r5): the provider `base_url` scheme check is CASE-INSENSITIVE (RFC 3986
+/// §3.1) — an uppercase `HTTPS://` (which reqwest lowercases and accepts) must validate, not be
 /// rejected with a misleading "must use http or https". Mirrors the webhook guard's `scheme_is`.
 #[test]
 fn test_validate_accepts_uppercase_url_scheme() {
@@ -2572,7 +2560,7 @@ fn test_validate_accepts_uppercase_url_scheme() {
     assert!(!scheme_is("httpsx://h", "https"));
 }
 
-/// An EMPTY `affinity.header_name` must be REJECTED at boot. It passes
+/// REGRESSION (audit c2r3): an EMPTY `affinity.header_name` must be REJECTED at boot. It passes
 /// the ASCII + length checks but silently disables session affinity at runtime
 /// (`headers.get("")` is always None) — the exact silent-disable the validator's comment promises
 /// to catch.
@@ -3858,27 +3846,23 @@ fn test_validate_role_binding_reserved_role_name_rejected() {
 /// their required setting fail too. Well-formed env/file refs pass (values are NOT resolved).
 #[test]
 fn test_validate_secret_module_resolvability() {
-    // A NON-built-in module (a `kind: secret` PLUGIN reference such
-    // as `vault`) is the marquee 1.5.0 "secrets are plugins" feature. `validate` runs BEFORE the
-    // plugin registry exists, so it CANNOT tell an installed vault plugin from a typo — the
-    // module-EXISTENCE check is DEFERRED to `main::validate_secret_refs` at plugin pre-flight (see the
-    // `secret_ref_*` tests in the main tests module). Therefore `validate` must NOT reject a
-    // plugin-backed module here; it must ONLY enforce the built-in `env`/`file` STRUCTURAL shape.
+    // providers.*.api_key with an unknown module.
     let (mut providers, models, pools) = valid_maps();
     providers.get_mut("myprovider").unwrap().api_key = config::SecretRef {
         module: "vault".to_string(),
         settings: serde_json::Map::new(),
     };
     let cfg = make_root_cfg(providers, models, pools);
+    let errs = validate(&cfg).expect_err("an unknown secret module must fail validation");
     assert!(
-        validate(&cfg).is_ok(),
-        "a plugin-backed api_key module must not be rejected by pre-registry validate; got: {:?}",
-        validate(&cfg)
+        errs.iter()
+            .any(|e| e.contains("providers.myprovider.api_key")
+                && e.contains("secret module 'vault'")
+                && e.contains("{ env: MY_SECRET_VAR }")),
+        "expected the unknown-secret-module error with the env stub; got: {errs:?}"
     );
 
-    // The STRUCTURAL env/file shape checks still fire: a plugin-backed `tls.cert` passes `validate`
-    // (existence deferred), but a `file` ref missing settings.path and an `env` ref missing
-    // settings.key are structural errors validate STILL catches.
+    // tls.cert / tls.key / tls.client_ca each checked; a file ref missing settings.path fails.
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
     cfg.tls = Some(config::TlsCfg {
@@ -3895,11 +3879,11 @@ fn test_validate_secret_module_resolvability() {
             settings: serde_json::Map::new(), // missing settings.key
         }),
     });
-    let errs = validate(&cfg).expect_err("structurally-bad tls secret refs must fail validation");
-    // The plugin-backed `tls.cert` is NOT rejected by validate (its existence is a pre-flight concern).
+    let errs = validate(&cfg).expect_err("bad tls secret refs must fail validation");
     assert!(
-        !errs.iter().any(|e| e.contains("tls.cert")),
-        "a plugin-backed tls.cert must not be rejected by pre-registry validate; got: {errs:?}"
+        errs.iter()
+            .any(|e| e.contains("tls.cert") && e.contains("secret module 'vault'")),
+        "tls.cert unknown module must error; got: {errs:?}"
     );
     assert!(
         errs.iter()
@@ -3926,7 +3910,7 @@ fn test_validate_secret_module_resolvability() {
         validate(&cfg)
     );
 
-    // auth.signing_key with a plugin-backed module is likewise NOT rejected by pre-registry validate.
+    // auth.signing_key is checked through the same seam.
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
     let mut auth = config::AuthCfg::default_none();
@@ -3935,10 +3919,11 @@ fn test_validate_secret_module_resolvability() {
         settings: serde_json::Map::new(),
     });
     cfg.auth = Some(auth);
+    let errs = validate(&cfg).expect_err("an unknown signing_key module must fail validation");
     assert!(
-        validate(&cfg).is_ok(),
-        "a plugin-backed signing_key module must not be rejected by pre-registry validate; got: {:?}",
-        validate(&cfg)
+        errs.iter()
+            .any(|e| e.contains("auth.signing_key") && e.contains("secret module 'vault'")),
+        "auth.signing_key unknown module must error; got: {errs:?}"
     );
 }
 
@@ -4006,42 +3991,6 @@ advanced:
     assert!(cfg.groups.contains_key("eng"));
     assert_eq!(cfg.store.as_ref().unwrap().module, "memory");
     assert_eq!(cfg.limits.rate_sweep_interval, 256);
-}
-
-/// The DOCUMENTED "secrets are plugins" vault example — a provider
-/// `api_key: { module: acme-vault }` (docs/plugins.md, configuration.md, migration-1.5.md) — RESOLVES
-/// and passes the shared boot/`--validate` semantic gate. `validate` runs before the plugin registry
-/// exists, so it must not reject the plugin-backed module; the registry-backed existence check is the
-/// deferred `validate_secret_refs` pre-flight (proven in the main tests module). This closes the
-/// round-3 regression where `validate` hard-rejected every plugin-backed secret module.
-#[test]
-fn test_validate_accepts_plugin_backed_secret_module_config() {
-    let yaml = r#"
-listen: "0.0.0.0:8080"
-providers:
-  anthropic:
-    api_key: { module: acme-vault, settings: { path: "secret/data/anthropic#key" } }
-models:
-  claude:
-    provider: anthropic
-pools:
-  main:
-    members:
-      - model: claude
-store:
-  module: memory
-"#;
-    let cfg = resolve_yaml(yaml).expect("the vault-api_key config must resolve");
-    assert_eq!(
-        cfg.providers.get("anthropic").unwrap().api_key.module,
-        "acme-vault",
-        "the plugin-backed secret module survived resolution"
-    );
-    assert!(
-        validate(&cfg).is_ok(),
-        "a plugin-backed api_key module must pass the shared boot/--validate gate; got: {:?}",
-        validate(&cfg)
-    );
 }
 
 /// The faulty twin: every NEW cost/auth-surface fault in one resolved config is collected by the

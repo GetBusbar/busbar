@@ -10,7 +10,7 @@
 //! its transitive type graph has a slot for pools, scope, permissions, roles-as-policy, or a policy
 //! decision. `#[serde(deny_unknown_fields)]` makes a rogue plugin's extra keys a REJECT, not a
 //! silently-ignored field, so the identity-only guarantee is structural. The engine resolves
-//! `groups → role_bindings → policy` AFTER, from [`Identity`] alone. A plugin
+//! `groups → role_bindings → policy` AFTER, from [`Identity`] alone (design-hooks-v2 §2.3). A plugin
 //! CANNOT serialize an authorization decision — the type it must produce has no place to put one.
 //!
 //! `Identity.groups` is the frozen WIRE name for the caller's asserted memberships; it maps to the

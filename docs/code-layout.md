@@ -7,11 +7,6 @@ true by construction. Size reduction is a side effect of getting that right, not
 Four invariants, all mechanically enforced by `scripts/structure-lint.sh` (run in CI). If they hold,
 the tree cannot drift back into giant, inconsistent files.
 
-The same script enforces one further invariant that is about *behavior* rather than layout — the
-**choke-point registry** (every hazard class has one owner, and no file hand-rolls a bypass). It
-belongs to the remediation contract; it is documented in
-[testing.md](testing.md#the-remediation-contract), and § "Running the lint" below covers all four.
-
 ## 0. Workspace layout: all Rust lives under `crates/`
 
 The repo is a Cargo workspace. Every crate lives under `crates/`, and nothing else at the root is
@@ -21,6 +16,7 @@ Rust, so "code vs not-code" is obvious at a glance:
 crates/
   busbar/            the engine + binary (src/main.rs, the request path, admin plane, protocols)
   api/               the plugin CONTRACT crate — traits/types both the engine and every plugin build against
+  auth-tokens/       built-in `tokens` auth plugin        (default-on, removable feature)
   auth-admin-tokens/ built-in `admin-tokens` admin plugin (default-on, removable feature)
   hooks-ranking/     built-in cheapest/fastest/… policies (default-on, removable feature)
 ```
@@ -96,7 +92,4 @@ scripts/structure-lint.sh
 ```
 
 Non-zero exit on any violation, with the offending path and the fix. It runs in CI (the `check` job),
-so a PR that reintroduces a giant file or a hybrid module fails before merge — and likewise a PR that
-hand-rolls a durable write, a plugin export, or a config swap outside its choke point
-(`DURABLE-BYPASS` / `EXPORT-BYPASS` / `MUTATION-BYPASS`), or deletes a choke point's class-level
-test (`MISSING-CLASS-TEST`). See [testing.md](testing.md#the-remediation-contract).
+so a PR that reintroduces a giant file or a hybrid module fails before merge.

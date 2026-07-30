@@ -140,8 +140,8 @@ fn pack(args: &[String]) -> ExitCode {
         let out = required("out")?;
         let kind = required("kind")?;
         // Default the ABI to the NEWEST version this binary's loader supports for the kind, so a
-        // plain `pack` of a store plugin stamps the current store ABI instead of a stale literal.
-        // `--abi-version` still overrides for cross-version packaging.
+        // plain `pack` of a store plugin stamps the current store ABI (v2, the token-ledger wire)
+        // instead of a stale literal. `--abi-version` still overrides for cross-version packaging.
         let default_abi = busbar_plugin_loader::supported_abi(&kind)
             .iter()
             .copied()

@@ -41,7 +41,7 @@ pub(crate) struct StreamTranslate {
     /// translator consults it and never names a protocol's wire quirk. A protocol with no per-stream
     /// quirk gets the inert [`PassthroughFraming`] default.
     framing: Box<dyn StreamFraming>,
-    /// CROSS-PROTOCOL tool-id native remap (the streaming half of the class fix). Reshapes
+    /// CROSS-PROTOCOL tool-id native remap (the streaming half of the §Finding-2 class fix). Reshapes
     /// each egress `tool_use` id (e.g. OpenAI `call_…`) to the INGRESS client's native shape (Anthropic
     /// `toolu_…`) before the ingress writer serializes it, so a foreign id never reaches the client. The
     /// map is stream-scoped: a tool id seen on `BlockStart` maps stably for the life of this stream (and
@@ -105,18 +105,6 @@ pub(crate) struct StreamTranslate {
     /// client uniformly on both the SSE and gemini-json-array paths.
     pending_terminal: Option<(crate::ir::IrStopReason, Option<String>, crate::ir::IrUsage)>,
     pending_stop: bool,
-    /// IR block indices whose BlockStart was TRANSLATED and whose BlockStop has not been. Anything
-    /// still here at the terminal frame was never closed by the egress reader — a truncated upstream,
-    /// or a reader whose terminal branch does not drain every block (cohere `message-end` closes only
-    /// text). Synthesized closes are routed back through `emit_ir_event`, so each ingress writer applies
-    /// its OWN projection and no wire shape is named here.
-    open_blocks: std::collections::BTreeSet<usize>,
-    /// Test-only instrumentation: counts frames that reached the `crate::json::parse_str` DOM parse
-    /// in the SSE loop. Proves the D1' same-proto Anthropic event-type gate actually elides the parse
-    /// for non-usage-bearing frames, rather than asserting a tautology about the diff. Compiled out
-    /// entirely in non-test builds — zero production cost.
-    #[cfg(test)]
-    pub(super) decode_calls: std::cell::Cell<usize>,
 }
 
 impl StreamTranslate {
@@ -180,9 +168,6 @@ impl StreamTranslate {
             terminal_error: None,
             pending_terminal: None,
             pending_stop: false,
-            open_blocks: std::collections::BTreeSet::new(),
-            #[cfg(test)]
-            decode_calls: std::cell::Cell::new(0),
         })
     }
 
@@ -198,11 +183,11 @@ impl StreamTranslate {
     /// Translate one egress event `(event_type, payload)` into ingress wire bytes, advancing the
     /// decode state. Shared by the SSE and event-stream feed paths.
     fn translate_event(&mut self, event_type: &str, data: &serde_json::Value, out: &mut Vec<u8>) {
-        // Ingress protocol name for the tool-id remap below. `name_static(&self) -> &'static str`
-        // does not borrow `self`, so holding it does not conflict with the mutable
-        // `self.tool_id_remap` borrow in `remap_event` below — unlike `Protocol::name(&self) -> &str`,
-        // whose return borrows `self`'s (elided) lifetime and so would collide. No allocation per frame.
-        let ingress_name = self.ingress.name_static();
+        // Ingress protocol name for the tool-id remap below. Captured up front (owned) because
+        // `Protocol::name(&self) -> &str` returns a reference with `self`'s lifetime (elided), not
+        // `&'static`, so holding it would conflict with the mutable `self.tool_id_remap` borrow in
+        // `remap_event` below. The copy of a short static name is cheap and breaks the borrow.
+        let ingress_name = self.ingress.name().to_string();
         for mut ev in self
             .egress
             .reader()
@@ -211,7 +196,7 @@ impl StreamTranslate {
             // CROSS-PROTOCOL tool-id native remap: reshape the egress `tool_use` id on a `BlockStart`
             // to the ingress client's native shape (see `StreamTranslate::tool_id_remap`). Done before
             // identity-strip/usage-backfill so the rest of the pipeline sees the client-facing id.
-            self.tool_id_remap.remap_event(ingress_name, &mut ev);
+            self.tool_id_remap.remap_event(&ingress_name, &mut ev);
             // Cross-protocol stream identity strip: a `StreamTranslate` only exists when
             // ingress != egress (`new` returns None otherwise), so every event here crosses a
             // protocol boundary. Clear the foreign-format `MessageStart` `id`/`created` so the INGRESS
@@ -311,21 +296,6 @@ impl StreamTranslate {
                         continue;
                     }
                 }
-            }
-
-            // INV-A: close any block the egress reader left open BEFORE the terminal frame goes out.
-            // Placed ahead of the Bedrock two-frame fan-out, the terminal-usage deferral, the post-stop
-            // drop guard and the citation fan-out below — every terminal path, deferred or immediate,
-            // reaches this without duplicating the site. A reader that already closes correctly leaves
-            // `open_blocks` empty, so this is a no-op on every existing exact-sequence stream.
-            if matches!(
-                ev,
-                crate::ir::IrStreamEvent::MessageDelta {
-                    stop_reason: Some(_),
-                    ..
-                } | crate::ir::IrStreamEvent::MessageStop
-            ) {
-                self.close_open_blocks(out);
             }
 
             // Bedrock-INGRESS combined-delta fan-out: the IR carries ONE combined
@@ -468,17 +438,7 @@ impl StreamTranslate {
                 }
             }
 
-            let is_message_start = matches!(ev, crate::ir::IrStreamEvent::MessageStart { .. });
             self.emit_ir_event(&ev, out);
-            // A native Anthropic stream emits `event: ping` right after `message_start`; a
-            // translated one didn't, which is both a fingerprintable proxy tell (see the writer's
-            // own comments on `message_start`) and closes part of the idle-timeout gap a native
-            // stream survives. `translate_event` only runs cross-protocol (`ingress != egress`,
-            // enforced by `new`) — same-protocol Anthropic passthrough takes the verbatim branch
-            // and already carries the upstream's own pings, so this cannot double-emit there.
-            if is_message_start && ingress_name == crate::proto::PROTO_ANTHROPIC {
-                out.extend_from_slice(crate::proto::ANTHROPIC_PING_SSE_FRAME);
-            }
         }
     }
 
@@ -556,22 +516,6 @@ impl StreamTranslate {
     /// identity — so this emitter branches only on transport (binary frame vs SSE), never on a wire
     /// event-type or protocol name.
     fn emit_ir_event(&mut self, ev: &crate::ir::IrStreamEvent, out: &mut Vec<u8>) {
-        // Track the IR lifecycle BEFORE the writer runs, NOT after. `write_response_event` returning
-        // `None` does not mean "no block was opened": `gemini/writer.rs`'s ToolUse `BlockStart` arm
-        // returns `None` DELIBERATELY — it buffers (name, args) and emits the single native
-        // `functionCall` part on `BlockStop`. Tracking after the let-else would never record a gemini
-        // tool block, so the terminal drain would never emit its stop, and the buffered call would
-        // never flush: on a truncated cohere->gemini stream the TOOL CALL IS SILENTLY DELETED. Track
-        // the IR intent; let each writer decide the wire projection.
-        match ev {
-            crate::ir::IrStreamEvent::BlockStart { index, .. } => {
-                self.open_blocks.insert(*index);
-            }
-            crate::ir::IrStreamEvent::BlockStop { index } => {
-                self.open_blocks.remove(index);
-            }
-            _ => {}
-        }
         let Some((out_et, mut out_data)) = self.ingress.writer().write_response_event(ev) else {
             return;
         };
@@ -597,20 +541,11 @@ impl StreamTranslate {
             // every non-OpenAI ingress is untouched. The `[DONE]` terminator stays a separate `finish()`
             // literal — only the chunk-identity + trailing-usage logic moved here.
             if let Some(trailing) = self.framing.on_egress_chunk(&mut out_data) {
-                write_sse_frame(out, &out_et, &out_data);
-                write_sse_frame(out, &out_et, &trailing);
+                out.extend_from_slice(reframe_sse(&out_et, &out_data).as_bytes());
+                out.extend_from_slice(reframe_sse(&out_et, &trailing).as_bytes());
                 return;
             }
-            write_sse_frame(out, &out_et, &out_data);
-        }
-    }
-
-    /// Close every block the egress reader left open. `mem::take` FIRST so the re-entrant
-    /// `emit_ir_event` calls cannot re-insert, which also makes this idempotent. `BTreeSet` iterates
-    /// ascending, so closes go out in index order.
-    fn close_open_blocks(&mut self, out: &mut Vec<u8>) {
-        for index in std::mem::take(&mut self.open_blocks) {
-            self.emit_ir_event(&crate::ir::IrStreamEvent::BlockStop { index }, out);
+            out.extend_from_slice(reframe_sse(&out_et, &out_data).as_bytes());
         }
     }
 
@@ -720,13 +655,9 @@ impl StreamTranslate {
         // only ABOVE that floor, so `feed()` stays linear without looping.
         let mut consumed = 0usize;
         // SAME-PROTOCOL verbatim re-emit cursor (R3-A-b): the start of the not-yet-flushed verbatim
-        // region. It splits on a SUPPRESSED frame (the OpenAI opted-out trailing usage chunk) and
-        // also on a STRIPPED frame — and for an opted-out OpenAI same-proto stream the strip fires
-        // on EVERY content frame carrying `usage` (a real OpenAI upstream stamps `"usage":null` on
-        // all of them once busbar forces `include_usage` upstream to bill), not only on the one
-        // suppressed trailing chunk. So `[0..consumed]` in a single bulk copy at the end is the
-        // Anthropic/Gemini/Cohere same-proto case; the dominant OpenAI same-proto case splits on
-        // most frames.
+        // region. The common case flushes `[0..consumed]` in one shot at the end (a single bulk copy);
+        // it only splits when a frame must be SUPPRESSED (the OpenAI opted-out trailing usage chunk),
+        // in which case the run BEFORE the suppressed frame is flushed and the frame's bytes skipped.
         let mut emit_from = 0usize;
         loop {
             let search_from = self
@@ -753,26 +684,6 @@ impl StreamTranslate {
                         // this frame, but its bytes are still re-emitted verbatim in same_proto mode).
                         continue;
                     }
-                    if self.same_proto
-                        && self.egress.name_static() == crate::proto::PROTO_ANTHROPIC
-                        && !matches!(
-                            event_type.as_str(),
-                            "message_start" | "message_delta" | "error"
-                        )
-                    {
-                        // D1' (class-11): the Anthropic same-proto reader is stateless
-                        // (`AnthropicReader::read_response_events` takes an unused `_state`) and
-                        // Anthropic's same-proto framing seams (`suppress_same_proto_frame` /
-                        // `strip_same_proto_usage`) are the constant-`false` defaults, so nothing
-                        // downstream of this egress needs a decoded `data` for any event except the
-                        // two that carry usage plus the terminal error. Skip the DOM parse, the IR
-                        // event `Vec`, and the per-token `String` allocation for the ~99% of frames
-                        // that are `content_block_*` — the bytes still reach the client verbatim via
-                        // the `[emit_from..]` bulk copy below, which never touched `data`.
-                        continue;
-                    }
-                    #[cfg(test)]
-                    self.decode_calls.set(self.decode_calls.get() + 1);
                     let Ok(data) = crate::json::parse_str::<serde_json::Value>(&data_str) else {
                         continue; // malformed data JSON — skip the frame rather than abort
                     };
@@ -828,12 +739,11 @@ impl StreamTranslate {
             }
         }
         // SAME-PROTOCOL verbatim re-emit: append the remaining un-flushed verbatim region (every
-        // complete frame the loop consumed and did NOT suppress/strip, including the keepalive/
-        // `[DONE]`/non-`data:` frames the cross-proto path drops), BEFORE the consumed prefix is
-        // reclaimed below - so the client sees the upstream SSE stream byte-for-byte, with the IR
-        // pipeline acting purely as the usage side-channel above. `emit_from == 0` (the single bulk
-        // copy of `[0..consumed]`) holds for Anthropic/Gemini/Cohere same-proto streams; a same-proto
-        // OpenAI stream with an opted-out client instead splits repeatedly, once per stripped frame.
+        // complete frame the loop consumed and did NOT suppress, including the keepalive/`[DONE]`/
+        // non-`data:` frames the cross-proto path drops), BEFORE the consumed prefix is reclaimed below
+        // - so the client sees the upstream SSE stream byte-for-byte, with the IR pipeline acting purely
+        // as the usage side-channel above. In the common (no-suppression) case `emit_from == 0`, so this
+        // is the single bulk copy of `[0..consumed]` the prior code did.
         if self.same_proto && consumed > emit_from {
             out.extend_from_slice(&self.buf[emit_from..consumed]);
         }
@@ -965,14 +875,6 @@ impl StreamTranslate {
         if self.same_proto {
             return out;
         }
-        // INV-A: close any block the egress reader left open going into `finish()` — the truncation
-        // case (no terminal frame ever arrived, so the `translate_event` drain never ran) and the
-        // reader-terminal-branch-does-not-drain-everything case (cohere `message-end` closes only
-        // text; `open_tools` is deliberately never drained, so tool blocks reach here still open).
-        // Unconditional and BEFORE `framing.on_finish()`: v1 placed this at the `pending_terminal`
-        // flush below, which is dead code for this case — `pending_terminal` is only set when
-        // `folds_terminal_usage()` is true, and both bedrock and openai_chat return `false`.
-        self.close_open_blocks(&mut out);
         // FINISH framing seam: if the ingress framing deferred a `metadata` frame that was
         // never resolved (the Bedrock-ingress zero-usage stop with no trailing usage delta — the
         // default OpenAI streaming case), it returns the single best-effort zero-usage event to flush

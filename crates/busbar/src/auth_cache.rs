@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The CREDENTIAL CACHE: short-circuit repeat authentications so an
+//! The CREDENTIAL CACHE (design-hooks-v2 §2.5): short-circuit repeat authentications so an
 //! external auth module (a directory lookup over a socket) is consulted once per credential per
 //! TTL, not once per request. In-process modules are microseconds and gain nothing, but they ride
 //! the same seam — the cache is engine machinery, not module policy.
@@ -82,7 +82,7 @@ impl CredentialCache {
         }
     }
 
-    /// Store a module's verdict per the rules. `Reject` is dropped on the floor — never
+    /// Store a module's verdict per the §2.5 rules. `Reject` is dropped on the floor — never
     /// cached. The `Identify` TTL is the module's suggestion clamped to the hard cap; `Pass` gets
     /// the short base TTL plus a per-key jitter (derived from the credential hash — deterministic,
     /// no clock/RNG — so distinct credentials expire at distinct offsets).
@@ -157,7 +157,7 @@ mod tests {
         AuthOutcome::Identify(p)
     }
 
-    /// The verdict rules: Identify cached (module TTL clamped), Pass cached short,
+    /// The §2.5 verdict rules: Identify cached (module TTL clamped), Pass cached short,
     /// Reject NEVER cached; expiry is a miss.
     #[test]
     fn verdict_rules_and_expiry() {

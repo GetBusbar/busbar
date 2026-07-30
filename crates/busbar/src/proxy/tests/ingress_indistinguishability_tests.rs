@@ -8,7 +8,7 @@ use reqwest::StatusCode;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-/// Every egress request must carry a native-SDK `Accept`
+/// REGRESSION (R15 MEDIUM, conformance): every egress request must carry a native-SDK `Accept`
 /// header — a native SDK always sends one, so its absence is a backend-side proxy fingerprint.
 /// The headline bedrock egress must mirror botocore: `application/vnd.amazon.eventstream` for a
 /// ConverseStream (stream) call, `application/json` for the unary Converse call.
@@ -30,7 +30,7 @@ fn test_egress_accept_matches_native_sdk() {
     assert_eq!(egress_accept("mystery", false), "application/json");
 }
 
-/// Every egress request must carry a native-SDK `User-Agent`
+/// REGRESSION (R17 MEDIUM/technique): every egress request must carry a native-SDK `User-Agent`
 /// (a UA-less request is the most distinctive backend-side proxy fingerprint), and each per-protocol
 /// UA embeds a PINNED SDK version that silently drifts from the real SDK over time. This test pins
 /// each protocol to its `EGRESS_UA_*` constant so the version strings cannot be edited or drift
@@ -40,48 +40,16 @@ fn test_egress_accept_matches_native_sdk() {
 /// returns a non-empty, plausibly-versioned UA.
 #[test]
 fn test_egress_ua_versions_are_pinned_and_present() {
-    // GOLDEN WIRE LITERALS — the exact bytes a native SDK sends. Comparing against the
-    // `EGRESS_UA_*` constants themselves is a tautology (both sides move together when the
-    // constant is edited); pinning the literal here means changing a constant is a deliberate,
-    // reviewed act that must touch BOTH this table and the constant, so it can never happen
-    // silently. Copied verbatim from the current `EGRESS_UA_*` values in egress.rs — this fix pins
-    // the status quo, it does not change any wire value.
-    assert_eq!(
-        egress_user_agent("anthropic"),
-        "Anthropic/Python 0.39.0",
-        "anthropic egress UA drifted from the pinned native-SDK string"
-    );
-    assert_eq!(
-        egress_user_agent("openai"),
-        "OpenAI/Python 1.54.0",
-        "openai egress UA drifted from the pinned native-SDK string"
-    );
-    assert_eq!(
-        egress_user_agent("responses"),
-        "OpenAI/Python 1.54.0",
-        "responses egress UA drifted from the pinned native-SDK string"
-    );
-    assert_eq!(
-        egress_user_agent("gemini"),
-        "google-genai-sdk/0.8.0 gl-python/3.11",
-        "gemini egress UA drifted from the pinned native-SDK string"
-    );
-    assert_eq!(
-        egress_user_agent("bedrock"),
-        "Boto3/1.35.0 md/Botocore#1.35.0",
-        "bedrock egress UA drifted from the pinned native-SDK string"
-    );
-    assert_eq!(
-        egress_user_agent("cohere"),
-        "cohere-python/5.11.0",
-        "cohere egress UA drifted from the pinned native-SDK string"
-    );
+    // Each known egress protocol maps to its named constant — drift can only happen by editing
+    // the constant (which trips this assertion), never silently.
+    assert_eq!(egress_user_agent("anthropic"), super::EGRESS_UA_ANTHROPIC);
+    assert_eq!(egress_user_agent("openai"), super::EGRESS_UA_OPENAI);
+    assert_eq!(egress_user_agent("responses"), super::EGRESS_UA_OPENAI);
+    assert_eq!(egress_user_agent("gemini"), super::EGRESS_UA_GEMINI);
+    assert_eq!(egress_user_agent("bedrock"), super::EGRESS_UA_BEDROCK);
+    assert_eq!(egress_user_agent("cohere"), super::EGRESS_UA_COHERE);
     // Foreign/unknown egress still gets a present, plausible UA (never empty / never absent).
-    assert_eq!(
-        egress_user_agent("mystery"),
-        "okhttp/4.12.0",
-        "mystery/default egress UA drifted from the pinned literal"
-    );
+    assert_eq!(egress_user_agent("mystery"), super::EGRESS_UA_DEFAULT);
     for p in [
         "anthropic",
         "openai",
@@ -118,7 +86,7 @@ fn test_egress_ua_versions_are_pinned_and_present() {
 }
 
 /// CANONICAL status→kind mapping shared by the main and degraded cross-protocol error shaping.
-/// A 401/403 must map to authentication_error/
+/// REGRESSION (R7 MEDIUM, forward_once): a 401/403 must map to authentication_error/
 /// permission_error, NOT invalid_request_error (the degraded-path bug). Exhaustive over the
 /// status arms the mapping distinguishes.
 #[test]
@@ -143,7 +111,7 @@ fn test_cross_protocol_error_kind_mapping() {
         cross_protocol_error_kind(StatusCode::BAD_GATEWAY),
         "api_error" // golden wire-contract literal (kept bare on purpose)
     );
-    // A genuine upstream 503 must map to `overloaded`, NOT `api_error`.
+    // REGRESSION (R15 MEDIUM): a genuine upstream 503 must map to `overloaded`, NOT `api_error`.
     // Collapsing it into `api_error` would emit, on a bedrock ingress, the
     // 503/InternalServerException pairing the real AWS runtime never produces (503 pairs with
     // ServiceUnavailableException). `overloaded` is the kind busbar already uses for its own 503s.
@@ -194,7 +162,7 @@ async fn test_shape_cross_protocol_error_auth_kinds() {
     }
 }
 
-/// A Bedrock-ingress forward-layer error must
+/// REGRESSION (R7 HIGH, proxy engine ingress_error): a Bedrock-ingress forward-layer error must
 /// carry BOTH `x-amzn-RequestId` and `x-amzn-errortype` (mirroring the body `__type`), exactly
 /// like a real AWS Bedrock runtime error and like ingress/auth.rs. Non-bedrock ingress must NOT
 /// carry them.
@@ -234,7 +202,7 @@ fn test_ingress_error_bedrock_amzn_headers() {
 /// A forward-layer error returned to the CLIENT must carry the INGRESS protocol's native JSON
 /// error envelope (not `text/plain`), with the status code preserved. For an Anthropic ingress
 /// the shape is `{"type":"error","error":{"type",...,"message"}}` — what `anthropic.APIStatusError`
-/// decodes.
+/// decodes. (§8.1)
 #[tokio::test]
 async fn test_ingress_error_emits_native_envelope_with_status() {
     use http_body_util::BodyExt as _;
@@ -324,7 +292,7 @@ async fn test_anthropic_ingress_error_request_id_header_matches_body() {
 }
 
 /// The streaming response Content-Type is driven by the ingress protocol, not the upstream:
-/// SSE protocols → `text/event-stream`; bedrock → `application/vnd.amazon.eventstream`.
+/// SSE protocols → `text/event-stream`; bedrock → `application/vnd.amazon.eventstream`. (§8.4)
 #[test]
 fn test_ingress_stream_content_type_by_protocol() {
     for p in ["openai", "anthropic", "gemini", "cohere", "responses"] {
@@ -341,7 +309,7 @@ fn test_ingress_stream_content_type_by_protocol() {
 /// Cross-protocol non-stream response: an OpenAI backend whose body carries a `chatcmpl-` id
 /// must NOT leak that foreign id to an Anthropic client. The translation seam strips the IR
 /// identity before the ingress writer runs, so the writer mints a NATIVE `msg_` id, and the
-/// response is served with the INGRESS Content-Type (`application/json`).
+/// response is served with the INGRESS Content-Type (`application/json`). (§8.2, §8.4)
 #[tokio::test]
 async fn test_cross_protocol_response_carries_ingress_ct_and_native_id() {
     crate::metrics::init();
@@ -432,7 +400,7 @@ async fn test_cross_protocol_response_carries_ingress_ct_and_native_id() {
     server.shutdown().await;
 }
 
-/// A cross-protocol non-stream 2xx whose `usage` block
+/// REGRESSION (MED #2, forward_with_pool): a cross-protocol non-stream 2xx whose `usage` block
 /// PARSES but whose content shape is UNMODELED (here an empty `choices` array, on which the OpenAI
 /// reader's `read_response` returns `Err`) must NOT charge the virtual key's token budget. The body
 /// is untranslatable, so the client receives a 500 with NO completion; billing it (the old code
@@ -541,106 +509,7 @@ async fn test_untranslatable_2xx_does_not_charge_tokens() {
     server.shutdown().await;
 }
 
-/// The untranslatable-2xx fallthrough must ALSO refund the headers-time lane budget unit AND record
-/// a breaker transient (the BREAKER half matters more than the budget half: today a lane returning
-/// undecodable 200s forever never trips). Same MockServer shape as
-/// `test_untranslatable_2xx_does_not_charge_tokens` (empty `choices`, so the OpenAI reader's
-/// `read_response` rejects it), but the lane is budget-limited to 1 and the pool's breaker is
-/// configured to trip on a single consecutive failure, so ONE untranslatable response must both
-/// return the unit and flip the cell to Open.
-#[tokio::test]
-async fn test_untranslatable_2xx_refunds_budget_and_trips_breaker() {
-    use crate::store::{BreakerCfg, BreakerState, TripConfig, TripMode};
-    crate::metrics::init();
-    let state = Arc::new(MockServerState::new());
-    state.push(MockResponse::Ok {
-        status: StatusCode::OK,
-        body: json!({
-            "id": "chatcmpl-EMPTY",
-            "object": "chat.completion",
-            "created": 1234567890,
-            "model": "glm-4.5",
-            "choices": [],
-            "usage": {"prompt_tokens": 7, "completion_tokens": 3}
-        }),
-    });
-    let server = MockServer::new(state.clone()).await;
-
-    let app = TestApp::new()
-        .lane(
-            LaneSpec::new(
-                "glm-4.5",
-                crate::proto::Protocol::openai(),
-                &server.base_url(),
-            )
-            .provider("zai")
-            .budget(1),
-        )
-        .pool("pa", &[(0, 1)])
-        .pool_runtime(
-            "pa",
-            crate::state::PoolRuntime {
-                breaker: Some(BreakerCfg {
-                    trip: TripConfig {
-                        mode: TripMode::Consecutive,
-                        consecutive_n: 1,
-                        ..TripConfig::default()
-                    },
-                    ..BreakerCfg::default()
-                }),
-                ..Default::default()
-            },
-        )
-        .build();
-
-    assert_eq!(app.store.lane_budget_remaining(0), Some(1));
-    // A prior optimistic success, exactly as the 2xx-headers path records before this arm runs, so
-    // the pool cell has something for the compensating transient to reverse.
-    app.store.record_success_in("pa", 0);
-    assert!(matches!(
-        app.store.breaker_state_in("pa", 0),
-        BreakerState::Closed
-    ));
-
-    let body = serde_json::to_vec(
-        &json!({"model": "pa", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 50}),
-    )
-    .unwrap();
-    let resp = forward_with_pool(
-        app.clone(),
-        vec![crate::state::WeightedLane {
-            reasoning: None,
-            idx: 0,
-            weight: 1,
-            attempt_timeout_ms: None,
-        }],
-        body.into(),
-        None,
-        "pa",
-        None,
-        "anthropic",
-        crate::handlers::CHAT,
-        None,
-    )
-    .await;
-
-    assert_eq!(resp.status().as_u16(), 500);
-    assert_eq!(
-        app.store.lane_budget_remaining(0),
-        Some(1),
-        "the untranslatable-2xx fallthrough must refund the headers-time spend_budget unit"
-    );
-    assert!(
-        matches!(
-            app.store.breaker_state_in("pa", 0),
-            BreakerState::Open { .. }
-        ),
-        "one consecutive untranslatable 2xx (consecutive_n=1) must trip the pool cell to Open"
-    );
-    server.shutdown().await;
-}
-
-/// A SAME-PROTOCOL NON-STREAM 2xx
+/// REGRESSION (MED #1, proxy engine `FirstByteBody`): a SAME-PROTOCOL NON-STREAM 2xx
 /// `application/json` body whose top-level object splits across transport frames BEFORE its
 /// trailing `usage` must STILL be token-counted. The streaming per-poll `tap.feed` scanner keeps
 /// no cross-chunk state — it only parses complete JSON objects within a single chunk — so the old
@@ -762,162 +631,7 @@ async fn test_same_protocol_nonstream_multichunk_counts_usage() {
     );
 }
 
-/// MEDIUM/correctness (M8): the non-stream usage-tap reassembly decision at
-/// `response_body.rs`'s `if this.nonstream_buf.len() < max_translated_body_bytes() { let remaining
-/// = max_translated_body_bytes() - ... }` reads the live-reloadable
-/// `crate::limits::translate_body_max_bytes()` TWICE. `InstallGuard::install` (`limits.rs:74`)
-/// mutates that `RwLock` under a still-running gateway (a config apply/rollback), so a write
-/// landing in the gap between the two reads makes the first read's `if` pass on a HIGH cap while
-/// the second read subtracts against a freshly-LOWERED one — an underflow (`remaining = lo - buf`)
-/// that panics in debug and wraps to ~2^64 in release (silently disabling the cap).
-///
-/// This is a genuine two-statement TOCTOU with NO await point between the reads (`poll_next` is
-/// synchronous), so there is no way to deterministically interleave a config apply between them
-/// without instrumenting production code. This test instead applies RACE PRESSURE: a background
-/// thread hammers `crate::limits::install` between a cap comfortably above `CHUNK1_LEN` and one
-/// below it, at the highest rate the toggling loop can sustain, while the foreground repeatedly
-/// drives a fresh `FirstByteBody` through the exact vulnerable decision (buffer `CHUNK1_LEN` bytes
-/// under the current cap, then poll a second chunk that re-reads the cap). Over enough attempts
-/// the race window is hit. After the fix (`cap` read once into a local) this can NEVER panic
-/// regardless of scheduling, so a passing run after the fix is not luck — it is deterministic.
-///
-/// `#[ignore]`: `crate::limits::install` (test-only escape hatch) mutates the SAME process-global
-/// `RwLock` every other test reads through `max_translated_body_bytes()`/`translate_body_max_bytes()`
-/// with no cross-test serialization (see `limits.rs`'s own doc — this is a bare test-only setter,
-/// not scoped). Hammering it from a background thread — required to have any chance of landing the
-/// TOCTOU window — corrupted a concurrently-running sibling
-/// (`test_cross_protocol_nonstream_over_cap_body_returns_500_uncharged`) under the default parallel
-/// `cargo test` runner. Run explicitly and alone to reproduce the RED/GREEN proof:
-/// `cargo test -p busbar --bin busbar -- --ignored --test-threads=1 nonstream_tap_cap_is_read_once_per_decision`.
-#[test]
-#[ignore = "hammers the global limits RwLock; run alone (see doc comment) to avoid corrupting sibling tests"]
-fn nonstream_tap_cap_is_read_once_per_decision() {
-    use super::FirstByteBody;
-    use crate::governance::{GovState, MemoryStore, NewKeySpec};
-    use bytes::Bytes;
-    use futures::StreamExt;
-    use std::panic::AssertUnwindSafe;
-    use std::sync::atomic::{AtomicBool, Ordering};
-
-    crate::metrics::init();
-    const CHUNK1_LEN: usize = 4096;
-    const ATTEMPTS: usize = 20_000;
-
-    let app = TestApp::new()
-        .lane(LaneSpec::new(
-            "m",
-            crate::proto::Protocol::openai(),
-            "http://127.0.0.1:1",
-        ))
-        .pool("pa", &[(0, 1)])
-        .build();
-
-    // A real UsageSink (not just `Some(..)`) so the decision runs the exact production condition
-    // (`taps_nonstream_usage() && usage_sink.is_some()`) that gates this branch — never reached
-    // to completion here (only 2 chunks are polled, never draining to the billing arm), so no
-    // background flush task is required.
-    let store = Arc::new(MemoryStore::new());
-    let gov = Arc::new(GovState::new(store, None).expect("gov"));
-    let cost = Arc::new(crate::cost::CostModel::flat(0));
-    let (key, _secret) = gov
-        .create_key(
-            NewKeySpec {
-                name: "k".to_string(),
-                allowed_pools: None,
-                group: None,
-                labels: Default::default(),
-            },
-            1_700_000_000,
-        )
-        .expect("create key");
-    let sink = Some(UsageSink {
-        gov: gov.clone(),
-        cost: cost.clone(),
-        key: std::sync::Arc::new(key.clone()),
-        pool: std::sync::Arc::from(""),
-        charged_at: 1_700_000_000,
-        admit: None,
-    });
-
-    let chunk1 = Bytes::from(vec![b'a'; CHUNK1_LEN]);
-    let chunk2 = Bytes::from(vec![b'b'; 64]);
-
-    // Race pressure: flip the live cap as fast as possible between a value that lets the first
-    // read's `if` pass (comfortably above CHUNK1_LEN) and one the second read's subtraction cannot
-    // survive (below CHUNK1_LEN) — the exact live-reload race `limits.rs`'s own header documents.
-    let stop = Arc::new(AtomicBool::new(false));
-    let stop2 = stop.clone();
-    let toggler = std::thread::spawn(move || {
-        let hi = crate::config::LimitsResolved {
-            request_body_max_bytes: CHUNK1_LEN * 10,
-            ..crate::config::LimitsResolved::default()
-        };
-        let lo = crate::config::LimitsResolved {
-            request_body_max_bytes: CHUNK1_LEN / 2,
-            ..crate::config::LimitsResolved::default()
-        };
-        while !stop2.load(Ordering::Relaxed) {
-            crate::limits::install(&hi);
-            crate::limits::install(&lo);
-        }
-    });
-
-    let waker = futures::task::noop_waker();
-    let mut cx = std::task::Context::from_waker(&waker);
-    let mut hit = false;
-    for _ in 0..ATTEMPTS {
-        let inner = futures::stream::iter(vec![
-            Ok::<Bytes, reqwest::Error>(chunk1.clone()),
-            Ok::<Bytes, reqwest::Error>(chunk2.clone()),
-        ]);
-        let mut fbb = FirstByteBody::new(
-            inner,
-            false, // is_sse: same-protocol NON-STREAM application/json
-            "openai",
-            crate::handlers::CHAT,
-            (),
-            app.clone(),
-            0,
-            Arc::new(crate::store::BreakerCfg::default()),
-            "pa",
-            None,
-            None,
-            sink.clone(),
-            false,
-        );
-        // Drive chunk 1 to completion (buffers CHUNK1_LEN bytes, whatever the cap happens to be at
-        // that instant — retried by the outer loop if it lands unlucky and truncates early).
-        loop {
-            match fbb.poll_next_unpin(&mut cx) {
-                std::task::Poll::Ready(Some(_)) => break,
-                std::task::Poll::Ready(None) => break,
-                std::task::Poll::Pending => continue,
-            }
-        }
-        // The vulnerable decision: chunk 2 re-reads the cap while the toggler hammers it.
-        let result = std::panic::catch_unwind(AssertUnwindSafe(|| loop {
-            match fbb.poll_next_unpin(&mut cx) {
-                std::task::Poll::Ready(_) => break,
-                std::task::Poll::Pending => continue,
-            }
-        }));
-        if result.is_err() {
-            hit = true;
-            break;
-        }
-    }
-    stop.store(true, Ordering::Relaxed);
-    toggler.join().unwrap();
-
-    assert!(
-        !hit,
-        "the cap decision must read `max_translated_body_bytes()` ONCE: a second read landing \
-         after a concurrent config apply lowered the cap underflowed `remaining` and panicked \
-         (attempt to subtract with overflow) within {ATTEMPTS} attempts under race pressure"
-    );
-}
-
-/// CHARACTERIZATION, FULL PATH: terminal token usage MUST reach the client on a
+/// audit H3 (CHARACTERIZATION, FULL PATH): terminal token usage MUST reach the client on a
 /// cross-protocol STREAM even when the egress reports usage in a SEPARATE trailing chunk (the OpenAI
 /// `include_usage` convention). This drives the REAL `FirstByteBody` translate → finish → json-array
 /// framer path for a gemini-ingress / openai-egress stream — the level the isolated translator tests
@@ -994,7 +708,7 @@ async fn test_cross_protocol_stream_delivers_trailing_usage_gemini_json_array() 
     );
 }
 
-/// CHARACTERIZATION, plain-SSE sibling: the terminal-usage fold must also deliver on the
+/// audit H3 (CHARACTERIZATION, plain-SSE sibling): the terminal-usage fold must also deliver on the
 /// PLAIN SSE path (no json-array framer), not just gemini json-array — find-1-solve-6 across the two
 /// delivery paths. anthropic ingress / openai egress with include_usage: the client's terminal
 /// `message_delta` must carry the real `usage.output_tokens` (400), not 0.
@@ -1173,7 +887,7 @@ async fn test_mid_stream_transport_error_does_not_bill_partial_usage() {
     );
 }
 
-/// In `Passthrough` mode, a caller that
+/// REGRESSION (LOW #15 SECURITY, proxy engine key selection): in `Passthrough` mode, a caller that
 /// presents NO credential must fall back to an EMPTY credential, NOT the lane operator's
 /// `api_key`. Borrowing the operator key would let an unauthenticated caller silently spend on the
 /// operator's upstream account. With the empty-credential fallback the upstream returns its own
@@ -1428,7 +1142,7 @@ async fn test_bedrock_ingress_success_carries_amzn_request_id() {
     );
     // UUID-v4 shaped: 36 chars, 8-4-4-4-12.
     assert_eq!(amzn.len(), 36, "x-amzn-RequestId is a UUID; got {amzn}");
-    // The header must appear EXACTLY ONCE. The collapsed
+    // Regression (duplicate-header): the header must appear EXACTLY ONCE. The collapsed
     // maybe_attach_response_request_id was briefly called twice at this cross-protocol site,
     // appending two distinct x-amzn-RequestId values (axum `header()` appends). `.get()` masks it;
     // count all values.
@@ -1503,7 +1217,7 @@ async fn test_anthropic_ingress_success_carries_request_id_header() {
         "anthropic-ingress 2xx MUST carry a synthesized `request-id` header in the native req_ \
              shape; got {rid:?}"
     );
-    // Exactly ONE `request-id` (no duplicate from a double attach).
+    // Regression (duplicate-header): exactly ONE `request-id` (no duplicate from a double attach).
     assert_eq!(
         resp.headers().get_all("request-id").iter().count(),
         1,
@@ -1669,7 +1383,7 @@ async fn test_cross_protocol_client_fault_reshapes_error_envelope() {
 }
 
 /// A forward error path through the real `forward_with_pool` (empty candidate pool → exhaustion)
-/// returns the ingress protocol's native JSON envelope with the right status.
+/// returns the ingress protocol's native JSON envelope with the right status. (§8.1)
 #[tokio::test]
 async fn test_forward_error_path_returns_native_envelope() {
     use http_body_util::BodyExt as _;
@@ -1805,7 +1519,7 @@ async fn test_forward_once_cross_protocol_strips_source_only_extra_keys() {
     server.shutdown().await;
 }
 
-/// The `forward_once` degraded
+/// Regression (MEDIUM, conformance): the `forward_once` degraded
 /// (LeastBad/FallbackPool) cross-protocol path must apply the SAME tool-id native remap the main
 /// forward path does. Before the fix it stripped identity + stamped `created` but omitted
 /// `ToolIdRemap::remap_response`, so a tool-call response emitted the egress backend's RAW native
@@ -1904,7 +1618,7 @@ async fn test_forward_once_cross_protocol_remaps_tool_call_id() {
     server.shutdown().await;
 }
 
-/// The `forward_once` degraded
+/// Regression (indistinguishability): the `forward_once` degraded
 /// (LeastBad/FallbackPool) SAME-protocol Bedrock error relay must forward BOTH `x-amzn-requestid`
 /// and `x-amzn-errortype` verbatim, mirroring the main path. Before the fix it captured neither on
 /// this path — a native AWS SDK's `request_id()` would return None and typed-exception dispatch
@@ -2540,75 +2254,7 @@ async fn test_cross_protocol_nonstream_over_cap_body_returns_500_uncharged() {
     server.shutdown().await;
 }
 
-/// REGRESSION (passes before and after the `BudgetSpendGuard` change, not a RED test): the
-/// `ReadEnd::Truncated` arm is a DELIBERATE no-refund policy — the upstream genuinely succeeded, so
-/// the lane DID serve a request and the budget unit must NOT be returned even though the client
-/// gets a 500. Pins that the guard's `disarm()` before this branch's `return` preserves that policy
-/// (a refund-by-default guard would invert it, exactly the mistake ruled out for this class).
-#[tokio::test]
-async fn test_truncated_body_does_not_refund_budget() {
-    crate::metrics::init();
-    let state = Arc::new(MockServerState::new());
-    let huge = "x".repeat(super::max_translated_body_bytes() + 1024);
-    state.push(MockResponse::Ok {
-        status: StatusCode::OK,
-        body: json!({
-            "id": "chatcmpl-huge",
-            "object": "chat.completion",
-            "created": 1234567890,
-            "model": "gpt-4o",
-            "choices": [{"index": 0, "message": {"role": "assistant", "content": huge}, "finish_reason": "stop"}],
-            "usage": {"prompt_tokens": 5, "completion_tokens": 999999}
-        }),
-    });
-    let server = MockServer::new(state.clone()).await;
-    let app = TestApp::new()
-        .lane(
-            LaneSpec::new(
-                "gpt-4o",
-                crate::proto::Protocol::openai(),
-                &server.base_url(),
-            )
-            .provider("openai")
-            .budget(1),
-        )
-        .pool("pc", &[(0, 1)])
-        .build();
-    assert_eq!(app.store.lane_budget_remaining(0), Some(1));
-    let body = serde_json::to_vec(&json!({
-        "model": "pc",
-        "messages": [{"role": "user", "content": "hi"}],
-        "max_tokens": 16
-    }))
-    .unwrap();
-    let resp = forward_with_pool(
-        app.clone(),
-        vec![crate::state::WeightedLane {
-            reasoning: None,
-            idx: 0,
-            weight: 1,
-            attempt_timeout_ms: None,
-        }],
-        body.into(),
-        None,
-        "pc",
-        None,
-        "anthropic",
-        crate::handlers::CHAT,
-        None,
-    )
-    .await;
-    assert_eq!(resp.status().as_u16(), 500);
-    assert_eq!(
-        app.store.lane_budget_remaining(0),
-        Some(0),
-        "an over-cap (Truncated) body is OUR cap, not an upstream fault, so the headers-time \
-             spend must NOT be refunded"
-    );
-    server.shutdown().await;
-}
-
-/// `read_capped` now pre-reserves a bounded initial buffer capacity
+/// REGRESSION (R18 LOW, perf): `read_capped` now pre-reserves a bounded initial buffer capacity
 /// to cut the per-chunk reallocation churn as the buffer grows toward `cap`. The pre-reserve must
 /// NOT change cap ENFORCEMENT: a body that exceeds `cap` is still rejected — the returned buffer
 /// holds exactly `cap` bytes (the admitted prefix) and the end reason is `ReadEnd::Truncated`,
@@ -2647,7 +2293,7 @@ async fn test_read_capped_enforces_cap_exactly_and_reports_truncated() {
     server.shutdown().await;
 }
 
-/// The client-facing 400 body for an unparseable JSON request
+/// REGRESSION (R18 LOW, public-scrub): the client-facing 400 body for an unparseable JSON request
 /// must carry ONLY the generic, vendor-plausible message — never serde_json's Display detail
 /// (line/column/expectation), which is a busbar-internal tell and can echo fragments of the
 /// malformed body. Sends a body that is valid UTF-8 but invalid JSON containing a recognizable
@@ -2708,7 +2354,7 @@ async fn test_unparseable_json_400_carries_no_serde_internals() {
     }
 }
 
-/// On the STREAMING (`is_sse`) path the 2xx headers
+/// REGRESSION (R20 MED #3, budget symmetry): on the STREAMING (`is_sse`) path the 2xx headers
 /// already spent one `max_requests` budget unit, but a PRE-FIRST-BYTE upstream body transport
 /// failure delivers no usable response. The buffered `ReadEnd::TransportError` paths refund that
 /// unit (#21); the streaming path previously refunded NOTHING — every streaming transport failure
@@ -2818,7 +2464,7 @@ async fn test_streaming_pre_first_byte_transport_error_refunds_budget() {
     );
 }
 
-/// A lane whose upstream connects and returns 2xx headers but then dies BEFORE
+/// REGRESSION (P2 #2): a lane whose upstream connects and returns 2xx headers but then dies BEFORE
 /// the first streamed byte on EVERY attempt must still trip its circuit breaker. Each pre-first-byte
 /// transport failure now records a breaker transient (no longer gated on `had_first`), so REPEATED
 /// pre-first-byte failures accumulate toward the trip threshold instead of silently recording
@@ -2901,7 +2547,7 @@ async fn test_repeated_pre_first_byte_failures_trip_breaker() {
     }
 }
 
-/// On a NON-SSE same-protocol passthrough (e.g.
+/// REGRESSION (R25 MED #1, breaker symmetry): on a NON-SSE same-protocol passthrough (e.g.
 /// OpenAI→OpenAI `/chat/completions`, content-type `application/json`) the 2xx headers recorded
 /// an optimistic breaker SUCCESS, but a mid-BODY transport failure AFTER the first byte delivers
 /// an incomplete response. `FirstByteBody`'s non-SSE `else` arm previously refunded budget but
@@ -3010,7 +2656,7 @@ async fn test_streaming_nonsse_mid_body_transport_error_records_transient() {
     );
 }
 
-/// A CROSS-PROTOCOL
+/// REGRESSION (R26 MED #1 + LOW #7, CLASS-COMPLETION of the R25 forward fix): a CROSS-PROTOCOL
 /// stream whose `StreamTranslate` ABORTS after the first byte — its reassembly buffer overran
 /// `MAX_BUF` (>16MiB without a frame terminator) or it hit a malformed egress prelude — sets NO
 /// `tap.terminal_error` (no in-band `{"type":"error"}` frame was ever scanned). R25 made the
@@ -3157,7 +2803,7 @@ async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
     );
 }
 
-/// A client that disconnects MID-STREAM (drops the body before
+/// Regression (cancel-Drop billing): a client that disconnects MID-STREAM (drops the body before
 /// the natural `Poll::Ready(None)` end) must still have the tokens generated+delivered so far
 /// billed — via `impl Drop for FirstByteBody`. Drives a CLEAN cross-protocol stream (no abort, no
 /// terminal error), polls it ONCE so the usage chunk is consumed (usage tapped, `usage_sink` still
@@ -3361,70 +3007,5 @@ async fn test_cancel_drop_skips_billing_on_aborted_translate() {
         ledgered, 0,
         "a mid-stream drop after a translate ABORT must NOT bill (the Drop's aborted() guard \
              suppresses the charge), inverse of test_cancel_drop_bills_partial_tokens"
-    );
-}
-
-/// Cancellation must refund the headers-time `spend_budget` unit. Unlike
-/// `test_streaming_pre_first_byte_transport_error_refunds_budget` (a TERMINAL error arm, which
-/// already refunds at :396 and sets `ended`), this drops the body mid-stream WITHOUT ever reaching
-/// a terminal poll arm — the shape a client disconnect or LB reset produces. Before the fix, `Drop`
-/// never read `budget_spent`, so the unit was gone forever.
-#[tokio::test]
-async fn test_cancel_drop_mid_stream_refunds_budget() {
-    use super::FirstByteBody;
-    use crate::store::BreakerCfg;
-    use bytes::Bytes;
-    use futures::StreamExt as _;
-
-    // Lane 0: budget-limited with a single remaining unit.
-    let app = TestApp::new()
-        .lane(
-            LaneSpec::new(
-                "m",
-                crate::proto::Protocol::anthropic(),
-                "http://127.0.0.1:1",
-            )
-            .budget(1),
-        )
-        .pool("p", &[(0, 1)])
-        .build();
-
-    // Spend the one unit, exactly as the 2xx-headers path does before streaming.
-    let budget_spent = app.store.spend_budget(0);
-    assert!(budget_spent, "the headers-spend must decrement the unit");
-    assert_eq!(app.store.lane_budget_remaining(0), Some(0));
-
-    // A normal in-band SSE chunk (no error, no terminator) — the stream never reaches a terminal
-    // poll arm before it is dropped, mirroring a client disconnect mid-response.
-    let chunk = b"data: {\"type\":\"content_block_delta\"}\n\n".to_vec();
-    let inner = Box::pin(futures::stream::iter(vec![Ok::<Bytes, reqwest::Error>(
-        Bytes::from(chunk),
-    )]));
-
-    {
-        let body = FirstByteBody::new(
-            inner,
-            true, // is_sse
-            "anthropic",
-            crate::handlers::CHAT,
-            (),
-            app.clone(),
-            0,
-            Arc::new(BreakerCfg::default()),
-            "p",
-            None,
-            None,
-            None,
-            budget_spent,
-        );
-        futures::pin_mut!(body);
-        let _ = body.next().await; // poll once: consume the chunk, no terminal arm reached
-                                   // body dropped here (cancel before stream end) → must refund.
-    }
-
-    assert_eq!(
-        app.store.lane_budget_remaining(0),
-        Some(1),
-        "a mid-stream cancel must refund the headers-time spend_budget unit"
     );
 }

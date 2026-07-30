@@ -14,7 +14,6 @@ pub(crate) mod groups;
 /// The 1.4.x -> 1.5.0 config migrator + the loud fail-closed 1.x detector (P9).
 pub(crate) mod migrate;
 /// The secret-reference type (C2): `{ module, settings }` + the `{env}`/`{file}` sugar.
-pub(crate) mod patch;
 pub(crate) mod secret;
 
 pub(crate) use groups::{GroupCfg, LimitCfg};
@@ -27,29 +26,17 @@ use crate::proto::PROTO_ANTHROPIC;
 /// Reject an env-var value that could break out of the surrounding YAML scalar when substituted
 /// into the raw config text BEFORE parsing. `interpolate_env` splices each value in verbatim, so a
 /// value carrying a YAML-structural control character — most critically a NEWLINE or carriage
-/// return — can close the quoted (or plain) scalar it sits inside and inject sibling YAML nodes.
-/// This is the FIRST of two layers: it is a fast, cheap, clear-error rejection of the
-/// newline-based injection shape. It is NOT sufficient on its own — see
-/// [`interpolate_env_with`]'s structural-equivalence check for the second layer, which closes the
-/// remaining injection surface that needs no newline at all: inside a YAML FLOW collection
-/// (`{ }` / `[ ]` — used by this project's own documented interpolation examples, e.g.
-/// `client_tokens: [ "${VAR}" ]`), a value containing a bare `,`, `"`, or `'` can inject sibling
-/// structure on a single line. A flow SEQUENCE has no schema-level defense against an extra
-/// element (it silently widens e.g. a client-token allowlist), and an opaque `settings:` map
-/// (`serde_json::Map`, used by auth-chain/hook module config and `SecretRef`) has no
-/// `deny_unknown_fields` to reject an injected sibling key either — both are real, exploitable
-/// shapes in this config format. (A typed struct like `PluginsCfg`, which DOES carry
-/// `#[serde(deny_unknown_fields)]` on every field, blocks a bare sibling-key injection at the
-/// deserialize layer for that specific struct — but that is struct-specific luck, not a general
-/// guarantee, and does not help flow sequences or opaque maps at all.)
+/// return — can close the quoted scalar it sits inside and inject sibling YAML nodes (e.g. an extra
+/// `client_tokens` entry, or a rewritten `admin_token`). Since both `client_tokens` and
+/// `admin_token` are interpolated from env vars inside double-quoted scalars in the shipped
+/// `config.yaml`, whoever controls those env vars (a CI pipeline, secret store, orchestrator) could
+/// otherwise silently widen the auth allowlist without editing the config file.
 ///
 /// No legitimate secret, token, URL, or path value contains a raw control character, so blocking
 /// the entire C0 control range (plus DEL and the C1 NEL/LS/PS line-breaks YAML also treats as line
-/// boundaries) closes the newline-based injection vector with effectively zero false positives. A
-/// double-quote, `#`, or comma on its own is harmless without a line break to terminate the
-/// current scalar in most positions, and YAML's own quoting handles them, so we do not
-/// over-reject those here — the flow-collection case they DO enable is handled by the structural
-/// check instead, which is not a character-based check.
+/// boundaries) closes the structural-injection vector with effectively zero false positives. A
+/// double-quote or `#` on its own is harmless without a line break to terminate the current scalar,
+/// and YAML's own quoting handles them, so we do not over-reject those.
 fn reject_yaml_unsafe_value(var_name: &str, value: &str) -> Result<(), String> {
     if let Some(bad) = value.chars().find(|c| {
         // C0 controls (incl. \n, \r, \t, NUL) and DEL, plus the Unicode line/paragraph separators
@@ -76,47 +63,21 @@ pub(crate) enum EnvSubst {
     Lenient,
 }
 
-/// Expand `${VAR}` tokens from the environment (see [`EnvSubst`] for unset-variable behavior). See
-/// [`interpolate_env_with`] for the two-layer injection defense applied to every substituted value.
+/// Expand `${VAR}` tokens from the environment (see [`EnvSubst`] for unset-variable behavior). A
+/// substituted value carrying a YAML-structural control character is rejected (`reject_yaml_unsafe_value`)
+/// so an env var cannot break out of the quoted scalar it lands in and inject extra YAML nodes.
 pub(crate) fn interpolate_env(s: &str) -> Result<String, String> {
     interpolate_env_with(s, EnvSubst::Strict, &mut Vec::new())
 }
 
-/// A single `${VAR}` occurrence resolved during interpolation: the real substituted text and the
-/// per-occurrence placeholder token that stands in for it in the "shape" pass (see
-/// [`assert_interpolation_preserves_structure`]). Recorded in source order so a structural
-/// mismatch can be attributed back to a specific occurrence / variable, best-effort.
-struct Occurrence {
-    var_name: String,
-    real_value: String,
-    placeholder: String,
-}
-
 /// See [`interpolate_env`]. In [`EnvSubst::Lenient`] mode each unset variable name is pushed into
 /// `unset` (first-seen, deduped) and a placeholder substituted; in `Strict` mode `unset` is untouched.
-///
-/// Two independent layers guard every substituted value against breaking out of the raw YAML text
-/// it is spliced into, verbatim, BEFORE parsing:
-///
-/// 1. [`reject_yaml_unsafe_value`] rejects a NEWLINE (or other YAML-structural control character)
-///    in the value outright — cheap, and gives a precise error for that shape.
-/// 2. A structural-equivalence check (this function, below): after interpolation, the SAME raw
-///    template is interpolated a second time with every `${VAR}` replaced by a unique, YAML-inert
-///    placeholder token instead of its real value. Both results are parsed to `serde_yaml::Value`
-///    and their trees are compared for structural equivalence (same map keys, same sequence
-///    lengths, same node kind, at every position — NOT scalar leaf values, which are expected and
-///    allowed to differ in content and even inferred type). Any difference means a substituted
-///    value injected or removed YAML structure — the config would parse into a different SHAPE
-///    than the template declares — and interpolation is rejected. This closes injection shapes
-///    that need no newline at all (flow-collection `,`/`"`/`'` breakout, anchor/tag games), which
-///    (1) alone cannot see.
 pub(crate) fn interpolate_env_with(
     s: &str,
     mode: EnvSubst,
     unset: &mut Vec<String>,
 ) -> Result<String, String> {
     let mut result = String::with_capacity(s.len());
-    let mut occurrences: Vec<Occurrence> = Vec::new();
     let mut chars = s.chars().peekable();
 
     while let Some(ch) = chars.next() {
@@ -161,217 +122,12 @@ pub(crate) fn interpolate_env_with(
             // the surrounding YAML scalar and inject sibling nodes (e.g. extra client_tokens).
             reject_yaml_unsafe_value(&var_name, &value)?;
             result.push_str(&value);
-            // Unique PER OCCURRENCE (not per var name): two different `${VAR}` references never
-            // collapse to the same placeholder token, so a real shape difference between two
-            // occurrences of the same variable can never be masked by the placeholder pass
-            // accidentally making them look like "the same node twice". Reusing the SAME var's
-            // real value at multiple points needs no special handling either way — the shape
-            // check never compares scalar leaf VALUES, only node kind/keys/lengths, so two
-            // occurrences sharing a real value are indistinguishable, structurally, from two
-            // occurrences with different values; both are fine.
-            let placeholder = structural_placeholder(occurrences.len());
-            occurrences.push(Occurrence {
-                var_name,
-                real_value: value,
-                placeholder,
-            });
         } else {
             result.push(ch);
         }
     }
 
-    if !occurrences.is_empty() {
-        assert_interpolation_preserves_structure(s, &result, &occurrences)?;
-    }
-
     Ok(result)
-}
-
-/// The per-occurrence placeholder token used by the structural-equivalence check: alphanumeric +
-/// underscore only, so it can never itself introduce YAML structure (no `,` `"` `'` `&` `*` `!`
-/// `:` `[` `]` `{` `}` `#` `|` `>` `-` or whitespace) regardless of where in the template it lands.
-fn structural_placeholder(occurrence_index: usize) -> String {
-    format!("__BUSBAR_INTERP_PLACEHOLDER_{occurrence_index}__")
-}
-
-/// Re-run the interpolation of `template` with the placeholder token substituted for occurrence
-/// `keep_real` (kept as its real value) and every OTHER occurrence's placeholder for all others,
-/// re-scanning `template` for `${...}` spans in the same left-to-right order `occurrences` was
-/// built in. Used only on the (rare, boot-time-only) attribution path after a mismatch is already
-/// known, to isolate which single occurrence's real value is responsible.
-fn splice_occurrences(
-    template: &str,
-    occurrences: &[Occurrence],
-    keep_real: Option<usize>,
-) -> String {
-    let mut out = String::with_capacity(template.len());
-    let mut chars = template.chars().peekable();
-    let mut idx = 0usize;
-    while let Some(ch) = chars.next() {
-        if ch == '$' && chars.peek() == Some(&'{') {
-            chars.next();
-            for ch in chars.by_ref() {
-                if ch == '}' {
-                    break;
-                }
-            }
-            let occ = &occurrences[idx];
-            if keep_real == Some(idx) {
-                out.push_str(&occ.real_value);
-            } else {
-                out.push_str(&occ.placeholder);
-            }
-            idx += 1;
-        } else {
-            out.push(ch);
-        }
-    }
-    out
-}
-
-/// The structural-equivalence check (see [`interpolate_env_with`] doc comment). `real` is the
-/// already fully-interpolated text; `template` is the original raw source (re-scanned to build the
-/// all-placeholder text and, on the failure path, single-occurrence hybrids for attribution).
-fn assert_interpolation_preserves_structure(
-    template: &str,
-    real: &str,
-    occurrences: &[Occurrence],
-) -> Result<(), String> {
-    // If the real text doesn't even parse as YAML, that already fails safely downstream (the
-    // caller re-parses it and gets a loud, ordinary parse error) — nothing "succeeded silently",
-    // so there is nothing for this check to add. Skip rather than invent a confusing second error.
-    let real_value: serde_yaml::Value = match serde_yaml::from_str(real) {
-        Ok(v) => v,
-        Err(_) => return Ok(()),
-    };
-
-    let placeholder_text = splice_occurrences(template, occurrences, None);
-    let placeholder_value: serde_yaml::Value = match serde_yaml::from_str(&placeholder_text) {
-        Ok(v) => v,
-        Err(e) => {
-            // The placeholder text is built from YAML-inert tokens, so this should not normally
-            // happen. Real interpolation succeeded (parsed fine above) but we cannot verify it
-            // preserves the template's structure — fail closed rather than let an unverifiable
-            // interpolation through.
-            return Err(format!(
-                "could not verify that environment-variable interpolation preserves config \
-                 structure (internal placeholder document failed to parse: {e}); refusing to \
-                 proceed"
-            ));
-        }
-    };
-
-    if structural_shapes_match(&real_value, &placeholder_value, 0) {
-        return Ok(());
-    }
-
-    // Mismatch: try to isolate which single occurrence's real value is responsible by swapping
-    // real values back in one at a time against the all-placeholder baseline. Boot-time-only,
-    // rare (error) path, so re-parsing per occurrence is a non-issue.
-    let mut culprits: Vec<String> = Vec::new();
-    for (i, occ) in occurrences.iter().enumerate() {
-        let hybrid_text = splice_occurrences(template, occurrences, Some(i));
-        let matches = match serde_yaml::from_str::<serde_yaml::Value>(&hybrid_text) {
-            Ok(hybrid_value) => structural_shapes_match(&hybrid_value, &placeholder_value, 0),
-            Err(_) => false, // this occurrence alone breaks parsing outright: also a culprit
-        };
-        if !matches && !culprits.contains(&occ.var_name) {
-            culprits.push(occ.var_name.clone());
-        }
-    }
-
-    if culprits.is_empty() {
-        // No single occurrence reproduces the mismatch in isolation (e.g. it takes two or more
-        // values together) — name every candidate rather than guess wrong.
-        let mut all: Vec<String> = occurrences.iter().map(|o| o.var_name.clone()).collect();
-        all.sort();
-        all.dedup();
-        Err(format!(
-            "environment-variable interpolation would change the config's YAML structure (extra \
-             or missing key, different sequence length, or different node kind at some position), \
-             but no single variable reproduces it in isolation — inspect: {}",
-            all.join(", ")
-        ))
-    } else {
-        Err(format!(
-            "environment variable(s) {} would change the config's YAML structure when \
-             interpolated (extra or missing key, different sequence length, or different node \
-             kind) — a substituted value must only ever change a scalar leaf's content, never the \
-             document's shape",
-            culprits.join(", ")
-        ))
-    }
-}
-
-/// The node "kind" compared by the structural-equivalence check: every scalar variant (`Null`,
-/// `Bool`, `Number`, `String`) folds into one bucket, because interpolation legitimately changes a
-/// leaf's content and even its INFERRED TYPE (e.g. `port: ${PORT}` — a real `8080` infers as
-/// `Number`, the placeholder token infers as `String`) without that being an injection. `Mapping`,
-/// `Sequence`, and `Tagged` stay distinct: those are shapes a plain scalar substitution should
-/// never turn into, so seeing one appear only on the real side (or vice versa) IS the signal.
-///
-/// `depth` bounds the recursion (mirrors `json::MAX_JSON_DEPTH`'s reasoning, at the same limit):
-/// this walks an UNTYPED `serde_yaml::Value` tree built from a config file only "trusted but
-/// validated" per this project's own threat model (a typo shouldn't become a crash), and unlike
-/// the typed deserialize path this function has no schema to bound its own depth — a config with
-/// deeply nested (even accidentally, via a templating bug) mappings/sequences could otherwise
-/// stack-overflow the boot/reload path. Past the limit, treat the pair as a shape MISMATCH (fail
-/// closed into the ordinary "would change structure" rejection) rather than let a document too
-/// deep to safely verify slip through.
-const MAX_STRUCTURAL_COMPARE_DEPTH: usize = 128;
-
-fn structural_shapes_match(a: &serde_yaml::Value, b: &serde_yaml::Value, depth: usize) -> bool {
-    use serde_yaml::Value;
-    if depth > MAX_STRUCTURAL_COMPARE_DEPTH {
-        return false;
-    }
-    match (a, b) {
-        (Value::Mapping(ma), Value::Mapping(mb)) => {
-            let mut ka: Vec<String> = ma.iter().map(|(k, _)| mapping_key_repr(k)).collect();
-            let mut kb: Vec<String> = mb.iter().map(|(k, _)| mapping_key_repr(k)).collect();
-            ka.sort();
-            kb.sort();
-            // Compared as a SET, not in map order: a real injection would not necessarily
-            // preserve key order, and order carries no semantic meaning for a YAML mapping here
-            // (`serde_yaml` / the typed structs downstream don't treat map key order as
-            // significant either), so an order-sensitive compare would be both meaningless and a
-            // source of spurious failures.
-            if ka != kb {
-                return false;
-            }
-            ma.iter().all(|(k, va)| match mb.get(k.clone()) {
-                Some(vb) => structural_shapes_match(va, vb, depth + 1),
-                None => false,
-            })
-        }
-        (Value::Sequence(sa), Value::Sequence(sb)) => {
-            sa.len() == sb.len()
-                && sa
-                    .iter()
-                    .zip(sb.iter())
-                    .all(|(va, vb)| structural_shapes_match(va, vb, depth + 1))
-        }
-        (Value::Tagged(ta), Value::Tagged(tb)) => {
-            ta.tag == tb.tag && structural_shapes_match(&ta.value, &tb.value, depth + 1)
-        }
-        (Value::Mapping(_), _) | (_, Value::Mapping(_)) => false,
-        (Value::Sequence(_), _) | (_, Value::Sequence(_)) => false,
-        (Value::Tagged(_), _) | (_, Value::Tagged(_)) => false,
-        // Both plain scalars (Null/Bool/Number/String in any combination): shape matches
-        // regardless of content or inferred type — see the doc comment above.
-        _ => true,
-    }
-}
-
-/// A YAML mapping key rendered to a comparable string for the structural-equivalence check's
-/// key-set comparison. Every key in this project's config surface is a plain YAML string, so the
-/// common case is exact; the fallback exists only so a non-string key (not expected in practice)
-/// degrades to a still-deterministic, still-comparable representation instead of panicking.
-fn mapping_key_repr(key: &serde_yaml::Value) -> String {
-    match key {
-        serde_yaml::Value::String(s) => s.clone(),
-        other => format!("{other:?}"),
-    }
 }
 
 /// The fully-resolved runtime config. NOT deserialized from YAML: the on-disk shape is `DeployCfg`
@@ -410,10 +166,6 @@ pub(crate) struct RootCfg {
     /// The `store:` block as configured; `None` = the block was ABSENT (ephemeral RAM store,
     /// presence-driven governance stays off unless another governance signal is present).
     pub(crate) store: Option<StoreCfg>,
-    /// Module-level `open()` config for `kind: secret` plugins, keyed by module name (the top-level
-    /// `secrets:` block). Empty = every secret plugin opens with `{}` (the prior behavior). The
-    /// built-in `env` / `file` modules take no config and must not appear here.
-    pub(crate) secrets: std::collections::BTreeMap<String, SecretModuleCfg>,
     /// Names of hooks that fire on EVERY request - the registry names synthesized from the
     /// `global_hooks:` inline refs, in order.
     pub(crate) global_hooks: Vec<String>,
@@ -470,10 +222,10 @@ pub(crate) struct TlsCfg {
 ///
 /// ```yaml
 /// chain:
-/// - keys
-/// - ad: { max_admin_scope: full, settings: { server: "ldaps://corp" } }
+///   - keys
+///   - ad: { max_admin_scope: full, settings: { server: "ldaps://corp" } }
 /// admin_auth:
-/// - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }
+///   - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct AuthChainEntry {
@@ -592,9 +344,8 @@ pub(crate) struct RoleBindingCfg {
     #[serde(default)]
     pub(crate) group: Option<String>,
     /// The ADMIN scope this role grants: `read-only` | `hooks-register` | `mint` | `full`. Absent =
-    /// no admin access from this role. A principal holds the UNION of what its bound roles grant
-    /// (`hooks-register` and `mint` are incomparable siblings, so holding both keeps both — see
-    /// `Grants` in the contract module), ceilinged by the asserting module's `max_admin_scope`.
+    /// no admin access from this role. The most permissive of a principal's bound roles wins (by the
+    /// `Scope` ordinal), ceilinged by the asserting module's `max_admin_scope`.
     #[serde(default)]
     pub(crate) admin_scope: Option<String>,
 }
@@ -846,8 +597,8 @@ fn neg1() -> i64 {
 ///
 /// ```yaml
 /// hooks:
-/// - cheapest                                    # bare BUILT-IN (an ordering strategy)
-/// - { module: my-hook-plugin, settings: { url: "https://sidecar/hook" }, on_error: reject }
+///   - cheapest                                    # bare BUILT-IN (an ordering strategy)
+///   - { module: my-hook-plugin, settings: { url: "https://sidecar/hook" }, on_error: reject }
 /// ```
 ///
 /// A bare name is ONLY a built-in (weighted | cheapest | fastest | least_busy | usage); everything
@@ -1031,7 +782,7 @@ impl<'de> Deserialize<'de> for PoolCfg {
     where
         D: serde::Deserializer<'de>,
     {
-        // Deny unknown keys so a typo'd pool key fails boot.
+        // M8: deny unknown keys so a typo'd pool key fails boot.
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct RawPoolCfg {
@@ -1186,7 +937,8 @@ impl PromptAccess {
     pub(crate) fn sends_prompt(self) -> bool {
         !matches!(self, PromptAccess::No)
     }
-    /// Whether the hook may return a `rewrite` arm (only `rw`).
+    /// Whether the hook may return a `rewrite` arm (only `rw`). Wired in the slice-4 seam.
+    #[allow(dead_code)]
     pub(crate) fn can_rewrite(self) -> bool {
         matches!(self, PromptAccess::Rw)
     }
@@ -1350,7 +1102,7 @@ pub(crate) struct HookCfg {
     #[serde(default)]
     pub(crate) user: UserAccess,
     /// Hook ordering key (default 0). Orders the rewrite transform chain and the phase-2 decision
-    /// chain (which reject surfaces; which order is "last" — see design-hooks-v2). Ascending;
+    /// chain (which reject surfaces; which order is "last" — see design-hooks-v2 §3.2). Ascending;
     /// ties keep globals before pool gates, then config order.
     #[serde(default)]
     pub(crate) priority: u16,
@@ -1843,11 +1595,6 @@ pub(crate) struct DeployCfg {
     /// The durable store as `{ module, settings }` (S6). Absent = the ephemeral RAM store.
     #[serde(default)]
     pub(crate) store: Option<StoreCfg>,
-    /// Module-level `open()` config for `kind: secret` plugins, keyed by module name — the delivery
-    /// path a Vault-style secret plugin needs (address / namespace / auth token / CA). Absent = every
-    /// secret plugin opens with `{}`. Mirrors `store.settings` for the store plugin.
-    #[serde(default)]
-    pub(crate) secrets: std::collections::BTreeMap<String, SecretModuleCfg>,
     /// Internal tuning knobs (the `advanced:` block).
     #[serde(default)]
     pub(crate) advanced: AdvancedCfg,
@@ -1868,11 +1615,9 @@ pub(crate) struct DeployCfg {
     /// field defaults to its historical hardcoded value (absent = today's behavior).
     #[serde(default)]
     pub(crate) limits: LimitsCfg,
-    /// Prometheus metrics — 100% OPT-IN. ABSENT = metrics are OFF: no recorder is installed, the
-    /// hot path records nothing, `/metrics` is not mounted, and nothing is retained. Present = the
-    /// operator opted in and MUST name `buffer_seconds` (see [`MetricsCfg`]).
+    /// Process-wide metrics tunables.
     #[serde(default)]
-    pub(crate) metrics: Option<MetricsCfg>,
+    pub(crate) metrics: MetricsCfg,
     /// Process-wide active-probe fallbacks (per-lane overrides still win).
     #[serde(default)]
     pub(crate) health: HealthDefaultsCfg,
@@ -1932,17 +1677,17 @@ pub(crate) struct PluginsCfg {
     /// meets the floor; nothing else loads it. Sibling of `trust` (a version axis, not a trust axis).
     #[serde(default)]
     pub(crate) min_versions: std::collections::BTreeMap<String, String>,
-    /// RUNTIME-ONLY (never in config, `#[serde(skip)]`): PER-PLUGIN FIRST-PARTY anti-downgrade floor
-    /// OVERRIDES for EXPLICIT operator rollbacks (1.5.0; M1). Empty (the default, and the ONLY value the
-    /// automatic boot/reload path ever sees) = every first-party plugin uses the running binary's own
-    /// version — the full automatic floor. An explicit, audited `POST /plugins/rollback` of a
-    /// FIRST-PARTY plugin adds a `name -> pinned target version` entry so `busbar_plugin_sign::evaluate`
-    /// admits the prior artifact for THAT NAME ONLY (an unpinned first-party plugin still faces the full
-    /// floor — the M1 fix, replacing the earlier single global floor). Derived from the persisted
+    /// RUNTIME-ONLY (never in config, `#[serde(skip)]`): the FIRST-PARTY anti-downgrade floor OVERRIDE
+    /// for an EXPLICIT operator rollback (1.5.0). `None` (the default, and the ONLY value the automatic
+    /// boot/reload path ever sees) = the running binary's own version — the full automatic floor. An
+    /// explicit, audited `POST /plugins/rollback` of a FIRST-PARTY plugin sets this to the pinned
+    /// target version so `busbar_plugin_sign::evaluate`'s first-party check (which gates on
+    /// `binary_version`) admits the prior first-party artifact. Derived from the persisted
     /// `plugin_versions` pins during a rebuild (`overlay::apply_plugin_versions_to_deploy`); it is
-    /// never deserialized, so config parsing + `deny_unknown_fields` are unchanged.
+    /// never deserialized, so config parsing + `deny_unknown_fields` are unchanged. See
+    /// `to_policy_with_floor`'s doc for the automatic-vs-explicit contract.
     #[serde(skip)]
-    pub(crate) first_party_floors: std::collections::BTreeMap<String, String>,
+    pub(crate) first_party_floor: Option<String>,
 }
 
 impl Default for PluginsCfg {
@@ -1952,7 +1697,7 @@ impl Default for PluginsCfg {
             dir: default_plugins_dir(),
             trust: PluginsTrustCfg::default(),
             min_versions: std::collections::BTreeMap::new(),
-            first_party_floors: std::collections::BTreeMap::new(),
+            first_party_floor: None,
         }
     }
 }
@@ -2000,11 +1745,13 @@ impl PluginsCfg {
         // (boot / config reload / config apply / admin plugin reload) uses — UNLESS an explicit,
         // audited rollback has set `first_party_floor` (a runtime-only, serde-skip field derived from
         // the persisted `plugin_versions` pins), in which case the operator's pinned floor stands.
-        // `first_party_floors` is EMPTY on every path except a rebuild carrying persisted rollback
-        // pins, so the automatic guarantee is unchanged by default. Each entry lowers the floor for
-        // ONE named first-party plugin only (M1); every other first-party plugin still faces the
-        // running binary's version.
-        self.to_policy_with_floor(env!("CARGO_PKG_VERSION"))
+        // `first_party_floor` is `None` on every path except a rebuild carrying a persisted rollback
+        // pin, so the automatic guarantee is unchanged by default.
+        let floor = self
+            .first_party_floor
+            .as_deref()
+            .unwrap_or(env!("CARGO_PKG_VERSION"));
+        self.to_policy_with_floor(floor)
     }
 
     /// Build the trust policy with an EXPLICIT first-party anti-downgrade floor OVERRIDE — the seam
@@ -2040,38 +1787,9 @@ impl PluginsCfg {
                 .map_err(|e| format!("plugins.trust.publishers['{}']: {e}", p.name))?;
             publishers.insert(p.name.clone(), key);
         }
-        // A malformed floor is not a config error (it does not stop the boot — `version_at_least`
-        // fails closed at the comparator, refusing just the one floored plugin, per class-12 D2) but
-        // it IS worth telling the operator about early, before an artifact is even present: an
-        // unparsable floor silently disarms the anti-downgrade control, so an operator who believes
-        // it is armed should not have to discover that from a missing `--list-plugins` row.
-        for (name, floor) in &self.min_versions {
-            if !floor.is_empty() && !busbar_plugin_sign::valid_semver(floor) {
-                tracing::warn!(
-                    key = %format!("plugins.min_versions['{name}']"),
-                    value = %floor,
-                    "anti-downgrade floor is not a valid MAJOR.MINOR.PATCH version (no leading \
-                     'v'); it cannot be satisfied, so this plugin will be refused. Fix or remove \
-                     the entry."
-                );
-            }
-        }
-        for (name, floor) in &self.first_party_floors {
-            if !floor.is_empty() && !busbar_plugin_sign::valid_semver(floor) {
-                tracing::warn!(
-                    key = %format!("plugins.first_party_floors['{name}']"),
-                    value = %floor,
-                    "anti-downgrade floor is not a valid MAJOR.MINOR.PATCH version (no leading \
-                     'v'); it cannot be satisfied, so this plugin will be refused — and this pin \
-                     REPLACES the binary-version floor, so the plugin is refused unconditionally \
-                     until this is fixed. Fix or remove the entry."
-                );
-            }
-        }
         Ok(busbar_plugin_sign::TrustPolicy {
             first_party_key: busbar_plugin_sign::embedded_release_pubkey(),
             binary_version: binary_version.to_string(),
-            first_party_floors: self.first_party_floors.clone(),
             publishers,
             allow_unsigned: self.trust.allow_unsigned,
             allow_third_party: self.trust.allow_third_party,
@@ -2114,27 +1832,6 @@ impl Default for StoreCfg {
 
 fn default_governance_store() -> String {
     GOVERNANCE_STORE_MEMORY.to_string()
-}
-
-/// A top-level `secrets:` entry — MODULE-LEVEL initialization config for a `kind: secret` plugin,
-/// keyed by the module NAME (alias or canonical). This is the delivery path for the config a secret
-/// plugin needs in its `open()` (a Vault plugin's address / namespace / auth token / TLS CA), exactly
-/// as `store.settings` carries a store plugin's `open()` config. WITHOUT this block a `kind: secret`
-/// plugin's `open()` receives `{}`, forcing operators to repeat every piece of module config in EVERY
-/// individual `SecretRef.settings` (multiplying exposure of the Vault address/token). The built-in
-/// `env` / `file` modules take no module config and MUST NOT appear here (validated).
-///
-/// The `settings` are resolved against the BUILT-IN `env` / `file` secret resolvers ONLY (so
-/// `{ token: { env: VAULT_TOKEN } }` works) — NEVER against another secret plugin, which would be a
-/// bootstrap cycle (a secret module cannot resolve its OWN config through itself).
-#[derive(Debug, Deserialize, Serialize, Clone, Default)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct SecretModuleCfg {
-    /// The module's own opaque module-level settings, delivered to the plugin's `open()` as its config
-    /// JSON. Any `SecretRef`-typed value (e.g. `token: { env: VAULT_TOKEN }`) is resolved via the
-    /// built-in env/file modules before it crosses the ABI.
-    #[serde(default)]
-    pub(crate) settings: serde_json::Map<String, serde_json::Value>,
 }
 
 /// The `advanced:` block - INTERNAL tuning knobs (formerly under `governance:`). Every field
@@ -2343,10 +2040,6 @@ fn default_max_inbound_concurrent() -> usize {
 fn default_max_keys_per_principal() -> usize {
     0
 }
-/// `0` = unlimited auto-provisioned groups (today's behavior — an absent knob changes nothing).
-fn default_max_auto_provisioned_groups() -> usize {
-    0
-}
 fn default_hard_down_cooldown_secs() -> u64 {
     DEFAULT_HARD_DOWN_COOLDOWN_SECS
 }
@@ -2413,21 +2106,12 @@ pub(crate) struct LimitsCfg {
     #[serde(default = "default_max_inbound_concurrent")]
     pub(crate) max_inbound_concurrent: usize,
     /// Cap on how many keys may be BOUND TO ONE GROUP — the anti-sprawl mitigation for self-service
-    /// minting. Because a `user:<sub>` leaf group IS the principal, this is
+    /// minting (self-service §6a). Because a `user:<sub>` leaf group IS the principal (§5), this is
     /// effectively "max keys per principal": a self-issued mint into a group already holding this
     /// many keys is a `409`. `0` (default) = UNLIMITED (today's behavior — an absent knob changes
     /// nothing). Enforced at `POST /keys` only; keys already present are never retroactively revoked.
     #[serde(default = "default_max_keys_per_principal")]
     pub(crate) max_keys_per_principal: usize,
-    /// Cap on how many groups `POST /keys` may AUTO-PROVISION (`parent:` self-service). The
-    /// key-count cap bounds keys per group but says nothing about the number of GROUPS, so a
-    /// `mint`-scope credential could grow the limit tree without bound — every new `user:<sub>`
-    /// leaf is a new bucket in the enforcement chain, the version log and the persisted overlay
-    /// Counted over the WHOLE runtime (overlay) group set, since that is what
-    /// auto-provisioning grows. `0` (default) = UNLIMITED (an absent knob changes nothing).
-    /// Explicitly configured groups are unaffected: the ceiling gates auto-provisioning only.
-    #[serde(default = "default_max_auto_provisioned_groups")]
-    pub(crate) max_auto_provisioned_groups: usize,
     #[serde(default = "default_hard_down_cooldown_secs")]
     pub(crate) hard_down_cooldown_secs: u64,
     #[serde(default = "default_upstream_error_body_max_bytes")]
@@ -2500,7 +2184,6 @@ impl Default for LimitsCfg {
             pool_idle_timeout_secs: default_pool_idle_timeout_secs(),
             max_inbound_concurrent: default_max_inbound_concurrent(),
             max_keys_per_principal: default_max_keys_per_principal(),
-            max_auto_provisioned_groups: default_max_auto_provisioned_groups(),
             hard_down_cooldown_secs: default_hard_down_cooldown_secs(),
             upstream_error_body_max_bytes: default_upstream_error_body_max_bytes(),
             tls_handshake_timeout_secs: default_tls_handshake_timeout_secs(),
@@ -2512,37 +2195,25 @@ impl Default for LimitsCfg {
     }
 }
 
-/// The `metrics:` block — PRESENT means the operator opted in to Prometheus metrics. Omit the whole
-/// block and busbar collects nothing (no recorder, no `/metrics`, no retention).
-///
-/// WHY OPT-IN. Recording an observation is not free: each sample is held as a raw
-/// `(value, timestamp)` pair until something folds it into its aggregate form. A gateway collecting
-/// metrics nobody reads pays that cost for data no one will look at. With the block absent the cost
-/// is structurally zero rather than merely small.
-///
-/// WHY `buffer_seconds` HAS NO DEFAULT. It is the retention window the operator asks busbar to hold
-/// in memory on their behalf — busbar folds parked samples into the rolling summary on a timer and
-/// drops what is older. That is a memory-for-fidelity trade with no universally right answer (at
-/// 100k rps each second of buffer is a few MB of raw samples), so it is NAMED by whoever opts in
-/// rather than defaulted to a number they never chose. Turning metrics on is a decision; how much
-/// memory that decision costs is part of the same decision.
+/// The `metrics:` block.
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(deny_unknown_fields)] // M8: a typo'd metrics key must fail boot, not be silently ignored.
 pub(crate) struct MetricsCfg {
-    /// How many SECONDS of observations to retain. REQUIRED — omitting it fails config load, the
-    /// same posture as any other field whose value must be a deliberate choice. Quantile lines on
-    /// `/metrics` cover the last `buffer_seconds`; `_sum`/`_count` stay cumulative and are unaffected
-    /// by the window. Also bounds memory: raw samples are folded on a timer derived from this value,
-    /// so retention is one window's traffic instead of the whole process lifetime.
-    pub(crate) buffer_seconds: u64,
     #[serde(default = "default_key_gauge_limit")]
     pub(crate) key_gauge_limit: usize,
+}
+
+impl Default for MetricsCfg {
+    fn default() -> Self {
+        Self {
+            key_gauge_limit: default_key_gauge_limit(),
+        }
+    }
 }
 
 /// The `health:` block — process-wide active-probe fallbacks (per-lane `health.interval_secs` /
 /// `timeout_secs` still override these).
 #[derive(Debug, Deserialize, Serialize, Clone)]
-#[serde(deny_unknown_fields)] // a typo'd health key must fail boot, not be silently ignored.
 pub(crate) struct HealthDefaultsCfg {
     #[serde(default = "default_probe_interval_secs")]
     pub(crate) default_probe_interval_secs: u64,
@@ -2586,11 +2257,8 @@ pub(crate) struct LimitsResolved {
     pub(crate) pool_max_idle_per_host: usize,
     pub(crate) pool_idle_timeout_secs: u64,
     pub(crate) max_inbound_concurrent: usize,
-    /// Max keys bound to one group (0 = unlimited) — the self-service mint anti-sprawl cap.
+    /// Max keys bound to one group (0 = unlimited) — the self-service mint anti-sprawl cap (§6a).
     pub(crate) max_keys_per_principal: usize,
-    /// Max groups a mint may AUTO-PROVISION (0 = unlimited) — the sibling anti-sprawl cap on the
-    /// SHAPE of the limit tree, not just its contents.
-    pub(crate) max_auto_provisioned_groups: usize,
     pub(crate) hard_down_cooldown_secs: u64,
     pub(crate) upstream_error_body_max_bytes: usize,
     pub(crate) tls_handshake_timeout_secs: u64,
@@ -2614,7 +2282,7 @@ impl Default for LimitsResolved {
             &LimitsCfg::default(),
             &ObservabilityCfg::default(),
             &AdvancedCfg::default(),
-            None,
+            &MetricsCfg::default(),
             &HealthDefaultsCfg::default(),
             &RoutingCfg::default(),
         )
@@ -2626,7 +2294,7 @@ impl LimitsResolved {
         limits: &LimitsCfg,
         obs: &ObservabilityCfg,
         advanced: &AdvancedCfg,
-        metrics: Option<&MetricsCfg>,
+        metrics: &MetricsCfg,
         health: &HealthDefaultsCfg,
         routing: &RoutingCfg,
     ) -> Self {
@@ -2637,7 +2305,6 @@ impl LimitsResolved {
             pool_idle_timeout_secs: limits.pool_idle_timeout_secs,
             max_inbound_concurrent: limits.max_inbound_concurrent,
             max_keys_per_principal: limits.max_keys_per_principal,
-            max_auto_provisioned_groups: limits.max_auto_provisioned_groups,
             hard_down_cooldown_secs: limits.hard_down_cooldown_secs,
             upstream_error_body_max_bytes: limits.upstream_error_body_max_bytes,
             tls_handshake_timeout_secs: limits.tls_handshake_timeout_secs,
@@ -2647,9 +2314,7 @@ impl LimitsResolved {
             reasoning_effort_budgets: limits.reasoning_effort_budgets,
             max_inflight_webhook_deliveries: obs.max_inflight_webhook_deliveries,
             webhook_delivery_timeout_secs: obs.webhook_delivery_timeout_secs,
-            // Metrics off (block absent) ⇒ the gauge cap is inert; carry the historical value so
-            // nothing downstream has to special-case a disabled collector.
-            key_gauge_limit: metrics.map_or_else(default_key_gauge_limit, |m| m.key_gauge_limit),
+            key_gauge_limit: metrics.key_gauge_limit,
             rate_sweep_interval: advanced.rate_sweep_interval,
             usage_flush_interval_ms: advanced.usage_flush_interval_ms,
             default_probe_interval_secs: health.default_probe_interval_secs,
@@ -2698,24 +2363,6 @@ pub(crate) fn resolve(
     defs: &HashMap<String, ProviderDef>,
 ) -> Result<RootCfg, Vec<String>> {
     let mut errors = Vec::new();
-
-    // `metrics.buffer_seconds: 0` would ask busbar to retain observations for no time at all: the
-    // rolling window is empty at every scrape, so `/metrics` renders quantiles over nothing while
-    // the hot path still pays the full recording cost — opted-in metrics that report nothing.
-    // Omitting the whole `metrics:` block is how collection is turned OFF; `0` is not that, so it
-    // fails boot loudly rather than silently producing an inert collector.
-    if deploy
-        .metrics
-        .as_ref()
-        .is_some_and(|m| m.buffer_seconds == 0)
-    {
-        errors.push(
-            "metrics.buffer_seconds: 0 retains no observations, so every scrape would report empty \
-             quantiles while still paying the recording cost — name a positive retention window in \
-             seconds, or omit the whole `metrics:` block to turn metrics off"
-                .to_string(),
-        );
-    }
     let mut resolved_providers: HashMap<String, ProviderCfg> = HashMap::new();
 
     for (deploy_name, deploy_cfg) in &deploy.providers {
@@ -2907,7 +2554,6 @@ pub(crate) fn resolve(
             rate_card: deploy.rate_card.clone(),
             per_request_fee: deploy.per_request_fee,
             store: deploy.store.clone(),
-            secrets: deploy.secrets.clone(),
             global_hooks: global_hook_names,
             blocked_metadata_hosts: deploy
                 .security
@@ -2931,7 +2577,7 @@ pub(crate) fn resolve(
                 &deploy.limits,
                 &deploy.observability.clone().unwrap_or_default(),
                 &deploy.advanced,
-                deploy.metrics.as_ref(),
+                &deploy.metrics,
                 &deploy.health,
                 &deploy.routing,
             ),

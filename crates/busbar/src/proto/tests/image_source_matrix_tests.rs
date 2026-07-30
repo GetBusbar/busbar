@@ -29,11 +29,10 @@ fn foreign_vendor_image_ref_never_corrupts_any_writer() {
     let req = req_with_image(foreign);
     let cohere = CohereWriter;
     let gemini = GeminiWriter;
-    let bedrock = BedrockWriter;
     let o = serde_json::to_string(&OpenAiWriter.write_request(&req)).unwrap();
     let a = serde_json::to_string(&AnthropicWriter.write_request(&req)).unwrap();
     let g = serde_json::to_string(&gemini.write_request(&req)).unwrap();
-    let b = serde_json::to_string(&bedrock.write_request(&req)).unwrap();
+    let b = serde_json::to_string(&BedrockWriter.write_request(&req)).unwrap();
     let c = serde_json::to_string(&cohere.write_request(&req)).unwrap();
     for (name, wire) in [
         ("openai", o),

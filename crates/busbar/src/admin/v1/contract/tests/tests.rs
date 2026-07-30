@@ -15,7 +15,7 @@ fn mount_constants_are_the_frozen_wire_literals() {
     );
 }
 
-/// The authorization matrix, test-locked: reads are read-only, hook-definition mutations
+/// The §1 authorization matrix, test-locked: reads are read-only, hook-definition mutations
 /// are hooks-register, everything else (keys, config, auth, cache) is full. Unknown methods
 /// fail closed to full.
 #[test]
@@ -142,47 +142,12 @@ fn scope_lattice_allows() {
     assert_eq!(Scope::Mint.as_str(), "mint");
 }
 
-/// THE CLASS TEST (not a RED test — `dominates`/`meet`/`Grants` do not exist before this design, so
-/// there is no prior behaviour to regress against). Pins the shape the whole fix rests on: a total
-/// order over `Scope` would make these properties fail, which is exactly why `Scope` has no `Ord`.
-#[test]
-fn scope_lattice_has_no_total_order() {
-    // HooksRegister and Mint are incomparable in BOTH directions — the crux of the whole class.
-    assert!(!Scope::HooksRegister.dominates(Scope::Mint));
-    assert!(!Scope::Mint.dominates(Scope::HooksRegister));
-
-    // The siblings' meet is their only common authority: ReadOnly, symmetric either way — never one
-    // of the two siblings themselves (that would be the S3 defect: a ceiling picking a side).
-    assert_eq!(Scope::HooksRegister.meet(Scope::Mint), Scope::ReadOnly);
-    assert_eq!(Scope::Mint.meet(Scope::HooksRegister), Scope::ReadOnly);
-
-    // `Grants::with` is exactly a UNION over `allows` — for every pair of scopes and every
-    // requirement, the union authorizes `n` iff EITHER operand alone would. In particular the union
-    // of the two siblings must NOT authorize `Full`: that is the lattice JOIN, not the union of
-    // authority, and conflating them is the rejected alternative (design 3.5.3).
-    for a in Scope::ALL {
-        for b in Scope::ALL {
-            let union = Grants::of(a).with(b);
-            for n in Scope::ALL {
-                assert_eq!(
-                    union.allows(n),
-                    a.allows(n) || b.allows(n),
-                    "Grants::of({a:?}).with({b:?}).allows({n:?})"
-                );
-            }
-        }
-    }
-    assert!(!Grants::of(Scope::HooksRegister)
-        .with(Scope::Mint)
-        .allows(Scope::Full));
-}
-
 /// The stable error taxonomy is locked: each variant's `code` + HTTP status is the frozen wire
 /// contract tooling branches on. A change here is a breaking change to v1 and must fail this test.
 #[test]
 fn admin_error_codes_and_statuses_are_frozen() {
     let cases = [
-        (AdminError::not_found("key"), "not_found", 404u16),
+        (AdminError::NotFound("key".into()), "not_found", 404u16),
         (AdminError::Unauthorized, "unauthorized", 401),
         (AdminError::MethodNotAllowed, "method_not_allowed", 405),
         (
@@ -201,7 +166,6 @@ fn admin_error_codes_and_statuses_are_frozen() {
         (AdminError::Conflict("state".into()), "conflict", 409),
         (AdminError::RateLimited, "rate_limited", 429),
         (AdminError::Internal, "internal", 500),
-        (AdminError::Unavailable("busy".into()), "unavailable", 503),
     ];
     for (e, code, status) in cases {
         assert_eq!(e.code(), code, "frozen error code changed");

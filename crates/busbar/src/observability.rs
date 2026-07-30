@@ -39,16 +39,6 @@ static CLIENT: OnceLock<Client> = OnceLock::new();
 /// `observability.max_inflight_webhook_deliveries`. `webhook_inflight()` initializes it to the
 /// installed limit on first touch and falls back to the historical default (64) otherwise, preserving
 /// the `'static`-permit RAII design (`InflightGuard`).
-///
-/// KNOWN GAP, tracked for post-1.5.0 (not fixed here — see the `reload_to_apply` gap-sweep for
-/// `limits.max_inbound_concurrent` / `observability.emit_server_timing` /
-/// `observability.request_log_webhook_url`, all of which ARE flagged): unlike those three, this
-/// field is frozen on FIRST WEBHOOK DELIVERY, not necessarily at boot — so whether a live `PUT` to
-/// `max_inflight_webhook_deliveries` takes effect depends on process history (has a delivery fired
-/// yet?) that `reload_to_apply`'s stateless, request-only classifier cannot observe. Flagging it
-/// unconditionally restart-scoped would be a lie in the cases it is still live, so it is
-/// intentionally left UNFLAGGED and documented only (`docs/configuration.md`), same triage class as
-/// `limits.request_body_max_bytes`'s half-live inbound/egress split.
 static WEBHOOK_INFLIGHT: OnceLock<Semaphore> = OnceLock::new();
 
 fn webhook_inflight() -> &'static Semaphore {
@@ -521,36 +511,29 @@ pub(crate) fn fire_request_log(payload: Value) {
             .await
         {
             Ok(resp) if resp.status().is_success() => {}
-            Ok(resp) => warn_webhook_delivery_failed(url.as_str(), Ok(resp.status())),
-            Err(e) => warn_webhook_delivery_failed(url.as_str(), Err(e)),
+            Ok(resp) => {
+                // Mask any embedded userinfo in the logged URL - parity with the OTLP path. An
+                // operator may embed `user:pass@` in the webhook URL (RFC 3986 §3.2.1); logging it
+                // raw on every delivery failure would leak the credential into the log.
+                tracing::warn!(
+                    webhook_url = mask_userinfo(url.as_str()),
+                    status = resp.status().as_u16(),
+                    "request-log webhook delivery returned a non-2xx status; this log was dropped"
+                );
+            }
+            Err(e) => {
+                // A reqwest error carries the request URL (WITH any userinfo) in its own `Display`, so
+                // `%e` is a second leak vector alongside the explicit field. `without_url()` strips the
+                // URL from the error so its Display can never carry the credential; the URL is logged
+                // once, userinfo-masked, in the dedicated field.
+                tracing::warn!(
+                    webhook_url = mask_userinfo(url.as_str()),
+                    error_kind = %e.without_url(),
+                    "request-log webhook delivery failed (transport error); this log was dropped"
+                );
+            }
         }
     });
-}
-
-/// The webhook delivery-failure warn, factored into ONE place so the userinfo masking cannot be
-/// reintroduced as a leak on only one of the two failure arms (non-2xx vs. transport error). Kept
-/// separate from `fire_request_log` so a test can drive the exact statement production emits
-/// without needing the process-wide `WEBHOOK_URL`/`CLIENT` `OnceLock`s to be set.
-fn warn_webhook_delivery_failed(url: &str, outcome: Result<reqwest::StatusCode, reqwest::Error>) {
-    match outcome {
-        // Mask any embedded userinfo in the logged URL - parity with the OTLP path. An operator
-        // may embed `user:pass@` in the webhook URL (RFC 3986 §3.2.1); logging it raw on every
-        // delivery failure would leak the credential into the log.
-        Ok(status) => tracing::warn!(
-            webhook_url = mask_userinfo(url),
-            status = status.as_u16(),
-            "request-log webhook delivery returned a non-2xx status; this log was dropped"
-        ),
-        // A reqwest error carries the request URL (WITH any userinfo) in its own `Display`, so `%e`
-        // is a second leak vector alongside the explicit field. `without_url()` strips the URL from
-        // the error so its Display can never carry the credential; the URL is logged once,
-        // userinfo-masked, in the dedicated field.
-        Err(e) => tracing::warn!(
-            webhook_url = mask_userinfo(url),
-            error_kind = %e.without_url(),
-            "request-log webhook delivery failed (transport error); this log was dropped"
-        ),
-    }
 }
 
 /// Retained `SdkTracerProvider` handle so its batched span buffer can be flushed/shut down on
@@ -567,45 +550,20 @@ static TRACER_PROVIDER: OnceLock<opentelemetry_sdk::trace::SdkTracerProvider> = 
 /// (e.g. a re-init path or a second test) must not mutate global tracing state when the new
 /// subscriber is not actually installed, which would otherwise leave a new provider behind an old
 /// subscriber.
-/// The stderr and OTLP level filters, which are deliberately NOT the same.
-///
-/// stderr takes `RUST_LOG` (a bare level word, e.g. `debug`), default `info`. Full `EnvFilter`
-/// directive syntax (`busbar=debug,hyper=warn`) would require the `env-filter` feature.
-///
-/// OTLP floors at DEBUG, because every request-path span (`forward`, `gemini_ingress`,
-/// `bedrock_converse`, `named`, `adhoc`) is emitted at debug so it costs nothing on the stderr path
-/// at the default level. Exporting at the stderr level meant an operator who configured a collector
-/// received no request trace at all — only the one span that happens to default to INFO, orphaned
-/// from the parent that was never created. The two must be independent: turning traces on must not
-/// require `RUST_LOG=debug`, which would flood stderr with every debug line in the process.
-///
-/// Both are attached PER LAYER. A bare `LevelFilter` added to the registry itself is a GLOBAL
-/// filter that gates callsite enablement for every layer, so an OTLP-specific filter underneath one
-/// is inert.
-fn log_levels() -> (
-    tracing_subscriber::filter::LevelFilter,
-    tracing_subscriber::filter::LevelFilter,
-) {
-    let stderr = std::env::var("RUST_LOG")
-        .ok()
-        .and_then(|v| v.trim().parse::<tracing::Level>().ok())
-        .unwrap_or(tracing::Level::INFO);
-    // `Level`'s ordering is by verbosity, so this is "DEBUG, or more verbose if asked for".
-    let otlp = stderr.max(tracing::Level::DEBUG);
-    (
-        tracing_subscriber::filter::LevelFilter::from_level(stderr),
-        tracing_subscriber::filter::LevelFilter::from_level(otlp),
-    )
-}
-
 pub(crate) fn init_logging(otlp_endpoint: Option<&str>) {
     use tracing_subscriber::layer::SubscriberExt as _;
     use tracing_subscriber::util::SubscriberInitExt as _;
-    use tracing_subscriber::Layer as _;
-    let (stderr_filter, otlp_filter) = log_levels();
-    let fmt_layer = tracing_subscriber::fmt::layer()
-        .with_target(false)
-        .with_filter(stderr_filter);
+
+    // Level filter from RUST_LOG (a bare level word, e.g. `debug`); default `info`.
+    // NOTE: full `EnvFilter` directive syntax (e.g. `busbar=debug,hyper=warn`) would require
+    // enabling the `env-filter` feature on tracing-subscriber in Cargo.toml — see the skipped
+    // finding for this unit.
+    let level = std::env::var("RUST_LOG")
+        .ok()
+        .and_then(|v| v.trim().parse::<tracing::Level>().ok())
+        .unwrap_or(tracing::Level::INFO);
+    let filter = tracing_subscriber::filter::LevelFilter::from_level(level);
+    let fmt_layer = tracing_subscriber::fmt::layer().with_target(false);
 
     // SSRF-validate the OTLP endpoint BEFORE building the exporter, so a config pointing at cloud
     // metadata / an internal service (e.g. `https://169.254.169.254/v1/traces`) is rejected and OTLP
@@ -626,11 +584,12 @@ pub(crate) fn init_logging(otlp_endpoint: Option<&str>) {
     // Decompose into the layer (used to build the subscriber) and the provider (installed on
     // success). `Option<Layer>` is itself a `Layer`, so it composes cleanly when absent.
     let (otel_layer, otel_provider) = match otel {
-        Some((layer, provider)) => (Some(layer.with_filter(otlp_filter)), Some(provider)),
+        Some((layer, provider)) => (Some(layer), Some(provider)),
         None => (None, None),
     };
 
     let initialized = tracing_subscriber::registry()
+        .with(filter)
         .with(fmt_layer)
         .with(otel_layer)
         .try_init()
@@ -1020,12 +979,11 @@ mod tests {
         }
     }
 
-    /// The request-log webhook DELIVERY-FAILURE warn must mask any
+    /// REGRESSION (P2 finding 4): the request-log webhook DELIVERY-FAILURE warn must mask any
     /// embedded userinfo in BOTH the `webhook_url` field AND the reqwest error's Display (`error_kind`).
     /// The OTLP path was hardened; this one was not - a webhook URL with `user:pass@` was logged
-    /// verbatim on every delivery failure. This drives `warn_webhook_delivery_failed` — the SAME
-    /// function `fire_request_log` calls in production, not a hand-copy of its body — for BOTH
-    /// failure arms, and asserts the credential never appears in either.
+    /// verbatim on every delivery failure. This drives a real delivery against an unroutable userinfo
+    /// URL, captures the emitted warn fields, and asserts the credential never appears.
     #[tokio::test]
     async fn test_request_log_delivery_failure_masks_userinfo() {
         use tracing_subscriber::layer::SubscriberExt as _;
@@ -1034,10 +992,11 @@ mod tests {
         let subscriber = tracing_subscriber::registry().with(cap.clone());
         let _guard = tracing::subscriber::set_default(subscriber);
 
+        // A userinfo URL whose host is guaranteed unroutable (RFC 5737 TEST-NET-1) so the POST fails
+        // fast with a transport error - the branch under test. We call the delivery inline (not via
+        // the global-`OnceLock` `fire_request_log`) so the test is isolated from other tests that set
+        // the process-wide webhook, while exercising the SAME masked log statement.
         let url = "https://user:hunter2@192.0.2.1/log";
-
-        // Transport-error arm: a real POST against a host guaranteed unroutable (RFC 5737
-        // TEST-NET-1) so it fails fast with a genuine reqwest::Error.
         let client = reqwest::Client::builder()
             .timeout(Duration::from_millis(200))
             .build()
@@ -1048,11 +1007,13 @@ mod tests {
             .send()
             .await
             .expect_err("post to an unroutable host must fail");
-        warn_webhook_delivery_failed(url, Err(err));
 
-        // Non-2xx arm: no network needed — this branch had NO coverage at all before this fix, not
-        // even the fake-in-test-body kind.
-        warn_webhook_delivery_failed(url, Ok(reqwest::StatusCode::INTERNAL_SERVER_ERROR));
+        // Reproduce the exact masked log statement from `fire_request_log`'s Err arm.
+        tracing::warn!(
+            webhook_url = mask_userinfo(url),
+            error_kind = %err.without_url(),
+            "request-log webhook delivery failed (transport error); this log was dropped"
+        );
 
         let events = cap.0.lock().unwrap().join("\n");
         assert!(
@@ -1324,7 +1285,7 @@ mod tests {
 
     #[test]
     fn test_validate_webhook_url_rejects_localhost_dns_name() {
-        // `localhost` is a DNS name, not an IP literal, but RFC 6761 reserves it
+        // Regression (SSRF): `localhost` is a DNS name, not an IP literal, but RFC 6761 reserves it
         // (and its subdomains) to loopback. An operator-set `https://localhost:<port>/path` would
         // POST request logs to a co-located process, so it must be blocked case-insensitively.
         for bad in [
@@ -1351,7 +1312,7 @@ mod tests {
 
     #[test]
     fn test_validate_webhook_url_rejects_ipv4_mapped_ipv6_internal() {
-        // An IPv4-mapped IPv6 literal (`::ffff:a.b.c.d`) parses as IpAddr::V6 and
+        // Regression (SSRF): an IPv4-mapped IPv6 literal (`::ffff:a.b.c.d`) parses as IpAddr::V6 and
         // matches none of the plain V6 predicates, so without canonicalization it would reach the
         // same internal targets (loopback / cloud-metadata / RFC1918) the V4 arm rejects.
         for bad in [
@@ -1379,7 +1340,7 @@ mod tests {
 
     #[test]
     fn test_validate_webhook_url_rejects_cgnat_v4() {
-        // RFC 6598 CGNAT
+        // Regression (SSRF, parity with config_validate::ssrf_blocked_host): RFC 6598 CGNAT
         // 100.64.0.0/10 is NOT is_private(), yet routable inside cloud VPCs / k8s clusters where it
         // fronts internal services. The V4 arm previously checked only loopback/link-local/private/
         // unspecified/broadcast, so https://100.64.0.5/ slipped through.
@@ -1415,7 +1376,7 @@ mod tests {
 
     #[test]
     fn test_validate_webhook_url_rejects_alternate_ipv4_encodings() {
-        // Non-canonical IPv4 encodings are rejected
+        // Regression (SSRF, parity with config_validate): non-canonical IPv4 encodings are rejected
         // by IpAddr::from_str but the OS resolver still maps them to internal addresses. Previously
         // they fell into the Err(_) DNS branch (which only blocked the localhost family) and passed.
         for bad in [
@@ -1439,12 +1400,12 @@ mod tests {
 
     #[test]
     fn test_url_parse_canonicalizes_alternate_ipv4_encodings() {
-        // Documentation lock: pins what the surrounding comments assert — for an http(s) URL
-        // `reqwest::Url::parse` (WHATWG special-scheme host parsing) is the PRIMARY guard,
-        // canonicalizing every alternate IPv4 encoding to a dotted-quad BEFORE `host_str()` is
-        // read, so `is_alternate_ipv4_encoding` is a defense-in-depth parity mirror rather than
-        // the primary block. If a future url/reqwest bump stops normalizing these, this test fails
-        // and both the comment and the reliance on the parity mirror must be revisited.
+        // Documentation lock (finding #22): pins the corrected comments' truth that for an http(s)
+        // URL `reqwest::Url::parse` (WHATWG special-scheme host parsing) is the PRIMARY guard — it
+        // canonicalizes every alternate IPv4 encoding to a dotted-quad BEFORE `host_str()` is read,
+        // so `is_alternate_ipv4_encoding` is a defense-in-depth parity mirror, not the primary block.
+        // If a future url/reqwest bump ever stopped normalizing these, this test fails and the comment
+        // (and the reliance on the parity mirror as a fallback) must be revisited.
         for (raw, want) in [
             ("https://2130706433/log", "127.0.0.1"),        // decimal
             ("https://0x7f000001/log", "127.0.0.1"),        // hex
@@ -1479,7 +1440,7 @@ mod tests {
 
     #[test]
     fn test_validate_webhook_url_rejects_cloud_metadata_dns_names() {
-        // The well-known cloud
+        // Regression (SSRF, parity with config_validate::METADATA_HOSTS): the well-known cloud
         // metadata DNS names resolve to internal/IMDS targets. They are not IP literals, so the
         // Err(_) DNS branch (localhost-only) let them through previously.
         for bad in [
@@ -1497,7 +1458,7 @@ mod tests {
 
     #[test]
     fn test_validate_webhook_url_rejects_trailing_dot_internal_hosts() {
-        // A trailing FQDN-root dot made the IP-literal parse
+        // Regression (SSRF): a trailing FQDN-root dot made the IP-literal parse
         // fail (slipping into the allow-by-default DNS arm) and the METADATA_HOSTS exact-compare miss,
         // so a trailing-dot internal target bypassed BOTH guards. getaddrinfo resolves these to the
         // same internal targets as the bare spelling, so they MUST be rejected.
@@ -1589,18 +1550,13 @@ mod tests {
     async fn test_inflight_guard_releases_slot_on_drop() {
         // The RAII guard returns its semaphore slot on Drop. Mirror the production acquire/forget
         // pattern, then drop the guard and confirm the slot is reusable (no leak).
-        //
-        // Asserted as a round-trip DELTA bracketing the whole acquire/forget/drop block, not as a
-        // `before - 1` snapshot mid-flight: `webhook_inflight()` is a process-global semaphore, and
-        // any concurrent test that fires a webhook delivery (or drops its own InflightGuard) between
-        // two reads shifts the absolute count out from under a mid-flight assertion. The delta is
-        // the actual contract this test is named for and is concurrency-safe by construction.
         let before = webhook_inflight().available_permits();
         {
             let permit = webhook_inflight()
                 .try_acquire()
                 .expect("a slot should be free");
             permit.forget();
+            assert_eq!(webhook_inflight().available_permits(), before - 1);
             let _guard = InflightGuard; // drops at end of scope -> add_permits(1)
         }
         assert_eq!(
@@ -1644,7 +1600,7 @@ mod tests {
 
     #[test]
     fn test_validate_otlp_endpoint_rejects_cloud_metadata_and_internal() {
-        // Span data carries key_ids, pool names, and governance
+        // Regression (SSRF): span data carries key_ids, pool names, and governance
         // decisions, so the OTLP sink must block cloud-metadata / RFC1918 / CGNAT / link-local
         // targets exactly like the webhook guard (only loopback is the intentional exception).
         for bad in [
@@ -1704,7 +1660,7 @@ mod tests {
 
     #[test]
     fn test_validate_otlp_endpoint_accepts_uppercase_scheme() {
-        // The OTLP scheme check is also
+        // Regression (sibling of the webhook scheme bug): the OTLP scheme check is also
         // case-insensitive, so `HTTP://localhost:4318` / `HTTPS://collector...` are valid and must
         // be accepted. The old literal lowercase `starts_with` rejected them.
         for ok in [
@@ -1791,79 +1747,5 @@ mod tests {
                 "plaintext http:// to a loopback OTLP collector '{ok}' must stay accepted; got {res:?}"
             );
         }
-    }
-    /// A span-name capture layer, standing in for the OTLP export layer: it records exactly the
-    /// spans a layer at its position would export.
-    #[derive(Clone, Default)]
-    struct SpanCapture(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
-
-    impl<S> tracing_subscriber::Layer<S> for SpanCapture
-    where
-        S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
-    {
-        fn on_new_span(
-            &self,
-            attrs: &tracing::span::Attributes<'_>,
-            _id: &tracing::span::Id,
-            _ctx: tracing_subscriber::layer::Context<'_, S>,
-        ) {
-            if let Ok(mut v) = self.0.lock() {
-                v.push(attrs.metadata().name().to_string());
-            }
-        }
-    }
-
-    /// OTLP must export the request-path spans, which are all `debug`, without the operator having
-    /// to set `RUST_LOG=debug` and flood stderr. So the OTLP filter floors at DEBUG and is never
-    /// less verbose than the stderr one.
-    #[test]
-    fn otlp_level_floors_at_debug_and_never_trails_stderr() {
-        let (stderr, otlp) = log_levels();
-        assert!(
-            otlp >= tracing_subscriber::filter::LevelFilter::DEBUG,
-            "OTLP must capture debug spans; got {otlp:?}"
-        );
-        assert!(
-            otlp >= stderr,
-            "OTLP must never be less verbose than stderr; got otlp={otlp:?} stderr={stderr:?}"
-        );
-    }
-
-    /// The filters must be attached PER LAYER. A bare `LevelFilter` added to the registry itself is
-    /// a global filter that gates callsite enablement for every layer, so a more-verbose OTLP filter
-    /// underneath one records nothing. Both halves are asserted: the correct shape exports the debug
-    /// span, and the shape this replaced does not.
-    #[test]
-    fn a_registry_level_filter_gates_the_otlp_layer() {
-        use tracing_subscriber::filter::LevelFilter;
-        use tracing_subscriber::layer::SubscriberExt as _;
-        use tracing_subscriber::Layer as _;
-
-        let per_layer = SpanCapture::default();
-        {
-            let subscriber = tracing_subscriber::registry()
-                .with(SpanCapture::default().with_filter(LevelFilter::INFO))
-                .with(per_layer.clone().with_filter(LevelFilter::DEBUG));
-            let _g = tracing::subscriber::set_default(subscriber);
-            let _s = tracing::debug_span!("forward").entered();
-        }
-        assert_eq!(
-            *per_layer.0.lock().unwrap(),
-            vec!["forward".to_string()],
-            "per-layer filters must let the OTLP layer see debug spans the stderr layer skips"
-        );
-
-        let under_global = SpanCapture::default();
-        {
-            let subscriber = tracing_subscriber::registry()
-                .with(LevelFilter::INFO)
-                .with(under_global.clone().with_filter(LevelFilter::DEBUG));
-            let _g = tracing::subscriber::set_default(subscriber);
-            let _s = tracing::debug_span!("forward").entered();
-        }
-        assert!(
-            under_global.0.lock().unwrap().is_empty(),
-            "a registry-level filter suppresses the callsite for every layer beneath it"
-        );
     }
 }

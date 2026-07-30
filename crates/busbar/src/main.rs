@@ -9,17 +9,17 @@
 // Routing — all SIX ingress protocols are first-class; a native SDK can point its base URL at
 // busbar unmodified (clients append the protocol path themselves). Mirrors the `--help` ENDPOINTS
 // block and the README routing table:
-// POST /<model>/v1/messages              Anthropic-format ingress (single model)
-// POST /<pool>/v1/messages               a config-defined pool (weighted selection + failover)
-// POST /<provider>/<model>/v1/messages   ad-hoc: a specific configured provider+model
-// POST /v1/chat/completions              OpenAI-format ingress (model from the body)
-// POST /v2/chat                          Cohere-format ingress (model from the body)
-// POST /v1/responses                     OpenAI Responses-API ingress (model from the body)
-// POST /v1/models/<model>:<action>       Gemini-format ingress (stable v1 alias)
-// POST /v1beta/models/<model>:<action>   Gemini-format ingress (v1beta)
-// POST /model/<modelId>/converse[-stream] Bedrock Converse / ConverseStream ingress
-// GET  /v1/models  /v1beta/models        list models (dialect by protocol fingerprint)
-// GET  /stats  /healthz  /metrics
+//   POST /<model>/v1/messages              Anthropic-format ingress (single model)
+//   POST /<pool>/v1/messages               a config-defined pool (weighted selection + failover)
+//   POST /<provider>/<model>/v1/messages   ad-hoc: a specific configured provider+model
+//   POST /v1/chat/completions              OpenAI-format ingress (model from the body)
+//   POST /v2/chat                          Cohere-format ingress (model from the body)
+//   POST /v1/responses                     OpenAI Responses-API ingress (model from the body)
+//   POST /v1/models/<model>:<action>       Gemini-format ingress (stable v1 alias)
+//   POST /v1beta/models/<model>:<action>   Gemini-format ingress (v1beta)
+//   POST /model/<modelId>/converse[-stream] Bedrock Converse / ConverseStream ingress
+//   GET  /v1/models  /v1beta/models        list models (dialect by protocol fingerprint)
+//   GET  /stats  /healthz  /metrics
 //
 // Each model is a "lane" with its own concurrency semaphore, optional lifetime request budget, and
 // per-(pool,lane) circuit-breaker health. A pool stacks its members' concurrency into one aggregate
@@ -60,7 +60,6 @@ mod breaker;
 mod config;
 mod config_validate;
 mod cost;
-mod durable;
 mod egress_auth;
 mod endpoints;
 mod eventstream;
@@ -146,38 +145,25 @@ fn handle_cli_flags() -> Option<i32> {
             let config_path =
                 std::env::var(ENV_CONFIG).unwrap_or_else(|_| DEFAULT_CONFIG_PATH.into());
             if let Ok(raw) = std::fs::read_to_string(&config_path) {
-                match config::interpolate_env(&raw) {
-                    Ok(interpolated) => {
-                        match serde_yaml::from_str::<config::DeployCfg>(&interpolated) {
-                            Ok(deploy) => {
-                                if let Some(sec) = deploy.security {
-                                    entries.extend(sec.blocked_metadata_hosts);
-                                }
+                if let Ok(interpolated) = config::interpolate_env(&raw) {
+                    match serde_yaml::from_str::<config::DeployCfg>(&interpolated) {
+                        Ok(deploy) => {
+                            if let Some(sec) = deploy.security {
+                                entries.extend(sec.blocked_metadata_hosts);
                             }
-                            Err(_) => {
-                                // The config did not parse (e.g. an unknown/typo'd key now rejected by
-                                // deny_unknown_fields). Don't silently print an INCOMPLETE denylist that
-                                // omits the operator's `security.blocked_metadata_hosts` — warn instead.
-                                // (Deliberately NOT echoing the error, which could quote a config value;
-                                // the normal boot path surfaces the precise parse error.)
-                                eprintln!(
+                        }
+                        Err(_) => {
+                            // The config did not parse (e.g. an unknown/typo'd key now rejected by
+                            // deny_unknown_fields). Don't silently print an INCOMPLETE denylist that
+                            // omits the operator's `security.blocked_metadata_hosts` — warn instead.
+                            // (Deliberately NOT echoing the error, which could quote a config value;
+                            // the normal boot path surfaces the precise parse error.)
+                            eprintln!(
                                 "warning: config at {config_path} did not parse; printing the built-in \
                                  metadata denylist only (security.blocked_metadata_hosts skipped). Run \
                                  busbar normally to see the parse error."
                             );
-                            }
                         }
-                    }
-                    Err(_) => {
-                        // Interpolation itself failed (unset var, or — since this fix — a value
-                        // that would change the config's YAML structure). Same reasoning as the
-                        // parse-failure arm above: don't silently print an incomplete denylist,
-                        // and don't echo the error (it could quote a rejected env var's value).
-                        eprintln!(
-                            "warning: config at {config_path} failed to interpolate; printing the \
-                             built-in metadata denylist only (security.blocked_metadata_hosts \
-                             skipped). Run busbar normally to see the interpolation error."
-                        );
                     }
                 }
             }
@@ -212,13 +198,13 @@ USAGE:
                         print the effective cloud-metadata SSRF denylist and exit
 
 ENVIRONMENT:
-    BUSBAR_CONFIG       path to config.yaml     (default: /etc/busbar/config.yaml)
     BUSBAR_PROVIDERS    path to providers.yaml  (default: /etc/busbar/providers.yaml)
     BUSBAR_STATE_FILE   state-snapshot path ('' disables; default: busbar-state.json next to config)
-    RUST_LOG            log level: error|warn|info|debug|trace  (default: info)
 
 Flags:
     --safe-mode         boot on base config.yaml alone (quarantine the persisted overlay)
+    BUSBAR_CONFIG       path to config.yaml     (default: /etc/busbar/config.yaml)
+    RUST_LOG            log level: error|warn|info|debug|trace  (default: info)
 
 ENDPOINTS (once running, listen address from config.yaml `listen`):
     POST /<model>/v1/messages              Anthropic-format ingress (single model)
@@ -306,7 +292,12 @@ fn validate_config_command() -> i32 {
     // consistency (plugins.enabled vs store.module), trust-policy resolution, the three-phase
     // scan of every tarball (structural -> trust -> conflict), and store resolution. Manifest-only:
     // nothing is `dlopen`ed, no store is opened — zero side effects.
-    let registry = match preflight_plugins_and_secrets(&loaded.deploy, &cfg) {
+    let registry = match plugins_preflight(
+        loaded.deploy.store.as_ref(),
+        cfg.auth.as_ref(),
+        &cfg.hooks,
+        &loaded.deploy.plugins,
+    ) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("[error] {e}");
@@ -607,8 +598,6 @@ fn main() {
     // the normal default path). `TOKIO_WORKER_THREADS` is read as a back-compat fallback so an operator
     // who pinned it on 1.3.0 keeps the same pool size. (1.4.0 audit.) `eprintln!` because this runs
     // before the tracing subscriber is installed.
-    // See the `.min(MAX_WORKER_THREADS)` call below for why this exists.
-    const MAX_WORKER_THREADS: usize = 128;
     fn worker_threads_from_env(name: &str) -> Option<usize> {
         match std::env::var(name) {
             Ok(v) => match v.trim().parse::<usize>() {
@@ -632,16 +621,7 @@ fn main() {
             std::thread::available_parallelism()
                 .map(|n| n.get())
                 .unwrap_or(1)
-        })
-        // A SANE CEILING. Nothing else in the process bounds concurrent admin requests (the admin
-        // router deliberately carries no `GlobalConcurrencyLimitLayer` — see `build_split_routers_
-        // with_limits`), so worker-thread count is the actual, if informal, upper bound a few
-        // capacity arguments elsewhere lean on (e.g. `admin::audit::WRITE_THROUGH_HEADROOM`'s
-        // pressure-valve reserve). An unclamped `available_parallelism()` on very large hardware, or
-        // an operator fat-fingering `BUSBAR_WORKER_THREADS`, would otherwise leave that bound
-        // unenforced. 128 is far above any realistic core count this process is deployed on and far
-        // above what those capacity arguments need.
-        .min(MAX_WORKER_THREADS);
+        });
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(worker_threads)
         .enable_all()
@@ -651,9 +631,12 @@ fn main() {
 }
 
 async fn run() {
-    // Metrics are configured AFTER the config loads (below, via `metrics::configure`) because they
-    // are 100% OPT-IN: `observability.metrics` absent ⇒ no recorder, no `/metrics`, nothing recorded
-    // and nothing retained. Nothing may install a recorder before that decision is read.
+    // Install the Prometheus recorder on a background thread. Its one-time clock calibration
+    // (quanta's TSC calibration, ~200ms) would otherwise block the listener; deferring it lets
+    // busbar bind and serve (incl. /healthz) in tens of ms. `/metrics` renders empty until the
+    // recorder is live, and the sliver of requests in that startup window go uncounted — an
+    // acceptable trade for a daemon/k8s readiness path. Emission macros are no-ops until then.
+    std::thread::spawn(metrics::init);
 
     // Locate the two config files (env-overridable paths) and run the shared disk-load pipeline —
     // the SAME pipeline `POST /api/v1/admin/config/reload` re-runs at runtime.
@@ -690,16 +673,6 @@ async fn run() {
 
     // Optional observability sinks; grab before `deploy` is borrowed by resolve.
     let observability_cfg = deploy.observability.clone().unwrap_or_default();
-    // METRICS OPT-IN, read here and nowhere else: `observability.metrics` present ⇒ install the
-    // recorder with the operator's REQUIRED `buffer_seconds` retention window; absent ⇒ metrics stay
-    // off for the life of the process. Called before the router is built so `/metrics` mounting sees
-    // a settled decision.
-    metrics::configure(
-        deploy
-            .metrics
-            .as_ref()
-            .map(|m| Duration::from_secs(m.buffer_seconds)),
-    );
     // The top-level `plugins:` block (master switch + dir + trust). Absent = disabled defaults.
     let plugins_cfg = deploy.plugins.clone();
 
@@ -800,17 +773,9 @@ async fn run() {
                     "audit log restored from the durable governance store"
                 );
             }
-            // A store READ failure and a chain-VERIFICATION failure are different events: the first
-            // is a hiccup, the second is tamper evidence. Reporting both as "chain verification"
-            // trains an operator to ignore the one that matters.
-            Err(e) if e.starts_with("audit restore read failed") => tracing::warn!(
+            Err(e) => tracing::warn!(
                 error = %e,
-                "could not read the durable audit log; falling back to the state snapshot"
-            ),
-            Err(e) => tracing::error!(
-                error = %e,
-                "durable audit CHAIN VERIFICATION failed — the persisted log does not verify \
-                 against its own hash chain; falling back to the state snapshot"
+                "durable audit restore failed (chain verification); falling back to the state snapshot"
             ),
         }
     }
@@ -861,8 +826,8 @@ async fn run() {
     // swap sites) so reloaded lanes get probed and the old generation exits.
     health::spawn_probers(&app);
 
-    // Build the two routers with the operator-configured ingress body cap + the inbound-concurrency
-    // layer (installed by default; `limits.max_inbound_concurrent: 0` opts out — no layer). The admin surface is built onto its
+    // Build the two routers with the operator-configured ingress body cap + optional inbound-
+    // concurrency layer (0 = unlimited / no layer, the default). The admin surface is built onto its
     // OWN router (ABSENT from the data router) and served on `admin_listen` below; the data router
     // serves the protocols. Both share one `app_handle`, so config-apply hot-swaps reach both planes.
     // Grab the secret resolver before `app` is moved into the router builder - the TLS listeners
@@ -888,34 +853,11 @@ async fn run() {
     // graceful shutdown", never a crash), and `shutdown_tracing()` is a no-op when OTLP is off.
     // ONE signal fans out to BOTH listeners (data + admin) so both planes drain together.
     let (shutdown_tx, _keep_open) = tokio::sync::broadcast::channel::<()>(1);
-    // Publish the sender so `POST /admin/restart` can trigger the SAME drain a signal does. A
-    // process-global is the honest home: restarting is a process-wide act, not a property of an
-    // `App` snapshot, and `AppHandle` is built before this channel exists.
-    crate::admin::restart::publish_shutdown(shutdown_tx.clone());
     {
         let shutdown_tx = shutdown_tx.clone();
-        let snap_handle = app_handle.clone();
-        let snap_file = state_file.clone();
         tokio::spawn(async move {
             shutdown_signal().await;
             let _ = shutdown_tx.send(());
-            // Snapshot AT SIGNAL, not only after the drain. The drain is unbounded by design — a
-            // streaming response may run to `limits.upstream_request_timeout_secs` — so an
-            // orchestrator whose grace period expires first SIGKILLs the process and the post-drain
-            // snapshot never runs. Bounding the drain instead would truncate healthy streams and
-            // trip breakers against a lane that did nothing wrong.
-            if let Some(ref sf) = snap_file {
-                // OFFLOADED for the same reason the periodic snapshotter is: this task runs on the
-                // SAME runtime as the in-flight drain below, and an inline fsync parks whichever
-                // worker runs it for the disk round-trip WHILE streaming responses are still
-                // draining. On a stalled volume that worker is gone for seconds, eating the
-                // orchestrator's SIGKILL grace period and making the SIGKILL race this snapshot
-                // exists to WIN more likely, not less.
-                if let Err(e) = state_persist::write_snapshot_blocking(&snap_handle, sf).await {
-                    tracing::warn!(path = %sf.display(), error = %e,
-                        "shutdown-signal state snapshot failed");
-                }
-            }
         });
     }
 
@@ -926,12 +868,7 @@ async fn run() {
     // once here (not on config apply/reload — the reused `Arc<GovState>` keeps its live cells and its
     // already-running flusher). No-op when governance is disabled.
     if let Some(gov) = app_handle.load().governance.clone() {
-        // Handle intentionally dropped (not awaited): the flusher runs for the process lifetime and
-        // exits its own loop on the shutdown broadcast; nothing here needs to join it.
-        std::mem::drop(crate::governance::spawn_budget_flusher(
-            gov,
-            shutdown_tx.subscribe(),
-        ));
+        crate::governance::spawn_budget_flusher(gov, shutdown_tx.subscribe());
     }
 
     // Data plane on `listen`, admin plane on its own `admin_listen`, served concurrently — each with
@@ -964,19 +901,12 @@ async fn run() {
     if let Some(gov) = app_handle.load().governance.clone() {
         let n = gov.flush_budgets();
         tracing::info!(flushed = n, "budget counters flushed on shutdown");
-        // The flusher task's own shutdown arm also flushes metering, but it is fire-and-forget and
-        // can lose the race with process exit (same reason the budget flush above is inline here).
-        let m = gov.flush_metering();
-        tracing::info!(flushed = m, "metering rows flushed on shutdown");
     }
     // D3: one FINAL state snapshot after the graceful drain, so the freshest health picture is
-    // what the next boot restores (the periodic 30s tick could be up to 30s stale). Routed through
-    // the SAME gate as the at-signal write above: both write the same file, and once the at-signal
-    // write is offloaded to the blocking pool the two are no longer ordered by program order alone
-    // — the gate is what guarantees THIS, the newer snapshot, is the one left on disk. (Not for
-    // blocking: nothing is left to block after `tokio::join!` has returned.)
+    // what the next boot restores (the periodic 30s tick could be up to 30s stale).
     if let Some(ref sf) = state_file {
-        if let Err(e) = state_persist::write_snapshot_blocking(&app_handle, sf).await {
+        let app = app_handle.load();
+        if let Err(e) = state_persist::write(sf, &state_persist::capture(&app)) {
             tracing::warn!(path = %sf.display(), error = %e, "final state snapshot failed");
         } else {
             tracing::info!(path = %sf.display(), "state snapshot written on shutdown");
@@ -1096,7 +1026,7 @@ pub(crate) fn fallback_error_response(
     use axum::response::IntoResponse;
     // The NATIVE-API root speaks the frozen admin envelope for EVERY response — including unmatched
     // paths and wrong methods, which previously fell through to the vendor-native shaping below and
-    // leaked `{error:{type}}` bodies onto a surface that promises `{error:{code}}`.
+    // leaked `{error:{type}}` bodies onto a surface that promises `{error:{code}}` (re-audit HIGH-1).
     // Boundary-safe: exact root or root + '/'.
     {
         use crate::admin::v1::contract::{AdminError, API_ROOT};
@@ -1104,7 +1034,7 @@ pub(crate) fn fallback_error_response(
             let e = if status == axum::http::StatusCode::METHOD_NOT_ALLOWED {
                 AdminError::MethodNotAllowed
             } else {
-                AdminError::not_found("resource")
+                AdminError::NotFound("resource".into())
             };
             return crate::admin::v1::json::err_json(&e);
         }
@@ -1152,30 +1082,12 @@ async fn method_not_allowed_handler(uri: axum::http::Uri) -> axum::response::Res
     )
 }
 
-/// The SENTINEL substring in the `text/plain` body axum's `DefaultBodyLimit` emits when a request
-/// exceeds the limit — used to distinguish axum's OWN body-limit 413 from a forward-path-relayed
-/// upstream 413, which must pass through untouched.
-///
-/// SUBSTRING, NOT BYTE-EQUALITY, and that is the fix. This was pinned to axum 0.7's EXACT body
-/// (`"length limit exceeded"`), and axum-core 0.5 renders the same rejection as
-/// `"Failed to buffer the request body: length limit exceeded"` — the `__define_rejection!`
-/// Error-variant arm prefixes the outer `FailedToBufferBody` prose onto the inner error. So on
-/// axum 0.8 the equality gate NEVER matched and the whole reshape was dead code in production:
-/// every oversized request, admin and data plane alike, answered with a bare `text/plain` body.
-/// That broke the admin surface's frozen `{error:{code}}` envelope (tooling that branches on `code`
-/// throws on parse) and handed official OpenAI/Anthropic/Bedrock SDKs a router tell instead of the
-/// vendor-native JSON envelope.
-///
-/// Matching the inner error's own words survives that wrapping. The residual risk — a relayed
-/// UPSTREAM `text/plain` 413 whose body happens to contain this phrase being reshaped into a JSON
-/// envelope of the same status — is far smaller than the risk this replaced, and is bounded to the
-/// envelope shape (the status is 413 either way).
-///
-/// THE REAL GUARD IS THE TEST, not this constant. Every prior test of this path hand-constructed
-/// the marker and called the pure reshape function, so all four stayed green while the layer was
-/// dead. `oversized_request_413_is_reshaped_on_the_live_stack` drives a real oversized request
-/// through the real layer stack, so the next time axum changes its prose the build goes red instead
-/// of the reshape silently switching itself off.
+/// The exact body axum 0.7's `DefaultBodyLimit` emits when a request exceeds the limit: its
+/// extractor rejection (`FailedToBufferBody::LengthLimitError`) renders a 413 with this literal
+/// `text/plain` body. This is the SENTINEL used to distinguish axum's OWN body-limit 413 from a
+/// forward-path-relayed upstream 413: the reshape acts only on a response whose body is
+/// exactly this marker, so a relayed upstream 413 (any other body, JSON or not) passes through
+/// untouched. (Pinned to axum's wire shape; covered by `test_reshape_oversized_413_passthrough`.)
 const AXUM_BODY_LIMIT_413_MARKER: &[u8] = b"length limit exceeded";
 
 /// Reshape an oversized-body rejection into a protocol-native error. axum's `DefaultBodyLimit`
@@ -1359,10 +1271,7 @@ async fn reshape_oversized_413(
         // already-consumed parts through with an empty body rather than reshape a non-axum reject.
         Err(_) => return axum::response::Response::from_parts(parts, axum::body::Body::empty()),
     };
-    if !bytes
-        .windows(AXUM_BODY_LIMIT_413_MARKER.len())
-        .any(|w| w == AXUM_BODY_LIMIT_413_MARKER)
-    {
+    if bytes.as_ref() != AXUM_BODY_LIMIT_413_MARKER {
         // A relayed upstream 413 (or any non-axum 413): pass through untouched, body re-attached.
         return axum::response::Response::from_parts(parts, axum::body::Body::from(bytes));
     }
@@ -1529,20 +1438,6 @@ pub(crate) fn load_config_from_disk(
             overlay_doc: None,
             unset_env_vars,
         });
-    }
-    // An overlay from a NEWER busbar is refused, not ignored: it is intact and meaningful, so
-    // starting without it would run with the operator's API-registered hooks and groups — security
-    // gates included — silently absent. `--safe-mode` boots on base config alone without touching
-    // the file, so this is a one-flag recovery rather than a brick.
-    if let Some(p) = overlay_path.as_ref() {
-        if let config::overlay::OverlayReadState::VersionTooNew(v) = config::overlay::read_state(p)
-        {
-            return Err(format!(
-                "config overlay '{}' was written by a newer busbar (overlay version {v}; this                  binary understands {}). Starting without it would silently drop API-registered                  hooks and groups. Upgrade busbar, or boot with --safe-mode to run on config.yaml                  alone (the overlay is left untouched).",
-                p.display(),
-                config::overlay::OVERLAY_VERSION
-            ));
-        }
     }
     let overlay_doc = overlay_path.as_ref().and_then(|p| {
         let doc = config::overlay::read(p);
@@ -1828,40 +1723,6 @@ pub(crate) fn plugins_preflight(
 /// desired) - in practice a signer is always produced so mint works out of the box.
 ///
 /// FAIL-CLOSED: a configured-but-unresolvable / malformed signing key refuses boot.
-/// Resolve the operator ADMIN credential — the `admin-tokens` chain entry's `token:` secret ref —
-/// with the BLANK-TOKEN guard. Shared by boot and the apply/reload path so the two cannot drift.
-///
-/// FAIL-CLOSED twice over:
-/// * an unresolvable ref refuses boot/apply (a silently-absent token would lock the admin API
-///   while the operator believes it is guarded);
-/// * a ref that resolves to EMPTY or ALL-WHITESPACE is refused too. The
-///   documented boot guard for this had been lost in the move to secret refs, and the consequence
-///   is worse than the docs described: the digest is computed over the blank string, so
-///   `admin_token_hash` is `Some(sha256(""))` — a REAL credential that an `Authorization: Bearer `
-///   with an empty value satisfies. An env var that expanded to nothing would silently hand the
-///   whole admin surface to an unauthenticated caller.
-fn resolve_admin_token(
-    auth: Option<&config::AuthCfg>,
-    resolver: &config::secret::SecretResolver,
-) -> Result<Option<String>, String> {
-    let Some(r) = auth.and_then(|a| a.admin_token_ref()) else {
-        return Ok(None);
-    };
-    let token = resolver
-        .resolve_string(r)
-        .map_err(|e| format!("auth.admin_auth admin-tokens token did not resolve: {e}"))?;
-    if token.trim().is_empty() {
-        return Err(
-            "auth.admin_auth admin-tokens `token:` resolved to an EMPTY/whitespace-only value. \
-             Refusing to start: the digest would be taken over the blank string, so an empty \
-             credential would authenticate as the operator. Check the referenced env var / file \
-             actually holds the token, or remove the `token:` to disable the admin API deliberately."
-                .to_string(),
-        );
-    }
-    Ok(Some(token))
-}
-
 fn resolve_signing_key(
     auth: Option<&config::AuthCfg>,
     resolver: &config::secret::SecretResolver,
@@ -1941,139 +1802,22 @@ fn resolve_signing_key(
 }
 
 /// Persist a generated signing key 0600 (owner read/write only) via a temp-file + rename so a
-/// concurrent reader never sees a torn key. On Unix the temp file is CREATED 0600 atomically (mode set
-/// at open, never briefly world-readable — L4); on other platforms the OS default applies (best-effort).
-/// The bytes are hex-encoded (64 chars) so the file is a plain text secret an operator can also drop in
-/// via `auth.signing_key: { file: ... }`.
+/// concurrent reader never sees a torn key. On Unix the mode is set BEFORE the rename; on other
+/// platforms the OS default applies (best-effort). The bytes are hex-encoded (64 chars) so the file
+/// is a plain text secret an operator can also drop in via `auth.signing_key: { file: ... }`.
 fn persist_signing_key(path: &std::path::Path, secret: &[u8; 32]) -> Result<(), String> {
+    let tmp = path.with_extension("key.tmp");
     let hex = hex::encode(secret);
-    // Publish via the crate's ONE durable-write choke point ([`crate::durable::write_with`]) with the
-    // signing-key posture carried in `DurableOpts`:
-    // * `mode: Some(0o600)` — L4: the temp (and therefore the published key) is created 0600 AT
-    // OPEN, so the plaintext ed25519 key — the 1.5.0 key-minting root of trust — is NEVER briefly
-    // world-readable between write and a later chmod (the old TOCTOU window). On non-unix the OS
-    // default applies (the sensitive-key concern is the multi-user unix host).
-    // * `exclusive: true` — anti-pre-plant (O_EXCL refuses to adopt a temp we did not just create)
-    // AND anti-wedge (the primitive pre-removes a stale temp of its own name first, so a leftover
-    // from a crashed first-boot run never permanently wedges retry). The parent-dir fsync (so the
-    // rename's directory entry survives power loss — a lost entry silently invalidates every minted
-    // key) is done by the primitive too. No bespoke code here: the posture is entirely in the opts.
-    let opts = crate::durable::DurableOpts {
-        mode: Some(0o600),
-        exclusive: true,
-    };
-    crate::durable::write_with(path, hex.as_bytes(), opts)
-        .map_err(|e| format!("cannot install signing key '{}': {e}", path.display()))
-}
-
-/// Validate ONE `secrets:` block key against the plugin registry and return the plugin's CANONICAL
-/// name. Fail-closed (an `Err`) when the key names a reserved built-in resolver (`env`/`file`, which
-/// take no module-level config), when no loadable plugin is named or aliased by it, or when the
-/// resolved plugin is not `kind: secret`. Shared by `build_secret_resolver` (boot) and the
-/// `--validate` pre-flight so both apply the identical policy (audit MEDIUM: a mistyped/aliased
-/// `secrets:` key must never silently open a plugin with `{}`).
-fn validate_secret_module(
-    registry: &busbar_plugin_loader::PluginRegistry,
-    module: &str,
-) -> Result<String, String> {
-    if module == config::secret::SECRET_MODULE_ENV || module == config::secret::SECRET_MODULE_FILE {
-        return Err(format!(
-            "secrets.{module}: '{module}' is a built-in secret resolver, not a plugin; it takes no \
-             module-level configuration. Remove this `secrets:` entry (reference it inline as \
-             {{ {module}: … }} where the secret is used)."
-        ));
+    std::fs::write(&tmp, hex.as_bytes())
+        .map_err(|e| format!("cannot write signing key '{}': {e}", tmp.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("cannot chmod 0600 signing key '{}': {e}", tmp.display()))?;
     }
-    match registry.resolve(module) {
-        Some(p) if p.manifest.kind == "secret" => Ok(p.manifest.name.clone()),
-        Some(p) => Err(format!(
-            "secrets.{module}: plugin '{}' has kind '{}', not 'secret'; only a kind: secret plugin \
-             can back a `secrets:` block entry",
-            p.manifest.name, p.manifest.kind
-        )),
-        None => Err(format!(
-            "secrets.{module}: no loadable `kind: secret` plugin is named or aliased '{module}' \
-             (check the spelling against the plugin's manifest name/alias, and that the plugin \
-             loaded — see --list-plugins)"
-        )),
-    }
-}
-
-/// THE POST-RESOLVE HALF OF `--validate`, in one place.
-///
-/// `config_validate::validate` is only part of what makes a config valid: the plugin pre-flight
-/// (consistency, trust resolution, the three-phase tarball scan, store resolution) and the two
-/// secret-reference checks are the rest, and they cannot run until the registry exists. Every caller
-/// that asks "is this config valid?" must run ALL of it -- `--validate` assembled the steps by hand
-/// and `POST /api/v1/admin/config/validate` ran only the first, so the admin dry-run answered
-/// `ok: true` for configs the CLI rejects and an operator could ship one straight into a failed boot.
-///
-/// Manifest-only, like the pre-flight it wraps: nothing is `dlopen`ed and no store is opened, so it
-/// is safe on the admin read path.
-pub(crate) fn preflight_plugins_and_secrets(
-    deploy: &config::DeployCfg,
-    cfg: &config::RootCfg,
-) -> Result<busbar_plugin_loader::PluginRegistry, String> {
-    let registry = plugins_preflight(
-        deploy.store.as_ref(),
-        cfg.auth.as_ref(),
-        &cfg.hooks,
-        &deploy.plugins,
-    )?;
-    validate_secret_modules(&registry, &cfg.secrets)?;
-    validate_secret_refs(&registry, cfg)?;
-    Ok(registry)
-}
-
-/// Validate EVERY `secrets:` block entry against the registry (the `--validate` counterpart of the
-/// per-entry check `build_secret_resolver` runs at boot). Returns the FIRST offending entry's error.
-fn validate_secret_modules(
-    registry: &busbar_plugin_loader::PluginRegistry,
-    secret_modules: &std::collections::BTreeMap<String, config::SecretModuleCfg>,
-) -> Result<(), String> {
-    for module in secret_modules.keys() {
-        validate_secret_module(registry, module)?;
-    }
-    Ok(())
-}
-
-/// Validate every SECRET REFERENCE's module against the plugin registry — the deferred half of the
-/// C2 secret-reference check `config_validate` cannot do (it runs before the registry exists). The
-/// built-in `env`/`file` modules always pass; ANY OTHER module name is a `kind: secret` PLUGIN
-/// reference (the 1.5.0 "secrets are plugins" feature: `api_key: { module: acme-vault, … }`, TLS
-/// cert/key, `auth.signing_key`, the admin token) and must resolve to a LOADED, TRUSTED, `kind:
-/// secret` plugin. A genuine typo (no built-in, no plugin) is a hard boot / `--validate` error;
-/// an installed vault/aws-sm plugin PASSES. Shared by boot (`build_app_from_config`) and the
-/// `--validate` pre-flight so the two cannot drift. Returns the FIRST offending reference's error.
-fn validate_secret_refs(
-    registry: &busbar_plugin_loader::PluginRegistry,
-    cfg: &config::RootCfg,
-) -> Result<(), String> {
-    for (what, r) in config_validate::secret_refs(cfg) {
-        if r.module == config::secret::SECRET_MODULE_ENV
-            || r.module == config::secret::SECRET_MODULE_FILE
-        {
-            continue; // built-in resolver — already structurally checked in config_validate
-        }
-        match registry.resolve(&r.module) {
-            Some(p) if p.manifest.kind == "secret" => {}
-            Some(p) => {
-                return Err(format!(
-                    "{what} references secret module '{}', but plugin '{}' has kind '{}', not \
-                     'secret'; only a `kind: secret` plugin can back a secret reference",
-                    r.module, p.manifest.name, p.manifest.kind
-                ));
-            }
-            None => {
-                return Err(format!(
-                    "{what} references secret module '{}', which is not a built-in (`env` | `file`) \
-                     and no loadable `kind: secret` plugin is named or aliased '{}'. Fix the \
-                     spelling, install/trust the plugin (see --list-plugins), or use a built-in, \
-                     e.g.:\n\n    {what}: {{ env: MY_SECRET_VAR }}\n",
-                    r.module, r.module
-                ));
-            }
-        }
-    }
+    std::fs::rename(&tmp, path)
+        .map_err(|e| format!("cannot install signing key '{}': {e}", path.display()))?;
     Ok(())
 }
 
@@ -2085,81 +1829,17 @@ fn validate_secret_refs(
 /// is a fail-closed error at resolve time.
 fn build_secret_resolver(
     registry: Arc<busbar_plugin_loader::PluginRegistry>,
-    secret_modules: &std::collections::BTreeMap<String, config::SecretModuleCfg>,
-) -> Result<config::secret::SecretResolver, String> {
-    // MODULE-LEVEL config delivery for `kind: secret` plugins (audit MEDIUM): resolve each configured
-    // `secrets.<module>.settings` ONCE at boot and hand it to the plugin's `open()`, exactly as
-    // `store.settings` configures the store plugin. Without this a secret plugin's `open()` always
-    // received `{}`, so a Vault-style plugin's address/namespace/token/CA had to be repeated in EVERY
-    // SecretRef — multiplying secret exposure and defeating the open-vs-resolve separation the ABI
-    // is designed around.
-    //
-    // The module config is resolved against the BUILT-IN env/file resolvers ONLY (a `builtins_only`
-    // resolver). A secret module cannot resolve its OWN `open()` config through a secret plugin —
-    // that would be a bootstrap cycle — so `{ token: { env: VAULT_TOKEN } }` resolves but
-    // `{ token: { module: some-other-secret-plugin } }` is a fail-closed error.
-    let builtins = config::secret::SecretResolver::builtins_only();
-    // Key the open-config map by the plugin's CANONICAL name, not by the literal `secrets:` block key
-    // (audit MEDIUM): a `SecretRef` may name the plugin by EITHER its canonical name or its alias, and
-    // the registry resolves both — but a bare string-equality lookup on the block key would MISS the
-    // other spelling and silently open the plugin with `{}` (dropping the operator's configured
-    // address/token/CA). Canonicalize the block key through the SAME by_name/by_alias resolution the
-    // registry uses, so a `secrets:` entry written under an alias and a `SecretRef` written under the
-    // canonical name (or vice versa) line up. A `secrets:` entry that resolves to NOTHING — a typo, or
-    // a module that names one of the reserved built-in resolvers (`env`/`file`, which take no
-    // module-level open config) — is a hard boot error: silently passing `{}` for a mis-typed module
-    // is exactly the failure this closes. The `--validate` path applies the identical policy via the
-    // shared `validate_secret_module`/`validate_secret_modules` helpers.
-    let mut open_config: std::collections::BTreeMap<String, String> =
-        std::collections::BTreeMap::new();
-    // Which `secrets:` block key produced each canonical entry, so an ALIAS/CANONICAL collision can
-    // be named precisely.
-    let mut claimed_by: std::collections::BTreeMap<String, String> =
-        std::collections::BTreeMap::new();
-    for (module, mcfg) in secret_modules {
-        // Validate + canonicalize the block key against the registry (shared with --validate). A
-        // reserved built-in name, an unknown module, or a non-secret plugin is a hard error here.
-        let canonical = validate_secret_module(&registry, module)?;
-        // TWO SPELLINGS, ONE MODULE: a `secrets:` block written under BOTH a plugin's alias and its
-        // canonical name canonicalizes to the same key, and the second insert silently DROPPED the
-        // first entry's open() config — one of the two blocks (address, token, CA) just vanished,
-        // with the module still loading happily on the survivor. Ambiguous by construction: there is
-        // no defensible rule for which one wins. Fail LOUD and name both spellings.
-        if let Some(previous) = claimed_by.get(&canonical) {
-            return Err(format!(
-                "secrets: the module '{canonical}' is configured TWICE — once as '{previous}' and \
-                 once as '{module}' (an alias and its canonical name resolve to the same plugin). \
-                 One of the two blocks would be silently dropped; keep exactly one."
-            ));
-        }
-        let resolved = config::secret::resolve_settings(&mcfg.settings, &builtins)
-            .map_err(|e| format!("secrets.{module} settings: {e}"))?;
-        claimed_by.insert(canonical.clone(), module.clone());
-        open_config.insert(canonical, serde_json::Value::Object(resolved).to_string());
-    }
-    Ok(config::secret::SecretResolver::with_plugin(Box::new(
+) -> config::secret::SecretResolver {
+    config::secret::SecretResolver::with_plugin(Box::new(
         move |module: &str, settings: &str| -> Result<Vec<u8>, String> {
-            // Canonicalize the referenced module the SAME way, so an alias-vs-name spelling difference
-            // between the `secrets:` block and this `SecretRef` still finds the configured open() JSON.
-            // A module that does not resolve falls through to `open_secret` below, which produces the
-            // authoritative "no such plugin" error.
-            let canonical = registry
-                .resolve(module)
-                .map(|p| p.manifest.name.as_str())
-                .unwrap_or(module);
-            // Deliver the module's configured open() JSON (default `{}` for an unconfigured module).
-            let open_cfg = open_config
-                .get(canonical)
-                .map(String::as_str)
-                .unwrap_or("{}");
-            let m = registry.open_secret(module, open_cfg)?;
+            let m = registry.open_secret(module, "{}")?;
             m.resolve(
                 &serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(settings)
                     .map_err(|e| format!("secret settings are not a JSON object: {e}"))?,
             )
             .map_err(|e| e.to_string())
         },
-    )))
+    ))
 }
 
 pub(crate) fn build_app_from_config(
@@ -2176,13 +1856,7 @@ pub(crate) fn build_app_from_config(
     // explicitly (client/store/router/TLS) read `cfg.limits` directly; the deep call-stack sites
     // (translate-body cap, metrics gauge limit, webhook timeout, governance sqlite/sweep, health
     // probe fallbacks, routing policy timeout) read the installed values.
-    //
-    // …THROUGH A GUARD, because everything below this line is fallible. The install has to come
-    // first (the build itself reads these values), but a build that goes on to FAIL must not leave
-    // the rejected config's limits installed under the old `App` that keeps serving. The guard
-    // restores the previous values on drop unless the build reaches its `Ok`, so "an invalid apply
-    // changes nothing" holds for process-wide limits the same way it holds for everything else.
-    let limits_guard = limits::InstallGuard::install(&cfg.limits);
+    limits::install(&cfg.limits);
     // The config version this App will carry — computed ONCE up front because hook-transport
     // resolution stamps it into every socket configure preamble (W-M4: the preamble's
     // settings_version must be the REAL version of the settings it delivers, not a hardcoded 0).
@@ -2210,20 +1884,10 @@ pub(crate) fn build_app_from_config(
         &plugins_cfg,
     )?);
 
-    // Every SECRET REFERENCE whose module is not a built-in (`env`/`file`) must resolve to a loaded
-    // `kind: secret` plugin — the deferred half of the C2 check `config_validate::validate` cannot do
-    // (it runs before the registry exists). A typo'd module fails boot HERE; the documented vault
-    // `api_key: { module: acme-vault }` passes once the plugin is loaded + trusted. This is the boot
-    // twin of the `--validate` check, sharing `validate_secret_refs`/`config_validate::secret_refs`.
-    validate_secret_refs(&plugin_registry, &cfg)?;
-
     // The SECRET RESOLVER (P2): built-in env/file resolve inline; any other module delegates to a
     // loaded `kind: secret` plugin via the registry (fail-closed if the plugin subsystem is off or
     // the module is unknown). Shared by provider keys, the admin token, and the TLS listener.
-    let secret_resolver = Arc::new(build_secret_resolver(
-        plugin_registry.clone(),
-        &cfg.secrets,
-    )?);
+    let secret_resolver = Arc::new(build_secret_resolver(plugin_registry.clone()));
 
     let mut lanes_data = Vec::new();
     // Validated provider handle for each lane, captured in lockstep with `lanes_data` below. The
@@ -2647,42 +2311,6 @@ pub(crate) fn build_app_from_config(
     // onto `App` (for the control-plane reads + scrape).
     let hook_env = hooks::HookEnv::new(plugin_registry.clone(), secret_resolver.clone());
 
-    // B1 FAIL-CLOSED: resolve every hook's SecretRef settings ONCE, up front, so an unresolvable
-    // hook secret aborts boot/reload here — matching the store path (above) and the auth chain
-    // (`AuthMiddleware::new`). Without this, a gate whose SecretRef fails to resolve would be
-    // silently dropped from the routing chain by `resolve_pool_gates`/`resolve_on_error_chain`
-    // (fail-OPEN), letting traffic the gate was configured to restrict/reject flow unfiltered.
-    hook_env.preresolve_hook_secrets(&cfg.hooks)?;
-
-    // The store's SecretRefs are resolved only on the BOOT arm (`prior == None`), because the store
-    // backend is reused across a hot reload. So a `PUT /config/settings` naming an unresolvable ref
-    // returned 200, persisted it, and the NEXT restart died in `resolve_settings` before serving.
-    //
-    // WARN, never fail: the store is restart-to-apply, so staging a ref whose secret the
-    // orchestrator mounts on the next deploy is a legitimate workflow — and `tls` already accepts
-    // exactly that. Rejecting here would make the store stricter than the block beside it.
-    if let Some(store_cfg) = cfg.store.as_ref() {
-        if let Err(e) = config::secret::resolve_settings(&store_cfg.settings, &secret_resolver) {
-            tracing::warn!(
-                store = %store_cfg.module,
-                error = %e,
-                "store settings hold a secret reference that does not resolve here; the store is \
-                 restart-to-apply, so THIS WILL FAIL THE NEXT RESTART unless the secret exists then"
-            );
-        }
-    }
-
-    // B1 (open-time variant) FAIL-CLOSED: actually OPEN every referenced decision/rewrite gate up
-    // front so an `open()`-time failure of a PRESENT plugin aborts boot/reload here — matching the
-    // store (`open_store`) and auth (`AuthMiddleware::new`) paths. Without this, a gate whose plugin
-    // fails to `open()` (constructor rejecting cfg_json, staging/mmap failure, ABI/kind mismatch
-    // observable only on load) is silently `filter_map`-dropped by the resolvers below (fail-OPEN),
-    // letting traffic a Reject/restrict/rewrite gate was configured to filter flow unfiltered while
-    // boot reports success. A GENUINELY-ABSENT plugin stays the legitimate fail-open skip.
-    // `plugins_preflight` is manifest-only (no dlopen) and `preresolve_hook_secrets` only resolves
-    // SecretRefs, so neither catches an `open()` failure — this pass does.
-    hook_env.preopen_gate_hooks(&cfg.hooks)?;
-
     // Per-pool runtime config (failover/exclusions), keyed by pool name.
     let mut pool_runtime = std::collections::HashMap::new();
     for (pool_name, pool_cfg) in &cfg.pools {
@@ -2764,66 +2392,8 @@ pub(crate) fn build_app_from_config(
     // so a bad plugin state can never produce a partial App. When plugins are disabled and nothing
     // references one, this is a no-op empty registry.
     // open the governance store + load the virtual-key cache when enabled.
-    // Credentials RE-RESOLVED on this apply/reload, applied to the reused `GovState` once the rest
-    // of the build has succeeded (see the `apply` call just before `Ok(App { .. })`). Resolution
-    // itself happens HERE and is FAIL-CLOSED: an `auth.admin_auth` token ref or an `auth.signing_key`
-    // that no longer resolves aborts the apply rather than silently leaving the old credential live.
-    let mut rotate_gov_credentials: Option<Box<dyn FnOnce()>> = None;
     let governance = if let Some(p) = prior {
-        // REUSED across applies: the keys + spend/rate state must survive config changes. But the
-        // CREDENTIALS on it are config, not state: `GovState` used to freeze the admin-token digest
-        // and the signing key at construction, so rotating either SecretRef and reloading had no
-        // effect whatsoever — the process kept accepting the boot-time credential for its entire
-        // life. Re-resolve both refs against the fresh resolver and swap them
-        // into the reused instance.
-        //
-        // SCOPE: a credential is re-resolved exactly when THIS config DECLARES it — an
-        // `admin-tokens` entry in `auth.admin_auth`/`auth.chain` for the admin token, an explicit
-        // `auth.signing_key` for the signing key. A config that declares neither is not asserting
-        // "no credential"; it simply does not own that credential (the dev signing key is
-        // generate-and-persist at BOOT, and re-running that on every reload would churn key
-        // material), so the live one stands. REMOVING a declaration therefore still needs a restart
-        // — documented, and the narrow case; ROTATING one, the operational path that matters and
-        // the one that silently did nothing, now works.
-        if let Some(gs) = p.governance.clone() {
-            let auth = cfg.auth.as_ref();
-            let declares_admin_tokens = auth.is_some_and(|a| {
-                a.admin_auth
-                    .iter()
-                    .chain(a.chain.iter())
-                    .any(|e| e.module == crate::config::ADMIN_TOKENS_MODULE)
-            });
-            // FAIL-CLOSED: a declared ref that no longer resolves ABORTS the apply. The alternative
-            // — carry on serving with the old credential — is exactly the defect being fixed.
-            let admin_token: Option<Option<String>> = if declares_admin_tokens {
-                // Declared with no token ref resolves to `None`: the admin API is credential-less
-                // BY CONFIGURATION, so fail closed and disable it rather than keep the old secret.
-                Some(
-                    resolve_admin_token(auth, &secret_resolver)
-                        .map_err(|e| format!("{e} (nothing was changed)"))?,
-                )
-            } else {
-                None
-            };
-            let signer = match auth.and_then(|a| a.signing_key.as_ref()) {
-                Some(_) => Some(resolve_signing_key(
-                    auth,
-                    &secret_resolver,
-                    config_paths.0.as_deref(),
-                )?),
-                None => None,
-            };
-            if admin_token.is_some() || signer.is_some() {
-                rotate_gov_credentials = Some(Box::new(move || {
-                    if let Some(token) = admin_token {
-                        gs.set_admin_token(token.as_deref());
-                    }
-                    if let Some(signer) = signer {
-                        gs.set_signing_key(signer);
-                    }
-                }));
-            }
-        }
+        // REUSED across applies: the keys + spend/rate state must survive config changes.
         p.governance.clone()
     } else {
         // Governance is ALWAYS available (it is inert until an admin token is set and virtual keys are
@@ -2853,7 +2423,13 @@ pub(crate) fn build_app_from_config(
         // The operator ADMIN credential: the `admin-tokens` chain entry's `token:` secret ref.
         // FAIL-CLOSED: a configured-but-unresolvable admin token refuses boot (a silently-absent
         // token would lock the admin API while the operator believes it is guarded).
-        let admin_token: Option<String> = resolve_admin_token(cfg.auth.as_ref(), &secret_resolver)?;
+        let admin_token: Option<String> =
+            match cfg.auth.as_ref().and_then(|a| a.admin_token_ref()) {
+                Some(r) => Some(secret_resolver.resolve_string(r).map_err(|e| {
+                    format!("auth.admin_auth admin-tokens token did not resolve: {e}")
+                })?),
+                None => None,
+            };
         // The KEY-SIGNING key (S2): resolve `auth.signing_key` (a secret ref) to 32 ed25519 secret
         // bytes; ABSENT => GENERATE a keypair on first boot and persist it 0600 (dev zero-config).
         // Fleet deployments provide it (shared) so every node verifies the same tokens.
@@ -2880,7 +2456,7 @@ pub(crate) fn build_app_from_config(
                 // config (mint validates it; a shared durable store can carry keys minted under a
                 // config another node no longer has). A dangling reference is a boot error naming
                 // the offender with the paste-ready fix.
-                // A store error reading the keys here must NOT be swallowed (the old `if let
+                // M9: a store error reading the keys here must NOT be swallowed (the old `if let
                 // Ok(keys)` skipped the whole dangling-reference check on error, so a boot-time store
                 // blip published a config whose keys were never validated). Propagate it - fail boot.
                 let keys = gs.all_keys().map_err(|e| {
@@ -2962,46 +2538,11 @@ pub(crate) fn build_app_from_config(
     let global_gates =
         hooks::resolve_gate_hooks(&cfg.hooks, &cfg.global_hooks, &hook_env, app_config_version);
 
-    // EVERY fallible step of this build has now succeeded, so the re-resolved governance
-    // credentials (HIGH-7) can be swapped into the reused `GovState`. Deferring to here means a
-    // build that fails later leaves the running engine's credentials exactly as they were.
-    if let Some(apply) = rotate_gov_credentials {
-        apply();
-    }
-
-    // The probe schedule is live state, not config-derived: it carries each lane's next-probe deadline
-    // and the prober generation. `App::clone` shares it (Arc), so an in-place mutation swap keeps the
-    // phase; a REBUILD must do the same, or a mutation cadence faster than the probe interval —
-    // /config/settings meters at 10/min, the default interval is 30s — replaces every generation before
-    // its first tick and probing goes dark while still logging that it is enabled. Carried ONLY when the
-    // lane set is identical, because deadlines are indexed by lane: a changed lane set makes the old
-    // indices mean something else, and a genuine lane change SHOULD re-establish probing.
-    //
-    // zip ≡ set-equality HERE, not in general: `cfg.models` is a `HashMap<String, ModelCfg>`, so model
-    // names are UNIQUE keys, and both lane vectors are built by sorting those keys before reaching this
-    // point. Two vectors built from the same unique-key set via the same deterministic sort are
-    // identical element-for-element, so an elementwise compare and a set compare accept exactly the
-    // same configs. Do NOT reuse this shortcut for a lane source that is not sorted-from-a-unique-key-
-    // set: there the zip would start accepting a shifted-index pairing.
-    let probe_schedule = match prior {
-        Some(p)
-            if p.lanes.len() == lanes.len()
-                && p.lanes
-                    .iter()
-                    .zip(lanes.iter())
-                    .all(|(a, b)| a.model == b.model && a.provider == b.provider) =>
-        {
-            p.probe_schedule.clone()
-        }
-        _ => Arc::new(crate::health::ProbeSchedule::new(lanes.len())),
-    };
-
-    let app = App {
+    Ok(App {
         // Telemetry-bank slot table for this generation, registered BEFORE the config-derived
         // collections move into the snapshot. Identical label sets across applies re-intern to the
         // same slots, so hot-path counters accumulate monotonically across config generations.
         tslots: Arc::new(telemetry::AppSlots::build(&lanes, &pools, &by_model)),
-        probe_schedule,
         lanes,
         store,
         by_model,
@@ -3063,7 +2604,6 @@ pub(crate) fn build_app_from_config(
         overlay_path,
         config_version: app_config_version,
         max_keys_per_principal: cfg.limits.max_keys_per_principal,
-        max_auto_provisioned_groups: cfg.limits.max_auto_provisioned_groups,
         failover_cfg,
         pool_runtime,
         fallback_pools,
@@ -3078,11 +2618,7 @@ pub(crate) fn build_app_from_config(
             let b = cfg.limits.reasoning_effort_budgets;
             [b.minimal, b.low, b.medium, b.high]
         },
-    };
-    // The build reached its end without a single fallible step refusing: KEEP the limits installed
-    // at the top. Every earlier `return Err` / `?` drops the guard instead and rolls them back.
-    limits_guard.commit();
-    Ok(app)
+    })
 }
 
 /// Build the busbar HTTP router for a given `App` state with default limits. Factored out so the
@@ -3134,25 +2670,15 @@ fn build_router_with_limits(
 /// router in the single-listener case, or onto its own router in the split case) so it can move to
 /// a dedicated listener without any of these routes coming with it.
 fn base_data_router() -> Router<std::sync::Arc<state::AppHandle>> {
-    let router = Router::new()
+    Router::new()
         .route("/stats", get(endpoints::stats))
-        .route("/healthz", get(endpoints::healthz));
-    // METRICS ARE OPT-IN (`observability.metrics`). Not opted in ⇒ neither exposition route is
-    // mounted at all, so an un-opted-in deployment has no scrape surface to speak of and the
-    // unknown path falls through to the same native-envelope 404 as any other (no bare-proxy tell).
-    let router = if metrics::enabled() {
-        router
-            .route("/metrics", get(metrics::handler))
-            // The Prometheus scrape of HOOK-reported metrics — a SEPARATE exposition from busbar's
-            // own `/metrics` so a hook can never type-conflict or shadow a first-party series.
-            // Verbatim hook metric names + an auto `hook="<name>"` label, so an external dashboard
-            // built against a hook repoints here and just works. Stale-while-revalidate; never
-            // blocks on a hook socket.
-            .route("/metrics/hooks", get(crate::hooks::scrape::handler))
-    } else {
-        router
-    };
-    router
+        .route("/healthz", get(endpoints::healthz))
+        .route("/metrics", get(metrics::handler))
+        // The Prometheus scrape of HOOK-reported metrics — a SEPARATE exposition from busbar's own
+        // `/metrics` so a hook can never type-conflict or shadow a first-party series. Verbatim hook
+        // metric names + an auto `hook="<name>"` label, so an external dashboard built against a hook
+        // repoints here and just works. Stale-while-revalidate; never blocks on a hook socket.
+        .route("/metrics/hooks", get(crate::hooks::scrape::handler))
         // busbar's OWN API keeps explicit routes (it is not a protocol dialect): discovery,
         // health/metrics/stats above, and the named/adhoc conveniences below.
         // OpenAI list-models: SDKs call `models.list()` first; UIs build pickers from it.
@@ -3244,13 +2770,12 @@ fn build_split_routers_with_limits(
     (data, admin, handle)
 }
 
-/// OUTERMOST inbound-concurrency cap. `max_inbound_concurrent == 0` disables the layer entirely (a
-/// true no-op) — but `0` is NOT the default; `DEFAULT_MAX_INBOUND_CONCURRENT` is `8192`, so the layer
-/// IS installed out of the box and an operator opts OUT with `0`, not in. When `> 0` (including the
-/// default), a tower `GlobalConcurrencyLimitLayer` (ONE shared semaphore across ALL requests) wraps
-/// the whole router: requests beyond the cap queue for a permit rather than overrunning. Applied as
-/// the last `.layer()` so it is outermost (it must admission-control before any inner work, including
-/// body buffering). Factored out so the add-only-when-`>0` rule is unit-testable in isolation.
+/// OUTERMOST inbound-concurrency cap. `max_inbound_concurrent == 0` (the default) returns the router
+/// UNCHANGED — NO layer is added, a true no-op so nothing changes unless an operator opts in. When
+/// `> 0`, a tower `GlobalConcurrencyLimitLayer` (ONE shared semaphore across ALL requests) wraps the
+/// whole router: requests beyond the cap queue for a permit rather than overrunning. Applied as the
+/// last `.layer()` so it is outermost (it must admission-control before any inner work, including body
+/// buffering). Factored out so the add-only-when-`>0` rule is unit-testable in isolation.
 fn apply_inbound_concurrency_limit(router: Router, max_inbound_concurrent: usize) -> Router {
     if max_inbound_concurrent > 0 {
         router.layer(tower::limit::GlobalConcurrencyLimitLayer::new(

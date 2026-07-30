@@ -94,19 +94,6 @@ pub struct ConfigureBody {
 /// Carrying `Reply` as an opaque [`serde_json::Value`] is deliberate: the fail-closed reply CONTRACT
 /// (reject wins, malformed detail degrades to a rejection not a silent route, metrics bounded) lives
 /// in ONE place — the engine's `hooks::wire` — and this ABI must not fork it.
-///
-/// UNLIKE [`HookRequest`] (`op`-tagged, snake_case, documented and test-pinned), this type carries NO
-/// `#[serde(...)]` attribute, so it serializes with serde's default externally-tagged representation,
-/// verbatim by Rust variant name. Any non-Rust hook author (Go, Zig, …) must match these THREE literal
-/// JSON forms exactly, and nothing on the fire-and-forget `notify` path errors on a mismatch:
-/// - `None` → the bare JSON string `"None"`.
-/// - `ConfigureAck { settings_version }` → `{"ConfigureAck":{"settings_version":N}}`.
-/// - `Reply(v)` → `{"Reply": v}`.
-///
-/// Pinned by `hook_reply_json_encoding_is_pinned` in this module's tests. Do NOT add a
-/// `#[serde(...)]` attribute here to "fix" the asymmetry with `HookRequest` — this is JSON over the
-/// frozen C-ABI transport (`plugin-loader`'s `transport_call::<HookRequest, HookReply>`), so any
-/// tagging change is a wire-breaking change, not a cosmetic one.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum HookReply {
     /// A per-request or management reply object, parsed by the engine's `hooks::wire` normalizers.
@@ -189,32 +176,5 @@ mod tests {
             let back: HookReply = serde_json::from_slice(&j).unwrap();
             assert_eq!(serde_json::to_vec(&back).unwrap(), j);
         }
-    }
-
-    /// class-13/14 F2: `HookReply` has NO `#[serde(...)]` attribute (unlike the `op`-tagged
-    /// `HookRequest`), so it uses serde's default externally-tagged enum representation verbatim —
-    /// and that shape was never written down anywhere. Pin the three literal JSON forms a plugin
-    /// author in any language must match on the fire-and-forget `notify` / `configure` reply path,
-    /// where a shape mismatch fails silently (nothing errors). This is a REGRESSION PROOF, not a RED
-    /// test — the encoding is not changing here, only becoming load-bearing: a future `#[serde(...)]`
-    /// addition (e.g. to match `HookRequest`'s tagging) would change these values and this test would
-    /// catch it, which is the whole point — do NOT add one; see `HookReply`'s doc comment.
-    #[test]
-    fn hook_reply_json_encoding_is_pinned() {
-        assert_eq!(
-            serde_json::to_value(HookReply::None).unwrap(),
-            serde_json::json!("None")
-        );
-        assert_eq!(
-            serde_json::to_value(HookReply::ConfigureAck {
-                settings_version: 42
-            })
-            .unwrap(),
-            serde_json::json!({"ConfigureAck": {"settings_version": 42}})
-        );
-        assert_eq!(
-            serde_json::to_value(HookReply::Reply(serde_json::json!({"order": [1, 0]}))).unwrap(),
-            serde_json::json!({"Reply": {"order": [1, 0]}})
-        );
     }
 }

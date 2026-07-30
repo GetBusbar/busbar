@@ -626,6 +626,7 @@ impl InMemoryStore {
             // an even `base_cooldown_secs` at `streak >= 63` WRAPPED TO 0, giving a zero cooldown
             // (tripped cell re-admits instantly) exactly when the lane is failing hardest. Compute in
             // u128 (base < 2^64, shift <= 63 → product < 2^127, no overflow) then saturate to u64.
+            // (found: audit c2r3.)
             let shift = streak.min(63);
             let shifted = (cfg.base_cooldown_secs as u128) << shift;
             u64::try_from(shifted)
@@ -693,7 +694,7 @@ impl InMemoryStore {
                 // minimum config_validate permits) the integer floor `1/2` truncates to 0, and a
                 // −1 jitter draw (~1/3 of trips) then produced a ZERO cooldown — the tripped cell
                 // re-admits instantly (`now >= cooldown_until`), the exact zero-backoff outcome the
-                // validator rejects a static `base_cooldown_secs = 0` to prevent.
+                // validator rejects a static `base_cooldown_secs = 0` to prevent. (found: audit c2r1.)
                 (duration / 2).max(1),
                 cfg.max_cooldown_secs,
             );
@@ -888,8 +889,8 @@ impl InMemoryStore {
     }
 
     /// OWNER-CHECKED probe release: the same revert as [`cell_release_probe`], but a strict NO-OP
-    /// unless `owned_epoch` still equals the cell's current `probe_epoch`. This closes a stalled-
-    /// release duplication: a `ProbeGuard` can outlive its acquisition across the
+    /// unless `owned_epoch` still equals the cell's current `probe_epoch`. This closes the stalled-
+    /// release duplication (P2 finding #4): a `ProbeGuard` can outlive its acquisition across the
     /// permit-wait await, so it may drop LATE - after the cell already recorded an outcome (advancing
     /// past the probe) and a NEW probe was won (bumping the epoch). The un-owned `cell_release_probe`
     /// would then CAS the FRESH winner's HalfOpen back to Open and clear its `probe_in_flight`, letting
@@ -1571,13 +1572,8 @@ impl InMemoryStore {
         // success-recovery and leave the cell Open with a cleared/short cooldown (sticky cooldown
         // dropped) or Closed with the stale sticky cooldown.
         let _tx = lock_recover(cell.transition_lock());
-        let now_secs = Self::now_secs();
-        // Same bool `record_hard_down_all_cells` captures (:1936): a genuine Closed->Open trip,
-        // gating the trip-counter bump below so a persistently-dead lane's recovery-probe cycle
-        // doesn't inflate it once per cycle.
-        let was_closed = cell.breaker_state().load(Ordering::Acquire) == ST_CLOSED;
         cell.cooldown_until().store(
-            now_secs.saturating_add(self.hard_down_cooldown_secs),
+            Self::now_secs().saturating_add(self.hard_down_cooldown_secs),
             Ordering::Release,
         );
         cell.breaker_state().store(ST_OPEN, Ordering::Release);
@@ -1588,11 +1584,6 @@ impl InMemoryStore {
         // Open→HalfOpen but the probe CAS (false→true) fails forever, benching the lane permanently
         // even after the operator fixes the credential/billing. Clearing it keeps hard-down RECOVERABLE.
         cell.probe_in_flight().store(false, Ordering::Release);
-        // Same seam `record_failure_for` bumps at (:1524-1528) — one logical trip, counted once.
-        if was_closed {
-            ls.trips.fetch_add(1, Ordering::Relaxed);
-            ls.last_trip_at.store(now_secs, Ordering::Relaxed);
-        }
     }
 
     pub(crate) fn select_weighted_for(
@@ -1687,10 +1678,6 @@ impl StateStore for InMemoryStore {
     fn available_permits(&self, lane: usize) -> usize {
         // Read-only snapshot of free concurrency permits — racy by nature (a ranking hint).
         self.get_lane(lane).sem.available_permits()
-    }
-
-    fn lane_admissible(&self, lane: usize) -> bool {
-        InMemoryStore::lane_admissible(self, lane)
     }
 
     fn lane_budget_remaining(&self, lane: usize) -> Option<i64> {
@@ -1953,13 +1940,6 @@ impl StateStore for InMemoryStore {
         for (_, cell) in cells.get(&lane).into_iter().flatten() {
             trip(cell.as_ref());
         }
-        // Same seam `record_failure_for` bumps at (:1524-1528): a genuine Closed->Open trip counts
-        // once against the lane's MONOTONIC trip counter, gated on the same bool that already keeps
-        // this from inflating once per recovery-probe cycle on a persistently-dead lane.
-        if default_was_closed {
-            ls.trips.fetch_add(1, Ordering::Relaxed);
-            ls.last_trip_at.store(now, Ordering::Relaxed);
-        }
         default_was_closed
     }
 
@@ -2173,7 +2153,7 @@ impl StateStore for InMemoryStore {
                 // an INCONSISTENT pair (e.g. Open with a cleared/short cooldown), which this snapshot
                 // then PERSISTS - on restore a hard-down lane would be revived as receiving traffic.
                 // Holding the same lock the write path holds, for BOTH loads at once, makes the pair
-                // move as a unit. Released immediately; the remaining fields are
+                // move as a unit (P2 finding #5). Released immediately; the remaining fields are
                 // independent counters with no cross-field invariant.
                 let (breaker_state, cooldown_until) = {
                     let _tx = lock_recover(&ls.transition_lock);

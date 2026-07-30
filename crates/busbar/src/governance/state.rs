@@ -17,61 +17,33 @@ impl GovState {
     ) -> StoreResult<Self> {
         let by_hash = Self::load(store.as_ref())?;
         let by_access_key_id = Self::load_by_access_key_id(store.as_ref(), &by_hash)?;
-        let by_id = Self::index_by_id(&by_hash);
+        let verifier = signer
+            .as_ref()
+            .map(|s| crate::governance::signing::TokenVerifier::single(s.kid(), s.verifying_key()));
         // Hydrate the denylist. A store with no denylist support returns empty (nothing revoked);
         // a durable one returns every persisted revoked subject.
         let denylist: std::collections::HashSet<String> =
             store.list_denylist()?.into_iter().collect();
-        // The set was just read from the store, so the staleness clock starts NOW. `RevocationSync`
-        // owns its own handle to the store: its refresh runs on the blocking pool and so cannot
-        // borrow from `GovState`.
-        let denylist = crate::governance::revocation::RevocationSync::new(
-            store.clone(),
-            denylist,
-            crate::store::now(),
-        );
         Ok(Self {
             store,
             caches: RwLock::new(GovCaches {
                 by_hash,
                 by_access_key_id,
-                by_id,
             }),
             concurrent: RwLock::new(HashMap::new()),
-            admin_token_hash: RwLock::new(
-                admin_token
-                    .as_ref()
-                    .map(|t| crate::sigv4::sha256_hex(t.as_bytes())),
-            ),
+            admin_token_hash: admin_token
+                .as_ref()
+                .map(|t| crate::sigv4::sha256_hex(t.as_bytes())),
             budget: Sharded::new(),
-            pending_metering: std::sync::Mutex::new(HashMap::new()),
-            signing: RwLock::new(signer.map(|s| Arc::new(SigningMaterial::new(s)))),
-            denylist,
-            refresh_lock: std::sync::Mutex::new(()),
+            signer,
+            verifier,
+            denylist: RwLock::new(denylist),
         })
-    }
-
-    /// SCHEDULE a re-read of the store's revocation denylist when this node's copy is older than
-    /// [`REVOCATION_SYNC_TTL_SECS`] — the check-time staleness guard that makes revocation
-    /// AUTHORITATIVE rather than a boot-time snapshot.
-    ///
-    /// Before this existed the denylist was hydrated ONCE at `GovState` construction and thereafter
-    /// only ever mutated by a revoke performed by THIS process. In a fleet sharing one durable store
-    /// (or after any out-of-band revoke) a revoked key kept authenticating here for the entire life
-    /// of the process — an auth bypass, not a staleness annoyance. `DELETE /keys/{id}` denylists the
-    /// subject before removing the binding, so a peer's DELETE propagates through this same path.
-    ///
-    /// The read itself is blocking store I/O and every caller of this is on a Tokio worker, so it is
-    /// SCHEDULED (blocking pool, at most one outstanding) rather than performed here. All of the
-    /// single-flight, rate-limit, bound and stamping rules live in
-    /// [`crate::governance::revocation::RevocationSync`] — one place, documented there.
-    fn sync_revocations_if_stale(&self, now: u64) {
-        self.denylist.refresh_if_stale(now);
     }
 
     /// Whether signed-token minting is available (a signing key was resolved at boot).
     pub(crate) fn signing_enabled(&self) -> bool {
-        self.signing_material().is_some()
+        self.signer.is_some()
     }
 
     /// VERIFY a presented signed token (1.5.0): signature + expiry (stateless) + the `sub` not on
@@ -81,42 +53,27 @@ impl GovState {
     /// resolves to no binding (a token for a deleted key). The distinction is logged, never
     /// surfaced (no enumeration oracle - the auth path maps every `None` to one opaque 401).
     pub(crate) fn verify_token(&self, token: &str, now: u64) -> Option<Arc<VirtualKey>> {
-        let material = self.signing_material()?;
-        let claims = match material.verifier.verify(token, now) {
+        let verifier = self.verifier.as_ref()?;
+        let claims = match verifier.verify(token, now) {
             Ok(c) => c,
             Err(e) => {
                 tracing::debug!(reason = %e, "signed-token verify rejected");
                 return None;
             }
         };
-        // Revocation: the ONE state read on the otherwise-stateless path. The set is a bounded-TTL
-        // CACHE of the store's denylist, re-read here when stale so a peer's (or an out-of-band)
-        // revoke is honoured within `REVOCATION_SYNC_TTL_SECS` instead of never.
-        self.sync_revocations_if_stale(now);
-        if self.denylist.contains(&claims.sub) {
+        // Revocation: the ONE state read on the otherwise-stateless path.
+        if self
+            .denylist
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(&claims.sub)
+        {
             tracing::debug!(sub = %claims.sub, "signed-token rejected: subject is revoked");
             return None;
         }
         // Resolve policy by `sub` (the key id). The binding lives in the `by_sub` index.
         match self.lookup_by_sub(&claims.sub) {
-            // GENERATION gate: the token must name the binding's CURRENT rotation generation.
-            // `POST /keys/{id}/rotate` stamps a fresh one into the durable binding row, so every
-            // token issued before that rotation stops verifying here — on this node and on every
-            // other node reading the same store — while the subject id (ledger bucket, budgets,
-            // usage history, audit attribution) stays stable.
-            Some(key)
-                if key.enabled
-                    && generation_matches(&key.key_hash, claims.generation.as_deref()) =>
-            {
-                Some(key)
-            }
-            Some(key) if key.enabled => {
-                tracing::debug!(
-                    sub = %claims.sub,
-                    "signed-token rejected: the binding was rotated after this token was minted"
-                );
-                None
-            }
+            Some(key) if key.enabled => Some(key),
             _ => {
                 tracing::debug!(sub = %claims.sub, "signed-token subject has no enabled binding");
                 None
@@ -124,21 +81,13 @@ impl GovState {
         }
     }
 
-    /// Resolve a policy binding by its subject id (the key id / token `sub`). O(1) index read — the
-    /// `by_id` secondary index (M6), rebuilt in lockstep with `by_hash` by `refresh`, so every signed-
-    /// token verify is a single hash lookup rather than a linear scan of `by_hash.values()`.
+    /// Resolve a policy binding by its subject id (the key id / token `sub`). O(1) index read.
     pub(crate) fn lookup_by_sub(&self, sub: &str) -> Option<Arc<VirtualKey>> {
-        self.caches_read().by_id.get(sub).cloned()
-    }
-
-    /// Build the `by_id` (subject id → key) index from a `by_hash` snapshot, sharing the same `Arc`
-    /// rows. Called wherever `by_hash` is (re)built so the two indices are always derived from the
-    /// SAME snapshot and can never drift (M6).
-    fn index_by_id(by_hash: &HashMap<String, Arc<VirtualKey>>) -> HashMap<String, Arc<VirtualKey>> {
-        by_hash
+        self.caches_read()
+            .by_hash
             .values()
-            .map(|k| (k.id.clone(), k.clone()))
-            .collect()
+            .find(|k| k.id == sub)
+            .cloned()
     }
 
     /// REVOKE a signed-token key by subject id: persist to the store denylist AND update the
@@ -147,22 +96,20 @@ impl GovState {
     /// a "revoked" token still valid after a restart is a security hole).
     pub(crate) fn revoke(&self, sub: &str, reason: &str) -> StoreResult<()> {
         self.store.add_denylist(sub, reason)?;
-        self.denylist.insert(sub);
+        self.denylist
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(sub.to_string());
         Ok(())
     }
 
-    /// Whether `sub` is currently revoked. Consulted by BOTH auth paths: the signed-token path
-    /// (`verify_token`) and the inbound SigV4 admit path (`verify_inbound_sigv4_and_resolve`), so a
-    /// revoked subject's credentials are rejected identically regardless of which credential is presented.
+    /// Whether `sub` is currently revoked (for the admin read / tests).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn is_revoked(&self, sub: &str) -> bool {
-        self.is_revoked_at(sub, crate::store::now())
-    }
-
-    /// [`GovState::is_revoked`] against an explicit clock — the staleness guard needs a `now`, and
-    /// the tests need it deterministic. Production callers use `is_revoked`.
-    pub(crate) fn is_revoked_at(&self, sub: &str, now: u64) -> bool {
-        self.sync_revocations_if_stale(now);
-        self.denylist.contains(sub)
+        self.denylist
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(sub)
     }
 
     /// MINT a signed-token key (1.5.0): persist the policy BINDING row (subject id -> group,
@@ -176,7 +123,7 @@ impl GovState {
         exp: u64,
         now: u64,
     ) -> StoreResult<(VirtualKey, String)> {
-        let Some(material) = self.signing_material() else {
+        let Some(signer) = self.signer.as_ref() else {
             return Err(StoreError(
                 "signed-token minting is unavailable: no signing key is configured".to_string(),
             ));
@@ -188,14 +135,11 @@ impl GovState {
         let mut raw = [0u8; 16];
         getrandom::fill(&mut raw).map_err(|e| StoreError(format!("CSPRNG unavailable: {e}")))?;
         let id = format!("{VK_ID_PREFIX}{}", hex::encode(raw));
-        let generation = generate_binding_generation().store()?;
         let binding = VirtualKey {
             id: id.clone(),
             // Not a credential: signed tokens are stateless. Kept non-empty + unique-per-key so a
             // durable store's UNIQUE(key_hash) constraint is satisfied; never used to authenticate.
-            // The trailing GENERATION is the rotation epoch (`rotate_key`), carried durably so a
-            // pre-rotation token is rejected by every node reading the same store.
-            key_hash: binding_marker(&id, &generation),
+            key_hash: format!("binding:{id}"),
             name: spec.name,
             // C6 intent carried intact from the mint body: None = all pools; Some([]) = none.
             allowed_pools: spec.allowed_pools,
@@ -206,7 +150,7 @@ impl GovState {
         };
         self.store.put_key(&binding)?;
         self.refresh()?;
-        let token = material.signer.mint(&id, exp, Some(&generation));
+        let token = signer.mint(&id, exp);
         Ok((binding, token))
     }
 
@@ -220,7 +164,7 @@ impl GovState {
         exp: u64,
         now: u64,
     ) -> StoreResult<(VirtualKey, String, String, String)> {
-        let Some(material) = self.signing_material() else {
+        let Some(signer) = self.signer.as_ref() else {
             return Err(StoreError(
                 "signed-token minting is unavailable: no signing key is configured".to_string(),
             ));
@@ -228,12 +172,11 @@ impl GovState {
         let mut raw = [0u8; 16];
         getrandom::fill(&mut raw).map_err(|e| StoreError(format!("CSPRNG unavailable: {e}")))?;
         let id = format!("{VK_ID_PREFIX}{}", hex::encode(raw));
-        let generation = generate_binding_generation().store()?;
         let access_key_id = generate_aws_access_key_id().store()?;
         let secret_access_key = generate_aws_secret_access_key().store()?;
         let binding = VirtualKey {
             id: id.clone(),
-            key_hash: binding_marker(&id, &generation),
+            key_hash: format!("binding:{id}"),
             name: spec.name,
             allowed_pools: spec.allowed_pools,
             enabled: true,
@@ -250,13 +193,41 @@ impl GovState {
             },
         )?;
         self.refresh()?;
-        let token = material.signer.mint(&id, exp, Some(&generation));
+        let token = signer.mint(&id, exp);
         Ok((binding, token, access_key_id, secret_access_key))
     }
 
     /// The signing key id (`kid`) this node stamps into minted tokens, if signing is enabled.
-    pub(crate) fn signing_kid(&self) -> Option<String> {
-        self.signing_material().map(|m| m.signer.kid().to_string())
+    pub(crate) fn signing_kid(&self) -> Option<&str> {
+        self.signer.as_ref().map(|s| s.kid())
+    }
+
+    /// Run a best-effort, FIRE-AND-FORGET store write WITHOUT blocking the async executor thread.
+    ///
+    /// SINGLE OFFLOAD. The op is a SYNCHRONOUS store closure (it calls the sync `Store` trait methods,
+    /// which run the SQL inline via `*_inner` — NO nested `spawn_blocking`). When a runtime is present
+    /// we move it into ONE `tokio::task::spawn_blocking`: the blocking SQL runs on the blocking pool,
+    /// any error is logged (never propagated), and we return immediately (fire-and-forget). This is
+    /// deliberately NOT the `*_async` path: those methods are for the hot blocking-AWAIT gate and would
+    /// here cost a second task — a `tokio::spawn`ed future whose only job is to await a `spawn_blocking`
+    /// (two tasks + extra key-id allocs) — for no benefit, since a fire-and-forget caller never awaits
+    /// the result. Outside a runtime (unit tests that call the accounting methods directly) we run the
+    /// sync op INLINE on the calling thread, so behaviour stays observable synchronously.
+    pub(crate) fn offload_store_write<F>(&self, what: &'static str, key_id: &str, op: F)
+    where
+        F: FnOnce(&dyn Store) -> StoreResult<()> + Send + 'static,
+    {
+        let store = self.store.clone();
+        let key_id = key_id.to_string();
+        if tokio::runtime::Handle::try_current().is_ok() {
+            tokio::task::spawn_blocking(move || {
+                if let Err(e) = op(&*store) {
+                    tracing::warn!(key = %key_id, error = %e, "{what}");
+                }
+            });
+        } else if let Err(e) = op(&*store) {
+            tracing::warn!(key = %key_id, error = %e, "{what}");
+        }
     }
 
     /// Accrue one completed response's TIER-TOKEN split under `model` to EVERY bucket in the key's
@@ -272,13 +243,13 @@ impl GovState {
     ///
     /// STRADDLE CASE (mirrors `add_rate_tokens`): `now` is the request's pinned `charged_at` (the
     /// window the request STARTED in), NOT a fresh clock. Per bucket:
-    /// - `window > cell.window_start` → the cell is genuinely stale: reset it to `window`
-    ///   (zeroed), then add.
-    /// - `window <= cell.window_start` → same window OR the straddle: credit IN PLACE on the
-    ///   live cell (never rewind/zero a newer window's counters). A straddling request's tokens
-    ///   attribute to the live window rather than being dropped - bounded to one in-flight
-    ///   request, never lost.
-    /// - no cell → insert fresh (defensive; post-admission the cell exists).
+    ///   - `window > cell.window_start` → the cell is genuinely stale: reset it to `window`
+    ///     (zeroed), then add.
+    ///   - `window <= cell.window_start` → same window OR the straddle: credit IN PLACE on the
+    ///     live cell (never rewind/zero a newer window's counters). A straddling request's tokens
+    ///     attribute to the live window rather than being dropped - bounded to one in-flight
+    ///     request, never lost.
+    ///   - no cell → insert fresh (defensive; post-admission the cell exists).
     pub(crate) fn record_usage(
         &self,
         cost: &crate::cost::CostModel,
@@ -333,7 +304,6 @@ impl GovState {
         };
         cell.accrue(model, tokens);
         cell.dirty = true;
-        cell.last_touch = now;
     }
 
     /// Record one completed response's RAW consumption into the per-(key, day-bucket, model,
@@ -342,11 +312,7 @@ impl GovState {
     /// cache-read / cache-creation — each prices differently) so a consumer with its own price
     /// catalog can reconstruct cost from the raw counts; busbar's derived spend is computed at read
     /// time. Zero-token responses still count the request (a flat-fee op is a request against a
-    /// model). WRITE-BEHIND: this only accumulates into `pending_metering` under a short-held
-    /// `std::sync::Mutex` — no store round-trip and no task spawn on this path. `flush_metering`
-    /// (ridden by the same 100ms-tick flusher that drains budgets) does the actual store write, so
-    /// a response is durably reflected within one `usage_flush_interval_ms` tick, not "eventually,
-    /// whenever the blocking pool gets to it".
+    /// model). Best-effort: the write is offloaded to the blocking pool and errors are logged.
     pub(crate) fn record_metering(
         &self,
         key_id: &str,
@@ -355,96 +321,21 @@ impl GovState {
         usage: Option<&crate::ir::IrUsage>,
         now: u64,
     ) {
-        let key = (
-            key_id.to_string(),
-            metering_bucket(now),
-            model.to_string(),
-            provider.to_string(),
-        );
-        let mut pending = self
-            .pending_metering
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let entry = pending.entry(key).or_default();
-        entry.requests = entry.requests.saturating_add(1);
-        entry.tokens_input = entry
-            .tokens_input
-            .saturating_add(usage.map(|u| u.input_tokens).unwrap_or(0));
-        entry.tokens_output = entry
-            .tokens_output
-            .saturating_add(usage.map(|u| u.output_tokens).unwrap_or(0));
-        entry.tokens_cache_read = entry
-            .tokens_cache_read
-            .saturating_add(usage.and_then(|u| u.cache_read_input_tokens).unwrap_or(0));
-        entry.tokens_cache_creation = entry.tokens_cache_creation.saturating_add(
-            usage
+        let delta = MeteringDelta {
+            key_id: key_id.to_string(),
+            bucket: metering_bucket(now),
+            model: model.to_string(),
+            provider: provider.to_string(),
+            tokens_input: usage.map(|u| u.input_tokens).unwrap_or(0),
+            tokens_output: usage.map(|u| u.output_tokens).unwrap_or(0),
+            tokens_cache_read: usage.and_then(|u| u.cache_read_input_tokens).unwrap_or(0),
+            tokens_cache_creation: usage
                 .and_then(|u| u.cache_creation_input_tokens)
                 .unwrap_or(0),
-        );
-    }
-
-    /// Drain `pending_metering` and write each entry to the store as one `MeteringDelta`. A DRAIN,
-    /// not a baseline (contrast `flush_budgets`): nothing in the tree enforces against a metering
-    /// cell, so there is no authoritative running total to protect, and a successfully-flushed
-    /// entry is simply gone — no reaper, no growth cap, cardinality bounded by arrival rate x the
-    /// flush interval. On a store error the entry's counts are merged BACK into whatever
-    /// accumulated meanwhile (saturating add, not overwrite) so the next tick retries the full
-    /// amount exactly once — this is what makes two concurrently-running flushes safe without a
-    /// gate: `std::mem::take` is an atomic full-map swap, so any two calls partition the arrivals
-    /// between them by construction and cannot double-send. Returns the number of deltas written.
-    pub(crate) fn flush_metering(&self) -> usize {
-        let taken: HashMap<(String, u64, String, String), MeterCounts> = {
-            let mut pending = self
-                .pending_metering
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            std::mem::take(&mut *pending)
         };
-        let mut flushed = 0usize;
-        for ((key_id, bucket, model, provider), counts) in taken {
-            if counts.requests == 0
-                && counts.tokens_input == 0
-                && counts.tokens_output == 0
-                && counts.tokens_cache_read == 0
-                && counts.tokens_cache_creation == 0
-            {
-                continue;
-            }
-            let delta = MeteringDelta {
-                key_id: key_id.clone(),
-                bucket,
-                model: model.clone(),
-                provider: provider.clone(),
-                tokens_input: counts.tokens_input,
-                tokens_output: counts.tokens_output,
-                tokens_cache_read: counts.tokens_cache_read,
-                tokens_cache_creation: counts.tokens_cache_creation,
-                requests: counts.requests,
-            };
-            match self.store.add_metering(&delta) {
-                Ok(()) => flushed += 1,
-                Err(e) => {
-                    tracing::warn!(key = %key_id, error = %e, "metering flush failed; will retry next tick");
-                    let mut pending = self
-                        .pending_metering
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner());
-                    let entry = pending
-                        .entry((key_id, bucket, model, provider))
-                        .or_default();
-                    entry.requests = entry.requests.saturating_add(counts.requests);
-                    entry.tokens_input = entry.tokens_input.saturating_add(counts.tokens_input);
-                    entry.tokens_output = entry.tokens_output.saturating_add(counts.tokens_output);
-                    entry.tokens_cache_read = entry
-                        .tokens_cache_read
-                        .saturating_add(counts.tokens_cache_read);
-                    entry.tokens_cache_creation = entry
-                        .tokens_cache_creation
-                        .saturating_add(counts.tokens_cache_creation);
-                }
-            }
-        }
-        flushed
+        self.offload_store_write("metering record failed", key_id, move |s| {
+            s.add_metering(&delta)
+        });
     }
 
     /// Every metering row for `bucket` (a [`metering_bucket`] day start) — the raw material of the
@@ -541,43 +432,8 @@ impl GovState {
     // Only read by the `auth-admin-tokens` chain link; without that feature the getter is unused
     // (the field is still populated/validated, so keep the method rather than gate the field).
     #[cfg_attr(not(feature = "auth-admin-tokens"), allow(dead_code))]
-    pub(crate) fn admin_token_hash(&self) -> Option<String> {
-        self.admin_token_hash
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
-    }
-
-    /// RE-SET the /admin bearer credential from a freshly-resolved plaintext token (`None` disables
-    /// the admin API). Called on every config apply/reload with the re-resolved `SecretRef`, so
-    /// rotating the underlying secret and reloading actually changes the accepted credential — the
-    /// digest used to be frozen at construction and `GovState` is reused across applies, so it never
-    /// did. Only the digest is retained; the plaintext is dropped here.
-    pub(crate) fn set_admin_token(&self, token: Option<&str>) {
-        let hash = token.map(|t| crate::sigv4::sha256_hex(t.as_bytes()));
-        *self
-            .admin_token_hash
-            .write()
-            .unwrap_or_else(|e| e.into_inner()) = hash;
-    }
-
-    /// RE-SET the signing material (mint-side signer + the verifier derived from it, swapped as one
-    /// unit so they can never drift). Called on every config apply/reload with the re-resolved
-    /// `auth.signing_key`. Rotating the key invalidates every outstanding token by design — that is
-    /// what a signing-key rotation MEANS — and until this existed a reload could not perform one at
-    /// all.
-    pub(crate) fn set_signing_key(&self, signer: Option<crate::governance::signing::TokenSigner>) {
-        let next = signer.map(|s| Arc::new(SigningMaterial::new(s)));
-        *self.signing.write().unwrap_or_else(|e| e.into_inner()) = next;
-    }
-
-    /// The current signing material, as a cheap `Arc` clone (the lock is held only for the clone,
-    /// never across the crypto).
-    fn signing_material(&self) -> Option<Arc<SigningMaterial>> {
-        self.signing
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
+    pub(crate) fn admin_token_hash(&self) -> Option<&str> {
+        self.admin_token_hash.as_deref()
     }
 
     /// Mint a new virtual key, persist it, refresh the cache, and return `(key, plaintext
@@ -699,66 +555,26 @@ impl GovState {
     /// Delete a key by id and refresh the cache.
     pub(crate) fn delete_key(&self, id: &str) -> StoreResult<()> {
         self.store.delete_key(id)?;
-        let refreshed = self.refresh();
-        // AFTER `refresh()`, which is what stops the credential resolving — dropping the cell before
-        // it lets a request admitted in the gap re-insert. The key bucket is uncapped
-        // (`cost::chain_for`), so this reclaims attribution state only and can never reset a cap.
-        //
-        // A still-dirty cell would also be flushed after the store cascade-deleted the key's
-        // ledger rows; whether that re-creates a durable row depends on the delta being non-zero.
-        self.budget.write(id).remove(id);
-        refreshed
+        self.refresh()
     }
 
-    /// ROTATE a key's CREDENTIAL in place. The key `id` stays STABLE — budgets, rate windows, usage
-    /// history and audit attribution carry over — and the previous credential stops authenticating
-    /// IMMEDIATELY and fleet-wide. An attached AWS SigV4 credential (if any) is NOT rotated here;
-    /// it is a separate credential with its own lifecycle. `None` for an unknown id.
-    ///
-    /// The rotation is credential-shaped, i.e. it rotates whatever credential the key actually has:
-    ///
-    /// * a 1.5.0 SIGNED-TOKEN binding (`key_hash` is a `binding:` marker) gets a fresh binding
-    ///   GENERATION stamped into the durable row plus a newly-minted token carrying it. Every
-    ///   token minted before the rotation names the OLD generation and is rejected by
-    ///   `verify_token` on every node reading the store. (rotation used to
-    ///   leave the outstanding signed token fully valid — it minted a bearer secret the token path
-    ///   never consults — so "rotate" revoked nothing at all.)
-    /// * a LEGACY hashed-secret key gets a fresh bearer secret whose hash replaces `key_hash`, so
-    ///   the old secret stops resolving on the next cache refresh. That is the only credential
-    ///   such a key has.
-    ///
-    /// A signed-token binding is NEVER downgraded into a hashed-secret key by rotation (the old
-    /// behaviour did exactly that: it ARMED the weaker legacy path on a key that had deliberately
-    /// been minted without one, adding a second, non-expiring credential). `key_hash` stays a
-    /// `binding:` marker, which can never equal a SHA-256 digest, so the legacy `lookup` path
-    /// remains structurally unreachable for it.
-    ///
-    /// FAIL-CLOSED: rotating a signed-token binding with no signer configured is an error rather
-    /// than a silent fallback to the legacy secret.
-    pub(crate) fn rotate_key(&self, id: &str, exp: u64) -> StoreResult<Option<RotatedCredential>> {
+    /// ROTATE a key's bearer secret in place: a fresh secret is minted, its hash replaces the
+    /// stored `key_hash`, and the OLD secret stops resolving immediately (cache refresh). The key
+    /// `id` stays STABLE — budgets, rate windows, usage history, and audit attribution carry over.
+    /// The id-from-hash-prefix coupling is a MINT-time collision guard only (lookups resolve by the
+    /// full `key_hash`), so a rotated row's id no longer matching its new hash prefix is harmless
+    /// by design. An attached AWS SigV4 credential (if any) is NOT rotated here — it is a separate
+    /// credential with its own lifecycle. Returns `None` for an unknown id; the new secret is shown
+    /// exactly once.
+    pub(crate) fn rotate_key(&self, id: &str) -> StoreResult<Option<(VirtualKey, String)>> {
         let Some(mut key) = self.store.get_key(id)? else {
             return Ok(None);
         };
-        if is_binding_marker(&key.key_hash) {
-            let Some(material) = self.signing_material() else {
-                return Err(StoreError(
-                    "cannot rotate a signed-token key: no signing key is configured (rotation \
-                     re-mints the token; it must never fall back to arming a legacy bearer secret)"
-                        .to_string(),
-                ));
-            };
-            let generation = generate_binding_generation().store()?;
-            key.key_hash = binding_marker(&key.id, &generation);
-            self.store.put_key(&key)?;
-            self.refresh()?;
-            let token = material.signer.mint(&key.id, exp, Some(&generation));
-            return Ok(Some(RotatedCredential::Token { key, token, exp }));
-        }
         let secret = generate_secret().store()?;
         key.key_hash = crate::sigv4::sha256_hex(secret.as_bytes());
         self.store.put_key(&key)?;
         self.refresh()?;
-        Ok(Some(RotatedCredential::Secret { key, secret }))
+        Ok(Some((key, secret)))
     }
 
     /// Apply a partial update to an existing key. Keys are PURE AUTH (S1), so the mutable surface
@@ -831,10 +647,6 @@ impl GovState {
                 ledger.billable_requests
             };
             let mut cell = BudgetCell::fresh(window);
-            // Stamp as touched NOW, not 0: an unstamped hydrated cell is instantly older than any
-            // TTL, so the first post-boot sweep would discard every restored key's history before
-            // that key had served a single request.
-            cell.last_touch = now;
             cell.requests = ledger.requests;
             cell.flushed_requests = ledger.requests;
             cell.billable_requests = billable;
@@ -879,11 +691,8 @@ impl GovState {
     }
 
     /// The DERIVED current-window usage of one bucket (key or group): cell-authoritative, durable
-    /// fallback, spend recomputed from tokens x current rates. `include_request_fee` controls whether
-    /// the flat per-request fee is folded into `spend_cents`. ENFORCEMENT (`try_admit`) counts the fee
-    /// for EVERY chain bucket — key AND group — so a read that wants to match what the enforcer sees
-    /// must pass `true` for both (N2/M5). The parameter exists only for callers that deliberately want
-    /// the fee-excluded figure; the usage dashboards pass `true` so they never overstate headroom.
+    /// fallback, spend recomputed from tokens x current rates. `include_request_fee` is true for a
+    /// KEY bucket only (the flat per-request fee counts against the innermost bucket alone).
     pub(crate) fn derived_bucket_usage(
         &self,
         cost: &crate::cost::CostModel,
@@ -1059,11 +868,10 @@ impl GovState {
     ///
     /// SYNCHRONOUS and INFALLIBLE (in-memory cells; no store round-trip, no await). The flat fee
     /// is charged HERE (as +1 request per bucket; spend derives), so the caller must NOT re-charge
-    /// in `finish`; a non-2xx outcome refunds via [`GovState::refund_request`]. This allocates a
-    /// handful of chain-sized scratch `Vec`s per call (`chain_for`'s two Vecs, the collected bucket
-    /// slice, the shard-index/order/guard Vecs sized to the chain depth) — there are no fixed
-    /// scratch arrays; every one of these is a fresh heap allocation. What IS true: no store
-    /// round-trip and no `await` anywhere on this path.
+    /// in `finish`; a non-2xx outcome refunds via [`GovState::refund_request`]. Zero heap
+    /// allocation on the admit path (fixed scratch arrays; the grant's gauge Vec is empty for the
+    /// common no-concurrent-cap chain; the rejection variant (cold) allocates its group-name
+    /// String).
     pub(crate) fn try_admit(
         &self,
         cost: &crate::cost::CostModel,
@@ -1153,29 +961,9 @@ impl GovState {
             let mut map = shard.map.write().unwrap_or_else(|p| p.into_inner());
             if sweep_needed {
                 let max_window = 31 * super::SECS_PER_DAY;
-                map.retain(|id, c| {
-                    if c.window_start != 0 {
-                        return c.window_start.saturating_add(max_window) > now;
-                    }
-                    // The all-time window never rolls, so age these by last use instead. ONLY the
-                    // attribution cells: a `group:` cell in the all-time window holds an ENFORCED
-                    // cap whose spend must not reset, and hydrate is boot-only so it would never
-                    // come back. A key's own bucket is uncapped by construction
-                    // (`cost::chain_for` pins its caps to `None`) and the flush is additive, so
-                    // dropping a clean, long-idle one loses no enforcement and no durable data.
-                    id.starts_with("group:")
-                        || c.dirty
-                        || c.last_touch.saturating_add(max_window) > now
+                map.retain(|_, c| {
+                    c.window_start == 0 || c.window_start.saturating_add(max_window) > now
                 });
-                // Bound the per-cell `models` Vec too: a never-rolled cell (the all-time
-                // `window_start == 0` bucket) accumulates a dead `ModelCell` for every model name
-                // ever seen (interned on first sight by `accrue`, including zero-token responses).
-                // Prune the dead (zero-token, fully-flushed) entries on the same amortized cadence so
-                // the Vec cannot grow unbounded in-process. Retained cells keep every model that still
-                // carries tokens or an unacked flush delta, so enforcement is unaffected.
-                for c in map.values_mut() {
-                    c.prune_dead_models();
-                }
             }
             guards[g] = Some(map);
             guard_shards[g] = sh;
@@ -1280,7 +1068,6 @@ impl GovState {
             cell.requests = cell.requests.saturating_add(1);
             cell.billable_requests = cell.billable_requests.saturating_add(1);
             cell.dirty = true;
-            cell.last_touch = now;
         }
         Ok(grant)
     }
@@ -1519,21 +1306,15 @@ impl GovState {
     /// after a management-API mutation. Rebuild `by_access_key_id` from the SAME fresh snapshot so the
     /// two indices can never drift (a key disabled/deleted/re-minted is reflected in both).
     pub(crate) fn refresh(&self) -> StoreResult<()> {
-        // Serialize the whole load→swap so a slow refresh can't clobber a newer one's cache with
-        // strictly-older store state (lost-update guard; see `refresh_lock`). A later refresh's
-        // `load` cannot begin until an earlier refresh has swapped, so its snapshot is never older.
-        let _refresh_guard = self.refresh_lock.lock().unwrap_or_else(|e| e.into_inner());
         let fresh = Self::load(self.store.as_ref())?;
         let fresh_akid = Self::load_by_access_key_id(self.store.as_ref(), &fresh)?;
         // Both indices live under the single `caches` lock, so the swap below is ONE atomic critical
         // section — a concurrent reader holding `caches_read` sees either the entire old pair or the
         // entire new pair, never a new `by_hash` against a stale `by_access_key_id` (or vice versa).
         // There is no longer a transient cross-index inconsistency window.
-        let fresh_by_id = Self::index_by_id(&fresh);
         let mut c = self.caches_write();
         c.by_hash = fresh;
         c.by_access_key_id = fresh_akid;
-        c.by_id = fresh_by_id;
         Ok(())
     }
 }

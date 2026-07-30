@@ -302,7 +302,7 @@ fn per_request_fee_counts_into_group_budget() {
         .expect("refund re-opened the cap");
 }
 
-/// A REFUND must return the fee (2xx-only billing) WITHOUT
+/// REGRESSION (found by the test agent): a REFUND must return the fee (2xx-only billing) WITHOUT
 /// returning the request-LIMIT slot. Otherwise a caller escapes the `requests` cap by hammering
 /// failing requests: each refunds its own slot and the cap only ever counts successes.
 #[test]
@@ -684,7 +684,7 @@ fn rate_headroom_reads_the_chain() {
     assert_eq!(g.rate_headroom(&cm, &key("vk_none", None), None, now), None);
 }
 
-// ── pool-scoped limits accounting) ───────────────────────────────────────
+// ── pool-scoped limits (§6b: per-(group, pool) accounting) ───────────────────────────────────────
 
 fn pooled(metric: LimitMetric, amount: u64, per: LimitWindow, pool: &str) -> LimitCfg {
     LimitCfg {
@@ -849,7 +849,7 @@ fn pool_scoped_accrual_and_refund_mirror_the_charge() {
         .expect("the refunded fee re-opened frontier's bucket");
 }
 
-/// Budget-that-teaches, engine side: a budget block whose limit declared `on_exhaust:
+/// §6c budget-that-teaches, engine side: a budget block whose limit declared `on_exhaust:
 /// downgrade` NAMES the downgrade pool in the rejection (ingress re-admits there); the most
 /// restrictive of two merged budgets is the one whose behavior governs; and a plain budget
 /// block still carries no downgrade.

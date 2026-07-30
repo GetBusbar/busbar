@@ -1,7 +1,7 @@
 # Architecture
 
 This document traces a request end-to-end and explains the two seams that make
-Busbar's thesis, *protocols, not providers*, work: the **superset IR** with its
+busbar's thesis, *protocols, not providers*, work: the **superset IR** with its
 `ProtocolReader` / `ProtocolWriter` traits, and the **two-stage failure-disposition
 pipeline**.
 
@@ -17,9 +17,9 @@ pipeline**.
   <g stroke="#94a3b8" stroke-width="2" marker-end="url(#rl-arw)">
     <line x1="350" y1="42"   x2="350" y2="62"/>
     <line x1="350" y1="150"  x2="350" y2="170"/>
-    <line x1="350" y1="268"  x2="350" y2="288"/>
-    <line x1="350" y1="396"  x2="350" y2="416"/>
-    <line x1="350" y1="524"  x2="350" y2="544"/>
+    <line x1="350" y1="258"  x2="350" y2="298"/>
+    <line x1="350" y1="386"  x2="350" y2="426"/>
+    <line x1="350" y1="514"  x2="350" y2="554"/>
     <line x1="350" y1="722"  x2="350" y2="742"/>
     <line x1="350" y1="870"  x2="350" y2="890"/>
     <line x1="350" y1="998"  x2="350" y2="1018"/>
@@ -153,10 +153,10 @@ Management/observability routes (`/stats`, `/healthz`, `/metrics`,
   arrives as `Authorization: Bearer` or `X-Admin-Token`; no valid admin credential means
   a 401. Because the socket is separate, a caller on the data port can never reach the
   control plane. Exposing `admin_listen` off loopback is a boot error unless you set
-  `admin_tls.client_ca` (mTLS on the admin listener) or the explicit `admin_insecure`
+  `admin_tls.client_ca_file` (mTLS on the admin listener) or the explicit `admin_insecure`
   waiver (for operators fronting admin with their own mesh).
 - On the data plane, the caller's bearer token is threaded through the request. Whether
-  Busbar signs the upstream call with its own lane key or forwards the caller's credential
+  busbar signs the upstream call with its own lane key or forwards the caller's credential
   is a separate config knob, `upstream_credentials:` (`Own`, the default, vs `Passthrough`),
   independent of which auth module ran at the front door. Under governance the resolved
   virtual key is attached for downstream ACL and budget checks.
@@ -209,7 +209,7 @@ weight 1.
 
 ### 5. Cross-protocol translation (the IR seam)
 
-If the ingress protocol differs from the selected lane's protocol, Busbar
+If the ingress protocol differs from the selected lane's protocol, busbar
 translates the **request** through the superset IR:
 
 ```
@@ -221,12 +221,8 @@ system blocks, messages with text / thinking (+signature) / tool-use / tool-resu
 / image blocks, tools (name + description + JSON schema), `max_tokens`,
 `temperature` (held as `f64` so a caller's value never silently mutates), a `stream`
 flag, and an `extra` passthrough map for fields outside the modeled subset
-(provider-specific sampling knobs with no first-class IR field, etc.). Same-protocol REQUESTS skip the IR entirely and pass through
-byte-for-byte, but only when the client named the lane's exact wire model — a pool-alias route
-(e.g. `model: "fast"` resolving to a specific lane) rewrites the model and re-serializes instead.
-Same-protocol RESPONSES pass through byte-for-byte on the wire but still decode each frame through
-the IR as a usage side-channel (see `docs/protocols.md`'s "Same-protocol passthrough"); only the
-re-encode is skipped, not the IR round-trip.
+(`top_p`, etc.). Same-protocol requests skip the IR entirely and pass through
+byte-for-byte.
 
 `ProtocolReader` and `ProtocolWriter` (`crates/busbar/src/proto/mod.rs`) are the per-protocol
 edges:

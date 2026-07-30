@@ -46,12 +46,12 @@ fn grp_principal(id: &str, roles: &[&str]) -> Principal {
 }
 
 /// `admin_scope_for`: the operator principal is full; role-carrying principals resolve
-/// through `role_bindings.<identifying module>` (the UNION of what its bound roles grant, unbound
+/// through `role_bindings.<identifying module>` (most permissive bound scope wins, unbound
 /// roles grant nothing); a roleless non-operator principal gets nothing; the open posture
 /// (no principal) is full.
 #[test]
 fn admin_scope_resolution() {
-    use crate::admin::v1::contract::{Grants, Scope};
+    use crate::admin::v1::contract::Scope;
     let rb = bindings_for(
         "test-groups-module",
         &[
@@ -63,7 +63,7 @@ fn admin_scope_resolution() {
     let module = Some("test-groups-module");
 
     // Open posture (no principal): full.
-    assert_eq!(admin_scope_for(None, None, &rb), Grants::of(Scope::Full));
+    assert_eq!(admin_scope_for(None, None, &rb), Some(Scope::Full));
     // The operator principal (admin-tokens): full by definition, no binding required.
     #[cfg(feature = "auth-admin-tokens")]
     assert_eq!(
@@ -74,148 +74,26 @@ fn admin_scope_resolution() {
             )),
             &rb
         ),
-        Grants::of(Scope::Full)
+        Some(Scope::Full)
     );
-    // Role-bound: the union of the principal's bound roles. `with` is a plain bitwise union (never
-    // canonicalized), so `{read-only} ∪ {full}` keeps BOTH bits rather than collapsing to `{full}` —
-    // asserted on `allows`, the actual authorization behaviour, not the raw bit pattern.
+    // Role-bound: the most permissive of the principal's bound roles wins.
     let p = grp_principal("test:alice", &["viewers", "admins"]);
-    assert!(admin_scope_for(module, Some(&p), &rb).allows(Scope::Full));
+    assert_eq!(admin_scope_for(module, Some(&p), &rb), Some(Scope::Full));
     let p = grp_principal("test:alice", &["viewers"]);
     assert_eq!(
         admin_scope_for(module, Some(&p), &rb),
-        Grants::of(Scope::ReadOnly)
+        Some(Scope::ReadOnly)
     );
     // Unbound roles grant nothing (fail closed).
     let p = grp_principal("test:alice", &["strangers"]);
-    assert_eq!(admin_scope_for(module, Some(&p), &rb), Grants::default());
+    assert_eq!(admin_scope_for(module, Some(&p), &rb), None);
     // A role bound WITHOUT an admin_scope grants nothing.
     let p = grp_principal("test:alice", &["no-admin"]);
-    assert_eq!(admin_scope_for(module, Some(&p), &rb), Grants::default());
+    assert_eq!(admin_scope_for(module, Some(&p), &rb), None);
     // A roleless NON-operator principal gets nothing (an external module cannot mint the
     // operator identity by returning a bare id).
     let stranger = Principal::from_id("test:bob");
-    assert_eq!(
-        admin_scope_for(module, Some(&stranger), &rb),
-        Grants::default()
-    );
-}
-
-/// R1 (class-8): a principal holding TWO roles bound to INCOMPARABLE sibling scopes must keep
-/// BOTH grants. Under the deleted `.max()` fold (ordinal `Mint` > `HooksRegister`), this used to
-/// collapse to `Mint` alone, and `Mint.allows(HooksRegister)` is false — a DENIAL of authority
-/// either role alone would have granted. `Grants::with` unions instead, so both survive.
-#[test]
-fn sibling_roles_union_keeps_both_grants() {
-    use crate::admin::v1::contract::Scope;
-    let rb = bindings_for(
-        "test-groups-module",
-        &[
-            ("registrar", binding(None, None, Some("hooks-register"))),
-            ("minter", binding(None, None, Some("mint"))),
-        ],
-    );
-    let p = grp_principal("test:alice", &["registrar", "minter"]);
-    let grants = admin_scope_for(Some("test-groups-module"), Some(&p), &rb);
-    assert!(
-        grants.allows(Scope::HooksRegister),
-        "the hooks-register role's grant must survive union with an incomparable sibling"
-    );
-    assert!(
-        grants.allows(Scope::Mint),
-        "the mint role's grant must survive union with an incomparable sibling"
-    );
-}
-
-/// R2 (class-8): REGRESSION PROOF, not a RED test — it passes today (there is no `.max()`/`.min()`
-/// path that could yield `Full` for this input) and exists to kill the rejected alternative of
-/// aggregating roles with the lattice JOIN (`join(HooksRegister, Mint) = Full`), which would be a
-/// genuine privilege escalation: the union of two roles' authority is not the join of the lattice.
-#[test]
-fn sibling_roles_union_is_not_full() {
-    use crate::admin::v1::contract::Scope;
-    let rb = bindings_for(
-        "test-groups-module",
-        &[
-            ("registrar", binding(None, None, Some("hooks-register"))),
-            ("minter", binding(None, None, Some("mint"))),
-        ],
-    );
-    let p = grp_principal("test:alice", &["registrar", "minter"]);
-    let grants = admin_scope_for(Some("test-groups-module"), Some(&p), &rb);
-    assert!(
-        !grants.allows(Scope::Full),
-        "the union of two sibling grants must never confer full authority"
-    );
-}
-
-/// R3 (class-8): a role bound `mint`, ceilinged by `max_admin_scope: hooks-register` — the
-/// SIBLING scope. Under the deleted `std::cmp::min(Mint, HooksRegister)` (`Mint` sorted above
-/// `HooksRegister` by the deleted ordinal), this used to yield `HooksRegister`, an ESCALATION: a
-/// mint-only role gaining hook-register authority its role never granted, purely because the
-/// ceiling named its sibling. The lattice meet of two incomparable scopes is `read-only` — neither
-/// sibling's authority survives.
-#[test]
-fn mint_capped_by_hooks_register_grants_only_read() {
-    use crate::admin::v1::contract::Scope;
-    let rb = bindings_for(
-        "test-scope-module",
-        &[("minters", binding(None, None, Some("mint")))],
-    );
-    let mut app = crate::test_support::TestApp::new().build();
-    let a = std::sync::Arc::get_mut(&mut app).expect("freshly built App Arc is unshared");
-    a.admin_chain = vec!["test-scope-module".to_string()];
-    a.role_bindings = rb;
-    a.auth_scope_caps.insert(
-        "test-scope-module".to_string(),
-        "hooks-register".to_string(),
-    );
-    let grants = dry_run_admin_scope(&app, Some("grp:minters"), None);
-    assert!(
-        !grants.allows(Scope::HooksRegister),
-        "a mint role capped by the sibling hooks-register ceiling must not gain hook authority"
-    );
-    assert!(
-        !grants.allows(Scope::Mint),
-        "the mint ceiling cut is real: the incomparable cap must not preserve mint either"
-    );
-    assert!(
-        grants.allows(Scope::ReadOnly),
-        "the siblings' only common authority (read-only) must survive"
-    );
-}
-
-/// R4 (class-8): the mirror of R3 — a role bound `hooks-register`, ceilinged by
-/// `max_admin_scope: mint`. Under the deleted `min`, this ALSO yielded `HooksRegister` (it sorts
-/// lower), so this direction is not an escalation (the result equals the role's own grant) but the
-/// ceiling FAILS TO CUT: a `mint` ceiling must not leave hooks-register authority in place. The
-/// lattice meet is still `read-only`.
-#[test]
-fn hooks_register_capped_by_mint_grants_only_read() {
-    use crate::admin::v1::contract::Scope;
-    let rb = bindings_for(
-        "test-scope-module",
-        &[("registrars", binding(None, None, Some("hooks-register")))],
-    );
-    let mut app = crate::test_support::TestApp::new().build();
-    let a = std::sync::Arc::get_mut(&mut app).expect("freshly built App Arc is unshared");
-    a.admin_chain = vec!["test-scope-module".to_string()];
-    a.role_bindings = rb;
-    a.auth_scope_caps
-        .insert("test-scope-module".to_string(), "mint".to_string());
-    let grants = dry_run_admin_scope(&app, Some("grp:registrars"), None);
-    assert!(
-        !grants.allows(Scope::HooksRegister),
-        "a mint ceiling must cut a hooks-register role's hook authority, not leave it in place"
-    );
-    assert!(
-        !grants.allows(Scope::Mint),
-        "the ceiling must not invent mint authority the role never granted"
-    );
-    assert!(
-        grants.allows(Scope::ReadOnly),
-        "the siblings' only common authority (read-only) must survive"
-    );
+    assert_eq!(admin_scope_for(module, Some(&stranger), &rb), None);
 }
 
 /// S4 module scoping: bindings are NESTED BY MODULE, so a role asserted by module A must NOT
@@ -223,26 +101,24 @@ fn hooks_register_capped_by_mint_grants_only_read() {
 /// principal identified by the test-groups-module.
 #[test]
 fn admin_scope_bindings_are_module_scoped() {
-    use crate::admin::v1::contract::{Grants, Scope};
+    use crate::admin::v1::contract::Scope;
     let rb = bindings_for(
         "other-module",
         &[("admins", binding(None, None, Some("full")))],
     );
     let p = grp_principal("test:alice", &["admins"]);
-    assert!(
-        admin_scope_for(Some("test-groups-module"), Some(&p), &rb) == Grants::default(),
+    assert_eq!(
+        admin_scope_for(Some("test-groups-module"), Some(&p), &rb),
+        None,
         "a role asserted by module A must not ride module B's binding"
     );
     // Control: the SAME principal identified by the binding's own module resolves.
     assert_eq!(
         admin_scope_for(Some("other-module"), Some(&p), &rb),
-        Grants::of(Scope::Full)
+        Some(Scope::Full)
     );
     // A module with no binding table at all grants nothing.
-    assert_eq!(
-        admin_scope_for(Some("unbound-module"), Some(&p), &rb),
-        Grants::default()
-    );
+    assert_eq!(admin_scope_for(Some("unbound-module"), Some(&p), &rb), None);
 }
 
 /// Assert a string is canonical UUID-v4 shaped: five dash-separated lowercase-hex groups of
@@ -1636,7 +1512,7 @@ async fn test_disabled_virtual_key_is_rejected_401() {
     server.shutdown().await;
 }
 
-/// `auth.mode=none` is an open relay, but governance supersedes
+/// Regression (MEDIUM/correctness): `auth.mode=none` is an open relay, but governance supersedes
 /// it. With governance enabled AND auth.mode explicitly None, a request that presents NO token
 /// must still be rejected 401 — none-mode's accept-every-request semantics are NOT honoured. This
 /// pins the documented override (and the parallel one-shot operator warning the override emits)
@@ -1733,7 +1609,7 @@ async fn test_none_mode_with_governance_still_requires_virtual_key() {
     server.shutdown().await;
 }
 
-/// `upstream_credentials: passthrough` + governance enabled is a
+/// Regression (LOW/test-coverage): `upstream_credentials: passthrough` + governance enabled is a
 /// documented UNSUPPORTED deployment. Passthrough's contract is "accept any caller credential and
 /// forward it upstream", but governance supersedes it: every request must resolve to a valid
 /// ENABLED virtual key. The middleware emits a one-shot operator warning (`WARN_ONCE` at the top
@@ -1855,7 +1731,7 @@ async fn test_passthrough_mode_with_governance_still_requires_virtual_key() {
 
 #[test]
 fn test_extract_admin_header_token_empty_filtered() {
-    // A present-but-blank `x-admin-token` must be treated as
+    // Regression (LOW/security-hardening): a present-but-blank `x-admin-token` must be treated as
     // ABSENT, mirroring the empty-filter `extract_client_token` applies to the vendor carriers.
     // The OLD code mapped a blank header to `Some("")` (no `.filter(|t| !t.is_empty())`), so this
     // unit test fails against it; the filtered helper now yields `None`.
@@ -1884,7 +1760,7 @@ fn test_extract_admin_header_token_empty_filtered() {
     assert_eq!(extract_admin_header_token(&absent), None);
 }
 
-/// A present-but-blank `x-admin-token` must be rejected on
+/// Regression (LOW/security-hardening): a present-but-blank `x-admin-token` must be rejected on
 /// the admin surface. Driven end-to-end through the real router + `auth_middleware` so the
 /// extraction + constant-time compare are exercised together. A correct token via the same header
 /// authorizes, proving the 401 is the empty-filter and not a blanket reject.
@@ -1934,68 +1810,6 @@ async fn test_admin_blank_header_token_rejected() {
         200,
         "a correct x-admin-token must authorize, got {}",
         r_ok.status()
-    );
-
-    handle.abort();
-}
-
-/// The `admin.forbidden` audit (class-10a) is bounded by the SAME per-(principal, window) counter
-/// the mutation rate limiter already uses, not written unconditionally. Drives 50 forbidden GETs
-/// (an UNBOUND role, so `admin_scope_for` returns `Grants::default()` and even a read is 403) from
-/// ONE principal and asserts the durable-write-through only fired once or twice, not 50 times.
-#[tokio::test]
-async fn forbidden_admin_requests_audit_once_per_window() {
-    use crate::test_support::TestApp;
-
-    crate::metrics::init();
-
-    // Unique per test run so concurrently-running tests sharing the process-global `AUDIT` ring
-    // cannot be counted here, and this test's own records cannot be miscounted by a sibling.
-    let unique = format!(
-        "unbound-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    );
-    let principal_id = format!("test:{unique}");
-
-    let app = TestApp::new()
-        .admin_chain(vec!["test-scope-module".to_string()])
-        .build();
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
-    let url = format!("http://{addr}/api/v1/admin/keys");
-
-    for _ in 0..50 {
-        let r = client
-            .get(&url)
-            .bearer_auth(format!("grp:{unique}"))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(
-            r.status().as_u16(),
-            403,
-            "an unbound role must be forbidden even on a GET (Grants::default() never allows \
-             ReadOnly), got {}",
-            r.status()
-        );
-    }
-
-    let n = crate::admin::audit::AUDIT
-        .export()
-        .iter()
-        .filter(|e| e.action == "admin.forbidden" && e.principal == principal_id)
-        .count();
-    assert!(
-        (1..=2).contains(&n),
-        "expected 1 or 2 durable audit records for 50 forbidden requests from one principal \
-         (bounded by the per-(principal, window) counter, with <=2 absorbing a window-boundary \
-         straddle), got {n}"
     );
 
     handle.abort();
@@ -2395,109 +2209,9 @@ async fn test_governance_rejects_empty_token_even_if_empty_secret_key_exists() {
     server.shutdown().await;
 }
 
-/// A pre-1.5.0 hashed-
-/// secret key — one resolved on the data plane via `gov.lookup(secret)` (a `by_hash` hit, hydrated
-/// by `GovState::load` on a 1.4.x→1.5.0 in-place upgrade) — must STOP authenticating after
-/// `revoke`, exactly like the signed-token and SigV4 paths. `revoke` denylists the subject but
-/// DELIBERATELY leaves `enabled = true` (it preserves the binding for history), so the enabled
-/// check alone is not enough. Before the fix the token middleware's `.or_else(|| gov.lookup(tok))`
-/// legacy branch admitted on `key.enabled` WITHOUT consulting `is_revoked`, so the Bearer secret of
-/// a "revoked" key kept authenticating indefinitely. The fix filters the lookup hit on
-/// `!gov.is_revoked(&key.id)`.
-#[tokio::test]
-async fn test_governance_revoked_legacy_hashed_secret_key_rejected() {
-    use crate::governance::{GovState, MemoryStore, Store, VirtualKey};
-    use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
-    use serde_json::json;
-    use std::sync::Arc;
-
-    crate::metrics::init();
-
-    let state = Arc::new(MockServerState::new());
-    let server = MockServer::new(state).await;
-
-    // A legacy hashed-secret key: the credential is the raw secret; the store row holds its sha256.
-    // This is the shape `GovState::load` hydrates into `by_hash` for a pre-1.5.0 upgraded store.
-    let secret = "legacy-bearer-secret-abc123";
-    let store = Arc::new(MemoryStore::new());
-    store
-        .put_key(&VirtualKey {
-            id: "legacy".to_string(),
-            key_hash: crate::sigv4::sha256_hex(secret.as_bytes()),
-            name: "legacy".to_string(),
-            allowed_pools: Some(vec!["pa".to_string()]),
-            enabled: true,
-            created_at: 0,
-            group: None,
-            labels: Default::default(),
-        })
-        .unwrap();
-    let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
-
-    let app = TestApp::new()
-        .lane(
-            LaneSpec::new(
-                "test-model",
-                crate::proto::Protocol::anthropic(),
-                &server.base_url(),
-            )
-            .api_key("busbar-upstream-key"),
-        )
-        .pool("pa", &[(0, 1)])
-        .governance(gov.clone())
-        .build();
-
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
-    let url = format!("http://{addr}/pa/v1/messages");
-    let body =
-        json!({"model": "pa", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 16})
-            .to_string();
-
-    // Baseline: the legacy Bearer secret authenticates via `gov.lookup` (200, proxied upstream).
-    let ok = client
-        .post(&url)
-        .header("x-api-key", secret)
-        .body(body.clone())
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        ok.status().as_u16(),
-        200,
-        "a live legacy hashed-secret Bearer key must authenticate (got {})",
-        ok.status()
-    );
-
-    // Revoke the subject (denylists it WITHOUT flipping `enabled`, exactly as `revoke_key` does).
-    gov.revoke("legacy", "audit regression").unwrap();
-    assert!(gov.is_revoked("legacy"), "revoke must denylist the subject");
-
-    // The same Bearer secret must now be REJECTED 401 — a revoked key's legacy secret is dead.
-    let denied = client
-        .post(&url)
-        .header("x-api-key", secret)
-        .body(body)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        denied.status().as_u16(),
-        401,
-        "a REVOKED legacy hashed-secret key's Bearer secret must be rejected (got {})",
-        denied.status()
-    );
-
-    handle.abort();
-    server.shutdown().await;
-}
-
 #[test]
 fn test_auth_middleware_debug_redacts_tokens() {
-    // `AuthMiddleware`'s manual `Debug` must expose only shape
+    // Regression (SECURITY LOW #22): `AuthMiddleware`'s manual `Debug` must expose only shape
     // (chain length, keys flag, upstream mode), never any credential material. There are no
     // static client tokens anymore; the invariant is that ONLY the whitelisted shape fields
     // appear, so a future field holding a secret cannot leak through a derived Debug.
@@ -2760,67 +2474,6 @@ fn test_verify_bedrock_sigv4_disabled_key_rejected() {
     assert!(
         verify_bedrock_sigv4(&gov, &req, b"").is_err(),
         "a correctly-signed request for a DISABLED key must be rejected"
-    );
-}
-
-#[test]
-fn test_verify_bedrock_sigv4_revoked_key_rejected() {
-    // A dual-credential key minted with
-    // BOTH a busbar signed bearer token AND a SigV4 credential is bound to ONE subject id. `revoke`
-    // denylists that subject but DELIBERATELY leaves `enabled = true` (it preserves the binding for
-    // history). The signed-token path consults the denylist and rejects; before the fix the inbound
-    // SigV4 admit path resolved purely by AccessKeyId -> key and admitted on `key.enabled` alone,
-    // NEVER consulting the denylist — so the revoked key's SigV4 credential kept authenticating.
-    // The fix gates the SigV4 admit on `!gov.is_revoked(&key.id)`, mirroring the signed-token path.
-    crate::metrics::init();
-    use crate::governance::{GovState, MemoryStore, NewKeySpec};
-    let store = std::sync::Arc::new(MemoryStore::new());
-    let gov = std::sync::Arc::new(GovState::new(store, None).unwrap());
-    // A DUAL-credential key: `create_key_with_aws` issues a signed bearer AND a SigV4 credential.
-    let (key, _bearer, akid, secret) = gov
-        .create_key_with_aws(
-            NewKeySpec {
-                name: "dual".to_string(),
-                allowed_pools: None,
-                group: None,
-                labels: Default::default(),
-            },
-            crate::store::now(),
-        )
-        .unwrap();
-
-    let amzdate = {
-        let (a, _d) = crate::sigv4::format_amz_time(crate::store::now());
-        a
-    };
-    let path = "/model/anthropic.claude/converse";
-
-    // Baseline: before revocation, the correctly-signed SigV4 request ADMITS.
-    let (auth, headers) =
-        sign_bedrock_request(&secret, &akid, "us-east-1", "bedrock", path, b"", &amzdate);
-    let req = bedrock_request(path, &auth, &headers);
-    let admitted = verify_bedrock_sigv4(&gov, &req, b"")
-        .expect("a non-revoked dual-credential key must admit via SigV4");
-    assert_eq!(admitted.name, "dual");
-
-    // Revoke by subject id. This denylists the subject WITHOUT flipping `enabled` (revoke preserves
-    // the binding), exactly as the admin `revoke_key` verb does.
-    gov.revoke(&key.id, "audit regression").unwrap();
-    assert!(gov.is_revoked(&key.id), "revoke must denylist the subject");
-
-    // Re-sign a fresh request (same secret/akid) and assert the SigV4 path now REJECTS — the revoked
-    // subject's SigV4 credential must be rejected exactly like its signed token would be.
-    let amzdate2 = {
-        let (a, _d) = crate::sigv4::format_amz_time(crate::store::now());
-        a
-    };
-    let (auth2, headers2) =
-        sign_bedrock_request(&secret, &akid, "us-east-1", "bedrock", path, b"", &amzdate2);
-    let req2 = bedrock_request(path, &auth2, &headers2);
-    assert_eq!(
-        verify_bedrock_sigv4(&gov, &req2, b""),
-        Err(()),
-        "a correctly-signed SigV4 request for a REVOKED (denylisted) key must be rejected"
     );
 }
 
@@ -3489,7 +3142,7 @@ async fn test_active_governance_persisted_key_is_enforced() {
 ///   - a credential no module identifies is denied outright.
 #[test]
 fn test_admin_scope_cap_ceilings_external_module() {
-    use crate::admin::v1::contract::{Grants, Scope};
+    use crate::admin::v1::contract::Scope;
     crate::metrics::init();
 
     let mk_app = |cap: Option<&str>, bind_module: &str| {
@@ -3508,7 +3161,7 @@ fn test_admin_scope_cap_ceilings_external_module() {
     let app = mk_app(None, "test-scope-module");
     assert_eq!(
         dry_run_admin_scope(&app, Some("grp:ops"), None),
-        Grants::of(Scope::ReadOnly),
+        Some(Scope::ReadOnly),
         "an external module without an explicit cap must be ceilinged to read-only"
     );
 
@@ -3516,103 +3169,20 @@ fn test_admin_scope_cap_ceilings_external_module() {
     let app = mk_app(Some("full"), "test-scope-module");
     assert_eq!(
         dry_run_admin_scope(&app, Some("grp:ops"), None),
-        Grants::of(Scope::Full),
+        Some(Scope::Full),
         "an explicit full cap must let the full binding through"
     );
 
     // Module scoping through the full stack: the binding lives under ANOTHER module's table, so
     // the principal (identified by test-scope-module) earns no scope at all.
     let app = mk_app(Some("full"), "other-module");
-    assert!(
-        dry_run_admin_scope(&app, Some("grp:ops"), None) == Grants::default(),
+    assert_eq!(
+        dry_run_admin_scope(&app, Some("grp:ops"), None),
+        None,
         "a binding under another module's table must grant nothing"
     );
 
     // A credential no chain module identifies: denied (fail closed).
     let app = mk_app(Some("full"), "test-scope-module");
-    assert!(dry_run_admin_scope(&app, Some("not-a-grp"), None) == Grants::default());
-}
-
-/// The structural SigV4 gate (class-4b) rejects a malformed `AWS4-HMAC-SHA256` Authorization header
-/// WITHOUT reading the request body. Discriminator: the client announces a `Content-Length` and then
-/// sends ZERO body bytes. If the gate rejects on headers alone, the 403 arrives immediately; if the
-/// (pre-fix) code buffers the body first (`axum::body::to_bytes`), the server blocks waiting for
-/// bytes that never arrive, and the client's read hangs (this test drives `axum::serve` directly,
-/// with no `TimeoutBody`/read-timeout wrapper, specifically so an unbounded hang is the only
-/// alternative to an immediate response - there is no third outcome to confuse the result).
-#[tokio::test]
-async fn structural_sigv4_gate_rejects_without_reading_the_body() {
-    use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
-    use std::sync::Arc;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-    crate::metrics::init();
-
-    let state = Arc::new(MockServerState::new());
-    let server = MockServer::new(state).await;
-    let auth_cfg = chain_cfg(&["test-groups-module"]);
-    // The inbound-SigV4 verify branch runs only when governance is enabled with an admin token
-    // configured (`auth/mod.rs`'s `app.governance.filter(|g| g.admin_token_hash().is_some())`) - a
-    // deploy with no admin token can never have a virtual key to resolve against. Without this the
-    // request falls through the plain bearer-token path instead, which never touches the SigV4
-    // structural gate at all (and rejects just as fast, defeating the discriminator).
-    let gov = std::sync::Arc::new(
-        crate::governance::GovState::new(
-            std::sync::Arc::new(crate::governance::MemoryStore::new()),
-            Some("admintok".to_string()),
-        )
-        .unwrap(),
-    );
-    let app = TestApp::new()
-        .lane(
-            LaneSpec::new(
-                "test-model",
-                crate::proto::Protocol::anthropic(),
-                &server.base_url(),
-            )
-            .api_key("busbar-upstream-key"),
-        )
-        .pool("pa", &[(0, 1)])
-        .auth(Arc::new(AuthMiddleware::new_builtin(&auth_cfg)))
-        .governance(gov)
-        .build();
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-    let mut sock = tokio::net::TcpStream::connect(addr).await.unwrap();
-    // Malformed: `AWS4-HMAC-SHA256` with no Credential/SignedHeaders/Signature at all, and no
-    // x-amz-content-sha256/x-amz-date headers either - fails `parse_authorization_header` AND the
-    // header-presence checks, so both gate conditions independently reject it. A large
-    // Content-Length is announced; NO body bytes are ever sent.
-    sock.write_all(
-        b"POST /model/anthropic.claude/converse HTTP/1.1\r\n\
-          Host: localhost\r\n\
-          Authorization: AWS4-HMAC-SHA256\r\n\
-          Content-Length: 1000000\r\n\
-          \r\n",
-    )
-    .await
-    .unwrap();
-    sock.flush().await.unwrap();
-
-    let mut buf = [0u8; 512];
-    let outcome = tokio::time::timeout(std::time::Duration::from_secs(2), sock.read(&mut buf))
-        .await
-        .expect(
-            "the structural gate did NOT reject before reading the body: the connection hung \
-             waiting for body bytes that were never sent, meaning `to_bytes` was called first",
-        )
-        .unwrap();
-    assert!(outcome > 0, "expected a response, got EOF");
-    let resp = String::from_utf8_lossy(&buf[..outcome]);
-    assert!(
-        resp.starts_with("HTTP/1.1 403"),
-        "expected an immediate 403 from the structural gate: {resp}"
-    );
-
-    handle.abort();
-    server.shutdown().await;
+    assert_eq!(dry_run_admin_scope(&app, Some("not-a-grp"), None), None);
 }

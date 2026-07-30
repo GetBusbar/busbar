@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Gemini `RequestHandler` + cells. Embeddings via `models/{id}:embedContent`.
+//! Gemini `RequestHandler` + cells (design §6/§7). Embeddings via `models/{id}:embedContent`.
+#![allow(dead_code)]
 
 use crate::handlers::{
     CodecError, EgressCtx, IngressReject, OperationHandler, RequestHandler, WireBody,
@@ -178,12 +179,13 @@ impl OperationHandler for GeminiTranscription {
                 let d = match &blob.payload {
                     MediaPayload::B64(s) => s.clone(),
                     MediaPayload::Bytes(b) => base64_encode(b),
+                    MediaPayload::Uri(_) => String::new(),
                 };
                 (blob.mime_type.clone(), d)
             }
             None => (String::new(), String::new()),
         };
-        // `target_language` set ⇒ translate (folds /audio/translations); else transcribe.
+        // `target_language` set ⇒ translate (folds /audio/translations, §1b); else transcribe.
         let instruction = if r.target_language.is_some() {
             "Translate the following audio to text."
         } else {
@@ -365,6 +367,7 @@ impl OperationHandler for GeminiSpeech {
                 let d = match &blob.payload {
                     MediaPayload::B64(s) => s.clone(),
                     MediaPayload::Bytes(b) => base64_encode(b),
+                    MediaPayload::Uri(_) => String::new(),
                 };
                 (d, blob.mime_type.clone())
             }
@@ -545,14 +548,7 @@ impl OperationHandler for GeminiEmbeddings {
                 }
                 v.first().cloned().unwrap_or_default()
             }
-            other => {
-                tracing::warn!(
-                    dropped = 1,
-                    "Gemini :embedContent takes text input only; dropping a non-text embeddings \
-                     input ({other:?} kind) with no analog"
-                );
-                String::new()
-            }
+            _ => String::new(),
         };
         // Carry the retrieval/shape controls the reader captures — Gemini `:embedContent` supports
         // them natively. Dropping `outputDimensionality` returned full-width vectors instead of the
@@ -843,29 +839,6 @@ mod tests {
         assert_eq!(v["outputDimensionality"], 256);
         assert_eq!(v["taskType"], "RETRIEVAL_DOCUMENT");
         assert_eq!(v["title"], "doc");
-    }
-
-    #[test]
-    fn embeddings_write_request_warns_on_dropped_non_text_input() {
-        use crate::test_support::warn_capture::WarnCapture;
-        use tracing_subscriber::layer::SubscriberExt as _;
-
-        let ir = IrReq::Embeddings(crate::ir::embeddings::EmbeddingsReq {
-            input: EmbInput::Images(vec!["data:image/png;base64,AA==".into()]),
-            ..Default::default()
-        });
-        let cap = WarnCapture::default();
-        let subscriber = tracing_subscriber::registry().with(cap.clone());
-        let out = tracing::subscriber::with_default(subscriber, || EMB.write_request(&ir));
-
-        let v: Value = serde_json::from_slice(&out).unwrap();
-        assert_eq!(v["content"]["parts"][0]["text"], json!(""));
-
-        assert!(
-            cap.contains("dropping a non-text embeddings input"),
-            "a dropped non-text embeddings input must warn: {:?}",
-            cap.messages()
-        );
     }
 
     #[test]

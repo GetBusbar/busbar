@@ -75,7 +75,7 @@ fn synthesize_principal_key_union_semantics() {
     assert!(synthesize_principal_key(&p, None).is_none());
 }
 
-/// A principal whose id literally
+/// REGRESSION (audit cost-1.5.0, bucket-namespace hardening): a principal whose id literally
 /// starts with `group:` must NEVER get a synthetic key. The synthetic key's `id` is its ledger
 /// bucket id, and budget-group buckets share that namespace as `group:<name>` - an IdP-supplied
 /// id like `group:acme` would otherwise charge/read/alias the `acme` budget group's cell.
@@ -110,7 +110,7 @@ fn group_prefixed_principal_id_cannot_alias_a_budget_group_bucket() {
     assert!(synthesize_principal_key(&bare, Some(&table)).is_none());
 }
 
-/// A principal whose id starts with `vk_` must NEVER get a
+/// REGRESSION (vk_ alias hardening): a principal whose id starts with `vk_` must NEVER get a
 /// synthetic key. A real virtual key's id is `vk_<16 hex>` and IS its ledger/rate bucket id, so an
 /// IdP-supplied subject shaped `vk_<...>` would alias a real virtual key's ledger + rate bucket
 /// (charging/reading it, or riding its rate window). Fail closed like the `group:` guard.
@@ -421,7 +421,6 @@ fn test_metering_accumulates_split_per_key_model_and_bucket() {
         tokens_output: output,
         tokens_cache_read: 7,
         tokens_cache_creation: 3,
-        requests: 1,
     };
     // Two responses on the same (key, model) accumulate; a different model is its own row.
     s.add_metering(&d("gpt-x", 100, 20)).unwrap();
@@ -453,13 +452,9 @@ fn test_metering_accumulates_split_per_key_model_and_bucket() {
     assert_eq!(rows[1].requests, 1);
 }
 
-/// `GovState::record_metering` end-to-end, write-behind: `record_metering` only accumulates into
-/// `pending_metering`, so an explicit `flush_metering()` is required before the store reflects it.
-/// The IrUsage split lands in the store under the request's day bucket; a `None` usage (flat-fee
-/// op) still counts the request; and the `requests` count on the store row must survive coalescing
-/// N `record_metering` calls into one flushed `MeteringDelta` (this is what a coalescing bug
-/// destroys — the four stores used to invent a literal `+1` per store call instead of carrying the
-/// real count on the wire).
+/// `GovState::record_metering` end-to-end (no tokio runtime → the offload runs inline): the
+/// IrUsage split lands in the store under the request's day bucket; a `None` usage (flat-fee op)
+/// still counts the request.
 #[test]
 fn test_record_metering_from_ir_usage_and_flat() {
     let store = Arc::new(MemoryStore::new());
@@ -473,7 +468,6 @@ fn test_record_metering_from_ir_usage_and_flat() {
     };
     gov.record_metering("vk_m", "claude-z", "anthropic", Some(&usage), now);
     gov.record_metering("vk_m", "claude-z", "anthropic", None, now); // flat-fee op
-    gov.flush_metering();
     let rows = gov.metering_for(metering_bucket(now)).unwrap();
     assert_eq!(rows.len(), 1);
     let r = &rows[0];
@@ -490,7 +484,7 @@ fn test_record_metering_from_ir_usage_and_flat() {
             r.requests
         ),
         (11, 22, 5, 0, 2),
-        "split preserved; the flat-fee response still counted its request; requests==N survives coalescing"
+        "split preserved; the flat-fee response still counted its request"
     );
 }
 
@@ -1304,7 +1298,6 @@ fn test_budget_sweep_is_window_agnostic_across_cotenants() {
         flushed_billable_requests: 0,
         models: Vec::new(),
         dirty,
-        last_touch: now,
     };
 
     // Seed co-tenants directly INTO the survivor's shard (same idiom as the old rate sweep test).
@@ -1363,11 +1356,11 @@ fn test_budget_sweep_is_window_agnostic_across_cotenants() {
 fn test_budget_sweep_cadence_post_increment_no_off_by_one() {
     // Regression for the sweep-cadence off-by-one, now on the budget shard sweep (the rate map is
     // gone; the same amortized POST-increment machinery guards the budget cells):
-    // - It must NOT fire on the very first admission (ticker starts at 0; the post-increment
-    // value 1 is not a multiple of N), so startup against an empty map does no wasted scan.
-    // - It must fire on admissions N, 2N, 3N, ...
-    // - The u32 wrap boundary must NOT skip a cycle: when the pre-increment value is 0xFFFFFFFF,
-    // the post-increment value wraps to 0 (a multiple of N) and the sweep still fires.
+    //  - It must NOT fire on the very first admission (ticker starts at 0; the post-increment
+    //    value 1 is not a multiple of N), so startup against an empty map does no wasted scan.
+    //  - It must fire on admissions N, 2N, 3N, ...
+    //  - The u32 wrap boundary must NOT skip a cycle: when the pre-increment value is 0xFFFFFFFF,
+    //    the post-increment value wraps to 0 (a multiple of N) and the sweep still fires.
     const N: u32 = crate::config::DEFAULT_RATE_SWEEP_INTERVAL;
     let store = Arc::new(MemoryStore::new());
     let gov = GovState::new(store, None).unwrap();
@@ -1381,7 +1374,6 @@ fn test_budget_sweep_cadence_post_increment_no_off_by_one() {
         flushed_billable_requests: 0,
         models: Vec::new(),
         dirty: false,
-        last_touch: now,
     };
 
     // Seed a STALE co-tenant INTO k1's shard so k1's own admission runs the (per-shard) sweep
@@ -1741,7 +1733,7 @@ impl Store for RecordingBarrierStore {
     }
 }
 
-/// The periodic flusher must never let two `flush_budgets`
+/// Regression (write-behind overlap): the periodic flusher must never let two `flush_budgets`
 /// runs overlap - overlapping snapshots could race baseline advancement and double- or
 /// under-count deltas. We hold the first flush's `add_usage` paused, accrue NEWER requests, and
 /// let the flusher fire (and SKIP) overlapping ticks; after release + shutdown the durable ledger
@@ -1769,7 +1761,7 @@ async fn test_write_behind_flush_serializes_and_counts_exactly_once() {
         assert!(gov.try_admit(&cost, &key, "", at).is_ok());
     }
     let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
-    let flusher = crate::governance::spawn_budget_flusher(gov.clone(), shutdown_rx);
+    crate::governance::spawn_budget_flusher(gov.clone(), shutdown_rx);
 
     // Wait until the first flush is paused inside add_usage.
     tokio::task::spawn_blocking(move || entered_rx.recv().unwrap())
@@ -1780,18 +1772,16 @@ async fn test_write_behind_flush_serializes_and_counts_exactly_once() {
     assert!(gov.try_admit(&cost, &key, "", at).is_ok());
     assert!(gov.try_admit(&cost, &key, "", at).is_ok());
 
-    // Yield so any tick that fires while the first flush is pinned takes its SKIP (try_lock) arm
-    // rather than racing it — not asserting how many ticks fired/skipped, only exactly-once below.
-    tokio::task::yield_now().await;
+    // Give the flusher time to fire (and SKIP) several overlapping ticks while the first blocks.
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
 
     // Release the first (older) flush; it completes writing its 3-request delta.
     release_tx.send(()).unwrap();
 
-    // Shut down and JOIN the flusher's own task instead of guessing a wall-clock duration for its
-    // final flush — this makes the wait for "the final flush COMPLETED" exact rather than a guess
-    // that can come up short under a loaded runner (the final flush is spawn_blocking work).
+    // Shut down: the final flush WAITS for the in-flight flush to drain, then flushes the
+    // remaining 2-request delta.
     shutdown_tx.send(()).unwrap();
-    flusher.await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
     // The durable ledger holds EXACTLY 5 requests: additive deltas, serialized, exactly once.
     let durable = store.inner.get_usage("k1", 0).unwrap().requests;
@@ -1927,7 +1917,7 @@ fn test_group_token_spend_blocks_chain_admission() {
     }
 }
 
-/// A boundary-STRADDLING admission - pinned `charged_at` in the
+/// REGRESSION (audit cost-1.5.0 #1): a boundary-STRADDLING admission - pinned `charged_at` in the
 /// OLD window, arriving after a concurrent admission already rolled the live cell to the NEW
 /// window - must charge the live cell IN PLACE. The pre-fix charge arm rewound the live cell to
 /// the straddler's older window (`BudgetCell::fresh(old_window)`), wiping the new window's
@@ -2358,524 +2348,5 @@ mod signed_token {
             .mint_signed(spec("bob", None, None), 2_000, 1_000)
             .unwrap_err();
         assert!(err.0.contains("no signing key"), "got {}", err.0);
-    }
-
-    // ── REVOCATION IS AUTHORITATIVE, NOT A BOOT SNAPSHOT ─────────
-    //
-    // The denylist used to be hydrated ONCE in `GovState::new_with_signer` and thereafter mutated
-    // only by a revoke performed by THIS process. Consequences, both live auth bypasses:
-    // * a revoke (or a DELETE, which denylists before removing the binding) performed on ANOTHER
-    // node of a fleet sharing one durable store never reached this node — the credential kept
-    // authenticating for the entire life of the process;
-    // * the same for any revocation written out-of-band directly against the store.
-    // The fix makes every auth path re-read the store denylist once its copy is older than
-    // `REVOCATION_SYNC_TTL_SECS`. These two cases are the class: (a) local revoke = zero window,
-    // (b) peer revoke = bounded window.
-
-    /// (a) A revoke performed on THIS node is authoritative on the VERY NEXT credential check —
-    /// both on the signed-token path (`verify_token`) and on the shared `is_revoked` predicate the
-    /// legacy-hash and inbound-SigV4 admit paths consult. No window at all.
-    #[test]
-    fn local_revoke_rejects_the_very_next_auth_attempt() {
-        let g = gov();
-        let base = crate::store::now();
-        let (binding, token) = g
-            .mint_signed(spec("bob", None, None), base + 10_000, base)
-            .expect("mint");
-        assert!(
-            g.verify_token(&token, base + 1).is_some(),
-            "admitted before the revoke"
-        );
-
-        g.revoke(&binding.id, "compromised").expect("revoke");
-
-        assert!(
-            g.verify_token(&token, base + 1).is_none(),
-            "the very next signed-token check after a local revoke must reject — no window"
-        );
-        assert!(
-            g.is_revoked_at(&binding.id, base + 1),
-            "the predicate the legacy-hash and SigV4 admit paths consult must agree immediately"
-        );
-    }
-
-    /// (b) A revoke written DIRECTLY to the shared store by a "peer" node (this node's in-memory set
-    /// is never told) is honoured here within `REVOCATION_SYNC_TTL_SECS` — the documented staleness
-    /// window — instead of never. RED without the check-time re-sync: the final assertion admits
-    /// forever.
-    #[test]
-    fn peer_revoke_written_to_the_store_is_honoured_within_the_window() {
-        use crate::governance::{Store, REVOCATION_SYNC_TTL_SECS};
-        let store = Arc::new(MemoryStore::new());
-        let signer = TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID);
-        let g = Arc::new(
-            GovState::new_with_signer(store.clone(), Some("t".into()), Some(signer)).unwrap(),
-        );
-        let base = crate::store::now();
-        let (binding, token) = g
-            .mint_signed(spec("bob", None, None), base + 10_000, base)
-            .expect("mint");
-        assert!(g.verify_token(&token, base).is_some(), "admitted at mint");
-
-        // THE PEER: another node revokes the subject. The write lands in the SHARED store only —
-        // nothing touches this process's in-memory denylist.
-        store
-            .add_denylist(&binding.id, "revoked by a peer node")
-            .expect("peer revoke persists");
-
-        // Inside the window this node may still admit — that is the documented, bounded exposure.
-        // (Asserted as a fact about the contract, not as a desirable property.)
-        assert!(
-            g.verify_token(&token, base).is_some(),
-            "inside the staleness window the cached set still governs (documented)"
-        );
-
-        // Past the window the next credential check re-reads the store and rejects — on BOTH the
-        // signed-token path and the `is_revoked` predicate.
-        let past = base + REVOCATION_SYNC_TTL_SECS + 2;
-        assert!(
-            g.verify_token(&token, past).is_none(),
-            "a peer's revoke must be honoured within REVOCATION_SYNC_TTL_SECS ({REVOCATION_SYNC_TTL_SECS}s)"
-        );
-        assert!(
-            g.is_revoked_at(&binding.id, past),
-            "the SigV4/legacy-hash admit predicate re-syncs on the same window"
-        );
-    }
-
-    // ── ROTATION ACTUALLY ROTATES ─────────────────────────────────────────
-    //
-    // `POST /keys/{id}/rotate` used to mint a legacy BEARER SECRET and stamp its hash over the
-    // binding marker. Two defects in one line:
-    // * the outstanding SIGNED TOKEN kept verifying (the token path resolves by `sub` and never
-    // looked at `key_hash`), so the operation revoked precisely nothing;
-    // * it ARMED the legacy hashed-secret path on a key deliberately minted without one — a
-    // second, weaker, non-expiring credential (a downgrade).
-    // Rotation now stamps a fresh binding GENERATION (durable, so every node agrees) and re-mints
-    // the token against it.
-
-    /// The PRE-ROTATION token is rejected immediately after rotate; the re-minted one is accepted;
-    /// the id (and with it the ledger bucket / usage history) is unchanged.
-    #[test]
-    fn rotate_invalidates_the_outstanding_signed_token() {
-        let g = gov();
-        let (binding, old_token) = g
-            .mint_signed(spec("bob", Some("growth"), None), 9_000, 1_000)
-            .expect("mint");
-        assert!(g.verify_token(&old_token, 1_500).is_some(), "valid at mint");
-
-        let rotated = g
-            .rotate_key(&binding.id, 9_000)
-            .expect("rotate")
-            .expect("known id");
-        let crate::governance::RotatedCredential::Token { key, token, .. } = rotated else {
-            panic!("a signed-token binding must rotate its TOKEN, never a bearer secret");
-        };
-
-        assert_eq!(
-            key.id, binding.id,
-            "the subject id is stable across rotation"
-        );
-        assert_eq!(
-            key.group.as_deref(),
-            Some("growth"),
-            "policy carries over untouched"
-        );
-        assert!(
-            g.verify_token(&old_token, 1_500).is_none(),
-            "the PRE-ROTATION token must be rejected immediately after rotate"
-        );
-        assert!(
-            g.verify_token(&token, 1_500).is_some(),
-            "the re-minted token authenticates"
-        );
-    }
-
-    /// Rotation does NOT re-arm the legacy hashed-secret path: the binding row keeps a `binding:`
-    /// marker (which can never equal a SHA-256 digest), so no bearer secret exists to look up.
-    #[test]
-    fn rotate_does_not_arm_the_legacy_hashed_secret_path() {
-        let g = gov();
-        let (binding, _token) = g
-            .mint_signed(spec("bob", None, None), 9_000, 1_000)
-            .expect("mint");
-        g.rotate_key(&binding.id, 9_000)
-            .expect("rotate")
-            .expect("known id");
-
-        let row = g
-            .all_keys()
-            .unwrap()
-            .into_iter()
-            .find(|k| k.id == binding.id)
-            .expect("binding still exists");
-        assert!(
-            crate::governance::is_binding_marker(&row.key_hash),
-            "the rotated row must stay a signed-token BINDING, not become a hashed-secret key: {}",
-            row.key_hash
-        );
-        assert!(
-            crate::governance::binding_generation(&row.key_hash).is_some(),
-            "the rotated binding carries a generation"
-        );
-    }
-
-    /// A LEGACY hashed-secret key still rotates its bearer secret (that is the only credential it
-    /// has): the fresh secret resolves, the old one stops.
-    #[test]
-    fn legacy_hashed_secret_key_still_rotates_its_secret() {
-        let g = gov();
-        let (key, old_secret) = g
-            .create_key(spec("legacy", None, None), 1_000)
-            .expect("mint");
-        assert!(g.lookup(&old_secret).is_some());
-
-        let rotated = g
-            .rotate_key(&key.id, 9_000)
-            .expect("rotate")
-            .expect("known id");
-        let crate::governance::RotatedCredential::Secret { secret, .. } = rotated else {
-            panic!("a hashed-secret key rotates its SECRET");
-        };
-        assert!(g.lookup(&secret).is_some(), "the fresh secret resolves");
-        assert!(
-            g.lookup(&old_secret).is_none(),
-            "the pre-rotation secret stops resolving"
-        );
-    }
-}
-
-/// Deleting a key reclaims its budget cell. The cell is attribution-only (the key bucket carries no
-/// caps), so dropping it cannot reset an enforcement limit — a group's cap lives in its own
-/// `group:` cell and is untouched.
-#[test]
-fn delete_key_drops_its_budget_cell() {
-    let store = Arc::new(MemoryStore::new());
-    let gov = GovState::new(store, None).unwrap();
-    let cost = flat_cost(7);
-    let key = sample_key("vk_doomed", "hs-doomed");
-    gov.store.put_key(&key).expect("put");
-    gov.refresh().expect("refresh");
-
-    gov.record_usage(&cost, &key, "prod", "m", &tt(10), 1_700_000_000);
-    assert!(
-        gov.budget.read(&key.id).contains_key(&key.id),
-        "precondition: use accrues an attribution cell"
-    );
-
-    gov.delete_key(&key.id).expect("delete");
-    assert!(
-        !gov.budget.read(&key.id).contains_key(&key.id),
-        "the deleted key's budget cell is reclaimed, not retained for the process lifetime"
-    );
-}
-
-/// Two bucket kinds live in the all-time window and so never aged out: a key's own attribution
-/// bucket, and a synthesized SSO principal's. A deleted key can leave its cell behind (a request
-/// admitted in the gap between the store delete and the in-memory removal re-inserts it), and a
-/// synthesized principal is never written to the store at all, so nothing can ever name it for
-/// removal. Both leaked for the process lifetime, one cell per distinct IdP subject.
-///
-/// Eviction is safe for these and only these: `cost::chain_for` pins a key bucket's caps to `None`,
-/// so it enforces nothing, and the flush is additive against baselines the cell already wrote — a
-/// re-created cell contributes only new accrual. A `group:` bucket in the same window is the
-/// opposite: it holds an enforced cap, and hydrate is boot-only, so resetting it is cap evasion.
-#[test]
-fn test_budget_sweep_evicts_idle_attribution_cells_but_never_group_caps() {
-    let store = Arc::new(MemoryStore::new());
-    let gov = GovState::new(store, None).unwrap();
-    let now = 1_700_000_040u64;
-    let idle_for = 40 * SECS_PER_DAY;
-
-    let survivor = sample_key("survivor", "hs");
-
-    let all_time = |requests: u64, dirty: bool, last_touch: u64| BudgetCell {
-        window_start: 0,
-        requests,
-        billable_requests: requests,
-        flushed_requests: requests,
-        flushed_billable_requests: requests,
-        models: Vec::new(),
-        dirty,
-        last_touch,
-    };
-
-    {
-        let mut map = gov.budget.write("survivor");
-        // A deleted key's orphaned attribution cell, and a synthesized principal's: both idle, both
-        // fully flushed. Nothing will ever name either again.
-        map.insert(
-            "vk_deleted".to_string(),
-            all_time(17, false, now - idle_for),
-        );
-        map.insert(
-            "user:alice@example.com".to_string(),
-            all_time(3, false, now - idle_for),
-        );
-        // An equally idle GROUP cell holding enforced spend — must survive.
-        map.insert(
-            "group:acme@total".to_string(),
-            all_time(4999, false, now - idle_for),
-        );
-        // An idle-but-DIRTY attribution cell: its delta has not reached the store, so evicting it
-        // would silently drop spend.
-        map.insert(
-            "vk_unflushed".to_string(),
-            all_time(9, true, now - idle_for),
-        );
-    }
-
-    gov.budget.sweep_ticker_for("survivor").store(
-        crate::config::DEFAULT_RATE_SWEEP_INTERVAL - 1,
-        Ordering::Relaxed,
-    );
-    assert!(gov.try_admit(&flat_cost(1), &survivor, "", now).is_ok());
-
-    let map = gov.budget.read("survivor");
-    assert!(
-        !map.contains_key("vk_deleted"),
-        "an idle, fully-flushed key attribution cell must not be retained forever"
-    );
-    assert!(
-        !map.contains_key("user:alice@example.com"),
-        "a synthesized principal's cell has no other removal path and must age out"
-    );
-    assert_eq!(
-        map.get("group:acme@total").map(|c| c.requests),
-        Some(4999),
-        "an enforced group cap must never be reset by the sweep"
-    );
-    assert_eq!(
-        map.get("vk_unflushed").map(|c| c.requests),
-        Some(9),
-        "an unflushed cell must be retained until its delta lands"
-    );
-    assert!(
-        map.contains_key("survivor"),
-        "the cell just charged is not idle"
-    );
-}
-
-/// Hydrated cells must carry a `last_touch`, or every restored key's history is discarded by the
-/// first post-boot sweep — before that key has served a single request.
-#[test]
-fn test_hydrated_cells_survive_the_first_sweep() {
-    let store = Arc::new(MemoryStore::new());
-    let restored = sample_key("restored", "hr");
-    store.put_key(&restored).unwrap();
-    store
-        .add_usage(
-            "restored",
-            0,
-            &busbar_api::UsageDelta {
-                requests: 42,
-                billable_requests: 42,
-                models: Vec::new(),
-            },
-        )
-        .unwrap();
-
-    let gov = GovState::new(store, None).unwrap();
-    let now = 1_700_000_040u64;
-    gov.hydrate_budgets(&flat_cost(1), now).unwrap();
-    assert_eq!(
-        gov.budget
-            .read("restored")
-            .get("restored")
-            .map(|c| c.requests),
-        Some(42),
-        "hydrate seeds the cell"
-    );
-
-    let driver = sample_key("restored", "hr");
-    gov.budget.sweep_ticker_for("restored").store(
-        crate::config::DEFAULT_RATE_SWEEP_INTERVAL - 1,
-        Ordering::Relaxed,
-    );
-    assert!(gov.try_admit(&flat_cost(1), &driver, "", now).is_ok());
-
-    assert_eq!(
-        gov.budget
-            .read("restored")
-            .get("restored")
-            .map(|c| c.requests),
-        Some(43),
-        "a hydrated cell must not be swept away before it is first used"
-    );
-}
-
-/// A `Store` wrapper that instruments `add_metering` (concurrent-entry high-water mark, and an
-/// optional scripted failure count) and delegates everything else to a `MemoryStore`. Shape copied
-/// from `revocation.rs`'s private `HungDenylistStore` (an `AtomicUsize` counter + delegate-to-
-/// `MemoryStore`), which is not reusable here because it instruments `list_denylist`, not
-/// `add_metering`, and is private to `revocation.rs`'s own test module.
-mod metering_fanout {
-    use super::*;
-    use std::sync::atomic::{AtomicI64, AtomicUsize};
-
-    struct CountingStore {
-        inner: MemoryStore,
-        /// Sampled INSIDE `add_metering`, not derived from task counts — a mark taken outside the
-        /// call would measure scheduling, not concurrency.
-        in_flight: AtomicUsize,
-        high_water: AtomicUsize,
-        total_calls: AtomicUsize,
-        /// Positive: fail this many times before delegating (T3). Decremented via `fetch_sub`
-        /// clamped at 0 by `saturating_sub`-style checked arithmetic.
-        fail_n_times: AtomicI64,
-    }
-
-    impl CountingStore {
-        fn new(fail_n_times: i64) -> Self {
-            Self {
-                inner: MemoryStore::new(),
-                in_flight: AtomicUsize::new(0),
-                high_water: AtomicUsize::new(0),
-                total_calls: AtomicUsize::new(0),
-                fail_n_times: AtomicI64::new(fail_n_times),
-            }
-        }
-    }
-
-    impl Store for CountingStore {
-        fn put_key(&self, k: &VirtualKey) -> StoreResult<()> {
-            self.inner.put_key(k)
-        }
-        fn get_key(&self, id: &str) -> StoreResult<Option<VirtualKey>> {
-            self.inner.get_key(id)
-        }
-        fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
-            self.inner.list_keys()
-        }
-        fn delete_key(&self, id: &str) -> StoreResult<()> {
-            self.inner.delete_key(id)
-        }
-        fn get_usage(&self, id: &str, w: u64) -> StoreResult<UsageLedger> {
-            self.inner.get_usage(id, w)
-        }
-        fn put_usage(&self, id: &str, w: u64, l: &UsageLedger) -> StoreResult<()> {
-            self.inner.put_usage(id, w, l)
-        }
-        fn add_metering(&self, d: &MeteringDelta) -> StoreResult<()> {
-            self.total_calls.fetch_add(1, Ordering::SeqCst);
-            let now_in = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
-            self.high_water.fetch_max(now_in, Ordering::SeqCst);
-            // A trivial amount of real work so overlapping calls (if the SUT ever produced any)
-            // have a chance to actually overlap in wall-clock time rather than the mark being an
-            // artifact of two atomics executing back-to-back.
-            std::thread::sleep(std::time::Duration::from_millis(2));
-            let result = loop {
-                let cur = self.fail_n_times.load(Ordering::SeqCst);
-                if cur <= 0 {
-                    break self.inner.add_metering(d);
-                }
-                if self
-                    .fail_n_times
-                    .compare_exchange(cur, cur - 1, Ordering::SeqCst, Ordering::SeqCst)
-                    .is_ok()
-                {
-                    break Err(StoreError("scripted failure".into()));
-                }
-            };
-            self.in_flight.fetch_sub(1, Ordering::SeqCst);
-            result
-        }
-        fn list_metering(&self, bucket: u64) -> StoreResult<Vec<MeteringRow>> {
-            self.inner.list_metering(bucket)
-        }
-    }
-
-    /// T2 — the metering write fan-out is bounded at 1, not N: with N responses metered
-    /// concurrently on a live runtime, `add_metering` never sees more than one call in flight, and
-    /// all N are eventually accounted once flushed.
-    ///
-    /// RED procedure (documented, not re-run every CI pass): against the pre-fix
-    /// `offload_store_write` per-response fire-and-forget `spawn_blocking`, N concurrent responses
-    /// each spawn their OWN blocking task that calls the store directly, so the high-water mark
-    /// reaches up to N — confirmed by temporarily restoring that call shape in `record_metering`
-    /// and rerunning this test, which failed with `high_water > 1` (observed 8/8 on an 8-response
-    /// run). The fix replaces that fan-out with the accumulate-then-drain flusher below, so exactly
-    /// one thread ever calls `add_metering` at a time (the `flush_metering` loop is sequential).
-    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-    async fn metering_write_fanout_is_bounded_at_one() {
-        let store = std::sync::Arc::new(CountingStore::new(0));
-        let gov = std::sync::Arc::new(GovState::new(store.clone(), None).unwrap());
-        let now = 1_700_100_000u64;
-        let n = 8usize;
-        let mut handles = Vec::new();
-        for i in 0..n {
-            let gov = gov.clone();
-            handles.push(tokio::spawn(async move {
-                let usage = crate::ir::IrUsage {
-                    input_tokens: 1,
-                    output_tokens: 1,
-                    cache_read_input_tokens: None,
-                    cache_creation_input_tokens: None,
-                };
-                gov.record_metering(&format!("vk_{i}"), "m", "p", Some(&usage), now);
-            }));
-        }
-        for h in handles {
-            h.await.unwrap();
-        }
-        let flushed = gov.flush_metering();
-        assert_eq!(
-            flushed, n,
-            "every distinct key's delta was written on the one flush"
-        );
-        assert!(
-            store.high_water.load(Ordering::SeqCst) <= 1,
-            "add_metering must never see more than one call in flight (observed {})",
-            store.high_water.load(Ordering::SeqCst)
-        );
-        assert_eq!(
-            store.total_calls.load(Ordering::SeqCst),
-            n,
-            "one add_metering call per distinct key, all eventually accounted"
-        );
-    }
-
-    /// T3 — a store error re-queues the entry and neither loses it nor double-counts it. Assert on
-    /// the STORE TOTAL (the discriminator that actually separates re-queue from double-send, per
-    /// the design doc — "the entry exists" does not discriminate: a drain-with-no-add-back makes
-    /// the delta vanish, and a re-queue-without-clearing double-sends. Only a total-count assertion
-    /// across two flushes catches both).
-    #[test]
-    fn a_store_error_requeues_without_double_counting() {
-        let store = std::sync::Arc::new(CountingStore::new(1)); // fail exactly once
-        let gov = GovState::new(store.clone(), None).unwrap();
-        let now = 1_700_200_000u64;
-        let usage = crate::ir::IrUsage {
-            input_tokens: 10,
-            output_tokens: 5,
-            cache_read_input_tokens: None,
-            cache_creation_input_tokens: None,
-        };
-        gov.record_metering("vk_err", "m", "p", Some(&usage), now);
-
-        // Flush 1: the scripted failure fires; the store must be empty and the entry must be back
-        // in `pending_metering` (assert via a successful flush 2, not via internal state).
-        let n1 = gov.flush_metering();
-        assert_eq!(n1, 0, "the failed flush wrote nothing");
-        let rows = gov.metering_for(metering_bucket(now)).unwrap();
-        assert!(rows.is_empty(), "a failed flush must not partially land");
-
-        // Flush 2: the store now holds the FULL amount exactly once.
-        let n2 = gov.flush_metering();
-        assert_eq!(n2, 1, "the requeued entry flushes on the next tick");
-        let rows = gov.metering_for(metering_bucket(now)).unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(
-            (rows[0].tokens_input, rows[0].requests),
-            (10, 1),
-            "the full delta landed exactly once, not zero and not twice"
-        );
-
-        // Flush 3: nothing left to write.
-        let n3 = gov.flush_metering();
-        assert_eq!(
-            n3, 0,
-            "a third flush writes nothing — the entry is gone, not duplicated"
-        );
     }
 }

@@ -306,37 +306,17 @@ impl ProtocolWriter for CohereWriter {
         // Cohere may pick any tool, not the one the caller named. This is the ONE documented
         // tool_choice degradation in the codebase — lossy-by-target, intentional, and unavoidable
         // until/unless the Cohere v2 API gains a named-tool choice (PF-H1).
-        // Cohere v2 documents `tool_choice` as only meaningful alongside `tools` (there is nothing
-        // to force/forbid otherwise) — the same shape as every sibling protocol's guard. The
-        // reachable case is a cross-protocol request whose hosted tools `prepare_for_egress`
-        // stripped (`ir/variant.rs`) while the tool_choice directive survived.
         if let Some(tc) = &req.tool_choice {
-            if req.tools.is_empty() {
-                tracing::warn!(
-                    "dropping tool_choice on Cohere egress: tool_choice has no accompanying tools \
-                     (likely because the hosted tools that carried it were stripped on the \
-                     cross-protocol seam)"
-                );
-            } else {
-                let v = match tc {
-                    crate::ir::IrToolChoice::Required | crate::ir::IrToolChoice::Tool { .. } => {
-                        Some(COHERE_TOOL_CHOICE_REQUIRED)
-                    }
-                    crate::ir::IrToolChoice::None => Some(COHERE_TOOL_CHOICE_NONE),
-                    crate::ir::IrToolChoice::Auto => None,
-                };
-                if let Some(s) = v {
-                    out.insert("tool_choice".to_string(), serde_json::json!(s));
+            let v = match tc {
+                crate::ir::IrToolChoice::Required | crate::ir::IrToolChoice::Tool { .. } => {
+                    Some(COHERE_TOOL_CHOICE_REQUIRED)
                 }
+                crate::ir::IrToolChoice::None => Some(COHERE_TOOL_CHOICE_NONE),
+                crate::ir::IrToolChoice::Auto => None,
+            };
+            if let Some(s) = v {
+                out.insert("tool_choice".to_string(), serde_json::json!(s));
             }
-        }
-        // class-6 6c1 egress: Cohere v2 `/v2/chat` models no parallelism control. `is_some()` gates
-        // this to requests that actually carried the flag (owner decision 4: no per-request noise).
-        if req.parallel_tool_calls.is_some() {
-            tracing::warn!(
-                "dropping parallel_tool_calls on Cohere egress: /v2/chat has no parallelism \
-                 control, so the backend's default parallelism applies"
-            );
         }
 
         if let Some(max_tokens) = req.max_tokens {
@@ -371,10 +351,7 @@ impl ProtocolWriter for CohereWriter {
             out.insert("k".to_string(), serde_json::json!(top_k));
         }
         if !req.stop.is_empty() {
-            out.insert(
-                "stop_sequences".to_string(),
-                serde_json::json!(crate::proto::clamp_stop(&req.stop, 5, "Cohere")),
-            );
+            out.insert("stop_sequences".to_string(), serde_json::json!(req.stop));
         }
         // Phase 0 sampling/output controls in Cohere v2's native (OpenAI-shaped) names. Emitted
         // before the `extra` overlay (the reader pulled these keys out of extra, so there is no
@@ -406,7 +383,7 @@ impl ProtocolWriter for CohereWriter {
                 write_cohere_response_format(response_format),
             );
         }
-        // Cohere-native `documents` (RAG grounding) has no cross-protocol analog and is not
+        // M4: Cohere-native `documents` (RAG grounding) has no cross-protocol analog and is not
         // modeled in the IR; on a same-protocol hop it flows through `extra` byte-exact below. The
         // non-silent loss warn for the cross-protocol case lives in `read_request` (the only Cohere
         // site that still sees an inbound `documents` before `extra` is cleared at the seam).
@@ -508,21 +485,10 @@ impl ProtocolWriter for CohereWriter {
                     // delta.message.content.text (an object), matching the content-start shape and
                     // this reader's object path. A bare string here is non-native and a client that
                     // reads content.text would accumulate nothing.
-                    //
-                    // NO `type` key inside `content` here (verified against Cohere's own API
-                    // reference): a real content-delta's `content` object is `{ "text": "…" }` only
-                    // -- `type` is carried ONLY by content-START (see the `BlockStart` arm above),
-                    // never repeated on every delta. Emitting one here was an extra field no native
-                    // Cohere client emits, which a strict parser -- or anyone fingerprinting streams
-                    // for the indistinguishability property this protocol's docs promise -- could
-                    // use to tell a busbar-translated stream from a native one. The reader already
-                    // accepts BOTH shapes (this one and the real one) for exactly this reason; this
-                    // is the writer catching up to match the real wire, not a breaking change to the
-                    // read side.
                     serde_json::json!({
                         "type": ET_CONTENT_DELTA,
                         "index": index,
-                        "delta": { "message": { "content": { "text": text } } }
+                        "delta": { "message": { "content": { "type": "text", "text": text } } }
                     }),
                 )),
                 // Streamed tool-call argument fragments map to a native `tool-call-delta` frame
@@ -680,7 +646,7 @@ impl ProtocolWriter for CohereWriter {
         for block in &resp.content {
             match block {
                 crate::ir::IrBlock::Text { text, .. } => {
-                    // KNOWN LIMITATION: Cohere's `message.tool_plan` (the
+                    // KNOWN LIMITATION (audit finding #7): Cohere's `message.tool_plan` (the
                     // assistant's pre-tool-call reasoning) is READ into a plain leading `IrBlock::Text`
                     // by both cohere readers (non-stream `read_response`, streaming
                     // `tool-plan-delta`). The IR has NO flag distinguishing that Text FROM an ordinary

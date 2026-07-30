@@ -183,7 +183,6 @@ fn thinking_omits_top_k() {
 #[test]
 fn seam_gate_clears_or_stamps() {
     let prep = |allowed: bool| EgressPrep {
-        thought_signature_fill: false,
         ingress_protocol: "openai",
         egress_requires_max_tokens: true,
         lane_default_max_tokens: None,
@@ -191,7 +190,6 @@ fn seam_gate_clears_or_stamps() {
         reasoning_allowed: allowed,
         reasoning_budgets: [1024, 2048, 3072, 4096],
         prompt_caching_allowed: true,
-        cache_control_cap: None,
     };
     let ir = crate::proto::openai_chat::OpenAiReader
         .read_request(&openai_effort_body("high"))

@@ -130,15 +130,6 @@ impl CounterSlot {
     /// Owner-writes-only add into THIS thread's cell. Relaxed load+store (not `fetch_add`) is
     /// sufficient and cheapest: the owning thread is the only writer, the atomic type only makes the
     /// aggregator's concurrent reads defined. No-op for INVALID slots and during TLS teardown.
-    ///
-    /// DELIBERATELY unconditional even when metrics are off — unlike `HistogramSlot::record`, this
-    /// does NOT gate on `metrics::retaining()`. Counters are cumulative: an add from before the
-    /// recorder installs must still be reflected in the post-install total, so it cannot simply be
-    /// dropped the way an off-metrics histogram sample can. And unlike a histogram's raw-sample
-    /// buffer, a counter cell's footprint is bounded by thread count x chunk count, not by traffic
-    /// volume — an idle process's counters cost the same few bytes whether metrics are on or off, so
-    /// there is no unbounded-retention problem here to fix. (This is why `configure`'s doc comment
-    /// says "nothing UNBOUNDED is retained" rather than a literal "nothing is retained".)
     pub(crate) fn add(self, n: u64) {
         if !self.is_valid() {
             return;
@@ -169,36 +160,11 @@ impl HistogramSlot {
         self.0 != u32::MAX
     }
 
-    /// Buffer one observation in THIS thread's sample vector — but ONLY if something will ever
-    /// drain it. See [`Self::record_inner`] for the gating rationale; this wrapper just supplies
-    /// the live decision from `metrics::retaining()`.
+    /// Buffer one observation in THIS thread's sample vector. The mutex is uncontended in steady
+    /// state (the aggregator takes it only during a scrape drain, and no other thread ever touches
+    /// it), so the lock is a single uncontended CAS on a cache line this core owns.
     pub(crate) fn record(self, value: f64) {
-        self.record_inner(value, crate::metrics::retaining());
-    }
-
-    /// `retaining` is passed in explicitly (rather than read here) so this is testable without
-    /// process-global `OnceLock` state: `metrics::HANDLE`/`ENABLED` can only be set once per
-    /// process, so a test can't reset them to exercise every branch — it can, however, call this
-    /// directly with a hand-picked `retaining`.
-    ///
-    /// When `retaining` is `false` (metrics off, or the recorder never installed / failed to
-    /// install), the sample is dropped immediately and the per-thread `HistChunk` for this slot is
-    /// never even materialized — nothing here will ever be drained (not by a scrape, not by the
-    /// `HIST_DRAIN_THRESHOLD` overflow backstop, not by anything else), so buffering it would only
-    /// grow memory with traffic volume for no eventual consumer. This is checked BEFORE the
-    /// `BANK`/`try_with` TLS access precisely so an off-metrics process never allocates a histogram
-    /// buffer it will never use.
-    ///
-    /// KNOWN RESIDUAL: if recorder install FAILS after the boot-window traffic already buffered
-    /// some samples (see `metrics::retaining`'s doc comment for that window), those already-buffered
-    /// samples are not proactively freed here — they sit until `HIST_DRAIN_THRESHOLD` or thread
-    /// exit reclaims them. Bounded by one ~200 ms window's traffic, and the install failure itself
-    /// is already logged (`tracing::error!` in `metrics::init_with`), so the cause is discoverable.
-    fn record_inner(self, value: f64, retaining: bool) {
         if !self.is_valid() {
-            return;
-        }
-        if !retaining {
             return;
         }
         let idx = self.0 as usize;
@@ -429,60 +395,6 @@ fn drain_hist_overflow(slot: u32, samples: Vec<f64>) {
     }
 }
 
-/// TEST-ONLY drain serialisation — a MEASUREMENT guard, not a correctness one.
-///
-/// [`flush_to_recorder`] MOVES each thread's sample `Vec` out (`mem::take`) and DROPS it on the
-/// DRAINING thread, so the free is charged to whoever drains rather than to the thread that
-/// allocated the buffer. `test_observations_are_released_after_the_load_stops` reads per-THREAD
-/// jemalloc alloc/dealloc counters exactly so its measurement is immune to the rest of the suite —
-/// but that immunity does NOT survive another test draining ITS buffer: those frees land on the
-/// other thread and leave `allocated - deallocated` on the measuring thread permanently inflated.
-/// Measured under a loaded `cargo test --workspace`: 5.15 MiB of phantom retention against a 1 MiB
-/// tolerance (2.6 B/observation, versus the ~24 B/observation the real regression costs) — a pure
-/// measurement artefact of WHICH thread ran the drain, with the fix itself working correctly.
-///
-/// Holding this guard for the measured window makes that thread the only drainer, which is what the
-/// assertion always assumed. RE-ENTRANT, so the holder still drives its own drains through the
-/// ordinary `metrics::drain_pending()` entry point. Lock ORDER is always `drain_serial` →
-/// `flush_lock` (both acquisitions are at the top of their function), so there is no inversion.
-#[cfg(test)]
-pub(crate) mod drain_serial {
-    use std::cell::Cell;
-    use std::sync::{Mutex, MutexGuard};
-
-    static LOCK: Mutex<()> = Mutex::new(());
-    thread_local! {
-        /// 0 = this thread does not hold `LOCK`; 1 = it does (nesting is strictly re-entrant, so a
-        /// boolean depth suffices).
-        static HELD: Cell<bool> = const { Cell::new(false) };
-    }
-
-    /// Held for as long as this thread needs exclusive drain rights. `None` = a re-entrant
-    /// acquisition whose outer guard owns the release.
-    pub(crate) struct Guard(Option<MutexGuard<'static, ()>>);
-
-    impl Drop for Guard {
-        fn drop(&mut self) {
-            // Clear the flag BEFORE the inner `MutexGuard` field drops (fields drop after
-            // `Drop::drop`), so no other thread can take the lock while this one still claims it.
-            if self.0.is_some() {
-                HELD.with(|h| h.set(false));
-            }
-        }
-    }
-
-    /// Acquire exclusive drain rights, re-entrantly. `std::sync::ReentrantLock` is still unstable
-    /// (rust#121440), so this is the two-line equivalent for the one shape we need.
-    pub(crate) fn lock() -> Guard {
-        if HELD.with(Cell::get) {
-            return Guard(None);
-        }
-        let g = LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        HELD.with(|h| h.set(true));
-        Guard(Some(g))
-    }
-}
-
 /// THE aggregator: sum every thread's cells per slot and push the delta since the last flush into
 /// the process-global Prometheus recorder. Called from `metrics::render()` so every scrape (and
 /// every test that reads the exposition) observes up-to-date bank totals. Deltas (not absolutes)
@@ -490,8 +402,6 @@ pub(crate) mod drain_serial {
 /// series. No-op until the recorder is installed — a handle minted before install would bind to
 /// the no-op recorder forever (same contract as the handle cache in `metrics.rs`).
 pub(crate) fn flush_to_recorder() {
-    #[cfg(test)]
-    let _serial = drain_serial::lock();
     if !crate::metrics::recorder_installed() {
         return;
     }

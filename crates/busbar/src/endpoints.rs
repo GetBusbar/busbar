@@ -298,7 +298,7 @@ mod tests {
         serde_json::from_slice(&bytes).expect("/stats body is JSON")
     }
 
-    /// A vkey restricted to `pool-a` must see ONLY
+    /// Regression (info-disclosure): a vkey restricted to `pool-a` must see ONLY
     /// `pool-a` in the reported topology and ONLY the lanes that pool routes to — never `pool-b`
     /// or its private lane `model-b`.
     #[tokio::test]

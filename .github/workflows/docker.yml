@@ -42,12 +42,6 @@ on:
 env:
   DOCKERHUB_IMAGE: getbusbar/busbar
   GHCR_IMAGE: ghcr.io/getbusbar/busbar
-  # Pinned ref for the external first-party headroom-hook plugin repo (GetBusbar/headroom-hook),
-  # bundled pre-installed into the image below. `dev` (not `main`) carries the sibling-relative-path
-  # dependency fix this build needs — main stays release-only, ongoing work lands on dev, same split
-  # as busbar's own main/dev. Same pin as .github/workflows/release.yml's HEADROOM_HOOK_REF — keep
-  # the two in sync when re-pinning.
-  HEADROOM_HOOK_REF: dev
 
 permissions:
   contents: read
@@ -187,122 +181,6 @@ jobs:
           path: target/pgo/${{ matrix.target }}/release/busbar
           if-no-files-found: error
 
-      # ── headroom-hook: build + sign for this same musl target, so the image below can ship it
-      # pre-installed (see the Dockerfile). Same first-party source repo and checkout as
-      # .github/workflows/release.yml's hook-plugins job — see the comments there for the full
-      # rationale (pin choice). headroom-hook's Cargo.toml declares its busbar-plugin-sdk (and
-      # dev-dependency) local path deps as sibling-relative, same convention webrequest-hook
-      # already uses, so no CI-side patching is needed — the checkout layout below IS the sibling
-      # layout the relative paths assume. Only headroom is bundled: it needs zero operator config
-      # (local-only BM25 compression), whereas webrequest-hook requires an operator-supplied
-      # forwarding URL and so has no sensible zero-config default — it is NOT pre-installed in the
-      # image.
-      - name: Checkout headroom-hook (first-party plugin source, pinned)
-        uses: actions/checkout@v7
-        with:
-          repository: GetBusbar/headroom-hook
-          ref: ${{ env.HEADROOM_HOOK_REF }}
-          path: ../headroom-hook
-
-      # Build headroom-hook's cdylib INSIDE a musl-native `rust:alpine` container rather than
-      # cross-compiling from this (glibc) Ubuntu host with musl-gcc, for two verified reasons:
-      #
-      # 1. headroom-core pulls in `tokenizers` -> `esaxx-rs`, which needs a C++ compiler. Ubuntu's
-      #    `musl-tools` package provides `musl-gcc` (C only) — no musl-targeted C++ toolchain, and
-      #    plain `g++` on this host targets glibc, not musl. Alpine ships a real musl-native g++.
-      #
-      # 2. VERIFIED FAILURE: `aarch64-unknown-linux-musl` does not support `crate-type = ["cdylib"]`
-      #    under Rust's DEFAULT (crt-static-on) linking mode for this target — the build silently
-      #    drops the cdylib output ("dropping unsupported crate type `cdylib`") and produces only an
-      #    .rlib. Building with `RUSTFLAGS="-C target-feature=-crt-static"` fixes this (produces a
-      #    real cdylib) but switches it to DYNAMIC linking against musl's libc/libgcc_s/libstdc++ —
-      #    which the FROM-scratch busbar image does not otherwise contain, so dlopen() would fail at
-      #    runtime with those libs missing. Building inside `rust:alpine` (musl-native) means the
-      #    exact matching runtime libs (from the SAME musl/gcc userland the plugin was linked
-      #    against) can be extracted from the build container itself and bundled into the image
-      #    (see the "Extract runtime libs" step and the Dockerfile) — this was tested end-to-end
-      #    (a real `FROM scratch` image, only the busbar binary + these libs + the plugin tarball,
-      #    successfully dlopen'd headroom and passed `busbar --validate`).
-      #
-      # JUDGMENT CALL: -crt-static is disabled (and the runtime libs bundled) UNIFORMLY for BOTH
-      # musl targets here, not just aarch64, even though x86_64-unknown-linux-musl did not show the
-      # "unsupported crate type" failure in ad hoc testing — that test was inconclusive (a QEMU
-      # emulation crash unrelated to cdylib support cut it short before reaching a clean signal).
-      # Applying the same, PROVEN mechanism to both architectures is the safer choice: it does not
-      # depend on an assumption about x86_64-musl's default-linking cdylib support that was never
-      # cleanly confirmed either way.
-      - name: Build headroom-hook cdylib + extract matching runtime libs (musl-native container)
-        run: |
-          set -euo pipefail
-          mkdir -p headroom-libs
-          docker run --rm \
-            -v "$PWD/../headroom-hook":/src/headroom-hook \
-            -v "$PWD":/src/busbarAI:ro \
-            -v "$PWD/headroom-libs":/out \
-            rust:alpine sh -exc '
-              apk add --no-cache musl-dev sqlite-dev pkgconfig gcc g++ git perl make
-              export CARGO_HOME=/tmp/cargo-home
-              cd /src/headroom-hook
-              RUSTFLAGS="-C target-feature=-crt-static" cargo build --release
-              cp target/release/libheadroom_hook.so /out/libheadroom_hook.so
-              cp /usr/lib/libstdc++.so.6 /usr/lib/libgcc_s.so.1 /out/
-              cp /lib/libc.musl-*.so.1 /out/
-              chmod -R a+rwX /out
-            '
-          ls -l headroom-libs
-        shell: bash
-
-      - name: Build busbar-plugin-pack (host target, build tool only)
-        run: cargo build --release -p busbar-plugin-pack
-
-      - name: Package + sign the headroom-hook plugin tarball
-        env:
-          BUSBAR_SIGN_KEY: ${{ secrets.BUSBAR_SIGN_KEY }}
-        run: |
-          set -euo pipefail
-          # Same version resolution as the publish job's "Resolve version" step (duplicated here,
-          # not shared, since this runs in a different job): the workflow_dispatch `version` input,
-          # else the pushed v* tag, else a placeholder for a bare `test`-tag dispatch build.
-          ver="${{ inputs.version }}"
-          if [ -z "$ver" ] && [ "$GITHUB_REF_TYPE" = "tag" ]; then ver="${GITHUB_REF_NAME#v}"; fi
-          [ -n "$ver" ] || ver="0.0.0-test"
-          outdir="plugin-dist"; mkdir -p "$outdir"
-          unsigned_flag=""
-          if [ -z "${BUSBAR_SIGN_KEY:-}" ]; then
-            echo "::warning::BUSBAR_SIGN_KEY secret is not provisioned — packaging an UNSIGNED headroom plugin tarball (loadable only under plugins.trust.allow_unsigned). See the TODO(release-keys) seam in release.yml."
-            unsigned_flag="--allow-unsigned"
-          fi
-          target/release/busbar-plugin-pack pack \
-            --lib "headroom-libs/libheadroom_hook.so" \
-            --name "busbar-headroom" --alias "headroom" --kind hook \
-            --version "$ver" --publisher busbar \
-            --needs-prompt rw \
-            --description "busbar headroom hook plugin: deterministic rule-based prompt-compression rewrite gate" \
-            --license Apache-2.0 \
-            --out "${outdir}/busbar-headroom-${{ matrix.arch }}.tar.gz" \
-            $unsigned_flag
-          ls -l "$outdir"
-        shell: bash
-
-      # The runtime libs (libc.musl-*.so.1, libgcc_s.so.1, libstdc++.so.6) the cdylib above needs at
-      # dlopen time — bundled alongside the plugin tarball so the Dockerfile can COPY them into
-      # /lib. Named per-arch so the publish job (single image build spanning both arches) can stage
-      # each into its own arch-specific Docker build context directory.
-      - uses: actions/upload-artifact@v7
-        with:
-          name: busbar-headroom-libs-${{ matrix.arch }}
-          path: |
-            headroom-libs/libstdc++.so.6
-            headroom-libs/libgcc_s.so.1
-            headroom-libs/libc.musl-*.so.1
-          if-no-files-found: error
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: busbar-headroom-${{ matrix.arch }}
-          path: plugin-dist/busbar-headroom-${{ matrix.arch }}.tar.gz
-          if-no-files-found: error
-
   publish:
     name: build & push image
     needs: build-binaries
@@ -310,7 +188,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Stage binaries + plugins into build context
+      - name: Stage binaries into build context
         uses: actions/download-artifact@v8
         with:
           pattern: busbar-*
@@ -318,20 +196,10 @@ jobs:
 
       - name: Arrange per-arch layout
         run: |
-          mkdir -p binaries/amd64 binaries/arm64 plugins/amd64/lib plugins/arm64/lib
+          mkdir -p binaries/amd64 binaries/arm64
           mv staged/busbar-amd64/busbar binaries/amd64/busbar
           mv staged/busbar-arm64/busbar binaries/arm64/busbar
           chmod +x binaries/amd64/busbar binaries/arm64/busbar
-          # headroom-hook, pre-installed into the image (see Dockerfile) — one signed tarball per arch,
-          # built by build-binaries above. webrequest-hook is intentionally NOT bundled: see the
-          # comment on the "headroom-hook" build steps in build-binaries for why.
-          mv staged/busbar-headroom-amd64/busbar-headroom-amd64.tar.gz plugins/amd64/busbar-headroom.tar.gz
-          mv staged/busbar-headroom-arm64/busbar-headroom-arm64.tar.gz plugins/arm64/busbar-headroom.tar.gz
-          # Runtime libs the plugin cdylib needs at dlopen time (musl libc/libgcc_s/libstdc++, built
-          # in the SAME musl-native container as the plugin — see build-binaries' "Build headroom-hook
-          # cdylib..." step for why these are required and how this was verified end to end).
-          mv staged/busbar-headroom-libs-amd64/* plugins/amd64/lib/
-          mv staged/busbar-headroom-libs-arm64/* plugins/arm64/lib/
 
       - uses: docker/setup-buildx-action@v4
 

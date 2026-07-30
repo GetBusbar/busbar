@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Bedrock `RequestHandler` + cells. Embeddings first (Titan, via InvokeModel).
+//! Bedrock `RequestHandler` + cells (design §6/§7). Embeddings first (Titan, via InvokeModel).
+#![allow(dead_code)]
 
 use crate::handlers::{
     CodecError, EgressCtx, IngressReject, OperationHandler, RequestHandler, WireBody,
@@ -211,14 +212,7 @@ impl OperationHandler for BedrockEmbeddings {
                 }
                 v.first().cloned().unwrap_or_default()
             }
-            other => {
-                tracing::warn!(
-                    dropped = 1,
-                    "Titan embeddings takes text input only; dropping a non-text embeddings \
-                     input ({other:?} kind) with no analog"
-                );
-                String::new()
-            }
+            _ => String::new(),
         };
         let mut body = json!({ "inputText": text });
         if let Some(d) = r.dimensions {
@@ -410,32 +404,6 @@ mod tests {
             panic!("expected IrReq::Embeddings");
         };
         assert_eq!(r.input, EmbInput::Text(vec!["hello".to_string()]));
-    }
-
-    #[test]
-    fn embeddings_write_request_warns_on_dropped_non_text_input() {
-        use crate::ir::embeddings::EmbeddingsReq;
-        use crate::test_support::warn_capture::WarnCapture;
-        use tracing_subscriber::layer::SubscriberExt as _;
-
-        let req = IrReq::Embeddings(EmbeddingsReq {
-            input: EmbInput::Tokens(vec![vec![1, 2, 3]]),
-            ..Default::default()
-        });
-        let cap = WarnCapture::default();
-        let subscriber = tracing_subscriber::registry().with(cap.clone());
-        let out =
-            tracing::subscriber::with_default(subscriber, || BedrockEmbeddings.write_request(&req));
-
-        // Behavior: a non-text input has no Titan analog, so `inputText` is empty (regression half).
-        let body: Value = serde_json::from_slice(&out).unwrap();
-        assert_eq!(body["inputText"], json!(""));
-
-        assert!(
-            cap.contains("dropping a non-text embeddings input"),
-            "a dropped non-text embeddings input must warn: {:?}",
-            cap.messages()
-        );
     }
 
     #[test]

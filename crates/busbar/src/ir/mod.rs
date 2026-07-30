@@ -7,15 +7,15 @@
 
 use serde_json::Value;
 
-// Per-operation IR variants. Chat is the existing `IrRequest`/`IrResponse` below; the
-// new operations live in submodules and are assembled into `enum IrReq`/`enum IrResp` once
+// Per-operation IR variants (design §5b). Chat is the existing `IrRequest`/`IrResponse` below; the
+// new operations live in submodules and are assembled into `enum IrReq`/`enum IrResp` (§12.4) once
 // all six exist.
 pub(crate) mod audio;
 pub(crate) mod embeddings;
 pub(crate) mod image;
 pub(crate) mod moderation;
 pub(crate) mod rerank;
-pub(crate) mod variant; // IrReq / IrResp enums + the operation-blind surface
+pub(crate) mod variant; // IrReq / IrResp enums + the operation-blind surface (§12.4)
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub(crate) struct IrRequest {
@@ -463,18 +463,6 @@ pub(crate) enum IrBlock {
         /// (cost/latency regression). Only the Anthropic reader populates it and only the Anthropic
         /// writer emits it; other protocols have no native analog and leave it `None`.
         cache_control: Option<CacheControl>,
-        /// Opaque, vendor-scoped continuation token — Gemini 3's `thoughtSignature`, a sibling of
-        /// `functionCall` on the wire `Part`, that MUST be echoed back verbatim on the next turn or
-        /// the Gemini backend 400s ("missing a thought_signature"). Mirrors [`IrBlock::Thinking`]'s
-        /// `signature` field, but scoped to a tool-use block instead of a thinking block. Populated
-        /// two ways: (1) read off the wire by Gemini's own readers when Gemini is the SOURCE
-        /// protocol (round-tripped verbatim; harmless to capture even though same-protocol
-        /// Gemini→Gemini traffic never actually passes through the IR), and (2) INJECTED by
-        /// [`IrReq::prepare_for_egress`] with Google's documented sentinel value when the egress lane
-        /// is Gemini AI Studio and the block has no real signature — this is the path that matters
-        /// for cross-protocol traffic (e.g. OpenAI history replayed against a Gemini backend), since
-        /// no foreign protocol has a `thoughtSignature` concept of its own to read.
-        thought_signature: Option<String>,
     },
     ToolResult {
         tool_use_id: String,
@@ -757,10 +745,6 @@ pub(crate) struct StreamDecodeState {
     pub(crate) reasoning_seen: bool,
     /// Whether the reasoning Thinking block (index 0) is currently open.
     pub(crate) thinking_block_open: bool,
-    /// Set once a `delta.refusal` chunk is seen. A refusal reports `finish_reason: "stop"`, so
-    /// without this latch the terminal frame maps to `EndTurn` and the refusal SIGNAL is lost even
-    /// though the text survived. OpenAI Chat reader only; other readers leave it false.
-    pub(crate) refusal_seen: bool,
     /// Stop reason buffered across two Bedrock stream frames. Native Bedrock ConverseStream splits
     /// the stop reason (`messageStop` frame) from the token usage (a following `metadata` frame). To
     /// emit ONE combined `MessageDelta{stop_reason, usage}` (so a cross-protocol ingress sees the
@@ -778,24 +762,6 @@ pub(crate) struct StreamDecodeState {
     /// `text_index` directly and never recompute a divergent base). Keyed by `oai_idx` so it tracks
     /// `open_tools` one-for-one.
     pub(crate) tool_ir_index: std::collections::BTreeMap<usize, usize>,
-    /// Monotone next-free IR block index, for readers that allocate slots by ORDER OF FIRST
-    /// APPEARANCE. NEVER reset for the life of the stream. The terminal branch's `mem::take` of
-    /// `open_tools`/`tool_ir_index` (openai_chat reader) clears WHO IS OPEN — it must not also be
-    /// read as clearing WHICH SLOTS ARE SPENT: a chunk arriving after a finish chunk would then
-    /// re-claim an index the client already has content in, reintroducing a block-index collision
-    /// on the post-terminal path. OpenAI Chat reader only; other readers leave it 0.
-    pub(crate) next_ir_index: usize,
-}
-
-impl StreamDecodeState {
-    /// Claim the next free IR block index. `reasoning_seen` reserves index 0 for the thinking block
-    /// (the OpenAI reader emits that one with a hardcoded 0), so the first claim after reasoning
-    /// starts at 1.
-    pub(crate) fn claim_ir_index(&mut self) -> usize {
-        let idx = self.next_ir_index.max(usize::from(self.reasoning_seen));
-        self.next_ir_index = idx + 1;
-        idx
-    }
 }
 
 #[cfg(test)]

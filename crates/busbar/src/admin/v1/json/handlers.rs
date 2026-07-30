@@ -67,29 +67,11 @@ pub(crate) async fn get_hook(
 }
 
 /// `GET /api/v1/admin/groups` — the `groups:` limit-tree read (+ config-plane `ETag` for `If-Match`
-/// chaining, so a client reads then mutates without a second round-trip). Paginated by the shared
-/// cursor envelope: `?limit=N` (cap 1000) + opaque `?cursor=`, response `{items, next_cursor}` —
-/// the group tree grows at runtime (auto-provisioned leaves), so it is bounded like every other
-/// growable admin collection (keys/audit/config-versions), never a single unbounded page.
-pub(crate) async fn list_groups(
-    State(handle): State<Arc<AppHandle>>,
-    Query(q): Query<std::collections::HashMap<String, String>>,
-) -> Response {
-    let limit = q
-        .get("limit")
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(crate::admin::v1::contract::LIST_LIMIT_DEFAULT)
-        .clamp(1, crate::admin::v1::contract::LIST_LIMIT_MAX);
-    let start = match cursor_offset(&q) {
-        Ok(n) => n,
-        Err(resp) => return resp,
-    };
+/// chaining, so a client reads then mutates without a second round-trip).
+pub(crate) async fn list_groups(State(handle): State<Arc<AppHandle>>) -> Response {
     let version = handle.load().config_version;
     with_config_etag(
-        respond(
-            StatusCode::OK,
-            service(&handle).list_groups(start, limit).await,
-        ),
+        respond(StatusCode::OK, service(&handle).list_groups().await),
         version,
     )
 }
@@ -107,7 +89,7 @@ pub(crate) async fn get_group(
 }
 
 /// `GET /api/v1/admin/groups/{name}/usage` — the group's derived current-window usage per
-/// enforcement bucket vs its caps.
+/// enforcement bucket vs its caps (§6d, the self-service dashboard read; 404 if unknown).
 pub(crate) async fn get_group_usage(
     State(handle): State<Arc<AppHandle>>,
     Path(name): Path<String>,
@@ -142,7 +124,6 @@ pub(crate) async fn list_plugins(
 /// running `plugins.*` trust posture (the client is never trusted). `file` is the bare `.tar.gz`
 /// filename to store it under (storage only — identity comes from the signed manifest inside).
 #[derive(serde::Deserialize)]
-#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub(crate) struct InstallPluginReq {
     file: String,
     tarball_b64: String,
@@ -186,33 +167,26 @@ pub(crate) async fn install_plugin(
             )));
         }
     };
-    // ONE GLOBAL MUTATION DOMAIN for the plugins directory. `rollback_plugin` and `reload_plugins`
-    // both validate an on-disk artifact and then REBUILD THE WHOLE APP by re-reading the entire
-    // plugin set; a concurrent install that writes a tarball between those two steps makes the
-    // rebuild load bytes nothing validated. Per-plugin locks cannot close this — the rebuild reads
-    // every plugin, not one — so install joins the SAME `config_transaction` section every other
-    // plugin/config mutation runs in. The tarball write is a `store_write`, so it executes on
-    // `spawn_blocking` (a slow disk / large tarball never stalls the reactor) while the guard is
-    // held: install-vs-rollback, install-vs-reload and install-vs-install are all serialized.
+    // The install itself is in-memory verification + filesystem I/O — run it off the async
+    // runtime's worker so a slow disk / large tarball can't stall the reactor.
+    let svc_handle = handle.clone();
     let file = req.file.clone();
-    let out = config_transaction(&handle, move |txn| {
-        let snapshot = txn.app().clone();
-        Ok(txn.store_write(move || {
-            let view = AdminService::new(snapshot).install_store_plugin(&file, &tarball)?;
-            // Installing does NOT hot-swap: the change takes effect on the next plugin (re)load, so
-            // there is no plan to commit — only the filesystem write that just happened.
-            Ok(Outcome::Value(view))
-        }))
+    let result = tokio::task::spawn_blocking(move || {
+        service(&svc_handle).install_store_plugin(&file, &tarball)
     })
     .await;
-    match out {
-        Ok(view) => {
+    match result {
+        Ok(Ok(view)) => {
             audit::AUDIT.record_by("plugin.install", &resource, audit::OUTCOME_APPLIED, &actor);
             ok_json(StatusCode::CREATED, &view)
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             audit::AUDIT.record_by("plugin.install", &resource, audit::OUTCOME_REJECTED, &actor);
             err_json(&e)
+        }
+        Err(_) => {
+            audit::AUDIT.record_by("plugin.install", &resource, audit::OUTCOME_REJECTED, &actor);
+            err_json(&AdminError::Internal)
         }
     }
 }
@@ -227,19 +201,8 @@ pub(crate) async fn remove_plugin(
 ) -> Response {
     let actor = principal.actor_id().to_string();
     let resource = format!("plugin:{file}");
-    // Same global mutation domain as install: a DELETE racing a rebuild-from-disk is the mirror
-    // hazard of an install racing one — the rebuild would read a plugin set that changed under it.
-    // The filesystem delete runs on `spawn_blocking`, under the guard.
-    let out = config_transaction(&handle, move |txn| {
-        let snapshot = txn.app().clone();
-        Ok(txn.store_write(move || {
-            AdminService::new(snapshot).remove_store_plugin(&file)?;
-            Ok(Outcome::Value(()))
-        }))
-    })
-    .await;
-    match out {
-        Ok(()) => {
+    match service(&handle).remove_store_plugin(&file) {
+        Ok(_) => {
             audit::AUDIT.record_by("plugin.remove", &resource, audit::OUTCOME_APPLIED, &actor);
             StatusCode::NO_CONTENT.into_response()
         }
@@ -270,48 +233,14 @@ pub(crate) async fn reload_plugins(
     axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
 ) -> Response {
     let actor = principal.actor_id().to_string();
-    // Serialize against config applies/reloads AND against plugin install/remove — they all touch
-    // the same plugins directory and rebuild-and-swap the App snapshot (: one global mutation
-    // domain). The whole rebuild is disk I/O, so it is queued onto `spawn_blocking`.
-    let out = config_transaction(&handle, |txn| {
-        let snapshot = txn.app().clone();
-        Ok(txn.read_store(move || {
-            // EPHEMERAL mode (no disk config, e.g. tests/dev) has no disk truth to rebuild the
-            // snapshot from — fall back to the report-only reconcile (the folder is still the source
-            // of truth for the catalog), so an install→reload flow still works without persistence.
-            // The LIVE hot swap needs disk truth.
-            if snapshot.config_path.is_none() || snapshot.providers_path.is_none() {
-                let view = AdminService::new(snapshot).reload_store_plugins()?;
-                return Ok(Outcome::Value((None, Ok(view))));
-            }
-            let next = rebuild_app_from_disk(&snapshot).map_err(AdminError::Validation)?;
-            let installed = Arc::new(next);
-            // Project the inventory of the snapshot about to go live (the reconciled, loaded set).
-            // A projection hiccup is reported but never rolls the swap back, exactly as before.
-            let projected = AdminService::new(installed.clone()).reload_store_plugins();
-            Ok(Outcome::swap(
-                installed.clone(),
-                (Some(installed), projected),
-            ))
-        }))
-    })
-    .await;
-    match out {
-        // Rebuild path: the swap succeeded, so the attempt is APPLIED regardless of the projection.
-        Ok((Some(_), projected)) => {
-            audit::AUDIT.record_by(
-                "plugin.reload",
-                "plugin:dir",
-                audit::OUTCOME_APPLIED,
-                &actor,
-            );
-            match projected {
-                Ok(view) => ok_json(StatusCode::OK, &view),
-                Err(e) => err_json(&e),
-            }
-        }
-        // Ephemeral report-only path.
-        Ok((None, projected)) => match projected {
+    // Serialize against config applies/reloads — they all rebuild-and-swap the App snapshot.
+    let _mlock = CONFIG_MUTATION_LOCK.lock().await;
+    let current = handle.load();
+    // EPHEMERAL mode (no disk config, e.g. tests/dev) has no disk truth to rebuild the snapshot from —
+    // fall back to the report-only reconcile (the folder is still the source of truth for the catalog),
+    // so an install→reload flow still works without persistence. The LIVE hot swap needs disk truth.
+    if current.config_path.is_none() || current.providers_path.is_none() {
+        return match service(&handle).reload_store_plugins() {
             Ok(view) => {
                 audit::AUDIT.record_by(
                     "plugin.reload",
@@ -330,7 +259,25 @@ pub(crate) async fn reload_plugins(
                 );
                 err_json(&e)
             }
-        },
+        };
+    }
+    match rebuild_app_from_disk(&current) {
+        Ok(next) => {
+            let installed = Arc::new(next);
+            handle.swap(installed.clone()); // swap re-spawns health probers; old snapshot drains + drops
+            audit::AUDIT.record_by(
+                "plugin.reload",
+                "plugin:dir",
+                audit::OUTCOME_APPLIED,
+                &actor,
+            );
+            // Project the inventory of the NOW-LIVE snapshot (the reconciled, loaded set).
+            match service(&handle).reload_store_plugins() {
+                Ok(view) => ok_json(StatusCode::OK, &view),
+                // The swap already succeeded; a projection hiccup is an internal error, not a rollback.
+                Err(e) => err_json(&e),
+            }
+        }
         Err(e) => {
             audit::AUDIT.record_by(
                 "plugin.reload",
@@ -338,7 +285,7 @@ pub(crate) async fn reload_plugins(
                 audit::OUTCOME_REJECTED,
                 &actor,
             );
-            err_json(&e)
+            err_json(&AdminError::Validation(e))
         }
     }
 }
@@ -386,91 +333,61 @@ pub(crate) async fn rollback_plugin(
         }
     };
     let resource = format!("plugin:{}", req.file);
-    let file = req.file.clone();
-    let audit_resource = resource.clone();
-    // ONE section for validate → persist-pin → rebuild → swap. Because install/remove now enter the
-    // SAME section, no concurrent write to the plugins directory can land between the artifact
-    // this resolves and the artifact the rebuild reads back: the validate/rebuild pair is atomic.
-    // Every step here is disk I/O, so the whole thing runs on `spawn_blocking`.
-    let out = config_transaction(&handle, move |txn| {
-        let current = txn.app();
-        if let Some(e) = stale_if_match(expected, current.config_version) {
-            return Err(e);
+    let _mlock = CONFIG_MUTATION_LOCK.lock().await;
+    let current = handle.load();
+    if let Some(e) = stale_if_match(expected, current.config_version) {
+        audit::AUDIT.record_by(
+            "plugin.rollback",
+            &resource,
+            audit::OUTCOME_REJECTED,
+            &actor,
+        );
+        return err_json(&e);
+    }
+    // A rollback must PERSIST its pin — an ephemeral (no-overlay) busbar has nowhere durable to record
+    // the operator's decision, and a restart would silently re-upgrade. Refuse loudly.
+    let Some(overlay_path) = current.overlay_path.clone() else {
+        audit::AUDIT.record_by(
+            "plugin.rollback",
+            &resource,
+            audit::OUTCOME_REJECTED,
+            &actor,
+        );
+        return err_json(&AdminError::Validation(
+            "plugin rollback requires config persistence (BUSBAR_CONFIG_OVERLAY); without it the \
+             pin cannot be recorded and a restart would silently re-upgrade the plugin"
+                .into(),
+        ));
+    };
+    // The current persisted pins (empty if none) — the base we merge this rollback onto.
+    let prior_pins = match crate::config::overlay::read(&overlay_path) {
+        Some(doc) => doc.plugin_versions,
+        None => std::collections::BTreeMap::new(),
+    };
+    // Resolve + validate the target and compute the merged pin map (fail-closed on a bad/absent/
+    // untrusted target — nothing is persisted or swapped).
+    let (manifest, pins) = match service(&handle).resolve_plugin_rollback(&req.file, &prior_pins) {
+        Ok(v) => v,
+        Err(e) => {
+            audit::AUDIT.record_by(
+                "plugin.rollback",
+                &resource,
+                audit::OUTCOME_REJECTED,
+                &actor,
+            );
+            return err_json(&e);
         }
-        // A rollback must PERSIST its pin — an ephemeral (no-overlay) busbar has nowhere durable to
-        // record the operator's decision, and a restart would silently re-upgrade. Refuse loudly.
-        let Some(overlay_path) = current.overlay_path.clone() else {
-            return Err(AdminError::Validation(
-                "plugin rollback requires config persistence (BUSBAR_CONFIG_OVERLAY); without it \
-                 the pin cannot be recorded and a restart would silently re-upgrade the plugin"
-                    .into(),
-            ));
-        };
-        let snapshot = current.clone();
-        Ok(txn.store_write(move || {
-            // The current persisted pins (empty if none) — the base we merge this rollback onto.
-            let prior_pins = match crate::config::overlay::read(&overlay_path) {
-                Some(doc) => doc.plugin_versions,
-                None => std::collections::BTreeMap::new(),
-            };
-            // Resolve + validate the target and compute the merged pin map (fail-closed on a
-            // bad/absent/untrusted target — nothing is persisted or swapped).
-            let (manifest, pins) = AdminService::new(snapshot.clone())
-                .resolve_plugin_rollback(&file, &prior_pins)?;
-            // Persist the pin FIRST, so the rebuild (which re-reads the overlay) derives the lowered
-            // floor and loads the prior artifact. Durability precedes the swap: if the process died
-            // between here and the swap, a restart would come up already rolled back (the safe
-            // direction). This persist is the WHOLE point of the rollback — a swallowed failure
-            // would swap the LIVE engine to the prior plugin while disk still carries the
-            // rolled-FORWARD state, so a restart would silently re-upgrade (defeating the operator's
-            // explicit, audited decision) AND the rebuild below re-reads this overlay to derive the
-            // lowered floor, so a non-persisted pin would rebuild against the wrong floor. Use the
-            // Result-returning variant and FAIL CLOSED (nothing swapped) if it did not land.
-            if let Err(e) =
-                crate::config::overlay::try_persist_plugin_versions(Some(&overlay_path), &pins)
-            {
-                tracing::error!(plugin = %audit_resource, error = %e, "plugin rollback: persisting the version pin failed; nothing swapped");
-                return Err(AdminError::Validation(format!(
-                    "plugin rollback could not persist the version pin to the overlay: {e}; nothing \
-                     was changed (the running engine still serves the current plugin)"
-                )));
-            }
-            let next = match rebuild_app_from_disk(&snapshot) {
-                Ok(next) => next,
-                Err(e) => {
-                    // The rebuild failed AFTER persisting the pin — the live snapshot is unchanged
-                    // (old plugin still serving, fail-closed), but the pin is now on disk. Roll the
-                    // pin back so a restart doesn't come up in a state the running engine rejected.
-                    // The compensation MUST be robust: if reverting the pin ALSO fails, a
-                    // silently-swallowed error would leave a stale rolled-forward pin on disk that a
-                    // restart would honor — contradicting the running engine. Surface that as a
-                    // distinct, louder error so the operator knows disk is out of sync and can fix
-                    // the overlay before restarting.
-                    if let Err(revert_err) = crate::config::overlay::try_persist_plugin_versions(
-                        Some(&overlay_path),
-                        &prior_pins,
-                    ) {
-                        tracing::error!(
-                            plugin = %audit_resource, rebuild_error = %e, revert_error = %revert_err,
-                            "plugin rollback rebuild failed AND reverting the persisted version pin \
-                             failed; the running engine still serves the prior plugin, but disk now \
-                             carries the rolled-forward pin — fix the overlay before restarting"
-                        );
-                        return Err(AdminError::Internal);
-                    }
-                    return Err(AdminError::Validation(e));
-                }
-            };
+    };
+    // Persist the pin FIRST, so the rebuild (which re-reads the overlay) derives the lowered floor and
+    // loads the prior artifact. Durability precedes the swap: if the process died between here and the
+    // swap, a restart would come up already rolled back (the safe direction).
+    crate::config::overlay::persist_plugin_versions(Some(&overlay_path), &pins);
+    match rebuild_app_from_disk(&current) {
+        Ok(next) => {
             let installed = Arc::new(next);
-            // The pin is already durable (persisted above, before the rebuild), so the commit step
-            // carries a no-op persist — the swap is the only thing left.
-            Ok(Outcome::swap(installed.clone(), (installed, manifest)))
-        }))
-    })
-    .await;
-    match out {
-        Ok((installed, manifest)) => {
+            handle.swap(installed.clone());
             audit::AUDIT.record_by("plugin.rollback", &resource, audit::OUTCOME_APPLIED, &actor);
+            let cur = handle.load();
             installed.versions.record(
                 installed.config_version,
                 &actor,
@@ -486,24 +403,28 @@ pub(crate) async fn rollback_plugin(
                         file: req.file,
                         version: manifest.version,
                         publisher: manifest.publisher,
-                        config_version: installed.config_version,
+                        config_version: cur.config_version,
                         note: "rolled the plugin DOWN to the prior version and hot-swapped to it; the \
                                version pin is persisted (survives restart) and the anti-downgrade \
                                floor was lowered ONLY for this explicit, audited action — a silent \
                                replay of an old artifact is still refused.",
                     },
                 ),
-                installed.config_version,
+                cur.config_version,
             )
         }
         Err(e) => {
+            // The rebuild failed AFTER persisting the pin — the live snapshot is unchanged (old plugin
+            // still serving, fail-closed), but the pin is now on disk. Roll the pin back so a restart
+            // doesn't come up in a state the running engine rejected.
+            crate::config::overlay::persist_plugin_versions(Some(&overlay_path), &prior_pins);
             audit::AUDIT.record_by(
                 "plugin.rollback",
                 &resource,
                 audit::OUTCOME_REJECTED,
                 &actor,
             );
-            err_json(&e)
+            err_json(&AdminError::Validation(e))
         }
     }
 }
@@ -626,7 +547,7 @@ pub(crate) async fn register_hook(
         Ok(r) => r,
         Err(e) => return err_json(&AdminError::Validation(format!("malformed hook body: {e}"))),
     };
-    // A hooks-register principal may not register a content-seeing / global (wired) hook.
+    // §6.3: a hooks-register principal may not register a content-seeing / global (wired) hook.
     if let Some(e) = hooks_register_escalation(scope, &req.config) {
         audit::AUDIT.record_by(
             "hook.register",
@@ -636,71 +557,50 @@ pub(crate) async fn register_hook(
         );
         return err_json(&e);
     }
-    let name = req.name.clone();
-    let resource = format!("hook:{name}");
-    let cfg = req.config;
-    // ONE critical section, entered through the single door: the base-hook guard, the If-Match
-    // re-validation, the build, the persist and the swap all read the SAME fresh post-lock snapshot
-    // (`txn.app()`) — there is no other snapshot in scope to read stale.
-    let txn_name = name.clone();
-    let out = config_transaction(&handle, move |txn| {
-        let current = txn.app();
-        // A base-config-defined hook may NOT be shadowed/redirected via the API — the same guard PUT
-        // and PATCH enforce (put_hook / patch_hook_settings). Without it a narrow hooks-register token
-        // could POST a same-shape definition over a base hook's name and silently redirect its
-        // transport (e.g. point a base `pii-guard` gate at a hostile socket). Edit config.yaml for base
-        // hooks.
-        if current.base_hook_names.contains(&txn_name) {
-            return Err(AdminError::Conflict(format!(
-                "hook `{txn_name}` is defined in the base config file; edit config.yaml (the API \
-                 cannot silently shadow operator file config)"
-            )));
-        }
-        if let Some(e) = stale_if_match(expected, current.config_version) {
-            return Err(e);
-        }
-        // Upsert status honesty: 201 only when the name is NEW; a same-grant re-register (an
-        // idempotent refresh) is a 200 replace — standard upsert semantics, so POST/PUT overlap is
-        // explicit.
-        let existed = current.hook_registry.contains_key(&txn_name);
-        let installed = Arc::new(build_with_hook(current, &txn_name, cfg)?);
-        // PERSIST-then-SWAP, fail-closed: `commit` records the new hook state to the overlay FIRST;
-        // only if disk takes it does the engine swap. A persist failure aborts the transaction and
-        // swaps nothing (the running engine is untouched). Clear any tombstone for this name — a
-        // re-register un-deletes it. Persist args are sourced from the CANDIDATE (`installed`),
-        // which IS the state we are about to make live.
-        let p = installed.clone();
-        Ok(txn.commit(
-            installed.clone(),
-            move || {
-                crate::config::overlay::persist(
-                    p.overlay_path.as_deref(),
-                    &p.hook_registry,
-                    &p.global_hooks,
-                    None,
-                    Some(&txn_name),
-                    &p.base_hook_names,
-                )
-                .map_err(|e| {
-                    format!(
-                        "hook could not be persisted to the overlay: {e}; nothing was changed (the \
-                         running engine is unaffected)"
-                    )
-                })
-            },
-            (installed, existed),
-        ))
-    })
-    .await;
-    match out {
-        Ok((installed, existed)) => {
+    let _mlock = CONFIG_MUTATION_LOCK.lock().await;
+    let current = handle.load();
+    let resource = format!("hook:{}", req.name);
+    // A base-config-defined hook may NOT be shadowed/redirected via the API — the same guard PUT
+    // and PATCH enforce (put_hook / patch_hook_settings). Without it a narrow hooks-register token
+    // could POST a same-shape definition over a base hook's name and silently redirect its
+    // transport (e.g. point a base `pii-guard` gate at a hostile socket). Edit config.yaml for base
+    // hooks. (found: audit c1r5 — register was the one mutation verb missing this check.)
+    if current.base_hook_names.contains(&req.name) {
+        audit::AUDIT.record_by("hook.register", &resource, audit::OUTCOME_REJECTED, &actor);
+        return err_json(&AdminError::Conflict(format!(
+            "hook `{}` is defined in the base config file; edit config.yaml (the API cannot \
+             silently shadow operator file config)",
+            req.name
+        )));
+    }
+    if let Some(e) = stale_if_match(expected, current.config_version) {
+        audit::AUDIT.record_by("hook.register", &resource, audit::OUTCOME_REJECTED, &actor);
+        return err_json(&e);
+    }
+    // Upsert status honesty: 201 only when the name is NEW; a same-grant re-register (an idempotent
+    // refresh) is a 200 replace — standard upsert semantics, so POST/PUT overlap is explicit.
+    let existed = current.hook_registry.contains_key(&req.name);
+    match build_with_hook(&current, &req.name, req.config) {
+        Ok(next) => {
+            let installed = Arc::new(next);
+            handle.swap(installed.clone());
             audit::AUDIT.record_by("hook.register", &resource, audit::OUTCOME_APPLIED, &actor);
+            // Persist the new hook state to the overlay (best-effort; no-op when persistence disabled).
+            // Clear any tombstone for this name — a re-register un-deletes it.
+            let cur = handle.load();
             installed.versions.record(
                 installed.config_version,
                 &actor,
                 &format!("hook.register {resource}"),
                 &installed.hook_registry,
                 &installed.global_hooks,
+            );
+            crate::config::overlay::persist(
+                cur.overlay_path.as_deref(),
+                &cur.hook_registry,
+                &cur.global_hooks,
+                None,
+                Some(&req.name),
             );
             // Project the registered hook from the NEW (post-swap) snapshot for the 201 body; the
             // new config-plane ETag rides along so the caller chains its next If-Match without a read.
@@ -711,7 +611,7 @@ pub(crate) async fn register_hook(
                     } else {
                         StatusCode::CREATED
                     },
-                    service(&handle).get_hook(&name).await,
+                    service(&handle).get_hook(&req.name).await,
                 ),
                 installed.config_version,
             )
@@ -726,7 +626,7 @@ pub(crate) async fn register_hook(
 /// `PUT /api/v1/admin/hooks/{name}` — REPLACE an existing hook definition at runtime (live, atomic
 /// swap). `404 not_found` for an unregistered name (PUT replaces; POST creates). `409 conflict`
 /// for a BASE-defined hook (operator file config is edited in the file, never silently shadowed
-/// via the API) and for a grant change (`kind`/`prompt`/`user` are immutable —, enforced in
+/// via the API) and for a grant change (`kind`/`prompt`/`user` are immutable — §6.4, enforced in
 /// `build_with_hook`). Audited + versioned + overlay-persisted like every mutation.
 pub(crate) async fn put_hook(
     State(handle): State<Arc<AppHandle>>,
@@ -745,7 +645,7 @@ pub(crate) async fn put_hook(
         Ok(r) => r,
         Err(e) => return err_json(&AdminError::Validation(format!("malformed hook body: {e}"))),
     };
-    // A hooks-register principal may not replace a hook into a content-seeing / global form.
+    // §6.3: a hooks-register principal may not replace a hook into a content-seeing / global form.
     if let Some(e) = hooks_register_escalation(scope, &req.config) {
         audit::AUDIT.record_by(
             "hook.replace",
@@ -755,60 +655,45 @@ pub(crate) async fn put_hook(
         );
         return err_json(&e);
     }
+    let _mlock = CONFIG_MUTATION_LOCK.lock().await;
+    let current = handle.load();
     let resource = format!("hook:{name}");
-    let cfg = req.config;
-    let txn_name = name.clone();
-    let out = config_transaction(&handle, move |txn| {
-        let current = txn.app();
-        if !current.hook_registry.contains_key(&txn_name) {
-            // Audit the 404 like every other reject in this handler (and like DELETE's 404) —
-            // otherwise an attacker can probe which hook names exist via the response code with no
-            // audit trail.
-            return Err(AdminError::not_found(format!("hook `{txn_name}`")));
-        }
-        if current.base_hook_names.contains(&txn_name) {
-            return Err(AdminError::Conflict(format!(
-                "hook `{txn_name}` is defined in the base config file; edit config.yaml (the API \
-                 cannot silently shadow operator file config)"
-            )));
-        }
-        if let Some(e) = stale_if_match(expected, current.config_version) {
-            return Err(e);
-        }
-        let installed = Arc::new(build_with_hook(current, &txn_name, cfg)?);
-        // PERSIST-then-SWAP, fail-closed (see hook.register / AppHandle::commit_and_swap).
-        let p = installed.clone();
-        Ok(txn.commit(
-            installed.clone(),
-            move || {
-                crate::config::overlay::persist(
-                    p.overlay_path.as_deref(),
-                    &p.hook_registry,
-                    &p.global_hooks,
-                    None,
-                    Some(&txn_name),
-                    &p.base_hook_names,
-                )
-                .map_err(|e| {
-                    format!(
-                        "hook could not be persisted to the overlay: {e}; nothing was changed (the \
-                         running engine is unaffected)"
-                    )
-                })
-            },
-            installed,
-        ))
-    })
-    .await;
-    match out {
-        Ok(installed) => {
+    if !current.hook_registry.contains_key(&name) {
+        // Audit the 404 like every other reject in this handler (and like DELETE's 404) — otherwise
+        // an attacker can probe which hook names exist via the response code with no audit trail.
+        audit::AUDIT.record_by("hook.replace", &resource, audit::OUTCOME_REJECTED, &actor);
+        return err_json(&AdminError::NotFound(format!("hook `{name}`")));
+    }
+    if current.base_hook_names.contains(&name) {
+        audit::AUDIT.record_by("hook.replace", &resource, audit::OUTCOME_REJECTED, &actor);
+        return err_json(&AdminError::Conflict(format!(
+            "hook `{name}` is defined in the base config file; edit config.yaml (the API cannot \
+             silently shadow operator file config)"
+        )));
+    }
+    if let Some(e) = stale_if_match(expected, current.config_version) {
+        audit::AUDIT.record_by("hook.replace", &resource, audit::OUTCOME_REJECTED, &actor);
+        return err_json(&e);
+    }
+    match build_with_hook(&current, &name, req.config) {
+        Ok(next) => {
+            let installed = Arc::new(next);
+            handle.swap(installed.clone());
             audit::AUDIT.record_by("hook.replace", &resource, audit::OUTCOME_APPLIED, &actor);
+            let cur = handle.load();
             installed.versions.record(
                 installed.config_version,
                 &actor,
                 &format!("hook.replace {resource}"),
                 &installed.hook_registry,
                 &installed.global_hooks,
+            );
+            crate::config::overlay::persist(
+                cur.overlay_path.as_deref(),
+                &cur.hook_registry,
+                &cur.global_hooks,
+                None,
+                Some(&name),
             );
             with_config_etag(
                 respond(StatusCode::OK, service(&handle).get_hook(&name).await),
@@ -839,81 +724,65 @@ pub(crate) async fn delete_hook(
         Ok(v) => v,
         Err(resp) => return resp,
     };
+    let _mlock = CONFIG_MUTATION_LOCK.lock().await;
+    let current = handle.load();
     let resource = format!("hook:{name}");
-    let txn_name = name.clone();
-    let out = config_transaction(&handle, move |txn| {
-        let current = txn.app();
-        // EXISTENCE before the concurrency guard — the same status precedence PUT/PATCH use, so all
-        // three verbs answer a stale guard on a nonexistent hook identically (404, not 409).
-        if !current.hook_registry.contains_key(&txn_name) {
-            return Err(AdminError::not_found(format!("hook `{txn_name}`")));
+    // EXISTENCE before the concurrency guard — the same status precedence PUT/PATCH use, so all
+    // three verbs answer a stale guard on a nonexistent hook identically (404, not 409).
+    if !current.hook_registry.contains_key(&name) {
+        audit::AUDIT.record_by("hook.delete", &resource, audit::OUTCOME_REJECTED, &actor);
+        return err_json(&AdminError::NotFound(format!("hook `{name}`")));
+    }
+    // Optimistic concurrency (H3): DELETE honors `If-Match` like every other config-plane mutation
+    // (it previously had NO guard — the one mutation verb missing it).
+    if let Some(e) = stale_if_match(expected, current.config_version) {
+        audit::AUDIT.record_by("hook.delete", &resource, audit::OUTCOME_REJECTED, &actor);
+        return err_json(&e);
+    }
+    // §6.3 escalation guard, keyed on the EXISTING hook's grants — a non-Full (hooks-register)
+    // principal may not DELETE a content-seeing (`prompt`/`user`) or `global: true` gate. Such a
+    // hook can only have been created by a Full admin (register/put block a narrow token from wiring
+    // one), and DELETING it TEARS DOWN that admin's security gate — the same escalation register /
+    // put / patch already forbid. Without this a hooks-register token could remove an operator's
+    // global `pii-guard` gate and reach content by the back door. (found: audit c1r13; the sibling
+    // c1r6 fix closed the PATCH path — DELETE was the remaining verb missing the guard.)
+    if let Some(existing) = current.hook_registry.get(&name) {
+        if let Some(e) = hooks_register_escalation(scope, existing) {
+            audit::AUDIT.record_by("hook.delete", &resource, audit::OUTCOME_REJECTED, &actor);
+            return err_json(&e);
         }
-        // Escalation guard, keyed on the EXISTING hook's grants — a non-Full (hooks-register)
-        // principal may not DELETE a content-seeing (`prompt`/`user`) or `global: true` gate. Such a
-        // hook can only have been created by a Full admin (register/put block a narrow token from
-        // wiring one), and DELETING it TEARS DOWN that admin's security gate — the same escalation
-        // register / put / patch already forbid. Without this a hooks-register token could remove an
-        // operator's global `pii-guard` gate and reach content by the back door.
-        //
-        // BEFORE the staleness check, matching `put_hook`'s escalation guard (checked before the
-        // transaction even opens): a principal that may never delete this hook must not be told
-        // "retry with a fresher ETag" — 403 is terminal regardless of which version the client held.
-        if let Some(existing) = current.hook_registry.get(&txn_name) {
-            if let Some(e) = hooks_register_escalation(scope, existing) {
-                return Err(e);
-            }
-        }
-        // Base-config guard BEFORE the If-Match staleness check, matching the precedence `put_hook`
-        // and `delete_group` establish on this resource: a base-config hook can NEVER be deleted via
-        // the API, so that terminal `conflict` must win over the retryable `version_conflict`. The
-        // prior order returned `version_conflict` for a stale-ETag DELETE on a base hook, trapping an
-        // auto-retry-on-conflict client in a re-read/retry loop that never sees the terminal error.
-        if current.base_hook_names.contains(&txn_name) {
-            return Err(AdminError::Conflict(format!(
-                "hook `{txn_name}` is defined in the base config file; edit config.yaml (the API \
-                 cannot silently shadow operator file config)"
-            )));
-        }
-        // Optimistic concurrency (H3): DELETE honors `If-Match` like every other config-plane
-        // mutation (it previously had NO guard — the one mutation verb missing it).
-        if let Some(e) = stale_if_match(expected, current.config_version) {
-            return Err(e);
-        }
-        let installed = Arc::new(build_without_hook(current, &txn_name)?);
-        // PERSIST-then-SWAP, fail-closed. Tombstone this name (arg `Some(&name)`) so the deletion
-        // survives a restart even if the hook was base-defined.
-        let p = installed.clone();
-        Ok(txn.commit(
-            installed.clone(),
-            move || {
-                crate::config::overlay::persist(
-                    p.overlay_path.as_deref(),
-                    &p.hook_registry,
-                    &p.global_hooks,
-                    Some(&txn_name),
-                    None,
-                    &p.base_hook_names,
-                )
-                .map_err(|e| {
-                    format!(
-                        "hook deletion could not be persisted to the overlay: {e}; nothing was \
-                         changed (the running engine is unaffected)"
-                    )
-                })
-            },
-            installed,
-        ))
-    })
-    .await;
-    match out {
-        Ok(installed) => {
+    }
+    // A base-config hook is read-only via the API (consistent with put_hook / patch_hook_settings).
+    // Without this a narrow hooks-register token could DELETE an operator's base-defined security
+    // gate (e.g. `pii-guard`) — an escalation beyond "register" — and the additive overlay can't
+    // durably subtract a base hook anyway. Edit config.yaml. (found: audit c1r5.)
+    if current.base_hook_names.contains(&name) {
+        audit::AUDIT.record_by("hook.delete", &resource, audit::OUTCOME_REJECTED, &actor);
+        return err_json(&AdminError::Conflict(format!(
+            "hook `{name}` is defined in the base config file; edit config.yaml (the API cannot \
+             silently shadow operator file config)"
+        )));
+    }
+    match build_without_hook(&current, &name) {
+        Ok(next) => {
+            let installed = Arc::new(next);
+            handle.swap(installed.clone());
             audit::AUDIT.record_by("hook.delete", &resource, audit::OUTCOME_APPLIED, &actor);
+            // Tombstone this name so the deletion survives a restart even if the hook was base-defined.
+            let cur = handle.load();
             installed.versions.record(
                 installed.config_version,
                 &actor,
                 &format!("hook.delete {resource}"),
                 &installed.hook_registry,
                 &installed.global_hooks,
+            );
+            crate::config::overlay::persist(
+                cur.overlay_path.as_deref(),
+                &cur.hook_registry,
+                &cur.global_hooks,
+                Some(&name),
+                None,
             );
             // 204 still carries the NEW config-plane ETag — a scripted delete chain needs no re-read.
             with_config_etag(
@@ -929,30 +798,31 @@ pub(crate) async fn delete_hook(
 }
 
 /// Resolve — and if needed AUTO-PROVISION — the group a `POST /keys` mint binds to (self-service
-/// D2). The mint-time group contract, one place, shared by the key handler:
+/// D2, §6a). The mint-time group contract, one place, shared by the key handler:
 ///
-/// - group EXISTS, no `parent` given → bind as-is (`Ok(None)`, nothing to provision).
-/// - group EXISTS, `parent` given → the given parent MUST equal the group's actual parent, else
-///   `409 conflict` (a portal must not silently re-home an existing leaf under a different team).
-/// - group MISSING, `parent` given → return the CANDIDATE `App` that creates it as a leaf under
-///   `parent`, limits stamped from the nearest-ancestor `child_default` (inherit-only when none),
-///   via the SAME `build_with_group` validate-at-the-door path every group write uses (so
-///   validation / cost rebuild / base-shadow guard all hold).
-/// - group MISSING, no `parent` → today's `400` (an unknown group with nowhere to root it).
+///   - group EXISTS, no `parent` given → bind as-is (`provisioned: false`).
+///   - group EXISTS, `parent` given → the given parent MUST equal the group's actual parent, else
+///     `409 conflict` (a portal must not silently re-home an existing leaf under a different team).
+///   - group MISSING, `parent` given → CREATE it as a leaf under `parent`, limits stamped from the
+///     nearest-ancestor `child_default` (inherit-only when none), via the SAME `build_with_group`
+///     validate-at-the-door path every group write uses (so validation / cost rebuild / version log
+///     / overlay persistence / base-shadow guard all hold), then bind (`provisioned: true`).
+///   - group MISSING, no `parent` → today's `400` (an unknown group with nowhere to root it).
 ///
-/// PURE and SYNCHRONOUS: it decides against the snapshot it is handed and returns a plan. It takes
-/// no lock and performs no swap — the caller runs it INSIDE `config_transaction`, so the existence
-/// check, the provisioning swap and the key's store write share ONE continuous lock hold. The
-/// earlier shape took the mutation lock itself and RELEASED it on return, which is exactly why the
-/// mint had to re-acquire and re-verify the group by hand; there is nothing left to re-verify
-/// because the lock is never released between the check and the bind. `parent` is capped at
-/// `MAX_GROUP_NAME_LEN` (a registry key / audit row).
-pub(crate) fn plan_mint_group(
-    current: &Arc<crate::state::App>,
+/// Runs the create under `CONFIG_MUTATION_LOCK` (serialized with every other group/config mutation)
+/// and re-loads INSIDE the lock, so a concurrent create of the same leaf is a benign no-op (the
+/// second caller sees it exists and binds). Audited + versioned + overlay-persisted exactly like an
+/// explicit `POST /groups`. `parent` is capped at `MAX_GROUP_NAME_LEN` (a registry key / audit row).
+///
+/// Returns `Ok(true)` when a leaf was auto-provisioned for this mint, `Ok(false)` when the group
+/// already existed (bind as-is).
+pub(crate) async fn resolve_mint_group(
+    handle: &Arc<AppHandle>,
     group: &str,
     parent: Option<&str>,
     actor: &str,
-) -> Result<Option<Arc<crate::state::App>>, AdminError> {
+) -> Result<bool, AdminError> {
+    let current = handle.load();
     // Fast path: the group already exists (existence is the ENFORCEMENT truth — `cost.group_named`,
     // the exact check every request admission uses — so a mint never binds a group the chain can't
     // resolve). If a `parent` was named it must match the existing parent (never silently re-home an
@@ -975,7 +845,7 @@ pub(crate) fn plan_mint_group(
                 )));
             }
         }
-        return Ok(None);
+        return Ok(false);
     }
     // The group does NOT exist. Without a `parent` there is nowhere to root it — today's 400 stands
     // (mirrors the pre-auto-provision message, but points at the self-service `parent:` field).
@@ -992,6 +862,24 @@ pub(crate) fn plan_mint_group(
             parent.len(),
             crate::admin::v1::service::MAX_GROUP_NAME_LEN
         )));
+    }
+    // AUTO-PROVISION under the mutation lock (serialized with /groups + /config writes). Re-load
+    // INSIDE the lock so we build against the freshest tree and a concurrent create of the same leaf
+    // is caught (benign: bind to it).
+    let _mlock = CONFIG_MUTATION_LOCK.lock().await;
+    let current = handle.load();
+    if current.cost.group_named(group).is_some() {
+        // A racing mint created it between our read and the lock. Honor the same parent-match rule.
+        let actual = current
+            .groups_registry
+            .get(group)
+            .and_then(|g| g.parent.clone());
+        if actual.as_deref() != Some(parent) {
+            return Err(AdminError::Conflict(format!(
+                "group `{group}` was concurrently created with a different parent than `{parent}`"
+            )));
+        }
+        return Ok(false);
     }
     // The named parent must exist — build_with_group's validate-at-the-door would reject a dangling
     // parent as a 400, but name it precisely here (the mint's parent, not an opaque tree error).
@@ -1011,63 +899,31 @@ pub(crate) fn plan_mint_group(
              silently shadow operator file config)"
         )));
     }
-    // ANTI-SPRAWL CEILING ON THE TREE'S SHAPE. `max_keys_per_principal` bounds
-    // how many keys a group holds but says nothing about how many GROUPS exist, so a `mint`-scope
-    // credential could grow the limit tree without bound — every auto-provisioned `user:<sub>` leaf
-    // is a new enforcement bucket, a new version-log entry and a new persisted overlay row.
-    // `limits.max_auto_provisioned_groups` (0 = unlimited, the default) caps the runtime group set
-    // this path may grow. Checked HERE, inside the transaction, against the same fresh snapshot the
-    // existence check reads, so N concurrent self-mints cannot jointly overshoot. Explicitly
-    // configured groups are unaffected: only auto-provisioning is gated.
-    let ceiling = current.max_auto_provisioned_groups;
-    if ceiling > 0 && current.groups_registry.len() >= ceiling {
-        return Err(AdminError::Conflict(format!(
-            "cannot auto-provision `{group}`: this server already has {} group(s), at the \
-             `limits.max_auto_provisioned_groups` ceiling of {ceiling}. Delete an unused group, \
-             raise the ceiling, or bind the key to an existing group",
-            current.groups_registry.len(),
-        )));
-    }
     let leaf = crate::config::groups::provision_child(&current.groups_registry, parent);
-    match build_with_group(current, group, leaf) {
-        Ok(next) => Ok(Some(Arc::new(next))),
-        Err(e) => {
-            // Same audit row the explicit `POST /groups` writes when its build is rejected.
-            audit::AUDIT.record_by(
-                "group.provision",
-                &format!("group:{group}"),
-                audit::OUTCOME_REJECTED,
+    let resource = format!("group:{group}");
+    match build_with_group(&current, group, leaf) {
+        Ok(next) => {
+            let installed = Arc::new(next);
+            handle.swap(installed.clone());
+            audit::AUDIT.record_by("group.provision", &resource, audit::OUTCOME_APPLIED, actor);
+            let cur = handle.load();
+            record_group_version(
+                &installed,
                 actor,
+                &format!("group.provision {resource} (auto, parent {parent})"),
             );
+            crate::config::overlay::persist_groups(
+                cur.overlay_path.as_deref(),
+                &cur.groups_registry,
+                None,
+                Some(group),
+            );
+            Ok(true)
+        }
+        Err(e) => {
+            audit::AUDIT.record_by("group.provision", &resource, audit::OUTCOME_REJECTED, actor);
             Err(e)
         }
-    }
-}
-
-/// The overlay persist a mint's auto-provisioned group leaf commits (PERSIST-then-SWAP, fail-closed
-/// — the same discipline and the same wording as an explicit `POST /groups`).
-pub(crate) fn persist_provisioned_group(
-    installed: Arc<crate::state::App>,
-    group: String,
-    actor: String,
-) -> impl FnOnce() -> Result<(), String> + Send + 'static {
-    move || {
-        crate::config::overlay::persist_groups(
-            installed.overlay_path.as_deref(),
-            &installed.groups_registry,
-            None,
-            Some(&group),
-            &installed.base_group_names,
-        )
-        .map_err(|e| {
-            audit::AUDIT.record_by(
-                "group.provision",
-                &format!("group:{group}"),
-                audit::OUTCOME_REJECTED,
-                &actor,
-            );
-            format!("group could not be persisted to the overlay: {e}; nothing was changed")
-        })
     }
 }
 
@@ -1097,54 +953,38 @@ pub(crate) async fn register_group(
             )))
         }
     };
-    let name = req.name.clone();
-    let resource = format!("group:{name}");
-    let cfg = req.config;
-    let txn_name = name.clone();
-    let out = config_transaction(&handle, move |txn| {
-        let current = txn.app();
-        // A base-config group is file-owned: the additive overlay cannot durably shadow it, and a
-        // narrow token must not silently redirect a base group's limits. Edit config.yaml. (Mirrors
-        // hooks.)
-        if current.base_group_names.contains(&txn_name) {
-            return Err(AdminError::Conflict(format!(
-                "group `{txn_name}` is defined in the base config file; edit config.yaml (the API \
-                 cannot silently shadow operator file config)"
-            )));
-        }
-        if let Some(e) = stale_if_match(expected, current.config_version) {
-            return Err(e);
-        }
-        let existed = current.groups_registry.contains_key(&txn_name);
-        let installed = Arc::new(build_with_group(current, &txn_name, cfg)?);
-        // PERSIST-then-SWAP, fail-closed. Persist the whole groups section; clear any tombstone
-        // for this name (re-create un-deletes).
-        let p = installed.clone();
-        Ok(txn.commit(
-            installed.clone(),
-            move || {
-                crate::config::overlay::persist_groups(
-                    p.overlay_path.as_deref(),
-                    &p.groups_registry,
-                    None,
-                    Some(&txn_name),
-                    &p.base_group_names,
-                )
-                .map_err(|e| {
-                    format!(
-                        "group could not be persisted to the overlay: {e}; nothing was changed (the \
-                         running engine is unaffected)"
-                    )
-                })
-            },
-            (installed, existed),
-        ))
-    })
-    .await;
-    match out {
-        Ok((installed, existed)) => {
+    let _mlock = CONFIG_MUTATION_LOCK.lock().await;
+    let current = handle.load();
+    let resource = format!("group:{}", req.name);
+    // A base-config group is file-owned: the additive overlay cannot durably shadow it, and a narrow
+    // token must not silently redirect a base group's limits. Edit config.yaml. (Mirrors hooks.)
+    if current.base_group_names.contains(&req.name) {
+        audit::AUDIT.record_by("group.create", &resource, audit::OUTCOME_REJECTED, &actor);
+        return err_json(&AdminError::Conflict(format!(
+            "group `{}` is defined in the base config file; edit config.yaml (the API cannot \
+             silently shadow operator file config)",
+            req.name
+        )));
+    }
+    if let Some(e) = stale_if_match(expected, current.config_version) {
+        audit::AUDIT.record_by("group.create", &resource, audit::OUTCOME_REJECTED, &actor);
+        return err_json(&e);
+    }
+    let existed = current.groups_registry.contains_key(&req.name);
+    match build_with_group(&current, &req.name, req.config) {
+        Ok(next) => {
+            let installed = Arc::new(next);
+            handle.swap(installed.clone());
             audit::AUDIT.record_by("group.create", &resource, audit::OUTCOME_APPLIED, &actor);
+            let cur = handle.load();
             record_group_version(&installed, &actor, &format!("group.create {resource}"));
+            // Persist the whole groups section; clear any tombstone for this name (re-create un-deletes).
+            crate::config::overlay::persist_groups(
+                cur.overlay_path.as_deref(),
+                &cur.groups_registry,
+                None,
+                Some(&req.name),
+            );
             with_config_etag(
                 respond(
                     if existed {
@@ -1152,7 +992,7 @@ pub(crate) async fn register_group(
                     } else {
                         StatusCode::CREATED
                     },
-                    service(&handle).get_group(&name).await,
+                    service(&handle).get_group(&req.name).await,
                 ),
                 installed.config_version,
             )
@@ -1187,51 +1027,37 @@ pub(crate) async fn put_group(
             )))
         }
     };
+    let _mlock = CONFIG_MUTATION_LOCK.lock().await;
+    let current = handle.load();
     let resource = format!("group:{name}");
-    let cfg = req.config;
-    let txn_name = name.clone();
-    let out = config_transaction(&handle, move |txn| {
-        let current = txn.app();
-        if !current.groups_registry.contains_key(&txn_name) {
-            return Err(AdminError::not_found(format!("group `{txn_name}`")));
-        }
-        if current.base_group_names.contains(&txn_name) {
-            return Err(AdminError::Conflict(format!(
-                "group `{txn_name}` is defined in the base config file; edit config.yaml (the API \
-                 cannot silently shadow operator file config)"
-            )));
-        }
-        if let Some(e) = stale_if_match(expected, current.config_version) {
-            return Err(e);
-        }
-        let installed = Arc::new(build_with_group(current, &txn_name, cfg)?);
-        // PERSIST-then-SWAP, fail-closed.
-        let p = installed.clone();
-        Ok(txn.commit(
-            installed.clone(),
-            move || {
-                crate::config::overlay::persist_groups(
-                    p.overlay_path.as_deref(),
-                    &p.groups_registry,
-                    None,
-                    Some(&txn_name),
-                    &p.base_group_names,
-                )
-                .map_err(|e| {
-                    format!(
-                        "group could not be persisted to the overlay: {e}; nothing was changed (the \
-                         running engine is unaffected)"
-                    )
-                })
-            },
-            installed,
-        ))
-    })
-    .await;
-    match out {
-        Ok(installed) => {
+    if !current.groups_registry.contains_key(&name) {
+        audit::AUDIT.record_by("group.replace", &resource, audit::OUTCOME_REJECTED, &actor);
+        return err_json(&AdminError::NotFound(format!("group `{name}`")));
+    }
+    if current.base_group_names.contains(&name) {
+        audit::AUDIT.record_by("group.replace", &resource, audit::OUTCOME_REJECTED, &actor);
+        return err_json(&AdminError::Conflict(format!(
+            "group `{name}` is defined in the base config file; edit config.yaml (the API cannot \
+             silently shadow operator file config)"
+        )));
+    }
+    if let Some(e) = stale_if_match(expected, current.config_version) {
+        audit::AUDIT.record_by("group.replace", &resource, audit::OUTCOME_REJECTED, &actor);
+        return err_json(&e);
+    }
+    match build_with_group(&current, &name, req.config) {
+        Ok(next) => {
+            let installed = Arc::new(next);
+            handle.swap(installed.clone());
             audit::AUDIT.record_by("group.replace", &resource, audit::OUTCOME_APPLIED, &actor);
+            let cur = handle.load();
             record_group_version(&installed, &actor, &format!("group.replace {resource}"));
+            crate::config::overlay::persist_groups(
+                cur.overlay_path.as_deref(),
+                &cur.groups_registry,
+                None,
+                Some(&name),
+            );
             with_config_etag(
                 respond(StatusCode::OK, service(&handle).get_group(&name).await),
                 installed.config_version,
@@ -1269,60 +1095,45 @@ pub(crate) async fn patch_group(
             )))
         }
     };
+    let _mlock = CONFIG_MUTATION_LOCK.lock().await;
+    let current = handle.load();
     let resource = format!("group:{name}");
-    let txn_name = name.clone();
-    let out = config_transaction(&handle, move |txn| {
-        let current = txn.app();
-        let Some(existing) = current.groups_registry.get(&txn_name) else {
-            return Err(AdminError::not_found(format!("group `{txn_name}`")));
-        };
-        if current.base_group_names.contains(&txn_name) {
-            return Err(AdminError::Conflict(format!(
-                "group `{txn_name}` is defined in the base config file; edit config.yaml (the API \
-                 cannot silently shadow operator file config)"
-            )));
-        }
-        if let Some(e) = stale_if_match(expected, current.config_version) {
-            return Err(e);
-        }
-        // Merge the provided fields onto the current definition; absent fields are preserved. The
-        // base being merged onto is the FRESH post-lock definition, so a concurrent PUT cannot be
-        // silently clobbered by a patch that read the group before the lock.
-        let merged = merge_group_patch(
-            existing.clone(),
-            req.parent,
-            req.enabled,
-            req.limits,
-            req.child_default,
-        );
-        let installed = Arc::new(build_with_group(current, &txn_name, merged)?);
-        // PERSIST-then-SWAP, fail-closed.
-        let p = installed.clone();
-        Ok(txn.commit(
-            installed.clone(),
-            move || {
-                crate::config::overlay::persist_groups(
-                    p.overlay_path.as_deref(),
-                    &p.groups_registry,
-                    None,
-                    Some(&txn_name),
-                    &p.base_group_names,
-                )
-                .map_err(|e| {
-                    format!(
-                        "group could not be persisted to the overlay: {e}; nothing was changed (the \
-                         running engine is unaffected)"
-                    )
-                })
-            },
-            installed,
-        ))
-    })
-    .await;
-    match out {
-        Ok(installed) => {
+    let Some(existing) = current.groups_registry.get(&name) else {
+        audit::AUDIT.record_by("group.patch", &resource, audit::OUTCOME_REJECTED, &actor);
+        return err_json(&AdminError::NotFound(format!("group `{name}`")));
+    };
+    if current.base_group_names.contains(&name) {
+        audit::AUDIT.record_by("group.patch", &resource, audit::OUTCOME_REJECTED, &actor);
+        return err_json(&AdminError::Conflict(format!(
+            "group `{name}` is defined in the base config file; edit config.yaml (the API cannot \
+             silently shadow operator file config)"
+        )));
+    }
+    if let Some(e) = stale_if_match(expected, current.config_version) {
+        audit::AUDIT.record_by("group.patch", &resource, audit::OUTCOME_REJECTED, &actor);
+        return err_json(&e);
+    }
+    // Merge the provided fields onto the current definition; absent fields are preserved.
+    let merged = merge_group_patch(
+        existing.clone(),
+        req.parent,
+        req.enabled,
+        req.limits,
+        req.child_default,
+    );
+    match build_with_group(&current, &name, merged) {
+        Ok(next) => {
+            let installed = Arc::new(next);
+            handle.swap(installed.clone());
             audit::AUDIT.record_by("group.patch", &resource, audit::OUTCOME_APPLIED, &actor);
+            let cur = handle.load();
             record_group_version(&installed, &actor, &format!("group.patch {resource}"));
+            crate::config::overlay::persist_groups(
+                cur.overlay_path.as_deref(),
+                &cur.groups_registry,
+                None,
+                Some(&name),
+            );
             with_config_etag(
                 respond(StatusCode::OK, service(&handle).get_group(&name).await),
                 installed.config_version,
@@ -1350,67 +1161,38 @@ pub(crate) async fn delete_group(
         Ok(v) => v,
         Err(resp) => return resp,
     };
+    let _mlock = CONFIG_MUTATION_LOCK.lock().await;
+    let current = handle.load();
     let resource = format!("group:{name}");
-    let txn_name = name.clone();
-    let out = config_transaction(&handle, move |txn| {
-        let current = txn.app();
-        if !current.groups_registry.contains_key(&txn_name) {
-            return Err(AdminError::not_found(format!("group `{txn_name}`")));
-        }
-        // Base-config guard BEFORE the If-Match staleness check, matching the precedence `put_group`
-        // and `patch_group` establish on this resource: a base-config group can NEVER be deleted via
-        // the API, so that terminal `conflict` must win over the retryable `version_conflict`. The
-        // prior order returned `version_conflict` for a stale-ETag DELETE on a base group, trapping
-        // an auto-retry-on-conflict client in a re-read/retry loop that never sees the terminal
-        // error.
-        if current.base_group_names.contains(&txn_name) {
-            return Err(AdminError::Conflict(format!(
-                "group `{txn_name}` is defined in the base config file; edit config.yaml (the API \
-                 cannot silently shadow operator file config)"
-            )));
-        }
-        if let Some(e) = stale_if_match(expected, current.config_version) {
-            return Err(e);
-        }
-        // The bound-key count is a synchronous, possibly plugin-backed `Store::list_keys()` scan of
-        // EVERY key. It is queued as a store READ: the closure runs on `spawn_blocking` — so the
-        // reactor keeps scheduling while a slow disk/DB answers — but still under the SAME guard, so
-        // the count, the tree validation and the swap are one atomic section. Nothing in the
-        // synchronous body above has a `&GovState`/`&dyn Store` to call this on, which is what makes
-        // "blocking under the async lock" a compile-time impossibility rather than a convention.
-        let snapshot = current.clone();
-        Ok(txn.read_store(move || {
-            let bound = crate::admin::v1::service::count_keys_bound_to(&snapshot, &txn_name)?;
-            let installed = Arc::new(build_without_group(&snapshot, &txn_name, bound)?);
-            // PERSIST-then-SWAP, fail-closed. Tombstone this name (arg `Some(&name)`) so the
-            // deletion survives a restart (the overlay is additive otherwise).
-            let p = installed.clone();
-            Ok(Outcome::commit(
-                installed.clone(),
-                move || {
-                    crate::config::overlay::persist_groups(
-                        p.overlay_path.as_deref(),
-                        &p.groups_registry,
-                        Some(&txn_name),
-                        None,
-                        &p.base_group_names,
-                    )
-                    .map_err(|e| {
-                        format!(
-                            "group deletion could not be persisted to the overlay: {e}; nothing was \
-                             changed (the running engine is unaffected)"
-                        )
-                    })
-                },
-                installed,
-            ))
-        }))
-    })
-    .await;
-    match out {
-        Ok(installed) => {
+    if !current.groups_registry.contains_key(&name) {
+        audit::AUDIT.record_by("group.delete", &resource, audit::OUTCOME_REJECTED, &actor);
+        return err_json(&AdminError::NotFound(format!("group `{name}`")));
+    }
+    if let Some(e) = stale_if_match(expected, current.config_version) {
+        audit::AUDIT.record_by("group.delete", &resource, audit::OUTCOME_REJECTED, &actor);
+        return err_json(&e);
+    }
+    if current.base_group_names.contains(&name) {
+        audit::AUDIT.record_by("group.delete", &resource, audit::OUTCOME_REJECTED, &actor);
+        return err_json(&AdminError::Conflict(format!(
+            "group `{name}` is defined in the base config file; edit config.yaml (the API cannot \
+             silently shadow operator file config)"
+        )));
+    }
+    match build_without_group(&current, &name) {
+        Ok(next) => {
+            let installed = Arc::new(next);
+            handle.swap(installed.clone());
             audit::AUDIT.record_by("group.delete", &resource, audit::OUTCOME_APPLIED, &actor);
+            let cur = handle.load();
             record_group_version(&installed, &actor, &format!("group.delete {resource}"));
+            // Tombstone this name so the deletion survives a restart (overlay is additive otherwise).
+            crate::config::overlay::persist_groups(
+                cur.overlay_path.as_deref(),
+                &cur.groups_registry,
+                Some(&name),
+                None,
+            );
             with_config_etag(
                 StatusCode::NO_CONTENT.into_response(),
                 installed.config_version,
@@ -1449,8 +1231,7 @@ pub(crate) async fn reset_overlay_section(
     // 400 (never masked by a header error). Unknown → invalid_request (the taxonomy's 400).
     let Some(section) = OverlaySection::parse(&section) else {
         return err_json(&AdminError::Validation(format!(
-            "unknown overlay section `{section}`: expected `groups`, `hooks`, `root`, or \
-             `plugin_versions`"
+            "unknown overlay section `{section}`: expected `groups`, `hooks`, or `root`"
         )));
     };
     let resource = format!("overlay:{}", section.as_str());
@@ -1458,180 +1239,121 @@ pub(crate) async fn reset_overlay_section(
         Ok(v) => v,
         Err(resp) => return resp,
     };
-    // ONE section: the If-Match re-validation, the idempotent-no-op probe, the disk rebuild, the
-    // overlay clear and the swap. The disk work (overlay read + `load_config_from_disk` + resolve +
-    // build) is a store/disk READ, so it is queued onto `spawn_blocking` — it used to run inline on
-    // a Tokio worker with the async mutation lock held, stalling the reactor for the whole rebuild.
-    let out = config_transaction(&handle, move |txn| {
-        let current = txn.app();
-        if let Some(e) = stale_if_match(expected, current.config_version) {
-            return Err(e);
+    let _mlock = CONFIG_MUTATION_LOCK.lock().await;
+    let current = handle.load();
+    if let Some(e) = stale_if_match(expected, current.config_version) {
+        audit::AUDIT.record_by("overlay.reset", &resource, audit::OUTCOME_REJECTED, &actor);
+        return err_json(&e);
+    }
+    // IDEMPOTENT NO-OP: if this section carries no overlay state (no API-applied entries AND no
+    // tombstones), the effective config already equals base for it — a reset changes nothing, so
+    // short-circuit a 200 without bumping the version or re-running the boot pipeline. With
+    // persistence disabled there is no overlay at all, so every section is definitionally empty.
+    let overlay_empty = match current.overlay_path.as_deref() {
+        None => true,
+        Some(p) => crate::config::overlay::read(p)
+            .map(|doc| doc.section_is_empty(section))
+            .unwrap_or(true),
+    };
+    if overlay_empty {
+        audit::AUDIT.record_by("overlay.reset", &resource, audit::OUTCOME_APPLIED, &actor);
+        return with_config_etag(
+            ok_json(
+                StatusCode::OK,
+                &json!({
+                    "reset": section.as_str(),
+                    "config_version": current.config_version,
+                    "changed": false
+                }),
+            ),
+            current.config_version,
+        );
+    }
+    // Re-run the BOOT disk-load pipeline to recover base `config.yaml` truth, then merge the CURRENT
+    // overlay with this section CLEARED — the sibling section's overlay entries/tombstones survive, the
+    // reset section reverts to base. This is the exact `config/reload` mechanism, minus one section.
+    let (Some(config_path), Some(providers_path)) =
+        (current.config_path.clone(), current.providers_path.clone())
+    else {
+        audit::AUDIT.record_by("overlay.reset", &resource, audit::OUTCOME_REJECTED, &actor);
+        return err_json(&AdminError::Validation(
+            "this busbar was started without config files (ephemeral mode); a per-section reset has \
+             no disk truth to revert to"
+                .into(),
+        ));
+    };
+    let outcome = crate::load_config_from_disk(
+        &config_path,
+        &providers_path,
+        false,
+        crate::config::EnvSubst::Strict,
+    )
+    .and_then(|mut loaded| {
+        // CLEAR the target section from the persisted overlay FIRST — that slice reverts to base, the
+        // other slices stay live. The clear happens before both merge halves so a `root` reset drops
+        // its DeployCfg-level overrides pre-resolve, and a `hooks`/`groups` reset drops its registry
+        // entries post-resolve.
+        let cleared_doc = loaded.overlay_doc.take().map(|mut doc| {
+            doc.clear_section(section);
+            doc
+        });
+        // Pre-resolve half: apply the (post-clear) root overrides onto the base DeployCfg, so the
+        // limits projection + admin-mTLS boot-guard re-derive over the merged shape.
+        if let Some(doc) = cleared_doc.as_ref() {
+            crate::config::overlay::apply_root_to_deploy(&mut loaded.deploy, doc);
         }
-        let snapshot = current.clone();
-        Ok(txn.read_store(move || {
-            // IDEMPOTENT NO-OP: if this section carries no overlay state (no API-applied entries AND
-            // no tombstones), the effective config already equals base for it — a reset changes
-            // nothing, so short-circuit a 200 without bumping the version or re-running the boot
-            // pipeline. This reads the overlay FILE, which is why it lives on the blocking side.
-            let overlay_empty = match snapshot.overlay_path.as_deref() {
-                None => true,
-                Some(p) => match crate::config::overlay::read_state(p) {
-                    crate::config::overlay::OverlayReadState::Absent => true,
-                    crate::config::overlay::OverlayReadState::Loaded(doc) => {
-                        doc.section_is_empty(section)
-                    }
-                    // A corrupt or too-new overlay is NOT "no overlay state". Reporting
-                    // `changed:false` would claim this section already equals base while the live
-                    // App may still carry it, and would skip the fail-closed `clear_section`
-                    // entirely (the asymmetry `rollback_plugin` and every persist path already
-                    // refuse on).
-                    crate::config::overlay::OverlayReadState::Unreadable => {
-                        return Err(AdminError::Validation(format!(
-                            "the config overlay at '{}' is present but unreadable/corrupt; refusing \
-                             to reset section `{}` (a reset probe over corrupt state cannot tell \
-                             whether this section still carries live overrides). Fix or remove the \
-                             overlay file, or restore it from backup, before resetting",
-                            p.display(),
-                            section.as_str()
-                        )));
-                    }
-                    crate::config::overlay::OverlayReadState::VersionTooNew(v) => {
-                        return Err(AdminError::Validation(format!(
-                            "the config overlay at '{}' was written by a NEWER busbar (version {v}) \
-                             than this one; refusing to reset section `{}` rather than silently \
-                             ignoring overrides this process cannot understand",
-                            p.display(),
-                            section.as_str()
-                        )));
-                    }
-                },
-            };
-            if overlay_empty {
-                return Ok(Outcome::Value((snapshot.config_version, None)));
-            }
-            // Re-run the BOOT disk-load pipeline to recover base `config.yaml` truth, then merge the
-            // CURRENT overlay with this section CLEARED. Ephemeral mode has no disk truth to revert
-            // to — the same 400 `config/reload` gives.
-            let (Some(config_path), Some(providers_path)) = (
-                snapshot.config_path.clone(),
-                snapshot.providers_path.clone(),
-            ) else {
-                return Err(AdminError::Validation(
-                    "this busbar was started without config files (ephemeral mode); a per-section \
-                     reset has no disk truth to revert to"
-                        .into(),
-                ));
-            };
-            let built = crate::load_config_from_disk(
-                &config_path,
-                &providers_path,
-                false,
-                crate::config::EnvSubst::Strict,
-            )
-            .and_then(|mut loaded| {
-                // CLEAR the target section from the persisted overlay FIRST — that slice reverts to
-                // base, the other slices stay live. The clear happens before both merge halves so a
-                // `root` reset drops its DeployCfg-level overrides pre-resolve, and a `hooks`/
-                // `groups` reset drops its registry entries post-resolve.
-                let cleared_doc = loaded.overlay_doc.take().map(|mut doc| {
-                    doc.clear_section(section);
-                    doc
-                });
-                // Pre-resolve half: apply the (post-clear) root overrides onto the base DeployCfg,
-                // so the limits projection + admin-mTLS boot-guard re-derive over the merged shape.
-                if let Some(doc) = cleared_doc.as_ref() {
-                    crate::config::overlay::apply_root_to_deploy(&mut loaded.deploy, doc);
-                }
-                let mut cfg = crate::config::resolve(&loaded.deploy, &loaded.defs)
-                    .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
-                let base_hook_names: std::collections::HashSet<String> =
-                    cfg.hooks.keys().cloned().collect();
-                let base_group_names: std::collections::HashSet<String> =
-                    cfg.groups.keys().cloned().collect();
-                // Post-resolve half: merge the (post-clear) hooks + groups sections onto the
-                // resolved config.
-                if let Some(doc) = cleared_doc {
-                    crate::config::overlay::merge_into(&mut cfg, doc);
-                }
-                crate::build_app_from_config(
-                    cfg,
-                    loaded.deploy.plugins.clone(),
-                    // Preserve the LIVE overlay path (not the env-derived one
-                    // `load_config_from_disk` returns) — the reset rewrites the same overlay file
-                    // the running App uses, exactly as `config/apply` preserves
-                    // `current.overlay_path`.
-                    snapshot.overlay_path.clone(),
-                    base_hook_names,
-                    base_group_names,
-                    (Some(config_path), Some(providers_path)),
-                    Some(&snapshot),
-                )
-            })
-            .map_err(AdminError::Validation)?;
-            let installed = Arc::new(built);
-            // PERSIST-THEN-SWAP (fail-closed), matching plugins/rollback's durability ordering:
-            // write the section-cleared overlay to disk BEFORE swapping the live App. A prior
-            // version swapped first and persisted after, so a crash in that window left the LIVE
-            // engine reverted while disk still carried the un-cleared overlay — a restart would
-            // silently re-apply the section the operator just reset (e.g. re-pin the
-            // plugin_versions they cleared). Persisting first means a crash before the swap comes
-            // up already reset (the safe direction). The installed App preserves
-            // `current.overlay_path`, so it names the same overlay file. (The sibling section is
-            // preserved verbatim by the read-modify-write inside `clear_section`.)
-            let p = installed.clone();
-            Ok(Outcome::commit(
-                installed.clone(),
-                move || {
-                    crate::config::overlay::clear_section(p.overlay_path.as_deref(), section)
-                        .map_err(|e| {
-                            format!(
-                                "overlay section reset could not be persisted: {e}; nothing was \
-                                 changed (the running engine is unaffected)"
-                            )
-                        })
-                },
-                (installed.config_version, Some(installed)),
-            ))
-        }))
-    })
-    .await;
-    match out {
-        Ok((version, None)) => {
-            audit::AUDIT.record_by("overlay.reset", &resource, audit::OUTCOME_APPLIED, &actor);
-            with_config_etag(
-                ok_json(
-                    StatusCode::OK,
-                    &json!({
-                        "reset": section.as_str(),
-                        "config_version": version,
-                        "changed": false
-                    }),
-                ),
-                version,
-            )
+        let mut cfg = crate::config::resolve(&loaded.deploy, &loaded.defs)
+            .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
+        let base_hook_names: std::collections::HashSet<String> =
+            cfg.hooks.keys().cloned().collect();
+        let base_group_names: std::collections::HashSet<String> =
+            cfg.groups.keys().cloned().collect();
+        // Post-resolve half: merge the (post-clear) hooks + groups sections onto the resolved config.
+        if let Some(doc) = cleared_doc {
+            crate::config::overlay::merge_into(&mut cfg, doc);
         }
-        Ok((version, Some(installed))) => {
+        crate::build_app_from_config(
+            cfg,
+            loaded.deploy.plugins.clone(),
+            // Preserve the LIVE overlay path (not the env-derived one `load_config_from_disk`
+            // returns) — the reset rewrites the same overlay file the running App uses, exactly as
+            // `config/apply` preserves `current.overlay_path`.
+            current.overlay_path.clone(),
+            base_hook_names,
+            base_group_names,
+            (Some(config_path), Some(providers_path)),
+            Some(&current),
+        )
+    });
+    match outcome {
+        Ok(next) => {
+            let installed = Arc::new(next);
+            handle.swap(installed.clone());
             audit::AUDIT.record_by("overlay.reset", &resource, audit::OUTCOME_APPLIED, &actor);
+            let cur = handle.load();
             record_group_version(
                 &installed,
                 &actor,
                 &format!("overlay.reset {} (revert to config.yaml)", section.as_str()),
             );
+            // Persist the section-cleared overlay so the revert survives a restart (the sibling
+            // section is preserved verbatim by the read-modify-write).
+            crate::config::overlay::clear_section(cur.overlay_path.as_deref(), section);
             with_config_etag(
                 ok_json(
                     StatusCode::OK,
                     &json!({
                         "reset": section.as_str(),
-                        "config_version": version,
+                        "config_version": cur.config_version,
                         "changed": true
                     }),
                 ),
-                version,
+                cur.config_version,
             )
         }
         Err(e) => {
             audit::AUDIT.record_by("overlay.reset", &resource, audit::OUTCOME_REJECTED, &actor);
-            err_json(&e)
+            err_json(&AdminError::Validation(e))
         }
     }
 }
@@ -1685,7 +1407,7 @@ pub(crate) async fn get_audit(
         .get("limit")
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(crate::admin::v1::contract::LIST_LIMIT_DEFAULT)
-        .clamp(1, crate::admin::v1::contract::LIST_LIMIT_MAX);
+        .min(crate::admin::v1::contract::LIST_LIMIT_MAX);
     let start = match cursor_offset(&q) {
         Ok(n) => n,
         Err(resp) => return resp,
@@ -1711,7 +1433,7 @@ pub(crate) async fn list_config_versions(
         .get("limit")
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(crate::admin::v1::contract::VERSIONS_LIMIT_DEFAULT)
-        .clamp(1, crate::admin::v1::contract::LIST_LIMIT_MAX);
+        .min(crate::admin::v1::contract::LIST_LIMIT_MAX);
     let start = match cursor_offset(&q) {
         Ok(n) => n,
         Err(resp) => return resp,
@@ -1741,7 +1463,7 @@ pub(crate) async fn get_config_version(
         Some(cv) => {
             // Project the snapshot through the ONE wire HookView shape (against the SNAPSHOT's own
             // global wiring) — never the raw HookCfg file shape, so a consumer parses hooks with a
-            // single schema whether it reads /hooks or a retained version.
+            // single schema whether it reads /hooks or a retained version (re-audit M6).
             let hooks: std::collections::BTreeMap<&String, _> = cv
                 .hook_registry
                 .iter()
@@ -1764,7 +1486,7 @@ pub(crate) async fn get_config_version(
                 }),
             )
         }
-        None => err_json(&AdminError::not_found(format!(
+        None => err_json(&AdminError::NotFound(format!(
             "config version {v} (pruned or never recorded)"
         ))),
     }
@@ -1790,7 +1512,7 @@ pub(crate) async fn config_diff(
     let a = match app.versions.get(from) {
         Some(v) => v,
         None => {
-            return err_json(&AdminError::not_found(format!(
+            return err_json(&AdminError::NotFound(format!(
                 "config version {from} (pruned or never recorded)"
             )))
         }
@@ -1798,7 +1520,7 @@ pub(crate) async fn config_diff(
     let b = match app.versions.get(to) {
         Some(v) => v,
         None => {
-            return err_json(&AdminError::not_found(format!(
+            return err_json(&AdminError::NotFound(format!(
                 "config version {to} (pruned or never recorded)"
             )))
         }
@@ -1839,29 +1561,8 @@ pub(crate) async fn config_diff(
     ok_json(StatusCode::OK, &body)
 }
 
-/// The `PUT /api/v1/admin/admin-auth` body: the replacement admin auth chain.
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
-pub(crate) struct PutAuthBody {
-    /// The ordered admin auth module chain. Empty is the explicit open dev posture.
-    admin_auth: Vec<String>,
-}
-
-/// The `POST /api/v1/admin/auth/cache/flush` body. An absent body (or an absent `module`) flushes
-/// every partition. Deliberately NOT `deny_unknown_fields`: the endpoint has always ignored extra
-/// members, and tightening that would reject a call that works today.
-#[derive(serde::Deserialize)]
-#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
-pub(crate) struct FlushCacheReq {
-    /// The auth module whose cache partition to flush. Omitted = flush all.
-    #[serde(default)]
-    module: Option<String>,
-}
-
 /// The `POST /api/v1/admin/config/rollback` request body. Optimistic concurrency rides `If-Match` (H3).
 #[derive(serde::Deserialize)]
-#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub(crate) struct RollbackReq {
     /// The retained version to restore.
     version: u64,
@@ -1890,53 +1591,36 @@ pub(crate) async fn rollback_config(
             )))
         }
     };
+    let _mlock = CONFIG_MUTATION_LOCK.lock().await;
+    let current = handle.load();
     let resource = format!("config:v{}", req.version);
-    let want = req.version;
-    let out = config_transaction(&handle, move |txn| {
-        let current = txn.app();
-        if let Some(e) = stale_if_match(expected, current.config_version) {
-            return Err(e);
-        }
-        let Some(target) = current.versions.get(want) else {
-            return Err(AdminError::not_found(format!(
-                "config version {want} (pruned or never recorded)"
-            )));
-        };
-        let installed = Arc::new(build_with_registry(
-            current,
-            target.hook_registry,
-            target.global_hooks,
-        )?);
-        // PERSIST-then-SWAP, fail-closed. A wholesale registry write (both tombstone args `None`);
-        // the reconciliation inside `persist` drops any tombstone for a restored name so the
-        // rollback survives a restart. Routed through the txn's commit so config.rollback shares the
-        // same durability discipline as plugin.rollback (C4 ≡ C5).
-        let p = installed.clone();
-        Ok(txn.commit(
-            installed.clone(),
-            move || {
-                crate::config::overlay::persist(
-                    p.overlay_path.as_deref(),
-                    &p.hook_registry,
-                    &p.global_hooks,
-                    None,
-                    None,
-                    &p.base_hook_names,
-                )
-                .map_err(|e| {
-                    format!(
-                        "config rollback could not be persisted to the overlay: {e}; nothing was \
-                         changed (the running engine is unaffected)"
-                    )
-                })
-            },
-            installed,
-        ))
-    })
-    .await;
-    match out {
-        Ok(installed) => {
+    if let Some(e) = stale_if_match(expected, current.config_version) {
+        audit::AUDIT.record_by(
+            "config.rollback",
+            &resource,
+            audit::OUTCOME_REJECTED,
+            &actor,
+        );
+        return err_json(&e);
+    }
+    let Some(target) = current.versions.get(req.version) else {
+        audit::AUDIT.record_by(
+            "config.rollback",
+            &resource,
+            audit::OUTCOME_REJECTED,
+            &actor,
+        );
+        return err_json(&AdminError::NotFound(format!(
+            "config version {} (pruned or never recorded)",
+            req.version
+        )));
+    };
+    match build_with_registry(&current, target.hook_registry, target.global_hooks) {
+        Ok(next) => {
+            let installed = Arc::new(next);
+            handle.swap(installed.clone());
             audit::AUDIT.record_by("config.rollback", &resource, audit::OUTCOME_APPLIED, &actor);
+            let cur = handle.load();
             installed.versions.record(
                 installed.config_version,
                 &actor,
@@ -1944,16 +1628,24 @@ pub(crate) async fn rollback_config(
                 &installed.hook_registry,
                 &installed.global_hooks,
             );
+            // Best-effort overlay persistence of the restored surface (no-op when disabled).
+            crate::config::overlay::persist(
+                cur.overlay_path.as_deref(),
+                &cur.hook_registry,
+                &cur.global_hooks,
+                None,
+                None,
+            );
             with_config_etag(
                 ok_json(
                     StatusCode::OK,
                     &json!({
                         "restored_version": req.version,
                         // The post-rollback version under the SAME name every other mutation uses.
-                        "config_version": installed.config_version,
+                        "config_version": cur.config_version,
                     }),
                 ),
-                installed.config_version,
+                cur.config_version,
             )
         }
         Err(e) => {
@@ -1987,6 +1679,11 @@ pub(crate) async fn put_auth(
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct PutAuthBody {
+        admin_auth: Vec<String>,
+    }
     let expected = match if_match_version(&headers) {
         Ok(v) => v,
         Err(resp) => return resp,
@@ -1995,83 +1692,78 @@ pub(crate) async fn put_auth(
         Ok(b) => b,
         Err(e) => return err_json(&AdminError::Validation(format!("invalid body: {e}"))),
     };
-    let chain = req.admin_auth.clone();
-    let out = config_transaction(&handle, move |txn| {
-        let current = txn.app();
-        if let Some(e) = stale_if_match(expected, current.config_version) {
-            return Err(e);
+    let _mlock = CONFIG_MUTATION_LOCK.lock().await;
+    let current = handle.load();
+    if let Some(e) = stale_if_match(expected, current.config_version) {
+        // Audit the rejected attempt (§6.7: every mutation attempt leaves a trail — uniform with
+        // every other stale-If-Match rejection in this file, and with put_auth's own
+        // dry-run-guard rejection below).
+        audit::AUDIT.record_by(
+            "auth.admin_chain_put",
+            "auth:admin_auth",
+            audit::OUTCOME_REJECTED,
+            principal.actor_id(),
+        );
+        return err_json(&e);
+    }
+    // Known-module validation (mirrors the boot rule): `admin-tokens` is the built-in; the
+    // test-only stand-in exists in test builds only. An unknown name can never silently drop auth.
+    for name in &req.admin_auth {
+        let known = name == "admin-tokens" || (cfg!(test) && name == "test-scope-module");
+        if !known {
+            return err_json(&AdminError::Validation(format!(
+                "admin_auth names unknown module '{name}'; the built-in admin module is \
+                 `admin-tokens` (external admin modules are registered at compile time)"
+            )));
         }
-        // Known-module validation (mirrors the boot rule): `admin-tokens` is the built-in; the
-        // test-only stand-in exists in test builds only. An unknown name can never silently drop
-        // auth.
-        for name in &req.admin_auth {
-            let known = name == "admin-tokens" || (cfg!(test) && name == "test-scope-module");
-            if !known {
-                return Err(AdminError::Validation(format!(
-                    "admin_auth names unknown module '{name}'; the built-in admin module is \
-                     `admin-tokens` (external admin modules are registered at compile time)"
-                )));
-            }
-        }
-        if req.admin_auth.is_empty() {
-            tracing::warn!(
-                "PUT /api/v1/admin/admin-auth applied an EMPTY admin_auth chain — the admin API is \
-                 now the open (anonymous, full-authority) dev posture"
-            );
-        }
-        // Candidate app with the new chain, built off the FRESH post-lock snapshot — so a config
-        // mutation that landed while this request was parsing cannot be clobbered by a candidate
-        // cloned from a pre-lock App.
-        let mut next = (**current).clone();
-        next.config_version = current.config_version.wrapping_add(1);
-        next.admin_chain = req.admin_auth;
-        // D4 DRY-RUN GUARD: this very request's carriers, evaluated under the CANDIDATE chain.
-        let bearer = headers
-            .get(axum::http::header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .and_then(crate::auth::AuthMiddleware::extract_bearer_token);
-        let header_tok = headers
-            .get(crate::auth::X_ADMIN_TOKEN)
-            .and_then(|v| v.to_str().ok())
-            .filter(|t| !t.is_empty())
-            .map(str::to_string);
-        let survives = crate::auth::dry_run_admin_scope(&next, bearer.as_deref(), header_tok.as_deref())
-            .contains(crate::admin::v1::contract::Scope::Full);
-        if !survives {
-            return Err(AdminError::Conflict(
-                "the new admin_auth chain would not grant THIS caller full scope — refusing to lock \
-                 you out. Authenticate with a credential the new chain accepts (at full scope) and \
-                 retry, or change the chain in config.yaml and restart"
-                    .into(),
-            ));
-        }
-        // LIVE-only (documented in the response `note`): the admin chain is not overlay-persisted,
-        // so this is a swap with a no-op persist — still the single swap site.
-        let installed = Arc::new(next);
-        Ok(txn.live_swap(installed.clone(), installed))
-    })
-    .await;
-    let installed = match out {
-        Ok(installed) => installed,
-        Err(e) => {
-            // Audit the rejected attempt (: every mutation attempt leaves a trail — uniform with
-            // every other stale-If-Match rejection in this file, and with put_auth's own
-            // dry-run-guard rejection).
-            audit::AUDIT.record_by(
-                "auth.admin_chain_put",
-                "auth:admin_auth",
-                audit::OUTCOME_REJECTED,
-                principal.actor_id(),
-            );
-            return err_json(&e);
-        }
-    };
+    }
+    if req.admin_auth.is_empty() {
+        tracing::warn!(
+            "PUT /api/v1/admin/admin-auth applied an EMPTY admin_auth chain — the admin API is now the \
+             open (anonymous, full-authority) dev posture"
+        );
+    }
+    // Candidate app with the new chain.
+    let mut next = (*current).clone();
+    next.config_version = current.config_version.wrapping_add(1);
+    next.admin_chain = req.admin_auth.clone();
+    // D4 DRY-RUN GUARD: this very request's carriers, evaluated under the CANDIDATE chain.
+    let bearer = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(crate::auth::AuthMiddleware::extract_bearer_token);
+    let header_tok = headers
+        .get(crate::auth::X_ADMIN_TOKEN)
+        .and_then(|v| v.to_str().ok())
+        .filter(|t| !t.is_empty())
+        .map(str::to_string);
+    let survives = matches!(
+        crate::auth::dry_run_admin_scope(&next, bearer.as_deref(), header_tok.as_deref()),
+        Some(crate::admin::v1::contract::Scope::Full)
+    );
+    if !survives {
+        audit::AUDIT.record_by(
+            "auth.admin_chain_put",
+            "auth:admin_auth",
+            audit::OUTCOME_REJECTED,
+            principal.actor_id(),
+        );
+        return err_json(&AdminError::Conflict(
+            "the new admin_auth chain would not grant THIS caller full scope — refusing to lock \
+             you out. Authenticate with a credential the new chain accepts (at full scope) and \
+             retry, or change the chain in config.yaml and restart"
+                .into(),
+        ));
+    }
+    let installed = Arc::new(next);
+    handle.swap(installed.clone());
     audit::AUDIT.record_by(
         "auth.admin_chain_put",
         "auth:admin_auth",
         audit::OUTCOME_APPLIED,
         principal.actor_id(),
     );
+    let cur = handle.load();
     installed.versions.record(
         installed.config_version,
         principal.actor_id(),
@@ -2080,24 +1772,24 @@ pub(crate) async fn put_auth(
         &installed.global_hooks,
     );
     // The response IS the resource (the same {configured, modules} shape GET /admin-auth returns,
-    // so a Terraform provider uses the PUT response as post-state) + apply metadata.
+    // so a Terraform provider uses the PUT response as post-state — re-audit M5) + apply metadata.
     with_config_etag(
         ok_json(
             StatusCode::OK,
             &json!({
-                "configured": !chain.is_empty(),
-                "modules": chain,
+                "configured": !req.admin_auth.is_empty(),
+                "modules": req.admin_auth,
                 "applied": true,
-                "config_version": installed.config_version,
+                "config_version": cur.config_version,
                 "note": "live until the next config reload/restart returns to disk truth; persist by updating config.yaml"
             }),
         ),
-        installed.config_version,
+        cur.config_version,
     )
 }
 
 /// `POST /api/v1/admin/auth/cache/flush` — INSTANT REVOCATION of the credential cache's
-/// cached-allow window. Body `{"module": "<name>"}` flushes one module's
+/// cached-allow window (design-hooks-v2 §2.5). Body `{"module": "<name>"}` flushes one module's
 /// partition; no/empty body flushes everything. The deny path never needed this (`Reject` is
 /// never cached); this closes the Identify window when a directory changes NOW.
 pub(crate) async fn flush_credential_cache(
@@ -2106,19 +1798,23 @@ pub(crate) async fn flush_credential_cache(
     body: axum::body::Bytes,
 ) -> Response {
     let app = handle.load();
-    let module: Option<String> =
-        if body.is_empty() {
-            None
-        } else {
-            match serde_json::from_slice::<FlushCacheReq>(&body) {
-                Ok(v) => v.module,
-                Err(_) => return err_json(&AdminError::Validation(
-                    "body must be JSON with an optional string `module` (the auth module whose \
-                     partition to flush)"
-                        .into(),
-                )),
-            }
-        };
+    let module: Option<String> = if body.is_empty() {
+        None
+    } else {
+        match serde_json::from_slice::<serde_json::Value>(&body) {
+            Ok(v) => match v.get("module") {
+                None | Some(serde_json::Value::Null) => None,
+                Some(serde_json::Value::String(m)) => Some(m.clone()),
+                Some(_) => {
+                    return err_json(&AdminError::Validation(
+                        "`module` must be a string (the auth module whose partition to flush)"
+                            .into(),
+                    ))
+                }
+            },
+            Err(_) => return err_json(&AdminError::Validation("body must be JSON".into())),
+        }
+    };
     let flushed = match module.as_deref() {
         Some(m) => app.credential_cache.flush_module(m),
         None => app.credential_cache.flush_all(),
@@ -2197,28 +1893,20 @@ pub(crate) async fn reload_config(
     axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
 ) -> Response {
     let actor = principal.actor_id().to_string();
-    // The whole rebuild is DISK I/O (config.yaml + providers.yaml + the overlay, then resolve +
-    // build). It is queued as a store read so it runs on `spawn_blocking`: before, this ran inline
-    // on a Tokio worker with the async mutation lock held, so a slow/large config stalled the
-    // reactor for every in-flight request, not just the other mutations.
-    let out = config_transaction(&handle, |txn| {
-        let snapshot = txn.app().clone();
-        Ok(txn.read_store(move || {
-            let next = rebuild_app_from_disk(&snapshot).map_err(AdminError::Validation)?;
-            // LIVE-only, exactly as before: a reload IS disk truth, so there is nothing to persist.
+    let _mlock = CONFIG_MUTATION_LOCK.lock().await;
+    let current = handle.load();
+    let outcome = rebuild_app_from_disk(&current);
+    match outcome {
+        Ok(next) => {
             let installed = Arc::new(next);
-            Ok(Outcome::swap(installed.clone(), installed))
-        }))
-    })
-    .await;
-    match out {
-        Ok(installed) => {
+            handle.swap(installed.clone()); // swap re-spawns health probers for the new snapshot
             audit::AUDIT.record_by(
                 "config.reload",
                 "config:disk",
                 audit::OUTCOME_APPLIED,
                 &actor,
             );
+            let cur = handle.load();
             installed.versions.record(
                 installed.config_version,
                 &actor,
@@ -2229,9 +1917,9 @@ pub(crate) async fn reload_config(
             with_config_etag(
                 ok_json(
                     StatusCode::OK,
-                    &json!({ "reloaded": true, "config_version": installed.config_version }),
+                    &json!({ "reloaded": true, "config_version": cur.config_version }),
                 ),
-                installed.config_version,
+                cur.config_version,
             )
         }
         Err(e) => {
@@ -2241,87 +1929,9 @@ pub(crate) async fn reload_config(
                 audit::OUTCOME_REJECTED,
                 &actor,
             );
-            err_json(&e)
+            err_json(&AdminError::Validation(e))
         }
     }
-}
-
-/// The `POST /api/v1/admin/restart` body. Absent is the same as `{}`.
-#[derive(serde::Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
-pub(crate) struct RestartReq {
-    /// Proceed even though no supervisor was detected. Exiting only restarts busbar if something
-    /// restarts it; without this an undetected supervisor is refused rather than risking the
-    /// gateway staying down.
-    #[serde(default)]
-    confirm: bool,
-}
-
-/// `POST /api/v1/admin/restart` — apply the restart-scoped settings (`listen`, `admin_listen`,
-/// `tls`, `admin_tls`, `admin_insecure`, `store`) by restarting, so an operator never needs a shell.
-///
-/// This drains through the SAME path a signal takes, so the final budget flush, the state snapshot
-/// and the tracing shutdown all happen exactly as they do on SIGTERM. It is deliberately not an
-/// in-process rebuild: the durable audit's sequence counters advance only via `fetch_max` so history
-/// cannot be rewound, and only a process boundary resets them.
-///
-/// Responds BEFORE the drain begins. The drain closes the connection carrying this request, so an
-/// operator who got no response could not tell a restart from a crash.
-pub(crate) async fn restart(
-    axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
-    body: axum::body::Bytes,
-) -> Response {
-    let actor = principal.actor_id().to_string();
-    let req: RestartReq = if body.is_empty() {
-        RestartReq::default()
-    } else {
-        match serde_json::from_slice(&body) {
-            Ok(r) => r,
-            Err(e) => {
-                audit::AUDIT.record_by("admin.restart", "process", audit::OUTCOME_REJECTED, &actor);
-                return err_json_cond(
-                    &AdminError::Validation(format!("invalid body: {e}")),
-                    Cond::MalformedBody,
-                );
-            }
-        }
-    };
-
-    let supervised = crate::admin::restart::supervisor_detected();
-    if !supervised && !req.confirm {
-        audit::AUDIT.record_by("admin.restart", "process", audit::OUTCOME_REJECTED, &actor);
-        return err_json_cond(
-            &AdminError::Conflict(
-                "no process supervisor was detected, so exiting would leave busbar down; re-send                  with `confirm: true` if a supervisor will restart it"
-                    .into(),
-            ),
-            Cond::NoSupervisor,
-        );
-    }
-
-    if !crate::admin::restart::can_restart() {
-        audit::AUDIT.record_by("admin.restart", "process", audit::OUTCOME_REJECTED, &actor);
-        return err_json_cond(
-            &AdminError::Conflict("this process cannot restart itself".into()),
-            Cond::NotRestartable,
-        );
-    }
-
-    // Record the INTENT before draining: this entry is the operator's only durable evidence of who
-    // asked and when, and the drain is about to take the connection that would have carried it.
-    audit::AUDIT.record_by("admin.restart", "process", audit::OUTCOME_APPLIED, &actor);
-    crate::admin::restart::begin_drain();
-
-    ok_json(
-        StatusCode::ACCEPTED,
-        &json!({
-            "restarting": true,
-            "supervisor_detected": supervised,
-            "note": "draining now; in-flight requests finish first. The process exits when the \
-                     drain completes and the supervisor restarts it."
-        }),
-    )
 }
 
 /// The `POST /api/v1/admin/config/apply` body: a full proposed config (validate's exact shape).
@@ -2361,73 +1971,46 @@ pub(crate) async fn apply_config(
             )))
         }
     };
-    let out = config_transaction(&handle, move |txn| {
-        let current = txn.app();
-        if let Some(e) = stale_if_match(expected, current.config_version) {
-            return Err(e);
-        }
-        // Resolve + build reads plugin artifacts off disk, so it is queued onto `spawn_blocking`
-        // rather than run inline under the async lock.
-        let snapshot = current.clone();
-        Ok(txn.read_store(move || {
-            // The applied body layers UNDER the persisted overlay, exactly as reload/reset/boot/
-            // `--validate` do. Apply was the sole rebuild path that skipped this, and it already
-            // carried `overlay_path` forward — so it kept WRITING an overlay it refused to read,
-            // and the next hook/group mutation persisted the truncated registry over it.
-            let overlay_doc = snapshot
-                .overlay_path
-                .as_deref()
-                .and_then(crate::config::overlay::read);
-            let ApplyConfigReq {
-                config: mut deploy,
-                providers,
-            } = req;
-            if let Some(doc) = overlay_doc.as_ref() {
-                crate::config::overlay::apply_root_to_deploy(&mut deploy, doc);
-                // Without this an apply re-validates against the BASE floors and silently reverts a
-                // live audited plugin rollback until the next restart re-applies the pin.
-                crate::config::overlay::apply_plugin_versions_to_deploy(&mut deploy, doc);
-            }
-            let next = crate::config::resolve(&deploy, &providers)
-                .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))
-                .and_then(|mut cfg| {
-                    // Base names are the APPLIED config's own registry, taken pre-merge so an
-                    // overlay-only hook is not misread as base-defined (and so undeletable).
-                    let base_hook_names: std::collections::HashSet<String> =
-                        cfg.hooks.keys().cloned().collect();
-                    let base_group_names: std::collections::HashSet<String> =
-                        cfg.groups.keys().cloned().collect();
-                    if let Some(doc) = overlay_doc {
-                        crate::config::overlay::merge_into(&mut cfg, doc);
-                    }
-                    crate::build_app_from_config(
-                        cfg,
-                        deploy.plugins.clone(),
-                        snapshot.overlay_path.clone(),
-                        base_hook_names,
-                        base_group_names,
-                        (
-                            snapshot.config_path.clone(),
-                            snapshot.providers_path.clone(),
-                        ),
-                        Some(&snapshot),
-                    )
-                })
-                .map_err(AdminError::Validation)?;
-            // LIVE-only (the response `note` says so): an applied config is not written to disk.
+    let _mlock = CONFIG_MUTATION_LOCK.lock().await;
+    let current = handle.load();
+    if let Some(e) = stale_if_match(expected, current.config_version) {
+        audit::AUDIT.record_by(
+            "config.apply",
+            "config:body",
+            audit::OUTCOME_REJECTED,
+            &actor,
+        );
+        return err_json(&e);
+    }
+    let outcome = crate::config::resolve(&req.config, &req.providers)
+        .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))
+        .and_then(|cfg| {
+            // Base hook + group names = the applied config's own (synthesized) registry.
+            let base_hook_names: std::collections::HashSet<String> =
+                cfg.hooks.keys().cloned().collect();
+            let base_group_names: std::collections::HashSet<String> =
+                cfg.groups.keys().cloned().collect();
+            crate::build_app_from_config(
+                cfg,
+                req.config.plugins.clone(),
+                current.overlay_path.clone(),
+                base_hook_names,
+                base_group_names,
+                (current.config_path.clone(), current.providers_path.clone()),
+                Some(&current),
+            )
+        });
+    match outcome {
+        Ok(next) => {
             let installed = Arc::new(next);
-            Ok(Outcome::swap(installed.clone(), installed))
-        }))
-    })
-    .await;
-    match out {
-        Ok(installed) => {
+            handle.swap(installed.clone()); // swap re-spawns health probers for the new snapshot
             audit::AUDIT.record_by(
                 "config.apply",
                 "config:body",
                 audit::OUTCOME_APPLIED,
                 &actor,
             );
+            let cur = handle.load();
             installed.versions.record(
                 installed.config_version,
                 &actor,
@@ -2440,12 +2023,12 @@ pub(crate) async fn apply_config(
                     StatusCode::OK,
                     &json!({
                         "applied": true,
-                        "config_version": installed.config_version,
+                        "config_version": cur.config_version,
                         "note": "live until the next reload/restart returns to disk truth; persist \
                                  by updating config.yaml",
                     }),
                 ),
-                installed.config_version,
+                cur.config_version,
             )
         }
         Err(e) => {
@@ -2455,7 +2038,7 @@ pub(crate) async fn apply_config(
                 audit::OUTCOME_REJECTED,
                 &actor,
             );
-            err_json(&e)
+            err_json(&AdminError::Validation(e))
         }
     }
 }
@@ -2469,8 +2052,6 @@ fn merge_root_settings(
     mut base: crate::config::overlay::RootSettings,
     req: crate::config::overlay::RootSettings,
 ) -> crate::config::overlay::RootSettings {
-    // WHOLE-VALUE sections: a listen address, a cert bundle, a store definition and a rate card are
-    // atomic units, and `store.settings` is opaque plugin config busbar must not reinterpret.
     if req.listen.is_some() {
         base.listen = req.listen;
     }
@@ -2495,27 +2076,27 @@ fn merge_root_settings(
     if req.store.is_some() {
         base.store = req.store;
     }
-    // PER-FIELD sections: successive PUTs to different fields of one section must accumulate. A
-    // whole-slot swap here would make the second PUT drop the first one's fields from the overlay,
-    // which is the same defect as the apply-side revert, one layer down.
-    macro_rules! merge_section {
-        ($($field:ident),+ $(,)?) => {$(
-            base.$field = match (req.$field, base.$field) {
-                (Some(new), Some(old)) => Some(new.merge(old)),
-                (Some(new), None) => Some(new),
-                (None, old) => old,
-            };
-        )+};
+    if req.security.is_some() {
+        base.security = req.security;
     }
-    merge_section!(
-        security,
-        limits,
-        observability,
-        advanced,
-        metrics,
-        health,
-        routing
-    );
+    if req.limits.is_some() {
+        base.limits = req.limits;
+    }
+    if req.observability.is_some() {
+        base.observability = req.observability;
+    }
+    if req.advanced.is_some() {
+        base.advanced = req.advanced;
+    }
+    if req.metrics.is_some() {
+        base.metrics = req.metrics;
+    }
+    if req.health.is_some() {
+        base.health = req.health;
+    }
+    if req.routing.is_some() {
+        base.routing = req.routing;
+    }
     base
 }
 
@@ -2541,161 +2122,19 @@ fn reload_to_apply_fields(req: &crate::config::overlay::RootSettings) -> Vec<Str
     push(req.admin_tls.is_some(), "admin_tls");
     push(req.admin_insecure.is_some(), "admin_insecure");
     push(req.store.is_some(), "store");
-    // Four `limits.*` fields are boot-frozen, via TWO independent mechanisms — flag them
-    // individually (dotted, since `limits` is a nested `Option<LimitsPatch>`, not a top-level
-    // `Option`) rather than the whole `limits` section, which would also mis-flag the
-    // genuinely-live rest of `limits` (e.g. `tls_handshake_timeout_secs`).
-    //
-    // Mechanism 1 — `main.rs` REUSES the prior `UpstreamClients` across a config apply (the warm
-    // connection pools are deliberately kept — rebuilding them on every apply would cold-start
-    // every upstream on a rate-card tweak). Its `else` builder arm is the ONLY place these three
-    // fields are read, so a PUT that touches them changes the STORED config but not the live
-    // `reqwest::Client`.
-    //
-    // Mechanism 2 — `max_inbound_concurrent` is captured ONCE in `main()` and baked into a
-    // `tower::limit::GlobalConcurrencyLimitLayer` on the DATA ROUTER at process start. A config
-    // apply swaps only `Arc<App>` (`AppHandle::swap`); the router — and the semaphore's permit
-    // count — is never rebuilt, so this field is frozen independently of the `UpstreamClients`
-    // reuse above.
-    //
-    // DRIFT GUARD, same idiom as `config::patch::tests::every_patch_mirrors_every_field_of_its_section`:
-    // this is an EXHAUSTIVE destructure of `LimitsPatch` (no `..`), so a field added there — which
-    // itself cannot compile without appearing here — must be explicitly named BOOT-FROZEN (pushed
-    // below) or GENUINELY LIVE (bound `_`, with a one-line reason) before this crate builds. That is
-    // exactly the bug class `max_inbound_concurrent` fell into: a boot-frozen field silently absent
-    // from a hand-maintained push list. A new boot-frozen field can no longer go unflagged by
-    // omission; the compiler forces a decision.
-    if let Some(limits) = req.limits.as_ref() {
-        let crate::config::patch::LimitsPatch {
-            upstream_request_timeout_secs,
-            pool_max_idle_per_host,
-            pool_idle_timeout_secs,
-            max_inbound_concurrent,
-            // GENUINELY LIVE — read per-request/per-connection off the `INSTALLED` snapshot that
-            // `InstallGuard::install` refreshes on every apply (see `limits.rs`), or off the swapped
-            // `Arc<App>` directly. NOT boot-captured, so a live `PUT` takes effect without a restart.
-            request_body_max_bytes: _, // HALF-live: the egress translate cap is live via the
-            // `INSTALLED` snapshot, but the inbound `DefaultBodyLimit` 413 threshold is boot-frozen
-            // the same way as `max_inbound_concurrent` (`main.rs:3184`, in `apply_common_layers`,
-            // reachable only from the boot/test-only router builders). Tracked as a known post-1.5.0
-            // gap (documented, not flagged here — see docs/configuration.md) rather than fixed now:
-            // fixing the coupling touches the request path and router layer stack, and flagging it
-            // dotted would mis-state that the WHOLE field is stored-not-live when three of its four
-            // consumers are live.
-            max_keys_per_principal: _,
-            max_auto_provisioned_groups: _,
-            hard_down_cooldown_secs: _,
-            upstream_error_body_max_bytes: _,
-            tls_handshake_timeout_secs: _,
-            request_body_read_timeout_secs: _,
-            max_honored_retry_after_secs: _,
-            default_max_tokens: _,
-            reasoning_effort_budgets: _,
-        } = limits;
-        push(
-            upstream_request_timeout_secs.is_some(),
-            "limits.upstream_request_timeout_secs",
-        );
-        push(
-            pool_max_idle_per_host.is_some(),
-            "limits.pool_max_idle_per_host",
-        );
-        push(
-            pool_idle_timeout_secs.is_some(),
-            "limits.pool_idle_timeout_secs",
-        );
-        push(
-            max_inbound_concurrent.is_some(),
-            "limits.max_inbound_concurrent",
-        );
-    }
-    // Three `observability.*` fields are boot-frozen — same class as `limits.max_inbound_concurrent`
-    // above, different mechanisms:
-    //
-    // `emit_server_timing` is captured ONCE in `main()` and baked as fixed middleware state into
-    // `apply_common_layers` (via `from_fn_with_state`) when the router is built at process start; a
-    // config apply never rebuilds the router.
-    //
-    // `request_log_webhook_url` is captured ONCE in `main()` and seeds a process-global
-    // `OnceLock<Arc<String>>` (`observability::configure_webhook`) — `OnceLock::set` silently no-ops
-    // on every call after the first, so the webhook target cannot change for the life of the process.
-    //
-    // `otlp_url` is captured ONCE in `main()` and passed to `observability::init_logging`, a one-shot
-    // `tracing_subscriber::registry().try_init()` — a second call is a structural no-op (logs
-    // "already initialized" and drops the new exporter).
-    //
-    // DRIFT GUARD, same idiom as above: an EXHAUSTIVE destructure of `ObservabilityPatch` (no `..`).
-    // `max_inflight_webhook_deliveries` is NOT cleanly classifiable as boot-frozen (its `OnceLock`
-    // is sized from config on FIRST webhook delivery, whichever moment that is post-boot, not
-    // necessarily at boot — so an operator's PUT sometimes does take effect, if no delivery has
-    // fired yet, and sometimes doesn't; flagging it unconditionally restart-scoped would be wrong in
-    // the cases it IS still live). Left unflagged and undocumented as a known, lower-severity gap
-    // rather than guessed at here; see docs/configuration.md.
-    if let Some(observability) = req.observability.as_ref() {
-        let crate::config::patch::ObservabilityPatch {
-            emit_server_timing,
-            request_log_webhook_url,
-            otlp_url,
-            // GENUINELY LIVE — read fresh on every call via `crate::limits::webhook_delivery_timeout_secs()`,
-            // backed by the `INSTALLED` snapshot refreshed on every apply. Not cached, not boot-captured.
-            webhook_delivery_timeout_secs: _,
-            // See the doc comment above: state-dependent, neither cleanly live nor cleanly frozen.
-            max_inflight_webhook_deliveries: _,
-        } = observability;
-        push(
-            emit_server_timing.is_some(),
-            "observability.emit_server_timing",
-        );
-        push(
-            request_log_webhook_url.is_some(),
-            "observability.request_log_webhook_url",
-        );
-        push(otlp_url.is_some(), "observability.otlp_url");
-    }
     out
 }
 
 /// Read the current overlay `root` section (the operator's API-set single-value overrides), or an
 /// empty `RootSettings` when persistence is disabled / the overlay is absent or carries no root
 /// section. Shared by the GET/PUT `/config/settings` handlers.
-///
-/// A corrupt or too-new overlay renders as an empty `RootSettings` — "the operator has set no
-/// overrides" — which is NOT wrong (nothing is mutated on this read), but a reader of the response
-/// alone cannot tell "no overrides" from "overrides exist but this read couldn't see them".
-/// `overlay::read`'s own warn/error already logs the cause, but genericly — it does not say which
-/// endpoint's answer it is misreporting. `endpoint` attributes the misreport to THIS specific read.
 fn current_root_settings(
     overlay_path: Option<&std::path::Path>,
-    endpoint: &str,
 ) -> crate::config::overlay::RootSettings {
-    let Some(p) = overlay_path else {
-        return crate::config::overlay::RootSettings::default();
-    };
-    match crate::config::overlay::read_state(p) {
-        crate::config::overlay::OverlayReadState::Absent => {
-            crate::config::overlay::RootSettings::default()
-        }
-        crate::config::overlay::OverlayReadState::Loaded(doc) => doc.root.unwrap_or_default(),
-        crate::config::overlay::OverlayReadState::Unreadable => {
-            tracing::warn!(
-                endpoint,
-                path = %p.display(),
-                "{endpoint} read the config overlay while it was unreadable/corrupt; reporting NO \
-                 root overrides, which may not reflect what is actually stored on disk"
-            );
-            crate::config::overlay::RootSettings::default()
-        }
-        crate::config::overlay::OverlayReadState::VersionTooNew(v) => {
-            tracing::warn!(
-                endpoint,
-                path = %p.display(),
-                overlay_version = v,
-                "{endpoint} read the config overlay while it was from a NEWER busbar; reporting NO \
-                 root overrides, which may not reflect what is actually stored on disk"
-            );
-            crate::config::overlay::RootSettings::default()
-        }
-    }
+    overlay_path
+        .and_then(crate::config::overlay::read)
+        .and_then(|doc| doc.root)
+        .unwrap_or_default()
 }
 
 /// `GET /api/v1/admin/config/settings` — read the API-set single-value config overlay (the `root`
@@ -2706,7 +2145,7 @@ fn current_root_settings(
 /// not raw key bytes).
 pub(crate) async fn get_config_settings(State(handle): State<Arc<AppHandle>>) -> Response {
     let current = handle.load();
-    let root = current_root_settings(current.overlay_path.as_deref(), "GET /config/settings");
+    let root = current_root_settings(current.overlay_path.as_deref());
     let settings = serde_json::to_value(&root).unwrap_or_else(|_| json!({}));
     with_config_etag(
         ok_json(
@@ -2735,13 +2174,6 @@ pub(crate) async fn get_config_settings(State(handle): State<Arc<AppHandle>>) ->
 /// concurrency; audited (every attempt) + versioned; overlay-persisted so it survives a restart.
 /// Requires config files on disk (the base to merge onto); an ephemeral busbar has none, so this is a
 /// `400 invalid_request` there, exactly like `config/reload`.
-/// The one request-scoped control key on the `/config/settings` PUT body. Reserved: it is REMOVED
-/// before the typed `RootSettings` parse, so `RootSettings`'s `deny_unknown_fields` still rejects
-/// every other unknown key — including a typo of this one, which is the point (a silently-ignored
-/// persistence request is the exact defect this field exists to fix; a query param would have hit
-/// the in-tree `Query<HashMap<String,String>>` idiom, which drops an unknown key silently).
-const PERSIST_FIELD: &str = "persist";
-
 pub(crate) async fn put_config_settings(
     State(handle): State<Arc<AppHandle>>,
     axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
@@ -2753,25 +2185,7 @@ pub(crate) async fn put_config_settings(
         Ok(v) => v,
         Err(resp) => return resp,
     };
-    let mut raw: serde_json::Value = match serde_json::from_slice(&body) {
-        Ok(v) => v,
-        Err(e) => {
-            return err_json(&AdminError::Validation(format!(
-                "malformed config settings body: {e}"
-            )))
-        }
-    };
-    let requested_persist = match raw.as_object_mut().and_then(|o| o.remove(PERSIST_FIELD)) {
-        None => false,
-        Some(serde_json::Value::Bool(b)) => b,
-        Some(other) => {
-            return err_json(&AdminError::Validation(format!(
-                "config settings '{PERSIST_FIELD}' must be a boolean (got {other}); it asserts the \
-                 change must be stored in the config overlay"
-            )))
-        }
-    };
-    let req: crate::config::overlay::RootSettings = match serde_json::from_value(raw) {
+    let req: crate::config::overlay::RootSettings = match serde_json::from_slice(&body) {
         Ok(r) => r,
         Err(e) => {
             return err_json(&AdminError::Validation(format!(
@@ -2779,156 +2193,94 @@ pub(crate) async fn put_config_settings(
             )))
         }
     };
-    let reload_to_apply = reload_to_apply_fields(&req);
-    let want = req.clone();
-    let out = config_transaction(&handle, move |txn| {
-        let current = txn.app();
-        if let Some(e) = stale_if_match(expected, current.config_version) {
-            return Err(e);
+    let _mlock = CONFIG_MUTATION_LOCK.lock().await;
+    let current = handle.load();
+    if let Some(e) = stale_if_match(expected, current.config_version) {
+        audit::AUDIT.record_by(
+            "config.settings",
+            "config:settings",
+            audit::OUTCOME_REJECTED,
+            &actor,
+        );
+        return err_json(&e);
+    }
+    let (Some(config_path), Some(providers_path)) =
+        (current.config_path.clone(), current.providers_path.clone())
+    else {
+        audit::AUDIT.record_by(
+            "config.settings",
+            "config:settings",
+            audit::OUTCOME_REJECTED,
+            &actor,
+        );
+        return err_json(&AdminError::Validation(
+            "this busbar was started without config files (ephemeral mode); /config/settings has no \
+             disk base to merge onto"
+                .into(),
+        ));
+    };
+    // Merge the partial request onto the CURRENT overlay root (partial-update semantics).
+    let merged = merge_root_settings(
+        current_root_settings(current.overlay_path.as_deref()),
+        req.clone(),
+    );
+    let merged_for_build = merged.clone();
+    // Re-run the disk-load pipeline (base truth), apply the MERGED root onto the DeployCfg BEFORE
+    // resolve (so the limits projection + admin-mTLS boot-guard re-derive over it), then merge the
+    // CURRENT hooks/groups overlay sections POST-resolve — exactly the reload mechanism, with the
+    // root section coming from the just-merged desired state rather than the on-disk overlay.
+    let outcome = crate::load_config_from_disk(
+        &config_path,
+        &providers_path,
+        false,
+        crate::config::EnvSubst::Strict,
+    )
+    .and_then(|mut loaded| {
+        merged_for_build.apply_to_deploy(&mut loaded.deploy);
+        let mut cfg = crate::config::resolve(&loaded.deploy, &loaded.defs)
+            .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
+        let base_hook_names: std::collections::HashSet<String> =
+            cfg.hooks.keys().cloned().collect();
+        let base_group_names: std::collections::HashSet<String> =
+            cfg.groups.keys().cloned().collect();
+        if let Some(doc) = loaded.overlay_doc {
+            crate::config::overlay::merge_into(&mut cfg, doc);
         }
-        // The caller EXPLICITLY required durability. `persist_root` on a `None` overlay path is a
-        // silent no-op `Ok` (`overlay.rs`), so honouring the request is impossible and reporting
-        // success would be the lie this endpoint used to tell. Refuse — the same precondition, and
-        // the same reasoning, as `plugins/rollback`.
-        if requested_persist && current.overlay_path.is_none() {
-            return Err(AdminError::Validation(
-                "\"persist\": true was requested, but this busbar has no config overlay \
-                 (BUSBAR_CONFIG_OVERLAY is unset), so the change cannot be stored and would not \
-                 survive a restart. Set BUSBAR_CONFIG_OVERLAY and retry, or omit \"persist\" to \
-                 apply the change in memory only, or use POST /config/apply for a live-only change."
-                    .into(),
-            ));
-        }
-        // Everything below reads the overlay file and re-runs the disk-load pipeline, so it is
-        // queued onto `spawn_blocking` — under the guard, off the reactor.
-        let snapshot = current.clone();
-        Ok(txn.read_store(move || {
-            let (Some(config_path), Some(providers_path)) = (
-                snapshot.config_path.clone(),
-                snapshot.providers_path.clone(),
-            ) else {
-                return Err(AdminError::Validation(
-                    "this busbar was started without config files (ephemeral mode); \
-                     /config/settings has no disk base to merge onto"
-                        .into(),
-                ));
-            };
-            // Merge the partial request onto the CURRENT overlay root (partial-update semantics).
-            let merged = merge_root_settings(
-                current_root_settings(snapshot.overlay_path.as_deref(), "PUT /config/settings"),
-                want,
-            );
-            let merged_for_build = merged.clone();
-            // Re-run the disk-load pipeline (base truth), apply the MERGED root onto the DeployCfg
-            // BEFORE resolve (so the limits projection + admin-mTLS boot-guard re-derive over it),
-            // then merge the CURRENT hooks/groups overlay sections POST-resolve — exactly the reload
-            // mechanism, with the root section coming from the just-merged desired state rather than
-            // the on-disk overlay.
-            let next = crate::load_config_from_disk(
-                &config_path,
-                &providers_path,
-                false,
-                crate::config::EnvSubst::Strict,
-            )
-            .and_then(|mut loaded| {
-                merged_for_build.apply_to_deploy(&mut loaded.deploy);
-                // Apply the overlay's `plugin_versions` rollback pins onto the DeployCfg BEFORE
-                // resolve, exactly as boot/reload/reset/`--validate` do
-                // (`overlay::apply_root_to_deploy`). Without this the rebuild re-validates against
-                // the BASE floors and re-loads the newer artifact, silently reverting a live audited
-                // rollback until the next restart re-applies the persisted pin.
-                if let Some(doc) = loaded.overlay_doc.as_ref() {
-                    crate::config::overlay::apply_plugin_versions_to_deploy(
-                        &mut loaded.deploy,
-                        doc,
-                    );
-                }
-                let mut cfg = crate::config::resolve(&loaded.deploy, &loaded.defs)
-                    .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
-                let base_hook_names: std::collections::HashSet<String> =
-                    cfg.hooks.keys().cloned().collect();
-                let base_group_names: std::collections::HashSet<String> =
-                    cfg.groups.keys().cloned().collect();
-                if let Some(doc) = loaded.overlay_doc {
-                    crate::config::overlay::merge_into(&mut cfg, doc);
-                }
-                crate::build_app_from_config(
-                    cfg,
-                    loaded.deploy.plugins.clone(),
-                    snapshot.overlay_path.clone(),
-                    base_hook_names,
-                    base_group_names,
-                    (Some(config_path), Some(providers_path)),
-                    Some(&snapshot),
-                )
-            })
-            .map_err(AdminError::Validation)?;
+        crate::build_app_from_config(
+            cfg,
+            loaded.deploy.plugins.clone(),
+            current.overlay_path.clone(),
+            base_hook_names,
+            base_group_names,
+            (Some(config_path), Some(providers_path)),
+            Some(&current),
+        )
+    });
+    match outcome {
+        Ok(next) => {
             let installed = Arc::new(next);
-            // PERSIST-then-SWAP, fail-closed. Persist the merged root section (the sibling
-            // hooks/groups sections are preserved verbatim by the read-modify-write).
-            let p = installed.clone();
-            let to_persist = merged.clone();
-            Ok(Outcome::commit(
-                installed.clone(),
-                move || {
-                    crate::config::overlay::persist_root(p.overlay_path.as_deref(), &to_persist)
-                        .map_err(|e| {
-                            format!(
-                                "config settings could not be persisted to the overlay: {e}; \
-                                 nothing was changed (the running engine is unaffected)"
-                            )
-                        })
-                },
-                (installed, merged),
-            ))
-        }))
-    })
-    .await;
-    match out {
-        Ok((installed, merged)) => {
+            handle.swap(installed.clone());
             audit::AUDIT.record_by(
                 "config.settings",
                 "config:settings",
                 audit::OUTCOME_APPLIED,
                 &actor,
             );
+            let cur = handle.load();
             record_group_version(&installed, &actor, "config.settings (root section applied)");
-            // `installed.overlay_path` is the SAME path the request started with — the reset/PUT
-            // paths preserve it verbatim across a rebuild — so it is the authoritative answer to
-            // "was there anywhere to persist this?" for the response we are about to build.
-            let (reload_to_apply, note) = if installed.overlay_path.is_none() {
-                // No overlay: `persist_root` was a no-op (it warns; see `overlay::persist_root`).
-                // `reload_to_apply`'s published meaning is "durably stored but not yet live" — since
-                // NOTHING was stored, listing fields there would be the precise lie this fix exists
-                // to remove. Its own field names move into the note instead.
-                let note = if reload_to_apply.is_empty() {
-                    "applied live, IN MEMORY ONLY: this busbar has no config overlay \
-                     (BUSBAR_CONFIG_OVERLAY is unset), so nothing was stored and every field here \
-                     reverts on the next restart or POST /config/reload. Set BUSBAR_CONFIG_OVERLAY \
-                     and re-send with \"persist\": true to store the change durably."
-                        .to_string()
-                } else {
-                    format!(
-                        "applied live, IN MEMORY ONLY: this busbar has no config overlay \
-                         (BUSBAR_CONFIG_OVERLAY is unset), so nothing was stored and every field \
-                         here reverts on the next restart or POST /config/reload. Fields {} cannot \
-                         take effect without a restart, and a restart discards them. Set \
-                         BUSBAR_CONFIG_OVERLAY and re-send with \"persist\": true to store the \
-                         change durably.",
-                        reload_to_apply.join(", ")
-                    )
-                };
-                (Vec::new(), note)
-            } else if reload_to_apply.is_empty() {
-                (reload_to_apply, "applied live".to_string())
+            // Persist the merged root section (best-effort; the sibling hooks/groups sections are
+            // preserved verbatim by the read-modify-write).
+            crate::config::overlay::persist_root(cur.overlay_path.as_deref(), &merged);
+            let reload_to_apply = reload_to_apply_fields(&req);
+            let note = if reload_to_apply.is_empty() {
+                "applied live".to_string()
             } else {
-                let note = format!(
+                format!(
                     "applied live except {} — stored in the overlay, effective on the next RESTART (a \
                      socket rebind / TLS bind is read once at process start, and the store backend is \
                      reused across a hot reload; none can hot-swap)",
                     reload_to_apply.join(", ")
-                );
-                (reload_to_apply, note)
+                )
             };
             let settings = serde_json::to_value(&merged).unwrap_or_else(|_| json!({}));
             with_config_etag(
@@ -2936,13 +2288,13 @@ pub(crate) async fn put_config_settings(
                     StatusCode::OK,
                     &json!({
                         "applied": true,
-                        "config_version": installed.config_version,
+                        "config_version": cur.config_version,
                         "settings": settings,
                         "reload_to_apply": reload_to_apply,
                         "note": note,
                     }),
                 ),
-                installed.config_version,
+                cur.config_version,
             )
         }
         Err(e) => {
@@ -2952,14 +2304,13 @@ pub(crate) async fn put_config_settings(
                 audit::OUTCOME_REJECTED,
                 &actor,
             );
-            err_json(&e)
+            err_json(&AdminError::Validation(e))
         }
     }
 }
 
 /// The `PATCH /api/v1/admin/hooks/{name}/settings` body. Optimistic concurrency rides `If-Match` (H3).
 #[derive(serde::Deserialize)]
-#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub(crate) struct PatchSettingsReq {
     settings: serde_json::Map<String, serde_json::Value>,
 }
@@ -3006,13 +2357,13 @@ pub(crate) async fn patch_hook_settings(
         // Audit the 404 like the other rejects here (and DELETE) — a missing audit row on the
         // unknown-name path lets a narrow token probe which hooks exist by response code alone.
         audit::AUDIT.record_by("hook.settings", &resource, audit::OUTCOME_REJECTED, &actor);
-        return err_json(&AdminError::not_found(format!("hook `{name}`")));
+        return err_json(&AdminError::NotFound(format!("hook `{name}`")));
     };
-    // Escalation guard, keyed on the EXISTING hook's grants (PATCH changes settings, not
+    // §6.3 escalation guard, keyed on the EXISTING hook's grants (PATCH changes settings, not
     // grants). A non-Full (hooks-register) principal may not push settings to a content-seeing
     // (`prompt`/`user`) or `global: true` hook — the same ceiling register_hook/put_hook enforce.
     // Without it a narrow token could retune a `prompt: rw` global gate it can neither create nor
-    // replace, reaching a content-seeing hook by the back door.
+    // replace, reaching a content-seeing hook by the back door. (found: audit c1r6.)
     if let Some(e) = hooks_register_escalation(scope, existing) {
         audit::AUDIT.record_by("hook.settings", &resource, audit::OUTCOME_REJECTED, &actor);
         return err_json(&e);
@@ -3032,7 +2383,7 @@ pub(crate) async fn patch_hook_settings(
     let pre_push_version = current.config_version;
     let settings_version = pre_push_version.wrapping_add(1);
     // PUSH first, COMMIT on ack — a hook that never acked never sees committed state it doesn't
-    // hold. The hook plugin env is captured here; the load()
+    // hold (§6.5: no partial config ever goes live). The hook plugin env is captured here; the load()
     // that feeds the actual swap is re-taken AFTER the await, under the mutation lock.
     let hook_env = current.hook_env.clone();
     if let Err(e) = crate::hooks::push_configure(&updated, &name, settings_version, &hook_env).await
@@ -3047,51 +2398,33 @@ pub(crate) async fn patch_hook_settings(
     // clobber that change (and reuse its version number). Re-validate the version under the lock;
     // a change means "config moved during your push" → 409, retry (the ack was for a now-stale
     // snapshot). Version unchanged ⇒ `current` is still the live snapshot, so the build is sound.
-    // The network push above happened BEFORE the section — and the txn body is SYNCHRONOUS, so it
-    // physically cannot be moved inside: "never hold the mutation lock across a network await" is
-    // now a type, not a comment.
-    let txn_name = name.clone();
-    let out = config_transaction(&handle, move |txn| {
-        let current = txn.app();
-        if current.config_version != pre_push_version {
-            return Err(AdminError::Conflict(
-                "config changed during the settings push; retry".to_string(),
-            ));
-        }
-        let installed = Arc::new(build_with_hook(current, &txn_name, updated)?);
-        // PERSIST-then-SWAP, fail-closed.
-        let p = installed.clone();
-        Ok(txn.commit(
-            installed.clone(),
-            move || {
-                crate::config::overlay::persist(
-                    p.overlay_path.as_deref(),
-                    &p.hook_registry,
-                    &p.global_hooks,
-                    None,
-                    Some(&txn_name),
-                    &p.base_hook_names,
-                )
-                .map_err(|e| {
-                    format!(
-                        "hook settings could not be persisted to the overlay: {e}; nothing was \
-                         changed (the running engine is unaffected)"
-                    )
-                })
-            },
-            installed,
-        ))
-    })
-    .await;
-    match out {
-        Ok(installed) => {
+    let _mlock = CONFIG_MUTATION_LOCK.lock().await;
+    let current = handle.load();
+    if current.config_version != pre_push_version {
+        audit::AUDIT.record_by("hook.settings", &resource, audit::OUTCOME_REJECTED, &actor);
+        return err_json(&AdminError::Conflict(
+            "config changed during the settings push; retry".to_string(),
+        ));
+    }
+    match build_with_hook(&current, &name, updated) {
+        Ok(next) => {
+            let installed = Arc::new(next);
+            handle.swap(installed.clone());
             audit::AUDIT.record_by("hook.settings", &resource, audit::OUTCOME_APPLIED, &actor);
+            let cur = handle.load();
             installed.versions.record(
                 installed.config_version,
                 &actor,
                 &format!("hook.settings {resource}"),
                 &installed.hook_registry,
                 &installed.global_hooks,
+            );
+            crate::config::overlay::persist(
+                cur.overlay_path.as_deref(),
+                &cur.hook_registry,
+                &cur.global_hooks,
+                None,
+                Some(&name),
             );
             with_config_etag(
                 respond(StatusCode::OK, service(&handle).get_hook(&name).await),
@@ -3113,7 +2446,7 @@ pub(crate) async fn hook_schema(
 ) -> Response {
     let current = handle.load();
     let Some(hook) = current.hook_registry.get(&name) else {
-        return err_json(&AdminError::not_found(format!("hook `{name}`")));
+        return err_json(&AdminError::NotFound(format!("hook `{name}`")));
     };
     let schema =
         crate::hooks::fetch_schema(&name, hook, current.config_version, &current.hook_env).await;
@@ -3132,7 +2465,7 @@ pub(crate) async fn hook_status(
 ) -> Response {
     let current = handle.load();
     let Some(hook) = current.hook_registry.get(&name) else {
-        return err_json(&AdminError::not_found(format!("hook `{name}`")));
+        return err_json(&AdminError::NotFound(format!("hook `{name}`")));
     };
     let desired_version = current.config_version;
     let reported =
@@ -3286,6 +2619,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                     "security": [{"adminToken": []}],
                     "responses": {
                         "200": {"description": "OK"},
+                        "401": {"description": "Missing/invalid admin credential"}
                     }
                 }
             }),
@@ -3304,6 +2638,9 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "responses": {
                     "201": {"description": "Registered — the name is NEW (body is the hook definition)"},
                     "200": {"description": "Replaced — the name existed (same-grant re-register; body is the hook definition)"},
+                    "400": {"description": "Malformed body or invalid definition (`invalid_request`)"},
+                    "403": {"description": "hooks-register principal may not register a content-seeing (`prompt`/`user`) or `global: true` hook (`forbidden`, §6.3)"},
+                    "409": {"description": "Base-defined hook (edit config.yaml), grant change on an existing hook, or stale `If-Match` (`version_conflict`, §6.4)"}
                 }
             }),
         );
@@ -3321,6 +2658,8 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "responses": {
                     "201": {"description": "Created — the name is NEW (body is the group definition)"},
                     "200": {"description": "Replaced — the name existed (body is the group definition)"},
+                    "400": {"description": "Invalid tree — dangling/cyclic parent or depth (`invalid_request`)"},
+                    "409": {"description": "Base-defined group (edit config.yaml) or stale `If-Match` (`version_conflict`)"}
                 }
             }),
         );
@@ -3337,6 +2676,8 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "security": [{"adminToken": []}],
                 "responses": {
                     "201": {"description": "Installed — `{file, name, interface_version, trust, version?, publisher?, note}`"},
+                    "400": {"description": "Malformed body, bad base64, or the library is not a loadable busbar store plugin (`invalid_request`)"},
+                    "409": {"description": "The upload is untrusted and not opted-in (`conflict`) - sign it with an allowlisted publisher, add the publisher to plugins.trust.publishers, or set plugins.trust.allow_unsigned / allow_third_party"}
                 }
             }),
         );
@@ -3355,18 +2696,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         }),
     );
     paths.insert(
-        ap("/plugins/rollback"),
-        json!({
-            "post": {
-                "summary": "EXPLICIT, authenticated, audited rollback of a plugin to a PRIOR version (1.5.0). Validates the target artifact (structure + trust) with the anti-downgrade floor lowered to EXACTLY the target's own version — a lower or untrusted artifact still fails (a rollback authenticates the OPERATOR, never the bytes). Persists the version pin to the overlay (survives restart) and hot-swaps via the same rebuild-and-swap path as plugins/reload",
-                "security": [{"adminToken": []}],
-                "responses": {
-                    "200": {"description": "`{plugin, version, config_version, plugins}` — rolled back and hot-swapped"},
-                }
-            }
-        }),
-    );
-    paths.insert(
         ap("/plugins/{file}"),
         json!({
             "delete": {
@@ -3378,6 +2707,8 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 }],
                 "responses": {
                     "204": {"description": "Removed"},
+                    "400": {"description": "Invalid plugin filename (`invalid_request`)"},
+                    "404": {"description": "No such plugin file (`not_found`)"}
                 }
             }
         }),
@@ -3395,6 +2726,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 }],
                 "responses": {
                     "200": {"description": "OK"},
+                    "404": {"description": "Unknown hook (error code `not_found`)"}
                 }
             },
             "put": {
@@ -3406,6 +2738,10 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 }],
                 "responses": {
                     "200": {"description": "The replaced hook"},
+                    "400": {"description": "Invalid definition (error code `invalid_request`)"},
+                    "403": {"description": "A `hooks-register` principal may not replace a hook into a content-seeing (`prompt`/`user`) or `global` form (error code `forbidden`, §6.3)"},
+                    "404": {"description": "Unknown hook (error code `not_found`)"},
+                    "409": {"description": "Base-defined hook, grant change (`conflict`), or stale `If-Match` (`version_conflict`)"}
                 }
             },
             "delete": {
@@ -3417,6 +2753,9 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 }],
                 "responses": {
                     "204": {"description": "Removed"},
+                    "403": {"description": "A `hooks-register` principal may not delete a content-seeing (`prompt`/`user`) or `global` hook (error code `forbidden`, §6.3)"},
+                    "404": {"description": "Unknown hook (error code `not_found`)"},
+                    "409": {"description": "Base-defined hook — read-only via the API; edit config.yaml (error code `conflict`)"}
                 }
             }
         }),
@@ -3433,6 +2772,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 }],
                 "responses": {
                     "200": {"description": "OK"},
+                    "404": {"description": "Unknown group (error code `not_found`)"}
                 }
             },
             "put": {
@@ -3444,6 +2784,9 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 }],
                 "responses": {
                     "200": {"description": "The replaced group"},
+                    "400": {"description": "Invalid tree — dangling/cyclic parent or depth (error code `invalid_request`)"},
+                    "404": {"description": "Unknown group (error code `not_found`)"},
+                    "409": {"description": "Base-defined group (edit config.yaml), or stale `If-Match` (`version_conflict`)"}
                 }
             },
             "patch": {
@@ -3455,6 +2798,9 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 }],
                 "responses": {
                     "200": {"description": "The updated group"},
+                    "400": {"description": "Invalid tree after the merge, or unknown patch field (error code `invalid_request`)"},
+                    "404": {"description": "Unknown group (error code `not_found`)"},
+                    "409": {"description": "Base-defined group, or stale `If-Match` (`version_conflict`)"}
                 }
             },
             "delete": {
@@ -3466,6 +2812,8 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 }],
                 "responses": {
                     "204": {"description": "Removed"},
+                    "404": {"description": "Unknown group (error code `not_found`)"},
+                    "409": {"description": "Base-defined group, or another group still names it as parent (error code `conflict`)"}
                 }
             }
         }),
@@ -3482,6 +2830,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 }],
                 "responses": {
                     "200": {"description": "OK"},
+                    "404": {"description": "Unknown pool (error code `not_found`)"}
                 }
             }
         }),
@@ -3498,6 +2847,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 }],
                 "responses": {
                     "200": {"description": "OK"},
+                    "404": {"description": "Unknown group (error code `not_found`)"}
                 }
             }
         }),
@@ -3514,6 +2864,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 }],
                 "responses": {
                     "200": {"description": "OK (`reachable` may be null for webhook/non-unix)"},
+                    "404": {"description": "Unknown hook (error code `not_found`)"}
                 }
             }
         }),
@@ -3530,6 +2881,9 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 ],
                 "responses": {
                     "200": {"description": "The diff (hooks added/removed/changed + global-wiring delta)"},
+                    "400": {"description": "Missing/non-numeric `from` or `to` (error code `invalid_request`)"},
+                    "404": {"description": "Either version pruned or never recorded (error code `not_found`)"},
+                    "401": {"description": "Missing/invalid admin credential"}
                 }
             }
         }),
@@ -3546,6 +2900,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 }],
                 "responses": {
                     "200": {"description": "The version (metadata + hooks + global_hooks)"},
+                    "404": {"description": "Pruned or never recorded (error code `not_found`)"}
                 }
             }
         }),
@@ -3562,6 +2917,10 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 }],
                 "responses": {
                     "200": {"description": "Acked + committed (the updated hook)"},
+                    "400": {"description": "Hook did not acknowledge (error code `invalid_request`); nothing committed"},
+                    "403": {"description": "A `hooks-register` principal may not push settings to a content-seeing (`prompt`/`user`) or `global` hook (error code `forbidden`, §6.3)"},
+                    "404": {"description": "Unknown hook (error code `not_found`)"},
+                    "409": {"description": "Base-defined hook (`conflict`) or stale `If-Match` (`version_conflict`)"}
                 }
             }
         }),
@@ -3578,6 +2937,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 }],
                 "responses": {
                     "200": {"description": "`{name, schema}` (`schema` null when the hook doesn't answer describe)"},
+                    "404": {"description": "Unknown hook (error code `not_found`)"}
                 }
             }
         }),
@@ -3594,6 +2954,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 }],
                 "responses": {
                     "200": {"description": "`{name, desired, reported, drift, metrics, as_of, source}`"},
+                    "404": {"description": "Unknown hook (error code `not_found`)"}
                 }
             }
         }),
@@ -3606,6 +2967,8 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "security": [{"adminToken": []}],
                 "responses": {
                     "200": {"description": "`{applied, config_version, note}`"},
+                    "400": {"description": "Invalid config (error code `invalid_request`); nothing changed"},
+                    "409": {"description": "Stale `If-Match` (error code `version_conflict` — re-read and retry)"}
                 }
             }
         }),
@@ -3618,18 +2981,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "security": [{"adminToken": []}],
                 "responses": {
                     "200": {"description": "`{reloaded, config_version}`"},
-                }
-            }
-        }),
-    );
-    paths.insert(
-        ap("/restart"),
-        json!({
-            "post": {
-                "summary": "Restart busbar to apply the restart-scoped settings (listen, admin_listen, tls, admin_tls, admin_insecure, store). Drains first; the supervisor brings it back",
-                "security": [{"adminToken": []}],
-                "responses": {
-                    "202": {"description": "`{restarting, supervisor_detected, note}` — draining; in-flight requests finish first"},
+                    "400": {"description": "Disk config invalid or no config files (error code `invalid_request`); nothing changed"}
                 }
             }
         }),
@@ -3642,6 +2994,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "security": [{"adminToken": []}],
                 "responses": {
                     "200": {"description": "`{applied:false, config_version, settings}` (settings = the current root overrides)"},
+                    "401": {"description": "Missing/invalid admin credential"}
                 }
             },
             "put": {
@@ -3649,6 +3002,8 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "security": [{"adminToken": []}],
                 "responses": {
                     "200": {"description": "`{applied:true, config_version, settings, reload_to_apply, note}`"},
+                    "400": {"description": "Invalid config after the merge, unknown field, or ephemeral busbar with no disk base (error code `invalid_request`); nothing changed"},
+                    "409": {"description": "Stale `If-Match` (error code `version_conflict` — re-read and retry)"}
                 }
             }
         }),
@@ -3659,6 +3014,8 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             "security": [{"adminToken": []}],
             "responses": {
                 "200": {"description": "The resource + apply metadata: `{configured, modules, applied, config_version, note}`"},
+                "400": {"description": "Unknown module / malformed body (error code `invalid_request`)"},
+                "409": {"description": "Stale `If-Match` (`version_conflict`), or the new chain would lock the caller out (error code `conflict`)"}
             }
         });
     }
@@ -3670,6 +3027,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "security": [{"adminToken": []}],
                 "responses": {
                     "200": {"description": "`{flushed}` — entries dropped"},
+                    "400": {"description": "Malformed body (error code `invalid_request`)"}
                 }
             }
         }),
@@ -3682,6 +3040,9 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "security": [{"adminToken": []}],
                 "responses": {
                     "200": {"description": "`{restored_version, config_version}`"},
+                    "404": {"description": "Target version not retained (error code `not_found`)"},
+                    "409": {"description": "Stale `If-Match` (error code `version_conflict` — re-read and retry)"},
+                    "400": {"description": "Snapshot fails re-validation (error code `invalid_request`)"}
                 }
             }
         }),
@@ -3690,11 +3051,13 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         ap("/overlay/{section}"),
         json!({
             "delete": {
-                "summary": "DISCARD a section's overlay mutations and revert it to base config.yaml (section ∈ groups|hooks|root|plugin_versions). Per-section reset — the OTHER sections' overlay survives. A NEW config version; an already-empty section is an idempotent no-op (changed:false)",
+                "summary": "DISCARD a section's overlay mutations and revert it to base config.yaml (section ∈ groups|hooks). Per-section reset — the OTHER section's overlay survives. A NEW config version; an already-empty section is an idempotent no-op (changed:false)",
                 "security": [{"adminToken": []}],
-                "parameters": [{"name": "section", "in": "path", "required": true, "schema": {"type": "string", "enum": ["groups", "hooks", "root", "plugin_versions"]}}],
+                "parameters": [{"name": "section", "in": "path", "required": true, "schema": {"type": "string", "enum": ["groups", "hooks"]}}],
                 "responses": {
                     "200": {"description": "`{reset, config_version, changed}` — changed:false when the section had no overlay state"},
+                    "400": {"description": "Unknown section, or ephemeral busbar with no config files to revert to (error code `invalid_request`)"},
+                    "409": {"description": "Stale `If-Match` (error code `version_conflict` — re-read and retry)"}
                 }
             }
         }),
@@ -3707,6 +3070,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "security": [{"adminToken": []}],
                 "responses": {
                     "200": {"description": "Verdict `{ok, errors}` (even for an invalid config)"},
+                    "400": {"description": "Malformed request body (error code `invalid_request`)"}
                 }
             }
         }),
@@ -3723,6 +3087,8 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "security": [{"adminToken": []}],
                 "responses": {
                     "200": {"description": "`{items, next_cursor}` — the cursor page envelope (next_cursor null at end)"},
+                    "400": {"description": "Malformed/foreign pagination cursor (error code `invalid_request`)"},
+                    "401": {"description": "Missing/invalid admin credential"}
                 }
             },
             "post": {
@@ -3730,6 +3096,8 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "security": [{"adminToken": []}],
                 "responses": {
                     "201": {"description": "Created (body includes the once-shown secret)"},
+                    "400": {"description": "Malformed body / invalid budget or rate (error code `invalid_request`)"},
+                    "409": {"description": "An Idempotency-Key request is already in flight (error code `conflict`)"}
                 }
             }
         }),
@@ -3743,14 +3111,18 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
                 "responses": {
                     "200": {"description": "Key metadata (+ `ETag` header)"},
+                    "404": {"description": "Unknown key (error code `not_found`)"}
                 }
             },
             "patch": {
-                "summary": "Enable/disable a key or rebind its group. Optional `If-Match` for optimistic concurrency",
+                "summary": "Update budget / rate / enabled. Optional `If-Match` for optimistic concurrency",
                 "security": [{"adminToken": []}],
                 "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
                 "responses": {
                     "200": {"description": "Updated metadata"},
+                    "400": {"description": "Invalid budget/rate (error code `invalid_request`)"},
+                    "404": {"description": "Unknown key (error code `not_found`)"},
+                    "409": {"description": "Stale `If-Match` ETag (error code `version_conflict` — re-read and retry)"}
                 }
             },
             "delete": {
@@ -3759,6 +3131,9 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
                 "responses": {
                     "204": {"description": "Revoked — No Content"},
+                    "400": {"description": "Malformed `If-Match` (error code `invalid_request`)"},
+                    "404": {"description": "Unknown key (error code `not_found`)"},
+                    "409": {"description": "Stale `If-Match` ETag (error code `version_conflict` — re-read and retry)"}
                 }
             }
         }),
@@ -3772,6 +3147,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
                 "responses": {
                     "200": {"description": "Budget-window counters + `rate_headroom` (fraction of the tightest RPM/TPM cap left; null = uncapped)"},
+                    "404": {"description": "Unknown key (error code `not_found`)"}
                 }
             }
         }),
@@ -3785,71 +3161,16 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
                 "responses": {
                     "200": {"description": "Rotated (body includes the once-shown new secret; an Idempotency-Key retry replays it verbatim)"},
+                    "404": {"description": "Unknown key (error code `not_found`)"},
+                    "409": {"description": "An Idempotency-Key request is already in flight (error code `conflict`)"}
                 }
             }
         }),
     );
-    paths.insert(
-        ap("/keys/{id}/revoke"),
-        json!({
-            "post": {
-                "summary": "REVOKE a signed-token key: denylist it durably WITHOUT deleting the binding (GET /keys/{id} still shows the record; verify now fails). Idempotent — revoking an already-revoked key is 200. DELETE /keys/{id} is the revoke-AND-forget variant (1.5.0)",
-                "security": [{"adminToken": []}],
-                "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
-                "responses": {
-                    "200": {"description": "`{revoked}` — the id, now denylisted"},
-                }
-            }
-        }),
-    );
-    paths.insert(
-        ap("/signing-key/rotate"),
-        json!({
-            "post": {
-                "summary": "ROTATE the busbar key-signing key (S2). Rotation is REVOKE-ALL by design: a new signing key means every token minted under the OLD key stops verifying, so every outstanding key must be re-minted. 1.5.0 is single-key, so this reports the intent + current kid; the actual swap is an operator action (replace auth.signing_key / the persisted key file and restart/reload every node in lockstep) (1.5.0)",
-                "security": [{"adminToken": []}],
-                "responses": {
-                    "200": {"description": "`{current_kid, revoke_all, message}` — the rotation intent + revoke-all warning"},
-                }
-            }
-        }),
-    );
-
-    use crate::admin::v1::contract::taxonomy;
-
-    // ── THE 4xx RESPONSE SET IS A PROJECTION, NOT PROSE (design D) ────────────────────────────
-    // Every body-specific 400 / 403-escalation / 404 / 409 is ENUMERATED from the ONE declaration
-    // in `contract::taxonomy::declared_errors` — the blocks above carry only their 2xx entries,
-    // their summary and their parameters. Nothing error-shaped is hand-typed beside an endpoint any
-    // more, so an endpoint cannot omit a status it emits (the class-level drift test in
-    // `tests/tests.rs` fails the build) and cannot document one it doesn't. Descriptions come from
-    // `Cond::phrase()`, so the same condition reads identically on every endpoint that declares it.
-    // This runs BEFORE the algorithmic pass below so a declared `403` (the hook escalation,
-    // whose phrasing is more specific) wins over the generic under-scope 403's `or_insert`.
-    for (path, methods) in paths.iter_mut() {
-        let Some(obj) = methods.as_object_mut() else {
-            continue;
-        };
-        let rel = path
-            .strip_prefix(crate::admin::v1::contract::ADMIN_PREFIX)
-            .unwrap_or(path)
-            .to_string();
-        for (method, op) in obj.iter_mut() {
-            let Some(tag) = taxonomy::MethodTag::from_op_key(method) else {
-                continue; // an `x-*` path-item extension, not an operation
-            };
-            let Some(responses) = op.get_mut("responses").and_then(|r| r.as_object_mut()) else {
-                continue;
-            };
-            for (status, description) in taxonomy::declared_responses(tag, &rel) {
-                responses.insert(status, json!({ "description": description }));
-            }
-        }
-    }
 
     // Stamp EVERY path+method with its required admin scope (`x-busbar-required-scope`) from the
     // SAME `required_scope` matrix the middleware enforces — the machine-readable authorization
-    // matrix, drift-proof by construction because both readers share one function. The
+    // matrix (§6.3), drift-proof by construction because both readers share one function. The
     // matrix keys on the literal path shape; templated segments (`{name}`) sit inside the same
     // prefix the matcher tests, so the annotation is exact for every route documented here.
     for (path, methods) in paths.iter_mut() {
@@ -3866,18 +3187,15 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 if let Some(op) = op.as_object_mut() {
                     let scope = crate::admin::v1::contract::required_scope(&m, path);
                     op.insert("x-busbar-required-scope".to_string(), json!(scope.as_str()));
-                    // Both accepted credential carriers, on every op.
+                    // Both accepted credential carriers, on every op (re-audit M8).
                     op.insert(
                         "security".to_string(),
                         json!([{"adminToken": []}, {"bearerAuth": []}]),
                     );
                     // The always-possible responses, stamped algorithmically so no hand-written
-                    // entry can forget them: 401 (bad/missing credential), 403
-                    // (authenticated but under-scoped), 500 (any handler can fail internally), and
-                    // 429 on every mutation (the per-principal mutation budget). These are the
-                    // UNIVERSAL half of the taxonomy — `err_kind_of` classifies exactly these
-                    // `AdminError` variants as algorithmic, so they are not declarable per endpoint
-                    // (listing them per-op would be noise AND a new drift vector).
+                    // entry can forget them (re-audit M7): 401 (bad/missing credential), 403
+                    // (authenticated but under-scoped), and 429 on every mutation (the
+                    // per-principal mutation budget).
                     if let Some(responses) = op.get_mut("responses").and_then(|r| r.as_object_mut())
                     {
                         responses.entry("401").or_insert(json!(
@@ -3892,16 +3210,13 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                                 {"description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"}
                             ));
                         }
-                        responses.entry("500").or_insert(json!(
-                            {"description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"}
-                        ));
                     }
                 }
             }
         }
     }
 
-    // Machine-readable QUERY PARAMETERS for the list/filter GETs — previously prose-
+    // Machine-readable QUERY PARAMETERS for the list/filter GETs (re-audit M7) — previously prose-
     // only, so generated clients had no query surface. Stamped from one table.
     /// (name, description, required) — one documented query parameter.
     type QueryParam = (&'static str, &'static str, bool);
@@ -3911,11 +3226,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             &[
                 ("enabled", "Filter by enabled state (`true`|`false`)", false),
                 ("prefix", "Filter by key-id prefix", false),
-                (
-                    "group",
-                    "Filter by bound group (a `user:<sub>` leaf's keys are one person's)",
-                    false,
-                ),
                 ("limit", "Page size (default 200, max 1000)", false),
                 (
                     "cursor",
@@ -4011,18 +3321,13 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     // config-plane ops guard on the config-version ETag their reads emit.
     const IF_MATCH_GUARDED: &[(&str, &str)] = &[
         (PATH_HOOKS, "post"),
-        (PATH_GROUPS, "post"),
         ("/hooks/{name}", "put"),
         ("/hooks/{name}", "delete"),
         ("/hooks/{name}/settings", "patch"),
-        ("/groups/{name}", "put"),
-        ("/groups/{name}", "patch"),
-        ("/groups/{name}", "delete"),
         (PATH_ADMIN_AUTH, "put"),
         ("/config/apply", "post"),
         ("/config/settings", "put"),
         ("/config/rollback", "post"),
-        ("/plugins/rollback", "post"),
         ("/overlay/{section}", "delete"),
         ("/keys/{id}", "patch"),
         ("/keys/{id}", "delete"),
@@ -4069,18 +3374,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         .for_serialize()
         .into_generator();
 
-    // A SECOND generator for REQUEST bodies. Responses describe what busbar serializes, requests
-    // what it accepts, and the two differ: `.for_deserialize()` is what makes a `#[serde(default)]`
-    // field OPTIONAL. Generating request bodies off the serialize generator would mark every
-    // defaulted field required — wrong in the opposite direction, and worse than saying nothing.
-    let mut req_gen = schemars::generate::SchemaSettings::draft2020_12()
-        .with(|s| {
-            s.definitions_path = "/components/schemas".into();
-            s.meta_schema = None;
-        })
-        .for_deserialize()
-        .into_generator();
-
     /// Write `content: { application/json: { schema: <schema> } }` onto one operation's `<status>`
     /// response object (creating the response entry if the op didn't already document that status).
     fn set_content(op: &mut serde_json::Value, status: &str, schema: serde_json::Value) {
@@ -4104,54 +3397,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             paths.get_mut(&ap($rel)).and_then(|p| p.get_mut($method))
         };
     }
-    /// Attach a REQUEST BODY schema to `<rel>.<method>`. `body!` derives it from a type; `body_raw!`
-    /// takes a hand-written one, for the bodies that are opaque config documents (see below).
-    macro_rules! body {
-        ($rel:expr, $method:literal, $t:ty) => {{
-            let schema = req_gen.subschema_for::<$t>();
-            let schema = serde_json::to_value(schema).unwrap_or_else(|_| json!({}));
-            body_raw!($rel, $method, schema);
-        }};
-    }
-    macro_rules! body_raw {
-        ($rel:expr, $method:literal, $schema:expr) => {{
-            if let Some(op) = op!($rel, $method) {
-                if let Some(obj) = op.as_object_mut() {
-                    obj.insert(
-                        "requestBody".to_string(),
-                        json!({
-                            "required": true,
-                            "content": {"application/json": {"schema": $schema}}
-                        }),
-                    );
-                }
-            }
-        }};
-    }
-    /// Sibling of `body!` for the one endpoint whose handler genuinely treats an absent body as the
-    /// type's `Default` — `POST /restart` (see its doc comment: "Absent is the same as `{}`"). Every
-    /// OTHER body-taking endpoint's handler requires the body, so `body!`/`body_raw!` stay
-    /// `"required": true`; this macro exists so a future genuinely-optional body has somewhere to go
-    /// without re-auditing every other call site's handler (an out-of-scope pass — see the class-13/14
-    /// design's open question).
-    macro_rules! body_optional {
-        ($rel:expr, $method:literal, $t:ty) => {{
-            let schema = req_gen.subschema_for::<$t>();
-            let schema = serde_json::to_value(schema).unwrap_or_else(|_| json!({}));
-            if let Some(op) = op!($rel, $method) {
-                if let Some(obj) = op.as_object_mut() {
-                    obj.insert(
-                        "requestBody".to_string(),
-                        json!({
-                            "required": false,
-                            "content": {"application/json": {"schema": schema}}
-                        }),
-                    );
-                }
-            }
-        }};
-    }
-
     // Attach the `$ref` schema of type `$t` to `<rel>.<method>.responses.<status>`.
     macro_rules! typed {
         ($rel:expr, $method:literal, $status:literal, $t:ty) => {{
@@ -4220,7 +3465,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     typed!("/config/settings", "get", "200", sview::ConfigSettingsView);
     typed!("/config/settings", "put", "200", sview::ConfigSettingsView);
     typed!("/config/reload", "post", "200", sview::ConfigReloadView);
-    typed!("/restart", "post", "202", sview::RestartView);
     typed!("/config/rollback", "post", "200", sview::ConfigRollbackView);
     typed!(
         "/overlay/{section}",
@@ -4249,13 +3493,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     typed!("/keys/{id}", "patch", "200", sview::KeyView);
     typed!("/keys/{id}/usage", "get", "200", sview::KeyMeteringView);
     typed!("/keys/{id}/rotate", "post", "200", sview::RotatedKeyView);
-    typed!("/keys/{id}/revoke", "post", "200", sview::RevokeView);
-    typed!(
-        "/signing-key/rotate",
-        "post",
-        "200",
-        sview::SigningKeyRotateView
-    );
 
     // The discovery endpoint returns THIS very OpenAPI 3.1 document — an arbitrary object. There is
     // no named struct for "an OpenAPI document"; an inline permissive object schema is the honest
@@ -4300,152 +3537,11 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         }
     }
 
-    // ── REQUEST BODIES ────────────────────────────────────────────────────────────────────────────
-    // Every mutating operation either declares a body here or is listed as bodyless in the drift
-    // test, which fails CI on any that is neither.
-
-    // Derived from the request struct, so the schema cannot drift from what the handler accepts.
-    body!(PATH_ADMIN_AUTH, "put", PutAuthBody);
-    body!("/auth/cache/flush", "post", FlushCacheReq);
-    body!("/plugins", "post", InstallPluginReq);
-    body!("/plugins/rollback", "post", PluginRollbackReq);
-    body!("/config/rollback", "post", RollbackReq);
-    body_optional!("/restart", "post", RestartReq);
-    body!("/hooks/{name}/settings", "patch", PatchSettingsReq);
-    body!("/keys", "post", crate::admin::CreateKeyReq);
-    body!("/keys/{id}", "patch", crate::admin::UpdateKeyReq);
-
-    // The config-carrying bodies are declared by HAND, deliberately.
-    //
-    // These embed the config tree, where several types (`LimitCfg`, `HookRefEntry`, `PoolCfg`,
-    // `AuthChainEntry`, `SecretRef`, …) have hand-written `Deserialize` impls whose accepted wire
-    // shape has nothing to do with their field layout — `LimitCfg` parses a map with a DYNAMIC
-    // metric key, `HookRefEntry` accepts either a bare string or a map. A derived schema would
-    // publish the internal representation as though it were the wire contract: a confident lie,
-    // with no compiler-enforced link back to the visitor that would catch the drift.
-    //
-    // So these say what is TRUE and no more: the body carries a config document, and the config
-    // reference is its specification. Honest and stable beats precise and wrong.
-    let config_doc = |what: &str| {
-        json!({
-            "type": "object",
-            "description": format!(
-                "{what} The accepted shape is the config file's own, documented in the \
-                 configuration reference; it is not restated here because several of its types \
-                 parse a wire shape that does not match their field layout."
-            ),
-            "additionalProperties": true
-        })
-    };
-    let config_body = |what: &str| {
-        json!({
-            "type": "object",
-            "properties": {
-                "config": config_doc("A `config.yaml` deploy block, as JSON."),
-                "providers": config_doc("A `providers.yaml` document, as JSON."),
-            },
-            "required": ["config"],
-            "description": what,
-            "additionalProperties": false
-        })
-    };
-    body_raw!(
-        "/config/apply",
-        "post",
-        config_body("Replace the running configuration.")
-    );
-    body_raw!(
-        PATH_CONFIG_VALIDATE,
-        "post",
-        config_body("Validate a configuration without applying it.")
-    );
-    body_raw!(
-        "/config/settings",
-        "put",
-        config_doc(
-            "The settings sections to replace, keyed by section name. The optional top-level \
-             boolean `persist` asserts the change MUST be stored in the config overlay: with \
-             `persist: true` a busbar that has no overlay refuses with `400 invalid_request` \
-             instead of applying the change in memory only. Omitted or `false` means the change is \
-             applied and stored where storage is available, and applied in memory only where it is \
-             not (the response `note` says which); `false` never suppresses storage. Every other \
-             top-level key must be a known settings section — an unknown key is a 400."
-        )
-    );
-    body_raw!(
-        PATH_GROUPS,
-        "post",
-        json!({
-            "type": "object",
-            "properties": {
-                "name": {"type": "string", "description": "The group name."},
-                "config": config_doc("A `groups:` entry, as JSON."),
-            },
-            "required": ["name", "config"],
-            "additionalProperties": false
-        })
-    );
-    body_raw!(
-        "/groups/{name}",
-        "put",
-        json!({
-            "type": "object",
-            "properties": {"config": config_doc("A `groups:` entry, as JSON.")},
-            "required": ["config"],
-            "additionalProperties": false
-        })
-    );
-    body_raw!(
-        "/groups/{name}",
-        "patch",
-        json!({
-            "type": "object",
-            "description": "A partial update: only the fields present are changed. `limits` and \
-                            `child_default` REPLACE their whole value when present.",
-            "properties": {
-                "parent": {"type": ["string", "null"]},
-                "enabled": {"type": ["boolean", "null"]},
-                "limits": {"type": ["array", "null"], "items": config_doc("A `limits:` entry.")},
-                "child_default": config_doc("A `child_default:` template."),
-            },
-            "additionalProperties": false
-        })
-    );
-    body_raw!(
-        PATH_HOOKS,
-        "post",
-        json!({
-            "type": "object",
-            "properties": {
-                "name": {"type": "string", "description": "The hook name."},
-                "config": config_doc("A `hooks:` entry, as JSON."),
-            },
-            "required": ["name", "config"],
-            "additionalProperties": false
-        })
-    );
-    body_raw!(
-        "/hooks/{name}",
-        "put",
-        json!({
-            "type": "object",
-            "properties": {"config": config_doc("A `hooks:` entry, as JSON.")},
-            "required": ["config"],
-            "additionalProperties": false
-        })
-    );
-
     // The generated component schemas (every `$ref`'d view type), merged with the hand-written
     // `Error` schema. The `Error` schema stays hand-written so its `code` enum is the frozen
     // AdminError taxonomy verbatim (the drift test `openapi_error_enum_matches_admin_error_codes`
     // locks it); schemars fills in every other referenced view.
     let mut schemas = gen.definitions().clone();
-    // Request-body component schemas live in the same `components.schemas` map. The two generators
-    // cannot collide today (no type is both a request struct and a response view) and the drift
-    // test asserts every declared body resolves, which would catch it if one ever were.
-    for (name, schema) in req_gen.definitions() {
-        schemas.insert(name.clone(), schema.clone());
-    }
     schemas.insert(
         "Error".to_string(),
         json!({

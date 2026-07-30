@@ -25,11 +25,7 @@ pub(crate) fn projectors() -> Arc<HookProjectors> {
         // decide: the full request projection (candidates + context). Byte-identical to what the
         // socket/webhook transports sent — `wire::build` serialized to an owned Value.
         decide: Box::new(|req, cands, ctx| {
-            // N3: an empty JSON OBJECT (not `Value::Null`) on the effectively-unreachable serialize
-            // failure — the wire projection is a bounded type, but a bare `null` handed to a plugin is
-            // an ambiguous payload; a well-formed empty object degrades to "no signals" cleanly.
-            serde_json::to_value(wire::build(wire::OP_DECIDE, req, cands, ctx))
-                .unwrap_or_else(|_| serde_json::json!({}))
+            serde_json::to_value(wire::build(wire::OP_DECIDE, req, cands, ctx)).unwrap_or_default()
         }),
         // transform: the request projection with no candidates (a rewrite gate reads the prompt, not
         // the candidate set), exactly as the socket transport's `transform` built it.
@@ -40,9 +36,8 @@ pub(crate) fn projectors() -> Arc<HookProjectors> {
                 budget_remaining: None,
                 budget: &[],
             };
-            // N3: empty object (not `Value::Null`) on the unreachable serialize failure — see `decide`.
             serde_json::to_value(wire::build(wire::OP_TRANSFORM, req, &empty, &ctx))
-                .unwrap_or_else(|_| serde_json::json!({}))
+                .unwrap_or_default()
         }),
         // normalize: parse the reply Value into the shared fail-closed `HookResponse` and run the
         // engine's `wire::normalize` (reject > restrict > abstain > order; unknown idxs dropped). A

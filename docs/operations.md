@@ -1,6 +1,6 @@
 # Operations
 
-Running Busbar in production: process configuration, health/readiness, the metrics
+Running busbar in production: process configuration, health/readiness, the metrics
 to watch, circuit-breaker and health-probe behavior, failover/exhaustion outcomes,
 governance/admin usage, and troubleshooting.
 
@@ -69,19 +69,14 @@ no sidecar required.
 ```yaml
 listen: "0.0.0.0:8443"
 tls:
-  cert: { file: /etc/busbar/tls/fullchain.pem }  # PEM cert chain, leaf first (secret reference)
-  key:  { file: /etc/busbar/tls/privkey.pem }    # PEM private key (PKCS#8 / PKCS#1 / SEC1)
-  # client_ca: { file: /etc/busbar/tls/ca.pem }  # OPTIONAL: see "Mutual TLS" below
+  cert_file: /etc/busbar/tls/fullchain.pem  # PEM cert chain, leaf first
+  key_file:  /etc/busbar/tls/privkey.pem    # PEM private key (PKCS#8 / PKCS#1 / SEC1)
+  # client_ca_file: /etc/busbar/tls/ca.pem  # OPTIONAL: see "Mutual TLS" below
 ```
 
-Each of `cert`, `key`, and `client_ca` is a **secret reference**, not a bare path: the
-`{ file: /path }` form above reads PEM bytes from disk, and `{ env: VAR }` reads them from an
-environment variable (or `{ module: <secret-plugin>, settings: {…} }` from a secret backend). The
-plaintext `cert_file`/`key_file`/`client_ca_file` path keys of earlier releases are gone in 1.5.0.
-
-**Certificate & key formats.** `cert` resolves to a PEM certificate chain with the leaf
+**Certificate & key formats.** `cert_file` is a PEM certificate chain with the leaf
 (server) certificate first, followed by any intermediates: exactly what most CAs
-ship as `fullchain.pem`. `key` resolves to the matching PEM private key in PKCS#8
+ship as `fullchain.pem`. `key_file` is the matching PEM private key in PKCS#8
 (`BEGIN PRIVATE KEY`), PKCS#1 (`BEGIN RSA PRIVATE KEY`), or SEC1
 (`BEGIN EC PRIVATE KEY`) encoding. Busbar advertises **http/1.1** over ALPN.
 
@@ -92,7 +87,7 @@ never logged.
 
 ### Mutual TLS (client-cert auth)
 
-Set `client_ca` (a secret reference resolving to a PEM CA bundle) to require **mutual TLS**: every client must
+Set `client_ca_file` to a PEM CA bundle to require **mutual TLS**: every client must
 present a certificate that chains to that CA, or the TLS handshake is rejected before
 any request is processed. This is transport-level zero-trust: only holders of a
 cert your CA signed can establish a connection at all, with no service mesh or
@@ -103,29 +98,9 @@ clients.
 
 ### Certificate rotation
 
-Certs are loaded once at startup, so rotation always needs a restart — but it does not need a
-shell. Push the new cert/key/CA through the admin API, then restart in-product:
-
-```bash
-curl -X PUT http://localhost:8081/api/v1/admin/config/settings \
-  -H "x-admin-token: $ADMIN_TOKEN" -H 'content-type: application/json' \
-  --data '{"tls": {"cert": {"file": "..."}, "key": {"file": "..."}, "client_ca": {"file": "..."}}}'
-# -> {"reload_to_apply": ["tls"], "note": "... takes effect on the next restart ..."}
-
-curl -X POST http://localhost:8081/api/v1/admin/restart \
-  -H "x-admin-token: $ADMIN_TOKEN"
-```
-
-The `PUT` stores the new material durably (overlay-persisted) and reports `tls` under
-`reload_to_apply` — restart-scoped, per the [`PUT /config/settings`](/docs/admin-api/#the-config-plane)
-table. `POST /restart` then applies it: it drains through the same graceful-shutdown path a signal
-takes (in-flight requests finish first), which is exactly why a restart on rotation is safe under
-live traffic — the same guarantee this section always relied on, now reachable without shelling in.
-If no process supervisor is detected, the endpoint refuses with `409 conflict` unless the request
-sets `confirm: true` (an unsupervised exit would leave Busbar down).
-
-Without admin API access (or without a config overlay configured), the file-level fallback still
-works: replace the PEM files on disk and restart Busbar directly (e.g. `systemctl restart busbar`).
+Certs are loaded once at startup. To rotate, replace the PEM files on disk and
+restart Busbar (e.g. `systemctl restart busbar`). The graceful-shutdown path drains
+in-flight requests first, so a restart on rotation does not drop live traffic.
 
 **Reverse proxy alternative.** A TLS-terminating reverse proxy (nginx, Caddy,
 Envoy) in front of a plain-HTTP Busbar still works if you prefer to manage certs
@@ -150,7 +125,7 @@ directly exposed to untrusted networks is not recommended.
 | Endpoint | Auth | Meaning |
 |---|---|---|
 | `GET /healthz` | open | `200 ok` if **any** lane is usable; `503` otherwise. Use for liveness/readiness probes. |
-| `GET /metrics` | virtual key | Prometheus exposition. OPT-IN: mounted only when a `metrics:` block is configured (with its required `buffer_seconds`); otherwise the path 404s like any other. Requires a valid key with a non-empty `auth.chain`, open under `chain: []`. Restrict at the network layer if unauthenticated scraping is needed. |
+| `GET /metrics` | virtual key | Prometheus exposition; requires a valid key with a non-empty `auth.chain`, open under `chain: []`. Restrict at the network layer if unauthenticated scraping is needed. |
 | `GET /stats` | virtual key | Per-lane health snapshot + pool membership, JSON. |
 
 `/stats` returns, per lane: `model`, `provider`, `max_concurrent`, `inflight`,
@@ -178,21 +153,13 @@ Three things are worth understanding before you scale out:
   LB (e.g. by the affinity header / a cookie) so a session lands on the same instance.
 - **Governance state defaults to per-instance memory; enforcement is per-node either
   way.** The default `store: memory` is ephemeral RAM per instance. A cluster-shared
-  store (postgres/redis) genuinely shares keys and the token ledger across N nodes (but
-  NOT the durable audit log - see below), and each node's write-behind flush ships
-  ADDITIVE per-(model, tier) token deltas so the store converges on the true fleet
-  totals - but the budget hard
+  store (postgres/redis) genuinely shares keys, the token ledger, and the audit log
+  across N nodes, and each node's write-behind flush ships ADDITIVE per-(model, tier)
+  token deltas so the store converges on the true fleet totals - but the budget hard
   cap is still checked from each node's in-memory counters, so between flushes N nodes
   splitting traffic can admit up to ~N times a configured cap. For a strict single
   ceiling, run a single instance (scale vertically); the proxy path itself scales
   horizontally without this caveat.
-- **The durable audit log takes exactly ONE writer.** Audit sequence numbers are
-  allocated in-process, so two nodes sharing a store reach for the same numbers and
-  overwrite each other's entries, breaking the hash chain the next boot verifies. A
-  node that detects another writer logs an error and detaches its durable sink,
-  continuing to audit to its in-memory ring and state snapshot rather than corrupting
-  the shared log. Point at most one node at a durable audit store; `GET /audit` is
-  per-instance either way (it serves that node's in-memory ring, never the store).
 
 So: for a gateway without group limits, scale out freely behind an LB. With limits,
 either accept the per-node cap semantics over a shared store, or keep enforcement on
@@ -200,7 +167,7 @@ one instance and scale the box, not the count.
 
 ## Metrics to watch
 
-All metrics are Prometheus counters/histograms exposed at `/metrics`, which is opt-in: with no `metrics:` block busbar records nothing and does not mount the endpoint. `metrics.buffer_seconds` (required when you opt in) sets how many seconds of observations are retained — quantiles cover that window, `_sum`/`_count` stay cumulative, and memory is bounded by the window rather than by uptime.
+All metrics are Prometheus counters/histograms exposed at `/metrics`.
 
 | Metric | Type | Labels | Watch for |
 |---|---|---|---|
@@ -338,14 +305,14 @@ config) adds a background prober:
 
 Each probing lane gets one background task. `interval_secs` (default 30) and
 `timeout_secs` (default 5) are honored (floored at 1s). The first tick is skipped so
-Busbar doesn't probe before any traffic establishes health. A lane with no key is
+busbar doesn't probe before any traffic establishes health. A lane with no key is
 skipped (a guaranteed 401 would only thrash the breaker). A 2xx probe recovers a
 tripped lane to Closed and increments the lane's `ok` counter by one; a failed probe records a
 transient (which, on a Closed lane in `active` mode, can trip it out).
 
 ## Failover & exhaustion
 
-For a single request, Busbar will retry across pool members up to the failover
+For a single request, busbar will retry across pool members up to the failover
 `max_hops` (default 3) and within the `timeout_secs` budget (default 120). Failover is
 allowed **only before the first upstream byte reaches the client**: once streaming
 has started, a failure cannot fail over (the client holds a partial response); the
@@ -372,14 +339,39 @@ guarded by `auth.admin_auth` (the built-in `admin-tokens` operator credential, s
 `Authorization: Bearer <admin_token>` or `X-Admin-Token: <admin_token>`, or an IdP role with
 `admin_scope`).
 
-Minting, listing, rotating, and revoking keys — the routes, request/response shapes, the mint-body
-field reference, and the scope lattice — are owned by the **[Admin API reference](/docs/admin-api/)**.
-The limit/group model those keys charge through is owned by
-**[Configuration → Virtual keys and enforcement](/docs/configuration/#virtual-keys-and-enforcement)**.
-This guide stays on the operational picture. In brief: `POST /api/v1/admin/keys` mints a key and
-returns the signed token **once**; a key is pure auth (every limit lives on the bound `group`), it
-EXPIRES (default 90 days — re-mint or rotate before then), and `DELETE` puts its subject on the
-durable revocation denylist immediately.
+| Method · Route | Purpose |
+|---|---|
+| `POST /api/v1/admin/keys` | Mint a key. The signed token is returned **once**. Pass `"issue_aws_credential": true` to also mint an AWS credential pair for Bedrock-SDK clients (see below). |
+| `GET /api/v1/admin/keys` | List key metadata: `{id, name, allowed_pools, group, enabled, created_at, labels}` (never secrets). |
+| `GET /api/v1/admin/keys/{id}/usage` | All-time attribution counters: `spend_cents`, `tokens`, `requests`, plus chain-derived `rate_headroom`. |
+| `PATCH /api/v1/admin/keys/{id}` | `{enabled?, group??}`: freeze/unfreeze, or rebind/unbind the group. Three-state group: absent = unchanged, `null` = unbind, value = rebind. |
+| `DELETE /api/v1/admin/keys/{id}` | Revoke: the key's subject joins the durable denylist (immediate, survives restart). |
+
+### Creating a key
+
+```bash
+curl -s -X POST http://localhost:8081/api/v1/admin/keys \
+  -H "Authorization: Bearer $BUSBAR_ADMIN_TOKEN" \
+  -H "content-type: application/json" \
+  -d '{
+        "name": "team-search",
+        "group": "search-team",
+        "allowed_pools": ["fast", "overflow"],
+        "expires_in": "90d",
+        "labels": {"team": "search"}
+      }'
+```
+
+Create-key fields (keys are PURE AUTH: every limit lives on the bound group):
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `name` | string | n/a | Required label. |
+| `group` | string | none | The `groups:` entry this key charges through (must exist; 400 otherwise). Omitted = authed + unlimited. |
+| `allowed_pools` | list<string> | omitted = all | Pools/models this key may target. OMITTED = all pools; an explicit `[]` = NO pools. Violations → `403`. |
+| `expires_in` / `expires_at` | duration / epoch | `90d` | Token lifetime (mutually exclusive). Keys EXPIRE: re-mint or rotate before expiry. |
+| `labels` | map | `{}` | Echoed onto the key's metric series (e.g. `sum by (team)`); never interpreted by enforcement. |
+| `issue_aws_credential` | bool | `false` | When `true`, also issues an AWS-style `aws_access_key_id` + `aws_secret_access_key` for inbound SigV4 auth (Bedrock SDK clients). Both fields are returned **once** in the 201 response alongside the signed token and never again. See [Bedrock ingress](protocols.md#bedrock). |
 
 ### Enforcement model
 
@@ -410,9 +402,8 @@ durable revocation denylist immediately.
 | `503` on every request | `/stats`, are all lanes `dead` or in cooldown? Check `dead_reason`. |
 | A lane stuck `dead` with `billing` reason | Upstream wallet/quota; the lane recovers on a successful probe once funded. Consider `health.mode: dead`. |
 | A lane stuck `dead` with `auth` reason | Wrong/expired credential behind the provider's `api_key` reference. |
-| A few `401`s from a Vertex AI or Azure (Entra ID) lane right after startup | The lane's first OAuth token is still minting. `jwt-bearer` / `oauth-client-credentials` lanes fetch an access token in the background at boot (and on every reload); for up to ~1s before it lands, the earliest calls return `401`. Clears itself within a second, no action needed. Static-key lanes (`bearer` / `api-key` / SigV4) never have this window. |
-| `429` from Busbar itself | A group limit blocked. The body's `error.type` distinguishes the cause: `rate_limit_error` = requests/tokens/concurrent limit (the message names group + metric + window); `insufficient_quota` = a budget limit (Bedrock ingress signals over-budget as `400` instead). Check `GET /api/v1/admin/keys/{id}/usage`. |
-| `403` from Busbar | The virtual key's `allowed_pools` doesn't include the target. |
+| `429` from busbar itself | A group limit blocked. The body's `error.type` distinguishes the cause: `rate_limit_error` = requests/tokens/concurrent limit (the message names group + metric + window); `insufficient_quota` = a budget limit (Bedrock ingress signals over-budget as `400` instead). Check `GET /api/v1/admin/keys/{id}/usage`. |
+| `403` from busbar | The virtual key's `allowed_pools` doesn't include the target. |
 | Startup panic: "unset environment variable" | A `${VAR}` (possibly in a comment) isn't exported. |
 | Startup panic: "not found in providers.yaml" | A `config.yaml` provider name isn't in the catalog. |
 | Cross-protocol responses missing fields | Expected, only the modeled IR subset survives a cross-protocol hop; same-protocol routes are lossless. |

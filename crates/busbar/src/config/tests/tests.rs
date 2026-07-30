@@ -53,13 +53,12 @@ fn base_deploy() -> DeployCfg {
         rate_card: None,
         per_request_fee: 0,
         store: None,
-        secrets: Default::default(),
         advanced: AdvancedCfg::default(),
         observability: None,
         plugins: Default::default(),
         security: None,
         limits: LimitsCfg::default(),
-        metrics: None,
+        metrics: MetricsCfg::default(),
         health: HealthDefaultsCfg::default(),
         routing: RoutingCfg::default(),
     }
@@ -167,21 +166,6 @@ fn test_removed_auth_keys_are_rejected_at_parse() {
 }
 
 /// M8 (deny_unknown_fields gap): `TlsCfg` is `#[serde(deny_unknown_fields)]`, so a TYPO under
-/// `health:` was the ONE top-level section without `deny_unknown_fields`, so a typo'd probe knob
-/// parsed clean and was silently ignored — the operator believes probing is retuned while it keeps
-/// the defaults. Every sibling section rejects at parse; this one now does too.
-#[test]
-fn test_health_typo_rejected_at_parse() {
-    let bad = "default_probe_interval_sec: 5"; // missing the trailing `s`
-    let err = serde_yaml::from_str::<crate::config::HealthDefaultsCfg>(bad)
-        .expect_err("a typo under health: must be rejected at parse (deny_unknown_fields)");
-    let msg = err.to_string();
-    assert!(
-        msg.contains("unknown field") && msg.contains("default_probe_interval_sec"),
-        "the error names the offending key: {msg}"
-    );
-}
-
 /// `tls:` (e.g. `client_c:` for `client_ca:`) is REJECTED AT PARSE rather than silently ignored
 /// (which would leave mTLS DISABLED while the operator believes it is on). The 1.4.x spellings
 /// `cert_file`/`key_file`/`client_ca_file` are REMOVED and rejected too; the fields are now
@@ -427,7 +411,7 @@ fn test_shipped_example_config_resolves() {
         return;
     }
 
-    // Booting the shipped default config must NOT require BUSBAR_ADMIN_TOKEN to
+    // Regression (#23): booting the shipped default config must NOT require BUSBAR_ADMIN_TOKEN to
     // be set: no brace-form interpolation of it may appear anywhere (comments included, since
     // interpolate_env scans the whole file).
     assert!(
@@ -477,7 +461,7 @@ fn braced_env_vars(raw: &str) -> Vec<String> {
     out
 }
 
-/// Tests sharing a process-global env var use a set -> interpolate -> remove
+/// Regression (#20): tests sharing a process-global env var use a set -> interpolate -> remove
 /// sequence. Under the default parallel test runner, an unguarded sibling could `remove_var`
 /// between this test's `set_var` and `interpolate_env`, making interpolation fail with an "unset
 /// variable" error. This test reproduces that race deterministically by hammering the exact
@@ -798,7 +782,7 @@ fn test_interpolate_env_no_vars() {
     assert_eq!(result, "plain-text-no-vars");
 }
 
-/// An env value containing a NEWLINE (the structural
+/// Regression (YAML-structure injection): an env value containing a NEWLINE (the structural
 /// break that closes a quoted YAML scalar) must be rejected, not spliced into the raw config
 /// text. The exploit shape: a value that ends a quoted list entry and injects an extra item must
 /// fail loudly at interpolation time. Uses a unique per-test var name (process-global env,
@@ -894,304 +878,6 @@ fn test_interpolate_env_unclosed_brace_fails() {
     assert!(
         err2.contains("unclosed"),
         "error must mention 'unclosed', got: {err2}"
-    );
-}
-
-// ── structural-equivalence check (flow-collection / opaque-map injection, no newline needed) ──────
-
-/// THE HEADLINE EXPLOIT, end-to-end through REAL typed deserialization (not just asserting
-/// `is_err()` from the interpolation function in isolation — that alone tests the mechanism, not
-/// the security property). `client_tokens: ["${VAR}"]` is this project's own documented
-/// interpolation pattern (`docs/migration-1.5.md`, `docs/migration-1.3.md`) for a flow SEQUENCE,
-/// which has no `deny_unknown_fields`-equivalent defense: a value containing `", "` can freely add
-/// a second array element.
-#[test]
-fn test_structural_injection_widens_client_tokens_array_end_to_end() {
-    let var = "BUSBAR_T_STRUCT_CLIENT_TOKENS";
-    let payload = "real-tok\", \"injected-tok";
-    std::env::set_var(var, payload);
-
-    let template = format!(
-        "providers: {{}}\nmodels: {{}}\nauth: {{ chain: [{{ tokens: {{ settings: {{ client_tokens: [\"${{{var}}}\"] }} }} }}] }}\n"
-    );
-
-    // Sanity check FIRST: prove the underlying vulnerability is real by splicing the payload
-    // directly, the way an UNGUARDED interpolator would, and running it through the REAL typed
-    // `DeployCfg` deserializer (not just a raw `Value`). If this assertion ever stops holding, the
-    // exploit shape has changed and this test needs to be revisited — it must stay red on the
-    // unguarded path for the test below to mean anything.
-    let unguarded_spliced = template.replace(&format!("${{{var}}}"), payload);
-    let deploy: DeployCfg = serde_yaml::from_str(&unguarded_spliced)
-        .expect("unguarded splice must parse and deserialize");
-    let auth = deploy.auth.expect("auth block must be present");
-    let client_tokens = auth.chain[0]
-        .settings
-        .get("client_tokens")
-        .and_then(|v| v.as_array())
-        .expect("client_tokens must deserialize as a JSON array");
-    assert_eq!(
-        client_tokens.len(),
-        2,
-        "sanity: an UNGUARDED splice really does widen client_tokens to a second, attacker-chosen \
-         entry through full real deserialization — this is the vulnerability the fix must close, \
-         not a mechanism-only artifact"
-    );
-
-    // Now prove the guard closes it: real `interpolate_env` must reject this template outright,
-    // before any typed parsing ever sees the widened array.
-    let result = interpolate_env(&template);
-    std::env::remove_var(var);
-    assert!(
-        result.is_err(),
-        "interpolate_env must reject a value that would widen client_tokens via flow-sequence \
-         injection, got: {:?}",
-        result
-    );
-    let err = result.unwrap_err();
-    assert!(
-        err.contains(var),
-        "the error should name the offending variable, got: {err}"
-    );
-}
-
-/// The second real, exploitable shape from the same audit: an OPAQUE `settings:` map
-/// (`serde_json::Map<String, serde_json::Value>`, used by `AuthChainEntry` / hook module settings
-/// / `SecretRef`) is a generic map, not a fixed struct — it carries no `deny_unknown_fields`
-/// equivalent, so an injected sibling key silently reconfigures a third-party auth/hook plugin.
-/// Mirrors `config/mod.rs`'s own documented flow-style example: `ad: { settings: { server: "..." } }`.
-#[test]
-fn test_structural_injection_adds_sibling_settings_key_end_to_end() {
-    let var = "BUSBAR_T_STRUCT_SETTINGS_KEY";
-    // Breaks out of the quoted `server` value and injects a whole new sibling key into `settings`.
-    let payload = "ldaps://corp\", \"evil_key\": \"evil_val";
-    std::env::set_var(var, payload);
-
-    let template = format!(
-        "providers: {{}}\nmodels: {{}}\nauth: {{ chain: [{{ ad: {{ settings: {{ server: \"${{{var}}}\" }} }} }}] }}\n"
-    );
-
-    // Sanity: the unguarded splice really does add the sibling key through real deserialization.
-    let unguarded_spliced = template.replace(&format!("${{{var}}}"), payload);
-    let deploy: DeployCfg = serde_yaml::from_str(&unguarded_spliced)
-        .expect("unguarded splice must parse and deserialize");
-    let settings = &deploy.auth.expect("auth block").chain[0].settings;
-    assert_eq!(
-        settings.get("evil_key").and_then(|v| v.as_str()),
-        Some("evil_val"),
-        "sanity: an UNGUARDED splice really does inject a sibling settings key through full real \
-         deserialization"
-    );
-
-    let result = interpolate_env(&template);
-    std::env::remove_var(var);
-    assert!(
-        result.is_err(),
-        "interpolate_env must reject a value that would inject a sibling settings key, got: {:?}",
-        result
-    );
-    assert!(
-        result.unwrap_err().contains(var),
-        "the error should name the offending variable"
-    );
-}
-
-/// Regression pin for the `plugins.trust.allow_unsigned` exhibit that does NOT work, kept as a
-/// documented "why this is safe" test (not because it's a live vector). `PluginsCfg` carries
-/// `#[serde(deny_unknown_fields)]` on every field and `dir` is its only interpolatable String, so
-/// injecting a sibling `trust: { allow_unsigned: true }` key requires also injecting a redirect to
-/// consume the template's own dangling closing quote — every redirect this audit tried fails:
-/// an unrecognized field name (e.g. `ignore:`) is rejected by `deny_unknown_fields`, and reusing
-/// `dir` again to consume the quote hits DUPLICATE-KEY rejection at the `serde_yaml` `Value`
-/// layer, before `PluginsCfg` is ever constructed. `allow_unsigned` stays `false` through the full
-/// real config-parsing path on the ORIGINAL, unfixed code — this test passes with or without the
-/// structural-equivalence fix, and is here so a future reader doesn't mistake this path for
-/// unguarded.
-#[test]
-fn test_plugins_trust_allow_unsigned_injection_already_fails_via_deny_unknown_fields() {
-    let var = "BUSBAR_T_PLUGINS_TRUST_PIN";
-    let redirect_via_unknown_field =
-        "real-dir\", \"trust\": {\"allow_unsigned\": true}, \"ignore\": \"";
-    std::env::set_var(var, redirect_via_unknown_field);
-    let template = format!(
-        "providers: {{}}\nmodels: {{}}\nplugins: {{ enabled: true, dir: \"${{{var}}}\" }}\n"
-    );
-    let spliced = template.replace(&format!("${{{var}}}"), redirect_via_unknown_field);
-    let result: Result<DeployCfg, _> = serde_yaml::from_str(&spliced);
-    std::env::remove_var(var);
-    assert!(
-        result.is_err(),
-        "an `ignore:`-redirect injection of plugins.trust.allow_unsigned must be rejected by \
-         PluginsCfg's deny_unknown_fields, but it deserialized: {:?}",
-        result.ok()
-    );
-
-    let var2 = "BUSBAR_T_PLUGINS_TRUST_PIN_DUP";
-    let redirect_via_duplicate_key =
-        "real-dir\", \"trust\": {\"allow_unsigned\": true}, \"dir\": \"";
-    std::env::set_var(var2, redirect_via_duplicate_key);
-    let template2 = format!(
-        "providers: {{}}\nmodels: {{}}\nplugins: {{ enabled: true, dir: \"${{{var2}}}\" }}\n"
-    );
-    let spliced2 = template2.replace(&format!("${{{var2}}}"), redirect_via_duplicate_key);
-    let result2: Result<serde_yaml::Value, _> = serde_yaml::from_str(&spliced2);
-    std::env::remove_var(var2);
-    assert!(
-        result2.is_err(),
-        "an dir-reuse redirect must be rejected as a duplicate key at the Value layer, got: {:?}",
-        result2.ok()
-    );
-    assert!(
-        result2.unwrap_err().to_string().contains("duplicate"),
-        "the rejection should be the duplicate-key error"
-    );
-}
-
-/// FALSE-POSITIVE FENCE: the structural check must not reject legitimate values whose content
-/// happens to be YAML-"special" but never changes the document's SHAPE. Must pass both before and
-/// after the fix (these values contain no control character either, so layer 1 never fires).
-#[test]
-fn test_structural_check_allows_real_world_special_char_values() {
-    let cases: &[(&str, &str)] = &[
-        // An LDAP DN: commas are mandatory and this is exactly the shape the OLD blocklist design
-        // (rejected by an earlier draft of this fix) would have broken.
-        ("BUSBAR_T_FENCE_LDAP", "cn=busbar,ou=svc,dc=corp,dc=com"),
-        // A legitimate JSON-ish blob value (braces/brackets/quotes as literal scalar content).
-        (
-            "BUSBAR_T_FENCE_JSON",
-            "{\"role\":\"svc\",\"scopes\":[\"a\",\"b\"]}",
-        ),
-        // A Windows-style path (busbar ships a windows-latest CI job + an
-        // x86_64-pc-windows-msvc release target, so backslash-bearing values are real).
-        ("BUSBAR_T_FENCE_WINPATH", "C:\\ProgramData\\busbar\\secrets"),
-        // A URL with a query string.
-        ("BUSBAR_T_FENCE_URL", "https://host/v1?a=1&b=2"),
-    ];
-    for (var, value) in cases {
-        std::env::set_var(var, value);
-        let input = format!("token: \"${{{var}}}\"");
-        let result = interpolate_env(&input);
-        std::env::remove_var(var);
-        assert!(
-            result.is_ok(),
-            "legitimate value for {var} must not be rejected as a structural injection: {:?}",
-            result
-        );
-        assert_eq!(result.unwrap(), format!("token: \"{value}\""));
-    }
-}
-
-/// The exact false-positive the structural check must NOT flag: a numeric env value substituted
-/// into `port: ${VAR}` infers as a YAML `Number` (real), while the internal placeholder token
-/// infers as a `String` (it's not numeric) — a scalar TYPE change, not a shape change, and must be
-/// allowed. Verified end-to-end: the field really does deserialize as an integer.
-#[test]
-fn test_structural_check_allows_numeric_scalar_type_inference_change() {
-    let var = "BUSBAR_T_FENCE_PORT";
-    std::env::set_var(var, "8080");
-    let input =
-        format!("providers: {{}}\nmodels: {{}}\nlisten: \"x\"\nadvanced: {{}}\nport: ${{{var}}}\n");
-    let result = interpolate_env(&input);
-    std::env::remove_var(var);
-    let expanded =
-        result.expect("a real numeric value must not be rejected as a structural mismatch");
-    let doc: serde_yaml::Value = serde_yaml::from_str(&expanded).unwrap();
-    assert_eq!(
-        doc.get("port").and_then(|v| v.as_i64()),
-        Some(8080),
-        "port must deserialize as a real integer, not get rejected or stringified"
-    );
-}
-
-/// Anchor/alias behavior, documented empirically (found via manual experimentation against the
-/// real `serde_yaml_ng` crate, not assumed): a bare `&name` / `*name` appearing STATICALLY in the
-/// template (not attacker-controlled) resolves normally and is not affected by interpolation at
-/// all — no false positive. This is the "no false positive" half.
-#[test]
-fn test_anchor_alias_static_usage_not_affected_by_interpolation() {
-    let var = "BUSBAR_T_ANCHOR_STATIC";
-    std::env::set_var(var, "plain-value-no-special-chars");
-    let input = format!("defaults: &shared orig\nfoo: \"${{{var}}}\"\nbar: *shared\n");
-    let result = interpolate_env(&input);
-    std::env::remove_var(var);
-    assert!(
-        result.is_ok(),
-        "a static anchor/alias unrelated to the interpolated value must not be flagged: {:?}",
-        result
-    );
-    let doc: serde_yaml::Value = serde_yaml::from_str(&result.unwrap()).unwrap();
-    assert_eq!(doc.get("bar").and_then(|v| v.as_str()), Some("orig"));
-}
-
-/// Anchor/alias INJECTION, the "caught" half: an attacker-controlled value can REDEFINE an
-/// existing anchor from inside a flow collection with no newline at all (`, b: &shared {...}, c:
-/// "` — the same comma-breakout mechanism as the headline exploit), hijacking what a LATER `*alias`
-/// resolves to elsewhere in the document. Verified empirically that this changes the parsed TREE
-/// SHAPE at the alias site (a scalar becomes a mapping) — which the structural check catches via
-/// the ordinary key-set/kind comparison, with no anchor-specific logic needed.
-#[test]
-fn test_anchor_redefinition_injection_is_caught_end_to_end() {
-    let var = "BUSBAR_T_ANCHOR_INJECT";
-    let payload = "x\", b: &shared {hijacked: true}, c: \"y";
-    std::env::set_var(var, payload);
-    let template =
-        format!("defaults: &shared orig-scalar\nfoo: {{ a: \"${{{var}}}\" }}\nbar: *shared\n");
-
-    // Sanity: prove the hijack is real on an unguarded splice — `bar` really does change from the
-    // scalar `orig-scalar` to a mapping.
-    let unguarded_spliced = template.replace(&format!("${{{var}}}"), payload);
-    let doc: serde_yaml::Value =
-        serde_yaml::from_str(&unguarded_spliced).expect("unguarded splice parses");
-    assert!(
-        doc.get("bar").map(|v| v.is_mapping()).unwrap_or(false),
-        "sanity: the unguarded anchor-redefinition attack really does turn `bar` into a mapping"
-    );
-
-    let result = interpolate_env(&template);
-    std::env::remove_var(var);
-    assert!(
-        result.is_err(),
-        "an anchor-redefinition injection must be rejected by the structural check: {:?}",
-        result
-    );
-}
-
-/// The structural check's own recursion is depth-bounded (mirrors `json::MAX_JSON_DEPTH`'s
-/// reasoning, at the same 128 limit) as defense-in-depth — but `serde_yaml_ng` itself already
-/// refuses to PARSE a document this deep (verified empirically: it returns a clean "recursion
-/// limit exceeded" `Err` around the same depth, well before Rust's own call stack is at any real
-/// risk), so `assert_interpolation_preserves_structure`'s existing early-return ("the real text
-/// doesn't even parse as YAML, that already fails safely downstream") fires first in practice.
-/// This test pins that observed, safe behavior: interpolation of the TEXT still succeeds (nothing
-/// panics, nothing hangs), and the eventual failure is deferred to the real typed parse a caller
-/// runs on the returned text — exactly as the existing code comment already documents for any
-/// other unparseable-once-interpolated document. 300 levels is comfortably past both limits.
-#[test]
-fn test_structural_check_does_not_overflow_on_deeply_nested_config() {
-    let var = "BUSBAR_T_DEEP_NEST";
-    std::env::set_var(var, "leaf-value");
-    let depth = 300;
-    let mut input = String::new();
-    for i in 0..depth {
-        input.push_str(&"  ".repeat(i));
-        input.push_str("a:\n");
-    }
-    input.push_str(&"  ".repeat(depth));
-    input.push_str(&format!("b: \"${{{var}}}\"\n"));
-    // Must not panic or hang — the real assertion is that this returns at all, and quickly.
-    let result = interpolate_env(&input);
-    std::env::remove_var(var);
-    assert!(
-        result.is_ok(),
-        "text-level interpolation must still succeed for a too-deep document (the eventual \
-         failure is the downstream real parse's job, not this check's): {:?}",
-        result
-    );
-    // The deferred failure actually happens: the caller's real parse of this same text rejects it
-    // (serde_yaml_ng's own recursion guard), so the too-deep document does not silently boot.
-    let parsed: Result<serde_yaml::Value, _> = serde_yaml::from_str(&result.unwrap());
-    assert!(
-        parsed.is_err(),
-        "a document nested this deep must still fail the real downstream parse"
     );
 }
 
@@ -1429,7 +1115,7 @@ fn breaker_cfg_default_matches_serde_default_fns() {
     );
 }
 
-/// The config surface carries NO raw secret material anywhere:
+/// REGRESSION (adapted for 1.5.0): the config surface carries NO raw secret material anywhere:
 /// every credential is a SecretRef (module + settings), so debug-logging a whole DeployCfg can
 /// never leak a resolved secret VALUE. This sets a distinctive value in the environment, builds a
 /// config full of refs to it, and asserts the Debug dump shows the reference (the env var NAME)
@@ -1495,7 +1181,7 @@ models:
         &deploy.limits,
         &deploy.observability.clone().unwrap_or_default(),
         &deploy.advanced,
-        deploy.metrics.as_ref(),
+        &deploy.metrics,
         &deploy.health,
         &deploy.routing,
     );
@@ -1555,7 +1241,7 @@ fn test_limits_resolved_default_matches_from_sections_defaults() {
         &LimitsCfg::default(),
         &ObservabilityCfg::default(),
         &AdvancedCfg::default(),
-        None,
+        &MetricsCfg::default(),
         &HealthDefaultsCfg::default(),
         &RoutingCfg::default(),
     );
@@ -1590,7 +1276,6 @@ limits:
   request_body_max_bytes: 1048576
   pool_idle_timeout_secs: 77
 metrics:
-  buffer_seconds: 30
   key_gauge_limit: 9
 advanced:
   rate_sweep_interval: 64
@@ -1605,7 +1290,7 @@ routing:
         &deploy.limits,
         &deploy.observability.clone().unwrap_or_default(),
         &deploy.advanced,
-        deploy.metrics.as_ref(),
+        &deploy.metrics,
         &deploy.health,
         &deploy.routing,
     );
@@ -1651,7 +1336,7 @@ limits:
         &deploy.limits,
         &ObservabilityCfg::default(),
         &AdvancedCfg::default(),
-        None,
+        &MetricsCfg::default(),
         &HealthDefaultsCfg::default(),
         &RoutingCfg::default(),
     );
@@ -2008,7 +1693,7 @@ fn test_group_limit_pool_qualifier() {
     assert!(err.to_string().contains("duplicate"), "{err}");
 }
 
-/// The `on_exhaust` pair: parses + round-trips on a pool-scoped budget; every malformed
+/// The `on_exhaust` pair (§6c): parses + round-trips on a pool-scoped budget; every malformed
 /// coupling fails AT PARSE with a teaching error (downgrade without a target, a dangling target
 /// without downgrade, a non-budget metric, a group-wide budget, a self-referential target).
 #[test]
@@ -2351,7 +2036,7 @@ fn to_policy_floor_distinguishes_automatic_from_explicit_downgrade() {
     // reject that no opt-in can relax.
     let err = evaluate(artifact, &old, &automatic).unwrap_err();
     assert!(
-        err.reason.contains("anti-downgrade"),
+        err.0.contains("anti-downgrade"),
         "automatic policy must refuse the old first-party artifact, got {err:?}"
     );
 
@@ -2395,50 +2080,20 @@ fn to_policy_floor_distinguishes_automatic_from_explicit_downgrade() {
     );
 }
 
-/// A runtime-set PER-PLUGIN `first_party_floors` override on `PluginsCfg` is honored by `to_policy`
-/// (the seam the persisted rollback pin drives) for that name ONLY, while the global `binary_version`
-/// stays the binary's own version — so an UNPINNED first-party plugin still faces the full floor (M1).
+/// A runtime-set `first_party_floor` on `PluginsCfg` is honored by `to_policy` (the seam the persisted
+/// rollback pin drives), while the default `None` keeps the binary's own version — so the automatic
+/// posture is unchanged unless a pin explicitly lowered it.
 #[test]
 fn to_policy_honors_runtime_first_party_floor_override() {
     let mut cfg = PluginsCfg {
         enabled: true,
         ..Default::default()
     };
-    // Default: the automatic floor equals the binary version and there are no per-name overrides.
+    // Default: the automatic floor equals the binary version.
     let auto = cfg.to_policy().expect("policy");
     assert_eq!(auto.binary_version, env!("CARGO_PKG_VERSION"));
-    assert!(auto.first_party_floors.is_empty());
-    // With an explicit per-name override (as a persisted rollback pin sets): only that name is lowered;
-    // the global binary_version floor (what every OTHER first-party plugin uses) is untouched.
-    cfg.first_party_floors
-        .insert("acme-hook".to_string(), "0.9.0".to_string());
+    // With an explicit override (as a persisted rollback pin sets): the lowered floor is used.
+    cfg.first_party_floor = Some("0.9.0".to_string());
     let pinned = cfg.to_policy().expect("policy");
-    assert_eq!(pinned.binary_version, env!("CARGO_PKG_VERSION"));
-    assert_eq!(
-        pinned
-            .first_party_floors
-            .get("acme-hook")
-            .map(String::as_str),
-        Some("0.9.0")
-    );
-}
-
-/// class-12 D2 REGRESSION PROOF: a malformed `min_versions` floor does NOT fail `to_policy` — the
-/// comparator (`version_at_least`), not config validation, is where a malformed floor is refused
-/// (§3.2 v3: fail closed at the comparator, don't refuse the boot). Passes before AND after; it is
-/// the anti-regression guard against reaching for the superseded v2 design (`to_policy` returning
-/// `Err` for this case), which this design deliberately does NOT do. If this test goes red, the
-/// builder implemented the superseded design.
-#[test]
-fn to_policy_still_returns_ok_for_a_malformed_floor() {
-    let mut cfg = PluginsCfg {
-        enabled: true,
-        ..Default::default()
-    };
-    cfg.min_versions
-        .insert("p".to_string(), "v1.6.0".to_string());
-    assert!(
-        cfg.to_policy().is_ok(),
-        "a malformed floor must not fail the boot — it is refused at the comparator instead"
-    );
+    assert_eq!(pinned.binary_version, "0.9.0");
 }

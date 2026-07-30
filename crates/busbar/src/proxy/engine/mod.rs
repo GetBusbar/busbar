@@ -190,39 +190,6 @@ pub(crate) async fn forward_with_pool_parsed(
     resp
 }
 
-/// RAII refund for the headers-time `spend_budget` unit across the BUFFERED forward path's
-/// spend→`read_capped(...).await` window (used by both `forward_with_pool_parsed_inner` here and
-/// its `walk.rs` degraded-path twin). A client disconnect / LB reset parked at that await drops the
-/// handler future without resuming it, so a plain local bool consulted only AFTER the await never
-/// runs the refund (#21) — the streaming path has `FirstByteBody::drop` for this; the buffered path
-/// has no such body wrapper, so it needs its own guard.
-///
-/// Mirrors `select::ProbeGuard`: armed by default, refunds on `Drop` unless disarmed first. Every
-/// exit that must KEEP the charge (a delivered completion, or our own translation-cap truncation)
-/// calls `disarm()` before returning; the exits that must refund (a pre-first-byte-equivalent
-/// transport failure, or an untranslatable 2xx) simply leave it armed and let the `return` unwind
-/// through it — replacing the old inline `if budget_spent { refund_budget(i) }` calls, not
-/// supplementing them (calling both would double-refund).
-struct BudgetSpendGuard<'a> {
-    store: &'a dyn crate::store::StateStore,
-    lane: usize,
-    armed: bool,
-}
-
-impl BudgetSpendGuard<'_> {
-    fn disarm(&mut self) {
-        self.armed = false;
-    }
-}
-
-impl Drop for BudgetSpendGuard<'_> {
-    fn drop(&mut self) {
-        if self.armed {
-            self.store.refund_budget(self.lane);
-        }
-    }
-}
-
 /// The dispatch core behind [`forward_with_pool_parsed`] (the thin wrapper exists only to fire the
 /// completion-stage taps around the whole request).
 //
@@ -260,7 +227,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // affinity derivation, failover/breaker config) up to the failover loop. Zero cost when
     // `BUSBAR_PROFILE` is unset — `start` returns `None` and takes no `Instant`.
     let _prep = crate::profile::start(crate::profile::Stage::Prepare);
-    // EGRESS deletion switch: every candidate
+    // EGRESS deletion switch (design §3, same contract as `forward_operation`): every candidate
     // lane's protocol must HOLD this operation's handler. A protocol whose handler was deleted is
     // not a valid egress for the operation — a clean no-handler 404 in the CALLER's dialect, never a
     // silent dispatch. Dormant while all six protocols serve chat; load-bearing the moment one is
@@ -514,14 +481,12 @@ pub(crate) async fn forward_with_pool_parsed_inner(
 
     // Apply configured failover exclusions: members named here are excluded from this pool's
     // candidate set (never selected, primary or failover) — a per-pool member blocklist.
-    //
-    // Removed from `cands` rather than seeded into `request_ctx.excluded`, mirroring how gate
-    // restricts narrow the set. The two are different kinds of exclusion: `request_ctx.excluded`
-    // accumulates already-tried lanes, so a consumer that reads it cannot tell a blocklisted member
-    // from one this request has burned through. The exhaustion paths read `cands` directly —
-    // `least_bad` and the `Retry-After` computation both did, and so reached blocklisted members.
     if let Some(excl) = pool_failover.and_then(|f| f.exclusions.as_ref()) {
-        cands.retain(|wl| !excl.iter().any(|m| m == &app.lanes[wl.idx].model));
+        for wl in &cands {
+            if excl.iter().any(|m| m == &app.lanes[wl.idx].model) {
+                request_ctx.exclude(wl.idx);
+            }
+        }
     }
 
     // ── ROUTING-POLICY SEAM ───────────────────────────────────────────────────────────────────────
@@ -654,7 +619,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 // Capture this restrict so it PERSISTS across a `fallback_pool` hop (which rebuilds
                 // candidates from an independent pool). Recorded for every restrict regardless of
                 // whether it narrows here — the fail-closed reject case returns below before any
-                // fallback, so a stray record is harmless.
+                // fallback, so a stray record is harmless. (found: audit c1r13.)
                 request_ctx.active_restricts.push(RestrictConstraint {
                     tags_any: tags_any.clone(),
                     on_empty: on_empty.clone(),
@@ -724,11 +689,6 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     .collect();
                 if !filtered.is_empty() {
                     gate_order = Some((filtered, name));
-                } else {
-                    // This gate outranks every earlier one in the chain, and it has abstained: the
-                    // fall-through is the pool's BASE ordering, never a lower-priority gate's stale
-                    // order left over from a previous loop iteration.
-                    gate_order = None;
                 }
             }
         }
@@ -862,7 +822,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                         // failover; the fallback pool rebuilds candidates independently and consults
                         // `enforce_restricts`. The gate arm was the c1r13 fix; this BASE routing-policy
                         // arm (pool `route:` hook) is the sibling path that was still leaking a
-                        // compliance restrict at the pool boundary.
+                        // compliance restrict at the pool boundary. (found: audit c1r14.)
                         request_ctx.active_restricts.push(RestrictConstraint {
                             tags_any: tags_any.clone(),
                             on_empty: on_empty.clone(),
@@ -989,14 +949,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         }
 
         let _pick = crate::profile::start(crate::profile::Stage::LanePick);
-        // `probe_epoch`: the owner token for whatever single-flight probe this pick won, captured
-        // synchronously by `pick_among` before any await. Every `release_probe_in` call below this
-        // point runs AFTER `read_capped_body(r).await` — a yield point where a successor request
-        // could have already recorded an outcome and won a NEWER probe on this same cell — so they
-        // must release via the OWNER-CHECKED `release_probe_owned_in(pool_name, i, probe_epoch)`,
-        // never the unowned `release_probe_in`, which would revert whichever probe is live at
-        // release time regardless of which one this attempt actually won.
-        let (i, permit, probe_epoch) = match pick_among(
+        let (i, permit) = match pick_among(
             &app,
             &cands,
             &mut request_ctx,
@@ -1410,7 +1363,11 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     // `extract_error` only sees the body, so the cooldown floor would otherwise be
                     // silently dropped on a 429 carrying an explicit retry hint.
                     let ct = r.headers().get(CONTENT_TYPE).cloned();
-                    let retry_after_secs = crate::breaker::parse_retry_after(r.headers());
+                    let retry_after_secs = r
+                        .headers()
+                        .get(axum::http::header::RETRY_AFTER)
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|s| s.trim().parse::<u64>().ok());
                     // A real AWS Bedrock endpoint sends `x-amzn-requestid` and `x-amzn-errortype` on
                     // EVERY response, including 4xx. First-party AWS SDKs read `x-amzn-errortype`
                     // BEFORE the body `__type` for typed-exception dispatch; their absence on a
@@ -1452,7 +1409,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                         // native shape. On a CROSS-protocol boundary (e.g. an Anthropic-ingress client
                         // routed to an OpenAI backend that 401s) relaying the egress provider's native
                         // error envelope and Content-Type to a different-protocol SDK is a
-                        // foreign-format leak — the SDK fails to decode it into its typed
+                        // foreign-format leak (§8.2) — the SDK fails to decode it into its typed
                         // exception, an immediate proxy tell. Reshape into the ingress protocol's
                         // native envelope instead, deriving the kind from the status (the sibling
                         // ClientFault branch does the same). The passthrough breaker invariant is
@@ -1462,7 +1419,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                             // failing — no breaker penalty — so no failure outcome is recorded to
                             // clear `probe_in_flight`. If this lane won the recovery probe, release
                             // it before relaying or the lane stays wedged HalfOpen.
-                            app.store.release_probe_owned_in(pool_name, i, probe_epoch);
+                            app.store.release_probe_in(pool_name, i);
                             // Reshape via the shared finalizer so the kind→native-envelope mapping
                             // (401→authentication_error, 403→permission_error, …) is identical on the
                             // main path, the degraded path, and the ClientFault branch below.
@@ -1471,7 +1428,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                         // Probe class guard (same-protocol passthrough 401/403): caller-key auth
                         // failure carries no breaker penalty, so nothing clears `probe_in_flight`.
                         // Release the won probe before the verbatim relay or the lane wedges HalfOpen.
-                        app.store.release_probe_owned_in(pool_name, i, probe_epoch);
+                        app.store.release_probe_in(pool_name, i);
                         use axum::body::Body;
                         let mut rb = Response::builder().status(status);
                         if let Some(ct) = ct {
@@ -1523,7 +1480,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                             // probe — leaving the recovering lane wedged HalfOpen until the slow
                             // out-of-band prober resets it. Release it once here, before either exit,
                             // so the lane is immediately re-probeable on the next cooldown.
-                            app.store.release_probe_owned_in(pool_name, i, probe_epoch);
+                            app.store.release_probe_in(pool_name, i);
                             // Same-protocol passthrough relays the upstream 4xx body + CT verbatim
                             // (it is already in the client's native shape). Cross-protocol must
                             // RESHAPE the error into the ingress protocol's native envelope —
@@ -1749,7 +1706,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                             // recovery probe, this `continue` would abandon it set, wedging the lane
                             // HalfOpen until the slow out-of-band prober rescues it. Release it so the
                             // lane is immediately probe-eligible again for normal-size requests.
-                            app.store.release_probe_owned_in(pool_name, i, probe_epoch);
+                            app.store.release_probe_in(pool_name, i);
                             last_failure = Some(DISPOSITION_CONTEXT_LENGTH);
                             drop(permit);
                             continue;
@@ -1784,15 +1741,6 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 // is a no-op success there) and `refund_budget` is likewise a no-op there, so an
                 // unlimited lane neither over-counts nor under-counts.
                 let budget_spent = app.store.spend_budget(i);
-                // Guards the buffered path's spend→`read_capped(...).await` window (#21): armed
-                // now, disarmed at every exit below that must KEEP the charge. Disarmed (without
-                // refunding) just before the streaming builder, which hands the same `budget_spent`
-                // value to `FirstByteBody` for its own cancellation-safe refund.
-                let mut budget_guard = BudgetSpendGuard {
-                    store: app.store.as_ref(),
-                    lane: i,
-                    armed: budget_spent,
-                };
                 // RECORD_SUCCESS ends; RESP_BUILD spans everything from here to the returned Response
                 // (usage/CT capture, SSE-vs-buffered branch, FirstByteBody wiring, response builder).
                 drop(_rec);
@@ -1870,10 +1818,12 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                         if tripped {
                             emit_breaker_trip(&app, pool_name, i);
                         }
-                        // `budget_guard` is still armed here (nothing has disarmed it): dropping it
-                        // on this `return` refunds ONLY if the headers-spend actually decremented
-                        // (#21) — `refund_budget` is an unconditional fetch_add, so refunding a
-                        // no-op spend would raise the budget above its cap.
+                        // Refund ONLY if the headers-spend actually decremented (#21): `refund_budget`
+                        // is an unconditional fetch_add, so refunding a no-op spend would raise the
+                        // budget above its cap.
+                        if budget_spent {
+                            app.store.refund_budget(i);
+                        }
                         return ingress_error(
                             ingress_protocol,
                             StatusCode::BAD_GATEWAY,
@@ -1899,7 +1849,6 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                             "cross-protocol non-stream success body exceeded the translation cap; \
                              cannot translate, not charging tokens, returning ingress-native error"
                         );
-                        budget_guard.disarm();
                         return ingress_error(
                             ingress_protocol,
                             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1940,9 +1889,6 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                         }
                         if let Some(Ok(mut ir)) = decoded {
                             record_resp_usage(&ir, &usage_sink, app.lanes.get(i));
-                            // Tokens are now committed to this key; keep the lane unit too rather
-                            // than refund it out from under an already-billed request.
-                            budget_guard.disarm();
                             ir.prepare_for_ingress(ingress_protocol, now());
                             if let Some(wire) = crate::handlers::request_handler(ingress_protocol)
                                 .and_then(|rh| rh.operation_handler(op.operation))
@@ -1986,9 +1932,6 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                                 // response). No FirstByteBody on this buffered path, so bill here —
                                 // straight from the IR usage the egress reader just decoded (Change A).
                                 record_resp_usage(&ir, &usage_sink, app.lanes.get(i));
-                                // Tokens are now committed to this key; keep the lane unit too
-                                // rather than refund it out from under an already-billed request.
-                                budget_guard.disarm();
                                 // OPERATION-BLIND ingress preparation: the IR reshapes ITSELF for
                                 // delivery in the caller's dialect (chat: native-identity strip, the
                                 // protocol-agnostic `created` boundary signal, tool-id remap — see
@@ -2106,7 +2049,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                                         .unwrap_or_else(|_| status.into_response());
                                 }
                                 // Content-Type is the INGRESS JSON CT, not the upstream's — the body
-                                // is now in the client's native non-stream shape. A
+                                // is now in the client's native non-stream shape (§8.4). A
                                 // bedrock-ingress 2xx also carries `x-amzn-RequestId` (matching a real
                                 // Converse response and the error path).
                                 let rb = Response::builder()
@@ -2140,7 +2083,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     // We reached this block only because ingress != egress, so relaying the upstream
                     // body+Content-Type verbatim would leak the EGRESS provider's native wire format
                     // to a different-protocol client — a foreign-format response is an immediate proxy
-                    // tell and a functional failure (the client's SDK cannot decode it). Return
+                    // tell (§8.2) and a functional failure (the client's SDK cannot decode it). Return
                     // an ingress-native 500 instead. (Same-protocol passthrough never enters this
                     // block — it streams through FirstByteBody / the buffered same-protocol path — so
                     // a legitimate verbatim relay is never suppressed here.)
@@ -2151,23 +2094,6 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                         "cross-protocol response not translatable; returning ingress-native error \
                          instead of leaking the upstream's native body"
                     );
-                    // The 2xx headers optimistically recorded a breaker SUCCESS, but an undecodable
-                    // body is exactly as much a lane fault as a transport failure — without this, a
-                    // lane returning undecodable 200s forever never trips (unlike its TransportError
-                    // sibling above, which already compensates). Record a transient to reverse it.
-                    let tripped = app.store.record_transient_in(
-                        pool_name,
-                        i,
-                        "untranslatable-2xx",
-                        &breaker_cfg,
-                        None,
-                    );
-                    if tripped {
-                        emit_breaker_trip(&app, pool_name, i);
-                    }
-                    // `budget_guard` is still armed here (nothing on this fallthrough disarmed it):
-                    // dropping it on this `return` refunds the headers-time unit, symmetric with the
-                    // TransportError branch above.
                     return ingress_error(
                         ingress_protocol,
                         StatusCode::INTERNAL_SERVER_ERROR,
@@ -2215,10 +2141,6 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                             .and_then(|p| p.writer().make_array_stream_framer())
                     })
                     .flatten();
-                // Handing the budget-refund decision to `FirstByteBody` (via `budget_spent` below,
-                // Cancellation part of the fix) — disarm the local guard so it does not ALSO refund
-                // when this stack frame unwinds.
-                budget_guard.disarm();
                 // RB_PRE ends; RB_BODY spans the FirstByteBody wiring + response builder + return.
                 drop(_rb_pre);
                 let _rb_body = crate::profile::start(crate::profile::Stage::RbBody);
@@ -2243,7 +2165,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 let mut rb = Response::builder().status(status);
                 // Cross-protocol streaming: the body is reframed to the client's format, so the CT
                 // must be the ingress client's, not the upstream's. Same-protocol passthrough keeps
-                // the upstream CT verbatim..
+                // the upstream CT verbatim. §8.4.
                 let cross_protocol = ingress_protocol != app.lanes[i].protocol.name();
                 if gemini_json_array && is_sse {
                     // JSON-array streaming body: a `[ {...}, {...} ]` document, not SSE.

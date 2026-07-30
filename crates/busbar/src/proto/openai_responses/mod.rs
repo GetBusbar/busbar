@@ -86,16 +86,12 @@ const STATUS_FAILED: &str = "failed";
 const STATUS_INCOMPLETE: &str = "incomplete";
 
 /// Output item `type` values on the `/v1/responses` wire.
-// `pub(crate)`: also read by `proxy/hooks.rs`'s block-text dispatch (`block_text`), which must
-// enumerate the SAME Responses item-type vocabulary the reader uses rather than re-inventing
-// string literals — two independent copies of "what item types exist" is how a hook-visibility
-// gap recurs.
-pub(crate) const ITEM_TYPE_FUNCTION_CALL: &str = "function_call";
+const ITEM_TYPE_FUNCTION_CALL: &str = "function_call";
 const ITEM_TYPE_MESSAGE: &str = "message";
-pub(crate) const ITEM_TYPE_REASONING: &str = "reasoning";
+const ITEM_TYPE_REASONING: &str = "reasoning";
 
 /// Content part `type` values on the `/v1/responses` wire.
-pub(crate) const CONTENT_TYPE_OUTPUT_TEXT: &str = "output_text";
+const CONTENT_TYPE_OUTPUT_TEXT: &str = "output_text";
 const CONTENT_TYPE_REASONING_TEXT: &str = "reasoning_text";
 const CONTENT_TYPE_INPUT_TEXT: &str = "input_text";
 
@@ -429,7 +425,7 @@ fn is_code_like_signal(signal: &str) -> bool {
 /// cross-protocol and transport-abort paths where `provider_signal` is a HUMAN sentence, not an enum
 /// — the code is DERIVED from the error class so the wire ALWAYS carries a valid enum an SDK can
 /// switch on, never a free-form string. Exhaustive over `StatusClass` (no `_`) per the no-catch-all
-/// rule.
+/// rule. (found: audit c2r2.)
 fn responses_error_code(err: &crate::proto::IrError) -> String {
     if let Some(s) = err.provider_signal.as_deref() {
         if is_code_like_signal(s) {
@@ -472,7 +468,6 @@ fn responses_modeled_keys() -> &'static std::collections::HashSet<&'static str> 
             "top_p",
             "stream",
             "tool_choice",
-            "parallel_tool_calls",
         ]
         .iter()
         .cloned()
@@ -503,7 +498,7 @@ fn responses_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, 
             })
         }
         "input_image" => {
-            // Handle a file_id-referenced image (no inline `image_url`) faithfully rather than
+            // L5: handle a file_id-referenced image (no inline `image_url`) faithfully rather than
             // emitting an empty Image block. Shared with the request-input reader.
             responses_input_image_block(block_val).ok_or(IrError {
                 class: StatusClass::ClientError,
@@ -511,26 +506,11 @@ fn responses_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, 
                 retry_after: None,
             })
         }
-        // Forward-compatibility: a valid native Responses content-block type the IR does not model
-        // (e.g. `input_file`, or a future type OpenAI adds after this build). The prior bare `Err`
-        // here was swallowed with ZERO log by every caller's `filter_map(..ok())`
-        // (`message_content_blocks` above, and the `function_call_output` content-array reader) —
-        // not just `input_file` but EVERY unknown future Responses content type vanished silently.
-        // Mirror the Anthropic reader's unmodeled-block handling: degrade to an empty Text block
-        // (preserving the turn's position in its parent array) with a WARN naming the type, rather
-        // than disappearing without a trace.
-        other => {
-            tracing::warn!(
-                block_type = other,
-                "skipping unmodeled Responses content-block type during ir parse; degrading to an \
-                 empty text block rather than silently dropping it"
-            );
-            Ok(crate::ir::IrBlock::Text {
-                text: String::new(),
-                cache_control: None,
-                citations: Vec::new(),
-            })
-        }
+        _ => Err(IrError {
+            class: StatusClass::ClientError,
+            provider_signal: Some(crate::proto::SIGNAL_IR_PARSE.to_string()),
+            retry_after: None,
+        }),
     }
 }
 
@@ -569,23 +549,8 @@ fn responses_input_image_block(item: &serde_json::Value) -> Option<crate::ir::Ir
 /// this module uses for fragment reassembly), preferring nothing — a real item carries one or the
 /// other, and concatenating both is lossless when only one is present (the other contributes nothing).
 /// Returns an empty string when neither array carries text, so the caller can skip an empty item.
-///
-/// `pub(crate)`: also called from `proxy/hooks.rs`'s `block_text` dispatch for the Responses
-/// summary-only-reasoning hook-visibility fix — the hook seam must walk `content[]`/`summary[]`
-/// with the EXACT SAME accept/skip rules the reader uses, not a second hand-rolled copy.
-///
-/// Returns `Cow<'_, str>` rather than an owned `String`: `total_text_chars` only needs a char
-/// count and immediately discards the text, so allocating for it on every call is wasted work.
-/// The common case — exactly ONE text-bearing part across BOTH `content[]` and `summary[]`
-/// combined — borrows straight from `item` (`Cow::Borrowed`); only a SECOND accepted part
-/// anywhere (either array, not per-array independently — a part in `content[]` followed by one
-/// in `summary[]` still must concatenate, not silently keep only the first) forces an allocation,
-/// and every further part appends into that same buffer. The empty case (no accepted part in
-/// either array) returns `Cow::Borrowed("")`, never `Cow::Owned(String::new())` — a caller that
-/// only wants a length must not pay an allocation for zero text.
-pub(crate) fn read_reasoning_text(item: &serde_json::Value) -> std::borrow::Cow<'_, str> {
-    use std::borrow::Cow;
-    let mut acc: Option<Cow<'_, str>> = None;
+fn read_reasoning_text(item: &serde_json::Value) -> String {
+    let mut text = String::new();
     for (arr_key, type_key) in [
         ("content", CONTENT_TYPE_REASONING_TEXT),
         ("summary", "summary_text"),
@@ -600,44 +565,15 @@ pub(crate) fn read_reasoning_text(item: &serde_json::Value) -> std::borrow::Cow<
                     .get("type")
                     .and_then(|t| t.as_str())
                     .is_none_or(|t| t == type_key);
-                if !type_ok {
-                    continue;
+                if type_ok {
+                    if let Some(t) = part.get("text").and_then(|t| t.as_str()) {
+                        text.push_str(t);
+                    }
                 }
-                let Some(t) = part.get("text").and_then(|t| t.as_str()) else {
-                    continue;
-                };
-                acc = Some(match acc {
-                    None => Cow::Borrowed(t),
-                    Some(Cow::Borrowed(prev)) => {
-                        let mut owned = String::with_capacity(prev.len() + t.len());
-                        owned.push_str(prev);
-                        owned.push_str(t);
-                        Cow::Owned(owned)
-                    }
-                    Some(Cow::Owned(mut owned)) => {
-                        owned.push_str(t);
-                        Cow::Owned(owned)
-                    }
-                });
             }
         }
     }
-    acc.unwrap_or(Cow::Borrowed(""))
-}
-
-/// Extract the opaque `encrypted_content` blob from a Responses `reasoning` item, applying the
-/// EXACT same accept/skip rule the reader uses at both its call sites (input-item arm and
-/// output-item arm, `reader.rs`): a string value, and non-empty. `None` for a missing key, a
-/// non-string value, or an empty string — the reader drops such an item entirely when it also
-/// carries no text (see both call sites' `!text.is_empty() || signature.is_some()` guard).
-///
-/// `pub(crate)`: also called from `proxy/hooks.rs`'s `block_text` dispatch (the Responses
-/// encrypted-content-only hook-visibility fix) so the hook seam recognizes the SAME opaque-blob
-/// shape the reader admits to the provider, instead of a second hand-rolled copy of this rule.
-pub(crate) fn read_reasoning_encrypted_content(item: &serde_json::Value) -> Option<&str> {
-    item.get("encrypted_content")
-        .and_then(|s| s.as_str())
-        .filter(|s| !s.is_empty())
+    text
 }
 
 /// Responses `incomplete_details.reason` → canonical [`crate::ir::IrStopReason`]. The ONLY place that
@@ -874,12 +810,6 @@ pub(crate) struct ResponsesWriter {
     /// for the same reason as the other fields; a poisoned lock degrades to omitting the accumulated
     /// text (the item then carries empty text) rather than panicking on the request path.
     text_accum: std::sync::Mutex<std::collections::BTreeMap<usize, String>>,
-    /// Per-stream buffer of the citations delivered for the message item at each `output_index`.
-    /// Responses carries citations as `annotations` on the assembled `output_text` part, not as a
-    /// standalone delta frame, so a streamed `CitationsDelta` has nowhere to go at arrival time and
-    /// is accumulated here until `BlockStop` builds that part. Dropping it, as the writer used to,
-    /// lost every grounding source on any cross-protocol stream into Responses.
-    citation_accum: std::sync::Mutex<std::collections::BTreeMap<usize, Vec<crate::ir::IrCitation>>>,
     /// Per-stream buffer of FINALIZED `output[]` items, keyed by `output_index` so the terminal
     /// event emits them in stable index order. A native /v1/responses `response.completed`/
     /// `response.incomplete` event's inner `response.output` is the fully assembled array (each
@@ -942,7 +872,6 @@ pub(crate) const ResponsesWriter: ResponsesWriter = ResponsesWriter {
     item_ids: std::sync::Mutex::new(std::collections::BTreeMap::new()),
     tool_calls: std::sync::Mutex::new(std::collections::BTreeMap::new()),
     text_accum: std::sync::Mutex::new(std::collections::BTreeMap::new()),
-    citation_accum: std::sync::Mutex::new(std::collections::BTreeMap::new()),
     output_items: std::sync::Mutex::new(std::collections::BTreeMap::new()),
     open_reasoning_indices: std::sync::Mutex::new(std::collections::BTreeSet::new()),
     reasoning_accum: std::sync::Mutex::new(std::collections::BTreeMap::new()),
@@ -1001,13 +930,6 @@ impl Clone for ResponsesWriter {
             // lock degrades to an empty map.
             text_accum: std::sync::Mutex::new(
                 self.text_accum
-                    .lock()
-                    .map(|m| m.clone())
-                    .unwrap_or_default(),
-            ),
-            // Carry the citation accumulator across the same clone, for the same reason.
-            citation_accum: std::sync::Mutex::new(
-                self.citation_accum
                     .lock()
                     .map(|m| m.clone())
                     .unwrap_or_default(),
@@ -1236,26 +1158,6 @@ impl ResponsesWriter {
         if let Ok(mut map) = self.text_accum.lock() {
             map.entry(index).or_default().push_str(fragment);
         }
-    }
-
-    /// Buffer streamed citations for the message item at `index` until `BlockStop` assembles the
-    /// `output_text` part they annotate. Lock poisoning degrades to a no-op.
-    fn append_citations(&self, index: usize, cits: &[crate::ir::IrCitation]) {
-        if cits.is_empty() {
-            return;
-        }
-        if let Ok(mut map) = self.citation_accum.lock() {
-            map.entry(index).or_default().extend_from_slice(cits);
-        }
-    }
-
-    /// Remove and return the accumulated citations for the message item at `index`.
-    fn take_citation_accum(&self, index: usize) -> Vec<crate::ir::IrCitation> {
-        self.citation_accum
-            .lock()
-            .ok()
-            .and_then(|mut map| map.remove(&index))
-            .unwrap_or_default()
     }
 
     /// Remove and return the accumulated text for the message item at `index`. Returns an empty

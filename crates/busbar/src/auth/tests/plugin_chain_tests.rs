@@ -6,11 +6,11 @@
 //! `busbar-auth-static-plugin` cdylib into a tarball, run it through `plugins_preflight` +
 //! `AuthMiddleware::new`, and prove:
 //!
-//! * a valid token → `Identify` → a mapped `Principal` whose roles resolve to `role_bindings`
-//!   policy AND whose admin scope is capped by `auth.chain.<module>.max_admin_scope`;
-//! * an invalid/absent credential → the chain fail-closed-denies (all-`Pass`);
-//! * a MISSING or UNTRUSTED plugin at boot → a LOUD failure (never a silently-open front door);
-//! * `plugins.enabled: false` + a configured auth plugin → boot refuses (`plugins_preflight`).
+//!   * a valid token → `Identify` → a mapped `Principal` whose roles resolve to `role_bindings`
+//!     policy AND whose admin scope is capped by `auth.chain.<module>.max_admin_scope`;
+//!   * an invalid/absent credential → the chain fail-closed-denies (all-`Pass`);
+//!   * a MISSING or UNTRUSTED plugin at boot → a LOUD failure (never a silently-open front door);
+//!   * `plugins.enabled: false` + a configured auth plugin → boot refuses (`plugins_preflight`).
 //!
 //! Mirrors the store-plugin end-to-end packed test (`crate::tests`), reusing its plugin-dir /
 //! manifest helpers.
@@ -257,20 +257,14 @@ fn auth_plugin_role_binding_and_scope_cap_apply() {
         crate::auth::admin_scope_for(Some("static-auth"), Some(&principal), &cfg.role_bindings);
     assert_eq!(
         bound,
-        crate::admin::v1::contract::Grants::of(Scope::Full),
+        Some(Scope::Full),
         "role binds full under the PLUGIN module name"
     );
-    // ..but the module's `max_admin_scope: mint` ceiling caps the effective scope. `run_admin_chain`
-    // dispatches by a closed name match (`admin-tokens` / `test-scope-module` only — see its
-    // REACHABILITY doc comment) and never admits an auth PLUGIN module, so `dry_run_admin_scope`
-    // cannot be driven end-to-end for a plugin name without a production change out of scope here.
-    // Calling the actual `Grants::capped_by` production method (instead of re-implementing the
-    // ceiling with `std::cmp::min`) still proves the real ceiling arithmetic under a plugin module
-    // name, which is what this test's doc comment claims to cover.
-    let capped = bound.capped_by(Scope::Mint);
+    // ...but the module's `max_admin_scope: mint` ceiling caps the effective scope.
+    let capped = std::cmp::min(bound.unwrap(), Scope::Mint);
     assert_eq!(
         capped,
-        crate::admin::v1::contract::Grants::of(Scope::Mint),
+        Scope::Mint,
         "max_admin_scope caps the plugin module"
     );
 
@@ -406,276 +400,4 @@ fn keys_module_is_not_a_plugin_ref() {
     .expect("keys chain builds");
     assert!(mw.keys_in_chain, "keys sets the engine flag");
     assert!(mw.chain_names().is_empty(), "keys is not a boxed module");
-}
-
-// ── THE AUTH CHAIN MUST NOT RUN ON THE REACTOR ───────────────────────────────────
-//
-// A `kind: auth` plugin's `authenticate` is a synchronous FFI call, and behind it the module does
-// whatever it does — the shipped OIDC module fetches JWKS over blocking HTTPS with a 10s timeout.
-// `auth_middleware` is an `async fn` on a Tokio worker, so calling the chain inline hands that
-// worker to the plugin. A slow identity provider then parks one worker per in-flight request until
-// the runtime polls nothing at all: not other requests, not the admin plane, and not `/healthz`
-// (exempt from the chain, but it still needs a worker thread to run). The node fails its liveness
-// probe and is killed, over an IdP most of the stalled traffic never used.
-
-/// An auth module that blocks — the shape of every plugin that talks to a network identity
-/// provider. It signals the moment it is entered, so the test never has to guess at timing.
-struct BlockingModule {
-    entered: std::sync::mpsc::Sender<()>,
-    hold: std::time::Duration,
-}
-impl busbar_api::AuthModule for BlockingModule {
-    fn name(&self) -> &'static str {
-        "blocking-test-module"
-    }
-    fn authenticate(&self, _candidate: Option<&str>) -> busbar_api::AuthOutcome {
-        let _ = self.entered.send(());
-        std::thread::sleep(self.hold);
-        busbar_api::AuthOutcome::Pass
-    }
-    fn cacheable(&self) -> bool {
-        false
-    }
-}
-
-/// RED (chain called inline from `auth_middleware`): the probe below is never scheduled, because
-/// the single worker is inside the plugin.
-/// GREEN (chain offloaded to the blocking pool): the worker is free and the probe completes while
-/// the plugin is still blocking.
-///
-/// A one-worker runtime is not a contrived shape — busbar sizes its runtime from
-/// `available_parallelism()` and the docs recommend 1-2 workers for sidecar deployments. It is
-/// simply the smallest configuration in which "a worker is parked" is decidable.
-#[test]
-fn a_blocking_auth_plugin_does_not_park_the_reactor() {
-    let (tx, entered) = std::sync::mpsc::channel();
-    let auth = std::sync::Arc::new(AuthMiddleware::from_chain_for_test(
-        vec![Box::new(BlockingModule {
-            entered: tx,
-            hold: std::time::Duration::from_secs(3),
-        })],
-        /* has_plugin_module = */ true,
-    ));
-    let cache = std::sync::Arc::new(crate::auth_cache::CredentialCache::new());
-
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(1)
-        .enable_all()
-        .build()
-        .expect("runtime");
-
-    rt.spawn(async move {
-        let _ = AuthMiddleware::run_chain_on_request_path(&auth, &cache, Some("tok".into())).await;
-    });
-    entered
-        .recv_timeout(std::time::Duration::from_secs(10))
-        .expect("the auth module must actually have been entered");
-
-    // Can the runtime still schedule anything while the module blocks? Signalled over a STD channel
-    // with a std timeout deliberately: a dead reactor has a dead timer driver, so a
-    // `tokio::time::timeout` would hang instead of failing.
-    let (ptx, probe) = std::sync::mpsc::channel();
-    rt.spawn(async move {
-        let _ = ptx.send("healthz ok");
-    });
-    let served = probe.recv_timeout(std::time::Duration::from_secs(2));
-    assert!(
-        matches!(served, Ok("healthz ok")),
-        "the runtime must keep serving while an auth module blocks; the worker is parked inside \
-         the plugin (got {served:?})"
-    );
-}
-
-/// The counterpart, so the offload is not applied blindly: an ALL-IN-PROCESS chain is called
-/// inline. Those modules are microsecond constant-time compares, and paying a `spawn_blocking` hop
-/// per request to protect against work that cannot block would be a pure regression. Asserted by
-/// behaviour — the verdict is identical and correct either way — plus the explicit flag.
-#[test]
-fn an_in_process_chain_is_not_offloaded() {
-    let auth = std::sync::Arc::new(AuthMiddleware::from_chain_for_test(
-        vec![Box::new(crate::auth::TestGroupsModule)],
-        /* has_plugin_module = */ false,
-    ));
-    let cache = std::sync::Arc::new(crate::auth_cache::CredentialCache::new());
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("runtime");
-    // A current-thread runtime has NO blocking-pool round-trip to hide behind: if this path tried to
-    // offload, the verdict would still arrive, but the point is that it resolves synchronously
-    // within one poll of the future.
-    let verdict = rt.block_on(async {
-        AuthMiddleware::run_chain_on_request_path(&auth, &cache, Some("grp:admins".into())).await
-    });
-    assert!(
-        matches!(verdict, ChainVerdict::Identified { .. }),
-        "an in-process chain must keep identifying exactly as before"
-    );
-}
-
-// ── PASS ADMISSION IS CHAIN-OUTCOME-CONDITIONED (F1) ─────────────────────────────
-//
-// `TestGroupsModule` (used above) leaves `cacheable()` at the trait default `false`
-// (`api/src/auth.rs:67-69`), so it cannot exercise the cache. These two purpose-built modules are
-// `cacheable() -> true`, mirroring `BlockingModule`'s pattern above but for the caching path
-// instead of the offload path.
-
-/// Always `Pass`es, and is cacheable — the shape of a `cacheable` introspection/directory module
-/// that does not recognize a given credential.
-struct CacheablePass;
-impl busbar_api::AuthModule for CacheablePass {
-    fn name(&self) -> &'static str {
-        "cacheable-pass-module"
-    }
-    fn authenticate(&self, _candidate: Option<&str>) -> busbar_api::AuthOutcome {
-        busbar_api::AuthOutcome::Pass
-    }
-    fn cacheable(&self) -> bool {
-        true
-    }
-}
-
-/// Always `Reject`s, and is cacheable (cacheability is irrelevant to `Reject`, which
-/// `auth_cache.rs:104` never caches regardless — included so the chain-position test is honest).
-struct CacheableReject;
-impl busbar_api::AuthModule for CacheableReject {
-    fn name(&self) -> &'static str {
-        "cacheable-reject-module"
-    }
-    fn authenticate(&self, _candidate: Option<&str>) -> busbar_api::AuthOutcome {
-        busbar_api::AuthOutcome::Reject
-    }
-    fn cacheable(&self) -> bool {
-        true
-    }
-}
-
-/// `Identify`s any candidate that equals `"good"`, else `Pass`es. Cacheable.
-struct CacheableIdentify;
-impl busbar_api::AuthModule for CacheableIdentify {
-    fn name(&self) -> &'static str {
-        "cacheable-identify-module"
-    }
-    fn authenticate(&self, candidate: Option<&str>) -> busbar_api::AuthOutcome {
-        match candidate {
-            Some("good") => busbar_api::AuthOutcome::Identify(crate::auth::Principal {
-                id: "test:good".to_string(),
-                name: None,
-                roles: vec![],
-                ttl_secs: None,
-            }),
-            _ => busbar_api::AuthOutcome::Pass,
-        }
-    }
-    fn cacheable(&self) -> bool {
-        true
-    }
-}
-
-/// RED: an unauthenticated caller (a chain that never identifies) must leave NO trace in the
-/// cache. Today `run_chain_cached` (`auth/mod.rs:293`) `put`s a fresh `Pass` immediately, so
-/// `flush_all()` observes 1 — that `Pass` is exactly the entry the finding shows displacing a real
-/// `Identify` under the oldest-inserted eviction rule (`auth_cache.rs:111-114`).
-#[test]
-fn an_unauthenticated_chain_admits_nothing_to_the_cache() {
-    let auth = AuthMiddleware::from_chain_for_test(
-        vec![Box::new(CacheablePass)],
-        /* has_plugin_module = */ false,
-    );
-    let cache = crate::auth_cache::CredentialCache::new();
-
-    let verdict = auth.run_chain_cached(Some("junk-token"), Some(&cache));
-
-    assert_eq!(verdict, ChainVerdict::Denied);
-    assert_eq!(
-        cache.flush_all(),
-        0,
-        "an all-Pass chain must admit nothing to the cache"
-    );
-}
-
-/// RED: a chain that `Pass`es through a leading module and is then `Reject`ed must also admit
-/// nothing — the leading `Pass` must not be committed before the `Reject` short-circuits the
-/// chain. This is the case the old `MAX_PASS_ENTRIES` partition design never addressed at all: it
-/// still admitted this leading `Pass`.
-#[test]
-fn a_rejected_chain_admits_nothing_to_the_cache() {
-    let auth = AuthMiddleware::from_chain_for_test(
-        vec![Box::new(CacheablePass), Box::new(CacheableReject)],
-        /* has_plugin_module = */ false,
-    );
-    let cache = crate::auth_cache::CredentialCache::new();
-
-    let verdict = auth.run_chain_cached(Some("junk-token"), Some(&cache));
-
-    assert_eq!(verdict, ChainVerdict::Denied);
-    assert_eq!(
-        cache.flush_all(),
-        0,
-        "a chain that ends in Reject must admit nothing to the cache, including the leading Pass"
-    );
-}
-
-/// RED: the finding's own end-to-end scenario. A real `Identify` is cached first (the entry the
-/// eviction rule must protect); then an unauthenticated caller runs the chain `MAX_ENTRIES` times
-/// with distinct junk credentials at the SAME `now`, so `retain`'s expiry sweep reclaims nothing
-/// and every `put` must fall through to `min_by_key(inserted_seq)`. Today's unconditional-`Pass`-put
-/// admits each of those, and because the `Identify` was inserted first it has the lowest
-/// `inserted_seq` and is evicted FIRST (`auth_cache.rs:111-114`).
-#[test]
-fn pass_churn_cannot_evict_an_identity() {
-    let auth = AuthMiddleware::from_chain_for_test(
-        vec![Box::new(CacheablePass)],
-        /* has_plugin_module = */ false,
-    );
-    let cache = crate::auth_cache::CredentialCache::new();
-    let now = 1_000_000u64;
-
-    cache.put(
-        "real-identity-module",
-        "real-credential",
-        &busbar_api::AuthOutcome::Identify(crate::auth::Principal {
-            id: "real:identity".to_string(),
-            name: None,
-            roles: vec![],
-            ttl_secs: Some(3600),
-        }),
-        now,
-    );
-
-    for i in 0..4096u64 {
-        let junk = format!("junk-{i}");
-        let _ = auth.run_chain_cached(Some(&junk), Some(&cache));
-    }
-
-    assert!(
-        matches!(
-            cache.get("real-identity-module", "real-credential", now),
-            Some(busbar_api::AuthOutcome::Identify(_))
-        ),
-        "unauthenticated Pass churn must not evict a real identity from the cache"
-    );
-}
-
-/// REGRESSION PROOF (passes before and after): the buffering must not be over-broad. An
-/// authenticated multi-module chain — a leading module that `Pass`es, followed by one that
-/// `Identify`s — must keep caching BOTH entries exactly as it does today, so the leading module's
-/// round-trip is still saved on the next request. If this goes red, the commit-on-identify path is
-/// wrong.
-#[test]
-fn an_identified_chain_still_caches_the_leading_pass() {
-    let auth = AuthMiddleware::from_chain_for_test(
-        vec![Box::new(CacheablePass), Box::new(CacheableIdentify)],
-        /* has_plugin_module = */ false,
-    );
-    let cache = crate::auth_cache::CredentialCache::new();
-
-    let verdict = auth.run_chain_cached(Some("good"), Some(&cache));
-
-    assert!(matches!(verdict, ChainVerdict::Identified { .. }));
-    assert_eq!(
-        cache.flush_all(),
-        2,
-        "an identified chain must still cache both the leading Pass and the Identify"
-    );
 }

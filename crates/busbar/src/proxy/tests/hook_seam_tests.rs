@@ -328,7 +328,7 @@ fn pool_runtime_with(
     }
 }
 
-/// A `Restrict` gate on the primary pool must persist onto
+/// REGRESSION (audit c1r13, compliance): a `Restrict` gate on the primary pool must persist onto
 /// a `fallback_pool` hop, re-applied against the FALLBACK pool's own member tags. A required
 /// (`on_empty: reject`) restrict fails CLOSED when no fallback lane carries the tag; a `weighted`
 /// restrict is an advisory escape (skip).
@@ -420,7 +420,7 @@ fn enforce_restricts_reapplies_compliance_tags_across_pools() {
     );
 }
 
-/// END-TO-END: a BASE routing-policy (`route:` hook) `Restrict` must
+/// REGRESSION (audit c1r14), END-TO-END: a BASE routing-policy (`route:` hook) `Restrict` must
 /// persist across a `fallback_pool` spill exactly like a gate restrict. Primary pool's only
 /// baa-eligible lane is dead → the request exhausts and spills to a fallback pool whose lane is
 /// NOT baa-tagged; the compliance restrict must FAIL CLOSED there, not serve the ineligible lane.
@@ -647,7 +647,7 @@ async fn completion_tap_fires_synthetic_rejected_by_auth() {
     serve.abort();
 }
 
-/// The completion-tap `status` must be the PROTOCOL-NATIVE auth-failure
+/// REGRESSION (audit c1r6): the completion-tap `status` must be the PROTOCOL-NATIVE auth-failure
 /// status the client actually receives — not a hardcoded 401. A Gemini ingress bad-key denial is
 /// HTTP 400 (INVALID_ARGUMENT), so a tap watching it must see 400, matching the served response.
 #[tokio::test]
@@ -821,7 +821,7 @@ impl RoutingPolicy for RewritingGate {
     }
 }
 
-/// A committed GLOBAL REWRITE must reach the upstream on a
+/// REGRESSION (Headroom e2e finding): a committed GLOBAL REWRITE must reach the upstream on a
 /// SAME-PROTOCOL passthrough. The pristine-bytes short-circuit re-emits the retained request
 /// bytes verbatim; before the fix those were the PRE-rewrite bytes, so a global compressor's
 /// output was silently discarded exactly on the fast path.
@@ -863,7 +863,7 @@ async fn same_protocol_passthrough_carries_global_rewrite() {
     );
 }
 
-/// A POOL-scoped `prompt: rw` gate joins the phase-1
+/// REGRESSION (Headroom e2e finding): a POOL-scoped `prompt: rw` gate joins the phase-1
 /// transform pass — its rewrite reaches the upstream (before the fix it fired as a decision
 /// gate, its rewrite reply normalized to Abstain, and the request paid its deadline for
 /// nothing).
@@ -1217,60 +1217,6 @@ async fn order_last_in_chain_wins() {
     beta.shutdown().await;
 }
 
-/// RECONCILE: the LAST (highest-priority) ordering gate filters to empty against the
-/// post-restrict surviving set ⇒ abstain to the pool's BASE ordering (`mod.rs:715-717`'s own
-/// comment), never a fall-through to a LOWER-priority gate's order. Three lanes: `base`/`low`
-/// survive a restrict, `excluded` does not. The low-priority gate orders `[low]`; the
-/// high-priority gate orders `[excluded]`, which filters to empty post-restrict. Before the
-/// missing-`else` fix, `gate_order` is left holding the low-priority gate's stale value from the
-/// prior loop iteration and `low` serves; after the fix it is cleared and the pool's base
-/// ordering (first healthy candidate, `base`) serves.
-#[tokio::test]
-async fn last_order_gate_filtered_to_empty_abstains_to_base_not_to_a_lower_gate() {
-    let base = mock_lane("base").await;
-    let low = mock_lane("low").await;
-    let mut app = TestApp::new()
-        .lane(LaneSpec::new(
-            "base-lane",
-            crate::proto::Protocol::anthropic(),
-            &base.base_url(),
-        ))
-        .lane(LaneSpec::new(
-            "low-lane",
-            crate::proto::Protocol::anthropic(),
-            &low.base_url(),
-        ))
-        .lane(LaneSpec::new(
-            "excluded-lane",
-            crate::proto::Protocol::anthropic(),
-            "http://127.0.0.1:1/", // dead: never actually reachable, only named by the stale order
-        ))
-        .pool("p", &[(0, 1), (1, 1), (2, 1)])
-        .pool_runtime(
-            "p",
-            pool_runtime_with(&[(0, &["keep"]), (1, &["keep"]), (2, &[])], Vec::new()),
-        )
-        .build();
-    Arc::get_mut(&mut app).expect("sole owner").global_gates = vec![
-        (
-            0u16,
-            canned_gate(Canned::Restrict(vec!["keep".to_string()]), "restrictor"),
-        ),
-        (10u16, canned_gate(Canned::Order(vec![1]), "low-orderer")),
-        (20u16, canned_gate(Canned::Order(vec![2]), "high-orderer")),
-    ];
-    let resp = fire(app, 3).await;
-    assert_eq!(resp.status().as_u16(), 200);
-    assert_eq!(
-        body_model(resp).await,
-        "base",
-        "a filtered-to-empty highest-priority order must abstain to the pool's base ordering, \
-         not fall through to a lower-priority gate's stale order"
-    );
-    base.shutdown().await;
-    low.shutdown().await;
-}
-
 /// RECONCILE: a global gate ORDER is now honored (the previously-deferred arm): a single global
 /// ordering gate reorders dispatch away from config order.
 #[tokio::test]
@@ -1447,7 +1393,7 @@ async fn send_user_projects_governance_key_identity() {
     assert_ne!(key_name.as_deref(), Some(secret.as_str()));
 }
 
-/// A GROUP/SSO principal's token is not a virtual-key secret, so the
+/// REGRESSION (audit c1r10): a GROUP/SSO principal's token is not a virtual-key secret, so the
 /// `decide_policy_order` token `lookup` MISSES — but the auth layer already synthesized a key
 /// for it (`GovCtx.key`, threaded as `resolved_gov_key`). The identity projection must fall back
 /// to that synthesized key so `send_user` policies see the caller, instead of silently `None`.
@@ -1518,104 +1464,7 @@ async fn send_user_falls_back_to_synthesized_group_key_identity() {
     assert_eq!(key_name.as_deref(), Some("eng-oncall"));
 }
 
-/// class-11 D3 (correctness, not a work reduction): auth's admission decision is authoritative.
-/// `auth/mod.rs` installs `GovCtx.key` from a legacy hashed-secret `lookup` only under
-/// `Some(key) if key.enabled`; a DISABLED key is rejected there and auth falls through to a
-/// SYNTHESIZED principal key instead (carried here as `resolved_gov_key`). `decide_policy_order`'s
-/// own raw `g.lookup(tok)` applies no `enabled`/`is_revoked` filter, so if it were tried FIRST it
-/// would resolve `identity`/`rate_headroom` against the disabled key auth already rejected — a
-/// caller admitted under the synthesized identity would be policy-ranked under the wrong one.
-/// This seeds `by_hash` with a DISABLED key for the token (so the two orders can disagree — an
-/// EMPTY `by_hash` cannot discriminate them, since `lookup` would miss either way) and asserts the
-/// resolved identity is the synthesized key's, matching what auth actually authorized.
-#[tokio::test]
-async fn send_user_prefers_resolved_key_over_disabled_legacy_lookup() {
-    use crate::governance::{GovState, MemoryStore, NewKeySpec};
-    let store = std::sync::Arc::new(MemoryStore::new());
-    let gov = std::sync::Arc::new(GovState::new(store, None).expect("gov state"));
-    let (disabled_key, secret) = gov
-        .create_key(
-            NewKeySpec {
-                name: "legacy-disabled".to_string(),
-                allowed_pools: None,
-                group: None,
-                labels: Default::default(),
-            },
-            1,
-        )
-        .expect("create key");
-    gov.update_key(&disabled_key.id, Some(false), None)
-        .expect("disable key")
-        .expect("key exists");
-
-    let app = TestApp::new()
-        .lane(LaneSpec::new(
-            "m0",
-            crate::proto::Protocol::anthropic(),
-            "http://localhost",
-        ))
-        .pool("p", &[(0, 1)])
-        .governance(gov)
-        .build();
-    let seen = Arc::new(StdMutex::new(None));
-    let resolved = ResolvedPolicy::Policy {
-        policy: Arc::new(CapturingPolicy {
-            seen: seen.clone(),
-            reject: None,
-        }),
-        on_error: crate::config::PolicyOnError::default(),
-        on_error_chain: Vec::new(),
-        timeout: std::time::Duration::from_millis(500),
-        send_prompt: false,
-        send_user: true,
-        on_empty: crate::config::PolicyOnError::Reject,
-    };
-    let cands = vec![WeightedLane {
-        reasoning: None,
-        idx: 0,
-        weight: 1,
-        attempt_timeout_ms: None,
-    }];
-    // The key auth ACTUALLY installed for this request: NOT the disabled `by_hash` hit, a
-    // different synthesized principal key (exactly what a fallthrough from `Some(key) if
-    // key.enabled` produces for a disabled-key caller re-admitted via a group binding).
-    let synth = std::sync::Arc::new(crate::governance::VirtualKey {
-        id: "synthesized-principal".to_string(),
-        key_hash: "principal:synthesized-principal".to_string(),
-        name: "synthesized-principal".to_string(),
-        allowed_pools: None,
-        enabled: true,
-        created_at: 0,
-        group: None,
-        labels: Default::default(),
-    });
-    let rc = RequestCtx::new(60);
-    let v = body();
-    decide_policy_order(
-        &app,
-        &resolved,
-        &cands,
-        &rc,
-        &v,
-        "p",
-        "anthropic",
-        false,
-        Some(&secret), // the RAW token, which DOES hash-match the disabled key in `by_hash`
-        Some(&synth),
-    )
-    .await;
-    let captured = seen.lock().unwrap().clone().expect("policy called");
-    let (key_id, key_name, _user) = captured.identity.expect("identity present");
-    assert_eq!(
-        key_id.as_deref(),
-        Some("synthesized-principal"),
-        "must resolve to the key auth actually authorized (the synthesized key), \
-         not the disabled legacy key a raw `lookup` would hit"
-    );
-    assert_eq!(key_name.as_deref(), Some("synthesized-principal"));
-}
-
-/// The named / ad-hoc anthropic routes go through `forward_with_pool`,
+/// REGRESSION (audit c1r11): the named / ad-hoc anthropic routes go through `forward_with_pool`,
 /// which carries NO resolved key — so the c1r10 fallback never fired there and a group principal
 /// on `/{pool}/v1/messages` was still routing-signal-blind. `forward_with_pool_keyed` threads
 /// `GovCtx.key` down; this exercises that path end-to-end via a pool's `send_user` policy.

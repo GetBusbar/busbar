@@ -57,7 +57,7 @@ impl ProtocolWriter for ResponsesWriter {
                                 }));
                             }
                             crate::ir::IrBlock::Image { source, .. } => match source {
-                                // A Responses-produced vendor reference is a `file_id` — re-emit
+                                // L5: a Responses-produced vendor reference is a `file_id` — re-emit
                                 // the native `input_image.file_id` form (a data URI would corrupt it).
                                 crate::ir::IrImageSource::Vendor { vendor, value }
                                     if *vendor == VENDOR_NAME =>
@@ -149,19 +149,12 @@ impl ProtocolWriter for ResponsesWriter {
                             // egress. Mirrors the `write_response` reasoning item shape: a REDACTED
                             // reasoning block holds opaque encrypted bytes with no plaintext analog
                             // on the Responses surface, so it is dropped rather than leaked.
-                            // ROLE GUARD: a `reasoning` input item asserts to the model "this is my
-                            // own prior reasoning". Only an Assistant message can truthfully carry
-                            // that — a Thinking block attached to a User message (possible from an
-                            // upstream reader that does not check role, e.g. the Gemini reader's
-                            // `thought: true` parts) must NOT be re-emitted as the model's own past
-                            // reasoning, or the caller's content is presented back to the model
-                            // with false provenance.
                             crate::ir::IrBlock::Thinking {
                                 text,
                                 signature,
                                 redacted,
                                 ..
-                            } if !*redacted && msg.role == crate::ir::IrRole::Assistant => {
+                            } if !*redacted => {
                                 let emit_sig = signature.as_deref();
                                 // A wholly-empty reasoning block (no text, no signature) emits no item.
                                 if !text.is_empty() || emit_sig.is_some() {
@@ -192,17 +185,6 @@ impl ProtocolWriter for ResponsesWriter {
                                     }
                                     reasoning_items.push(serde_json::Value::Object(item));
                                 }
-                            }
-                            // Non-Assistant Thinking (role guard above) — drop-with-warn, the
-                            // file's convention for a block with no analog on the target surface
-                            // (see the foreign-vendor-image and json-tool-result arms above), so
-                            // the loss is visible rather than silent.
-                            crate::ir::IrBlock::Thinking { redacted, .. } if !*redacted => {
-                                tracing::warn!(
-                                    "dropping non-Assistant Thinking block on Responses egress: a \
-                                     `reasoning` input item asserts it is the model's own prior \
-                                     reasoning, which only an Assistant-role message can carry"
-                                );
                             }
                             // A REDACTED reasoning block (opaque encrypted bytes, no plaintext
                             // analog on Responses) is dropped rather than leaked as `reasoning_text`.
@@ -314,37 +296,8 @@ impl ProtocolWriter for ResponsesWriter {
 
         // Emit `tool_choice` (PF-H1) in the Responses native shape when present so a forced/targeted
         // directive translated from another protocol does not silently degrade to `auto`.
-        // `/v1/responses` rejects it tool-less identically to Chat Completions — the reachable case
-        // is a cross-protocol request whose hosted tools `prepare_for_egress` stripped
-        // (`ir/variant.rs`) while the tool_choice directive survived.
         if let Some(tc) = &req.tool_choice {
-            if req.tools.is_empty() {
-                tracing::warn!(
-                    "dropping tool_choice on Responses egress: tool_choice is only allowed when \
-                     tools are specified (likely because the hosted tools that carried it were \
-                     stripped on the cross-protocol seam)"
-                );
-            } else {
-                out.insert("tool_choice".to_string(), write_responses_tool_choice(tc));
-            }
-        }
-        // `parallel_tool_calls` (class-6 6c1 egress): `/v1/responses` documents it the same way as
-        // Chat — meaningless (and, empirically, rejected) with no tools. The `is_some()` gate means
-        // this can only fire on a request that actually carried the flag, so it never fires as
-        // per-request noise on the common tool-less case.
-        if let Some(parallel) = req.parallel_tool_calls {
-            if req.tools.is_empty() {
-                tracing::warn!(
-                    "dropping parallel_tool_calls on Responses egress: it has no accompanying \
-                     tools (likely because the hosted tools that carried it were stripped on the \
-                     cross-protocol seam), so the backend's default parallelism applies"
-                );
-            } else {
-                out.insert(
-                    "parallel_tool_calls".to_string(),
-                    serde_json::json!(parallel),
-                );
-            }
+            out.insert("tool_choice".to_string(), write_responses_tool_choice(tc));
         }
 
         if let Some(max_tokens) = req.max_tokens {
@@ -664,14 +617,11 @@ impl ProtocolWriter for ResponsesWriter {
                 &crate::ir::IrDelta::ThinkingDelta(_)
                 | crate::ir::IrDelta::SignatureDelta(_)
                 | crate::ir::IrDelta::RedactedReasoningDelta(_) => None,
-                // Responses carries citations as `annotations` on the assembled `output_text`
-                // part, not as a standalone delta frame — so there is nothing to emit HERE, but the
-                // citations must survive until `BlockStop` builds that part. Buffer them; dropping
-                // them lost every grounding source on a cross-protocol stream into Responses.
-                crate::ir::IrDelta::CitationsDelta(cits) => {
-                    self.append_citations(*index, cits);
-                    None
-                }
+                // L2-5: the Responses streaming surface has no confirmable citation/annotation
+                // delta shape to map this onto, so suppress rather than synthesize one (the
+                // citation stays in the IR and is re-emitted by protocols that model streaming
+                // citations). No panic on this otherwise-unhandled variant.
+                crate::ir::IrDelta::CitationsDelta(_) => None,
                 // Responses streaming logprobs (inside `output_text` events) are out of the 1.2
                 // OpenAI<->Gemini scope; dropped rather than emitted in a non-native shape.
                 crate::ir::IrDelta::LogprobsDelta(_) => None,
@@ -766,22 +716,13 @@ impl ProtocolWriter for ResponsesWriter {
                     // empty content array.
                     let item_id = self.item_id_for(ITEM_ID_PREFIX_MSG, *index);
                     let text = self.take_text_accum(*index);
-                    let annotations = crate::proto::openai_chat::url_annotations(
-                        &text,
-                        0,
-                        &self.take_citation_accum(*index),
-                    );
                     let item = serde_json::json!({
                         "type": ITEM_TYPE_MESSAGE,
                         "id": item_id,
                         "role": "assistant",
                         "status": STATUS_COMPLETED,
                         "content": [
-                            {
-                                "type": CONTENT_TYPE_OUTPUT_TEXT,
-                                "text": text,
-                                "annotations": annotations,
-                            }
+                            { "type": CONTENT_TYPE_OUTPUT_TEXT, "text": text, "annotations": [] }
                         ]
                     });
                     // Record the finalized message item so the terminal event emits the fully
@@ -938,7 +879,7 @@ impl ProtocolWriter for ResponsesWriter {
                 // `code` MUST be a valid Responses enum, never the free-form human `provider_signal`
                 // (a cross-protocol / transport-abort path carries a sentence like "The response
                 // stream was interrupted." there). A recognized code round-trips; otherwise it is
-                // derived from the error class. `message` keeps the human text.
+                // derived from the error class. `message` keeps the human text. (found: audit c2r2.)
                 let code = responses_error_code(err);
                 // Replay the stream's captured `response.id` so `response.failed` correlates with
                 // the opening `response.created` (the SDK reads `event.response.id` on the failure
@@ -1017,14 +958,10 @@ impl ProtocolWriter for ResponsesWriter {
         let mut output_arr: Vec<serde_json::Value> = Vec::new();
         for block in &resp.content {
             match block {
-                crate::ir::IrBlock::Text {
-                    text, citations, ..
-                } => {
+                crate::ir::IrBlock::Text { text, .. } => {
                     if text.is_empty() {
                         continue;
                     }
-                    let annotations =
-                        crate::proto::openai_chat::url_annotations(text, 0, citations);
                     // Match the native message-item shape the STREAMING `output_item.done` emits: an
                     // item-level `id` (`msg_…`), a `status`, and `annotations: []` on the `output_text`
                     // content part. Omitting them is a proxy tell — a typed SDK reading `item.id` /
@@ -1039,7 +976,7 @@ impl ProtocolWriter for ResponsesWriter {
                         "content": [{
                             "type": CONTENT_TYPE_OUTPUT_TEXT,
                             "text": text,
-                            "annotations": annotations
+                            "annotations": []
                         }]
                     }));
                 }

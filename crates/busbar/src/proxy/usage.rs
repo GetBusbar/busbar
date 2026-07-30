@@ -54,60 +54,8 @@ pub(crate) fn tier_tokens(u: &crate::ir::IrUsage) -> busbar_api::TierTokens {
     }
 }
 
-/// THE ONE PLACE a delivered response is attributed to a model — for the budget LEDGER and for the
-/// METERING series both. Every accrual site in the proxy funnels through here so the two can never
-/// again be keyed differently.
-///
-/// THE MODEL KEY IS THE CONFIG NAME (`lane.model`), NOT THE WIRE NAME (`lane.wire_model()`).
-/// The rate card is keyed by the CONFIG model name, and `validate_cost_model` enforces that in both
-/// directions: every `models:` key must have a card entry, and a card entry naming anything that is
-/// not a `models:` key is a boot error. All three accrual sites nonetheless passed
-/// `lane.wire_model()`, which returns `upstream_model` whenever a lane sets one — so for every
-/// aliased lane (the documented flagship multi-provider setup) `CostModel::rate_for` looked up a
-/// string that CANNOT be in the card, silently took the `None` arm, and derived spend of ZERO.
-/// Consequences: a group with a `budget:` limit counted only the flat per-request fee for that
-/// traffic — effectively uncapped on token cost — `busbar_bucket_spend_cents` reported 0 with full
-/// headroom, and the two spend surfaces disagreed, because metering (three lines below) was already
-/// keyed by `lane.model` and priced correctly on `/api/v1/admin/usage`.
-///
-/// `wire_model()` remains right for what it is named after: the string sent to the provider. It is
-/// simply not an accounting key, and there is now one function rather than three that has to know
-/// the difference.
-///
-/// `lane` is the SERVING lane (post-failover). `None` — an unknown/unresolvable lane — can attribute
-/// tokens to no model, so nothing is ledgered or metered (unreachable in production: every delivered
-/// response has a serving lane).
-pub(crate) fn ledger_and_meter(
-    sink: &UsageSink,
-    lane: &crate::state::Lane,
-    usage: Option<&crate::ir::IrUsage>,
-    tier: &busbar_api::TierTokens,
-) {
-    // Ledger the TIER SPLIT (uncached input / output / cache-read / cache-write — each prices
-    // differently under the rate card) against the key's budget chain, in the SAME window as the
-    // flat per-request fee (`sink.charged_at`, the header-arrival epoch), so token accrual and the
-    // per-request fee never split across windows (#29). `record_usage` no-ops on an all-zero tier.
-    sink.gov.record_usage(
-        &sink.cost,
-        &sink.key,
-        &sink.pool,
-        &lane.model,
-        tier,
-        sink.charged_at,
-    );
-    // Metering (raw per-model consumption series, token SPLIT preserved) — even a zero-token
-    // delivered response counts its request. Same pinned epoch as the budget charges (#29).
-    sink.gov.record_metering(
-        &sink.key.id,
-        &lane.model,
-        &lane.provider,
-        usage,
-        sink.charged_at,
-    );
-}
-
-/// `lane` is the SERVING lane - the model attribution for BOTH the token ledger and the metering
-/// series (see [`ledger_and_meter`], which owns the choice of key).
+/// `lane` is the SERVING lane - the model attribution for BOTH the token ledger (its resolved
+/// upstream model, the rate card's key space) and the metering series (its configured model name).
 /// `None` (an unknown/unresolvable lane) can attribute tokens to no model, so nothing is ledgered
 /// or metered (unreachable in production: every delivered response has a serving lane).
 pub(crate) fn record_ir_usage(
@@ -117,7 +65,29 @@ pub(crate) fn record_ir_usage(
 ) {
     if let Some(sink) = usage_sink {
         let Some(lane) = lane else { return };
-        ledger_and_meter(sink, lane, Some(usage), &tier_tokens(usage));
+        let tier = tier_tokens(usage);
+        if !tier.is_zero() {
+            // Ledger the tier split against the key's budget chain, in the SAME window as the flat
+            // per-request fee (`sink.charged_at`, header-arrival epoch), so the buffered-path token
+            // accrual and the per-request fee never split across windows (#29).
+            sink.gov.record_usage(
+                &sink.cost,
+                &sink.key,
+                &sink.pool,
+                lane.wire_model(),
+                &tier,
+                sink.charged_at,
+            );
+        }
+        // Metering (raw per-model consumption series) records the SPLIT — even a zero-token
+        // delivered response counts its request. Same pinned epoch as the budget charges (#29).
+        sink.gov.record_metering(
+            &sink.key.id,
+            &lane.model,
+            &lane.provider,
+            Some(usage),
+            sink.charged_at,
+        );
     }
 }
 

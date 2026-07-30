@@ -182,9 +182,7 @@ jobs:
       # BUSBAR_RELEASE_PUBKEY (repository VARIABLE, not a secret — it is the PUBLIC half) is
       # embedded into the binary at build time (plugin-sign's option_env!): busbar-signed
       # plugins then verify as first-party with zero configuration. The matching PRIVATE half
-      # is the BUSBAR_SIGN_KEY secret used by the hook-plugins job below (and, independently, by
-      # each standalone plugin repo's own release workflow — see the "Store/auth plugin releases
-      # moved out" note above hook-plugins for why store/auth plugins are no longer packed here).
+      # is the BUSBAR_SIGN_KEY secret used by the store-plugins job below.
       # TODO(release-keys): the release orchestrator generates the real keypair separately
       # (`busbar-plugin-pack keygen`) and provisions BOTH: the variable (public) + the secret
       # (private). Until provisioned, release binaries embed no key and first-party plugin
@@ -211,83 +209,203 @@ jobs:
         with:
           subject-path: "busbar-${{ matrix.target }}.*"
 
-  # ── Every plugin releases from its own repo — no plugin upload jobs live here at all ─────────────
-  # Through 1.5.0 this file built and published every first-party plugin itself: `store-plugins`
-  # (sqlite/postgres/redis) and `auth-plugins` (oidc) from the in-tree `crates/store-*-plugin` /
-  # `crates/auth-oidc-plugin` crates, and `hook-plugins` (headroom/webrequest) from external sibling
-  # checkouts — headroom was ALSO baked pre-installed into the official Docker image. All of that
-  # special-casing is gone: a plugin is a plugin, full stop. Every first-party plugin — store, auth,
-  # AND hook alike — is a standalone repo (GetBusbar/store-sqlite, store-postgres, store-redis,
-  # auth-oidc, headroom-hook, webrequest-hook) with its own CI, its own `main`/`dev` branches, and
-  # its own release workflow that builds+signs+publishes ITS OWN tarball to ITS OWN GitHub Release
-  # on a version tag, independently versioned from busbar itself. busbar's own release publishes
-  # ONLY the core binary — no plugin tarball, signed or otherwise, is uploaded from this workflow.
-  # The Docker image (docker.yml) ships with zero plugins pre-installed, same as the binary.
+  # ── Store-plugin tarballs — one signed .tar.gz per (plugin, target) ──────────────────────────────
+  # Each first-party store backend (sqlite / postgres / redis) ships as a signed plugin tarball
+  # {cdylib + manifest.json} that busbar's plugin subsystem verifies and loads (plugins.enabled +
+  # governance.store). The manifest is signed with the busbar release PRIVATE key (BUSBAR_SIGN_KEY
+  # secret); the matching PUBLIC key is embedded into the busbar binary above (BUSBAR_RELEASE_PUBKEY
+  # repository variable), so these tarballs verify as FIRST-PARTY with zero operator configuration.
   #
-  #   - No trust argument favors bundling. First-party verification comes from the BUSBAR_SIGN_KEY
-  #     signature + the embedded BUSBAR_RELEASE_PUBKEY, not from which repo's Release page hosts the
-  #     file — a tarball signed by the same key and published from a plugin's own repo verifies
-  #     exactly as first-party as one uploaded here would.
-  #   - Publishing the SAME plugin from two different repos' Releases is a real provenance/trust
-  #     hazard with no offsetting benefit: which one is canonical, which one do docs point at, which
-  #     one gets the CVE fix first. One release pipeline per plugin removes the ambiguity.
-  #
-  # Every first-party store/auth/secret plugin crate has now been EXTRACTED out of this monorepo
-  # entirely: `crates/auth-oidc` + `crates/auth-oidc-plugin`, `crates/secret-vault` +
-  # `crates/secret-vault-plugin`, `crates/store-redis` + `crates/store-redis-plugin`,
-  # `crates/store-postgres` + `crates/store-postgres-plugin`, and `crates/store-sqlite` +
-  # `crates/store-sqlite-plugin` all now live in their own repos (GetBusbar/auth-oidc,
-  # GetBusbar/secret-vault, GetBusbar/store-redis, GetBusbar/store-postgres,
-  # GetBusbar/store-sqlite) — same-repo 2-crate Cargo workspaces bringing the real logic crate
-  # in-repo, the reference restructure GetBusbar/auth-oidc's "Restructure as a same-repo 2-crate
-  # workspace" commit established. None of their coverage comes from an in-tree crate any more;
-  # scripts/release-check.sh's sibling-checkout phases run each repo's own test suite (real dlopen
-  # ABI + a real backing service container, where applicable) instead — see that script's
-  # Phase 1/Phase 2/Phase 3/Phase 4/Phase 4.5. "Every plugin, including its logic crate, lives in
-  # its own repo" is no longer an aspiration — it's the current state.
-  # See docs/plugins.md's "Signing and packaging" section for the corrected, current release-source
-  # story per plugin kind.
-
-
-  # ── Fan out an instant "a real release just happened" signal to every downstream repo that
-  #    self-heals off busbar's releases (Homebrew tap, Helm chart, and whatever else gets added to
-  #    .github/release-notify-targets.txt). Each target already has its OWN daily-poll workflow as
-  #    the durable fallback (so a missed/failed dispatch here is never a silent miss, just a same-day
-  #    catch-up) — this job only makes the common case instant instead of up-to-24h-later. Adding a
-  #    new downstream consumer to the fan-out is a one-line addition to that text file, no workflow
-  #    changes needed here or in this job.
-  notify-downstream:
-    needs: [sbom, openapi, upload-assets]
-    runs-on: ubuntu-latest
+  # TODO(release-keys): the release orchestrator generates the keypair separately
+  # (`busbar-plugin-pack keygen`) and provisions the BUSBAR_SIGN_KEY secret + the
+  # BUSBAR_RELEASE_PUBKEY variable. Until the secret exists, this job packages UNSIGNED tarballs
+  # (loadable only under plugins.trust.allow_unsigned) so a release is never blocked on key setup —
+  # the gh step prints which mode it ran in.
+  store-plugins:
+    needs: create-release
+    name: store-plugins (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            libext: so
+            libprefix: lib
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            libext: so
+            libprefix: lib
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            libext: dylib
+            libprefix: lib
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            libext: dylib
+            libprefix: lib
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            libext: dll
+            libprefix: ""
     steps:
       - uses: actions/checkout@v7
-      - name: Dispatch upstream-release to every listed downstream repo
-        env:
-          # A fine-grained PAT (or GitHub App installation token) with Contents:read + Actions:write
-          # on every repo listed in release-notify-targets.txt. NOT the default GITHUB_TOKEN — that
-          # token cannot dispatch to OTHER repos, only this one. TODO(release-dispatch): provision
-          # this secret (org-level, so every downstream repo's own workflow can also use it if
-          # needed) before this job can do anything; until then it fails loudly rather than
-          # silently no-op'ing, so a missing token can't masquerade as "nothing to notify."
-          # GH_TOKEN is what `gh api` itself reads; DISPATCH_TOKEN is the same value under a
-          # separate name purely so the emptiness check below reads clearly.
-          GH_TOKEN: ${{ secrets.RELEASE_DISPATCH_TOKEN }}
-          DISPATCH_TOKEN: ${{ secrets.RELEASE_DISPATCH_TOKEN }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the store plugin cdylibs + the packer
+        run: |
+          cargo build --release --target ${{ matrix.target }} \
+            -p busbar-store-sqlite-plugin -p busbar-store-postgres-plugin -p busbar-store-redis-plugin \
+            -p busbar-plugin-pack
         shell: bash
+      - name: Package + sign the plugin tarballs
+        env:
+          BUSBAR_SIGN_KEY: ${{ secrets.BUSBAR_SIGN_KEY }}
         run: |
           set -euo pipefail
-          if [ -z "${DISPATCH_TOKEN:-}" ]; then
-            echo "::error::RELEASE_DISPATCH_TOKEN is not provisioned — cannot fan out the release" \
-                 "notification. Every downstream repo's own daily poll will still pick this release" \
-                 "up within 24h (self-healing fallback intact), but the instant path is unavailable." >&2
-            exit 1
+          ver="${GITHUB_REF_NAME#v}"
+          target="${{ matrix.target }}"
+          outdir="plugin-dist"; mkdir -p "$outdir"
+          pack="target/${target}/release/busbar-plugin-pack"
+          [ -x "$pack" ] || pack="target/${target}/release/busbar-plugin-pack.exe"
+          unsigned_flag=""
+          if [ -z "${BUSBAR_SIGN_KEY:-}" ]; then
+            echo "::warning::BUSBAR_SIGN_KEY secret is not provisioned — packaging UNSIGNED plugin tarballs (loadable only under plugins.trust.allow_unsigned). See the TODO(release-keys) seam."
+            unsigned_flag="--allow-unsigned"
           fi
-          while IFS= read -r repo; do
-            # Skip blank lines and comments.
-            case "$repo" in ''|'#'*) continue ;; esac
-            echo "Dispatching upstream-release to ${repo}..."
-            gh api "repos/${repo}/dispatches" \
-              -f event_type=upstream-release \
-              -f "client_payload[tag]=${GITHUB_REF_NAME}" \
-              -f "client_payload[repo]=${GITHUB_REPOSITORY}"
-          done < .github/release-notify-targets.txt
+          for store in sqlite postgres redis; do
+            lib="target/${target}/release/${{ matrix.libprefix }}busbar_store_${store}_plugin.${{ matrix.libext }}"
+            "$pack" pack \
+              --lib "$lib" \
+              --name "busbar-store-${store}" --alias "${store}" --kind store \
+              --version "$ver" --publisher busbar \
+              --description "busbar ${store} governance store plugin" \
+              --license Apache-2.0 \
+              --out "${outdir}/busbar-store-${store}-${ver}-${target}.tar.gz" \
+              $unsigned_flag
+          done
+          ls -l "$outdir"
+        shell: bash
+      - name: Attach plugin tarballs to Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${GITHUB_REF_NAME}" plugin-dist/*.tar.gz --repo "${GITHUB_REPOSITORY}" --clobber
+        shell: bash
+      # Build-provenance attestation for every plugin tarball, same as the binary archives: a
+      # swapped artifact on the Release page fails `gh attestation verify`.
+      - name: Attest plugin build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: "plugin-dist/*.tar.gz"
+
+  # ── Hook-plugin tarballs — one signed .tar.gz per (plugin, target) ───────────────────────────────
+  # The first-party kind:hook plugins (webrequest, headroom) ship as signed plugin tarballs
+  # {cdylib + manifest.json} exactly like the store plugins above: same busbar release PRIVATE key
+  # (BUSBAR_SIGN_KEY secret) signs the manifest, and the matching PUBLIC key embedded in the busbar
+  # binary (BUSBAR_RELEASE_PUBKEY repository variable) makes them verify as FIRST-PARTY with zero
+  # operator configuration.
+  #
+  # Two hook plugins, distinct declared intent:
+  #   - webrequest: a transparent HTTP forwarder. It relays whatever the CORE projected; a deployment
+  #     that fronts a prompt:rw gate would re-declare that need, but the shipped first-party artifact
+  #     asks for NOTHING by default (no --needs-*), the least-privilege posture. The operator still
+  #     grants explicitly, and the forwarder cannot cause content to be sent.
+  #   - headroom: a prompt-compression REWRITE gate. It MUST read + rewrite the prompt, so it packs
+  #     with --needs-prompt rw (SIGNED into the manifest, surfaced to the admin at register/load).
+  #     The operator's config grant of prompt:rw remains the enforcement (belt-and-suspenders).
+  #
+  # TODO(release-keys): same seam as store-plugins — until the BUSBAR_SIGN_KEY secret is provisioned
+  # this job packages UNSIGNED tarballs (loadable only under plugins.trust.allow_unsigned), so a
+  # release is never blocked on key setup. The gh step prints which mode it ran in.
+  hook-plugins:
+    needs: create-release
+    name: hook-plugins (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            libext: so
+            libprefix: lib
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            libext: so
+            libprefix: lib
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            libext: dylib
+            libprefix: lib
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            libext: dylib
+            libprefix: lib
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            libext: dll
+            libprefix: ""
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the hook plugin cdylibs + the packer
+        run: |
+          cargo build --release --target ${{ matrix.target }} \
+            -p busbar-webrequest-hook-plugin -p busbar-headroom-hook-plugin \
+            -p busbar-plugin-pack
+        shell: bash
+      - name: Package + sign the hook plugin tarballs
+        env:
+          BUSBAR_SIGN_KEY: ${{ secrets.BUSBAR_SIGN_KEY }}
+        run: |
+          set -euo pipefail
+          ver="${GITHUB_REF_NAME#v}"
+          target="${{ matrix.target }}"
+          outdir="plugin-dist"; mkdir -p "$outdir"
+          pack="target/${target}/release/busbar-plugin-pack"
+          [ -x "$pack" ] || pack="target/${target}/release/busbar-plugin-pack.exe"
+          unsigned_flag=""
+          if [ -z "${BUSBAR_SIGN_KEY:-}" ]; then
+            echo "::warning::BUSBAR_SIGN_KEY secret is not provisioned — packaging UNSIGNED hook plugin tarballs (loadable only under plugins.trust.allow_unsigned). See the TODO(release-keys) seam."
+            unsigned_flag="--allow-unsigned"
+          fi
+          libpfx='${{ matrix.libprefix }}'; libext='${{ matrix.libext }}'
+
+          # webrequest: transparent forwarder, declares NO needs (least privilege).
+          "$pack" pack \
+            --lib "target/${target}/release/${libpfx}busbar_webrequest_hook_plugin.${libext}" \
+            --name "busbar-webrequest" --alias "webrequest" --kind hook \
+            --version "$ver" --publisher busbar \
+            --description "busbar webrequest hook plugin: signed dlopen'd HTTP forwarder for hook ops" \
+            --license Apache-2.0 \
+            --out "${outdir}/busbar-webrequest-${ver}-${target}.tar.gz" \
+            $unsigned_flag
+
+          # headroom: prompt-compression rewrite gate, declares needs.prompt=rw (SIGNED).
+          "$pack" pack \
+            --lib "target/${target}/release/${libpfx}busbar_headroom_hook_plugin.${libext}" \
+            --name "busbar-headroom" --alias "headroom" --kind hook \
+            --version "$ver" --publisher busbar \
+            --needs-prompt rw \
+            --description "busbar headroom hook plugin: deterministic rule-based prompt-compression rewrite gate" \
+            --license Apache-2.0 \
+            --out "${outdir}/busbar-headroom-${ver}-${target}.tar.gz" \
+            $unsigned_flag
+
+          ls -l "$outdir"
+        shell: bash
+      - name: Attach hook plugin tarballs to Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${GITHUB_REF_NAME}" plugin-dist/*.tar.gz --repo "${GITHUB_REPOSITORY}" --clobber
+        shell: bash
+      - name: Attest hook plugin build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: "plugin-dist/*.tar.gz"
