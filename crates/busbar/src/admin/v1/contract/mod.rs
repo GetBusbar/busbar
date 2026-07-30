@@ -708,54 +708,61 @@ pub(crate) struct GroupBucketUsageView {
     pub(crate) budget_remaining_cents: Option<i64>,
 }
 
-/// The transport half of a `HookView`: which wire the hook speaks and its target (socket path or
-/// webhook URL — operator config, not a secret). Exactly one of `socket`/`webhook` is set.
+/// The transport half of a `HookView`. As of 1.5.0 a hook is EITHER a compiled-in kind (no
+/// transport at all) or a signed `kind: hook` dlopen'd plugin (`target` = the plugin NAME, not a
+/// socket path or URL) — the retired 1.4.x socket/webhook sidecar transports are gone.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub(crate) struct HookTransportView {
-    /// `"socket"` or `"webhook"` (or `"none"` for a misconfigured entry with neither).
+    /// `"plugin"` for a signed dlopen'd hook plugin, or `"none"` for a hook with no plugin
+    /// transport (compiled-in kinds, or a misconfigured entry).
     pub(crate) kind: &'static str,
-    /// The socket path or webhook URL. `None` only if the definition set neither transport.
+    /// The plugin's NAME (not a path or URL). `None` when `kind` is `"none"`.
     pub(crate) target: Option<String>,
 }
 
-/// The live health of one hook's transport (`GET /api/v1/admin/hooks/{name}/health`). BEST-EFFORT: for a
-/// socket transport `reachable` is `Some(true/false)` from a short-timeout connect probe; for a webhook
-/// (or on a non-unix host) it is `None` (probed on demand, not here) with a `detail` note. Never fires
-/// the hook — just checks whether the endpoint accepts a connection. Additive-only.
+/// The live health of one hook's transport (`GET /api/v1/admin/hooks/{name}/health`). Checks
+/// whether the hook resolves to a LOADED `kind: hook` plugin in the process's plugin registry —
+/// this is a plugin-LOAD status check, not a network reachability probe: it never opens a
+/// connection, and it cannot tell you whether a `kind: hook` plugin's own configured external
+/// endpoint (e.g. `busbar-webrequest-hook`'s `settings.url`) is actually reachable, only that the
+/// plugin itself is loaded. Never fires the hook. Additive-only.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub(crate) struct HookHealthView {
     pub(crate) name: String,
     pub(crate) transport: HookTransportView,
-    /// `Some(true)` = the transport accepted a connection; `Some(false)` = it did not; `None` = not
-    /// probed here (webhook / non-unix).
+    /// `Some(true)` = resolves to a loaded `kind: hook` plugin; `Some(false)` = it does not
+    /// (wrong kind, or not installed/loaded) — always `Some`, never `None`, as of 1.5.0's
+    /// in-process plugin model.
     pub(crate) reachable: Option<bool>,
-    /// A short human note on the probe (why `None`, or the connect error class). Never a secret.
+    /// A short human note on the resolution (why `false`, or the resolved plugin's kind). Never a
+    /// secret.
     pub(crate) detail: Option<String>,
 }
 
 /// One plugin in the plugin catalog (`GET /api/v1/admin/plugins?type=`). A plugin is either
-/// COMPILED-IN (baked into the binary, feature-gated — provably removable via `--no-default-features`),
-/// EXTERNAL (registered at runtime over socket/webhook), or a DYNAMIC-LIBRARY plugin (a loadable
-/// `.so`/`.dll`/`.dylib` in the plugins directory, loaded over the store C ABI). `active` is
-/// `Some(true/false)` where activation is tracked (auth modules: in the chain?; external hooks:
-/// configured = true; dynamic store: the configured `store.module`) and `None` where it is a
-/// per-pool concern not summarized here (compiled-in ranking policies). Additive-only.
+/// COMPILED-IN (baked into the binary, feature-gated — provably removable via `--no-default-features`)
+/// or a signed DYNAMIC-LIBRARY plugin (a loadable `.so`/`.dll`/`.dylib`, dlopen'd over the signed
+/// plugin ABI — this covers `auth`, `hooks`, and `store` plugin kinds alike as of 1.5.0; the
+/// retired 1.4.x socket/webhook "external" transport is gone). `active` is `Some(true/false)`
+/// where activation is tracked (auth modules: in the chain?; hook plugins: configured = true;
+/// dynamic store: the configured `store.module`) and `None` where it is a per-pool concern not
+/// summarized here (compiled-in ranking policies). Additive-only.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub(crate) struct PluginView {
     pub(crate) name: String,
     /// `"auth"`, `"hooks"`, or `"store"` — the plugin TYPE (each a distinct engine contract).
     pub(crate) r#type: &'static str,
-    /// `"compiled-in"`, `"external"`, or `"dynamic-library"`.
+    /// `"compiled-in"` or `"plugin"` (a dlopen'd dynamic-library plugin — auth, hook, and store
+    /// kinds alike as of 1.5.0's signed plugin ABI).
     pub(crate) loader: &'static str,
     /// Whether the plugin is currently active, where tracked; `None` when activation is not summarized
     /// at this level.
     pub(crate) active: Option<bool>,
-    /// For an external plugin, its transport target (socket path / webhook URL); for a dynamic-library
-    /// plugin, its library FILENAME in the plugins directory (the handle `DELETE` takes). `None` for
-    /// compiled-in.
+    /// For a dynamic-library plugin, its NAME (not a socket path or URL — the retired 1.4.x
+    /// transport target). `None` for compiled-in.
     pub(crate) target: Option<String>,
     /// The plugin's semantic version, from its signed sidecar manifest (dynamic-library plugins only).
     /// `None` for compiled-in/external, or a dynamic plugin with no/invalid manifest.
