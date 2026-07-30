@@ -2715,7 +2715,7 @@ pub(crate) async fn put_config_settings(
             )
             .and_then(|mut loaded| {
                 merged_for_build.apply_to_deploy(&mut loaded.deploy);
-                // M2: apply the overlay's `plugin_versions` rollback pins onto the DeployCfg BEFORE
+                // Apply the overlay's `plugin_versions` rollback pins onto the DeployCfg BEFORE
                 // resolve, exactly as boot/reload/reset/`--validate` do
                 // (`overlay::apply_root_to_deploy`). Without this the rebuild re-validates against
                 // the BASE floors and re-loads the newer artifact, silently reverting a live audited

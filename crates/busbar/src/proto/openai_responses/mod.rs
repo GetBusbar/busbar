@@ -499,7 +499,7 @@ fn responses_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, 
             })
         }
         "input_image" => {
-            // L5: handle a file_id-referenced image (no inline `image_url`) faithfully rather than
+            // Handle a file_id-referenced image (no inline `image_url`) faithfully rather than
             // emitting an empty Image block. Shared with the request-input reader.
             responses_input_image_block(block_val).ok_or(IrError {
                 class: StatusClass::ClientError,

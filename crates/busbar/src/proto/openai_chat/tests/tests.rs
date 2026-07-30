@@ -3834,7 +3834,7 @@ fn test_n_gt_1_clamped_to_one_on_cross_protocol_egress() {
     assert_eq!(ir0.n, None, "absent n stays absent");
 }
 
-// H6: the `"auto"` and `"none"` string forms had no read→write round-trip coverage.
+// The `"auto"` and `"none"` string forms had no read→write round-trip coverage.
 #[test]
 fn test_openai_tool_choice_auto_roundtrips() {
     let body = serde_json::json!({
@@ -3865,7 +3865,7 @@ fn test_openai_tool_choice_none_roundtrips() {
     assert_eq!(out["tool_choice"], serde_json::json!("none"));
 }
 
-// H7: the Anthropic→OpenAI tool_choice direction (auto/none/any/tool) — pinned from the OpenAI
+// The Anthropic→OpenAI tool_choice direction (auto/none/any/tool) — pinned from the OpenAI
 // side because the OpenAI writer is the egress here. Mirrors the OpenAI→Anthropic tests that
 // live in anthropic.rs.
 #[test]
@@ -3901,7 +3901,7 @@ fn test_anthropic_to_openai_tool_choice_directions() {
     }
 }
 
-// M5: unknown / structurally-invalid tool_choice values must map to `None` (NOT silently to
+// Unknown / structurally-invalid tool_choice values must map to `None` (NOT silently to
 // Auto/Required). This guards a future refactor from forcing tool calls on a malformed input.
 #[test]
 fn test_openai_tool_choice_unknown_string_is_none() {

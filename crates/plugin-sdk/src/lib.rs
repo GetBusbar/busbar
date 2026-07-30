@@ -228,8 +228,9 @@ macro_rules! export_auth_plugin {
 }
 
 // ── SECRET-plugin glue (`kind: secret`) ─────────────────────────────────────────────────────────
-// Mirrors the store glue one-to-one: same five-symbol shape, same panic-catching impl style, its
-// own handle type (`Box<dyn SecretModule>`) and its own tiny request enum.
+// Mirrors the store glue one-to-one: same six-symbol shape via `export_plugin!`, same
+// panic-catching impl style, its own handle type (`Box<dyn SecretModule>`) and its own tiny
+// request enum.
 
 /// The secret handle behind the opaque `*mut c_void`: a boxed [`busbar_api::SecretModule`]. Named at
 /// the module level so the `export_plugin!` expansion can pass it to `close_boundary::<$ty>`.

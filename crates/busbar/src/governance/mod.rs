@@ -913,8 +913,8 @@ pub(crate) fn spawn_budget_flusher(
                     tokio::task::spawn_blocking(move || {
                         gov.flush_budgets();
                         gov.flush_metering();
-                        // Reuses this same tick/gate/offload plumbing for the durable audit
-                        // write-through's write-behind drain (finding #5): `durable_write_through`'s
+                        // Reuses this same tick/gate/offload plumbing for the audit log's
+                        // write-behind drain: `durable_write_through`'s
                         // unit of work is already a coalescing RANGE, so one call here persists
                         // every seq `record_by`'s pressure valve left pending since the last tick.
                         crate::admin::audit::AUDIT.flush_durable();

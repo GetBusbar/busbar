@@ -206,7 +206,7 @@ impl ProtocolWriter for BedrockWriter {
                 } = block
                 {
                     text_arr.push(serde_json::json!({ "text": text }));
-                    // H3: emit a Bedrock `cachePoint` AFTER the block that carries the IR
+                    // Emit a Bedrock `cachePoint` AFTER the block that carries the IR
                     // `cache_control` boundary (the position Bedrock expects — the breakpoint closes
                     // the prefix before it). Suppressed when the positional stash owns placement.
                     if emit_inline_system_cache && cache_control.is_some() {
@@ -254,7 +254,7 @@ impl ProtocolWriter for BedrockWriter {
 
             let mut content_arr: Vec<serde_json::Value> = Vec::new();
             for block in &msg.content {
-                // H3: the prompt-cache boundary carried on this block, if any. Emitted as a
+                // The prompt-cache boundary carried on this block, if any. Emitted as a
                 // `cachePoint` block IMMEDIATELY AFTER the block below (the position Bedrock expects).
                 // Suppressed when the positional stash owns placement (same-protocol passthrough).
                 let block_cache_control = match block {
@@ -364,7 +364,7 @@ impl ProtocolWriter for BedrockWriter {
                         // top-level message-content shape, so omit it from a message turn.
                     }
                 }
-                // H3: emit the prompt-cache boundary as a `cachePoint` block right after the block it
+                // Emit the prompt-cache boundary as a `cachePoint` block right after the block it
                 // applies to. Only Text/ToolUse/ToolResult carry `cache_control` (see
                 // `block_cache_control`); a block whose write produced nothing (e.g. a dropped Image)
                 // still emits no cachePoint here because such kinds carry no `cache_control` field.
@@ -396,7 +396,7 @@ impl ProtocolWriter for BedrockWriter {
                 splice_cache_points(&mut content_arr, &for_this_msg);
             }
 
-            // F4: Bedrock Converse requires strictly ALTERNATING user/assistant turns — two
+            // Bedrock Converse requires strictly ALTERNATING user/assistant turns — two
             // consecutive messages of the same role are a 400 ValidationException. After the
             // Tool→"user" role mapping above, common IR shapes produce consecutive "user" turns: a
             // Tool-result turn followed by a real user turn, or several tool results that arrived as
@@ -546,7 +546,7 @@ impl ProtocolWriter for BedrockWriter {
                 tool_obj.insert("toolSpec".to_string(), serde_json::Value::Object(tool_spec));
                 tools_arr.push(serde_json::Value::Object(tool_obj));
 
-                // H3: a tool-definition prompt-cache boundary is emitted as a `cachePoint` element in
+                // A tool-definition prompt-cache boundary is emitted as a `cachePoint` element in
                 // the `toolConfig.tools` array right after the tool it closes (the prefix of tool
                 // schemas up to here is cached). Unlike the system/message arrays there is no
                 // positional tools-cachePoint stash, so the typed `cache_control` field is the SOLE
@@ -578,7 +578,7 @@ impl ProtocolWriter for BedrockWriter {
                     Some(v) => {
                         tool_config.insert("toolChoice".to_string(), v);
                     }
-                    // L4: `IrToolChoice::None` ("do NOT call a tool") has no native Converse directive,
+                    // `IrToolChoice::None` ("do NOT call a tool") has no native Converse directive,
                     // so it degrades to omitting `toolChoice` (the backend applies its own default,
                     // which may still call a tool). Previously SILENT; warn so it is observable.
                     None => {

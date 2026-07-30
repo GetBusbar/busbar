@@ -425,7 +425,7 @@ impl AppHandle {
 
     /// Atomically replace the current snapshot (the admin config-mutation seam: reload, apply, and every
     /// hook/auth mutation). Re-spawns the health probers against `next`: probers hold a `Weak<App>` and
-    /// exit once the App they were spawned against drops (audit H2), so EVERY swap must re-attach them —
+    /// exit once the App they were spawned against drops, so EVERY swap must re-attach them —
     /// otherwise the first admin mutation replaces the boot App, the boot App drops as in-flight requests
     /// drain, its probers exit, and active/dead health probing silently STOPS even though lanes/health are
     /// unchanged (audit 1.4.0: only reload/apply re-spawned; the six hook/auth-mutation swaps did not).

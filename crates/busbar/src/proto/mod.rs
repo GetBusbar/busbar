@@ -1125,10 +1125,12 @@ impl Protocol {
 /// zero-sized, but a fresh instance is REQUIRED per request regardless: `GeminiWriter`,
 /// `CohereWriter`, and `ResponsesWriter` carry per-STREAM mutable state (e.g. `Mutex<Vec<…>>`,
 /// `AtomicU64`) seeded from their const constructors, so they must not be shared/cached across
-/// concurrent requests. The allocations are small (empty collections) and confined to per-request
-/// setup paths — never per-chunk loops. Registry SWEEPS that only need pure-by-name vtable facts
-/// (`streaming_content_types`, `array_stream_shim_keys`) memoize their results to avoid repeating
-/// these allocations on the hot path.
+/// concurrent requests. The allocations are small (empty collections) and happen only on
+/// request/response SETUP paths — a handful of times per request as each layer resolves the
+/// protocol it needs from a name string, never inside a per-chunk loop. Callers that hold a
+/// resolution for the life of a stream resolve it once and keep it (see `FirstByteBody::new`);
+/// callers that need only a pure by-name vtable fact go through the memoized registry sweeps below
+/// (`streaming_content_types`, `array_stream_shim_keys`) rather than resolving here.
 pub(crate) fn protocol_for(name: &str) -> Option<Protocol> {
     match name {
         PROTO_ANTHROPIC => Some(Protocol::anthropic()),

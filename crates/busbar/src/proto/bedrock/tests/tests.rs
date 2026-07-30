@@ -5007,7 +5007,7 @@ fn test_bedrock_tool_choice_absent_is_none() {
     );
 }
 
-// PF-M1: OpenAI/Responses ingress accepts temperature up to 2.0, but Bedrock's native range is
+// OpenAI/Responses ingress accepts temperature up to 2.0, but Bedrock's native range is
 // [0.0, 1.0] and rejects >1 with a hard 400 ValidationException. The writer must clamp.
 #[test]
 fn test_bedrock_writer_clamps_temperature_above_one() {

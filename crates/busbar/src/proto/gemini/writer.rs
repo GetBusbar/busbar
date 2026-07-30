@@ -262,7 +262,7 @@ impl ProtocolWriter for GeminiWriter {
                     if let Some(desc) = &tool.description {
                         obj.insert("description".to_string(), serde_json::json!(desc));
                     }
-                    // L3: Gemini's tool `parameters` accept only a strict OpenAPI-3.0 Schema subset,
+                    // Gemini's tool `parameters` accept only a strict OpenAPI-3.0 Schema subset,
                     // NOT full JSON Schema. A cross-protocol tool def (OpenAI/Anthropic) routinely
                     // carries draft keywords (`$schema`, `additionalProperties`, `$ref`, …) that
                     // Gemini 400-rejects. Strip them recursively so the tool def survives the seam
@@ -971,7 +971,7 @@ impl ProtocolWriter for GeminiWriter {
         // Build candidates array (Gemini whole-response format)
         let mut parts_arr: Vec<serde_json::Value> = Vec::new();
 
-        // L2: collect citations from every Text block to re-emit at the candidate level
+        // Collect citations from every Text block to re-emit at the candidate level
         // (`candidates[].citationMetadata.citationSources[]`) — Gemini carries citations there, not
         // per content-part. The reader anchors them to a Text block; here we hoist them back out.
         let mut citation_sources: Vec<serde_json::Value> = Vec::new();
@@ -1108,7 +1108,7 @@ impl ProtocolWriter for GeminiWriter {
             }
         });
         candidate[FIELD_FINISH_REASON] = serde_json::json!(finish_reason);
-        // L2: re-emit candidate-level citationMetadata when the IR carried citations (grounding /
+        // Re-emit candidate-level citationMetadata when the IR carried citations (grounding /
         // web-search). Only emitted when non-empty so a normal response stays byte-identical.
         if !citation_sources.is_empty() {
             candidate["citationMetadata"] = serde_json::json!({

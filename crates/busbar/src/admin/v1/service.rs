@@ -827,7 +827,7 @@ impl AdminService {
         for b in &rt.buckets {
             let usage = match &self.app.governance {
                 Some(gov) => gov
-                    // M5: include the flat per-request fee (`true`) — the group `/usage` read must
+                    // Include the flat per-request fee (`true`) — the group `/usage` read must
                     // match ENFORCEMENT (`try_admit` counts the fee for EVERY chain bucket, groups
                     // included). Passing `false` here understated spend and overstated remaining
                     // budget, so operators saw more headroom than the enforcer actually allows.

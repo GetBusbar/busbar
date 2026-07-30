@@ -888,8 +888,8 @@ impl InMemoryStore {
     }
 
     /// OWNER-CHECKED probe release: the same revert as [`cell_release_probe`], but a strict NO-OP
-    /// unless `owned_epoch` still equals the cell's current `probe_epoch`. This closes the stalled-
-    /// release duplication (P2 finding #4): a `ProbeGuard` can outlive its acquisition across the
+    /// unless `owned_epoch` still equals the cell's current `probe_epoch`. This closes a stalled-
+    /// release duplication: a `ProbeGuard` can outlive its acquisition across the
     /// permit-wait await, so it may drop LATE - after the cell already recorded an outcome (advancing
     /// past the probe) and a NEW probe was won (bumping the epoch). The un-owned `cell_release_probe`
     /// would then CAS the FRESH winner's HalfOpen back to Open and clear its `probe_in_flight`, letting
@@ -2173,7 +2173,7 @@ impl StateStore for InMemoryStore {
                 // an INCONSISTENT pair (e.g. Open with a cleared/short cooldown), which this snapshot
                 // then PERSISTS - on restore a hard-down lane would be revived as receiving traffic.
                 // Holding the same lock the write path holds, for BOTH loads at once, makes the pair
-                // move as a unit (P2 finding #5). Released immediately; the remaining fields are
+                // move as a unit. Released immediately; the remaining fields are
                 // independent counters with no cross-field invariant.
                 let (breaker_state, cooldown_until) = {
                     let _tx = lock_recover(&ls.transition_lock);

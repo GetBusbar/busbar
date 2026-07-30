@@ -463,8 +463,9 @@ pub(crate) fn url_annotations(
                 .filter(|q| !q.is_empty())
                 .and_then(|q| {
                     // `str::find` and `q.len()` are BYTE offsets/lengths; the IR contract is
-                    // CHARACTERS (class-6 6e1, site 2). `find` always returns a char boundary, so
-                    // the byte slice below stays valid — only the emitted span needs converting.
+                    // CHARACTERS, not bytes (see `IrCitation::start_index`). `find` always returns
+                    // a char boundary, so the byte slice below stays valid — only the emitted span
+                    // needs converting.
                     let first = text.find(q)?;
                     if text[first + q.len()..].contains(q) {
                         return None;

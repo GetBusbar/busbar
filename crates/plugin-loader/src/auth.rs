@@ -111,7 +111,7 @@ pub fn load_auth_from_bytes(
             ))
         }
     };
-    // L1: `AuthModule::name` is `&'static str`. INTERN it so a repeated open of the same auth plugin
+    // `AuthModule::name` is `&'static str`. INTERN it so a repeated open of the same auth plugin
     // (per chain rebuild / reload) reuses ONE allocation rather than leaking a fresh one every time.
     let name: &'static str = crate::intern_name(&name);
     Ok(Box::new(DynAuth {

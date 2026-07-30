@@ -554,7 +554,7 @@ impl Store for RedisStore {
         // true fleet total instead of last-writer-wins overwriting each other. No dollar delta
         // crosses this wire. (A transient negative is clamped to 0 on read - see the crate doc.)
         let k = usage_key(bucket_id, window_start);
-        // M3: NON-IDEMPOTENT HINCRBY cascade - no auto-retry (a lost-reply timeout must not
+        // NON-IDEMPOTENT HINCRBY cascade - no auto-retry (a lost-reply timeout must not
         // double-apply; the flusher re-derives from baseline on error).
         self.with_conn_no_retry(|c| {
             let mut pipe = redis::pipe();
@@ -598,7 +598,7 @@ impl Store for RedisStore {
         // One atomic MULTI/EXEC: index the row + HINCRBY the four token fields and the request
         // count + persist the identity fields (idempotent HSET). Accumulation without a
         // read-modify-write race, and no partially-written row on failure.
-        // M3: NON-IDEMPOTENT HINCRBY cascade - no auto-retry (a lost-reply timeout must not
+        // NON-IDEMPOTENT HINCRBY cascade - no auto-retry (a lost-reply timeout must not
         // double-apply; the flusher re-derives from baseline on error).
         self.with_conn_no_retry(|c| {
             redis::pipe()
@@ -857,7 +857,7 @@ mod tests {
         assert_eq!(scrub("plain".into(), None), "plain");
         assert_eq!(scrub("plain".into(), Some("zz")), "plain");
 
-        // L1: the scrub redacts BOTH the raw (percent-encoded) and DECODED forms of the password.
+        // The scrub redacts BOTH the raw (percent-encoded) and DECODED forms of the password.
         // `url_password` returns the raw `p%40ss`; a driver error may print either the raw form or
         // the decoded `p@ss`. Both must be redacted.
         let raw = url_password("rediss://user:p%40ss@host:6380").expect("password");

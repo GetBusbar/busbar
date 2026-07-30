@@ -1312,7 +1312,7 @@ fn test_protocol_clone_works() {
     let _cloned_writer = openai_writer.clone();
 }
 
-/// audit H4: Cohere v2 carries the assistant's pre-tool reasoning in `message.tool_plan`. It must be
+/// Cohere v2 carries the assistant's pre-tool reasoning in `message.tool_plan`. It must be
 /// read as a LEADING Text block (ahead of the tool call) or it vanishes on any Cohere→X hop.
 #[test]
 fn cohere_read_response_surfaces_tool_plan_as_leading_text() {
