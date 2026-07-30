@@ -16,32 +16,37 @@ item under **Changed**.
      this section to `## [1.5.0], <cut-date>` and stamps the real date. Do NOT hard-code a dated
      [1.5.0] header here — that collides with the auto-promotion at tag time. -->
 
-The config / identity / cost REDESIGN release. 1.5.0 is a deliberate, tooled, BREAKING-FOR-OPERATORS
+The config / identity / cost redesign release. 1.5.0 is a deliberate, tooled, breaking-for-operators
 step: the config format changed shape (run `busbar --migrate-config`), and every 1.4.x virtual key
-stops working and must be re-minted. It is still a MINOR version because the SemVer contract is
-now stated honestly (see **Changed**): the frozen surface is the RUNTIME an application integrates
-against (the data-plane HTTP surface + the six wire protocols), which does NOT break here - an app
-posting to `/v1/chat/completions` is byte-identical. The key re-mint is a CREDENTIAL ROTATION and
-the release's security headline: 1.x keys never expired; 1.5.0 keys are signed tokens that do.
+stops working and must be re-minted. It is still a **minor** version because the SemVer contract is
+now stated honestly (see **Changed**): the frozen, SemVer-protected surface is the **runtime** an
+application integrates against — the data-plane HTTP surface plus the six wire protocols — and that
+surface is unaffected by this release: an app posting to `/v1/chat/completions` before the upgrade
+gets a byte-identical response after it. What does change is auth: every existing virtual key must be
+re-minted, a one-time **credential rotation** operators need to perform. That rotation is also the
+release's security headline: 1.x keys were bearer secrets that never expired, so a leaked key stayed
+valid forever; 1.5.0 keys are signed tokens with a built-in expiry, so a leaked key eventually stops
+working on its own.
 
 ### Added
 
-- **The clean 1.5.0 config.** One governing principle: the object that OWNS a concept is the ONLY
-  place it is defined, and the same KIND of thing is expressed the same WAY everywhere. `module` +
-  `settings` for every loadable unit (store, secret, auth, hook); ONE limit shape; ONE secret
-  shape; reference fields name the referenced thing (`model`, `group`, `provider`, `module`);
-  windows are nouns (`minute|hour|day|month|total`); `on_X` handlers are keyword-bare or
-  structured refs; an OMITTED list means "all" and an explicit `[]` means "none", everywhere.
+- **The clean 1.5.0 config.** One governing principle: the object that **owns** a concept is the
+  **only** place it is defined, and the same **kind** of thing is expressed the same **way**
+  everywhere. `module` + `settings` for every loadable unit (store, secret, auth, hook); **one**
+  limit shape; **one** secret shape; reference fields name the referenced thing (`model`, `group`,
+  `provider`, `module`); windows are nouns (`minute|hour|day|month|total`); `on_X` handlers are
+  keyword-bare or structured refs; an **omitted** list means "all" and an explicit `[]` means
+  "none", everywhere.
   Every operator struct rejects unknown fields (a typo fails boot, never a silent no-op). The
   canonical example lives at `examples/clean-config-1.5.0.yaml` and boots under `busbar
   --validate`.
-- **`groups:` - the ONE limit tree.** A group is a named enforcement bucket: `{ parent?, enabled,
+- **`groups:` - the one limit tree.** A group is a named enforcement bucket: `{ parent?, enabled,
   limits: [...] }`, forming an acyclic chain (any depth). A limit is generic:
   `{ requests|tokens|budget: <amount>, per: <window> }`, or `{ concurrent: <n> }` (instantaneous
-  in-flight gauge, no window). Admission walks the chain UP through `parent` and ANDs EVERY limit
-  of EVERY group atomically (all-or-nothing charging); the rejection NAMES the exact blocking
-  bucket (group + metric + window) with `Retry-After` for rolling windows. `enabled: false`
-  FREEZES a group (and every descendant) while keeping its history. Requests are enforced
+  in-flight gauge, no window). Admission walks the chain **up** through `parent` and **ANDs**
+  every limit of every group atomically (all-or-nothing charging); the rejection **names** the
+  exact blocking bucket (group + metric + window) with `Retry-After` for rolling windows.
+  `enabled: false` **freezes** a group (and every descendant) while keeping its history. Requests are enforced
   precisely; tokens are best-effort post-paid (the old TPM posture); budget derives at check time
   from the token ledger x the current rate card + the flat fee; `concurrent` holds release
   automatically when the response stream completes.
@@ -49,115 +54,115 @@ the release's security headline: 1.x keys never expired; 1.5.0 keys are signed t
   carry `pool: <name>`, so it accounts and enforces per `(group, pool)` instead of group-wide:
   `{ budget: 5000, per: month, pool: frontier }` + `{ budget: 5000, per: month, pool: value }`
   carve one team's spend across model tiers, each in its own ledger bucket
-  (`group:<name>@<window>#<pool>`). Exhausting the frontier budget blocks ONLY frontier traffic
-  (the rejection names the pool - the caller's expensive calls stop while cheap ones continue);
-  group-wide limits still AND over all traffic. Admission charge, token accrual, and non-2xx
+  (`group:<name>@<window>#<pool>`). Exhausting the frontier budget blocks **only** frontier
+  traffic (the rejection names the pool - the caller's expensive calls stop while cheap ones
+  continue); group-wide limits still **AND** over all traffic. Admission charge, token accrual, and non-2xx
   refunds share one participation predicate, so what was charged is exactly what refunds. The
   named pool must exist (validated at boot / `--validate` / Admin API); the hook seam's
   `BudgetBucketState` and the Admin groups read (`LimitView`) carry the pool scope. Also gone:
   the arbitrary 8-level group-depth ceiling (the cycle check is what bounds the walk; hierarchy
   depth is the operator's call).
 - **Budgets that teach (`on_exhaust: downgrade`).** A pool-scoped budget limit may declare
-  `on_exhaust: downgrade, downgrade_to: <pool>`: when it runs dry, the request is RE-ADMITTED and
-  DISPATCHED through the downgrade pool instead of refused - the dev's expensive calls get
+  `on_exhaust: downgrade, downgrade_to: <pool>`: when it runs dry, the request is **re-admitted
+  and dispatched** through the downgrade pool instead of refused - the dev's expensive calls get
   cheaper, not blocked (teach by gravity; omit for today's hard rejection, teach by friction).
   The charge lands on the effective pool's buckets (accounting follows the traffic), the key's
   pool ACL re-runs on every hop (an exhaustion can never route a key into a pool it may not use),
   and cascades are cycle-bounded. Where several budgets merge into one bucket, the most
   restrictive cap's behavior governs. Validated at the door: `downgrade` needs a different,
   existing `downgrade_to` pool, a `pool:` scope, and the `budget` metric.
-- **KEYS ARE PURE AUTH + THEY EXPIRE.** A minted key is a busbar-SIGNED token `{sub, exp, kid}`
-  (ed25519). Verify = signature + expiry (stateless) + a small revocation denylist; policy (the
-  bound `group`, `allowed_pools`) is resolved from the store by `sub`, so policy is mutable
-  without re-issuing the credential. Keys carry NO limits - a key resolves to a group, and a key
-  with no group is authed + unlimited (access only). Mint body:
+- **Keys are pure auth, and they expire.** A minted key is a busbar-**signed** token `{sub, exp,
+  kid}` (ed25519). Verify = signature + expiry (stateless) + a small revocation denylist; policy
+  (the bound `group`, `allowed_pools`) is resolved from the store by `sub`, so policy is mutable
+  without re-issuing the credential. Keys carry **no** limits - a key resolves to a group, and a
+  key with no group is authed + unlimited (access only). Mint body:
   `{ name, group?, allowed_pools?, labels?, expires_in|expires_at?, issue_aws_credential? }`
   (default lifetime 90 days). Revoke = denylist entry, live across every store backend. The
   signing key is `auth.signing_key` (a secret reference, fleet-shared); absent, busbar generates
   one 0600 on first boot. Rotating it revokes every outstanding key.
-- **SECRETS ARE PLUGINS (`kind: secret`).** Every secret value in config is a secret REFERENCE:
+- **Secrets are plugins (`kind: secret`).** Every secret value in config is a secret **reference**:
   `{ env: VAR }`, `{ file: /path }` (the built-in secret modules), or
   `{ module: <secret-plugin>, settings: {...} }` for third-party sources (vault, cloud secret
   managers) loaded through the same signed-plugin trust pipeline. Applies to provider `api_key`,
   `auth.signing_key`, the admin token, and every TLS cert/key/CA. No `*_env` suffix fields
   remain.
-- **HOOKS ARE PLUGINS - no `hooks:` registry block.** A hook INSTANCE is referenced inline where
-  it runs: in `pools.<p>.hooks` (ordered) and `global_hooks` (ordered). A bare name is a built-in
-  ordering strategy (`weighted | cheapest | fastest | least_busy | usage`); everything else is a
-  module ref `{ module: webhook|socket|<kind: hook plugin>, settings: {...}, kind?, timeout_ms?,
-  on_error?, prompt?, user?, priority?, at? }`. The socket/webhook transports are built-in hook
-  MODULES (`settings.path` / `settings.url`), so out-of-process hooks persist; the registry and
+- **Hooks are plugins - no `hooks:` registry block.** A hook **instance** is referenced inline
+  where it runs: in `pools.<p>.hooks` (ordered) and `global_hooks` (ordered). A bare name is a
+  built-in ordering strategy (`weighted | cheapest | fastest | least_busy | usage`); everything
+  else is a module ref `{ module: webhook|socket|<kind: hook plugin>, settings: {...}, kind?,
+  timeout_ms?, on_error?, prompt?, user?, priority?, at? }`. The socket/webhook transports are
+  built-in hook **modules** (`settings.path` / `settings.url`), so out-of-process hooks persist; the registry and
   the `global:`/`default:` flags are gone (subsumed by the two lists). `module: webhook|socket`
   refs are the out-of-process transport modules; a `kind: hook` plugin name routes through the
   plugin loader and runs in-process over the hybrid ABI (see the Unified plugin model entry below).
-- **RUNTIME-MUTABLE GROUPS on the Admin API - self-service governance.** The `groups:` limit tree
+- **Runtime-mutable groups on the Admin API - self-service governance.** The `groups:` limit tree
   is now editable live over the Admin API, so per-team and per-user budgets change without a
   restart: `GET /api/v1/admin/groups` + `GET/POST/PUT/PATCH/DELETE /api/v1/admin/groups/{name}`.
-  A write is VALIDATE-AT-THE-DOOR (the whole tree is re-checked - parent exists, acyclic, depth -
+  A write **validates at the door** (the whole tree is re-checked - parent exists, acyclic, depth -
   so an invalid edit is a 400 that changes nothing), then the enforcement projection is rebuilt in
-  place (limits live on the next request) while the token LEDGER survives, so past accrual is
+  place (limits live on the next request) while the token **ledger** survives, so past accrual is
   preserved. `PATCH` is the ergonomic per-field verb ("raise Alice's budget" = send just `limits`;
   "freeze a team" = `enabled: false`). Because a group is `{ parent?, enabled, limits, child_default? }`
-  and org/team/user are the SAME primitive, **a user is just a leaf group** parented to their team:
-  a personal budget is the leaf's own limits, always sub-capped by the team ceiling (the chain ANDs,
+  and org/team/user are the **same** primitive, **a user is just a leaf group** parented to their team:
+  a personal budget is the leaf's own limits, always sub-capped by the team ceiling (the chain **ANDs**,
   so over-allocating personal budgets can never sum past the team pool). Every mutation is audited,
   bumps `config_version` (optimistic concurrency via `If-Match`), and is written to the config
-  OVERLAY so it survives a restart; a base-config group is file-owned (a 409 - edit config.yaml).
+  **overlay** so it survives a restart; a base-config group is file-owned (a 409 - edit config.yaml).
   New optional `groups.<g>.child_default` seeds the limits of children auto-provisioned under a
   group (nearest-ancestor-wins).
 - **Per-group read surface (§6d).** `GET /api/v1/admin/groups/{name}/usage` returns the group's
-  DERIVED current-window usage, one row per `(window, pool?)` enforcement bucket its limits
+  **derived** current-window usage, one row per `(window, pool?)` enforcement bucket its limits
   materialize: `{group, enabled, buckets: [{window, pool?, requests, tokens, spend_cents, ...caps
   and budget_remaining_cents...}], as_of}`. Spend is repriced at read time from the token ledger x
   the current `rate_card` (nothing dollar-shaped is stored); `buckets` is empty for a group with
   only a `concurrent` limit. `GET /api/v1/admin/keys?group=<name>` lists the keys bound to a
   group — a leaf group's keys are one person's keys; a team group's are the team's (exact
   bound-group match; no existence check, so dangling references remain findable).
-- **SELF-SERVICE MINT: auto-provision + the delegated `mint` scope.** `POST /api/v1/admin/keys`
-  takes an optional `parent`: when `group` names a leaf that does NOT yet exist and `parent` is an
-  existing group, the leaf is AUTO-PROVISIONED under it (limits stamped from the nearest-ancestor
-  `child_default`, inherit-only when none) through the SAME validate-at-the-door group-write path -
+- **Self-service mint: auto-provision + the delegated `mint` scope.** `POST /api/v1/admin/keys`
+  takes an optional `parent`: when `group` names a leaf that does not yet exist and `parent` is an
+  existing group, the leaf is **auto-provisioned** under it (limits stamped from the nearest-ancestor
+  `child_default`, inherit-only when none) through the **same** validate-at-the-door group-write path -
   so the first self-mint materializes a `user:<sub>` personal budget bucket, binds the key, and the
   new leaf is live in the enforcement chain (`leaf ∩ team ∩ org`). If the group already exists,
   `parent` must match its actual parent (a 409 - a mint never re-homes an existing group). A new
   delegated **`mint`** admin scope lets a customer's self-service portal mint keys (and
-  auto-provision) WITHOUT god-mode `full`. `mint` and `hooks-register` are SIBLINGS, not ladder
+  auto-provision) **without** god-mode `full`. `mint` and `hooks-register` are **siblings**, not ladder
   rungs: a mint credential cannot register hooks and a hooks-register credential cannot mint (the
   authorization check is a diamond lattice, not `>=`). New optional
   `limits.max_keys_per_principal` caps how many keys may bind to one group (= one principal, since a
   user is a leaf group) - an over-cap self-mint is a 409; absent/`0` = unlimited (today's behavior).
-- **Config OVERLAY substrate (`BUSBAR_CONFIG_OVERLAY`).** Admin-API config mutations layer onto a
+- **Config overlay substrate (`BUSBAR_CONFIG_OVERLAY`).** Admin-API config mutations layer onto a
   busbar-owned overlay file (never the operator's base `config.yaml`); the effective config = base
   + overlay, re-merged at boot and re-validated on every hot-apply. Atomic write (temp + rename),
   per-section tombstones for deletions, and a loud refusal to overwrite a corrupt overlay. This is
   what makes the runtime-mutable groups (above) durable across restarts.
-- **Per-section overlay RESET - the audited revert-to-config.yaml front door.**
-  `DELETE /api/v1/admin/overlay/{section}` (section ∈ `groups` | `hooks`) DISCARDS every overlay
+- **Per-section overlay reset - the audited revert-to-config.yaml front door.**
+  `DELETE /api/v1/admin/overlay/{section}` (section ∈ `groups` | `hooks`) **discards** every overlay
   mutation for that one section and reverts it to what base `config.yaml` declares: a `groups` reset
   restores the base limit tree (cost model rebuilt), a `hooks` reset restores base hooks
-  (registry/gates/rewrites rebuilt), each leaving the OTHER section's runtime mutations untouched.
+  (registry/gates/rewrites rebuilt), each leaving the **other** section's runtime mutations untouched.
   Full scope, `If-Match` optimistic concurrency, audited + versioned, and the cleared overlay is
   persisted so the revert survives a restart. A section with no overlay state is an idempotent no-op
   (`changed: false`, version unchanged); an unknown section is a 400. The revert re-reads disk truth
   (the same boot pipeline `config/reload` runs), so an ephemeral busbar with no config files has
   nothing to revert to and 400s.
-- **`auth.role_bindings` NESTED BY MODULE.** `role_bindings.<module>.<role> ->
+- **`auth.role_bindings` nested by module.** `role_bindings.<module>.<role> ->
   { allowed_pools?, group?, admin_scope? }` - pure auth. A role asserted by one module can never
   ride another module's binding (`ad.platform` != `oidc.platform`); an unbound role grants
   nothing (fail closed). Admin access = a role's `admin_scope` (ceilinged by the asserting
   module's `max_admin_scope`) OR the `admin-tokens` operator credential, now a secret reference
   under the module entry itself.
 - **The 1.5.0 cost model: tokens are the ledger, dollars are derived.** The store accumulates an
-  immutable TOKEN LEDGER per (bucket, window, model, tier) - input, output, cache-read,
-  cache-write - and every spend figure (enforcement, admin reads, metrics, hooks) is COMPUTED at
+  immutable **token ledger** per (bucket, window, model, tier) - input, output, cache-read,
+  cache-write - and every spend figure (enforcement, admin reads, metrics, hooks) is **computed** at
   read time as `tokens x rate_card + requests x per_request_fee`. Nothing dollar-shaped is stored
   or crosses the store wire, so correcting a rate is a config edit + reload: historical and
   future derived spend become right on the next read, with no re-billing and no data migration.
-  (Honest limit: repricing cannot un-make PAST admit/reject decisions taken under a wrong rate.)
-- **Top-level `rate_card:` - the ONLY cost source.** Per-model, per-tier token rates in
-  MICRO-units per token of an ABSTRACT cost unit (busbar attaches no currency). ALL-OR-NOTHING:
-  absent = every model's tokens price at 0 (budgets count only `per_request_fee`); present =
-  authoritative and COMPLETE - every configured model must have an entry or boot/`--validate`
+  (Honest limit: repricing cannot un-make **past** admit/reject decisions taken under a wrong rate.)
+- **Top-level `rate_card:` - the only cost source.** Per-model, per-tier token rates in
+  **micro-units** per token of an **abstract** cost unit (busbar attaches no currency).
+  **All-or-nothing:** absent = every model's tokens price at 0 (budgets count only
+  `per_request_fee`); present = authoritative and **complete** - every configured model must have an entry or boot/`--validate`
   fail with a paste-ready zeroed stub. A request for an arbitrary passthrough model with no rate
   is rejected pre-forward. Routing's `cheapest` strategy derives its scalar from the card; pool
   members carry no cost.
@@ -166,13 +171,13 @@ the release's security headline: 1.x keys never expired; 1.5.0 keys are signed t
   `group_map` -> `role_bindings` with inline caps moved into a generated `groups:` entry;
   `api_key_env` -> `api_key: { env: ... }`; member `target` -> `model`; the `hooks:` registry ->
   inline refs; breaker/failover aliases; `price_per_1k_tokens_cents` -> synthesized `rate_card`;
-  `otlp_endpoint` -> `otlp_url`) and prints TODO comments where a human must decide, with a LOUD
-  warning on every `allowed_pools: []` occurrence (its meaning FLIPPED: it used to mean all
+  `otlp_endpoint` -> `otlp_url`) and prints TODO comments where a human must decide, with a **loud**
+  warning on every `allowed_pools: []` occurrence (its meaning **flipped**: it used to mean all
   pools, it now means none). Zero side effects: the new YAML goes to stdout, the change summary
   to stderr.
-- **Loud fail-closed boot on a 1.x config.** Boot AND `--validate` detect the 1.x structural
+- **Loud fail-closed boot on a 1.x config.** Boot and `--validate` detect the 1.x structural
   markers (a `governance:` block, `auth.group_map:`, `auth.mode:`, a top-level `hooks:` block,
-  `*_env` secret fields, `target:` in a pool member) and REFUSE to start: "this looks like a
+  `*_env` secret fields, `target:` in a pool member) and **refuse** to start: "this looks like a
   busbar 1.x config; run `busbar --migrate-config` and review the flagged items." Nothing from
   1.x can boot-and-silently-flip semantics.
 - **Store plugins: durable backends load from a dynamic library, and the default binary is
@@ -185,33 +190,33 @@ the release's security headline: 1.x keys never expired; 1.5.0 keys are signed t
   denylist cluster-shared); the budget hard cap remains per-node between additive flushes
   (documented fleet honesty).
 - **The dynamic plugin system: one signed tarball per plugin, a top-level `plugins.*` block, and
-  a three-phase fail-closed load pipeline.** Store, secret, auth, and hook plugins share ONE
-  artifact format, ONE trust model, ONE loader, discriminated by the manifest `kind`. Phase 1
-  STRUCTURAL (in-memory unpack, manifest completeness, sha256, abi gate - any invalid tarball in
-  an enabled dir aborts boot naming file + reason); phase 2 TRUST (busbar's release key is
-  EMBEDDED - first-party plugins verify with zero config and are auto-floored at the binary's
-  version; `trust.publishers` allowlists third-party ed25519 keys; `trust.allow_unsigned` /
-  `trust.allow_third_party` are EXPLICIT opt-ins, both default `false`, and an untrusted plugin
-  is logged and SKIPPED - never `dlopen`ed); phase 3 CONFLICT (no two loadable plugins share a
-  name/alias). The loader maps EXACTLY the verified bytes (`memfd_create` on Linux; a private
+  a three-phase fail-closed load pipeline.** Store, secret, auth, and hook plugins share **one**
+  artifact format, **one** trust model, **one** loader, discriminated by the manifest `kind`.
+  Phase 1 **structural** (in-memory unpack, manifest completeness, sha256, abi gate - any invalid
+  tarball in an enabled dir aborts boot naming file + reason); phase 2 **trust** (busbar's release
+  key is **embedded** - first-party plugins verify with zero config and are auto-floored at the
+  binary's version; `trust.publishers` allowlists third-party ed25519 keys; `trust.allow_unsigned`
+  / `trust.allow_third_party` are **explicit** opt-ins, both default `false`, and an untrusted
+  plugin is logged and **skipped** - never `dlopen`ed); phase 3 **conflict** (no two loadable
+  plugins share a name/alias). The loader maps **exactly** the verified bytes (`memfd_create` on Linux; a private
   `0700` staging dir elsewhere) - a pre-existing on-disk library is never loaded, closing the
   verify-then-load TOCTOU. `plugins.min_versions` adds per-plugin anti-downgrade floors.
 - **Auth plugins load over the same signed hybrid ABI as store and secret plugins.** A
   `kind: auth` plugin is now a real runtime identity provider: name it in `auth.chain` (anything
   but the built-in `keys`) and the engine resolves it against the plugins directory and loads it
-  IN-PROCESS at boot through `registry.open_auth` — the identical trust posture, loader, and
-  fail-closed pipeline that back store and secret plugins. **STORE, SECRET, AND AUTH plugins now
+  **in-process** at boot through `registry.open_auth` — the identical trust posture, loader, and
+  fail-closed pipeline that back store and secret plugins. **Store, secret, and auth plugins now
   genuinely load over the one signed hybrid ABI** (an earlier note that implied a single loader
   already carried all plugin kinds was ahead of the code for `auth`; it is now true for these
   three). The plugin returns identity only (`Principal` id + roles); busbar maps those roles
-  through `auth.role_bindings.<module>` — keyed by the plugin's RUNTIME `name()` — to pools,
+  through `auth.role_bindings.<module>` — keyed by the plugin's **runtime** `name()` — to pools,
   group limits, and an admin scope capped by `auth.chain.<module>.max_admin_scope`. **Fail-closed
   everywhere:** a configured auth plugin that cannot load (missing/untrusted tarball, wrong kind,
-  `plugins.enabled: false`, or an ABI failure) is a HARD boot/apply error — a dropped front-door
+  `plugins.enabled: false`, or an ABI failure) is a **hard** boot/apply error — a dropped front-door
   module can never silently open the door. `busbar --validate` catches it manifest-only ahead of
   boot, and `GET /api/v1/admin/plugins?type=auth` reports a loaded auth plugin. The bundled
   `oidc` module (`busbar-auth-oidc-plugin`, `auth.chain: [oidc]`) is the first such plugin.
-  **Hook plugins are IN-PROCESS `dlopen` plugins too** (1.5.0 retired the out-of-process
+  **Hook plugins are in-process `dlopen` plugins too** (1.5.0 retired the out-of-process
   socket/webhook hook transports): a hook is now a signed `kind: hook` plugin loaded in-process as a
   routing policy, sharing the same artifact, trust, and inventory machinery as the store/auth plugins.
 - **Admin plugin API.** The admin surface manages the plugin catalog over its own versioned
@@ -222,12 +227,12 @@ the release's security headline: 1.x keys never expired; 1.5.0 keys are signed t
   completeness (zeroed stubs of exactly the missing models), groups tree faults (missing parent
   stub, cycle path, depth), role_bindings module/role checks, secret-module resolvability, key
   group existence, plugin pre-flight (consistency, trust, three-phase scan, store resolution) -
-  the SAME code path boot runs, so a clean `--validate` means a clean boot. New
+  the **same** code path boot runs, so a clean `--validate` means a clean boot. New
   `busbar --list-plugins` prints the manifest-only inventory without loading plugin code.
 - **Limit-dimension metrics.** Scrape-time gauges are keyed by the new enforcement dimensions:
   `busbar_bucket_spend_cents` / `busbar_bucket_budget_remaining_cents` /
   `busbar_bucket_tokens{model,tier}` carry `{bucket, group, window}` labels, one series per
-  (group, window) bucket, all derived from the token ledger at the CURRENT rate card at scrape
+  (group, window) bucket, all derived from the token ledger at the **current** rate card at scrape
   time. Mint-time key `labels` (e.g. `{"team": "growth"}`) echo onto per-key series so external
   dashboards `sum by (team)` without busbar knowing what a team is.
 - **Budget state on the routing hook seam.** `RoutingContext.budget` (and the webhook/socket
@@ -241,7 +246,7 @@ the release's security headline: 1.x keys never expired; 1.5.0 keys are signed t
   `min(cores, 16)` ways (rounded to a power of two) and each worker thread is pinned to one
   shard on first use, so the shared pool lock is contended by ~1/N threads. Warm connections
   and TLS sessions stay worker-local; per-host idle budgets are divided across shards so the
-  TOTAL kept-alive connections are unchanged. The shard count is machine-derived, not
+  **total** kept-alive connections are unchanged. The shard count is machine-derived, not
   configurable.
 - **Semaphore skip for unbounded lanes (perf).** When `max_concurrent` is omitted on a model
   (the default — unbounded), the admission path skips the semaphore's shared atomics entirely.
@@ -252,7 +257,7 @@ the release's security headline: 1.x keys never expired; 1.5.0 keys are signed t
   scrape time, taking span and counter updates off the shared atomic path on every request.
 
 - **Unified plugin model — hooks are `kind: hook` dlopen plugins.** The old socket/webhook hook
-  transport is RETIRED as the only mechanism; hooks now load as signed in-process plugins over the
+  transport is **retired** as the only mechanism; hooks now load as signed in-process plugins over the
   frozen hybrid ABI (the same six kind-neutral symbols: `busbar_abi` / `busbar_plugin_kind` /
   `busbar_open` / `busbar_call` / `busbar_free` / `busbar_close`). Kind is bound at load via the
   signed manifest `kind` field cross-checked against `busbar_plugin_kind()`. Trust is
@@ -290,7 +295,7 @@ the release's security headline: 1.x keys never expired; 1.5.0 keys are signed t
   artifact leaves old plugins serving. `POST /api/v1/admin/plugins/rollback` is an explicit,
   audited, If-Match-guarded rollback (body: `{"file": "<tarball-filename>"}`) that pins a prior
   version and lowers the anti-downgrade floor **only for the operator's action** — automatic silent
-  downgrade stays refused. Both are Full scope and audited. **Store-backend live swap is NOT in
+  downgrade stays refused. Both are Full scope and audited. **Store-backend live swap is not in
   1.5.0**; a store module change still requires a restart.
 
 ### Changed
@@ -301,10 +306,10 @@ the release's security headline: 1.x keys never expired; 1.5.0 keys are signed t
   toolchain has failed for some time. CI has always floated on `dtolnay/rust-toolchain@stable`
   (currently 1.97), so `rust-version` is corrected to match what is actually verified rather than
   an unverified, already-false claim.
-- **THE SEMVER CONTRACT IS REDEFINED (and this is what makes 1.5.0 a minor).** The stable,
-  SemVer-protected contract is the RUNTIME: the data-plane HTTP surface an application
-  integrates against and the six wire-protocol contracts. The `config.yaml` is an OPERATOR
-  deployment artifact (nginx/postgres/envoy precedent), explicitly OUTSIDE the SemVer freeze: it
+- **The SemVer contract is redefined (and this is what makes 1.5.0 a minor).** The stable,
+  SemVer-protected contract is the **runtime**: the data-plane HTTP surface an application
+  integrates against and the six wire-protocol contracts. The `config.yaml` is an **operator**
+  deployment artifact (nginx/postgres/envoy precedent), explicitly **outside** the SemVer freeze: it
   may change between releases, always with a migration path (`busbar --migrate-config`) and a
   loud fail-closed boot on an outdated config - never a silent behavior change. The admin API is
   its own versioned contract (`/api/v1/admin`); a break there is expressed by the admin contract
@@ -328,7 +333,7 @@ the release's security headline: 1.x keys never expired; 1.5.0 keys are signed t
   `key_id` to `bucket_id`, with additive fleet flushes. v3 (this release): `VirtualKey` is pure
   auth - inline limits dropped, `budget_group` renamed `group`, `allowed_pools` re-encoded as
   nullable (C6), and the denylist surface added. sqlite (`PRAGMA user_version`), postgres
-  (`busbar_schema`), and redis (`busbar:schema`) stamp schema v3 and DROP a pre-v3 dev schema on
+  (`busbar_schema`), and redis (`busbar:schema`) stamp schema v3 and drop a pre-v3 dev schema on
   open (1.5.0 unreleased: no stable schema existed to migrate).
 - **Governance is always available; enforcement is in-memory on the request path.** No on/off
   switch: governance is inert until keys exist. The per-request admission is an atomic in-memory
@@ -353,13 +358,13 @@ the release's security headline: 1.x keys never expired; 1.5.0 keys are signed t
   behavior was the bug. If your hook logs or forwards the `prompt` projection somewhere less
   trusted than the hook itself, review that path against reasoning content now being present.
   Opaque redacted reasoning (Anthropic `redacted_thinking`, Bedrock `redactedContent`, a
-  Responses `reasoning` item carrying only an opaque `encrypted_content` blob) is UNAFFECTED by
+  Responses `reasoning` item carrying only an opaque `encrypted_content` blob) is **unaffected** by
   this widening — it still never appears as plaintext, only as the fixed
   `[busbar:redacted_reasoning]` marker.
 
 ### Removed
 
-- **Hooks-as-socket/webhook as the ONLY hook model retired.** The retired out-of-process-only
+- **Hooks-as-socket/webhook as the only hook model retired.** The retired out-of-process-only
   hook model (where every hook ran in a separate process) is replaced by the unified plugin model.
   Socket and webhook persist as built-in transport modules but are no longer the only option.
 - **The `governance:` block.** Its contents dissolved: `governance.store`/`db_path` ->
@@ -370,7 +375,7 @@ the release's security headline: 1.x keys never expired; 1.5.0 keys are signed t
   `advanced`. `governance.enabled` and `governance.budget_on_store_error` are gone (always-on,
   and admission never touches the store).
 - **Static tokens.** The `tokens`/`static-tokens` allowlist module and `auth.client_tokens` are
-  REMOVED. Data-plane auth = the built-in `keys` signed-token verifier + IdP auth modules.
+  **removed**. Data-plane auth = the built-in `keys` signed-token verifier + IdP auth modules.
 - **Per-key limits.** `rpm_limit`, `tpm_limit`, `max_budget_cents`, `budget_period` are gone
   from mint, PATCH, the store schema, and the key metadata: every limit lives on the bound
   group. The per-key `busbar_key_budget_remaining_cents` gauge is gone with them (use the group
@@ -387,21 +392,21 @@ the release's security headline: 1.x keys never expired; 1.5.0 keys are signed t
 
 ### Fixed
 
-- **Budget-cell straddle wipe.** A request straddling a window boundary could rewind a NEWER
+- **Budget-cell straddle wipe.** A request straddling a window boundary could rewind a **newer**
   live budget cell to its older admission window, zeroing the live window's accrued
   tokens/requests and flush baselines; the atomic chain charge and accrual paths now only reset
   genuinely stale cells.
 - **Derived-spend integer wrap.** An adversarially large ledger (u64-scale tokens x a large
-  configured rate) could push the cent total past `i64::MAX` and wrap NEGATIVE, deriving as free
+  configured rate) could push the cent total past `i64::MAX` and wrap **negative**, deriving as free
   and bypassing every budget cap; derivation now saturates at `i64::MAX` (blocks, fail-closed).
 - **Requests-limit refund escape.** The flat per-request fee bills 2xx only (a non-2xx outcome
   refunds it), while the `requests` limit counts admissions. Backing both with one counter would
-  let a caller escape the requests cap by hammering FAILING requests (each refunds its own slot,
+  let a caller escape the requests cap by hammering **failing** requests (each refunds its own slot,
   so the cap only ever counted successes). The ledger now tracks the admission count (never
   refunded, the requests-limit truth) separately from the billable count (the fee base, refunded
   on non-2xx).
 - **Boot fail-open on budget hydration.** A store error while hydrating accrued ledgers at boot
-  silently started with EMPTY cells (a maxed-out key could spend its whole cap again); boot now
+  silently started with **empty** cells (a maxed-out key could spend its whole cap again); boot now
   fails loudly instead of resuming unenforced.
 - **Bucket-namespace collisions.** IdP-influenced principal ids shaped like `vk_...` or
   `group:...` could alias a real key's or group's ledger bucket; both prefixes are reserved and
@@ -432,7 +437,7 @@ the release's security headline: 1.x keys never expired; 1.5.0 keys are signed t
   a mandatory expiry (default 90 days), stateless verification, and a durable revocation
   denylist that is enforced fleet-wide and survives restarts. Rotating the signing key revokes
   everything at once. Upgrading forces the rotation.
-- **Plugin supply-chain hardening.** Untrusted plugin code is NEVER executed: unsigned,
+- **Plugin supply-chain hardening.** Untrusted plugin code is **never** executed: unsigned,
   tampered, or unknown-publisher tarballs are logged and skipped without being `dlopen`ed
   (`trust.allow_unsigned` / `trust.allow_third_party` are explicit opt-ins, both default
   `false` - safe by default). The loader maps exactly the verified bytes (memfd / private
@@ -446,7 +451,7 @@ the release's security headline: 1.x keys never expired; 1.5.0 keys are signed t
   only stops the newline-based breakout; a value containing a bare `,`, `"`, or `'` could still
   splice extra structure into a YAML flow collection (`{ }` / `[ ]`, e.g. this project's own
   documented `client_tokens: [ "${VAR}" ]` pattern) or an opaque `settings:` map with no newline at
-  all — a flow SEQUENCE has no schema defense against an extra element, and a generic
+  all — a flow **sequence** has no schema defense against an extra element, and a generic
   `serde_json::Map` settings block has no `deny_unknown_fields` equivalent against an injected
   sibling key. Rather than enumerate more forbidden characters (which is both under-inclusive —
   misses anchor/alias redefinition — and over-inclusive — breaks legitimate LDAP DNs, JSON blobs,
@@ -464,7 +469,7 @@ the release's security headline: 1.x keys never expired; 1.5.0 keys are signed t
   point silently passing content it was deployed to inspect. Two of the three paths need no
   forged/valid signature at all to reach the provider: Bedrock's writer has no unsigned-drop
   filter (unlike Anthropic's egress path), and the Responses reader admits a `reasoning` item on
-  EITHER real text OR a non-empty `encrypted_content` blob alone. All three now route through a
+  **either** real text **or** a non-empty `encrypted_content` blob alone. All three now route through a
   protocol-dispatched extractor (keyed on the parsed ingress protocol, not on which JSON field
   happens to be present) and are projected/counted like any other text. Opaque redacted reasoning
   (`redacted_thinking`/`redactedContent`, which busbar cannot decrypt) is never exposed as
@@ -473,7 +478,7 @@ the release's security headline: 1.x keys never expired; 1.5.0 keys are signed t
   itself still a bypass after the above: a `reasoning` item admitted purely on its opaque
   `encrypted_content` blob (no `content[]`/`summary[]` text at all) produced an empty string from
   the text extractor and read as "nothing here" instead of the redacted-reasoning marker, and
-  separately, `content: []` (present but an EMPTY array, not absent) on a `reasoning` item bypassed
+  separately, `content: []` (present but an **empty** array, not absent) on a `reasoning` item bypassed
   the reasoning-item dispatch in both `total_text_chars` and `build_prompt_projection` entirely
   (it took the empty-array walk instead of ever reaching the reasoning extractor). Both are now
   fixed: the extractor treats an `encrypted_content`-only item the same as the other two
@@ -530,9 +535,9 @@ the release's security headline: 1.x keys never expired; 1.5.0 keys are signed t
   `TooManyRequests`/`QuotaExceeded`/`LimitExceeded`-in-a-400 quirk is handled by the catalog `error_map`.
 
   The support surface is now **6 protocols × 6 auth mechanisms**. To be clear on direction: these are
-  **egress** auth mechanisms: how Busbar authenticates OUTWARD to each upstream AI provider (Busbar →
+  **egress** auth mechanisms: how Busbar authenticates **outward** to each upstream AI provider (Busbar →
   provider), configured per provider in `providers.yaml`. They are unrelated to how clients authenticate
-  INWARD to Busbar (client → Busbar), which is the separate `auth:` client-token / virtual-key layer. Any
+  **inward** to Busbar (client → Busbar), which is the separate `auth:` client-token / virtual-key layer. Any
   upstream speaking one of the six wire protocols and one of the six egress auth styles is a config entry,
   no code change.
 
@@ -570,14 +575,14 @@ the release's security headline: 1.x keys never expired; 1.5.0 keys are signed t
   unchanged on the system allocator and do not get the plateau/fall-back-to-idle behavior.
 - `ring` and `base64` are now direct dependencies (both were already in the lockfile via rustls), used for
   the RS256 JWT signature and the PKCS#8/base64url handling in `jwt-bearer`. No new crates enter the tree.
-- Streaming: for a cross-protocol stream whose backend reports token usage in a SEPARATE trailing chunk
-  (the OpenAI `include_usage` convention), the terminal usage frame is now DEFERRED and the trailing usage
+- Streaming: for a cross-protocol stream whose backend reports token usage in a **separate** trailing chunk
+  (the OpenAI `include_usage` convention), the terminal usage frame is now **deferred** and the trailing usage
   folded into it, so a non-OpenAI client (Anthropic/Gemini/Cohere/Responses) receives the real prompt/
   completion counts on its terminal frame instead of zeros. Delivery is uniform across the SSE and
   gemini-json-array paths (the response body now streams `finish()`'s content through the json-array framer,
   which previously discarded it). Behavior-preserving for OpenAI ingress (which still receives the separate
   usage chunk) and Bedrock ingress (which carries usage in its `metadata` frame). **Wire-shape note:** a
-  Gemini JSON-array (non-SSE) client on a cross-protocol stream now receives one ADDITIONAL trailing array
+  Gemini JSON-array (non-SSE) client on a cross-protocol stream now receives one **additional** trailing array
   element carrying the terminal `usageMetadata` that 1.3.0 silently dropped, spec-correct for native Gemini
   streaming, but a client that counted or hashed raw array elements will see N+1 elements.
 - **Upgrade hint for the removed `auth.mode:` key.** A config that still carries the pre-`auth.chain`
@@ -593,13 +598,13 @@ the release's security headline: 1.x keys never expired; 1.5.0 keys are signed t
   behind a deleted key. The Redis store also gains transparent one-shot reconnect after a dropped
   connection, `rediss://` TLS support (rustls), and password scrubbing in error strings; its
   unbounded no-TTL growth posture is documented (retention is the operator's schedule).
-- **Fleet-budget flushes are ADDITIVE.** The write-behind usage flush now writes the DELTA since
+- **Fleet-budget flushes are additive.** The write-behind usage flush now writes the **delta** since
   the last acknowledged flush (`Store::add_usage`, atomic accumulate in every backend) instead of
-  an absolute overwrite, so multiple nodes sharing one durable store SUM to the true fleet total
+  an absolute overwrite, so multiple nodes sharing one durable store **sum** to the true fleet total
   instead of last-writer-wins clobbering each other.
 
-- **Security: OAuth egress SSRF hardening (config-time AND runtime):** the `token_url` a
-  `oauth-client-credentials` provider POSTs the client secret to now runs through the SAME SSRF/cloud-metadata
+- **Security: OAuth egress SSRF hardening (config-time and runtime):** the `token_url` a
+  `oauth-client-credentials` provider POSTs the client secret to now runs through the **same** SSRF/cloud-metadata
   denylist and case-insensitive https requirement as `base_url` (previously only a case-sensitive `http://`
   check with NO metadata guard, so a typo'd/templated `token_url` pointing at IMDS or
   `metadata.google.internal` could leak the secret). Additionally: (a) both self-minting OAuth clients
@@ -609,8 +614,8 @@ the release's security headline: 1.x keys never expired; 1.5.0 keys are signed t
   saw; (b) the `jwt-bearer` service-account `token_uri` now gets the same https + metadata denylist vetting as
   `token_url`; and (c) `busbar --validate` now dry-run-validates a `jwt-bearer` credential's SA JSON + PKCS#8
   key (when the env var is set), instead of surfacing malformed key material only at boot/apply.
-- An aborted cross-protocol **gemini JSON-array** stream now emits exactly ONE trailing error element (a
-  mid-cycle change had it wrap the native error frame AND append a second one). `busbar --validate` no longer
+- An aborted cross-protocol **gemini JSON-array** stream now emits exactly **one** trailing error element (a
+  mid-cycle change had it wrap the native error frame and append a second one). `busbar --validate` no longer
   reports false errors on a config that env-templates its `base_url` / `token_url` (`${VAR}`) when the variable
   is unset (a Lenient-mode placeholder was failing the URL/https checks it will pass at boot). Streaming
   Cohere→X hops now preserve `message.tool_plan` (the pre-tool-call reasoning), matching the non-stream path.
@@ -724,13 +729,13 @@ instead.
 ### Added
 
 - **FinOps metering, built for third parties.** `GET /api/v1/admin/usage` reports per-model and per-key
-  consumption as the RAW token split (input / output / cache-read / cache-creation, each prices differently)
+  consumption as the **raw** token split (input / output / cache-read / cache-creation, each prices differently)
   in fixed UTC-day buckets, with `spend_micros` (micro-USD, integer math) derived at read time from your
   configured prices. Busbar exposes the inputs of cost, not just its own number, so a consumer with negotiated
   per-model pricing reconstructs cost exactly from the split. `?window=` selects past buckets; over-cap key
   lists carry an `others` remainder so every unit stays attributable; `window`/`as_of`/`currency` label the
   numbers.
-- **Hooks are control-plane citizens.** A hook self-reports its OBSERVED settings and its own operational
+- **Hooks are control-plane citizens.** A hook self-reports its **observed** settings and its own operational
   metrics over the new `status` wire message, and `GET /api/v1/admin/hooks/{name}/status` surfaces it with a
   desired-vs-reported drift verdict, so a dashboard built on Busbar sees what every plug is doing without
   each hook needing its own dashboard.
@@ -938,12 +943,12 @@ unchanged: it is simply the first operation now, not a special case.
   `thinking.budget_tokens` and Gemini `thinkingConfig.thinkingBudget` (token budgets). Number to number is a
   straight copy (a Claude/Gemini thinking pool loses nothing); words and numbers convert through a
   configurable effort table (`limits.reasoning_effort_budgets`, defaults 1024/4096/8192/16384). Because
-  thinking support is per-MODEL, not per-protocol, the carry is **gated by an operator flag**: `reasoning:
+  thinking support is per-**model**, not per-protocol, the carry is **gated by an operator flag**: `reasoning:
   true` on a model (overridable per pool member) declares "this backend accepts thinking params". Without the
   flag the ask is dropped at the seam with a warn and the request proceeds normally, so a non-reasoning model
   can never 400 from translation. Budgets are clamped to fit `max_tokens` (Anthropic requires it), and
   Anthropic-incompatible sampling knobs (temperature, top_k) are omitted with a warn when thinking is emitted.
-  The response-side thinking CONTENT was already lossless and is unaffected. Gemini's dynamic `-1` round-trips
+  The response-side thinking **content** was already lossless and is unaffected. Gemini's dynamic `-1` round-trips
   to Gemini and projects elsewhere as `medium`.
 
 ### Changed
