@@ -10,11 +10,12 @@
 #   out" comment in .github/workflows/release.yml) load into a REAL busbar binary, that busbar
 #   serves REAL HTTP traffic through each backend exactly the way docs/getting-started.md and
 #   docs/configuration.md tell an operator to configure it, and that keys/usage genuinely
-#   SURVIVE A PROCESS RESTART against sqlite, postgres, and redis. It builds real artifacts,
-#   spins up real `docker run` postgres/redis servers with real readiness probes (no fixed
-#   sleeps), mints a real virtual key over the real admin API, drives a real chat-completion
-#   request through a real (if minimal) mock upstream, and asserts real response bodies and
-#   real usage counters — not just exit codes.
+#   SURVIVE A PROCESS RESTART against sqlite and postgres. It builds real artifacts, spins up a
+#   real `docker run` postgres server with a real readiness probe (no fixed sleeps), mints a real
+#   virtual key over the real admin API, drives a real chat-completion request through a real (if
+#   minimal) mock upstream, and asserts real response bodies and real usage counters — not just
+#   exit codes. (Redis's own real-ABI + real-persistence proof now lives in its own repo — see
+#   Phase 3 below.)
 #
 # WHAT THIS DOES NOT TEST
 #   - Store-sqlite's hermetic in-process dlopen path — that's a separate, parallel test.
@@ -26,6 +27,13 @@
 #     crates/plugin-loader/src/lib.rs), which stands up a real local JWKS server + a real minted
 #     JWT and drives the plugin through the real ABI. This script just runs that suite as a gate
 #     rather than reinventing a second, lower-quality fake-IdP proof (see Phase 5 below).
+#   - Redis's real-ABI + real-persistence proof — store-redis now lives entirely in its own repo
+#     (GetBusbar/store-redis, a same-repo 2-crate workspace bringing 100% of its own logic +
+#     adapter). That repo's own tests/e2e.rs already dlopens the real cdylib against a real
+#     redis:7, writes through it, closes + reopens the plugin, and independently verifies via the
+#     plain busbar-store-redis lib crate — genuine, hermetic, real-Redis coverage. This script
+#     sibling-checks-out that repo and runs its suite as a gate (Phase 3 below) rather than
+#     reinventing a second, lower-quality proof in-tree.
 #
 # WHEN TO RUN
 #   Pre-tag / pre-push, NOT on every commit. This is release infrastructure, not part of the
@@ -202,13 +210,15 @@ PACK_BIN="${REPO_ROOT}/target/release/busbar-plugin-pack"
 ok "busbar binary: $BUSBAR_BIN"
 ok "busbar-plugin-pack: $PACK_BIN"
 
-# ── Build + pack every store plugin + the auth-oidc plugin, in the same host-native/unsigned
-#    shape each plugin's own standalone-repo release workflow packs it (busbarAI's release.yml
-#    itself no longer builds or packs these — it only ships the busbar binary + the bundled hook
-#    plugins now; see the "Store/auth plugin releases moved out" comment there). ──────────────────
-phase "Phase 0b: build + pack store-sqlite / store-postgres / store-redis / auth-oidc plugin tarballs"
+# ── Build + pack every store plugin still in-tree + the auth-oidc plugin, in the same
+#    host-native/unsigned shape each plugin's own standalone-repo release workflow packs it
+#    (busbarAI's release.yml itself no longer builds or packs these — it only ships the busbar
+#    binary + the bundled hook plugins now; see the "Store/auth plugin releases moved out" comment
+#    there). store-redis is built from its own sibling checkout in Phase 3 below, not here — it
+#    fully owns its logic crate now. ──────────────────────────────────────────────────────────────
+phase "Phase 0b: build + pack store-sqlite / store-postgres / auth-oidc plugin tarballs"
 cargo build --release \
-  -p busbar-store-sqlite-plugin -p busbar-store-postgres-plugin -p busbar-store-redis-plugin \
+  -p busbar-store-sqlite-plugin -p busbar-store-postgres-plugin \
   -p busbar-auth-oidc-plugin
 
 pack_store_plugin() {
@@ -227,7 +237,6 @@ pack_store_plugin() {
 }
 pack_store_plugin sqlite
 pack_store_plugin postgres
-pack_store_plugin redis
 
 auth_lib="${REPO_ROOT}/target/release/${LIBPREFIX}busbar_auth_oidc_plugin.${LIBEXT}"
 [ -f "$auth_lib" ] || { echo "missing built cdylib: $auth_lib" >&2; exit 1; }
@@ -430,28 +439,43 @@ else
   ok "Postgres phase complete: elapsed=${SECONDS}s"
   docker rm -f "$PG_CONTAINER" >/dev/null 2>&1 || true
 
-  # ── Phase 3: Redis ─────────────────────────────────────────────────────────────────────────────
-  phase "Phase 3: store-redis-plugin — real redis:7 container, real busbar, restart durability"
-  REDIS_CONTAINER="busbar-release-check-redis-$$"
-  DOCKER_CONTAINERS+=("$REDIS_CONTAINER")
-  docker run -d --rm --name "$REDIS_CONTAINER" -p 16379:6379 redis:7 >/dev/null
-  echo "  waiting for redis to accept connections (redis-cli ping inside the container)..."
-  waited=0
-  until [ "$(docker exec "$REDIS_CONTAINER" redis-cli ping 2>/dev/null)" = "PONG" ]; do
-    waited=$((waited + 1))
-    if [ "$waited" -ge 60 ]; then
-      echo "redis did not become ready within 60s" >&2
-      docker logs "$REDIS_CONTAINER" || true
-      exit 1
-    fi
-    sleep 1
-  done
-  ok "redis ready after ${waited}s"
-  run_store_backend_e2e "redis" "redis" \
-    "{ url: \"redis://127.0.0.1:16379\" }" \
-    18100 18101 18099
-  ok "Redis phase complete: elapsed=${SECONDS}s"
-  docker rm -f "$REDIS_CONTAINER" >/dev/null 2>&1 || true
+  # ── Phase 3: Redis — sibling checkout; store-redis now owns 100% of its own logic + real-ABI
+  #    + real-persistence proof ───────────────────────────────────────────────────────────────────
+  phase "Phase 3: store-redis — sibling checkout: real dlopen ABI + real-Redis proof via its own test suite"
+  STORE_REDIS_SRC="${REPO_ROOT}/../store-redis"
+  if [ -d "$STORE_REDIS_SRC" ]; then
+    note "store-redis no longer lives in-tree — it brings 100% of what it needs in its own repo, a"
+    note "same-repo 2-crate workspace (busbar-store-redis + busbar-store-redis-plugin). Its own"
+    note "store-redis-plugin/tests/e2e.rs dlopens the REAL cdylib against a REAL redis:7, writes"
+    note "through it over the C ABI, closes + reopens the plugin, and independently re-verifies via"
+    note "the plain busbar-store-redis lib crate — genuine, hermetic, real-Redis coverage. Running"
+    note "its own workspace test suite here (rather than reinventing a second, lower-quality proof"
+    note "in this repo) is the correct release-gate check for this plugin."
+    REDIS_CONTAINER="busbar-release-check-redis-$$"
+    DOCKER_CONTAINERS+=("$REDIS_CONTAINER")
+    docker run -d --rm --name "$REDIS_CONTAINER" -p 16379:6379 redis:7 >/dev/null
+    echo "  waiting for redis to accept connections (redis-cli ping inside the container)..."
+    waited=0
+    until [ "$(docker exec "$REDIS_CONTAINER" redis-cli ping 2>/dev/null)" = "PONG" ]; do
+      waited=$((waited + 1))
+      if [ "$waited" -ge 60 ]; then
+        echo "redis did not become ready within 60s" >&2
+        docker logs "$REDIS_CONTAINER" || true
+        exit 1
+      fi
+      sleep 1
+    done
+    ok "redis ready after ${waited}s"
+    REDIS_URL="redis://127.0.0.1:16379" cargo test --release \
+      --manifest-path "${STORE_REDIS_SRC}/Cargo.toml" --workspace -- --nocapture
+    ok "Redis real-ABI + real-persistence plugin tests passed (sibling checkout)"
+    docker rm -f "$REDIS_CONTAINER" >/dev/null 2>&1 || true
+  else
+    echo "SKIP: ../store-redis not present as a sibling checkout on this machine." >&2
+    echo "Gate incomplete — Redis coverage could not run. Check out ../store-redis for full" >&2
+    echo "coverage before tagging, or confirm that repo's own CI is green." >&2
+    STORE_REDIS_SKIPPED=1
+  fi
 fi
 
 # ── Phase 4: OIDC — proof already lives in the real test suite; run it as a gate, not a duplicate ──
@@ -530,7 +554,14 @@ fi
 
 phase "RELEASE GATE PASSED"
 echo "Total elapsed: ${SECONDS}s"
-echo "SQLite, Postgres, Redis, and OIDC phases all passed with real assertions."
+echo "SQLite, Postgres, and OIDC phases all passed with real assertions."
+if [ -n "${STORE_REDIS_SKIPPED:-}" ]; then
+  echo "NOTE: ../store-redis was not present locally — Redis coverage was skipped, not passed. Run"
+  echo "on a machine with ../store-redis checked out for full coverage before tagging, or confirm"
+  echo "that repo's own CI is green."
+else
+  echo "Redis phase passed with real assertions (sibling checkout)."
+fi
 if [ ! -d "$HEADROOM_SRC" ] || [ ! -d "$WEBREQUEST_SRC" ]; then
   echo "NOTE: one or both hook-plugin sibling repos were not present locally — that phase was"
   echo "partially or fully skipped. Run on a machine with ../headroom-hook and ../webrequest-hook"
