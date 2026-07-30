@@ -61,8 +61,8 @@ Metrics are **off unless you ask for them.** With no `metrics:` block busbar ins
 
 ```yaml
 metrics:
-  buffer_seconds: 60      # REQUIRED — how many seconds of observations to retain
-  key_gauge_limit: 500    # optional (default 500)
+  buffer_seconds: 60       # REQUIRED — how many seconds of observations to retain
+  key_gauge_limit: 2000    # optional (default 2000)
 ```
 
 `buffer_seconds` is the retention window. Busbar folds buffered observations into their aggregate form on a timer and drops anything older, so:
@@ -72,6 +72,8 @@ metrics:
 * **memory is bounded by the window, not by uptime.** Retention is one window's traffic, whether or not anything ever scrapes you.
 
 There is no default because the right value is a memory-for-fidelity trade only you can make: every second of buffer holds that second's raw observations in memory (at very high request rates, a few MB per second). Pick the window your dashboards actually query. `buffer_seconds: 0` is rejected at boot — it would retain nothing while still paying the recording cost; omit the whole block instead.
+
+`key_gauge_limit` bounds the per-key gauge series (e.g. `busbar_key_spend_cents{key="…"}`) emitted on a single `/metrics` scrape. A fleet with many virtual keys can otherwise produce one time series per key, unbounded — Prometheus cardinality that never shrinks back down. Busbar emits at most `key_gauge_limit` per-key series per scrape (highest-spend keys first) and logs a warning when it truncates; aggregate totals (`_sum`, `_count`) are never affected, only the per-key breakdown. Raise it if your dashboards need finer per-key visibility than the default gives at your key count; the trade is the same one `buffer_seconds` makes — more fidelity for more memory and scrape payload.
 
 Scraping is not required for correctness. A gateway with metrics enabled and nothing scraping it retains one `buffer_seconds` window and no more.
 
