@@ -380,9 +380,10 @@ signing identity, but the *release* it ships from depends on the plugin:
   own release workflow. Download the tarball for the backend you need from *that plugin's own*
   GitHub Release, not from busbar's.
 - **Hook plugins** (`busbar-headroom`, `busbar-webrequest`) also live in their own repos
-  (`GetBusbar/headroom-hook`, `GetBusbar/webrequest-hook`), but busbar's own release additionally
-  builds them from those sources and re-publishes signed tarballs on busbar's own GitHub Release,
-  for operator convenience — see [Hook plugins](#hook-plugins-kind-hook) above.
+  (`GetBusbar/headroom-hook`, `GetBusbar/webrequest-hook`) with their own CI and release workflow —
+  same as every other kind. Busbar's own release no longer builds or re-publishes any plugin
+  tarball, hook or otherwise: download the tarball for the plugin you need from *that plugin's own*
+  GitHub Release, not from busbar's.
 
 Regardless of which repo's Release page a tarball comes from, release binaries embed the matching
 public key, so every first-party plugin verifies with zero configuration — the signature is what

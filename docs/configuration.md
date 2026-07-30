@@ -749,7 +749,7 @@ Two spellings per entry:
   on_empty?, prompt?, user?, priority?, at? }`. `module:` names a loaded `kind: hook` plugin by
   its signed-manifest name/alias (1.5.0 retired the built-in `socket`/`webhook` transports; a hook
   is now always a signed plugin). Out-of-process forwarding to an HTTPS sidecar is the first-party
-  `busbar-webrequest-hook` plugin (`settings.url`). Any module ref requires `plugins.enabled: true`
+  `busbar-webrequest` plugin (`settings.url`). Any module ref requires `plugins.enabled: true`
   and the tarball installed in `plugins.dir`.
 
 ```yaml
@@ -758,7 +758,7 @@ pools:
   smart:
     hooks:
       - cheapest                                       # base ordering strategy
-      - { module: busbar-webrequest-hook, settings: { url: "https://router.internal/rank" },
+      - { module: busbar-webrequest, settings: { url: "https://router.internal/rank" },
           kind: gate, timeout_ms: 5, on_error: nothing }
     members:
       - model: claude-sonnet-4-5
@@ -777,7 +777,7 @@ pools:
         tags: ["cheap"]
 
 global_hooks:                                          # fire on EVERY request, ordered
-  - { module: busbar-webrequest-hook, settings: { url: "https://sidecar.internal/pii" },
+  - { module: busbar-webrequest, settings: { url: "https://sidecar.internal/pii" },
       kind: gate, timeout_ms: 5, on_error: reject, prompt: ro }
 ```
 
@@ -797,7 +797,7 @@ global_hooks:                                          # fire on EVERY request, 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `kind` | `tap` \| `gate` | `gate` in a pool list, `tap` in `global_hooks` | `gate` = fire-and-wait (may rank/reject/restrict/rewrite); `tap` = fire-and-forget observation. |
-| `settings` | map | `{}` | The plugin's own opaque config, pushed to it via the `configure` wire message. For the first-party `busbar-webrequest-hook`, `settings.url` is the sidecar endpoint (SSRF-guarded: loopback allowed; RFC-1918/CGNAT/link-local/metadata blocked; remote must be `https://`). |
+| `settings` | map | `{}` | The plugin's own opaque config, pushed to it via the `configure` wire message. For the first-party `busbar-webrequest`, `settings.url` is the sidecar endpoint (SSRF-guarded: loopback allowed; RFC-1918/CGNAT/link-local/metadata blocked; remote must be `https://`). |
 | `timeout_ms` | integer | `1` | Hard wall-clock deadline for a gate decision. Raise it when the hook does I/O. On timeout the decision is coerced to `on_error`. |
 | `on_error` | keyword or ref | `nothing` | Fallback when a gate times out / errors / saturates: a bare terminal (`nothing` \| `weighted` \| `reject` \| `first`) or a structured hook reference `{ hook: <name> }` (a chain, proven terminating at boot). A gate's deliberate `reject` reply is a decision, not a failure. |
 | `on_empty` | string | `reject` | A restrict gate's empty-intersection behavior: `reject` (fail closed, 503) or `weighted` (advisory escape). |
@@ -1392,7 +1392,7 @@ Busbar validates the merged config before accepting any traffic. Fatal errors ab
 | Pool `hooks:` bare name not a built-in strategy | An out-of-process hook is an inline `{ module: ... }` ref; bare names are only `weighted`/`cheapest`/`fastest`/`least_busy`/`usage` |
 | Unknown hook module | An inline ref's `module` does not resolve to a loaded `kind: hook` plugin (by manifest name/alias) |
 | Hook plugin subsystem disabled | An inline ref names a plugin while `plugins.enabled` is false, or the tarball is not installed in `plugins.dir` |
-| Hook `busbar-webrequest-hook` SSRF-blocked | RFC-1918, CGNAT, link-local, and metadata hosts are blocked in its `settings.url` (loopback allowed; remote must be `https://`) |
+| Hook `busbar-webrequest` SSRF-blocked | RFC-1918, CGNAT, link-local, and metadata hosts are blocked in its `settings.url` (loopback allowed; remote must be `https://`) |
 | `prompt: rw` on a `kind: tap` hook | A tap observes; it can never rewrite |
 | Groups tree faults | A `parent` that does not exist (paste-ready stub), a cycle (the path is printed), or a chain deeper than 8 |
 | Malformed group limit | A limit without exactly one metric key, a windowed metric without `per:`, or `concurrent` with a `per:` |
