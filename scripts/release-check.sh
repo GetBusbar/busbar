@@ -17,7 +17,9 @@
 #   real usage counters — not just exit codes.
 #
 # WHAT THIS DOES NOT TEST
-#   - Store-sqlite's hermetic in-process dlopen path — that's a separate, parallel test.
+#   - Store-sqlite's hermetic in-process dlopen path — that's a separate, parallel test, and now
+#     lives entirely in store-sqlite's own repo (GetBusbar/store-sqlite, a same-repo 2-crate
+#     workspace) — see Phase 1 below for how this script reaches it via a sibling checkout.
 #   - The release-SIGNING pipeline (BUSBAR_SIGN_KEY) — out of scope by design. Every tarball
 #     here is packed with `--allow-unsigned`, exactly like CI's fallback path when the signing
 #     secret isn't provisioned (see the TODO(release-keys) seam in release.yml).
@@ -39,10 +41,14 @@
 #     the script still exits non-zero, because "gate incomplete" must never look like "gate green".
 #   - python3 (stdlib only) — used for a tiny local mock upstream server. No network access
 #     beyond localhost and the Docker daemon is required.
-#   - Optionally, sibling checkouts `../headroom-hook` and `../webrequest-hook` next to this
-#     repo (GetBusbar/headroom-hook, GetBusbar/webrequest-hook) for the hook-plugin --validate
-#     phase. If absent, that phase is skipped loudly and does not fail the gate (documented,
-#     matches the task's explicit instruction not to fail the whole run over a missing sibling).
+#   - Optionally, sibling checkouts `../store-sqlite`, `../headroom-hook`, and `../webrequest-hook`
+#     next to this repo (GetBusbar/store-sqlite, GetBusbar/headroom-hook,
+#     GetBusbar/webrequest-hook). store-sqlite has been fully extracted — its own repo now owns
+#     100% of its logic + release-gate proof (see that repo's own CI). If `../store-sqlite` is
+#     present, Phase 1 below builds the plugin cdylib from it and runs the same real-HTTP +
+#     restart-durability proof busbar has always run for its store backends. If absent, Phase 1 is
+#     skipped loudly and does not fail the gate (documented, matches the headroom-hook /
+#     webrequest-hook sibling-checkout pattern below).
 #
 # USAGE
 #   scripts/release-check.sh                # run every phase
@@ -202,13 +208,15 @@ PACK_BIN="${REPO_ROOT}/target/release/busbar-plugin-pack"
 ok "busbar binary: $BUSBAR_BIN"
 ok "busbar-plugin-pack: $PACK_BIN"
 
-# ── Build + pack every store plugin + the auth-oidc plugin, in the same host-native/unsigned
-#    shape each plugin's own standalone-repo release workflow packs it (busbarAI's release.yml
-#    itself no longer builds or packs these — it only ships the busbar binary + the bundled hook
-#    plugins now; see the "Store/auth plugin releases moved out" comment there). ──────────────────
-phase "Phase 0b: build + pack store-sqlite / store-postgres / store-redis / auth-oidc plugin tarballs"
+# ── Build + pack every store plugin still in-tree + the auth-oidc plugin, in the same
+#    host-native/unsigned shape each plugin's own standalone-repo release workflow packs it
+#    (busbarAI's release.yml itself no longer builds or packs these — it only ships the busbar
+#    binary + the bundled hook plugins now; see the "Store/auth plugin releases moved out" comment
+#    there). store-sqlite is built from its own sibling checkout in Phase 1 below, not here — it
+#    fully owns its logic crate now. ─────────────────────────────────────────────────────────────
+phase "Phase 0b: build + pack store-postgres / store-redis / auth-oidc plugin tarballs"
 cargo build --release \
-  -p busbar-store-sqlite-plugin -p busbar-store-postgres-plugin -p busbar-store-redis-plugin \
+  -p busbar-store-postgres-plugin -p busbar-store-redis-plugin \
   -p busbar-auth-oidc-plugin
 
 pack_store_plugin() {
@@ -225,7 +233,6 @@ pack_store_plugin() {
     --allow-unsigned
   ok "packed busbar-store-${store}"
 }
-pack_store_plugin sqlite
 pack_store_plugin postgres
 pack_store_plugin redis
 
@@ -388,11 +395,39 @@ EOF
   wait "$pid2" 2>/dev/null || true
 }
 
-# ── Phase 1: SQLite (dockerless, fastest feedback loop) ─────────────────────────────────────────────
-phase "Phase 1: store-sqlite-plugin — real busbar, real HTTP traffic, real restart durability"
-SQLITE_DB="$(new_tmpdir)/governance.db"
-run_store_backend_e2e "sqlite" "sqlite" "{ db_path: \"${SQLITE_DB}\" }" 18080 18081 18079
-ok "SQLite phase complete: $(date -u +%H:%M:%S) elapsed=${SECONDS}s"
+# ── Phase 1: SQLite — sibling checkout; store-sqlite now owns 100% of its own logic + release
+#    proof. Its own release-check-equivalent lives in ITS repo/CI; this script's job is only to
+#    prove busbar's real HTTP + restart-durability story against it when the sibling is available
+#    locally (dockerless, fastest feedback loop of the three backends). ────────────────────────────
+STORE_SQLITE_SRC="${REPO_ROOT}/../store-sqlite"
+if [ -d "$STORE_SQLITE_SRC" ]; then
+  phase "Phase 1: store-sqlite-plugin — sibling checkout: real busbar, real HTTP traffic, real restart durability"
+  note "store-sqlite no longer lives in-tree — it brings 100% of what it needs in its own repo, a"
+  note "same-repo 2-crate workspace (busbar-store-sqlite + busbar-store-sqlite-plugin). Its own"
+  note "store-sqlite-plugin/tests/e2e.rs already covers the hermetic in-process dlopen ABI path."
+  note "This phase builds the plugin cdylib from the sibling checkout and drives it through busbar's"
+  note "real end-to-end HTTP + restart-durability story, the same as every other store backend here."
+  cargo build --release --manifest-path "${STORE_SQLITE_SRC}/Cargo.toml" -p busbar-store-sqlite-plugin
+  SQLITE_LIB="${STORE_SQLITE_SRC}/target/release/${LIBPREFIX}busbar_store_sqlite_plugin.${LIBEXT}"
+  [ -f "$SQLITE_LIB" ] || { echo "missing built cdylib: $SQLITE_LIB" >&2; exit 1; }
+  "$PACK_BIN" pack \
+    --lib "$SQLITE_LIB" \
+    --name "busbar-store-sqlite" --alias "sqlite" --kind store \
+    --version "$VER" --publisher busbar \
+    --description "busbar sqlite governance store plugin" \
+    --license Apache-2.0 \
+    --out "${PLUGIN_DIST}/busbar-store-sqlite-${VER}-local.tar.gz" \
+    --allow-unsigned
+  ok "packed busbar-store-sqlite (sibling checkout)"
+  SQLITE_DB="$(new_tmpdir)/governance.db"
+  run_store_backend_e2e "sqlite" "sqlite" "{ db_path: \"${SQLITE_DB}\" }" 18080 18081 18079
+  ok "SQLite phase complete: $(date -u +%H:%M:%S) elapsed=${SECONDS}s"
+else
+  echo "SKIP: ../store-sqlite not present as a sibling checkout on this machine." >&2
+  echo "Gate incomplete — SQLite coverage could not run. Check out ../store-sqlite for full" >&2
+  echo "coverage before tagging, or confirm that repo's own CI is green." >&2
+  SQLITE_SKIPPED=1
+fi
 
 if [ "$SKIP_DOCKER" = "1" ]; then
   note "SKIP_DOCKER set — skipping Postgres and Redis phases. This is NOT a valid release gate run."
@@ -530,7 +565,14 @@ fi
 
 phase "RELEASE GATE PASSED"
 echo "Total elapsed: ${SECONDS}s"
-echo "SQLite, Postgres, Redis, and OIDC phases all passed with real assertions."
+echo "Postgres, Redis, and OIDC phases all passed with real assertions."
+if [ -n "${SQLITE_SKIPPED:-}" ]; then
+  echo "NOTE: ../store-sqlite was not present locally — SQLite coverage was skipped, not passed. Run"
+  echo "on a machine with ../store-sqlite checked out for full coverage before tagging, or confirm"
+  echo "that repo's own CI is green."
+else
+  echo "SQLite phase passed with real assertions (sibling checkout)."
+fi
 if [ ! -d "$HEADROOM_SRC" ] || [ ! -d "$WEBREQUEST_SRC" ]; then
   echo "NOTE: one or both hook-plugin sibling repos were not present locally — that phase was"
   echo "partially or fully skipped. Run on a machine with ../headroom-hook and ../webrequest-hook"

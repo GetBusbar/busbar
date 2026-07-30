@@ -232,17 +232,23 @@ jobs:
   #     hazard with no offsetting benefit: which one is canonical, which one do docs point at, which
   #     one gets the CVE fix first. One release pipeline per plugin removes the ambiguity.
   #
-  # The in-tree crates (`crates/store-sqlite-plugin`, `crates/store-postgres-plugin`,
-  # `crates/store-redis-plugin`, `crates/auth-oidc-plugin`) are UNCHANGED and deliberately still
-  # live in this monorepo — do not read their removal from this file as a signal to delete them.
-  # They remain load-bearing for:
+  # The remaining in-tree crates (`crates/store-postgres-plugin`, `crates/store-redis-plugin`,
+  # `crates/auth-oidc-plugin`) are UNCHANGED and deliberately still live in this monorepo — do not
+  # read their removal from THIS FILE as a signal to delete them. They remain load-bearing for:
   #   - the real dlopen ABI-crossing tests in crates/plugin-loader/src/lib.rs
-  #     (`load_and_exercise_sqlite_plugin_*`, `load_and_exercise_auth_oidc_plugin_*`), part of the
-  #     normal `cargo test --workspace` gate every release already implicitly requires green;
+  #     (`load_and_exercise_auth_oidc_plugin_*`), part of the normal `cargo test --workspace` gate
+  #     every release already implicitly requires green;
   #   - scripts/release-check.sh's own end-to-end gate, which builds and packs these crates directly
   #     (see that script's header) to prove busbar works against ALL its plugins together at a given
   #     commit — a property that requires the crates to be buildable from inside this checkout,
   #     independent of where the shipped release artifact ultimately comes from.
+  # store-sqlite has followed auth-oidc's full extraction (not just this file's release-job
+  # removal): its logic crate no longer lives in this monorepo at all — it brings 100% of what it
+  # needs in its own repo (GetBusbar/store-sqlite, a same-repo 2-crate workspace). This repo's own
+  # release-check.sh gate now reaches it via a sibling checkout, the same pattern already used for
+  # auth-oidc/headroom-hook/webrequest-hook. store-postgres and store-redis are still in-tree,
+  # slated for the same full extraction next; when that lands, this whole paragraph collapses to
+  # "every plugin, including its logic crate, lives in its own repo."
   # See docs/plugins.md's "Signing and packaging" section for the corrected, current release-source
   # story per plugin kind.
 

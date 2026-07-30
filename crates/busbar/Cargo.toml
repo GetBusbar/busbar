@@ -228,10 +228,10 @@ loom-model = ["dep:loom"]
 txn-fence-red = []
 
 [dev-dependencies]
-# The durable-audit (#17) tests exercise the REAL SQLite store's append_audit/list_audit over a
-# simulated restart — a dev-only dependency (the store itself ships as a droppable plugin, not linked
-# into the release binary).
-busbar-store-sqlite = { path = "../store-sqlite" }
+# The durable-audit (#17) tests exercise busbar-store-memory's append_audit/list_audit over a
+# simulated restart (a fresh AuditLog against the SAME Arc<dyn Store> handle, simulating "process 2"
+# restoring from where "process 1" left off) — busbar-store-memory is already a normal dependency
+# above (the built-in default store), so no separate dev-only entry is needed here.
 # `test-util` gives the health-schedule test a PAUSED clock, so it can drive 20 simulated seconds of
 # swap churn against a 10s probe interval without sleeping for 20 real ones.
 tokio = { version = "1", features = ["test-util"] }

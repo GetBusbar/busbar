@@ -1063,321 +1063,42 @@ pub fn inventory(dir: &Path) -> Vec<PluginInfo> {
 mod tests {
     use super::*;
 
-    /// Locate the SQLite plugin cdylib in the build's target dir, derived from the test binary's own
-    /// path (robust to a custom CARGO_TARGET_DIR). Returns None if it hasn't been built — a
-    /// `-p busbar`-only run may not have built it, so the caller skips rather than fails; under
-    /// `cargo test --workspace` (preflight/CI) the cdylib is always present and the caller runs.
+    /// Locate the REAL `busbar-store-sqlite-plugin` cdylib built from a SIBLING checkout of
+    /// `GetBusbar/store-sqlite` (a workspace at `../store-sqlite` relative to this repo, matching the
+    /// sibling-checkout convention already used for headroom-hook/webrequest-hook and every other
+    /// extracted plugin). store-sqlite now lives entirely in its own repo — there is no in-tree
+    /// `kind: store` plugin left to fake, so these LOADER-mechanism tests (TOCTOU-safe loading,
+    /// hot-swap coexistence, staged-file lifecycle, denylist-fallback classification — never
+    /// sqlite-specific behavior, which is that repo's own job, covered by its own
+    /// `store-sqlite-plugin/tests/e2e.rs`) exercise the REAL plugin instead of a fixture. Returns
+    /// `None` if the sibling checkout isn't present or hasn't been built — local iteration without
+    /// the sibling checked out skips cleanly.
     ///
-    /// CI HARDENING (mirrors the store-postgres live-DB test): CI runs `cargo test --workspace`, so
-    /// the cdylib MUST be present. If it is absent while `CI` is set, that is a broken build - a HARD
-    /// FAILURE here, not a silent skip, so the only over-the-ABI coverage of the durable store path
-    /// cannot quietly vanish. Locally (no `CI`) a missing cdylib still skips cleanly.
-    fn sqlite_plugin_path() -> Option<std::path::PathBuf> {
-        let candidate = (|| {
-            let exe = std::env::current_exe().ok()?; // .../target/<profile>/deps/busbar-<hash>
-            let profile_dir = exe.parent()?.parent()?; // .../target/<profile>
+    /// CI HARDENING: `.github/workflows/dev-gate.yml` checks out `../store-sqlite` as a sibling and
+    /// runs `cargo build --release` there before running this workspace's tests, so under that
+    /// workflow's `CI` env var the cdylib MUST be present — its absence there is a broken pipeline,
+    /// a HARD FAILURE here rather than a silent skip, so this coverage cannot quietly vanish. The
+    /// lightweight per-push `ci.yml` does NOT check out this sibling (it stays fast), so these tests
+    /// skip there — real coverage runs on every push to `dev`/`*-dev` via `dev-gate.yml` instead.
+    fn store_fixture_plugin_path() -> Option<std::path::PathBuf> {
+        let candidate = {
+            let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR")); // .../busbarAI/crates/plugin-loader
+            let sibling_root = manifest_dir.join("../../../store-sqlite"); // sibling of busbarAI
             let name = plugin_library_filename("busbar_store_sqlite_plugin");
-            let candidate = profile_dir.join(&name);
+            let candidate = sibling_root.join("target/release").join(&name);
             candidate.exists().then_some(candidate)
-        })();
-        if candidate.is_none() && std::env::var_os("CI").is_some() {
+        };
+        if candidate.is_none()
+            && std::env::var_os("CI").is_some()
+            && std::env::var_os("DEV_GATE").is_some()
+        {
             panic!(
-                "the sqlite plugin cdylib is not built under CI: `cargo test --workspace` must build \
-                 busbar_store_sqlite_plugin. Refusing to silently skip the only over-the-ABI \
-                 coverage of the durable store path."
+                "the store-sqlite-plugin cdylib is not built from the ../store-sqlite sibling \
+                 checkout under dev-gate.yml: refusing to silently skip loader-mechanism coverage \
+                 of the kind:store dlopen seam."
             );
         }
         candidate
-    }
-
-    /// End-to-end: load the REAL SQLite plugin cdylib over the C ABI and exercise the Store surface
-    /// through the DynStore — put a key, read it back, list, delete, and round-trip usage.
-    #[test]
-    fn load_and_exercise_sqlite_plugin() {
-        let Some(path) = sqlite_plugin_path() else {
-            eprintln!("skip: sqlite plugin cdylib not built (run under --workspace)");
-            return;
-        };
-        // In-memory sqlite so the test leaves no file behind.
-        let cfg = r#"{"db_path": ":memory:"}"#;
-        let store = load_store(&path, cfg).expect("load sqlite plugin");
-
-        let key = VirtualKey {
-            id: "vk_dyn".into(),
-            key_hash: "abc".into(),
-            name: "dynamic".into(),
-            allowed_pools: Some(vec!["p".into()]),
-            enabled: true,
-            created_at: 7,
-            group: Some("growth".into()),
-            labels: std::collections::BTreeMap::from([("team".into(), "growth".into())]),
-        };
-        store.put_key(&key).expect("put_key");
-
-        let got = store.get_key("vk_dyn").expect("get_key").expect("present");
-        assert_eq!(got.id, "vk_dyn");
-        assert_eq!(
-            got.group.as_deref(),
-            Some("growth"),
-            "the group binding survives the ABI round-trip"
-        );
-        assert_eq!(
-            got.allowed_pools,
-            Some(vec!["p".to_string()]),
-            "the pool grant survives the ABI round-trip"
-        );
-        assert_eq!(got.labels.get("team").map(String::as_str), Some("growth"));
-
-        assert_eq!(store.list_keys().expect("list").len(), 1);
-
-        // The token LEDGER round-trips over the ABI: absolute put, additive add, then read back.
-        let ledger = busbar_api::UsageLedger {
-            requests: 3,
-            billable_requests: 3,
-            models: vec![busbar_api::ModelTokens {
-                model: "gpt-5".into(),
-                tokens: busbar_api::TierTokens {
-                    input: 9,
-                    output: 4,
-                    cache_read: 2,
-                    cache_write: 1,
-                },
-            }],
-        };
-        store.put_usage("vk_dyn", 100, &ledger).expect("put_usage");
-        store
-            .add_usage(
-                "vk_dyn",
-                100,
-                &busbar_api::UsageDelta {
-                    requests: 1,
-                    billable_requests: 1,
-                    models: vec![busbar_api::ModelTokensDelta {
-                        model: "gpt-5".into(),
-                        tokens: busbar_api::TierTokensDelta {
-                            input: 1,
-                            output: 1,
-                            cache_read: 0,
-                            cache_write: 0,
-                        },
-                    }],
-                },
-            )
-            .expect("add_usage");
-        let usage = store.get_usage("vk_dyn", 100).expect("get_usage");
-        assert_eq!(usage.requests, 4);
-        let t = usage.tokens_for("gpt-5").expect("model row");
-        assert_eq!(
-            (t.input, t.output, t.cache_read, t.cache_write),
-            (10, 5, 2, 1)
-        );
-
-        store.delete_key("vk_dyn").expect("delete");
-        assert!(store.get_key("vk_dyn").expect("get after delete").is_none());
-    }
-
-    /// The DURABLE AUDIT surface (#17) works over the C ABI through the real sqlite plugin: append two
-    /// records and read them back oldest-first — proving the new `AppendAudit`/`ListAudit` variants
-    /// serialize across the boundary and the plugin persists them. This is the dynamic-library path a
-    /// `governance.store: sqlite` deployment actually uses for durable audit.
-    #[test]
-    fn dyn_store_durable_audit_over_abi() {
-        use busbar_api::AuditRecord;
-        let Some(path) = sqlite_plugin_path() else {
-            eprintln!("skip: sqlite plugin cdylib not built (run under --workspace)");
-            return;
-        };
-        let store = load_store(&path, r#"{"db_path": ":memory:"}"#).expect("load sqlite plugin");
-        let rec = |seq: u64, prev: &str, hash: &str| AuditRecord {
-            seq,
-            ts: 1000 + seq,
-            action: "plugin.install".into(),
-            resource: format!("plugin:{seq}"),
-            outcome: "applied".into(),
-            principal: "admin".into(),
-            prev_hash: prev.into(),
-            hash: hash.into(),
-        };
-        store.append_audit(&rec(1, "", "h1")).expect("append 1");
-        store.append_audit(&rec(2, "h1", "h2")).expect("append 2");
-        let got = store.list_audit().expect("list_audit over the ABI");
-        assert_eq!(got.len(), 2);
-        assert_eq!(
-            (got[0].seq, got[1].seq),
-            (1, 2),
-            "oldest-first across the ABI"
-        );
-        assert_eq!(
-            got[1].prev_hash, "h1",
-            "chain fields survive the JSON-over-C round-trip"
-        );
-        assert_eq!(got[0].resource, "plugin:1");
-    }
-
-    /// End-to-end PERSISTENCE: dlopen the real sqlite plugin against a REAL file on disk (not
-    /// `:memory:`, which every other test in this file uses so it leaves nothing behind), write a key
-    /// and usage through the plugin over the C ABI, drop the plugin (closing its connection via
-    /// `RawPlugin`'s `Drop`, which runs `busbar_close`), then verify the data actually landed in the
-    /// file two independent ways:
-    ///   1. re-dlopen the SAME cdylib against the SAME path — a fresh `busbar_open`/fresh `DynStore`
-    ///      instance, proving the plugin itself doesn't just hold an in-memory cache across calls.
-    ///   2. open the SAME file with `busbar_store_sqlite::SqliteStore::open` directly — a totally
-    ///      independent code path that never goes through the cdylib, the C ABI, or the loader at all
-    ///      — proving the plugin actually wrote real SQLite rows, not just satisfying its own
-    ///      in-process round-trip.
-    ///
-    /// This is the proof that `store: sqlite` operations over the ABI aren't silently no-ops.
-    #[test]
-    fn load_and_exercise_sqlite_plugin_persists_to_real_file_across_reopen() {
-        let Some(path) = sqlite_plugin_path() else {
-            eprintln!("skip: sqlite plugin cdylib not built (run under --workspace)");
-            return;
-        };
-        let dir = std::env::temp_dir().join(format!(
-            "busbar-sqlite-plugin-abi-{}-{}",
-            std::process::id(),
-            "persist"
-        ));
-        std::fs::create_dir_all(&dir).expect("create temp dir for the real sqlite file");
-        let db_path = dir.join("governance.db");
-        let db_path_str = db_path.to_str().unwrap();
-        let cfg = serde_json::json!({ "db_path": db_path_str }).to_string();
-
-        let key = VirtualKey {
-            id: "vk_real_file".into(),
-            key_hash: "hash-real".into(),
-            name: "real-file-key".into(),
-            allowed_pools: Some(vec!["p".into()]),
-            enabled: true,
-            created_at: 42,
-            group: Some("infra".into()),
-            labels: std::collections::BTreeMap::from([("env".into(), "prod".into())]),
-        };
-        let ledger = busbar_api::UsageLedger {
-            requests: 5,
-            billable_requests: 5,
-            models: vec![busbar_api::ModelTokens {
-                model: "gpt-5".into(),
-                tokens: busbar_api::TierTokens {
-                    input: 20,
-                    output: 8,
-                    cache_read: 0,
-                    cache_write: 0,
-                },
-            }],
-        };
-
-        {
-            let store = load_store(&path, &cfg).expect("load sqlite plugin against a real file");
-            store.put_key(&key).expect("put_key");
-            store
-                .put_usage("vk_real_file", 200, &ledger)
-                .expect("put_usage");
-            assert_eq!(
-                store
-                    .get_key("vk_real_file")
-                    .expect("get_key")
-                    .expect("present in the same session")
-                    .id,
-                "vk_real_file"
-            );
-            // `store` (and the `RawPlugin` it wraps) drops here, running `busbar_close` and dropping
-            // the plugin's `SqliteStore`/`Connection` — the file must hold the committed data after
-            // this, not just an in-process cache.
-        }
-
-        assert!(
-            db_path.exists(),
-            "the plugin must have created a real file on disk at the configured db_path"
-        );
-
-        // (1) Re-dlopen the SAME cdylib against the SAME path: a fresh plugin instance, fresh
-        // `busbar_open`, fresh connection inside the plugin process — proves the ABI round-trip isn't
-        // relying on the first instance still being alive.
-        let reopened =
-            load_store(&path, &cfg).expect("re-load sqlite plugin against the same file");
-        let got = reopened
-            .get_key("vk_real_file")
-            .expect("get_key after reopen")
-            .expect("the key must survive a full plugin close + reopen against the same file");
-        assert_eq!(got.group.as_deref(), Some("infra"));
-        assert_eq!(got.labels.get("env").map(String::as_str), Some("prod"));
-        let usage = reopened
-            .get_usage("vk_real_file", 200)
-            .expect("get_usage after reopen");
-        assert_eq!(usage.requests, 5, "usage ledger must survive the reopen");
-        let t = usage
-            .tokens_for("gpt-5")
-            .expect("model row survives reopen");
-        assert_eq!((t.input, t.output), (20, 8));
-        drop(reopened);
-
-        // (2) Open the SAME file with the plain `SqliteStore` — a code path that never touches the
-        // cdylib, the C ABI, or `plugin-loader` at all. If the plugin's `put_key`/`put_usage` over the
-        // ABI were silent no-ops (or wrote somewhere other than the configured `db_path`), this
-        // independent reader would come back empty even though the reopen-via-plugin check above
-        // passed (a bug shared by both `open` calls, e.g. always using `:memory:`, would otherwise
-        // slip through unnoticed).
-        let direct = busbar_store_sqlite::SqliteStore::open(db_path_str, 5000)
-            .expect("open the real file directly with the plain SqliteStore, bypassing the plugin");
-        let direct_key = Store::get_key(&direct, "vk_real_file")
-            .expect("get_key via the direct connection")
-            .expect("the row must be physically present in the sqlite file on disk");
-        assert_eq!(direct_key.name, "real-file-key");
-        assert_eq!(direct_key.allowed_pools, Some(vec!["p".to_string()]));
-        let direct_usage = Store::get_usage(&direct, "vk_real_file", 200)
-            .expect("get_usage via the direct connection");
-        assert_eq!(
-            direct_usage.requests, 5,
-            "usage must be physically present in the sqlite file, not just cached in-process"
-        );
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// End-to-end FAILURE: an `open()` config that cannot produce a usable database — here, a
-    /// `db_path` under a directory that doesn't exist, which `rusqlite::Connection::open` refuses —
-    /// surfaces back across the C ABI as a clean `Err`, never a panic or a silently-succeeded load.
-    /// Mirrors `load_and_exercise_auth_oidc_plugin_bad_config_fails_over_abi` for `kind: store`.
-    #[test]
-    fn load_and_exercise_sqlite_plugin_bad_config_fails_over_abi() {
-        let Some(path) = sqlite_plugin_path() else {
-            eprintln!("skip: sqlite plugin cdylib not built (run under --workspace)");
-            return;
-        };
-
-        // Malformed JSON: the plugin's own `open()` config parsing must reject it, surfaced intact
-        // across the ABI.
-        let err = load_store(&path, "{ not json")
-            .err()
-            .expect("malformed config JSON must fail to load, not silently succeed");
-        assert!(
-            err.contains("invalid sqlite plugin config"),
-            "the plugin's own error message should survive the ABI crossing intact: {err}"
-        );
-
-        // A `db_path` whose parent directory does not exist: sqlite cannot create the file, so
-        // `SqliteStore::open` fails and that failure must surface as a load error, not a panic or a
-        // store that silently has no backing file.
-        let bogus_dir = std::env::temp_dir().join(format!(
-            "busbar-sqlite-plugin-abi-{}-does-not-exist",
-            std::process::id()
-        ));
-        // Make sure it really doesn't exist (it never should, but be defensive against test reruns).
-        let _ = std::fs::remove_dir_all(&bogus_dir);
-        let bogus_path = bogus_dir.join("nested").join("governance.db");
-        let cfg = serde_json::json!({ "db_path": bogus_path.to_str().unwrap() }).to_string();
-        let err = load_store(&path, &cfg)
-            .err()
-            .expect("a db_path under a nonexistent directory must fail to load");
-        assert!(
-            !err.is_empty(),
-            "expected a descriptive sqlite open failure, got an empty string"
-        );
-        assert!(
-            !bogus_dir.exists(),
-            "a failed open must not have created the parent directory or file"
-        );
     }
 
     /// A non-plugin library (or a missing file) is refused with a clear error, never a crash.
@@ -1390,25 +1111,25 @@ mod tests {
         assert!(err.contains("failed to load plugin"), "got: {err}");
     }
 
-    /// `validate_plugin` accepts the real sqlite cdylib (ABI v1) without constructing a store, and
-    /// `inventory` finds it (and any sibling plugins) in the target directory as valid.
+    /// `validate_plugin` accepts the real store-sqlite-plugin cdylib (ABI v1) without constructing a
+    /// store, and `inventory` finds it (and any sibling plugins) in the target directory as valid.
     #[test]
     fn validate_and_inventory() {
-        let Some(path) = sqlite_plugin_path() else {
-            eprintln!("skip: sqlite plugin cdylib not built (run under --workspace)");
+        let Some(path) = store_fixture_plugin_path() else {
+            eprintln!("skip: store-sqlite-plugin cdylib not built (run `cargo build --release -p busbar-store-sqlite-plugin` in a sibling ../store-sqlite checkout)");
             return;
         };
         assert_eq!(validate_plugin(&path).expect("validate"), TRANSPORT_VERSION);
 
         let dir = path.parent().unwrap();
         let inv = inventory(dir);
-        let sqlite = inv
+        let fixture = inv
             .iter()
             .find(|p| p.file.contains("busbar_store_sqlite_plugin"))
-            .expect("sqlite plugin in inventory");
-        assert!(sqlite.valid);
-        assert_eq!(sqlite.abi_version, Some(TRANSPORT_VERSION));
-        assert!(sqlite.error.is_none());
+            .expect("sibling store-sqlite-plugin in inventory");
+        assert!(fixture.valid);
+        assert_eq!(fixture.abi_version, Some(TRANSPORT_VERSION));
+        assert!(fixture.error.is_none());
     }
 
     /// `inventory` of a missing directory is empty, not an error.
@@ -1469,18 +1190,13 @@ mod tests {
     /// and the same, with no path re-read in between.
     #[test]
     fn load_store_from_bytes_loads_the_given_bytes() {
-        let Some(path) = sqlite_plugin_path() else {
-            eprintln!("skip: sqlite plugin cdylib not built (run under --workspace)");
+        let Some(path) = store_fixture_plugin_path() else {
+            eprintln!("skip: store-sqlite-plugin cdylib not built (run `cargo build --release -p busbar-store-sqlite-plugin` in a sibling ../store-sqlite checkout)");
             return;
         };
-        let bytes = std::fs::read(&path).expect("read sqlite cdylib");
-        let store = load_store_from_bytes(
-            &bytes,
-            r#"{"db_path": ":memory:"}"#,
-            "sqlite-from-bytes",
-            "store",
-        )
-        .expect("load from verified bytes");
+        let bytes = std::fs::read(&path).expect("read sibling store-sqlite-plugin cdylib");
+        let store = load_store_from_bytes(&bytes, r#"{}"#, "fixture-from-bytes", "store")
+            .expect("load from verified bytes");
         let key = VirtualKey {
             id: "vk_b".into(),
             key_hash: "h".into(),
@@ -1504,8 +1220,8 @@ mod tests {
     /// have loaded the attacker's file; here the loaded library is the verified `bytes`, full stop.
     #[test]
     fn on_disk_swap_after_verify_does_not_change_what_loads() {
-        let Some(path) = sqlite_plugin_path() else {
-            eprintln!("skip: sqlite plugin cdylib not built (run under --workspace)");
+        let Some(path) = store_fixture_plugin_path() else {
+            eprintln!("skip: store-sqlite-plugin cdylib not built (run `cargo build --release -p busbar-store-sqlite-plugin` in a sibling ../store-sqlite checkout)");
             return;
         };
         // "Verify" step: read the good bytes (in the engine these are hash/signature-checked here).
@@ -1519,13 +1235,12 @@ mod tests {
         // Confirm loading the victim PATH would pick up whatever is on disk...
         std::fs::write(&victim, b"\x7fELF hostile junk, not a plugin").unwrap();
         assert!(
-            load_store(&victim, r#"{"db_path": ":memory:"}"#).is_err(),
+            load_store(&victim, r#"{}"#).is_err(),
             "the swapped-in junk is not a loadable plugin (path load sees the swap)"
         );
         // ..but the from-bytes load, fed the bytes we verified BEFORE the swap, loads fine.
-        let store =
-            load_store_from_bytes(&verified, r#"{"db_path": ":memory:"}"#, "toctou", "store")
-                .expect("verified bytes still load despite the on-disk swap");
+        let store = load_store_from_bytes(&verified, r#"{}"#, "toctou", "store")
+            .expect("verified bytes still load despite the on-disk swap");
         assert!(store.list_keys().expect("list over the ABI").is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1545,19 +1260,14 @@ mod tests {
     /// window. The exact path is immune to concurrency and actually fails when the artifact leaks.
     #[test]
     fn from_bytes_load_leaves_no_artifact_after_drop() {
-        let Some(path) = sqlite_plugin_path() else {
-            eprintln!("skip: sqlite plugin cdylib not built (run under --workspace)");
+        let Some(path) = store_fixture_plugin_path() else {
+            eprintln!("skip: store-sqlite-plugin cdylib not built (run `cargo build --release -p busbar-store-sqlite-plugin` in a sibling ../store-sqlite checkout)");
             return;
         };
-        let bytes = std::fs::read(&path).expect("read sqlite cdylib");
+        let bytes = std::fs::read(&path).expect("read sibling store-sqlite-plugin cdylib");
         let staged: Option<std::path::PathBuf> = {
-            let store = load_dyn_store_from_bytes(
-                &bytes,
-                r#"{"db_path": ":memory:"}"#,
-                "no-leak-check",
-                "store",
-            )
-            .expect("load from bytes");
+            let store = load_dyn_store_from_bytes(&bytes, r#"{}"#, "no-leak-check", "store")
+                .expect("load from bytes");
             assert!(store.list_keys().expect("list").is_empty());
             let staged = store.staged_path().map(std::path::Path::to_path_buf);
             // While the store is ALIVE the backing must exist — otherwise the post-drop assertion
@@ -1612,20 +1322,18 @@ mod tests {
     /// `handle.swap` relies on: instance → close handle → `_lib` unmaps → `_backing` removed.
     #[test]
     fn hot_swap_old_and_new_coexist_then_old_unmaps_new_keeps_serving() {
-        let Some(path) = sqlite_plugin_path() else {
-            eprintln!("skip: sqlite plugin cdylib not built (run under --workspace)");
+        let Some(path) = store_fixture_plugin_path() else {
+            eprintln!("skip: store-sqlite-plugin cdylib not built (run `cargo build --release -p busbar-store-sqlite-plugin` in a sibling ../store-sqlite checkout)");
             return;
         };
-        let bytes = std::fs::read(&path).expect("read sqlite cdylib");
+        let bytes = std::fs::read(&path).expect("read sibling store-sqlite-plugin cdylib");
 
         // The OLD instance is serving; write a key so we can prove instance IDENTITY across the swap.
         // Load via `load_dyn_store_from_bytes` (as the fixed sibling
         // `from_bytes_load_leaves_no_artifact_after_drop` does) so each generation's OWN
         // `staged_path()` is reachable — asserting on it, not a process-wide directory count that a
         // concurrent test in this binary can shift in either direction between samples.
-        let old =
-            load_dyn_store_from_bytes(&bytes, r#"{"db_path": ":memory:"}"#, "old-gen", "store")
-                .expect("load OLD");
+        let old = load_dyn_store_from_bytes(&bytes, r#"{}"#, "old-gen", "store").expect("load OLD");
         let old_path = old.staged_path().map(std::path::Path::to_path_buf);
         if let Some(p) = &old_path {
             assert!(p.is_file(), "OLD's staged backing must exist while alive");
@@ -1644,9 +1352,8 @@ mod tests {
 
         // Load the NEW instance ALONGSIDE the old — both libraries are mapped simultaneously. On
         // macOS/Windows this is two staged files at once; on Linux two memfds (no disk).
-        let new =
-            load_dyn_store_from_bytes(&bytes, r#"{"db_path": ":memory:"}"#, "new-gen", "store")
-                .expect("load NEW alongside OLD");
+        let new = load_dyn_store_from_bytes(&bytes, r#"{}"#, "new-gen", "store")
+            .expect("load NEW alongside OLD");
         let new_path = new.staged_path().map(std::path::Path::to_path_buf);
         if let (Some(op), Some(np)) = (&old_path, &new_path) {
             assert!(
@@ -1657,7 +1364,7 @@ mod tests {
             );
             assert_ne!(op, np, "each generation stages its OWN file");
         }
-        // The NEW instance is a DISTINCT backend (fresh :memory: db): it does NOT see the old key.
+        // The NEW instance is a DISTINCT backend (a fresh in-memory store): it does NOT see the old key.
         assert!(
             new.get_key("vk_old").expect("new get").is_none(),
             "the new instance is a separate backend, proving a real second load — not an alias"
@@ -1721,24 +1428,19 @@ mod tests {
     /// property proven at the loader seam (the engine-level proof is that the old App snapshot drops).
     #[test]
     fn repeated_reloads_do_not_leak_staged_libraries() {
-        let Some(path) = sqlite_plugin_path() else {
-            eprintln!("skip: sqlite plugin cdylib not built (run under --workspace)");
+        let Some(path) = store_fixture_plugin_path() else {
+            eprintln!("skip: store-sqlite-plugin cdylib not built (run `cargo build --release -p busbar-store-sqlite-plugin` in a sibling ../store-sqlite checkout)");
             return;
         };
-        let bytes = std::fs::read(&path).expect("read sqlite cdylib");
+        let bytes = std::fs::read(&path).expect("read sibling store-sqlite-plugin cdylib");
         // Per-cycle own path, not a process-wide count: a concurrent test staging or releasing a
         // file in this binary between samples can move the count in either direction, hiding a real
         // leak or reporting a false one. Collect this run's own paths and assert each is gone after
         // its own drop, and that no two cycles reused the same path.
         let mut seen = std::collections::HashSet::new();
         for i in 0..16 {
-            let s = load_dyn_store_from_bytes(
-                &bytes,
-                r#"{"db_path": ":memory:"}"#,
-                &format!("reload-{i}"),
-                "store",
-            )
-            .unwrap_or_else(|e| panic!("reload {i} load: {e}"));
+            let s = load_dyn_store_from_bytes(&bytes, r#"{}"#, &format!("reload-{i}"), "store")
+                .unwrap_or_else(|e| panic!("reload {i} load: {e}"));
             assert!(s.list_keys().expect("list").is_empty());
             let staged = s.staged_path().map(std::path::Path::to_path_buf);
             if let Some(p) = &staged {
@@ -1768,19 +1470,18 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn linux_from_bytes_load_touches_no_disk() {
-        let Some(path) = sqlite_plugin_path() else {
-            eprintln!("skip: sqlite plugin cdylib not built (run under --workspace)");
+        let Some(path) = store_fixture_plugin_path() else {
+            eprintln!("skip: store-sqlite-plugin cdylib not built (run `cargo build --release -p busbar-store-sqlite-plugin` in a sibling ../store-sqlite checkout)");
             return;
         };
-        let bytes = std::fs::read(&path).expect("read sqlite cdylib");
+        let bytes = std::fs::read(&path).expect("read sibling store-sqlite-plugin cdylib");
         // The actual claim ("a memfd load reports no staged path"), not a directory census: a
         // process-wide count is quiet here only because the common Linux path never touches disk in
         // the first place, but the instrument is the same flawed one the sibling tests above moved
         // away from — a concurrent test staging a file on the non-memfd fallback path between the
         // two samples would have made this assertion fail for a reason unrelated to THIS load.
         let store =
-            load_dyn_store_from_bytes(&bytes, r#"{"db_path": ":memory:"}"#, "memfd-check", "store")
-                .expect("memfd load");
+            load_dyn_store_from_bytes(&bytes, r#"{}"#, "memfd-check", "store").expect("memfd load");
         assert!(store.list_keys().expect("list").is_empty());
         assert!(
             store.staged_path().is_none(),
@@ -1794,7 +1495,7 @@ mod tests {
     // The regression uses a FAKE `busbar_call` whose returned (status, body) is chosen per-test via a
     // thread-local, wired into a genuine `RawPlugin` built on a real loaded `Library` (so the whole
     // `list_denylist` → `transport_call_status` → classification path runs end to end). We swap ONLY the
-    // `call` fn pointer; the real `open`/`free`/`close`/handle from the loaded sqlite store stay valid.
+    // `call` fn pointer; the real `open`/`free`/`close`/handle from the loaded store fixture stay valid.
 
     use std::cell::Cell;
     thread_local! {
@@ -1835,19 +1536,20 @@ mod tests {
     /// Build a `DynStore` whose `call` is `fake_call`, reusing a real loaded store's `Library`/handle/
     /// `close` (so `RawPlugin` is genuinely valid) but our fake `free` to match `fake_call`'s allocator.
     fn dyn_store_with_fake_call() -> Option<DynStore> {
-        let path = sqlite_plugin_path()?;
+        let path = store_fixture_plugin_path()?;
         // Stage a genuine `RawPlugin` (real `Library` + handle + `close`), then splice in our fake
         // `call`/`free` so the response's (status, body) is what the test chooses.
-        let bytes = std::fs::read(&path).expect("read sqlite cdylib");
+        let bytes = std::fs::read(&path).expect("read sibling store-sqlite-plugin cdylib");
         // `.expect`, NOT `.ok()?`: the ONLY sanctioned reason these D4 guards may skip is "the cdylib
-        // was never built" — which `sqlite_plugin_path` already turns into a hard panic under CI. A
+        // was never built" — which `store_fixture_plugin_path` already turns into a hard panic under
+        // CI. A
         // STAGING failure is a different thing entirely, and swallowing it into a `None` let the whole
         // revocation fail-open suite self-disable while the run stayed green.
         let (lib, staged) = stage::load_library_from_bytes(&bytes, "fake-call-store")
-            .expect("stage the sqlite cdylib for the fake-call harness");
+            .expect("stage the sibling store-sqlite-plugin cdylib for the fake-call harness");
         let mut raw = wire_up_raw(
             lib,
-            r#"{"db_path": ":memory:"}"#,
+            r#"{}"#,
             "fake-call-store".to_string(),
             abi_kind::STORE,
             abi_kind::STORE,
@@ -1866,7 +1568,7 @@ mod tests {
     #[test]
     fn denylist_unsupported_status_falls_back_empty() {
         let Some(store) = dyn_store_with_fake_call() else {
-            eprintln!("skip: sqlite plugin cdylib not built (run under --workspace)");
+            eprintln!("skip: store-sqlite-plugin cdylib not built (run `cargo build --release -p busbar-store-sqlite-plugin` in a sibling ../store-sqlite checkout)");
             return;
         };
         FAKE_CALL.with(|c| {
@@ -1889,7 +1591,7 @@ mod tests {
     #[test]
     fn denylist_legacy_v1_decode_failure_falls_back_empty() {
         let Some(store) = dyn_store_with_fake_call() else {
-            eprintln!("skip: sqlite plugin cdylib not built (run under --workspace)");
+            eprintln!("skip: store-sqlite-plugin cdylib not built (run `cargo build --release -p busbar-store-sqlite-plugin` in a sibling ../store-sqlite checkout)");
             return;
         };
         FAKE_CALL.with(|c| {
@@ -1919,7 +1621,7 @@ mod tests {
     #[test]
     fn no_plugin_crash_shape_can_empty_the_denylist() {
         let Some(store) = dyn_store_with_fake_call() else {
-            eprintln!("skip: sqlite plugin cdylib not built (run under --workspace)");
+            eprintln!("skip: store-sqlite-plugin cdylib not built (run `cargo build --release -p busbar-store-sqlite-plugin` in a sibling ../store-sqlite checkout)");
             return;
         };
         // (status, body, what the shape IS) — every one must FAIL CLOSED.
@@ -2012,7 +1714,7 @@ mod tests {
     #[test]
     fn denylist_backend_error_with_unknown_variant_text_propagates() {
         let Some(store) = dyn_store_with_fake_call() else {
-            eprintln!("skip: sqlite plugin cdylib not built (run under --workspace)");
+            eprintln!("skip: store-sqlite-plugin cdylib not built (run `cargo build --release -p busbar-store-sqlite-plugin` in a sibling ../store-sqlite checkout)");
             return;
         };
         // A crafted / coincidental backend error: STATUS_ERR, but the body contains "unknown variant".
@@ -2039,7 +1741,7 @@ mod tests {
     #[test]
     fn audit_tail_backend_error_propagates_not_masked_by_fallback() {
         let Some(store) = dyn_store_with_fake_call() else {
-            eprintln!("skip: sqlite plugin cdylib not built (run under --workspace)");
+            eprintln!("skip: store-sqlite-plugin cdylib not built (run `cargo build --release -p busbar-store-sqlite-plugin` in a sibling ../store-sqlite checkout)");
             return;
         };
         FAKE_CALL.with(|c| {
@@ -2071,7 +1773,7 @@ mod tests {
     #[test]
     fn panic_in_list_denylist_fails_closed_not_empty() {
         let Some(store) = dyn_store_with_fake_call() else {
-            eprintln!("skip: sqlite plugin cdylib not built (run under --workspace)");
+            eprintln!("skip: store-sqlite-plugin cdylib not built (run `cargo build --release -p busbar-store-sqlite-plugin` in a sibling ../store-sqlite checkout)");
             return;
         };
         FAKE_CALL.with(|c| {
@@ -2094,7 +1796,7 @@ mod tests {
     #[test]
     fn denylist_status_matrix() {
         let Some(store) = dyn_store_with_fake_call() else {
-            eprintln!("skip: sqlite plugin cdylib not built (run under --workspace)");
+            eprintln!("skip: store-sqlite-plugin cdylib not built (run `cargo build --release -p busbar-store-sqlite-plugin` in a sibling ../store-sqlite checkout)");
             return;
         };
         FAKE_CALL.with(|c| c.set((STATUS_UNSUPPORTED, b"unsupported variant")));
@@ -2118,7 +1820,7 @@ mod tests {
     #[test]
     fn append_audit_status_matrix() {
         let Some(store) = dyn_store_with_fake_call() else {
-            eprintln!("skip: sqlite plugin cdylib not built (run under --workspace)");
+            eprintln!("skip: store-sqlite-plugin cdylib not built (run `cargo build --release -p busbar-store-sqlite-plugin` in a sibling ../store-sqlite checkout)");
             return;
         };
         let rec = AuditRecord {
@@ -2186,7 +1888,7 @@ mod tests {
 
     /// class-13/14 F1: `kind: secret` was the only plugin kind with ZERO over-the-ABI test coverage
     /// (`grep -rn export_secret_plugin crates/` found only the macro's own definition). Locate the
-    /// hermetic `busbar-secret-example-plugin` cdylib, mirroring `sqlite_plugin_path` above — CI
+    /// hermetic `busbar-secret-example-plugin` cdylib, mirroring `store_fixture_plugin_path` above — CI
     /// (`cargo test --workspace`) always builds it, so a missing cdylib there is a hard failure, not
     /// a silent skip.
     fn secret_example_plugin_path() -> Option<std::path::PathBuf> {
@@ -2401,7 +2103,7 @@ mod tests {
     // the plugin's own `busbar-auth-oidc` logic, and a genuine load-time config failure surfaced back
     // across the C ABI.
 
-    /// Locate the auth-oidc-plugin cdylib, mirroring `secret_example_plugin_path`/`sqlite_plugin_path`
+    /// Locate the auth-oidc-plugin cdylib, mirroring `secret_example_plugin_path`/`store_fixture_plugin_path`
     /// above exactly: same target-dir derivation, same CI-hard-fail-instead-of-silent-skip policy so
     /// this, the only over-the-ABI coverage of the `kind: auth` dlopen seam, cannot quietly vanish.
     fn auth_oidc_plugin_path() -> Option<std::path::PathBuf> {
