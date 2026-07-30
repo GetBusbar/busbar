@@ -262,3 +262,46 @@ jobs:
   # See docs/plugins.md's "Signing and packaging" section for the corrected, current release-source
   # story per plugin kind.
 
+
+  # ── Fan out an instant "a real release just happened" signal to every downstream repo that
+  #    self-heals off busbar's releases (Homebrew tap, Helm chart, and whatever else gets added to
+  #    .github/release-notify-targets.txt). Each target already has its OWN daily-poll workflow as
+  #    the durable fallback (so a missed/failed dispatch here is never a silent miss, just a same-day
+  #    catch-up) — this job only makes the common case instant instead of up-to-24h-later. Adding a
+  #    new downstream consumer to the fan-out is a one-line addition to that text file, no workflow
+  #    changes needed here or in this job.
+  notify-downstream:
+    needs: [sbom, openapi, upload-assets]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Dispatch upstream-release to every listed downstream repo
+        env:
+          # A fine-grained PAT (or GitHub App installation token) with Contents:read + Actions:write
+          # on every repo listed in release-notify-targets.txt. NOT the default GITHUB_TOKEN — that
+          # token cannot dispatch to OTHER repos, only this one. TODO(release-dispatch): provision
+          # this secret (org-level, so every downstream repo's own workflow can also use it if
+          # needed) before this job can do anything; until then it fails loudly rather than
+          # silently no-op'ing, so a missing token can't masquerade as "nothing to notify."
+          # GH_TOKEN is what `gh api` itself reads; DISPATCH_TOKEN is the same value under a
+          # separate name purely so the emptiness check below reads clearly.
+          GH_TOKEN: ${{ secrets.RELEASE_DISPATCH_TOKEN }}
+          DISPATCH_TOKEN: ${{ secrets.RELEASE_DISPATCH_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${DISPATCH_TOKEN:-}" ]; then
+            echo "::error::RELEASE_DISPATCH_TOKEN is not provisioned — cannot fan out the release" \
+                 "notification. Every downstream repo's own daily poll will still pick this release" \
+                 "up within 24h (self-healing fallback intact), but the instant path is unavailable." >&2
+            exit 1
+          fi
+          while IFS= read -r repo; do
+            # Skip blank lines and comments.
+            case "$repo" in ''|'#'*) continue ;; esac
+            echo "Dispatching upstream-release to ${repo}..."
+            gh api "repos/${repo}/dispatches" \
+              -f event_type=upstream-release \
+              -f "client_payload[tag]=${GITHUB_REF_NAME}" \
+              -f "client_payload[repo]=${GITHUB_REPOSITORY}"
+          done < .github/release-notify-targets.txt
