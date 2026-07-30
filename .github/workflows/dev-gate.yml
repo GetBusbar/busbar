@@ -45,12 +45,12 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: GetBusbar/headroom-hook
-          ref: a61e7f8
-          # a61e7f8 is an abbreviated commit SHA, not the default branch tip — the default shallow
-          # fetch-depth:1 cannot resolve it (checkout silently leaves the directory empty rather
-          # than erroring the step, which is why this surfaced downstream as a cargo "manifest path
-          # does not exist" failure instead of at the checkout step itself). Full history required.
-          fetch-depth: 0
+          # `dev` (not `main`) carries the sibling-relative-path dependency fix this build actually
+          # needs — mirrors busbar's own main/dev split: main stays release-only, ongoing work lands
+          # on dev. An earlier pin here (a61e7f8, an abbreviated SHA) only ever existed in a local
+          # checkout and was never pushed at all, which surfaced as a cargo "manifest path does not
+          # exist" failure rather than a checkout error.
+          ref: dev
           path: headroom-hook
         continue-on-error: true
 

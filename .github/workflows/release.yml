@@ -427,7 +427,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       # Pinned refs for the external first-party plugin source repos — see the block comment above.
-      HEADROOM_HOOK_REF: a61e7f8
+      HEADROOM_HOOK_REF: dev
       WEBREQUEST_HOOK_REF: 5999093848c7574df09faccde71b25d3b137b1e5
     strategy:
       fail-fast: false

@@ -43,10 +43,11 @@ env:
   DOCKERHUB_IMAGE: getbusbar/busbar
   GHCR_IMAGE: ghcr.io/getbusbar/busbar
   # Pinned ref for the external first-party headroom-hook plugin repo (GetBusbar/headroom-hook),
-  # bundled pre-installed into the image below. Same pin (and same rationale — this is the commit
-  # that ports the plugin to busbar's dlopen ABI, NOT the latest tag which predates the port) as
-  # .github/workflows/release.yml's HEADROOM_HOOK_REF. Keep the two in sync when re-pinning.
-  HEADROOM_HOOK_REF: a61e7f8
+  # bundled pre-installed into the image below. `dev` (not `main`) carries the sibling-relative-path
+  # dependency fix this build needs — main stays release-only, ongoing work lands on dev, same split
+  # as busbar's own main/dev. Same pin as .github/workflows/release.yml's HEADROOM_HOOK_REF — keep
+  # the two in sync when re-pinning.
+  HEADROOM_HOOK_REF: dev
 
 permissions:
   contents: read
