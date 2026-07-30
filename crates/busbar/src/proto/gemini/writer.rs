@@ -264,13 +264,16 @@ impl ProtocolWriter for GeminiWriter {
                     }
                     // Gemini's tool `parameters` accept only a strict OpenAPI-3.0 Schema subset,
                     // NOT full JSON Schema. A cross-protocol tool def (OpenAI/Anthropic) routinely
-                    // carries draft keywords (`$schema`, `additionalProperties`, `$ref`, …) that
-                    // Gemini 400-rejects. Strip them recursively so the tool def survives the seam
-                    // instead of hard-failing; same-protocol Gemini schemas (which never carry these)
-                    // are unaffected.
+                    // carries draft keywords (`$schema`, a schema-valued `additionalProperties`, …)
+                    // that Gemini 400-rejects, and a `$ref`/`$defs` nested-model shape (what every
+                    // Pydantic/Zod-generated tool schema uses) that the live API does not reliably
+                    // resolve on its own — see the research note on `GEMINI_SCHEMA_REJECTED_KEYS`.
+                    // `resolve_gemini_schema_refs` inlines `$ref` against `$defs` first so nested
+                    // structure survives, then `sanitize_gemini_schema` strips the rest recursively;
+                    // same-protocol Gemini schemas (which never carry these) are unaffected.
                     obj.insert(
                         "parameters".to_string(),
-                        sanitize_gemini_schema(&tool.input_schema),
+                        sanitize_gemini_schema(&resolve_gemini_schema_refs(&tool.input_schema)),
                     );
                     serde_json::Value::Object(obj)
                 })
