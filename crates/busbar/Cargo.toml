@@ -7,7 +7,7 @@ edition = "2021"
 # `manual_is_multiple_of` lint rewrites `% N == 0` back to it, so 1.87 is the genuine minimum. Declare
 # it so a build on an older toolchain fails fast with a clear message instead of a cryptic
 # "method not found", and so MSRV-aware tooling resolves compatible deps.
-rust-version = "1.87"
+rust-version = "1.97"
 description = "Native-protocol LLM gateway: lossless cross-protocol translation, weighted pools, per-(pool,lane) circuit breaking, and governance — in one static Rust binary."
 license = "Apache-2.0"
 

@@ -4,7 +4,7 @@ name = "busbar-store-redis-plugin"
 version = "1.5.0"
 publish = false
 edition = "2021"
-rust-version = "1.87"
+rust-version = "1.97"
 description = "The Redis store as a droppable busbar plugin — a cdylib exporting the store C ABI. Drop it in the plugins folder and set governance.store: redis."
 license = "Apache-2.0"
 

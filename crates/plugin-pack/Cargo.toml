@@ -3,7 +3,7 @@ name = "busbar-plugin-pack"
 version = "1.5.0"
 publish = false            # internal workspace crate; never goes to crates.io
 edition = "2021"
-rust-version = "1.87"
+rust-version = "1.97"
 description = "Packaging + signing CLI for busbar plugins: builds the signed manifest over a cdylib and packages the {cdylib + manifest.json} .tar.gz the engine loads. Used by the release pipeline (BUSBAR_SIGN_KEY) and by third-party plugin authors."
 license = "Apache-2.0"
 

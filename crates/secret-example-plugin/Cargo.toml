@@ -4,7 +4,7 @@ name = "busbar-secret-example-plugin"
 version = "1.5.0"
 publish = false            # internal TEST-support cdylib; never goes to crates.io
 edition = "2021"
-rust-version = "1.87"
+rust-version = "1.97"
 description = "A hermetic trivial kind:secret plugin cdylib. Doubles as: (1) the reference implementation docs/plugins.md's secret-plugin example is checked against, so the doc example cannot silently drift from the real SecretModule trait shape the way it did before this crate existed; (2) the end-to-end over-the-ABI coverage of the DynSecret dlopen seam, which had none."
 license = "Apache-2.0"
 

@@ -4,7 +4,7 @@ name = "busbar-store-redis"
 version = "1.5.0"
 publish = false            # internal workspace crate; never goes to crates.io
 edition = "2021"
-rust-version = "1.87"
+rust-version = "1.97"
 description = "The Redis backend for busbar's durable governance store — the shared, multi-node db plugin over a KV data model. Implements busbar_api::Store on a mutex-guarded synchronous redis connection."
 license = "Apache-2.0"
 
