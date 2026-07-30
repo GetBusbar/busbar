@@ -211,9 +211,8 @@ the release's security headline: 1.x keys never expired; 1.5.0 keys are signed t
   module can never silently open the door. `busbar --validate` catches it manifest-only ahead of
   boot, and `GET /api/v1/admin/plugins?type=auth` reports a loaded auth plugin. The bundled
   `oidc` module (`busbar-auth-oidc-plugin`, `auth.chain: [oidc]`) is the first such plugin.
-  **Hook plugins are IN-PROCESS `dlopen` plugins too** (1.5.0 retired the out-of-process
-  socket/webhook hook transports): a hook is now a signed `kind: hook` plugin loaded in-process as a
-  routing policy, sharing the same artifact, trust, and inventory machinery as the store/auth plugins.
+  **Hook plugins stay OUT-OF-PROCESS** (socket/webhook transports); they share the artifact,
+  trust, and inventory machinery but are not in-process `dlopen` consumers.
 - **Admin plugin API.** The admin surface manages the plugin catalog over its own versioned
   contract: list/inspect installed plugins (manifest, signature verdict, load status), install a
   signed tarball, and remove one - with the same trust pipeline as boot (an untrusted upload is
@@ -279,11 +278,6 @@ the release's security headline: 1.x keys never expired; 1.5.0 keys are signed t
   **restart-to-apply** (listen/admin_listen socket binds, tls/admin_tls binds, admin_insecure,
   store backend — bound once at process start, store reused across hot reloads; stored durably but
   take effect on next restart).
-- **`POST /api/v1/admin/restart`** applies the restart-to-apply settings above without a shell:
-  drains through the same path a signal takes (final budget flush, state snapshot, tracing
-  shutdown), responds `202` before the drain begins, then exits. Body is optional (`{"confirm":
-  bool?}`; absent = `{}`); refuses with `409 conflict` when no process supervisor is detected and
-  `confirm` was not set, or when the process cannot restart itself. Full scope.
 - **Hot plugin reload + explicit rollback.** `POST /api/v1/admin/plugins/reload` is now a live hot
   swap: re-runs the fail-closed plugin pipeline from disk+overlay, rebuilds the registry and
   `kind: hook` transports, and old libraries drain then unmap — no restart. Fail-closed: a bad
@@ -295,12 +289,6 @@ the release's security headline: 1.x keys never expired; 1.5.0 keys are signed t
 
 ### Changed
 
-- **MSRV corrected to Rust 1.97.** The declared `rust-version` (1.87, set when `u32::is_multiple_of`
-  first required it) had drifted silently: no CI job ever built at that pin, and a transitive
-  dependency (`redis`) had since raised its own floor past it, so `cargo build` on a real 1.87
-  toolchain has failed for some time. CI has always floated on `dtolnay/rust-toolchain@stable`
-  (currently 1.97), so `rust-version` is corrected to match what is actually verified rather than
-  an unverified, already-false claim.
 - **THE SEMVER CONTRACT IS REDEFINED (and this is what makes 1.5.0 a minor).** The stable,
   SemVer-protected contract is the RUNTIME: the data-plane HTTP surface an application
   integrates against and the six wire-protocol contracts. The `config.yaml` is an OPERATOR
@@ -339,23 +327,6 @@ the release's security headline: 1.x keys never expired; 1.5.0 keys are signed t
   derived-from-the-rate-card; scoping is per-key attribution / per-group enforcement; the store
   default is documented as in-memory; the budget hard cap carries the per-node fleet caveat
   everywhere it is described.
-- **`prompt: ro`/`rw` hook projections now include reasoning/thinking text (behavior change, not
-  just a bugfix).** Anthropic `thinking`, Bedrock `reasoningContent.reasoningText`, and Responses
-  `reasoning` block text now flow into the flattened `system`/`messages` projection like any
-  other text block, closing a screening bypass (see **Security**). This widens what an
-  already-opt-in, `full`-scope-gated grant exposes: an operator who wired `prompt: ro` before
-  this release for PII/DLP screening will now also see replayed chain-of-thought text in that
-  projection (and, for a `prompt: rw` hook that echoes its projection verbatim rather than
-  abstaining, that text — or the redacted-reasoning marker — can be promoted into a real,
-  visible content block on the outgoing request via the pre-existing, not-index-aligned
-  `apply_rewrite_to_body` write-back; see `docs/hooks.md`'s `rewrite` arm). **Awareness, not a
-  migration step**: no config change is required or possible to opt back out — the previous
-  behavior was the bug. If your hook logs or forwards the `prompt` projection somewhere less
-  trusted than the hook itself, review that path against reasoning content now being present.
-  Opaque redacted reasoning (Anthropic `redacted_thinking`, Bedrock `redactedContent`, a
-  Responses `reasoning` item carrying only an opaque `encrypted_content` blob) is UNAFFECTED by
-  this widening — it still never appears as plaintext, only as the fixed
-  `[busbar:redacted_reasoning]` marker.
 
 ### Removed
 
@@ -442,46 +413,6 @@ the release's security headline: 1.x keys never expired; 1.5.0 keys are signed t
 - **Env-var YAML injection closed.** Interpolated `${VAR}` values are rejected if they carry
   YAML-structural control characters, so a compromised environment cannot splice extra config
   nodes (e.g. widen an auth allowlist) through a quoted scalar.
-- **Remaining flow-collection env-var YAML injection closed.** The control-character check above
-  only stops the newline-based breakout; a value containing a bare `,`, `"`, or `'` could still
-  splice extra structure into a YAML flow collection (`{ }` / `[ ]`, e.g. this project's own
-  documented `client_tokens: [ "${VAR}" ]` pattern) or an opaque `settings:` map with no newline at
-  all — a flow SEQUENCE has no schema defense against an extra element, and a generic
-  `serde_json::Map` settings block has no `deny_unknown_fields` equivalent against an injected
-  sibling key. Rather than enumerate more forbidden characters (which is both under-inclusive —
-  misses anchor/alias redefinition — and over-inclusive — breaks legitimate LDAP DNs, JSON blobs,
-  and Windows paths), interpolation now runs a structural-equivalence check: the template is
-  interpolated a second time with each `${VAR}` replaced by an inert placeholder, both results are
-  parsed, and the two trees must have identical map keys, sequence lengths, and node kinds at every
-  position (scalar leaf content and inferred type are exempt, since real values are expected to
-  differ there). Any shape difference is rejected, naming the responsible variable where it can be
-  isolated.
-- **Reasoning-block `prompt: ro`/`rw` hook-visibility bypass closed.** `flatten_content` /
-  `total_text_chars` / `system_text_chars` (`proxy/hooks.rs`) probed content blocks only for a
-  `text` field, so Anthropic `thinking`, Bedrock `reasoningContent.reasoningText`, and Responses
-  summary-only `reasoning` blocks were invisible to a `prompt: ro` screening gate even though
-  they ship to the provider in full — an operator-owned PII/DLP/guardrail policy-enforcement
-  point silently passing content it was deployed to inspect. Two of the three paths need no
-  forged/valid signature at all to reach the provider: Bedrock's writer has no unsigned-drop
-  filter (unlike Anthropic's egress path), and the Responses reader admits a `reasoning` item on
-  EITHER real text OR a non-empty `encrypted_content` blob alone. All three now route through a
-  protocol-dispatched extractor (keyed on the parsed ingress protocol, not on which JSON field
-  happens to be present) and are projected/counted like any other text. Opaque redacted reasoning
-  (`redacted_thinking`/`redactedContent`, which busbar cannot decrypt) is never exposed as
-  plaintext — it projects as a fixed, non-authenticated presence marker instead of silently
-  vanishing. A follow-up audit found the `encrypted_content`-only half of the Responses OR was
-  itself still a bypass after the above: a `reasoning` item admitted purely on its opaque
-  `encrypted_content` blob (no `content[]`/`summary[]` text at all) produced an empty string from
-  the text extractor and read as "nothing here" instead of the redacted-reasoning marker, and
-  separately, `content: []` (present but an EMPTY array, not absent) on a `reasoning` item bypassed
-  the reasoning-item dispatch in both `total_text_chars` and `build_prompt_projection` entirely
-  (it took the empty-array walk instead of ever reaching the reasoning extractor). Both are now
-  fixed: the extractor treats an `encrypted_content`-only item the same as the other two
-  redacted-reasoning shapes, and both callers check the item's `type` before its `content`'s
-  shape, so `content: []` no longer shadows the reasoning dispatch. Also fixes a related
-  role-inference bug: a Responses `reasoning` item was misattributed to `user` instead of
-  `assistant`, contradicting the protocol reader's own mapping on the same body. See **Changed**
-  for the resulting widened `prompt` grant scope.
 
 ## [1.4.1], 2026-07-20
 
@@ -717,7 +648,7 @@ authenticated, audited API. The routing hook grew into a hook system: gates and 
 
 This release reshapes how hooks and policies are configured. Hooks are now defined once by name and referenced
 everywhere; the old inline `policy:` block and transport-named `route:` values are replaced. **Existing
-configs need a one-time update** — see the [1.2.x → 1.3 migration guide](docs/migration-1.3.md). It is a clean
+configs need a one-time update** (see the 1.2.x → 1.3 migration guide, `docs/migration-1.3.md`). It is a clean
 cut with no silent fallbacks: an old-form key reports a clear startup error telling you exactly what to write
 instead.
 

@@ -34,8 +34,8 @@ use std::path::{Path, PathBuf};
 /// axis: every kind exports the SAME six kind-neutral C symbols at `busbar_abi() == TRANSPORT_VERSION`;
 /// `kind` only selects which payload schema (and engine seam) the cdylib speaks. The range is its
 /// endpoints; contiguity is the contract (every value between is speakable), so an additive schema
-/// bump stays in range and an old plugin of the same kind keeps loading. Store's PAYLOAD starts at
-/// `[1, 1]` (1.5.0 is the first release to carry it) until an additive bump widens the floor.
+/// bump stays in range and an old plugin of the same kind keeps loading. Store churned its PAYLOAD to
+/// v4 (all payload, zero transport); it is `[4, 4]` until an additive bump widens the floor.
 pub fn supported_abi(kind: &str) -> &'static [u32] {
     match kind {
         "store" => &[
@@ -49,10 +49,7 @@ pub fn supported_abi(kind: &str) -> &'static [u32] {
         ],
         // A `kind: auth` plugin is a first-class identity provider (the engine's auth chain consumes
         // `Box<dyn AuthModule>` via `open_auth`). Payload schema v1.
-        "auth" => &[
-            busbar_plugin_abi::AUTH_ABI_VERSION,
-            busbar_plugin_abi::AUTH_ABI_VERSION,
-        ],
+        "auth" => &[1, 1],
         // A `kind: hook` plugin is an in-process routing policy (the engine's routing/hook chains
         // consume `Arc<dyn RoutingPolicy>` via `open_hook`). The 1.5.0 replacement for the retired
         // out-of-process socket/webhook hook transport. Payload schema v1.
@@ -80,9 +77,6 @@ pub struct SkippedPlugin {
     pub file: String,
     pub manifest: Manifest,
     pub reason: String,
-    /// STRUCTURED rejection category from the trust evaluator — the authority for any label/column.
-    /// Never derive a trust label by substring-matching `reason` (it embeds plugin-controlled bytes).
-    pub kind: busbar_plugin_sign::RejectKind,
 }
 
 /// The registry of validated, loadable plugins, addressable by canonical name OR alias. Built only
@@ -322,13 +316,7 @@ pub fn discover(dir: &Path) -> Result<Vec<PathBuf>, String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(out),
         Err(e) => return Err(format!("cannot read plugins dir {}: {e}", dir.display())),
     };
-    // FAIL CLOSED on a DirEntry iteration error: a per-entry `io::Error` (corrupted inode, bad NFS
-    // mount, concurrent unlink-during-readdir) must NOT be silently dropped — swallowing it could make
-    // a configured/named plugin tarball vanish from the scan while boot still SUCCEEDS with a smaller
-    // loadable set. Propagate it so the whole scan fails rather than serving with a plugin missing.
-    for entry in entries {
-        let entry =
-            entry.map_err(|e| format!("error reading plugins dir {}: {e}", dir.display()))?;
+    for entry in entries.flatten() {
         let path = entry.path();
         let Some(file) = path.file_name().and_then(|f| f.to_str()) else {
             continue;
@@ -355,35 +343,6 @@ fn examine(path: &Path, policy: &TrustPolicy) -> FileOutcome {
         .and_then(|f| f.to_str())
         .unwrap_or("plugin")
         .to_string();
-    // Check the file's size BEFORE reading it into memory: `tarball::unpack` bounds the two
-    // DECOMPRESSED members it extracts, but that check only runs after the WHOLE compressed file
-    // has already been read into a `Vec<u8>`. A huge file planted in the plugins directory (by
-    // accident or otherwise) would otherwise be read in full - unbounded - on every boot-time scan,
-    // before any validation gets a chance to reject it.
-    // Check the file's size BEFORE reading it into memory: `tarball::unpack` bounds the two
-    // DECOMPRESSED members it extracts, but that check only runs after the WHOLE compressed file
-    // has already been read into a `Vec<u8>`. A huge file planted in the plugins directory (by
-    // accident or otherwise) would otherwise be read in full - unbounded - on every boot-time scan,
-    // before any validation gets a chance to reject it.
-    match std::fs::metadata(path) {
-        Ok(meta) if meta.len() > tarball::MAX_TARBALL_FILE_BYTES => {
-            return FileOutcome::Invalid {
-                file,
-                reason: format!(
-                    "tarball is {} bytes, exceeding the {}-byte cap",
-                    meta.len(),
-                    tarball::MAX_TARBALL_FILE_BYTES
-                ),
-            };
-        }
-        Ok(_) => {}
-        Err(e) => {
-            return FileOutcome::Invalid {
-                file,
-                reason: format!("cannot stat: {e}"),
-            };
-        }
-    }
     let bytes = match std::fs::read(path) {
         Ok(b) => b,
         Err(e) => {
@@ -415,8 +374,7 @@ fn examine(path: &Path, policy: &TrustPolicy) -> FileOutcome {
         Err(rejected) => FileOutcome::Skipped(SkippedPlugin {
             file,
             manifest: unpacked.manifest,
-            reason: rejected.reason,
-            kind: rejected.kind,
+            reason: rejected.0,
         }),
     }
 }
@@ -553,26 +511,19 @@ pub fn inventory(dir: &Path, policy: &TrustPolicy) -> Vec<InventoryEntry> {
                 loadable.push(p);
             }
             FileOutcome::Skipped(s) => {
-                // Derive the signature label from the STRUCTURED verdict (`s.kind`), NEVER by
-                // substring-matching `s.reason` — the reason embeds plugin-author-controlled bytes
-                // (`manifest.publisher`), so a crafted publisher like "anti-downgrade-bypass" could
-                // otherwise mislabel an unknown-publisher reject as "trusted (below floor)".
-                use busbar_plugin_sign::RejectKind;
-                let signature = match s.kind {
-                    RejectKind::AntiDowngrade => "trusted (below floor)",
-                    // A floored artifact that could NOT prove trust: labeled as the UNTRUSTED artifact
-                    // it is, never mislabeled "trusted (below floor)" (the round-1 regression).
-                    RejectKind::UntrustedFloored => "untrusted (below floor)",
-                    RejectKind::UnknownPublisher => "unknown-publisher",
-                    RejectKind::Tampered => "tampered",
-                    RejectKind::Unsigned => "unsigned",
-                }
-                .to_string();
-                let status = match s.kind {
-                    // Only a TRUSTED-but-below-floor artifact is a hard REJECTED row; every untrusted
-                    // reject (including a floored untrusted one) is a SKIP.
-                    RejectKind::AntiDowngrade => format!("REJECTED: {}", s.reason),
-                    _ => format!("SKIPPED: {}", s.reason),
+                let signature = if s.reason.contains("anti-downgrade") {
+                    "trusted (below floor)".to_string()
+                } else if s.reason.contains("not in the allowlist") {
+                    "unknown-publisher".to_string()
+                } else if s.reason.contains("signature") && s.reason.contains("failed") {
+                    "tampered".to_string()
+                } else {
+                    "unsigned".to_string()
+                };
+                let status = if s.reason.contains("anti-downgrade") {
+                    format!("REJECTED: {}", s.reason)
+                } else {
+                    format!("SKIPPED: {}", s.reason)
                 };
                 rows.push(InventoryEntry {
                     file: s.file,
@@ -634,7 +585,6 @@ mod tests {
         TrustPolicy {
             first_party_key: Some(first_party.verifying_key()),
             binary_version: "1.5.0".into(),
-            first_party_floors: Default::default(),
             publishers: Default::default(),
             allow_unsigned: false,
             allow_third_party: false,
@@ -643,15 +593,13 @@ mod tests {
     }
 
     fn tmpdir(tag: &str) -> PathBuf {
-        // `pid + tag` is already unique across today's 13 call sites (each passes a distinct
-        // literal tag), but a clock read is not a monotonic ticket — two threads on two cores can
-        // observe the same `SystemTime::now()` value, and routinely do on a coarse-clock platform.
-        // `crate::stage::next_seq()` is the in-tree fix for exactly this shape (already applied to
-        // `stage.rs`'s own staging-file naming); reuse it here instead of a second, weaker idiom.
         let d = std::env::temp_dir().join(format!(
             "busbar-registry-{}-{tag}-{}",
             std::process::id(),
-            crate::stage::next_seq()
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
         std::fs::create_dir_all(&d).unwrap();
         d
@@ -717,36 +665,6 @@ mod tests {
             errs[0]
         );
         assert!(errs[0].contains("invalid plugin"), "got {}", errs[0]);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// A file over `tarball::MAX_TARBALL_FILE_BYTES` is rejected by its SIZE, before `fs::read`
-    /// ever runs - not by a later gzip/tar decode failure. We prove this by making the oversize
-    /// file a SPARSE all-zeros file (cheap to create, costs no real disk or memory): `fs::read`
-    /// would happily succeed on it (it is valid, if enormous, input), so if the rejection reason
-    /// names the byte cap rather than some gzip/tar decode error, the size check - not the
-    /// decoder - is what caught it, and it caught it before the whole file was read into memory.
-    #[test]
-    fn oversize_tarball_file_is_rejected_by_size_before_being_read() {
-        let release = key(1);
-        let dir = tmpdir("oversize");
-        let path = dir.join("huge.tar.gz");
-        let f = std::fs::File::create(&path).unwrap();
-        f.set_len(tarball::MAX_TARBALL_FILE_BYTES + 1).unwrap();
-        drop(f);
-
-        let errs = scan_and_validate(&dir, &policy(&release)).unwrap_err();
-        assert_eq!(errs.len(), 1);
-        assert!(
-            errs[0].contains("huge.tar.gz"),
-            "names the file: {}",
-            errs[0]
-        );
-        assert!(
-            errs[0].contains("exceeding") && errs[0].contains("byte cap"),
-            "rejected by size, not by decode: {}",
-            errs[0]
-        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -890,9 +808,9 @@ mod tests {
         let dir = tmpdir("kind");
         let mut m = manifest("busbar-hook-ranker", "ranker", "busbar");
         m.kind = "hook".into();
-        // Stamp the hook-supported ABI version so the scan admits it and the KIND gate (not the
-        // ABI gate) is what rejects.
-        m.abi_version = busbar_plugin_abi::hook::HOOK_ABI_VERSION;
+        // Hook plugins are still on ABI v1 (the store wire bumped to v2 with the token ledger);
+        // stamp the hook-supported version so the scan admits it and the KIND gate is what rejects.
+        m.abi_version = 1;
         let m = sign(&release, m, b"hook lib");
         write_tarball(&dir, "hook.tar.gz", &m, b"hook lib");
         let reg = scan_and_validate(&dir, &policy(&release)).expect("scan");
@@ -965,47 +883,37 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Locate the REAL `busbar-store-sqlite-plugin` cdylib built from a SIBLING checkout of
-    /// `GetBusbar/store-sqlite` (mirrors the loader tests' `store_fixture_plugin_path` in
-    /// `crate::tests` exactly — see that function's doc comment for the full sibling-checkout
-    /// rationale). Used here purely to prove the tarball PIPELINE's mechanics (sign, package, scan,
-    /// resolve-by-alias, open), never sqlite-specific behavior (which is that repo's own job).
-    fn store_fixture_cdylib() -> Option<PathBuf> {
-        let candidate = {
-            let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")); // .../busbarAI/crates/plugin-loader
-            let sibling_root = manifest_dir.join("../../../store-sqlite"); // sibling of busbarAI
+    /// Locate the REAL sqlite plugin cdylib in the build's target dir (like the loader tests).
+    /// CI hardening: under CI (`cargo test --workspace` always builds it) a missing cdylib is a
+    /// HARD failure, never a silent skip.
+    fn sqlite_cdylib() -> Option<PathBuf> {
+        let candidate = (|| {
+            let exe = std::env::current_exe().ok()?;
+            let profile_dir = exe.parent()?.parent()?;
             let name = crate::plugin_library_filename("busbar_store_sqlite_plugin");
-            let candidate = sibling_root.join("target/release").join(&name);
+            let candidate = profile_dir.join(&name);
             candidate.exists().then_some(candidate)
-        };
-        if candidate.is_none()
-            && std::env::var_os("CI").is_some()
-            && std::env::var_os("DEV_GATE").is_some()
-        {
+        })();
+        if candidate.is_none() && std::env::var_os("CI").is_some() {
             panic!(
-                "the store-sqlite-plugin cdylib is not built from the ../store-sqlite sibling \
-                 checkout under dev-gate.yml: refusing to silently skip the end-to-end tarball \
-                 pipeline coverage"
+                "the sqlite plugin cdylib is not built under CI; refusing to silently skip the                  end-to-end tarball pipeline coverage"
             );
         }
         candidate
     }
 
-    /// END-TO-END, REAL CODE: package the real store-sqlite-plugin cdylib into a SIGNED tarball, run
+    /// END-TO-END, REAL CODE: package the actual sqlite store cdylib into a SIGNED tarball, run
     /// the full three-phase pipeline, resolve by ALIAS, and open a live `dyn Store` through the
     /// memfd (Linux) / private-temp loader - exercising put/get over the C ABI. This is the exact
     /// seam the engine sees: verified bytes in, `Box<dyn Store>` out, indistinguishable from a
     /// compiled-in backend.
     #[test]
     fn end_to_end_open_store_from_signed_tarball() {
-        let Some(path) = store_fixture_cdylib() else {
-            eprintln!(
-                "skip: store-sqlite-plugin cdylib not built (run `cargo build --release -p \
-                 busbar-store-sqlite-plugin` in a sibling ../store-sqlite checkout)"
-            );
+        let Some(path) = sqlite_cdylib() else {
+            eprintln!("skip: sqlite plugin cdylib not built (run under --workspace)");
             return;
         };
-        let lib = std::fs::read(&path).expect("read sibling store-sqlite-plugin cdylib");
+        let lib = std::fs::read(&path).expect("read sqlite cdylib");
         let acme = key(3);
         let dir = tmpdir("e2e");
         let m = sign(&acme, manifest("acme-store-sqlite", "sqlite", "acme"), &lib);
@@ -1018,7 +926,7 @@ mod tests {
         let reg = scan_and_validate(&dir, &pol).expect("scan");
         let store = reg
             .open_store("sqlite", r#"{"db_path": ":memory:"}"#)
-            .expect("open the real store through the full pipeline");
+            .expect("open the real sqlite store through the full pipeline");
         let key = busbar_api::VirtualKey {
             id: "vk_pipeline".into(),
             key_hash: "h".into(),
@@ -1057,164 +965,5 @@ mod tests {
             rows[0].status
         );
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// class-12 D2: a malformed `min_versions` floor SKIPS just the one floored plugin — the boot is
-    /// NOT killed — and the graduated escalation ladder (`registry.rs:374-389`'s "a rejection here is
-    /// a SKIP, unless referenced") already surfaces it: `skipped()` names the reason, and
-    /// `--list-plugins`/the admin catalog show a `REJECTED:` row. All four asserted in one test
-    /// because the graduated escalation IS the design. RED: before the fix the floor is a no-op, so
-    /// the plugin loads, `skipped()` is empty, and the index panics.
-    #[test]
-    fn a_malformed_floor_skips_the_plugin_and_keeps_the_boot_alive() {
-        let release = key(1);
-        let dir = tmpdir("malformed-floor");
-        let m = sign(
-            &release,
-            manifest("busbar-store-redis", "redis", "busbar"),
-            b"lib",
-        );
-        write_tarball(&dir, "redis.tar.gz", &m, b"lib");
-
-        let mut pol = policy(&release);
-        pol.min_versions
-            .insert("busbar-store-redis".to_string(), "v9.9.9".to_string());
-
-        let reg =
-            scan_and_validate(&dir, &pol).expect("scan must succeed — the boot is not killed");
-        assert!(
-            reg.resolve("redis").is_none(),
-            "the malformed-floor plugin must not be loadable"
-        );
-        assert!(
-            reg.skipped()[0].reason.contains("v9.9.9"),
-            "the skip reason must name the malformed floor: {}",
-            reg.skipped()[0].reason
-        );
-        let rows = inventory(&dir, &pol);
-        assert!(
-            rows[0].status.starts_with("REJECTED:"),
-            "--list-plugins / the admin catalog must show the rejection: {}",
-            rows[0].status
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// class-12 D2: the escalation's top rung — a REFERENCED plugin (e.g. `store.module`) with a
-    /// malformed floor fails the boot LOUDLY, with the reason attached, via `unresolved_reason` (the
-    /// same string `main.rs`'s hard boot error interpolates for a referenced module). Proves the
-    /// reason is available and correct; the `main.rs` interpolation itself is verified by reading
-    /// source, not by a test (no in-tree harness boots the binary).
-    #[test]
-    fn a_referenced_plugin_with_a_malformed_floor_fails_the_boot_loudly() {
-        let release = key(1);
-        let dir = tmpdir("malformed-floor-referenced");
-        let m = sign(
-            &release,
-            manifest("busbar-store-redis", "redis", "busbar"),
-            b"lib",
-        );
-        write_tarball(&dir, "redis.tar.gz", &m, b"lib");
-
-        let mut pol = policy(&release);
-        pol.min_versions
-            .insert("busbar-store-redis".to_string(), "v9.9.9".to_string());
-
-        let reg = scan_and_validate(&dir, &pol).expect("scan");
-        let reason = reg
-            .unresolved_reason("redis")
-            .expect("a malformed-floor plugin must be reportable as unresolved")
-            .reason
-            .clone();
-        assert!(
-            reason.contains("v9.9.9"),
-            "the reason `main.rs` interpolates into its hard boot error must name the floor: {reason}"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// AUDIT REGRESSION (LOW): the `--list-plugins` signature label is derived from the STRUCTURED
-    /// reject verdict (`SkippedPlugin.kind`), NOT a substring of the plugin-controlled reason. A
-    /// third-party plugin whose author crafts `publisher: "anti-downgrade-bypass"` (so the rejection
-    /// reason text contains "anti-downgrade") must still be labeled `unknown-publisher`, never
-    /// mislabeled `trusted (below floor)`. Load decisions never used this text; the fix is the label.
-    #[test]
-    fn crafted_publisher_cannot_forge_signature_label() {
-        let release = key(1);
-        let attacker = key(9);
-        let dir = tmpdir("label-forge");
-        // Validly signed by the attacker, but the publisher is NOT allowlisted → unknown-publisher.
-        // The crafted publisher name is chosen so the reason string contains "anti-downgrade".
-        let m = sign(
-            &attacker,
-            manifest("acme-store-x", "acme", "anti-downgrade-bypass"),
-            b"lib",
-        );
-        write_tarball(&dir, "acme.tar.gz", &m, b"lib");
-
-        // Default posture (no allow_third_party) → skipped as unknown-publisher.
-        let reg = scan_and_validate(&dir, &policy(&release)).expect("scan");
-        assert!(reg.resolve("acme").is_none());
-        assert_eq!(
-            reg.skipped()[0].kind,
-            busbar_plugin_sign::RejectKind::UnknownPublisher
-        );
-
-        let rows = inventory(&dir, &policy(&release));
-        assert_eq!(
-            rows[0].signature, "unknown-publisher",
-            "the crafted publisher must NOT forge a 'trusted (below floor)' label; got {}",
-            rows[0].signature
-        );
-        assert!(
-            rows[0].status.starts_with("SKIPPED:"),
-            "an unknown-publisher reject is a SKIP, not a REJECTED row: {}",
-            rows[0].status
-        );
-
-        // AUDIT REGRESSION (round 2): the SAME untrusted artifact but with a configured `min_versions`
-        // floor on its name must NEVER be labeled `trusted (below floor)`. The floor is trust-relative:
-        // `AntiDowngrade` is reserved for artifacts that proved trust. An untrusted+floored artifact is
-        // categorized as `UntrustedFloored` and labeled `untrusted (below floor)` — a hard SKIP, never
-        // a "trusted" surface. (Regression: the floor check fired BEFORE trust resolution and returned
-        // `AntiDowngrade` for this case, mislabeling it "trusted (below floor)".)
-        let mut floored = policy(&release);
-        floored
-            .min_versions
-            .insert("acme-store-x".to_string(), "2.0.0".to_string());
-        let reg = scan_and_validate(&dir, &floored).expect("scan");
-        assert!(reg.resolve("acme").is_none());
-        assert_eq!(
-            reg.skipped()[0].kind,
-            busbar_plugin_sign::RejectKind::UntrustedFloored,
-            "a floored untrusted artifact must resolve to UntrustedFloored, not AntiDowngrade"
-        );
-        let rows = inventory(&dir, &floored);
-        assert_eq!(
-            rows[0].signature, "untrusted (below floor)",
-            "a floored untrusted artifact must NOT be mislabeled 'trusted (below floor)'; got {}",
-            rows[0].signature
-        );
-        assert!(
-            rows[0].status.starts_with("SKIPPED:"),
-            "a floored untrusted reject is a SKIP, not REJECTED: {}",
-            rows[0].status
-        );
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// class-13/14 F4: `supported_abi("auth")` now reads `busbar_plugin_abi::AUTH_ABI_VERSION`
-    /// instead of the bare literal `&[1, 1]`, matching `"secret"`/`"hook"`. COMPILE-TIME GUARD, not a
-    /// RED test — see the identical note on `plugin-sdk`'s `auth_abi_version_reads_the_shared_const`.
-    #[test]
-    fn auth_supported_abi_reads_the_shared_const() {
-        assert_eq!(
-            supported_abi("auth"),
-            &[
-                busbar_plugin_abi::AUTH_ABI_VERSION,
-                busbar_plugin_abi::AUTH_ABI_VERSION
-            ]
-        );
     }
 }

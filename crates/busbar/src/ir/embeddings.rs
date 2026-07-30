@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Embeddings IR. Cross-protocol across OpenAI, Cohere, Gemini,
-//! Bedrock (NO Anthropic — it ships no embeddings API). Split request/response per;
+//! Embeddings IR (design-operations-oop.md §5b). Cross-protocol across OpenAI, Cohere, Gemini,
+//! Bedrock (NO Anthropic — it ships no embeddings API). Split request/response per §12.4;
 //! token-metered → `Billing::Tokens`.
 //!
 //! Losslessness crux (from the provider-doc review): a single response can carry MULTIPLE typed
 //! vectors AT ONCE (Cohere/Titan return float AND int8/binary), so vectors are keyed BY ENCODING in
 //! [`EmbeddingItem::vectors`] — a flat `Vec<f32>` would silently drop the others.
+#![allow(dead_code)]
 
 use crate::billing::{Billing, TokenUsage};
 use crate::lossless::SourceScopedExtra;
@@ -38,13 +39,7 @@ pub(crate) enum VectorData {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum EmbInput {
     Text(Vec<String>),
-    /// Cohere/Gemini/Bedrock accept token-array input; no 1.5.0 ingress reader constructs this
-    /// variant yet, but the superset IR must be able to express it once one does.
-    #[allow(dead_code)]
     Tokens(Vec<Vec<u32>>),
-    /// Cohere/Gemini/Bedrock accept image input for embedding; no 1.5.0 ingress reader constructs
-    /// this variant yet, but the superset IR must be able to express it once one does.
-    #[allow(dead_code)]
     Images(Vec<String>), // data-URI / base64 refs
 }
 
@@ -60,7 +55,7 @@ pub(crate) struct EmbeddingsReq {
     pub(crate) model: String,
     pub(crate) input: EmbInput,
     pub(crate) input_type: Option<String>, // Cohere/Bedrock semantic role (search_document/query/…)
-    pub(crate) task_type: Option<String>,  // Gemini task type — kept DISTINCT from input_type
+    pub(crate) task_type: Option<String>,  // Gemini task type — kept DISTINCT from input_type (§5b)
     pub(crate) title: Option<String>,      // Gemini RETRIEVAL_DOCUMENT
     pub(crate) dimensions: Option<u32>,    // OpenAI/Cohere/Gemini/Titan (one canonical field)
     pub(crate) encoding_formats: Vec<EncFmt>, // Vec: Cohere/Titan may request several at once

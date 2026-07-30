@@ -32,9 +32,8 @@ everything it models, and to make a same-protocol hop lossless for *everything*.
   - `IrResponse.model`, the upstream-reported serving model, so a pooled
     cross-protocol response still names the member that served it.
 - **The `extra` map.** `IrRequest.extra` is a passthrough `Map` for fields adjacent
-  to the modeled subset (e.g. provider-specific sampling knobs with no first-class
-  IR field). A reader can stash unmodeled request fields here; whether a given
-  writer re-emits them depends on that writer.
+  to the modeled subset (e.g. `top_p`). A reader can stash unmodeled request
+  fields here; whether a given writer re-emits them depends on that writer.
 - **Lossy by necessity.** Anything neither modeled in the IR enums nor carried in
   `extra` does not survive a *cross-protocol* hop. **Same-protocol routes use the IR
   path but remain byte-exact.** `StreamTranslate::new_same_proto` re-emits the
@@ -141,15 +140,11 @@ InMemoryStore {
 - **`compute_cooldown_with_retry_after`**: exponential backoff doubling from
   `base_cooldown_secs` to `max_cooldown_secs`, indexed by `streak`, with ±10%
   jitter once `streak > 0`. A server `Retry-After` is honored as a **floor**,
-  `duration.max(retry_after.min(max_honored_retry_after_secs))`: even beyond
-  `max_cooldown_secs`, but clamped to `limits.max_honored_retry_after_secs`
-  (default 86400s) so a hostile or buggy upstream can never park a lane down
-  indefinitely by returning an absurd `Retry-After`.
+  `duration.max(retry_after)`: even beyond `max_cooldown_secs`.
 - **Hard-down** (`record_hard_down_for`) bypasses trip evaluation: it sets the
-  cell to Open with a sticky cooldown (default 1800s, operator-configurable via
-  `limits.hard_down_cooldown_secs`) and records a `dead_reason`, but deliberately
-  does **not** set the lane-global `dead` flag, so the half-open probe (or an
-  active probe) can still recover it.
+  cell to Open with a fixed sticky cooldown (`HARD_DOWN_COOLDOWN_SECS` = 1800s)
+  and records a `dead_reason`, but deliberately does **not** set the lane-global
+  `dead` flag, so the half-open probe (or an active probe) can still recover it.
 
 > `OutcomeWindow` is a bounded ring of timestamps (capacity 1024); `count_in_window`
 > filters to entries within `now - window_s`. Memory is bounded regardless of
@@ -220,7 +215,7 @@ approximate, but eligibility filtering and long-run proportionality hold. See
 
 ---
 
-## 5. Governance internals
+## 5. Governance internals (ADR-0009)
 
 `crates/busbar/src/governance/mod.rs` is a **separate** durable store from the hot in-memory
 `StateStore`; it holds only bounded enforcement state.

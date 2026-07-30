@@ -15,6 +15,7 @@
 //! STREAMING translation additionally rides the stream-event machinery those same vtables provide
 //! (`read_response_events`/`write_response_event`), reached through the engine only after the
 //! dispatch has resolved THIS handler.
+#![allow(dead_code)]
 
 use crate::handlers::{CodecError, IngressReject, OperationHandler, WireBody};
 use crate::ir::variant::{IrReq, IrResp};

@@ -125,29 +125,6 @@ pub(crate) struct RawUpstreamError {
     pub(crate) retry_after_secs: Option<u64>,
 }
 
-/// Parse a `Retry-After` header value. RFC 9110 §10.2.3 defines the field as
-/// `delay-seconds / HTTP-date`; BOTH forms are normative and providers send both. Parsing only the
-/// integer form silently discards the provider's stated cooldown floor on every date-form response,
-/// leaving the breaker to guess.
-pub(crate) fn parse_retry_after(headers: &axum::http::HeaderMap) -> Option<u64> {
-    let s = headers
-        .get(axum::http::header::RETRY_AFTER)?
-        .to_str()
-        .ok()?;
-    let s = s.trim();
-    if let Ok(n) = s.parse::<u64>() {
-        return Some(n);
-    }
-    // A date already in the past means "retry now", not "retry in a very long time" — hence
-    // saturating_duration_since, which floors at zero.
-    let at = httpdate::parse_http_date(s).ok()?;
-    Some(
-        at.duration_since(std::time::SystemTime::now())
-            .unwrap_or_default()
-            .as_secs(),
-    )
-}
-
 /// Classify a raw upstream error into a canonical signal using an error_map.
 /// Stage 1b (provider normalizer): data-driven mapping from raw errors to StatusClass.
 pub(crate) fn normalize_raw_error(
@@ -455,44 +432,5 @@ mod tests {
         };
         let sig = normalize_raw_error(&raw, &HashMap::new());
         assert_eq!(sig.class, StatusClass::RateLimit); // from HTTP 429
-    }
-
-    fn headers_with_retry_after(v: &str) -> axum::http::HeaderMap {
-        let mut h = axum::http::HeaderMap::new();
-        h.insert(
-            axum::http::header::RETRY_AFTER,
-            axum::http::HeaderValue::from_str(v).unwrap(),
-        );
-        h
-    }
-
-    #[test]
-    fn retry_after_accepts_the_http_date_form() {
-        let at = std::time::SystemTime::now() + std::time::Duration::from_secs(120);
-        let date = httpdate::fmt_http_date(at);
-        let secs = parse_retry_after(&headers_with_retry_after(&date));
-        let n = secs.expect("HTTP-date Retry-After must parse");
-        assert!((115..=120).contains(&n), "got {n}");
-    }
-
-    #[test]
-    fn retry_after_accepts_delay_seconds() {
-        // Regression proof: passes before and after — the integer form already worked.
-        assert_eq!(
-            parse_retry_after(&headers_with_retry_after("120")),
-            Some(120)
-        );
-    }
-
-    #[test]
-    fn a_past_http_date_retry_after_floors_at_zero() {
-        let at = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
-        let date = httpdate::fmt_http_date(at);
-        assert_eq!(parse_retry_after(&headers_with_retry_after(&date)), Some(0));
-    }
-
-    #[test]
-    fn a_missing_retry_after_is_none() {
-        assert_eq!(parse_retry_after(&axum::http::HeaderMap::new()), None);
     }
 }

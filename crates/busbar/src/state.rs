@@ -197,9 +197,6 @@ pub(crate) struct App {
     pub(crate) tslots: Arc<crate::telemetry::AppSlots>,
     pub(crate) lanes: Vec<Lane>,
     pub(crate) store: Arc<dyn StateStore>,
-    /// The health-probe schedule, shared by every clone-derived snapshot of this lineage so a swap
-    /// does not reset the probe phase. See [`crate::health::ProbeSchedule`].
-    pub(crate) probe_schedule: Arc<crate::health::ProbeSchedule>,
     pub(crate) by_model: HashMap<String, usize>,
     /// Pool members, each carrying a lane index and its configured weight.
     pub(crate) pools: HashMap<String, Vec<WeightedLane>>,
@@ -287,7 +284,7 @@ pub(crate) struct App {
     // Read by the Phase 1 groups-CRUD PUT/DELETE base-shadow guard (task #100); carried here first.
     #[allow(dead_code)]
     pub(crate) base_group_names: std::collections::HashSet<String>,
-    /// Per-principal ADMIN MUTATION rate limiter. Arc-shared across apply snapshots so the
+    /// Per-principal ADMIN MUTATION rate limiter (§6.6). Arc-shared across apply snapshots so the
     /// windows survive every swap.
     pub(crate) mutation_limiter: Arc<crate::admin::rate::MutationLimiter>,
     /// Idempotency-Key replay cache for key minting (bounded, ~10min TTL): a retried POST with the
@@ -307,7 +304,7 @@ pub(crate) struct App {
     /// The ADMIN auth chain (`admin_auth:` module names, default `[admin-tokens]`) — executed by
     /// the auth middleware for `/admin` paths. Empty = the explicit OPEN admin posture (dev).
     pub(crate) admin_chain: Vec<String>,
-    /// The credential cache — Arc-shared ACROSS config swaps (like the
+    /// The credential cache (design-hooks-v2 §2.5) — Arc-shared ACROSS config swaps (like the
     /// mutation limiter): an apply/reload must not silently re-open every cached-allow window.
     pub(crate) credential_cache: Arc<crate::auth_cache::CredentialCache>,
     /// Per-module `max_admin_scope:` ceilings (from the auth chain entries) - consulted at admin
@@ -332,17 +329,11 @@ pub(crate) struct App {
     /// tooling can tell whether the running config changed since a prior read. Process-local (resets on
     /// restart); durable version history + rollback is a follow-up.
     pub(crate) config_version: u64,
-    /// Anti-sprawl cap on keys BOUND TO ONE GROUP.
-    /// Because a `user:<sub>` leaf IS the principal, this is effectively "max keys per principal".
+    /// Anti-sprawl cap on keys BOUND TO ONE GROUP (self-service §6a; `limits.max_keys_per_principal`).
+    /// Because a `user:<sub>` leaf IS the principal (§5), this is effectively "max keys per principal".
     /// `0` = unlimited (default). Enforced at `POST /keys`; carried on the snapshot so a config apply
     /// can change it (survives `App::clone`).
     pub(crate) max_keys_per_principal: usize,
-    /// Anti-sprawl cap on the NUMBER of groups a mint may AUTO-PROVISION
-    /// (`limits.max_auto_provisioned_groups`). The key cap bounds a group's contents; this bounds
-    /// the tree's SHAPE, which a `mint`-scope credential could otherwise grow without bound
-    /// (round-5 #20). `0` = unlimited (default). Carried on the snapshot for the same reason as
-    /// `max_keys_per_principal`.
-    pub(crate) max_auto_provisioned_groups: usize,
     /// Default failover config (deadline_s and max_failover cap) when a pool has no override.
     pub(crate) failover_cfg: Option<crate::config::FailoverCfg>,
     /// Per-pool runtime config (failover/exclusions today; breaker/affinity as they're wired).
@@ -425,7 +416,7 @@ impl AppHandle {
 
     /// Atomically replace the current snapshot (the admin config-mutation seam: reload, apply, and every
     /// hook/auth mutation). Re-spawns the health probers against `next`: probers hold a `Weak<App>` and
-    /// exit once the App they were spawned against drops, so EVERY swap must re-attach them —
+    /// exit once the App they were spawned against drops (audit H2), so EVERY swap must re-attach them —
     /// otherwise the first admin mutation replaces the boot App, the boot App drops as in-flight requests
     /// drain, its probers exit, and active/dead health probing silently STOPS even though lanes/health are
     /// unchanged (audit 1.4.0: only reload/apply re-spawned; the six hook/auth-mutation swaps did not).
@@ -433,29 +424,6 @@ impl AppHandle {
     pub(crate) fn swap(&self, next: Arc<App>) {
         *self.current.write().unwrap_or_else(|e| e.into_inner()) = next.clone();
         crate::health::spawn_probers(&next);
-    }
-
-    /// Commit a live-config mutation as PERSIST-then-SWAP, FAIL-CLOSED — the ONE sanctioned way to
-    /// apply a mutation that must survive a restart. `persist` writes the DESIRED overlay to disk; only
-    /// if it succeeds do we `swap` the live engine to `next`. On a persist error nothing swaps and the
-    /// error is returned (the caller records `OUTCOME_REJECTED` and returns a 4xx/5xx) — the running
-    /// engine is left exactly as it was.
-    ///
-    /// Why this direction is the safe one, in ONE place so reset and rollback cannot diverge: a crash
-    /// between persist and swap restarts ALREADY-APPLIED (disk carries the operator's change), the
-    /// direction they asked for. The old swap-then-persist sites had the opposite failure window — a
-    /// persist failure (or a crash before it) left the live engine AHEAD of disk, so a restart silently
-    /// REVERTED the operator's applied change. `plugin.rollback` already used this discipline
-    /// (persist-then-swap, fail-closed) because its rebuild re-reads the overlay; routing every mutation
-    /// through here makes that discipline uniform rather than a rollback-only special case.
-    pub(crate) fn commit_and_swap(
-        &self,
-        next: Arc<App>,
-        persist: impl FnOnce() -> Result<(), String>,
-    ) -> Result<(), String> {
-        persist()?; // fail-closed: if disk didn't take it, do not swap.
-        self.swap(next); // only after the desired state is durable.
-        Ok(())
     }
 }
 

@@ -40,49 +40,6 @@ const VK_ID_PREFIX: &str = "vk_";
 const VK_ID_HASH_PREFIX_LEN: usize = 16;
 /// The `"sk-bb-"` prefix for bearer secrets returned by `generate_secret`.
 const SK_SECRET_PREFIX: &str = "sk-bb-";
-/// The `key_hash` MARKER prefix of a 1.5.0 signed-token binding row. A signed-token key has NO
-/// hashed bearer secret: the token is the credential, and the `key_hash` column holds
-/// `binding:<id>:<generation>` purely to satisfy the store's `UNIQUE(key_hash)` constraint and to
-/// carry the rotation generation durably. Because the marker can never equal a SHA-256 hex digest,
-/// a binding row is structurally unreachable from the legacy hashed-secret lookup path.
-pub(crate) const BINDING_MARKER_PREFIX: &str = "binding:";
-
-/// The `key_hash` marker for a signed-token binding at a given rotation generation.
-pub(crate) fn binding_marker(id: &str, generation: &str) -> String {
-    format!("{BINDING_MARKER_PREFIX}{id}:{generation}")
-}
-
-/// The rotation GENERATION carried by a binding row's `key_hash` marker, if any. `None` for a
-/// legacy hashed-secret key (a real digest) AND for a pre-generation binding marker
-/// (`binding:<id>`, minted before rotation carried a generation) — in both cases only a token
-/// likewise carrying no generation may verify.
-pub(crate) fn binding_generation(key_hash: &str) -> Option<&str> {
-    key_hash
-        .strip_prefix(BINDING_MARKER_PREFIX)?
-        .split_once(':')
-        .map(|(_id, generation)| generation)
-}
-
-/// Whether a presented token's generation claim matches the binding row's CURRENT generation —
-/// the rotation gate on the signed-token verify path. Exact equality including the `None` case:
-/// a pre-generation token (`None`) verifies only against a pre-generation binding (`None`), so a
-/// rotation can never be defeated by simply omitting the claim.
-pub(crate) fn generation_matches(key_hash: &str, presented: Option<&str>) -> bool {
-    binding_generation(key_hash) == presented
-}
-
-/// Whether `key_hash` is a signed-token BINDING marker rather than a hashed bearer secret.
-pub(crate) fn is_binding_marker(key_hash: &str) -> bool {
-    key_hash.starts_with(BINDING_MARKER_PREFIX)
-}
-
-/// A fresh unguessable binding GENERATION (128 bits of OS CSPRNG, hex). Fails closed on no entropy,
-/// exactly like every other credential-shaped draw in this module.
-fn generate_binding_generation() -> Result<String, getrandom::Error> {
-    let mut raw = [0u8; 16];
-    getrandom::fill(&mut raw)?;
-    Ok(hex::encode(raw))
-}
 
 // ── AWS-key formats ───────────────────────────────────────────────────────────────────────────────
 /// The literal `"AKIA"` prefix required by AWS SDK validators for long-term AccessKeyIds.
@@ -140,13 +97,6 @@ struct BudgetCell {
     /// actually used), scanned linearly.
     models: Vec<ModelCell>,
     dirty: bool,
-    /// Wall-clock of the last accrual or admission charge. The eviction sweep ages cells by
-    /// `window_start`, but a key's own bucket and a synthesized SSO principal's bucket both live in
-    /// the all-time window (`window_start == 0`), which never ages — so those cells were retained
-    /// for the process lifetime even after the key was deleted or the principal stopped appearing.
-    /// `dirty` alone cannot substitute: the flusher clears it every 100ms, so a busy cell is
-    /// legitimately clean and would be swept mid-use.
-    last_touch: u64,
 }
 
 impl BudgetCell {
@@ -183,20 +133,6 @@ impl BudgetCell {
         self.models.iter().map(|m| (&*m.model, &m.cur))
     }
 
-    /// Drop DEAD `ModelCell`s so the `models` Vec cannot grow without bound in a long-lived,
-    /// never-rolled cell (the all-time `window_start == 0` cell, which the sweep never ages out).
-    /// `accrue` interns a `ModelCell` on the FIRST sight of a (bucket, model) pair — including a
-    /// zero-token response — so over a long-running process a bucket accumulates one entry per model
-    /// name EVER seen, most of them long dormant. A cell is DEAD iff it carries no current tokens
-    /// (`cur.total() == 0`) AND nothing unflushed (`flushed.total() == 0`): removing it loses no
-    /// enforcement truth (its token contribution is zero) and no unacked write-behind delta (there is
-    /// none). A model that later reappears is simply re-interned by `accrue`. Called from the
-    /// amortized cell sweep, so it costs one linear pass on the same cadence as the stale-cell prune.
-    fn prune_dead_models(&mut self) {
-        self.models
-            .retain(|m| m.cur.total() != 0 || m.flushed.total() != 0);
-    }
-
     /// Total current tokens across models and tiers (the legacy scalar view for admin reads).
     fn total_tokens(&self) -> u64 {
         self.models
@@ -221,7 +157,7 @@ pub(crate) enum LimitBlocked {
         window: Option<&'static str>,
         pool: Option<String>,
         /// For a BUDGET block whose limit declared `on_exhaust: downgrade`: the pool ingress
-        /// should re-admit + dispatch through instead of refusing. `None` = block.
+        /// should re-admit + dispatch through instead of refusing (§6c). `None` = block.
         downgrade_to: Option<String>,
         retry_after: Option<u64>,
     },
@@ -276,28 +212,6 @@ pub(crate) struct DerivedUsage {
     pub(crate) tokens: u64,
     pub(crate) requests: u64,
 }
-
-/// THE REVOCATION STALENESS WINDOW (seconds). The in-memory denylist is a CACHE of the durable
-/// store's revocation set, not the truth: every auth path re-reads the store denylist when its copy
-/// is older than this, so a revoke performed on ANOTHER NODE of a fleet sharing one store — or
-/// written out-of-band directly against the store — is honoured here within at most this many
-/// seconds. A revoke performed on THIS node is applied to the in-memory set synchronously by
-/// [`GovState::revoke`] and takes effect on the very next check (zero window).
-///
-/// The re-read is SCHEDULED by the request path, not performed by it (see
-/// [`revocation::RevocationSync`]), so a peer's revoke lands within roughly two of these windows on
-/// a healthy store — the price of never parking a reactor thread inside a store call.
-///
-/// WHY 5s: the re-read costs ONE small store query per node per window regardless of request rate
-/// (single-flighted by a CAS on the attempt stamp), so at 5s even a 50k-RPS node adds 0.2
-/// queries/sec — negligible — while bounding the worst case that matters (a compromised credential
-/// still authenticating after the operator revoked it) to seconds rather than the lifetime of the
-/// process. Shorter windows buy little (a revoke is an operator action measured in seconds anyway)
-/// and start to matter for a network-backed store plugin; longer windows re-open the hole this
-/// closes. It is deliberately a CONSTANT, not a knob: an operator cannot accidentally widen a
-/// security window, and there is no deployment for which "revocation lands within 5 seconds" is
-/// wrong.
-pub(crate) const REVOCATION_SYNC_TTL_SECS: u64 = 5;
 
 /// Number of shards for the per-key enforcement maps (`rate`, `budget`, `token_spend_carry`). A
 /// power of two so `hash & (N-1)` selects the shard with a mask (no modulo). 64 keeps lock
@@ -431,11 +345,6 @@ struct GovCaches {
     /// and threaded read-only through governance/routing, so sharing it via `Arc` is exact.
     by_hash: HashMap<String, Arc<VirtualKey>>,
     by_access_key_id: HashMap<String, AwsKeyEntry>,
-    /// Subject id (the key id / token `sub`) → key. The O(1) index behind `lookup_by_sub` (the
-    /// signed-token verify hot path, M6) — replacing an O(n) linear scan of `by_hash.values()` under
-    /// the read lock. Shares the same `Arc<VirtualKey>` rows as `by_hash`, rebuilt from the SAME
-    /// snapshot by `refresh`, so it can never drift from the other indices.
-    by_id: HashMap<String, Arc<VirtualKey>>,
 }
 
 /// Per-instance governance runtime: the durable `Store` plus an in-memory key cache (hashed-secret
@@ -453,15 +362,10 @@ pub(crate) struct GovState {
     /// touching the map again. Read-locked on the hot path (atomics mutate through a shared ref);
     /// write-locked only to materialise a gauge on first sight.
     concurrent: RwLock<HashMap<String, Arc<std::sync::atomic::AtomicI64>>>,
-    /// SHA-256 hex digest of the configured /admin bearer token. The plaintext token is NOT retained
-    /// — only its digest, which is all the constant-time compare on the /admin path needs (less
-    /// plaintext secret held in memory). `None` = admin API disabled.
-    ///
-    /// RE-SETTABLE (`set_admin_token`): `GovState` is process-lifetime and is REUSED across every
-    /// config apply/reload (the key cache, ledgers and rate windows must survive one), so a digest
-    /// frozen at construction meant rotating `auth.admin_auth`'s token secret and reloading had NO
-    /// effect — the process kept accepting the boot-time credential forever.
-    admin_token_hash: RwLock<Option<String>>,
+    /// SHA-256 hex digest of the configured /admin bearer token, computed once at construction. The
+    /// plaintext token is NOT retained — only its digest, which is all the constant-time compare on
+    /// the /admin path needs (less plaintext secret held in memory). `None` = admin API disabled.
+    admin_token_hash: Option<String>,
     /// AUTHORITATIVE in-memory TOKEN-LEDGER cells - the hard-cap admission state consulted (and
     /// charged) on the request hot path with NO await and NO store round-trip. Keyed by BUCKET id:
     /// a virtual key's id, or `group:<name>` for a budget-group bucket - key buckets and group
@@ -476,84 +380,18 @@ pub(crate) struct GovState {
     /// stores raw tokens and spend derives at read time, so there is no remainder to carry and no
     /// O(n) carry sweep to amortize.
     budget: Sharded<BudgetCell>,
-    /// Write-behind ACCUMULATOR for metering rows, keyed by the stores' own upsert key
-    /// `(key_id, bucket, model, provider)`. `record_metering` is a hot-path sync fn (no await,
-    /// called from the response tap) so this is a `std::sync::Mutex`, not a tokio one — matches
-    /// `flush_metering`, which runs inside `spawn_blocking` and also never awaits. `flush_metering`
-    /// DRAINS this map (not a baseline like `budget`): metering cells are authoritative for
-    /// nothing — nothing enforces against them, the store is the only consumer — so there is no
-    /// running total to protect and a drained-empty entry needs no reaper or growth cap.
-    pending_metering: std::sync::Mutex<HashMap<(String, u64, String, String), MeterCounts>>,
-    /// The busbar SIGNING material (1.5.0, S1/S2) — the mint-side signer paired with the
-    /// verify-side public keyset, held together so they can never drift. `Some` once a signing key
-    /// is resolved/generated at boot; `None` in the (test) path that constructs GovState without
-    /// signing (SigV4-only / legacy-hash tests).
-    ///
-    /// RE-SETTABLE (`set_signing_key`) for the same reason as `admin_token_hash`: `auth.signing_key`
-    /// is a SecretRef, and a reused `GovState` never re-resolved it, so rotating the underlying
-    /// secret and reloading silently kept minting and accepting tokens under the old key. Read as an
-    /// `Arc` clone on the verify hot path, so the lock is held only for the clone.
-    signing: RwLock<Option<Arc<SigningMaterial>>>,
-    /// The revocation DENYLIST as an in-memory set of subject ids, hydrated from the store at boot,
-    /// updated live on revoke, and RE-HYDRATED from the store on a bounded TTL (see
-    /// [`REVOCATION_SYNC_TTL_SECS`]). A verified token whose `sub` is present is rejected - the ONLY
-    /// state the otherwise-stateless verify path reads.
-    ///
-    /// The re-hydration is a blocking store round-trip and the auth path is an `async fn` on a Tokio
-    /// worker, so the set and its refresh live in [`revocation::RevocationSync`], which keeps the
-    /// read OFF the reactor and BOUNDS it. The request path only ever reads the set; see that
-    /// module's docs for why, and for what the offload costs.
-    denylist: Arc<revocation::RevocationSync>,
-    /// Serializes `refresh` so a slow reader-load cannot clobber a newer swap (lost-update guard).
-    /// `refresh` loads the full key set from the store OUTSIDE the `caches` write lock (to keep that
-    /// critical section short), then swaps. Without serialization, two concurrent refreshes could
-    /// interleave load-A, load-B, swap-B, swap-A where load-A predates B's committed mutation — so
-    /// the final cache is missing B's key until the next mutation. Holding this mutex across the
-    /// ENTIRE load→swap means a later refresh's load begins only after the earlier refresh's swap
-    /// has committed, so it can never contain strictly-older store state. Guarded data is `()`;
-    /// a poisoned lock is recovered with `into_inner()` (serializing is strictly better than not).
-    refresh_lock: std::sync::Mutex<()>,
-}
-
-/// The busbar signing key as ONE unit: the mint-side signer and the verify-side keyset derived
-/// from it. Swapped atomically by `GovState::set_signing_key`, so a reload can never leave the
-/// engine minting under one key while verifying under another.
-pub(crate) struct SigningMaterial {
-    signer: crate::governance::signing::TokenSigner,
-    verifier: crate::governance::signing::TokenVerifier,
-}
-
-impl SigningMaterial {
-    /// Derive the verifier from the signer (the only construction path — they cannot drift).
-    fn new(signer: crate::governance::signing::TokenSigner) -> Self {
-        let verifier =
-            crate::governance::signing::TokenVerifier::single(signer.kid(), signer.verifying_key());
-        Self { signer, verifier }
-    }
-}
-
-/// What `POST /keys/{id}/rotate` re-issued — the credential shape the key actually carries. The
-/// once-shown material differs per arm, and the handler renders each accordingly.
-pub(crate) enum RotatedCredential {
-    /// A 1.5.0 signed-token binding: a freshly-minted token at a NEW binding generation. Every
-    /// token issued before the rotation is now rejected by `verify_token`.
-    Token {
-        key: VirtualKey,
-        token: String,
-        exp: u64,
-    },
-    /// A legacy hashed-secret key: a fresh bearer secret (its only credential). The old secret stops
-    /// resolving immediately.
-    Secret { key: VirtualKey, secret: String },
-}
-
-impl RotatedCredential {
-    /// The rotated key's metadata (shared by both arms).
-    pub(crate) fn key(&self) -> &VirtualKey {
-        match self {
-            RotatedCredential::Token { key, .. } | RotatedCredential::Secret { key, .. } => key,
-        }
-    }
+    /// The busbar TOKEN SIGNER (1.5.0, S1/S2): mints signed `{sub, exp, kid}` key tokens. `Some`
+    /// once a signing key is resolved/generated at boot; `None` in the (test) path that constructs
+    /// GovState without signing (SigV4-only / legacy-hash tests).
+    signer: Option<crate::governance::signing::TokenSigner>,
+    /// The STATELESS token VERIFIER (public keyset). Verifies a presented token's signature + expiry
+    /// before any store read; policy is then resolved by `sub`. `Some` iff `signer` is.
+    verifier: Option<crate::governance::signing::TokenVerifier>,
+    /// The revocation DENYLIST as an in-memory set of subject ids, hydrated from the store at boot
+    /// and updated live on revoke. A verified token whose `sub` is present is rejected - the ONLY
+    /// state the otherwise-stateless verify path reads. Under an `RwLock` (read on the hot path,
+    /// write only on revoke).
+    denylist: RwLock<std::collections::HashSet<String>>,
 }
 
 /// Parameters for minting a new virtual key (from the management API) - PURE AUTH (S1): identity,
@@ -569,7 +407,6 @@ pub(crate) struct NewKeySpec {
     pub(crate) labels: std::collections::BTreeMap<String, String>,
 }
 
-pub(crate) mod revocation;
 pub(crate) mod signing;
 mod state;
 
@@ -831,17 +668,6 @@ pub(crate) use busbar_api::UsageLedger;
 /// per-model aggregation ACROSS keys has one well-defined time base.
 pub(crate) const METERING_BUCKET_SECS: u64 = 86_400;
 
-/// One `pending_metering` entry: the same five counters `MeteringDelta` carries, accumulated
-/// in-memory across every `record_metering` call that lands on this key before the next flush.
-#[derive(Default, Clone, Copy)]
-pub(crate) struct MeterCounts {
-    pub(crate) requests: u64,
-    pub(crate) tokens_input: u64,
-    pub(crate) tokens_output: u64,
-    pub(crate) tokens_cache_read: u64,
-    pub(crate) tokens_cache_creation: u64,
-}
-
 /// Floor an epoch to its UTC-day metering bucket start.
 pub(crate) fn metering_bucket(now: u64) -> u64 {
     now - (now % METERING_BUCKET_SECS)
@@ -866,20 +692,18 @@ impl<T> IntoStoreResult<T> for Result<T, getrandom::Error> {
 // crate::main's store selection + busbar-plugin-loader).
 pub(crate) use busbar_store_memory::MemoryStore;
 
-/// The write-behind flusher: on a fixed cadence (and once more on graceful shutdown) pushes the
-/// dirty in-memory budget cells, the accumulated `pending_metering` rows, AND the durable audit log's
-/// pending write-through (`admin::audit::AuditLog::flush_durable`) to the durable store off the
-/// request hot path. Mirrors the D3 `state_persist::spawn_snapshotter` shape — a spawned loop
-/// that ticks, does the durable write, and runs one FINAL flush on the shutdown signal so a graceful
-/// stop loses nothing. The in-memory budget cells stay AUTHORITATIVE for enforcement; metering cells
-/// are authoritative for nothing (the store is their only consumer). `flush_budgets` and
-/// `flush_metering` are best-effort and re-queue their unwritten data on a store error, so a
-/// transient write failure is retried on the next tick rather than lost; `flush_durable` is likewise
-/// best-effort — see `admin::audit::WRITE_THROUGH_HEADROOM` for what backstops it when a tick stalls.
+/// The write-behind budget flusher: on a fixed cadence (and once more on graceful shutdown) push the
+/// dirty in-memory budget cells to the durable store off the request hot path. Mirrors the D3
+/// `state_persist::spawn_snapshotter` shape — a spawned loop that ticks, does the durable write, and
+/// runs one FINAL flush on the shutdown signal so a graceful stop loses nothing. The in-memory cells
+/// stay AUTHORITATIVE for enforcement; this only keeps SQLite eventually-consistent for restart
+/// crash-recovery (`hydrate_budgets`) and the historical/telemetry reads. `flush_budgets` is
+/// best-effort and re-marks a cell dirty on a store error, so a transient write failure is retried on
+/// the next tick rather than lost.
 pub(crate) fn spawn_budget_flusher(
     gov: std::sync::Arc<GovState>,
     mut shutdown: tokio::sync::broadcast::Receiver<()>,
-) -> tokio::task::JoinHandle<()> {
+) {
     let interval = std::time::Duration::from_millis(crate::limits::usage_flush_interval_ms());
     // SERIALIZE flushes: `flush_budgets` snapshots each dirty cell's DELTA against its acked
     // baseline and `add_usage`-accumulates it, advancing the baseline only on success. If a slow
@@ -912,12 +736,6 @@ pub(crate) fn spawn_budget_flusher(
                     let gov = gov.clone();
                     tokio::task::spawn_blocking(move || {
                         gov.flush_budgets();
-                        gov.flush_metering();
-                        // Reuses this same tick/gate/offload plumbing for the audit log's
-                        // write-behind drain: `durable_write_through`'s
-                        // unit of work is already a coalescing RANGE, so one call here persists
-                        // every seq `record_by`'s pressure valve left pending since the last tick.
-                        crate::admin::audit::AUDIT.flush_durable();
                         drop(guard);
                     });
                 }
@@ -934,8 +752,6 @@ pub(crate) fn spawn_budget_flusher(
                     let gov = gov.clone();
                     let _ = tokio::task::spawn_blocking(move || {
                         gov.flush_budgets();
-                        gov.flush_metering();
-                        crate::admin::audit::AUDIT.flush_durable();
                         drop(guard);
                     })
                     .await;
@@ -943,7 +759,7 @@ pub(crate) fn spawn_budget_flusher(
                 }
             }
         }
-    })
+    });
 }
 
 #[cfg(test)]
@@ -953,54 +769,3 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/limits_tests.rs"]
 mod limits_tests;
-
-#[cfg(test)]
-mod budget_cell_tests {
-    use super::*;
-
-    /// AUDIT: the sweep's `prune_dead_models` bounds the per-cell `models` Vec so a
-    /// never-rolled cell cannot accumulate a dead entry per model name ever seen. A model with live
-    /// tokens (or an unacked flush delta) is KEPT (enforcement/write-behind truth); a zero-token,
-    /// fully-flushed entry is DROPPED; a re-appearing model is simply re-interned by `accrue`.
-    #[test]
-    fn prune_dead_models_drops_only_zero_token_fully_flushed_entries() {
-        let tok = |n: u64| busbar_api::TierTokens {
-            input: n,
-            output: 0,
-            cache_read: 0,
-            cache_write: 0,
-        };
-        let mut cell = BudgetCell::fresh(0); // the all-time cell that the sweep never ages out
-        cell.accrue("live-model", &tok(10)); // real tokens → must be KEPT
-        cell.accrue("dead-model", &tok(0)); // interned with zero tokens → dead, must be DROPPED
-                                            // An entry that was charged then FLUSHED (cur == flushed, both non-zero) still carries the
-                                            // window's enforcement total, so it must be KEPT.
-        cell.accrue("flushed-model", &tok(5));
-        if let Some(m) = cell
-            .models
-            .iter_mut()
-            .find(|m| &*m.model == "flushed-model")
-        {
-            m.flushed = m.cur;
-        }
-        assert_eq!(cell.models.len(), 3, "all three interned before the prune");
-
-        cell.prune_dead_models();
-
-        let names: Vec<&str> = cell.models.iter().map(|m| &*m.model).collect();
-        assert!(names.contains(&"live-model"), "live tokens kept: {names:?}");
-        assert!(
-            names.contains(&"flushed-model"),
-            "flushed-but-nonzero kept: {names:?}"
-        );
-        assert!(
-            !names.contains(&"dead-model"),
-            "zero-token dead entry pruned: {names:?}"
-        );
-        assert_eq!(cell.models.len(), 2);
-
-        // A re-appearing model is re-interned on the next accrue (prune is not permanent).
-        cell.accrue("dead-model", &tok(3));
-        assert!(cell.models.iter().any(|m| &*m.model == "dead-model"));
-    }
-}

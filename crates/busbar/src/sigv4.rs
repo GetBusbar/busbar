@@ -1009,7 +1009,7 @@ mod tests {
 
     #[test]
     fn test_parse_authorization_header_skips_unknown_sections() {
-        // An UNKNOWN section (AWS clients may emit extras) is SKIPPED, not rejected — as long as
+        // F3: an UNKNOWN section (AWS clients may emit extras) is SKIPPED, not rejected — as long as
         // the three mandatory sections are present and well-formed.
         let v = "AWS4-HMAC-SHA256 Credential=AKID/20150830/us-east-1/bedrock/aws4_request, \
                  SignedHeaders=host;x-amz-date, Signature=abc123, X-Future-Extension=whatever";
@@ -1070,7 +1070,7 @@ mod tests {
 
     #[test]
     fn test_verify_inbound_sigv4_exact_skew_boundary_accepted() {
-        // The clock-skew check is `skew > CLOCK_SKEW_SECS` (strict >), so a skew EXACTLY equal to
+        // M4: the clock-skew check is `skew > CLOCK_SKEW_SECS` (strict >), so a skew EXACTLY equal to
         // the bound must be ACCEPTED (only strictly-greater is Expired). Pins the boundary.
         let secret = "the-real-secret";
         let amzdate = "20150830T123600Z";
@@ -1098,7 +1098,7 @@ mod tests {
 
     #[test]
     fn test_verify_inbound_sigv4_missing_date_rejected() {
-        // A request whose x-amz-date is not a parseable amz timestamp fails with MissingDate,
+        // M4: a request whose x-amz-date is not a parseable amz timestamp fails with MissingDate,
         // surfaced through verify_inbound_sigv4 itself (not just parse_amz_date in isolation).
         let secret = "the-real-secret";
         let amzdate = "20150830T123600Z";

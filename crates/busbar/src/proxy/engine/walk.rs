@@ -11,11 +11,6 @@ pub(crate) fn find_soonest_cooldown(
     let mut soonest_remaining = u64::MAX;
 
     for wl in cands {
-        // A dead or budget-exhausted lane reports a cooldown of 0 (deadness lives outside the cell
-        // FSM), so without this it sorts FIRST and beats a lane that genuinely recovers in seconds.
-        if !store.lane_admissible(wl.idx) {
-            continue;
-        }
         let remaining = store.cooldown_remaining_in(pool, wl.idx, now);
         if remaining < soonest_remaining {
             soonest_remaining = remaining;
@@ -157,7 +152,7 @@ pub(crate) async fn forward_once(
     // The selected pool member's `reasoning` override (`WeightedLane.reasoning`), resolved by the
     // caller from its candidate slice. `None` = no member override → fall back to the lane flag. The
     // degraded path has no `cands` in scope, so the caller passes the already-resolved override here
-    // (mirrors the hot path's `effective_reasoning`).
+    // (mirrors the hot path's `effective_reasoning`). (found: audit c2r3.)
     reasoning_override: Option<bool>,
 ) -> Result<Response, ()> {
     // Re-parse body for per-lane model rewriting. An OPAQUE (non-JSON) body — multipart/binary
@@ -229,7 +224,7 @@ pub(crate) async fn forward_once(
         v,
         req_content_type,
         // Honor the pool member's `reasoning` override (as the hot path does via
-        // `effective_reasoning`), falling back to the lane-level flag.
+        // `effective_reasoning`), falling back to the lane-level flag. (found: audit c2r3.)
         reasoning_override.unwrap_or(app.lanes[i].reasoning),
         body,
     ) {
@@ -396,7 +391,7 @@ pub(crate) async fn forward_once(
             if !status.is_success() {
                 let bytes = read_capped_body(r).await;
                 // Cross-protocol: relaying the EGRESS provider's native error body+Content-Type to a
-                // different-protocol client is a foreign-format leak. Reshape to the ingress
+                // different-protocol client is a foreign-format leak (§8.2). Reshape to the ingress
                 // protocol's native error envelope, lifting the upstream's human message where
                 // present. Same-protocol passthrough relays verbatim (already the client's shape).
                 if cross_protocol {
@@ -503,15 +498,6 @@ pub(crate) async fn forward_once(
             // actually decremented. `budget_spent` is `true` for an unlimited lane (spend is a no-op
             // success there), so an unlimited lane never refunds (refund_budget is also a no-op there).
             let budget_spent = app.store.spend_budget(i);
-            // Guards the buffered path's spend→`read_capped(...).await` window (#21): armed now,
-            // disarmed at every exit below that must KEEP the charge. Disarmed (without refunding)
-            // just before the streaming builder, which hands `budget_spent` to `FirstByteBody` for
-            // its own cancellation-safe refund. See `engine::mod::BudgetSpendGuard`.
-            let mut budget_guard = super::BudgetSpendGuard {
-                store: app.store.as_ref(),
-                lane: i,
-                armed: budget_spent,
-            };
 
             // SUCCESS: stream the response body incrementally (permit held for stream life).
             let is_sse = ct
@@ -561,8 +547,9 @@ pub(crate) async fn forward_once(
                     if tripped {
                         emit_breaker_trip(app, pool, i);
                     }
-                    // `budget_guard` is still armed here (nothing has disarmed it): dropping it on
-                    // this `return` refunds ONLY if the headers-spend actually decremented (#21).
+                    if budget_spent {
+                        app.store.refund_budget(i);
+                    }
                     return Ok(ingress_error(
                         ingress_protocol,
                         StatusCode::BAD_GATEWAY,
@@ -583,7 +570,6 @@ pub(crate) async fn forward_once(
                         "cross-protocol non-stream success body exceeded the translation cap; \
                          cannot translate, not charging tokens, returning ingress-native error"
                     );
-                    budget_guard.disarm();
                     return Ok(ingress_error(
                         ingress_protocol,
                         StatusCode::INTERNAL_SERVER_ERROR,
@@ -616,9 +602,6 @@ pub(crate) async fn forward_once(
                     }
                     if let Some(Ok(mut ir)) = decoded {
                         record_resp_usage(&ir, &usage_sink, app.lanes.get(i));
-                        // Tokens are now committed to this key; keep the lane unit too rather than
-                        // refund it out from under an already-billed request.
-                        budget_guard.disarm();
                         ir.prepare_for_ingress(ingress_protocol, now());
                         if let Some(wire) = crate::handlers::request_handler(ingress_protocol)
                             .and_then(|rh| rh.operation_handler(op.operation))
@@ -654,9 +637,6 @@ pub(crate) async fn forward_once(
                             // buffered path, so bill from the IR usage just decoded (Change A,
                             // mirrors the main path).
                             record_resp_usage(&ir, &usage_sink, app.lanes.get(i));
-                            // Tokens are now committed to this key; keep the lane unit too rather
-                            // than refund it out from under an already-billed request.
-                            budget_guard.disarm();
                             // OPERATION-BLIND ingress preparation (identity strip, `created`
                             // boundary signal, tool-id remap) — the SAME seam transform the main
                             // path applies; relocated verbatim into `IrResp::prepare_for_ingress`.
@@ -759,22 +739,6 @@ pub(crate) async fn forward_once(
                     egress = %egress_name,
                     "degraded cross-protocol response not translatable; returning ingress-native error"
                 );
-                // The 2xx headers optimistically recorded a breaker SUCCESS against the ROUTING POOL
-                // cell, but an undecodable body is exactly as much a lane fault as a transport
-                // failure — without this, a lane returning undecodable 200s forever never trips
-                // (unlike its TransportError sibling above, which already compensates).
-                let tripped = app.store.record_transient_in(
-                    pool,
-                    i,
-                    "untranslatable-2xx",
-                    forward_once_cfg.as_ref(),
-                    None,
-                );
-                if tripped {
-                    emit_breaker_trip(app, pool, i);
-                }
-                // `budget_guard` is still armed here: dropping it on this `return` refunds the
-                // headers-time unit, symmetric with the TransportError branch above.
                 return Ok(ingress_error(
                     ingress_protocol,
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -805,9 +769,6 @@ pub(crate) async fn forward_once(
                         .and_then(|p| p.writer().make_array_stream_framer())
                 })
                 .flatten();
-            // Handing the budget-refund decision to `FirstByteBody` (via `budget_spent` below) —
-            // disarm the local guard so it does not ALSO refund when this frame unwinds.
-            budget_guard.disarm();
             let upstream_stream = r.bytes_stream();
             let guarded_body = FirstByteBody::new(
                 upstream_stream,
@@ -925,7 +886,7 @@ pub(crate) async fn handle_fallback_pool(
     // Re-apply any compliance restrict from the primary pool against THIS fallback pool's own member
     // tags — the fallback pool is an independent membership, so without this the "restrictions hold
     // across failover" guarantee would break at the pool boundary. Fail closed (503) if a required
-    // restrict leaves no eligible fallback lane.
+    // restrict leaves no eligible fallback lane. (found: audit c1r13.)
     let fallback_cands = match request_ctx.enforce_restricts(&app, pool_name, fallback_cands) {
         Ok(c) => c,
         Err(name) => {
@@ -944,24 +905,6 @@ pub(crate) async fn handle_fallback_pool(
         }
     };
 
-    // Apply the FALLBACK pool's OWN `failover.exclusions`. Exclusions are a per-pool member
-    // blocklist, and the fallback pool is an independent membership — the primary pool's blocklist
-    // says nothing about it, and its own was never consulted, so a member the operator blocklisted
-    // here could still be reached by spilling into this pool.
-    let fallback_cands = match app
-        .pool_runtime
-        .get(pool_name)
-        .and_then(|r| r.failover.as_ref())
-        .or(app.failover_cfg.as_ref())
-        .and_then(|f| f.exclusions.as_ref())
-    {
-        Some(excl) => fallback_cands
-            .into_iter()
-            .filter(|wl| !excl.iter().any(|m| m == &app.lanes[wl.idx].model))
-            .collect(),
-        None => fallback_cands,
-    };
-
     // Mark before re-entering so a cycle back to this pool is detected.
     request_ctx.mark_pool_visited(pool_name);
 
@@ -976,15 +919,11 @@ pub(crate) async fn handle_fallback_pool(
             );
         }
 
-        let Some((i, permit, _probe_epoch)) =
+        let Some((i, permit)) =
             // Fallback-pool selection uses plain SWRR by design: routing POLICY applies to the PRIMARY
             // pool (where it shapes the normal-path lane choice); the fallback pool is the
             // already-degraded overflow path, so it deliberately selects with the unchanged inline SWRR
             // (`policy_order == None`) rather than re-running a policy over the spillover candidates.
-            // The epoch is unused here: this function delegates to `forward_once` (a separate
-            // single-attempt call), whose own `release_probe_in` sites are unowned by design — each
-            // is preceded by an unowned `record_transient_in` that already transitions the cell, so
-            // switching those to owned would change nothing observable (see M6's audit notes).
             pick_among(&app, &fallback_cands, request_ctx, None, pool_name, None).await
         else {
             // Fallback pool itself exhausted — consult ITS on_exhausted config (multi-level

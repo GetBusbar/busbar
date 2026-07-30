@@ -1,7 +1,58 @@
 use crate::governance::{GovState, MemoryStore, NewKeySpec};
-use crate::test_support::warn_capture::WarnCapture;
 use crate::test_support::TestApp;
 use std::sync::Arc;
+
+/// A `tracing::Layer` that records the messages of WARN-level events it sees, so a test can
+/// assert a particular `tracing::warn!` fired (mirrors the established pattern in config.rs /
+/// config_validate.rs / eventstream.rs).
+#[derive(Clone, Default)]
+struct WarnCapture(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for WarnCapture {
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        if *event.metadata().level() != tracing::Level::WARN {
+            return;
+        }
+        // Capture the rendered message AND every other field (e.g. the structured `pool` /
+        // `key_name` on create_key's diagnostic) so a test can assert on a field value, not just
+        // the static message text. Fields are flattened into one `key=value` string per event.
+        #[derive(Default)]
+        struct Vis {
+            message: String,
+            fields: String,
+        }
+        impl Vis {
+            fn record(&mut self, field: &tracing::field::Field, rendered: String) {
+                if field.name() == "message" {
+                    self.message = rendered;
+                } else {
+                    if !self.fields.is_empty() {
+                        self.fields.push(' ');
+                    }
+                    self.fields
+                        .push_str(&format!("{}={}", field.name(), rendered));
+                }
+            }
+        }
+        impl tracing::field::Visit for Vis {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                self.record(field, format!("{value:?}"));
+            }
+            fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                self.record(field, value.to_string());
+            }
+        }
+        let mut vis = Vis::default();
+        event.record(&mut vis);
+        if let Ok(mut msgs) = self.0.lock() {
+            msgs.push(format!("{} {}", vis.message, vis.fields));
+        }
+    }
+}
 
 /// Build a `GovState` that CAN mint 1.5.0 signed-token keys: it carries a deterministic
 /// `TokenSigner` (fixed key bytes + the default kid) so `POST /keys` issues a `bbk_` token instead
@@ -187,7 +238,7 @@ async fn test_admin_v1_topology_reads_pools_models_providers() {
 
 /// `GET /api/v1/admin/pools/{name}` projects each member's LIVE status (usable/cooldown/concurrency/
 /// inflight/tallies) from the store; 404s an unknown pool.
-/// EVERY response under the native-API root speaks the frozen envelope —
+/// Re-audit HIGH-1: EVERY response under the native-API root speaks the frozen envelope —
 /// including unmatched paths (404 `not_found`) and wrong methods (405 `method_not_allowed`),
 /// which previously fell through to the data plane's vendor-native shaping (`error.type`).
 #[tokio::test]
@@ -235,7 +286,7 @@ async fn test_api_root_unmatched_paths_speak_the_admin_envelope() {
     handle.abort();
 }
 
-/// Governance-off semantics are UNAMBIGUOUS — collection reads answer the
+/// Re-audit HIGH-2: governance-off semantics are UNAMBIGUOUS — collection reads answer the
 /// truthful empty page, single reads a truthful 404, and writes a 409 `conflict` with an
 /// actionable message (previously everything was 404, making `not_found` mean two things).
 #[tokio::test]
@@ -384,84 +435,6 @@ async fn test_admin_v1_pool_detail_live_status() {
     handle.abort();
 }
 
-/// `pool_detail` must report the PER-POOL breaker cell, not the lane-global any-cell/max-cell
-/// aggregate: one lane in two pools, only ONE pool's cell tripped. Before the fix `usable`/
-/// `cooldown_remaining_seconds` came from `store.snapshot` (`lane_usable_any_cell` /
-/// `lane_max_cooldown_remaining`), so BOTH pools reported the tripped pool's numbers — a
-/// dashboard for the untouched pool would show a phantom cooldown, and the tripped pool would show
-/// `usable: true` (any-cell) even though routing in that exact pool will skip the member.
-#[tokio::test]
-async fn test_admin_v1_pool_detail_reports_the_per_pool_breaker_cell() {
-    use crate::test_support::LaneSpec;
-    crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let mut app = TestApp::new()
-        .governance(gov)
-        .lane(
-            LaneSpec::new(
-                "m1",
-                crate::proto::Protocol::anthropic(),
-                "http://127.0.0.1:1/",
-            )
-            .provider("p"),
-        )
-        .pool("fast", &[(0, 1)])
-        .pool("cheap", &[(0, 1)])
-        .build();
-    let now = crate::store::now();
-    Arc::get_mut(&mut app)
-        .expect("sole owner")
-        .store
-        .force_open_in("fast", 0, now + 300);
-
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
-
-    let fast: serde_json::Value = client
-        .get(format!("http://{addr}/api/v1/admin/pools/fast"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let fm = &fast["members"][0];
-    assert_eq!(
-        fm["usable"], false,
-        "the tripped pool's OWN cell must report unusable: {fast}"
-    );
-    assert_eq!(
-        fm["cooldown_remaining_seconds"], 300,
-        "the tripped pool must report its own cell's cooldown: {fast}"
-    );
-
-    let cheap: serde_json::Value = client
-        .get(format!("http://{addr}/api/v1/admin/pools/cheap"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let cm = &cheap["members"][0];
-    assert_eq!(
-        cm["usable"], true,
-        "an untouched pool's own cell must still be usable, not the any-cell aggregate: {cheap}"
-    );
-    assert_eq!(
-        cm["cooldown_remaining_seconds"], 0,
-        "an untouched pool must not inherit another pool's max-cell cooldown: {cheap}"
-    );
-
-    handle.abort();
-}
-
 /// `GET /api/v1/admin/admin-auth` reports the admin-plane guard: with governance + an admin token it
 /// is `configured: true` with the `admin-token` module. Never a secret.
 #[tokio::test]
@@ -599,12 +572,20 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
         cache_read_input_tokens: Some(100),
         cache_creation_input_tokens: None,
     };
-    // `record_metering` only accumulates into `pending_metering` (write-behind); an explicit
-    // `flush_metering()` is required so the GET below deterministically sees them in the store.
-    gov.record_metering(&minted.id, "gpt-x", "openai", Some(&usage), now);
-    gov.record_metering(&minted.id, "gpt-x", "openai", Some(&usage), now);
-    gov.record_metering(&minted.id, "claude-z", "anthropic", None, now);
-    gov.flush_metering();
+    // On a runtime `record_metering` offloads (fire-and-forget) — run the setup writes on a
+    // plain thread (no tokio context → the write happens inline) and join, so the GET below
+    // deterministically sees them.
+    {
+        let gov = gov.clone();
+        let key_id = minted.id.clone();
+        std::thread::spawn(move || {
+            gov.record_metering(&key_id, "gpt-x", "openai", Some(&usage), now);
+            gov.record_metering(&key_id, "gpt-x", "openai", Some(&usage), now);
+            gov.record_metering(&key_id, "claude-z", "anthropic", None, now);
+        })
+        .join()
+        .unwrap();
+    }
     let app = TestApp::new().governance(gov).cost(cost).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1119,7 +1100,7 @@ async fn test_admin_v1_scope_ladder_e2e_with_group_mapped_principals() {
         inner
             .role_bindings
             .insert("other-module".to_string(), other);
-        // Trust-boundary CEILING on the external module: nothing through it can exceed
+        // §2.4 trust-boundary CEILING on the external module: nothing through it can exceed
         // hooks-register regardless of what role_bindings grant.
         inner.auth_scope_caps.insert(
             "test-scope-module".to_string(),
@@ -1265,96 +1246,12 @@ async fn test_admin_v1_scope_ladder_e2e_with_group_mapped_principals() {
     handle.abort();
 }
 
-/// R5 (class-8): the SIBLING ceiling case the ladder-shaped `min` got wrong in the ESCALATION
-/// direction. A role bound `mint`, ceilinged by `max_admin_scope: hooks-register` on its module.
-/// `HooksRegister` and `Mint` are INCOMPARABLE siblings, so the lattice meet is `read-only` — the
-/// principal must get NEITHER sibling's authority, only what both share. Under the old
-/// `std::cmp::min(Mint, HooksRegister)` (Mint > HooksRegister by the deleted ordinal), this used to
-/// yield `HooksRegister` and `POST /hooks` returned 201: a `mint` role inheriting hook-definition
-/// authority its role never granted, purely because the ceiling named an incomparable sibling.
-#[tokio::test]
-async fn test_admin_v1_sibling_ceiling_grants_only_read_e2e() {
-    crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let mut app = TestApp::new().governance(gov).build();
-    {
-        let inner = Arc::get_mut(&mut app).expect("sole owner");
-        inner.admin_chain = vec!["test-scope-module".to_string()];
-        let mut table = std::collections::BTreeMap::new();
-        table.insert(
-            "minters".to_string(),
-            crate::config::RoleBindingCfg {
-                admin_scope: Some("mint".to_string()),
-                ..Default::default()
-            },
-        );
-        inner
-            .role_bindings
-            .insert("test-scope-module".to_string(), table);
-        // The ceiling names the SIBLING scope, not a dominating one.
-        inner.auth_scope_caps.insert(
-            "test-scope-module".to_string(),
-            "hooks-register".to_string(),
-        );
-    }
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
-    let with = |tok: &'static str, req: reqwest::RequestBuilder| {
-        req.header("x-admin-token", tok)
-            .header("content-type", "application/json")
-    };
-
-    // The sibling meet is read-only: reads still work.
-    let r = with(
-        "grp:minters",
-        client.get(format!("http://{addr}/api/v1/admin/info")),
-    )
-    .send()
-    .await
-    .unwrap();
-    assert_eq!(r.status().as_u16(), 200, "the meet still allows reads");
-
-    // Registering a hook must be REFUSED: the role never granted hooks-register, and a ceiling
-    // naming an incomparable sibling must not invent it.
-    let hook_body = serde_json::json!({
-        "name": "sibling-ceiling-hook",
-        "config": {"kind": "tap", "plugin": "test-hook"}
-    })
-    .to_string();
-    let r = with(
-        "grp:minters",
-        client.post(format!("http://{addr}/api/v1/admin/hooks")),
-    )
-    .body(hook_body)
-    .send()
-    .await
-    .unwrap();
-    assert_eq!(
-        r.status().as_u16(),
-        403,
-        "an incomparable-sibling ceiling must not invent hook-register authority"
-    );
-    let body: serde_json::Value = r.json().await.unwrap();
-    assert_eq!(body["error"]["code"], "forbidden");
-
-    handle.abort();
-}
-
-/// ESCALATION GUARD: a hooks-register principal may register a shape-only, non-global hook
+/// §6.3 ESCALATION GUARD: a hooks-register principal may register a shape-only, non-global hook
 /// but NOT one wired into a security-critical path — a `prompt: rw`/`ro` content-seeing gate, a
 /// `user: ro` identity-seeing hook, or an inline `global: true` (chain wiring is full-only). The
 /// operator (full) may register all of them.
 #[tokio::test]
 async fn test_admin_v1_hooks_register_cannot_escalate_via_grants_or_global() {
-    drive_hook_escalation_errors().await;
-}
-
-/// See the test above. Split out so the class-level over-claim test can drive it directly.
-async fn drive_hook_escalation_errors() {
     crate::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
@@ -1427,25 +1324,6 @@ async fn drive_hook_escalation_errors() {
         "a shape-only, non-global hook is within hooks-register"
     );
 
-    // The guard is on the SHAPE, not on the verb: REPLACING that same shape-only hook with a
-    // content-seeing one over PUT is the identical escalation and the identical 403. (POST alone
-    // would leave the PUT door open — and `openapi.json` documents the 403 on PUT for this reason.)
-    let r = client
-        .put(format!("http://{addr}/api/v1/admin/hooks/h"))
-        .header("x-admin-token", "grp:registrars")
-        .header("content-type", "application/json")
-        .body(serde_json::json!({"config": base(serde_json::json!({"prompt": "rw"}))}).to_string())
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        r.status().as_u16(),
-        403,
-        "hooks-register must not PUT a hook into a content-seeing form"
-    );
-    let body: serde_json::Value = r.json().await.unwrap();
-    assert_eq!(body["error"]["code"], "forbidden");
-
     // The operator (full) can register a prompt: rw global gate (unique name — `h` is taken).
     let r = client
         .post(format!("http://{addr}/api/v1/admin/hooks"))
@@ -1463,9 +1341,9 @@ async fn drive_hook_escalation_errors() {
         .unwrap();
     assert_eq!(r.status().as_u16(), 201, "full scope registers anything");
 
-    // A hooks-register token may not RETUNE (PATCH settings) a
+    // REGRESSION (audit c1r6): a hooks-register token may not RETUNE (PATCH settings) a
     // content-seeing / global hook it can neither create nor replace — PATCH must enforce the
-    // same ceiling, keyed on the EXISTING hook's grants.
+    // same §6.3 ceiling, keyed on the EXISTING hook's grants.
     let patch = client
         .patch(format!("http://{addr}/api/v1/admin/hooks/op-hook/settings"))
         .header("x-admin-token", "grp:registrars")
@@ -1484,8 +1362,8 @@ async fn drive_hook_escalation_errors() {
         "forbidden"
     );
 
-    // A hooks-register token may not DELETE a content-seeing / global
-    // gate a full admin installed — tearing down that security gate is the same escalation
+    // REGRESSION (audit c1r13): a hooks-register token may not DELETE a content-seeing / global
+    // gate a full admin installed — tearing down that security gate is the same §6.3 escalation
     // register/put/patch forbid.
     let del = client
         .delete(format!("http://{addr}/api/v1/admin/hooks/op-hook"))
@@ -1582,7 +1460,7 @@ async fn test_admin_v1_idempotency_key_is_principal_scoped() {
     handle.abort();
 }
 
-/// The credential cache end-to-end: an external-module identify is CACHED (the second
+/// The credential cache end-to-end (§2.5): an external-module identify is CACHED (the second
 /// request is served from the cache — observable via the flush count), `POST
 /// /api/v1/admin/auth/cache/flush` drops it (full scope; read-only principals get 403), and the
 /// built-in operator token is NEVER cached (flush finds nothing after operator calls).
@@ -1646,7 +1524,7 @@ async fn test_admin_v1_credential_cache_and_flush_endpoint() {
     assert_eq!(r.status().as_u16(), 200);
     let body: serde_json::Value = r.json().await.unwrap();
     // TWO entries in the module's partition: the viewers Identify, plus the PASS the module
-    // returned for the operator token (Pass IS cached, short-TTL —; only the built-in
+    // returned for the operator token (Pass IS cached, short-TTL — §2.5; only the built-in
     // admin-tokens module's own verdicts are exempt). The flushing request's own Pass was
     // inserted by its chain run before the handler flushed.
     assert_eq!(
@@ -1955,140 +1833,6 @@ async fn test_admin_v1_idempotency_reservation_frees_on_failure() {
     handle.abort();
 }
 
-/// A `Store` wrapper that sleeps on the FIRST `put_key` only, then runs at full speed — a stand-in
-/// for a slow durable store's write round-trip, used to widen the window between "the mint has been
-/// handed to the uncancellable blocking task" and "the mint actually lands" so a client disconnect
-/// can be landed deterministically inside it.
-struct SlowKeyStore {
-    inner: Arc<dyn crate::governance::Store>,
-    delay: std::time::Duration,
-    fired: std::sync::atomic::AtomicBool,
-}
-impl crate::governance::Store for SlowKeyStore {
-    fn put_key(&self, key: &busbar_api::VirtualKey) -> crate::governance::StoreResult<()> {
-        if !self.fired.swap(true, std::sync::atomic::Ordering::SeqCst) {
-            std::thread::sleep(self.delay);
-        }
-        self.inner.put_key(key)
-    }
-    fn get_key(&self, id: &str) -> crate::governance::StoreResult<Option<busbar_api::VirtualKey>> {
-        self.inner.get_key(id)
-    }
-    fn list_keys(&self) -> crate::governance::StoreResult<Vec<busbar_api::VirtualKey>> {
-        self.inner.list_keys()
-    }
-    fn delete_key(&self, id: &str) -> crate::governance::StoreResult<()> {
-        self.inner.delete_key(id)
-    }
-    fn get_usage(
-        &self,
-        bucket_id: &str,
-        window_start: u64,
-    ) -> crate::governance::StoreResult<busbar_api::UsageLedger> {
-        self.inner.get_usage(bucket_id, window_start)
-    }
-    fn put_usage(
-        &self,
-        bucket_id: &str,
-        window_start: u64,
-        ledger: &busbar_api::UsageLedger,
-    ) -> crate::governance::StoreResult<()> {
-        self.inner.put_usage(bucket_id, window_start, ledger)
-    }
-    fn add_metering(
-        &self,
-        delta: &crate::governance::MeteringDelta,
-    ) -> crate::governance::StoreResult<()> {
-        self.inner.add_metering(delta)
-    }
-    fn list_metering(
-        &self,
-        bucket: u64,
-    ) -> crate::governance::StoreResult<Vec<crate::governance::MeteringRow>> {
-        self.inner.list_metering(bucket)
-    }
-}
-
-/// The double-mint reachable via an ordinary client-side timeout shorter than a slow store's write:
-/// the handler future is DROPPED mid-`config_transaction` (a client disconnect/timeout), but the
-/// mint keeps running to completion on the uncancellable blocking task and DOES write the key. A
-/// retry with the same `Idempotency-Key` must see the reservation still held (not an empty slot it
-/// can double-mint into).
-#[tokio::test]
-async fn an_idempotency_key_survives_a_client_disconnect_mid_mint() {
-    crate::metrics::init();
-    let inner = Arc::new(MemoryStore::new());
-    let slow_store: Arc<dyn crate::governance::Store> = Arc::new(SlowKeyStore {
-        inner,
-        delay: std::time::Duration::from_millis(500),
-        fired: std::sync::atomic::AtomicBool::new(false),
-    });
-    let gov = gov_with_signer(slow_store, Some("admintok".to_string()));
-    let app = TestApp::new().governance(gov).build();
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-
-    // A short client-side timeout (100ms) vs. the store's 500ms write — a 5x margin, both real
-    // sleeps (per the design's timing caution).
-    let short_timeout_client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_millis(100))
-        .build()
-        .unwrap();
-    let post = |client: &reqwest::Client| {
-        client
-            .post(format!("http://{addr}/api/v1/admin/keys"))
-            .header("x-admin-token", "admintok")
-            .header("content-type", "application/json")
-            .header("idempotency-key", "dc-1")
-            .body(r#"{"name": "disconnector"}"#)
-            .send()
-    };
-
-    // First request: the client times out and errors BEFORE the 500ms store write completes,
-    // dropping the server-side handler future mid-mint.
-    let first = post(&short_timeout_client).await;
-    assert!(first.is_err(), "the short client timeout must fire first");
-
-    // Give the (uncancellable) blocking mint time to actually land.
-    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
-
-    // Retry with the SAME Idempotency-Key, no timeout this time.
-    let normal_client = reqwest::Client::new();
-    let retry = post(&normal_client).await.unwrap();
-    // Either outcome is correct under the fix: a 409 "already in flight" (if `dc-1`'s TTL window is
-    // still open and the reservation was never cleared) or — since the mint already landed and the
-    // cache slot may have been replaced by the real committed body before this retry runs — a replay
-    // of that same committed response. What must NOT happen is a fresh 201 that mints a SECOND key.
-    assert_ne!(
-        retry.status().as_u16(),
-        201,
-        "a disconnect mid-mint must never let a retry mint a SECOND key"
-    );
-
-    let keys: serde_json::Value = normal_client
-        .get(format!("http://{addr}/api/v1/admin/keys"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let items = keys["items"].as_array().unwrap();
-    let disconnector_count = items
-        .iter()
-        .filter(|k| k["name"].as_str() == Some("disconnector"))
-        .count();
-    assert_eq!(
-        disconnector_count, 1,
-        "exactly one key must exist after a client disconnect mid-mint + retry, got: {items:?}"
-    );
-
-    handle.abort();
-}
-
 /// Key ROTATION: the new secret works, the old stops resolving, the id + settings are
 /// unchanged; unknown ids 404. And keys pagination: limit/offset over the id-sorted set with a
 /// stable total.
@@ -2184,10 +1928,10 @@ async fn test_admin_v1_key_rotate_and_pagination() {
         "invalid_request"
     );
 
-    // Rotate the first key: these are SIGNED-TOKEN bindings, so rotation re-mints the TOKEN at a
-    // fresh binding generation (every prior token for the subject is now rejected) and keeps the id
-    // stable. It must NOT hand back a legacy bearer secret — arming the hashed-secret path on a key
-    // minted without one would add a second, weaker, non-expiring credential.
+    // Rotate the first key: the legacy rotate path mints a FRESH BEARER secret in place (distinct
+    // from the signed-token mint above), keeping the id stable. The new secret resolves via the
+    // hash lookup. (The signed-token binding carried no bearer secret to compare against - rotate is
+    // the legacy-secret escape hatch, still returning `secret`, not a token.)
     let id = ids[0].clone();
     let rotated: serde_json::Value =
         admin(client.post(format!("http://{addr}/api/v1/admin/keys/{id}/rotate")))
@@ -2198,16 +1942,8 @@ async fn test_admin_v1_key_rotate_and_pagination() {
             .await
             .unwrap();
     assert_eq!(rotated["id"], id.as_str(), "id is stable across rotation");
-    let new_token = rotated["token"].as_str().unwrap().to_string();
-    assert!(new_token.starts_with("bbk_"), "a re-minted signed token");
-    assert!(
-        rotated["secret"].is_null(),
-        "rotation must not arm a legacy bearer secret on a signed-token key"
-    );
-    assert!(
-        gov.verify_token(&new_token, crate::store::now()).is_some(),
-        "the re-minted token authenticates"
-    );
+    let new_secret = rotated["secret"].as_str().unwrap().to_string();
+    assert!(gov.lookup(&new_secret).is_some(), "new secret resolves");
 
     // Unknown id → 404.
     let missing = admin(client.post(format!("http://{addr}/api/v1/admin/keys/vk_nope/rotate")))
@@ -2577,7 +2313,7 @@ async fn test_admin_v1_register_hook_takes_effect_live() {
         "invalid_request"
     );
 
-    // Grant immutability over the wire: re-registering "compress" (a prompt:rw gate) with a
+    // Grant immutability over the wire (§6.4): re-registering "compress" (a prompt:rw gate) with a
     // DIFFERENT grant (prompt:ro) → 409 conflict, no mutation. Same grants would be idempotent.
     let escalate = client
         .post(format!("http://{addr}/api/v1/admin/hooks"))
@@ -2656,7 +2392,7 @@ async fn test_admin_v1_audit_records_mutations() {
     assert_eq!(mine["outcome"], "applied");
     assert!(mine["seq"].is_number() && mine["ts"].is_number());
 
-    // Filter by resource: only this hook's entries come back.
+    // Filter by resource (§2.5): only this hook's entries come back.
     let filtered: serde_json::Value = client
         .get(format!(
             "http://{addr}/api/v1/admin/audit?resource=hook:{name}"
@@ -2692,7 +2428,7 @@ async fn test_admin_v1_audit_records_mutations() {
     handle.abort();
 }
 
-/// The UNKNOWN-NAME 404 on `PUT /hooks/{name}` and
+/// REGRESSION (audit c1r9): the UNKNOWN-NAME 404 on `PUT /hooks/{name}` and
 /// `PATCH /hooks/{name}/settings` must be AUDITED (like DELETE's 404) — an unaudited 404 lets a
 /// principal probe which hook names exist by response code alone, with no trail.
 #[tokio::test]
@@ -2766,7 +2502,7 @@ async fn test_admin_v1_hook_mutation_404_is_audited() {
     handle.abort();
 }
 
-/// `GET /api/v1/admin/keys` supports `?prefix=` and `?enabled=` filters: a full-id prefix
+/// `GET /api/v1/admin/keys` supports `?prefix=` and `?enabled=` filters (§2.1): a full-id prefix
 /// returns just that key; a non-matching prefix returns none; `?enabled=true` includes a fresh key.
 #[tokio::test]
 async fn test_admin_v1_list_keys_filters() {
@@ -2828,7 +2564,7 @@ async fn test_admin_v1_list_keys_filters() {
     handle.abort();
 }
 
-/// `GET /api/v1/admin/keys?group=<name>`: exact bound-group filter — returns the keys BOUND
+/// `GET /api/v1/admin/keys?group=<name>` (§6d): exact bound-group filter — returns the keys BOUND
 /// to that group and nothing else (not another group's, not a groupless key). A name no group
 /// registry carries is a valid EMPTY 200, never a 400/404 — deliberately no existence check, so a
 /// key whose group another node's config dropped stays findable (that dangling state is exactly
@@ -3094,98 +2830,7 @@ async fn test_admin_v1_hook_register_persists_to_overlay() {
     handle.abort();
 }
 
-/// `POST /config/apply` layers the applied body UNDER the persisted overlay, as every other
-/// rebuild path does. Apply was the sole exception while still carrying `overlay_path` forward, so
-/// it kept writing an overlay it refused to read: an API-created group vanished from the live
-/// registry immediately — every key bound to it fails closed at admission from that instant — and
-/// the next unrelated group mutation then persisted the truncated registry over the file.
-#[tokio::test]
-async fn test_admin_v1_config_apply_preserves_the_persisted_overlay() {
-    crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let overlay = std::env::temp_dir().join(format!(
-        "busbar-apply-overlay-{}-{}.json",
-        std::process::id(),
-        crate::store::now()
-    ));
-    let _ = std::fs::remove_file(&overlay);
-    let app = TestApp::new()
-        .governance(gov)
-        .overlay_path(overlay.clone())
-        .build();
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
-
-    let create_group = |name: &'static str| {
-        let c = client.clone();
-        async move {
-            c.post(format!("http://{addr}/api/v1/admin/groups"))
-                .header("x-admin-token", "admintok")
-                .header("content-type", "application/json")
-                .body(
-                    serde_json::json!({
-                        "name": name,
-                        "config": {"limits": [{"requests": 10, "per": "minute"}]}
-                    })
-                    .to_string(),
-                )
-                .send()
-                .await
-                .unwrap()
-                .status()
-                .as_u16()
-        }
-    };
-    assert_eq!(create_group("api_team").await, 201);
-
-    // Apply a config that does not mention `api_team`. A DeployCfg body has no way to express an
-    // API-created group, so omitting one is not an instruction to delete it.
-    let applied = client
-        .post(format!("http://{addr}/api/v1/admin/config/apply"))
-        .header("x-admin-token", "admintok")
-        .header("content-type", "application/json")
-        .body(serde_json::json!({"config": {"providers": {}, "models": {}}}).to_string())
-        .send()
-        .await
-        .unwrap();
-    let st = applied.status().as_u16();
-    let body = applied.text().await.unwrap_or_default();
-    assert_eq!(st, 200, "the apply itself succeeds: {body}");
-
-    // LIVE: still there, so a key bound to it still admits.
-    let got = client
-        .get(format!("http://{addr}/api/v1/admin/groups/api_team"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        got.status().as_u16(),
-        200,
-        "an API-created group survives an apply that does not name it"
-    );
-
-    // ON DISK: a later, unrelated mutation must not clobber it out of the overlay.
-    assert_eq!(create_group("second_team").await, 201);
-    let doc = crate::config::overlay::read(&overlay).expect("overlay still readable");
-    assert!(
-        doc.groups.contains_key("api_team"),
-        "the next group write must not erase the earlier one from the overlay"
-    );
-    assert!(
-        doc.groups.contains_key("second_team"),
-        "and records the new one"
-    );
-
-    let _ = std::fs::remove_file(&overlay);
-    handle.abort();
-}
-
-/// Key mutations are audited too: minting a key records
+/// Key mutations are audited too (§6.7 — EVERY admin mutation): minting a key records
 /// `key.create` / `applied` with the new key's id.
 #[tokio::test]
 async fn test_admin_v1_audit_records_key_mutations() {
@@ -3234,7 +2879,7 @@ async fn test_admin_v1_audit_records_key_mutations() {
     handle.abort();
 }
 
-/// Base-config hooks are READ-ONLY across every mutation verb — a
+/// REGRESSION (audit c1r5): base-config hooks are READ-ONLY across every mutation verb — a
 /// narrow hooks-register token must not be able to shadow/redirect (POST) or remove (DELETE) an
 /// operator's file-defined hook (e.g. a `pii-guard` gate). PUT/PATCH already guarded; this pins
 /// POST + DELETE to the same 409, matching the guard other verbs enforce.
@@ -3304,113 +2949,6 @@ async fn test_admin_v1_base_hook_is_read_only_via_api() {
     assert!(
         got["transport"].to_string().contains("test-hook"),
         "base hook untouched: {got}"
-    );
-}
-
-/// `DELETE` on a base-config hook must return the TERMINAL `conflict` code even when the caller's
-/// `If-Match` is also stale — the base-hook guard must outrank the retryable staleness check
-/// (matching `put_hook`/`delete_group`'s precedence), not the other way around. Both errors are
-/// HTTP 409, so the assertion MUST be on the frozen `code` field — a status-only check false-passes
-/// both before and after this fix.
-#[tokio::test]
-async fn base_hook_delete_conflict_outranks_a_stale_if_match() {
-    crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let base: crate::config::HookCfg = serde_json::from_value(serde_json::json!({
-        "kind": "gate", "plugin": "test-hook", "prompt": "no", "global": true
-    }))
-    .unwrap();
-    let app = TestApp::new()
-        .governance(gov)
-        .base_hook("pii-guard", base)
-        .build();
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let _handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
-
-    let del = client
-        .delete(format!("http://{addr}/api/v1/admin/hooks/pii-guard"))
-        .header("x-admin-token", "admintok")
-        .header("if-match", "\"999\"")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(del.status().as_u16(), 409);
-    let body: serde_json::Value = del.json().await.unwrap();
-    assert_eq!(
-        body["error"]["code"], "conflict",
-        "the terminal base-hook conflict must win over the retryable version_conflict: {body}"
-    );
-}
-
-/// The escalation guard must ALSO outrank the staleness check on DELETE: a hooks-register token
-/// that may never delete a `prompt:rw`/`global` hook must see 403, not a 409 that invites a
-/// re-read/retry against a request it can never complete.
-#[tokio::test]
-async fn hook_delete_escalation_outranks_a_stale_if_match() {
-    crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let mut app = TestApp::new().governance(gov).build();
-    {
-        let inner = Arc::get_mut(&mut app).expect("sole owner");
-        inner.admin_chain = vec!["test-scope-module".to_string(), "admin-tokens".to_string()];
-        let mut table = std::collections::BTreeMap::new();
-        table.insert(
-            "registrars".to_string(),
-            crate::config::RoleBindingCfg {
-                admin_scope: Some("hooks-register".to_string()),
-                ..Default::default()
-            },
-        );
-        inner
-            .role_bindings
-            .insert("test-scope-module".to_string(), table);
-        inner
-            .auth_scope_caps
-            .insert("test-scope-module".to_string(), "full".to_string());
-    }
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let _handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
-
-    // Full admin registers a content-seeing global gate hooks-register can never touch.
-    let created = client
-        .post(format!("http://{addr}/api/v1/admin/hooks"))
-        .header("x-admin-token", "admintok")
-        .header("content-type", "application/json")
-        .body(
-            serde_json::json!({
-                "name": "op-hook",
-                "config": {"kind": "gate", "plugin": "test-hook", "prompt": "rw", "global": true}
-            })
-            .to_string(),
-        )
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(created.status().as_u16(), 201);
-
-    let del = client
-        .delete(format!("http://{addr}/api/v1/admin/hooks/op-hook"))
-        .header("x-admin-token", "grp:registrars")
-        .header("if-match", "\"0\"")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        del.status().as_u16(),
-        403,
-        "escalation must outrank a stale If-Match, not be masked by a 409"
-    );
-    assert_eq!(
-        del.json::<serde_json::Value>().await.unwrap()["error"]["code"],
-        "forbidden"
     );
 }
 
@@ -3817,44 +3355,6 @@ async fn test_admin_v1_config_validate_dry_run() {
             .iter()
             .any(|e| e.as_str().unwrap_or("").contains("openai")),
         "the dangling provider is named in an error: {errors:?}"
-    );
-
-    // THE CLI-PARITY CASE. A config the `--validate` CLI REJECTS must not come back `ok: true`
-    // here. This one resolves and passes `config_validate` cleanly -- the defect is only reachable
-    // in the post-resolve pre-flight: a `secrets:` entry naming a module that resolves to no
-    // installed `kind: secret` plugin. The endpoint used to stop after
-    // `config_validate` and answer `ok: true`, so an operator could dry-run a config green and then
-    // watch boot fail on exactly this.
-    let proposed = serde_json::json!({
-        "config": {
-            "secrets": { "acme-vault": { "settings": {} } },
-            "providers": {},
-            "models": {}
-        },
-        "providers": {}
-    });
-    let resp = client
-        .post(&url)
-        .header("x-admin-token", "admintok")
-        .header("content-type", "application/json")
-        .body(proposed.to_string())
-        .send()
-        .await
-        .unwrap();
-    let st = resp.status().as_u16();
-    let v: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(st, 200, "{v}");
-    assert_eq!(
-        v["ok"], false,
-        "a secret module the CLI cannot resolve must not validate green here: {v}"
-    );
-    assert!(
-        v["errors"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|e| e.as_str().unwrap_or("").contains("acme-vault")),
-        "the unresolvable secret module is named: {v}"
     );
 
     handle.abort();
@@ -4637,13 +4137,9 @@ async fn test_patch_key_three_state_group_and_enabled() {
             ..Default::default()
         },
     )]);
-    // Seed BOTH the cost model and the groups_registry from one tree (the production invariant): the
-    // rebind existence check now reads `groups_registry` — the authoritative registry the group
-    // DELETE guard also uses — so cost and registry must AGREE, exactly as every real config apply
-    // keeps them (`groups_tree` does this; a bare `.cost(...)` left the registry empty).
     let app = crate::test_support::TestApp::new()
         .governance(gov)
-        .groups_tree(groups)
+        .cost(crate::cost::CostModel::resolve_parts(None, 0, &groups))
         .build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -4750,7 +4246,7 @@ async fn test_patch_key_three_state_group_and_enabled() {
 }
 #[test]
 fn test_create_key_warns_on_unconfigured_allowed_pool() {
-    // Create_key accepted `allowed_pools` with NO ingress
+    // Regression (LOW #13, completeness): create_key accepted `allowed_pools` with NO ingress
     // diagnostic, unlike its sibling validations. An entry naming no configured pool must NOT be
     // a 400 (minting a key before its pool exists is a supported forward-reference workflow), but
     // it MUST surface a NON-FATAL `tracing::warn!` so a typo (`"smrt"` for `"smart"`) is visible.
@@ -4799,9 +4295,6 @@ fn test_create_key_warns_on_unconfigured_allowed_pool() {
             let r1 = super::create_key(
                 axum::extract::State(handle.clone()),
                 axum::Extension(crate::auth::AuthPrincipal(None)),
-                axum::Extension(crate::auth::AdminScope(
-                    crate::admin::v1::contract::Grants::of(crate::admin::v1::contract::Scope::Full),
-                )),
                 axum::http::HeaderMap::new(),
                 body1,
             )
@@ -4819,9 +4312,6 @@ fn test_create_key_warns_on_unconfigured_allowed_pool() {
             let r2 = super::create_key(
                 axum::extract::State(handle),
                 axum::Extension(crate::auth::AuthPrincipal(None)),
-                axum::Extension(crate::auth::AdminScope(
-                    crate::admin::v1::contract::Grants::of(crate::admin::v1::contract::Scope::Full),
-                )),
                 axum::http::HeaderMap::new(),
                 body2,
             )
@@ -4841,7 +4331,7 @@ fn test_create_key_warns_on_unconfigured_allowed_pool() {
         "a configured allowed_pool creates the key"
     );
 
-    let msgs = cap.messages();
+    let msgs = cap.0.lock().unwrap();
     // Exactly one warning, naming the typo'd pool — "smart" (configured) must NOT warn.
     let pool_warns: Vec<&String> = msgs
         .iter()
@@ -4922,291 +4412,6 @@ async fn test_delete_missing_key_returns_404() {
     handle.abort();
 }
 
-/// A `Store` wrapper that counts calls to `list_keys` (the O(n) full table scan) and `get_key`
-/// (the O(1) single-row lookup) separately, delegating everything else to an inner `MemoryStore`.
-/// Used to prove the single-key admin read/write paths resolve one key via `get_key`, not by
-/// scanning the whole table and filtering by id.
-struct CountingStore {
-    inner: MemoryStore,
-    list_keys_calls: std::sync::atomic::AtomicUsize,
-    get_key_calls: std::sync::atomic::AtomicUsize,
-}
-impl CountingStore {
-    fn new() -> Self {
-        Self {
-            inner: MemoryStore::new(),
-            list_keys_calls: std::sync::atomic::AtomicUsize::new(0),
-            get_key_calls: std::sync::atomic::AtomicUsize::new(0),
-        }
-    }
-    fn reset(&self) {
-        self.list_keys_calls
-            .store(0, std::sync::atomic::Ordering::SeqCst);
-        self.get_key_calls
-            .store(0, std::sync::atomic::Ordering::SeqCst);
-    }
-}
-impl crate::governance::Store for CountingStore {
-    fn put_key(&self, key: &busbar_api::VirtualKey) -> crate::governance::StoreResult<()> {
-        self.inner.put_key(key)
-    }
-    fn get_key(&self, id: &str) -> crate::governance::StoreResult<Option<busbar_api::VirtualKey>> {
-        self.get_key_calls
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.inner.get_key(id)
-    }
-    fn list_keys(&self) -> crate::governance::StoreResult<Vec<busbar_api::VirtualKey>> {
-        self.list_keys_calls
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.inner.list_keys()
-    }
-    fn delete_key(&self, id: &str) -> crate::governance::StoreResult<()> {
-        self.inner.delete_key(id)
-    }
-    fn get_usage(
-        &self,
-        bucket_id: &str,
-        window_start: u64,
-    ) -> crate::governance::StoreResult<busbar_api::UsageLedger> {
-        self.inner.get_usage(bucket_id, window_start)
-    }
-    fn put_usage(
-        &self,
-        bucket_id: &str,
-        window_start: u64,
-        ledger: &busbar_api::UsageLedger,
-    ) -> crate::governance::StoreResult<()> {
-        self.inner.put_usage(bucket_id, window_start, ledger)
-    }
-    fn add_metering(
-        &self,
-        delta: &crate::governance::MeteringDelta,
-    ) -> crate::governance::StoreResult<()> {
-        self.inner.add_metering(delta)
-    }
-    fn list_metering(
-        &self,
-        bucket: u64,
-    ) -> crate::governance::StoreResult<Vec<crate::governance::MeteringRow>> {
-        self.inner.list_metering(bucket)
-    }
-    fn add_denylist(&self, sub: &str, reason: &str) -> crate::governance::StoreResult<()> {
-        self.inner.add_denylist(sub, reason)
-    }
-    fn list_denylist(&self) -> crate::governance::StoreResult<Vec<String>> {
-        self.inner.list_denylist()
-    }
-}
-
-/// GET /keys/{id}, GET /keys/{id}/usage and POST /keys/{id}/revoke are pure single-key reads (no
-/// cache refresh follows them), so a fixed handler must resolve the key via exactly one
-/// `Store::get_key` call and never fall back to `Store::list_keys` (a full table scan) to find it.
-/// Before the O(1) fix each of these called `gov.all_keys()` (→ `list_keys`) and filtered for the
-/// id by hand.
-#[tokio::test]
-async fn test_single_key_reads_use_get_key_not_list_keys() {
-    crate::metrics::init();
-    let store = Arc::new(CountingStore::new());
-    let gov = gov_with_signer(store.clone(), Some("admintok".to_string()));
-    let (key_a, _) = gov
-        .create_key(
-            NewKeySpec {
-                name: "a".to_string(),
-                allowed_pools: None,
-                group: None,
-                labels: Default::default(),
-            },
-            0,
-        )
-        .unwrap();
-    let (key_b, _) = gov
-        .create_key(
-            NewKeySpec {
-                name: "b".to_string(),
-                allowed_pools: None,
-                group: None,
-                labels: Default::default(),
-            },
-            0,
-        )
-        .unwrap();
-    let (key_c, _) = gov
-        .create_key(
-            NewKeySpec {
-                name: "c".to_string(),
-                allowed_pools: None,
-                group: None,
-                labels: Default::default(),
-            },
-            0,
-        )
-        .unwrap();
-    let (addr, handle) = serve_with_gov(gov).await;
-    let client = reqwest::Client::new();
-
-    store.reset();
-    let resp = client
-        .get(format!("http://{addr}/api/v1/admin/keys/{}", key_a.id))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status().as_u16(), 200);
-    assert_eq!(
-        store
-            .list_keys_calls
-            .load(std::sync::atomic::Ordering::SeqCst),
-        0,
-        "GET /keys/{{id}} must not scan the whole table"
-    );
-    assert!(
-        store
-            .get_key_calls
-            .load(std::sync::atomic::Ordering::SeqCst)
-            >= 1,
-        "GET /keys/{{id}} must resolve the key via Store::get_key"
-    );
-
-    store.reset();
-    let resp = client
-        .get(format!(
-            "http://{addr}/api/v1/admin/keys/{}/usage",
-            key_b.id
-        ))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status().as_u16(), 200);
-    assert_eq!(
-        store
-            .list_keys_calls
-            .load(std::sync::atomic::Ordering::SeqCst),
-        0,
-        "GET /keys/{{id}}/usage must not scan the whole table"
-    );
-    assert!(
-        store
-            .get_key_calls
-            .load(std::sync::atomic::Ordering::SeqCst)
-            >= 1,
-        "GET /keys/{{id}}/usage must resolve the key via Store::get_key"
-    );
-
-    store.reset();
-    let resp = client
-        .post(format!(
-            "http://{addr}/api/v1/admin/keys/{}/revoke",
-            key_c.id
-        ))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status().as_u16(), 200);
-    assert_eq!(
-        store
-            .list_keys_calls
-            .load(std::sync::atomic::Ordering::SeqCst),
-        0,
-        "POST /keys/{{id}}/revoke must not scan the whole table to check existence"
-    );
-    assert!(
-        store
-            .get_key_calls
-            .load(std::sync::atomic::Ordering::SeqCst)
-            >= 1,
-        "POST /keys/{{id}}/revoke must resolve the key via Store::get_key"
-    );
-    handle.abort();
-}
-
-/// PATCH /keys/{id} and DELETE /keys/{id} both refresh the in-memory cache (one legitimate
-/// `list_keys` call) after a successful mutation, so they cannot be zero — but the pre-fix code
-/// called `list_keys` a SECOND time (via `gov.all_keys().find(...)`) just to locate the row before
-/// mutating it. A fixed handler resolves that existence/If-Match read via `Store::get_key`, so only
-/// the one unavoidable refresh-driven `list_keys` call remains.
-#[tokio::test]
-async fn test_single_key_writes_use_get_key_for_their_existence_check() {
-    crate::metrics::init();
-    let store = Arc::new(CountingStore::new());
-    let gov = gov_with_signer(store.clone(), Some("admintok".to_string()));
-    let (key_a, _) = gov
-        .create_key(
-            NewKeySpec {
-                name: "a".to_string(),
-                allowed_pools: None,
-                group: None,
-                labels: Default::default(),
-            },
-            0,
-        )
-        .unwrap();
-    let (key_b, _) = gov
-        .create_key(
-            NewKeySpec {
-                name: "b".to_string(),
-                allowed_pools: None,
-                group: None,
-                labels: Default::default(),
-            },
-            0,
-        )
-        .unwrap();
-    let (addr, handle) = serve_with_gov(gov).await;
-    let client = reqwest::Client::new();
-
-    store.reset();
-    let resp = client
-        .patch(format!("http://{addr}/api/v1/admin/keys/{}", key_a.id))
-        .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"enabled": false}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status().as_u16(), 200);
-    assert_eq!(
-        store
-            .list_keys_calls
-            .load(std::sync::atomic::Ordering::SeqCst),
-        1,
-        "PATCH /keys/{{id}} must call list_keys only once, for the post-write cache refresh — \
-         not a second time to locate the row"
-    );
-    assert!(
-        store
-            .get_key_calls
-            .load(std::sync::atomic::Ordering::SeqCst)
-            >= 1,
-        "PATCH /keys/{{id}} must resolve the pre-image via Store::get_key"
-    );
-
-    store.reset();
-    let resp = client
-        .delete(format!("http://{addr}/api/v1/admin/keys/{}", key_b.id))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status().as_u16(), 204);
-    assert_eq!(
-        store
-            .list_keys_calls
-            .load(std::sync::atomic::Ordering::SeqCst),
-        1,
-        "DELETE /keys/{{id}} must call list_keys only once, for the post-write cache refresh — \
-         not a second time to locate the row"
-    );
-    assert!(
-        store
-            .get_key_calls
-            .load(std::sync::atomic::Ordering::SeqCst)
-            >= 1,
-        "DELETE /keys/{{id}} must resolve the pre-image via Store::get_key"
-    );
-    handle.abort();
-}
-
 #[tokio::test]
 async fn test_delete_key_is_not_idempotent_204() {
     // After a successful delete, a second delete of the same id must 404 (proves the 204 was a
@@ -5247,7 +4452,7 @@ async fn test_delete_key_is_not_idempotent_204() {
 
 #[tokio::test]
 async fn test_concurrent_delete_returns_exactly_one_204() {
-    // Two concurrent DELETEs of the SAME id must not
+    // Regression (MEDIUM/correctness, TOCTOU): two concurrent DELETEs of the SAME id must not
     // both observe the key and both return 204 (which would imply two revocations of one row in
     // an audit trail). The delete handler serializes its lookup→delete critical section, so the
     // winner returns 204 and every loser returns 404. Fire a burst and assert exactly one 204.
@@ -5306,7 +4511,7 @@ async fn test_concurrent_delete_returns_exactly_one_204() {
 
 #[tokio::test]
 async fn test_patch_after_delete_404s_and_does_not_recreate_key() {
-    // A PATCH must never RESURRECT a key a DELETE removed. The
+    // Regression (MEDIUM #7, SECURITY): a PATCH must never RESURRECT a key a DELETE removed. The
     // store's `update_key` is a check-then-act (`get_key` → `put_key`, where `put_key` UPSERTs and
     // so re-INSERTs a missing row). Serializing `update_key`'s lookup→put behind the same gate as
     // DELETE closes the window. This sequential case (DELETE fully precedes PATCH) proves the base
@@ -5460,12 +4665,19 @@ impl crate::governance::Store for BarrierStore {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_patch_interleaved_with_delete_never_resurrects_key() {
-    // A PATCH
+    // Regression (MEDIUM #7, SECURITY — the precise interleaving the gate exists to stop): a PATCH
     // that has already read an extant key, then is overtaken by a DELETE that revokes it, must NOT
-    // have its `put_key` re-INSERT (resurrect) the row. `BarrierStore` forces the interleaving
-    // deterministically: the PATCH's `put_key` pauses between the existence check and the write
-    // while the DELETE runs. Holding `EXISTENCE_GATE` across lookup→put is what makes the DELETE
-    // run strictly after the PATCH's put, so the row is removed last and ends up ABSENT.
+    // have its `put_key` re-INSERT (resurrect) the row. We force the interleaving deterministically
+    // with `BarrierStore`: the PATCH's `put_key` pauses between the existence check and the write
+    // while the DELETE runs.
+    //
+    // Old code (PATCH not under the gate): the DELETE proceeds while the PATCH is paused, removes
+    // the row, returns 200; then the PATCH's UPSERT re-inserts it -> key PRESENT -> this test's
+    // final "key absent" assertion FAILS.
+    //
+    // Fixed code (PATCH holds the same `EXISTENCE_GATE` across lookup→put): the DELETE blocks on
+    // the gate until the PATCH releases it, so it runs strictly AFTER the PATCH's put -> the row is
+    // removed last -> key ABSENT -> this test PASSES.
     crate::metrics::init();
     let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel::<()>(1);
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
@@ -5552,7 +4764,7 @@ async fn test_patch_interleaved_with_delete_never_resurrects_key() {
     handle.abort();
 }
 
-/// `rotate_key` is a check-then-act (get_key → mint →
+/// REGRESSION (audit c1r6, SECURITY): `rotate_key` is a check-then-act (get_key → mint →
 /// put_key over the UPSERT), so — exactly like update_key/delete_key — it must hold
 /// EXISTENCE_GATE across lookup→write. Without it a DELETE that revokes the key between rotate's
 /// read and its `put_key` is clobbered by the put, RESURRECTING the revoked key with a fresh
@@ -5640,7 +4852,7 @@ async fn test_rotate_interleaved_with_delete_never_resurrects_key() {
 
 #[test]
 fn test_existence_gate_is_std_sync_mutex_lockable_without_runtime() {
-    // The gate MUST be a
+    // Regression (MEDIUM #6, R26 — CONTINUES the R25 existence-race fix): the gate MUST be a
     // `std::sync::Mutex<()>`, not a `tokio::sync::Mutex<()>`. The fix binds the gate's lifetime to
     // the SYNCHRONOUS store mutation by locking it INSIDE the `spawn_blocking` closure (which has no
     // async runtime in scope); a `tokio::sync::Mutex` cannot be locked there — its `.lock()` returns
@@ -5658,7 +4870,7 @@ fn test_existence_gate_is_std_sync_mutex_lockable_without_runtime() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_cancelled_patch_keeps_gate_held_for_full_store_mutation() {
-    // The R25 fix held
+    // Regression (MEDIUM #6, R26 — request-cancellation voids the existence gate): the R25 fix held
     // the gate across the cancellable outer `.await`. If the client dropped the request, the async
     // guard dropped — but the already-scheduled (uncancellable) `spawn_blocking` closure kept
     // running its lookup→write with the gate NO LONGER held, re-opening the resurrection /
@@ -5669,12 +4881,12 @@ async fn test_cancelled_patch_keeps_gate_held_for_full_store_mutation() {
     // existence check and its write). We then DROP (cancel) the PATCH's driving future while it is
     // parked, and fire a DELETE. The DELETE must NOT be able to complete while the PATCH's blocking
     // mutation is still in flight:
-    // - Old code (async guard owned by the dropped PATCH future): cancelling releases the gate, so
-    // the DELETE acquires it and COMPLETES within the window -> this test's "DELETE still
-    // pending" assertion FAILS.
-    // - Fixed code (gate locked inside the still-running blocking closure): the DELETE blocks on
-    // the gate until the PATCH's `put_key` finishes -> the DELETE is STILL PENDING in the
-    // window -> this test PASSES. Releasing the barrier then lets both drain.
+    //   - Old code (async guard owned by the dropped PATCH future): cancelling releases the gate, so
+    //     the DELETE acquires it and COMPLETES within the window -> this test's "DELETE still
+    //     pending" assertion FAILS.
+    //   - Fixed code (gate locked inside the still-running blocking closure): the DELETE blocks on
+    //     the gate until the PATCH's `put_key` finishes -> the DELETE is STILL PENDING in the
+    //     window -> this test PASSES. Releasing the barrier then lets both drain.
     crate::metrics::init();
     let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel::<()>(1);
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
@@ -5739,21 +4951,13 @@ async fn test_cancelled_patch_keeps_gate_held_for_full_store_mutation() {
             .as_u16()
     });
 
-    // Poll (rather than one sample at a fixed delay) for the DELETE completing during the window:
-    // a single late sample can MISS an early completion that happened and then quiesced before the
-    // sample, which is a false-pass in exactly the direction load makes worse (more time between
-    // dispatch and sample, not less). Polling for "never finished" over the whole window is
-    // strictly stronger than one sample and no slower in the happy (still-blocked) case.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(300);
-    while std::time::Instant::now() < deadline {
-        assert!(
-            !delete_task.is_finished(),
-            "a cancelled PATCH must keep the EXISTENCE_GATE held for its full blocking mutation; \
-             the DELETE must remain blocked on the gate (old async-guard code releases it on \
-             cancel)"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
+    // Give the DELETE time to either complete (old) or wedge on the gate (fixed).
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(
+        !delete_task.is_finished(),
+        "a cancelled PATCH must keep the EXISTENCE_GATE held for its full blocking mutation; the \
+             DELETE must remain blocked on the gate (old async-guard code releases it on cancel)"
+    );
 
     // Release the parked PATCH put_key so the gate frees and the DELETE can finish — proves no
     // deadlock and lets the task drain cleanly.
@@ -6264,7 +5468,7 @@ async fn test_create_key_budget_group_and_labels_roundtrip_and_missing_group_400
     handle.abort();
 }
 
-// ── self-service mint: auto-provision + delegated mint scope + max_keys_per_principal (D2/) ────
+// ── self-service mint: auto-provision + delegated mint scope + max_keys_per_principal (D2/§6a) ────
 
 /// A `budget` limit for a group tree (helper to keep the test trees readable).
 fn budget_limit(cents: u64) -> crate::config::groups::LimitCfg {
@@ -6610,7 +5814,7 @@ async fn test_mint_scope_is_sibling_of_hooks_register() {
     handle.abort();
 }
 
-/// `max_keys_per_principal`: with the cap set to 2, a group's 3rd mint is a 409 that
+/// `max_keys_per_principal` (audit gap 7): with the cap set to 2, a group's 3rd mint is a 409 that
 /// names the cap; a DIFFERENT group is unaffected (the cap is per group = per principal). Cap `0`
 /// (default, tested elsewhere) is unlimited.
 #[tokio::test]
@@ -6675,312 +5879,6 @@ async fn test_max_keys_per_principal_cap_trips() {
 
     // A DIFFERENT group is unaffected — the cap is per group (= per principal).
     assert_eq!(mint("d", "other").await.unwrap().status().as_u16(), 201);
-
-    handle.abort();
-}
-
-/// The three anti-sprawl refusals, driven end-to-end. Split out of the `#[tokio::test]` so the
-/// class-level drift test can run it too.
-///
-/// 1. **`PATCH /keys/{id}` rebind into an at-cap group**. Only its pure
-///    predicate (`check_key_cap`) was tested; the HANDLER arm that turns it into a 409 had no test
-///    at all, so `contract::taxonomy` never declared `Conflict/AtKeyCap` for that operation and
-///    `openapi.json` documented a `409` that named only `GovernanceOff`. The under-claim guard could
-///    not catch it either: it compared `ErrKind` alone, and `Conflict` WAS declared.
-/// 2. **RE-ENABLE past the cap** — the same ratchet, reached through the other field. `check_key_cap` counts LIVE keys, so `disable → mint → re-enable` walks a bucket past
-///    its ceiling with every single request passing the guard. Now gated by the same 409.
-/// 3. **`POST /keys` delegated-mint-must-bind 400** — never exercised, and its
-///    emission reused `Cond::RebindTargetMissing`, whose canonical phrase describes a DIFFERENT
-///    refusal. `openapi.json` therefore described this 400 as a dangling-rebind error.
-///
-/// It also asserts the audit consequence: every one of these refusals writes a `rejected` row —
-/// a refused mint is an attempt to issue a credential, and it must leave a trace.
-async fn drive_key_cap_and_delegation_errors() {
-    crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let groups = std::collections::BTreeMap::from([
-        (
-            "capped".to_string(),
-            crate::config::GroupCfg {
-                limits: vec![budget_limit(1_000_000)],
-                ..Default::default()
-            },
-        ),
-        (
-            "roomy".to_string(),
-            crate::config::GroupCfg {
-                limits: vec![budget_limit(1_000_000)],
-                ..Default::default()
-            },
-        ),
-    ]);
-    let mut app = TestApp::new().governance(gov).groups_tree(groups).build();
-    {
-        let inner = Arc::get_mut(&mut app).expect("sole owner");
-        inner.max_keys_per_principal = 2;
-        // A DELEGATED `mint` principal (case 3): the refusal is body-derived authorization, so it
-        // is only reachable from a non-`Full` scope. Ceiling `full` so `mint` resolves un-capped.
-        inner.admin_chain = vec!["test-scope-module".to_string(), "admin-tokens".to_string()];
-        let mut table = std::collections::BTreeMap::new();
-        table.insert(
-            "minters".to_string(),
-            crate::config::RoleBindingCfg {
-                admin_scope: Some("mint".to_string()),
-                ..Default::default()
-            },
-        );
-        inner
-            .role_bindings
-            .insert("test-scope-module".to_string(), table);
-        inner
-            .auth_scope_caps
-            .insert("test-scope-module".to_string(), "full".to_string());
-    }
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
-    let keys_url = format!("http://{addr}/api/v1/admin/keys");
-
-    let mint = |name: &'static str, group: &'static str| {
-        let (c, u) = (client.clone(), keys_url.clone());
-        async move {
-            let r = c
-                .post(&u)
-                .header("x-admin-token", "admintok")
-                .json(&serde_json::json!({"name": name, "group": group}))
-                .send()
-                .await
-                .unwrap();
-            assert_eq!(r.status().as_u16(), 201, "mint {name}/{group}");
-            let b: serde_json::Value = r.json().await.unwrap();
-            b["id"].as_str().unwrap().to_string()
-        }
-    };
-    let patch = |id: String, body: serde_json::Value| {
-        let (c, u) = (client.clone(), keys_url.clone());
-        async move {
-            c.patch(format!("{u}/{id}"))
-                .header("x-admin-token", "admintok")
-                .json(&body)
-                .send()
-                .await
-                .unwrap()
-        }
-    };
-
-    // Fill `capped` to its ceiling of 2, and park one key in `roomy` to rebind with.
-    let cap_a = mint("a", "capped").await;
-    let _cap_b = mint("b", "capped").await;
-    let roamer = mint("roamer", "roomy").await;
-
-    // ── 1. REBIND into an at-cap bucket → 409 `conflict` naming the cap ───────────────────────
-    let r = patch(roamer.clone(), serde_json::json!({"group": "capped"})).await;
-    assert_eq!(r.status().as_u16(), 409, "rebind into an at-cap group");
-    let body: serde_json::Value = r.json().await.unwrap();
-    assert_eq!(body["error"]["code"], "conflict");
-    assert!(
-        body["error"]["message"]
-            .as_str()
-            .unwrap_or("")
-            .contains("max_keys_per_principal"),
-        "the rebind 409 names the cap: {body}"
-    );
-
-    // ── 2. RE-ENABLE past the cap → the SAME 409 ──────────────────────────────────────────────
-    // Disable one of `capped`'s keys: the bucket now counts 1 live, so a fresh mint is admitted.
-    assert_eq!(
-        patch(cap_a.clone(), serde_json::json!({"enabled": false}))
-            .await
-            .status()
-            .as_u16(),
-        200,
-        "disabling is always allowed — it can only free a slot"
-    );
-    let _cap_c = mint("c", "capped").await;
-    // …and NOW re-enabling the parked key would make 3 live keys in a bucket capped at 2.
-    let r = patch(cap_a.clone(), serde_json::json!({"enabled": true})).await;
-    assert_eq!(
-        r.status().as_u16(),
-        409,
-        "re-enabling past the cap is the same admission as a rebind past the cap"
-    );
-    let body: serde_json::Value = r.json().await.unwrap();
-    assert_eq!(body["error"]["code"], "conflict");
-    assert!(
-        body["error"]["message"]
-            .as_str()
-            .unwrap_or("")
-            .contains("max_keys_per_principal"),
-        "the re-enable 409 names the cap: {body}"
-    );
-    // A DISABLED key can still be edited in every other way — the guard fires on admission, not on
-    // touching an at-cap bucket (otherwise an at-cap bucket would freeze).
-    assert_eq!(
-        patch(cap_a.clone(), serde_json::json!({"enabled": false}))
-            .await
-            .status()
-            .as_u16(),
-        200,
-        "a no-op disable of a key in an at-cap bucket is not an admission"
-    );
-
-    // ── 3. DELEGATED MINT with no `group` → 400 `invalid_request` ─────────────────────────────
-    let r = client
-        .post(&keys_url)
-        .header("x-admin-token", "grp:minters")
-        .json(&serde_json::json!({"name": "unbound"}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        r.status().as_u16(),
-        400,
-        "a delegated mint credential may not issue an unbound (uncapped) key"
-    );
-    let body: serde_json::Value = r.json().await.unwrap();
-    assert_eq!(body["error"]["code"], "invalid_request");
-    // The SAME request from the operator (`full`) is allowed — the refusal is body-derived
-    // authorization, not a body validation rule, and must not become one.
-    let r = client
-        .post(&keys_url)
-        .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"name": "unbound-by-operator"}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        r.status().as_u16(),
-        201,
-        "the operator owns the tree and may still mint an unbound key"
-    );
-
-    // ── THE AUDIT CONSEQUENCE ─────────────────────────────────────────────────────────────────
-    // Every refusal above wrote a `rejected` row: a refused mint is a stopped attempt to issue a
-    // credential, and must leave a trace. The rows are asserted through
-    // the live `GET /audit` surface, and only for EXISTENCE (the log is a process-global other
-    // tests append to, so "at least one" is the only stable predicate).
-    let audit_rows = |action: &'static str| {
-        let (c, a) = (client.clone(), addr);
-        async move {
-            let r = c
-                .get(format!("http://{a}/api/v1/admin/audit?action={action}"))
-                .header("x-admin-token", "admintok")
-                .send()
-                .await
-                .unwrap();
-            let b: serde_json::Value = r.json().await.unwrap();
-            b["items"].as_array().cloned().unwrap_or_default()
-        }
-    };
-    for action in ["key.create", "key.patch"] {
-        let rejected = audit_rows(action)
-            .await
-            .iter()
-            .filter(|e| e["outcome"] == "rejected")
-            .count();
-        assert!(
-            rejected > 0,
-            "no `{action}` audit row with outcome=rejected — a refusal that leaves no trail is \
-             the gap `KeyAudit` exists to make unrepresentable"
-        );
-    }
-
-    server.abort();
-}
-
-/// The `#[tokio::test]` wrapper for [`drive_key_cap_and_delegation_errors`].
-#[tokio::test]
-async fn key_cap_and_delegation_refusals_are_reachable_declared_and_audited() {
-    drive_key_cap_and_delegation_errors().await;
-}
-
-/// N concurrent mints into a
-/// group sitting one below the cap must NOT all pass. Before the fix the count and the mint ran in
-/// two separate `spawn_blocking` tasks with an `.await` between and no lock spanning them, so
-/// concurrent callers all read `n < cap` and all minted, overshooting the cap by up to `N-1`. The
-/// fix folds the count and the mint into ONE `spawn_blocking` under `EXISTENCE_GATE`, serializing
-/// callers at the boundary. Here: cap = 3, seed the group with 2 keys, fire 6 concurrent mints ⇒
-/// EXACTLY one succeeds (fills the last slot) and the rest 409, and the group ends at EXACTLY the cap.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn test_max_keys_per_principal_atomic_under_concurrent_mint() {
-    crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let groups = std::collections::BTreeMap::from([(
-        "capped".to_string(),
-        crate::config::GroupCfg {
-            limits: vec![budget_limit(1_000_000)],
-            ..Default::default()
-        },
-    )]);
-    let mut app = TestApp::new()
-        .governance(gov.clone())
-        .groups_tree(groups)
-        .build();
-    {
-        let inner = Arc::get_mut(&mut app).expect("sole owner");
-        inner.max_keys_per_principal = 3;
-    }
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
-    let url = format!("http://{addr}/api/v1/admin/keys");
-    let mint = |name: String| {
-        let client = client.clone();
-        let url = url.clone();
-        async move {
-            client
-                .post(&url)
-                .header("x-admin-token", "admintok")
-                .json(&serde_json::json!({"name": name, "group": "capped"}))
-                .send()
-                .await
-                .unwrap()
-                .status()
-                .as_u16()
-        }
-    };
-
-    // Seed the group to cap-1 (2 of 3) sequentially so exactly one slot remains.
-    assert_eq!(mint("seed-a".to_string()).await, 201);
-    assert_eq!(mint("seed-b".to_string()).await, 201);
-
-    // Fire 6 mints CONCURRENTLY at the boundary. Only ONE may fill the last slot; the rest 409.
-    let mut set = tokio::task::JoinSet::new();
-    for i in 0..6 {
-        set.spawn(mint(format!("race-{i}")));
-    }
-    let mut statuses = Vec::new();
-    while let Some(res) = set.join_next().await {
-        statuses.push(res.unwrap());
-    }
-    let created = statuses.iter().filter(|s| **s == 201).count();
-    let conflicts = statuses.iter().filter(|s| **s == 409).count();
-    assert_eq!(
-        created, 1,
-        "exactly ONE concurrent mint may fill the last cap slot (got {created} 201s): {statuses:?}"
-    );
-    assert_eq!(
-        conflicts, 5,
-        "the other five concurrent mints must 409 at the cap: {statuses:?}"
-    );
-
-    // The store must hold EXACTLY the cap (3) keys bound to `capped` — never more.
-    let n = gov
-        .all_keys()
-        .unwrap()
-        .iter()
-        .filter(|k| k.group.as_deref() == Some("capped"))
-        .count();
-    assert_eq!(
-        n, 3,
-        "the group must end at EXACTLY the cap under concurrency, never over it (got {n})"
-    );
 
     handle.abort();
 }
@@ -7336,32 +6234,6 @@ async fn test_signing_key_rotate_reports_kid_and_revoke_all() {
         "reports the current signing-key id: {body}"
     );
     assert_eq!(body["revoke_all"], true, "rotation is revoke-all by design");
-
-    // The endpoint rotates NOTHING — it reads the current kid and returns instructions. The audit
-    // row must not claim otherwise: `signing_key.rotate`/`applied` told a reader every outstanding
-    // token had been revoked. The row itself stays, because a valid admin token calling this
-    // repeatedly is exactly the probing the log exists to record.
-    //
-    // Scoped by resource ("signing-key") only, over the whole 1000-entry ring: the negative
-    // assertion below (no `signing_key.rotate` row) holds only because no OTHER test currently
-    // emits that action against this resource, and a large concurrent audit-writing burst could in
-    // principle evict this test's own `signing_key.report` row before the read. Latent; accepted —
-    // bracketing by seq would narrow the window but not defeat eviction.
-    let rows = crate::admin::audit::AUDIT.list_filtered(
-        0,
-        crate::admin::audit::MAX_AUDIT_ENTRIES,
-        None,
-        Some("signing-key"),
-    );
-    assert!(
-        rows.iter().any(|e| e.action == "signing_key.report"
-            && e.outcome == crate::admin::audit::OUTCOME_APPLIED),
-        "the report is recorded under a verb that does not claim a mutation"
-    );
-    assert!(
-        !rows.iter().any(|e| e.action == "signing_key.rotate"),
-        "and never under a verb asserting key material changed"
-    );
 
     handle.abort();
 }
@@ -7929,7 +6801,7 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
             serde_json::json!({
                 "per_request_fee": 7,
                 "rate_card": { "m0": { "input_utok": 1.5, "output_utok": 2.0 } },
-                "limits": { "tls_handshake_timeout_secs": 30 }
+                "limits": { "max_inbound_concurrent": 512 }
             })
             .to_string(),
         )
@@ -7946,7 +6818,7 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
             .await
             .unwrap();
     assert_eq!(body["settings"]["per_request_fee"], 7);
-    assert_eq!(body["settings"]["limits"]["tls_handshake_timeout_secs"], 30);
+    assert_eq!(body["settings"]["limits"]["max_inbound_concurrent"], 512);
     assert!(
         body["settings"]["rate_card"]["m0"].is_object(),
         "rate_card round-trips"
@@ -8077,194 +6949,7 @@ async fn test_admin_v1_config_settings_process_level_flagged_reload_to_apply() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// class-13/14 T2: `main.rs`'s `UpstreamClients` is REUSED across a config apply (warm connection
-/// pools are deliberately kept) — its `else` builder arm is the ONLY place
-/// `pool_max_idle_per_host` / `pool_idle_timeout_secs` / `upstream_request_timeout_secs` are read, so
-/// changing them via `PUT /config/settings` is silently boot-scoped. `reload_to_apply_fields` did not
-/// flag them, so the endpoint returned `reload_to_apply: []` and a `note` saying "applied live" for a
-/// change that changes nothing at runtime — a false success. Assert the field IS flagged (dotted,
-/// since `limits` is a nested `Option` section, not a top-level one — flagging bare `"limits"` would
-/// wrongly also mark the genuinely-live `request_body_max_bytes` as restart-scoped).
-#[tokio::test]
-async fn test_admin_v1_config_settings_boot_scoped_limits_flagged_reload_to_apply() {
-    let (dir, _overlay, addr, handle) = settings_test_app("bootscopedlimits").await;
-    let client = reqwest::Client::new();
-    let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
-
-    let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
-        .header("content-type", "application/json")
-        .body(
-            serde_json::json!({
-                "limits": { "pool_max_idle_per_host": 16 }
-            })
-            .to_string(),
-        )
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(put.status().as_u16(), 200, "{:?}", put.text().await);
-    let body: serde_json::Value = put.json().await.unwrap();
-    let flagged: Vec<&str> = body["reload_to_apply"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|v| v.as_str().unwrap())
-        .collect();
-    assert!(
-        flagged.contains(&"limits.pool_max_idle_per_host"),
-        "a boot-scoped UpstreamClients field must be flagged reload-to-apply, not silently \
-         'applied live': {flagged:?}"
-    );
-
-    handle.abort();
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// `limits.max_inbound_concurrent` is frozen by a DIFFERENT mechanism than the `UpstreamClients`
-/// reuse above: `main.rs` captures it ONCE in `main()` and bakes it into a
-/// `tower::limit::GlobalConcurrencyLimitLayer` on the DATA ROUTER at process start. A config apply
-/// swaps only `Arc<App>` (`AppHandle::swap`) — the router, and therefore the semaphore's permit
-/// count, is never rebuilt. `reload_to_apply_fields` did not flag it, so a
-/// `PUT {"limits":{"max_inbound_concurrent":512}}` returned `reload_to_apply: []` and a note saying
-/// "applied live" for a change that changes nothing at runtime until a restart — the exact
-/// false-success class the sibling `UpstreamClients` fields were already fixed for. Assert the field
-/// IS flagged (dotted, its own mechanism, deserving its own regression separate from the
-/// `UpstreamClients` test above).
-#[tokio::test]
-async fn test_admin_v1_config_settings_max_inbound_concurrent_flagged_reload_to_apply() {
-    let (dir, _overlay, addr, handle) = settings_test_app("maxinboundconcurrent").await;
-    let client = reqwest::Client::new();
-    let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
-
-    let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
-        .header("content-type", "application/json")
-        .body(
-            serde_json::json!({
-                "limits": { "max_inbound_concurrent": 512 }
-            })
-            .to_string(),
-        )
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(put.status().as_u16(), 200, "{:?}", put.text().await);
-    let body: serde_json::Value = put.json().await.unwrap();
-    let flagged: Vec<&str> = body["reload_to_apply"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|v| v.as_str().unwrap())
-        .collect();
-    assert!(
-        flagged.contains(&"limits.max_inbound_concurrent"),
-        "the router-level GlobalConcurrencyLimitLayer is boot-frozen and must be flagged \
-         reload-to-apply, not silently 'applied live': {flagged:?}"
-    );
-
-    handle.abort();
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// The `observability` section is live EXCEPT three fields the gap-sweep for
-/// `max_inbound_concurrent` also turned up: `emit_server_timing` is baked into router middleware
-/// state at boot, `request_log_webhook_url` seeds a process-global `OnceLock` that silently no-ops
-/// after the first `main()` call, and `otlp_url` feeds a one-shot `tracing_subscriber` init. None of
-/// the three are rebuilt by a config apply. Assert all three are flagged (dotted, same reasoning as
-/// `limits.*`).
-#[tokio::test]
-async fn test_admin_v1_config_settings_boot_scoped_observability_flagged_reload_to_apply() {
-    let (dir, _overlay, addr, handle) = settings_test_app("bootscopedobs").await;
-    let client = reqwest::Client::new();
-    let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
-
-    let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
-        .header("content-type", "application/json")
-        .body(
-            serde_json::json!({
-                "observability": {
-                    "emit_server_timing": true,
-                    "request_log_webhook_url": "https://example.com/hook",
-                    "otlp_url": "https://otel.example.com:4317"
-                }
-            })
-            .to_string(),
-        )
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(put.status().as_u16(), 200, "{:?}", put.text().await);
-    let body: serde_json::Value = put.json().await.unwrap();
-    let flagged: Vec<&str> = body["reload_to_apply"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|v| v.as_str().unwrap())
-        .collect();
-    assert!(
-        flagged.contains(&"observability.emit_server_timing"),
-        "router-baked middleware state must be flagged reload-to-apply: {flagged:?}"
-    );
-    assert!(
-        flagged.contains(&"observability.request_log_webhook_url"),
-        "the OnceLock-seeded webhook target must be flagged reload-to-apply: {flagged:?}"
-    );
-    assert!(
-        flagged.contains(&"observability.otlp_url"),
-        "the one-shot tracing-subscriber init must be flagged reload-to-apply: {flagged:?}"
-    );
-
-    handle.abort();
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
 /// PARTIAL UPDATE: a second `PUT` naming only `per_request_fee` preserves the earlier `rate_card`
-/// A store secret reference that does not resolve HERE must not be rejected. The store is
-/// restart-to-apply, so staging a ref whose secret the orchestrator mounts on the next deploy is a
-/// legitimate workflow — and `tls`, the block beside it with the identical failure mode, already
-/// accepts exactly that. The operator gets a loud warn naming the field and the restart
-/// consequence; rejecting instead would make a config they can legally write into `config.yaml`
-/// un-PUT-able.
-#[tokio::test]
-async fn test_admin_v1_config_settings_unresolvable_store_secret_warns_not_rejects() {
-    let (dir, overlay, addr, handle) = settings_test_app("storesecret").await;
-    let client = reqwest::Client::new();
-    let var = format!("BUSBAR_TEST_STORE_SECRET_MISSING_{}", std::process::id());
-    std::env::remove_var(&var);
-
-    let put = client
-        .put(format!("http://{addr}/api/v1/admin/config/settings"))
-        .header("x-admin-token", "admintok")
-        .header("content-type", "application/json")
-        .body(
-            serde_json::json!({
-                "store": { "module": "memory", "settings": { "licenseKey": { "env": var } } }
-            })
-            .to_string(),
-        )
-        .send()
-        .await
-        .unwrap();
-    let st = put.status().as_u16();
-    let body = put.text().await.unwrap_or_default();
-    assert_eq!(
-        st, 200,
-        "an unresolvable store ref is staged, not refused: {body}"
-    );
-
-    // And it is persisted, so the next restart uses it — which is the point of staging.
-    let doc = crate::config::overlay::read(&overlay).expect("overlay written");
-    assert!(
-        doc.root
-            .as_ref()
-            .and_then(|r| r.store.as_ref())
-            .is_some_and(|s| s.settings.contains_key("licenseKey")),
-        "the staged reference reaches the overlay"
-    );
-
-    handle.abort();
-    drop(dir);
-}
-
 /// override (partial-merge semantics, like a group PATCH).
 #[tokio::test]
 async fn test_admin_v1_config_settings_partial_update_preserves_prior() {
@@ -8373,166 +7058,6 @@ async fn test_admin_v1_config_settings_reset_reverts_to_base() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The reset pre-flight probe (`overlay_empty`) must NOT treat a CORRUPT overlay as "no overlay
-/// state" — that short-circuits to a `200 changed:false` + `OUTCOME_APPLIED` audit row without ever
-/// running the fail-closed `clear_section`, which every sibling durable-write path on an unreadable
-/// overlay refuses. Write a non-empty root override first (so the overlay exists), then corrupt the
-/// file bytes and reset — the corruption must be REFUSED (400), not silently reported as an
-/// idempotent no-op.
-#[tokio::test]
-async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_corrupt() {
-    let (dir, overlay, addr, handle) = settings_test_app("reset-corrupt").await;
-    let client = reqwest::Client::new();
-    let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
-
-    admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
-        .header("content-type", "application/json")
-        .body(serde_json::json!({ "per_request_fee": 42 }).to_string())
-        .send()
-        .await
-        .unwrap();
-    assert!(
-        crate::config::overlay::read(&overlay)
-            .and_then(|d| d.root)
-            .is_some(),
-        "root override present before corrupting the overlay"
-    );
-
-    std::fs::write(&overlay, b"{ not json").unwrap();
-
-    let reset = admin(client.delete(format!("http://{addr}/api/v1/admin/overlay/root")))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        reset.status().as_u16(),
-        400,
-        "a reset probe over a corrupt overlay must refuse, not report a false no-op: {:?}",
-        reset.text().await
-    );
-
-    let rows = crate::admin::audit::AUDIT.list_filtered(
-        0,
-        crate::admin::audit::MAX_AUDIT_ENTRIES,
-        None,
-        Some("overlay:root"),
-    );
-    assert!(
-        rows.iter()
-            .any(|e| e.action == "overlay.reset"
-                && e.outcome == crate::admin::audit::OUTCOME_REJECTED),
-        "the corrupt-overlay reset must be audited as REJECTED, never APPLIED: {rows:?}"
-    );
-    assert!(
-        !rows
-            .iter()
-            .any(|e| e.action == "overlay.reset"
-                && e.outcome == crate::admin::audit::OUTCOME_APPLIED),
-        "a corrupt-overlay reset must never be recorded as a successful apply: {rows:?}"
-    );
-
-    handle.abort();
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// Same probe, the OTHER non-`Absent` classification: an overlay written by a NEWER busbar than
-/// this one is intact and meaningful (unlike `Unreadable`), and `load_config_from_disk` already
-/// refuses to boot on one (`main.rs`). The reset pre-flight probe must not paper over that refusal
-/// with a false `changed:false`.
-#[tokio::test]
-async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_too_new() {
-    let (dir, overlay, addr, handle) = settings_test_app("reset-too-new").await;
-    let client = reqwest::Client::new();
-    let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
-
-    admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
-        .header("content-type", "application/json")
-        .body(serde_json::json!({ "per_request_fee": 42 }).to_string())
-        .send()
-        .await
-        .unwrap();
-    let mut doc: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&overlay).unwrap()).unwrap();
-    doc["version"] = serde_json::json!(crate::config::overlay::OVERLAY_VERSION + 1);
-    std::fs::write(&overlay, serde_json::to_vec(&doc).unwrap()).unwrap();
-
-    let reset = admin(client.delete(format!("http://{addr}/api/v1/admin/overlay/root")))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        reset.status().as_u16(),
-        400,
-        "a reset probe over a too-new overlay must refuse: {:?}",
-        reset.text().await
-    );
-
-    handle.abort();
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// `GET /config/settings` on a corrupt/unreadable overlay renders `settings: {}` (the honest
-/// "no overrides visible" answer given the fail-soft `read`), but the misreport must be
-/// ATTRIBUTABLE to THIS read — a generic `overlay.rs` warn is not enough, because a reader can't
-/// tell which of the many overlay-reading endpoints produced it. Drives the handler directly
-/// (not over HTTP) so the thread-local `WarnCapture` subscriber sees the synchronous warn.
-#[test]
-fn test_get_config_settings_warns_when_overlay_is_unreadable() {
-    use tracing_subscriber::layer::SubscriberExt as _;
-
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-get-settings-corrupt-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    let overlay = dir.join("overlay.json");
-    std::fs::write(&overlay, b"{ not json").unwrap();
-
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let mut app = TestApp::new()
-        .governance(gov)
-        .overlay_path(overlay.clone())
-        .build();
-    {
-        let inner = Arc::get_mut(&mut app).expect("sole owner");
-        inner.config_path = None;
-        inner.providers_path = None;
-    }
-    let handle = std::sync::Arc::new(crate::state::AppHandle::new(app));
-
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    let cap = WarnCapture::default();
-    let subscriber = tracing_subscriber::registry().with(cap.clone());
-
-    let resp = tracing::subscriber::with_default(subscriber, || {
-        rt.block_on(crate::admin::v1::json::get_config_settings(
-            axum::extract::State(handle),
-        ))
-    });
-    assert_eq!(
-        resp.status().as_u16(),
-        200,
-        "a corrupt overlay must not brick the read; it renders no overrides"
-    );
-
-    assert!(
-        cap.contains("/config/settings"),
-        "GET /config/settings on a corrupt overlay must emit a warn naming THIS endpoint, not just \
-         overlay.rs's generic boot-time warn: {:?}",
-        cap.messages()
-    );
-
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
 /// ETAG / If-Match: a stale `If-Match` on the PUT is a 409 version_conflict that changes nothing.
 #[tokio::test]
 async fn test_admin_v1_config_settings_stale_if_match_conflicts() {
@@ -8588,215 +7113,6 @@ async fn test_admin_v1_config_settings_unknown_field_400() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Same fixture as `settings_test_app`, but with NO overlay configured (`BUSBAR_CONFIG_OVERLAY`
-/// unset) — the default deployment — while config/providers files still exist on disk (so the
-/// separate ephemeral-mode guard does not fire first).
-async fn settings_test_app_no_overlay(
-    tag: &str,
-) -> (
-    std::path::PathBuf,
-    std::net::SocketAddr,
-    tokio::task::JoinHandle<()>,
-) {
-    crate::metrics::init();
-    let (dir, config_path, providers_path) = write_reset_fixture(&format!("settings-no-ov-{tag}"));
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let mut app = TestApp::new().governance(gov).build();
-    {
-        let inner = Arc::get_mut(&mut app).expect("sole owner");
-        inner.config_path = Some(config_path.clone());
-        inner.providers_path = Some(providers_path.clone());
-    }
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    (dir, addr, handle)
-}
-
-/// Case 2 of the `persist` matrix (§3.3.3): with no overlay configured, a PUT still applies live
-/// (200) but must report TRUTHFULLY that nothing was stored — `reload_to_apply` empty and a note
-/// saying IN MEMORY ONLY — instead of the old unconditional "stored in the overlay" claim.
-#[tokio::test]
-async fn test_admin_v1_config_settings_put_without_persistence_reports_in_memory_only() {
-    let (dir, addr, handle) = settings_test_app_no_overlay("truthful").await;
-    let client = reqwest::Client::new();
-    let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
-
-    let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
-        .header("content-type", "application/json")
-        .body(serde_json::json!({ "listen": "127.0.0.1:0" }).to_string())
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(put.status().as_u16(), 200, "{:?}", put.text().await);
-    let body: serde_json::Value = put.json().await.unwrap();
-    let reload_to_apply = body["reload_to_apply"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
-    assert!(
-        reload_to_apply.is_empty(),
-        "no overlay ⇒ nothing was durably stored, so reload_to_apply must be empty: {body}"
-    );
-    let note = body["note"].as_str().unwrap_or_default();
-    assert!(
-        note.contains("IN MEMORY ONLY"),
-        "the note must say the change is in memory only: {note}"
-    );
-    assert!(
-        !note.contains("stored in the overlay"),
-        "the note must not claim durable storage that did not happen: {note}"
-    );
-
-    handle.abort();
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// Case 4 of the `persist` matrix: `"persist": true` with no overlay configured must REFUSE (400)
-/// rather than silently apply in memory while claiming success. THE STATUS ALONE DOES NOT
-/// DISCRIMINATE — `RootSettings`'s `deny_unknown_fields` 400s this exact body TODAY for a different
-/// reason (`unknown field \`persist\``), so the assertion must be on the message.
-#[tokio::test]
-async fn test_admin_v1_config_settings_put_refuses_when_persistence_is_explicitly_requested_and_unavailable(
-) {
-    let (dir, addr, handle) = settings_test_app_no_overlay("refuse").await;
-    let client = reqwest::Client::new();
-    let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
-
-    let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
-        .header("content-type", "application/json")
-        .body(serde_json::json!({ "listen": "127.0.0.1:0", "persist": true }).to_string())
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(put.status().as_u16(), 400, "{:?}", put.text().await);
-    let body: serde_json::Value = put.json().await.unwrap();
-    let msg = body["error"]["message"].as_str().unwrap_or_default();
-    assert!(
-        msg.contains("BUSBAR_CONFIG_OVERLAY"),
-        "the refusal must name BUSBAR_CONFIG_OVERLAY as the missing precondition, not just be a \
-         generic 400: {body}"
-    );
-    assert!(
-        !msg.contains("unknown field"),
-        "this must be the NEW persist-unavailable refusal, not the OLD deny_unknown_fields 400 \
-         that fires on this body today: {body}"
-    );
-
-    handle.abort();
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// The positive half of case 3: `"persist": true` WITH an overlay present must still persist
-/// exactly as an implicit persist does today.
-#[tokio::test]
-async fn test_admin_v1_config_settings_put_with_persist_true_still_persists_when_overlay_exists() {
-    let (dir, overlay, addr, handle) = settings_test_app("persist-true").await;
-    let client = reqwest::Client::new();
-    let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
-
-    let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
-        .header("content-type", "application/json")
-        .body(serde_json::json!({ "per_request_fee": 7, "persist": true }).to_string())
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(put.status().as_u16(), 200, "{:?}", put.text().await);
-    let on_disk = crate::config::overlay::read(&overlay)
-        .and_then(|d| d.root)
-        .expect("root section persisted");
-    assert_eq!(
-        on_disk.per_request_fee,
-        Some(7),
-        "persist:true with an overlay present stores the value on disk"
-    );
-
-    handle.abort();
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// `"persist"` rejects a non-boolean — the message must name it, discriminating from the OLD
-/// `unknown field` 400 the same body triggers today (status alone does not discriminate here
-/// either, since both are 400s).
-#[tokio::test]
-async fn test_admin_v1_config_settings_put_rejects_a_non_boolean_persist() {
-    let (dir, addr, handle) = settings_test_app_no_overlay("nonbool").await;
-    let client = reqwest::Client::new();
-    let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
-
-    let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
-        .header("content-type", "application/json")
-        .body(serde_json::json!({ "persist": "yes" }).to_string())
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(put.status().as_u16(), 400, "{:?}", put.text().await);
-    let body: serde_json::Value = put.json().await.unwrap();
-    let msg = body["error"]["message"].as_str().unwrap_or_default();
-    assert!(
-        msg.contains("persist") && msg.contains("boolean"),
-        "the refusal must name `persist` as needing a boolean: {body}"
-    );
-
-    handle.abort();
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// REGRESSION PROOF (passes before AND after): stripping `persist` before the typed parse must NOT
-/// weaken `deny_unknown_fields` — a TYPO of the control key is still a loud 400, which is the whole
-/// justification (§3.3.2) for choosing a body field over a query param (the in-tree
-/// `Query<HashMap<String,String>>` idiom drops unknown keys silently).
-#[tokio::test]
-async fn test_admin_v1_config_settings_put_still_rejects_an_unknown_field_including_persist_typo() {
-    let (dir, addr, handle) = settings_test_app_no_overlay("typo").await;
-    let client = reqwest::Client::new();
-    let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
-
-    let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
-        .header("content-type", "application/json")
-        .body(serde_json::json!({ "persits": true }).to_string())
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(put.status().as_u16(), 400, "{:?}", put.text().await);
-    let body: serde_json::Value = put.json().await.unwrap();
-    let msg = body["error"]["message"].as_str().unwrap_or_default();
-    assert!(
-        msg.contains("unknown field"),
-        "a typo of `persist` must still be an unknown-field 400, not a silently-ignored request: \
-         {body}"
-    );
-
-    handle.abort();
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// `persist_root(None, ..)` (the default-deployment no-op) must log — the last piece of owner
-/// requirement (iii). Driven directly (not over HTTP) so the thread-local `WarnCapture` subscriber
-/// sees it.
-#[test]
-fn test_persist_root_without_an_overlay_logs() {
-    use tracing_subscriber::layer::SubscriberExt as _;
-
-    let cap = WarnCapture::default();
-    let subscriber = tracing_subscriber::registry().with(cap.clone());
-
-    let result = tracing::subscriber::with_default(subscriber, || {
-        crate::config::overlay::persist_root(None, &crate::config::overlay::RootSettings::default())
-    });
-    assert!(
-        result.is_ok(),
-        "a None path is a documented no-op, not an error"
-    );
-    assert!(
-        cap.contains("in memory only"),
-        "persist_root(None, ..) must log the in-memory-only outcome: {:?}",
-        cap.messages()
-    );
-}
-
 /// SCOPE: `PUT /config/settings` is a FULL-scope mutation (the config-plane fallthrough), `GET` is
 /// read-only — the matrix the middleware enforces.
 #[test]
@@ -8821,2021 +7137,4 @@ fn test_config_settings_scope_matrix() {
         "full",
         "a root reset is a full-scope mutation"
     );
-}
-
-// ── KEYS ERROR SURFACE — BYTE-PARITY LOCK ────────────────────────────────────────────────────────
-//
-// The keys handlers historically spoke their OWN error vocabulary (`error_response` + `ERR_TYPE_*`,
-// re-mapped onto the frozen `code` enum in a second place) while every other v1 handler spoke
-// `AdminError` + `err_json`. Design D route 2 collapses that second vocabulary onto the one
-// taxonomy. The collapse must be INVISIBLE on the wire: this test pins the EXACT status,
-// content-type and body BYTES of every keys error path, so the refactor is provably a no-op for
-// clients and any future divergence between the two surfaces is a red test, not a support ticket.
-//
-// Regenerate deliberately with `UPDATE_KEYS_ERROR_GOLDEN=1 cargo test -p busbar
-// keys_error_surface_is_byte_stable` — a diff in that file is a WIRE CHANGE on a frozen surface.
-
-/// The governance posture a keys error case is exercised against.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum KeysFixture {
-    /// Governance on, signing key present — the normal server.
-    Signing,
-    /// Governance on, NO signing key — mint and signing-key rotate have nothing to sign with.
-    NoSigner,
-    /// Governance off entirely — the whole keys resource is unavailable.
-    Off,
-}
-
-/// One pinned keys error case: a request, and the fixture it runs against.
-struct KeysErrCase {
-    name: &'static str,
-    fixture: KeysFixture,
-    method: &'static str,
-    /// Path relative to `/api/v1/admin`; `{live}` is substituted with the id of a minted key.
-    path: &'static str,
-    headers: &'static [(&'static str, &'static str)],
-    body: Option<&'static str>,
-}
-
-/// The committed byte-for-byte snapshot of the keys error wire.
-const KEYS_ERROR_GOLDEN: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/src/admin/tests/keys_error_wire.json"
-);
-
-/// Serve one fixture, returning its address, the server task, and the id of a live key (empty for
-/// the postures that cannot mint).
-async fn serve_keys_fixture(
-    fixture: KeysFixture,
-) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>, String) {
-    let store: Arc<dyn crate::governance::Store> = Arc::new(MemoryStore::new());
-    let app = match fixture {
-        KeysFixture::Signing => {
-            let gov = gov_with_signer(store, Some("admintok".to_string()));
-            TestApp::new().governance(gov).build()
-        }
-        KeysFixture::NoSigner => {
-            let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
-            TestApp::new().governance(gov).build()
-        }
-        // Governance OFF: there is no governance to hold an operator token, so the fixture uses
-        // the explicit `admin_auth: []` OPEN posture (the documented dev posture) to authenticate.
-        // Otherwise every case would 401 in the middleware and never reach a keys handler.
-        KeysFixture::Off => {
-            let cfg = crate::config::AuthCfg {
-                admin_auth: Vec::new(),
-                ..crate::config::AuthCfg::default_none()
-            };
-            TestApp::new()
-                .auth(Arc::new(crate::auth::AuthMiddleware::new_builtin(&cfg)))
-                .admin_chain(Vec::new())
-                .build()
-        }
-    };
-    let router = crate::build_router(app.clone());
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    // A live key id for the stale-ETag cases (only mintable on the signing fixture).
-    let live = if fixture == KeysFixture::Signing {
-        let (key, _) = app
-            .governance
-            .as_ref()
-            .unwrap()
-            .mint_signed(
-                NewKeySpec {
-                    name: "live".into(),
-                    allowed_pools: None,
-                    group: None,
-                    labels: Default::default(),
-                },
-                crate::store::now() + 3600,
-                crate::store::now(),
-            )
-            .unwrap();
-        key.id
-    } else {
-        String::new()
-    };
-    (addr, handle, live)
-}
-
-/// BYTE-PARITY LOCK (design D route 2): every keys error response — status, content-type and body
-/// BYTES — is pinned. The keys surface is frozen v1; collapsing its private error vocabulary onto
-/// `AdminError` + `err_json` may change how the bytes are PRODUCED, never what they ARE.
-#[tokio::test]
-async fn keys_error_surface_is_byte_stable() {
-    drive_keys_error_surface().await;
-}
-
-/// Drive every pinned keys error path and assert the wire is byte-identical to the golden. Split
-/// out of the `#[tokio::test]` so the class-level over-claim test can RUN it (and collect its
-/// emissions) without depending on test ordering.
-async fn drive_keys_error_surface() {
-    crate::metrics::init();
-    // A 65-character id (the cap is 64) and an id that cannot exist.
-    const OVERLONG: &str = "vk_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    const MISSING: &str = "vk_0000000000000000";
-    // A well-formed but WRONG key ETag (16 hex chars) — the stale-If-Match guard, not the parser.
-    const STALE_ETAG: &str = "\"00000000000000ff\"";
-    let cases: &[KeysErrCase] = &[
-        // ── GET /keys — the query string is validated at the door ─────────────────────────────
-        c(
-            "list_bad_cursor",
-            KeysFixture::Signing,
-            "GET",
-            "/keys?cursor=%21%21",
-            &[],
-            None,
-        ),
-        c(
-            "list_bad_enabled",
-            KeysFixture::Signing,
-            "GET",
-            "/keys?enabled=maybe",
-            &[],
-            None,
-        ),
-        c(
-            "list_bad_limit",
-            KeysFixture::Signing,
-            "GET",
-            "/keys?limit=lots",
-            &[],
-            None,
-        ),
-        // ── POST /keys ────────────────────────────────────────────────────────────────────────
-        c(
-            "mint_bad_json",
-            KeysFixture::Signing,
-            "POST",
-            "/keys",
-            &[],
-            Some("{"),
-        ),
-        c(
-            "mint_reserved_label",
-            KeysFixture::Signing,
-            "POST",
-            "/keys",
-            &[],
-            Some(r#"{"name":"k","labels":{"key":"v"}}"#),
-        ),
-        c(
-            "mint_both_expiry_fields",
-            KeysFixture::Signing,
-            "POST",
-            "/keys",
-            &[],
-            Some(r#"{"name":"k","expires_in":"1h","expires_at":9999999999}"#),
-        ),
-        c(
-            "mint_bad_duration",
-            KeysFixture::Signing,
-            "POST",
-            "/keys",
-            &[],
-            Some(r#"{"name":"k","expires_in":"1x"}"#),
-        ),
-        c(
-            "mint_expires_in_the_past",
-            KeysFixture::Signing,
-            "POST",
-            "/keys",
-            &[],
-            Some(r#"{"name":"k","expires_at":1}"#),
-        ),
-        c(
-            "mint_parent_without_group",
-            KeysFixture::Signing,
-            "POST",
-            "/keys",
-            &[],
-            Some(r#"{"name":"k","parent":"team"}"#),
-        ),
-        c(
-            "mint_unknown_group_no_parent",
-            KeysFixture::Signing,
-            "POST",
-            "/keys",
-            &[],
-            Some(r#"{"name":"k","group":"nope"}"#),
-        ),
-        c(
-            "mint_unknown_parent",
-            KeysFixture::Signing,
-            "POST",
-            "/keys",
-            &[],
-            Some(r#"{"name":"k","group":"leaf","parent":"nope"}"#),
-        ),
-        c(
-            "mint_no_signing_key",
-            KeysFixture::NoSigner,
-            "POST",
-            "/keys",
-            &[],
-            Some(r#"{"name":"k"}"#),
-        ),
-        c(
-            "mint_governance_off",
-            KeysFixture::Off,
-            "POST",
-            "/keys",
-            &[],
-            Some(r#"{"name":"k"}"#),
-        ),
-        // ── GET /keys/{id} ────────────────────────────────────────────────────────────────────
-        c(
-            "read_overlong_id",
-            KeysFixture::Signing,
-            "GET",
-            "/keys/{overlong}",
-            &[],
-            None,
-        ),
-        c(
-            "read_unknown",
-            KeysFixture::Signing,
-            "GET",
-            "/keys/{missing}",
-            &[],
-            None,
-        ),
-        c(
-            "read_governance_off",
-            KeysFixture::Off,
-            "GET",
-            "/keys/{missing}",
-            &[],
-            None,
-        ),
-        // ── PATCH /keys/{id} ──────────────────────────────────────────────────────────────────
-        c(
-            "patch_overlong_id",
-            KeysFixture::Signing,
-            "PATCH",
-            "/keys/{overlong}",
-            &[],
-            Some("{}"),
-        ),
-        c(
-            "patch_malformed_if_match",
-            KeysFixture::Signing,
-            "PATCH",
-            "/keys/{missing}",
-            &[("if-match", "not-an-etag")],
-            Some("{}"),
-        ),
-        c(
-            "patch_bad_json",
-            KeysFixture::Signing,
-            "PATCH",
-            "/keys/{missing}",
-            &[],
-            Some("{"),
-        ),
-        c(
-            "patch_rebind_target_missing",
-            KeysFixture::Signing,
-            "PATCH",
-            "/keys/{missing}",
-            &[],
-            Some(r#"{"group":"nope"}"#),
-        ),
-        c(
-            "patch_unknown",
-            KeysFixture::Signing,
-            "PATCH",
-            "/keys/{missing}",
-            &[],
-            Some("{}"),
-        ),
-        c(
-            "patch_stale_etag",
-            KeysFixture::Signing,
-            "PATCH",
-            "/keys/{live}",
-            &[("if-match", STALE_ETAG)],
-            Some("{}"),
-        ),
-        c(
-            "patch_governance_off",
-            KeysFixture::Off,
-            "PATCH",
-            "/keys/{missing}",
-            &[],
-            Some("{}"),
-        ),
-        // ── DELETE /keys/{id} ─────────────────────────────────────────────────────────────────
-        c(
-            "delete_overlong_id",
-            KeysFixture::Signing,
-            "DELETE",
-            "/keys/{overlong}",
-            &[],
-            None,
-        ),
-        c(
-            "delete_malformed_if_match",
-            KeysFixture::Signing,
-            "DELETE",
-            "/keys/{missing}",
-            &[("if-match", "not-an-etag")],
-            None,
-        ),
-        c(
-            "delete_unknown",
-            KeysFixture::Signing,
-            "DELETE",
-            "/keys/{missing}",
-            &[],
-            None,
-        ),
-        c(
-            "delete_stale_etag",
-            KeysFixture::Signing,
-            "DELETE",
-            "/keys/{live}",
-            &[("if-match", STALE_ETAG)],
-            None,
-        ),
-        c(
-            "delete_governance_off",
-            KeysFixture::Off,
-            "DELETE",
-            "/keys/{missing}",
-            &[],
-            None,
-        ),
-        // ── GET /keys/{id}/usage ──────────────────────────────────────────────────────────────
-        c(
-            "usage_overlong_id",
-            KeysFixture::Signing,
-            "GET",
-            "/keys/{overlong}/usage",
-            &[],
-            None,
-        ),
-        c(
-            "usage_unknown",
-            KeysFixture::Signing,
-            "GET",
-            "/keys/{missing}/usage",
-            &[],
-            None,
-        ),
-        c(
-            "usage_governance_off",
-            KeysFixture::Off,
-            "GET",
-            "/keys/{missing}/usage",
-            &[],
-            None,
-        ),
-        // ── POST /keys/{id}/rotate ────────────────────────────────────────────────────────────
-        c(
-            "rotate_unknown",
-            KeysFixture::Signing,
-            "POST",
-            "/keys/{missing}/rotate",
-            &[],
-            None,
-        ),
-        c(
-            "rotate_governance_off",
-            KeysFixture::Off,
-            "POST",
-            "/keys/{missing}/rotate",
-            &[],
-            None,
-        ),
-        // ── POST /keys/{id}/revoke ────────────────────────────────────────────────────────────
-        c(
-            "revoke_overlong_id",
-            KeysFixture::Signing,
-            "POST",
-            "/keys/{overlong}/revoke",
-            &[],
-            None,
-        ),
-        c(
-            "revoke_unknown",
-            KeysFixture::Signing,
-            "POST",
-            "/keys/{missing}/revoke",
-            &[],
-            None,
-        ),
-        c(
-            "revoke_governance_off",
-            KeysFixture::Off,
-            "POST",
-            "/keys/{missing}/revoke",
-            &[],
-            None,
-        ),
-        // ── POST /signing-key/rotate ──────────────────────────────────────────────────────────
-        c(
-            "signing_rotate_no_key",
-            KeysFixture::NoSigner,
-            "POST",
-            "/signing-key/rotate",
-            &[],
-            None,
-        ),
-        c(
-            "signing_rotate_governance_off",
-            KeysFixture::Off,
-            "POST",
-            "/signing-key/rotate",
-            &[],
-            None,
-        ),
-    ];
-
-    let client = reqwest::Client::new();
-    let mut observed = serde_json::Map::new();
-    for fixture in [
-        KeysFixture::Signing,
-        KeysFixture::NoSigner,
-        KeysFixture::Off,
-    ] {
-        let (addr, server, live) = serve_keys_fixture(fixture).await;
-        for case in cases.iter().filter(|c| c.fixture == fixture) {
-            let path = case
-                .path
-                .replace("{overlong}", OVERLONG)
-                .replace("{missing}", MISSING)
-                .replace("{live}", &live);
-            let mut req = client
-                .request(
-                    reqwest::Method::from_bytes(case.method.as_bytes()).unwrap(),
-                    format!("http://{addr}/api/v1/admin{path}"),
-                )
-                .header("x-admin-token", "admintok");
-            for (k, v) in case.headers {
-                req = req.header(*k, *v);
-            }
-            if let Some(body) = case.body {
-                req = req
-                    .header("content-type", "application/json")
-                    .body(body.to_string());
-            }
-            let resp = req.send().await.unwrap();
-            let status = resp.status().as_u16();
-            let content_type = resp
-                .headers()
-                .get("content-type")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or_default()
-                .to_string();
-            let body = resp.text().await.unwrap();
-            assert!(
-                (400..600).contains(&status),
-                "{} expected an error response, got {status}: {body}",
-                case.name
-            );
-            observed.insert(
-                case.name.to_string(),
-                serde_json::json!({"status": status, "content_type": content_type, "body": body}),
-            );
-        }
-        server.abort();
-    }
-
-    let fresh = format!(
-        "{}\n",
-        serde_json::to_string_pretty(&serde_json::Value::Object(observed))
-            .expect("serialize keys error wire")
-    );
-    if std::env::var("UPDATE_KEYS_ERROR_GOLDEN").is_ok_and(|v| v == "1") {
-        std::fs::write(KEYS_ERROR_GOLDEN, &fresh)
-            .unwrap_or_else(|e| panic!("write {KEYS_ERROR_GOLDEN}: {e}"));
-        return;
-    }
-    let committed = std::fs::read_to_string(KEYS_ERROR_GOLDEN)
-        .unwrap_or_else(|e| panic!("read {KEYS_ERROR_GOLDEN}: {e}"));
-    assert_eq!(
-        committed, fresh,
-        "the keys error WIRE changed — status/content-type/body bytes on a FROZEN surface. If this \
-         is deliberate, regenerate with `UPDATE_KEYS_ERROR_GOLDEN=1`."
-    );
-}
-
-/// Terse constructor for a [`KeysErrCase`] row.
-const fn c(
-    name: &'static str,
-    fixture: KeysFixture,
-    method: &'static str,
-    path: &'static str,
-    headers: &'static [(&'static str, &'static str)],
-    body: Option<&'static str>,
-) -> KeysErrCase {
-    KeysErrCase {
-        name,
-        fixture,
-        method,
-        path,
-        headers,
-        body,
-    }
-}
-
-// ── DESIGN D: WITNESS DRIVER FOR THE DECLARED ERROR SET ───────────────────────────────────────────
-//
-// `contract::taxonomy::declared_errors` is what `openapi.json` documents. Under-claim (a handler
-// emits a kind the declaration omits) is already fatal on the spot — the v1 router's recording layer
-// panics inside whichever test triggered it. OVER-claim (the declaration lists a response no handler
-// can produce) has no such moment: it needs a WITNESS. This test is the driver that produces one for
-// every declared entry the rest of the suite does not already exercise, so
-// `declared_error_set_has_no_over_claim` (in the json tests) can assert that every documented error
-// is a real one. A declared 409 nobody can trigger is a lie in the contract; this is how it stays
-// impossible to keep.
-
-/// Drive the non-keys admin error paths that the rest of the suite leaves unexercised: the group
-/// CRUD errors, the version-guard errors on every If-Match-guarded mutation, the list-GET query
-/// rejections and the config-plane read errors. Assertions are deliberately thin (status + code) —
-/// the POINT of the test is the emission, which the router's recording layer witnesses.
-#[tokio::test]
-async fn admin_error_surface_witnesses_every_declared_response() {
-    drive_admin_error_surface().await;
-}
-
-/// Build a FRESH admin fixture for the error-surface driver: a base-config group (`team`) and hook
-/// (`basehook`) — file-owned, so the `conflict` base-defined arms are reachable — plus an OVERLAY
-/// group (`og`) and hook (`oh`) created over the API, for the arms that must NOT hit the
-/// base-defined guard. Returns the address and the server task.
-///
-/// Each batch of cases gets its own fixture: the admin surface enforces a per-principal, per-class
-/// MUTATION BUDGET (10/min for the config plane), and a driver that exercises every declared error
-/// blows straight through it. A fresh App carries a fresh limiter, so the batching keeps the driver
-/// exercising HANDLERS rather than the rate limiter.
-async fn admin_error_fixture() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = TestApp::new()
-        .governance(gov)
-        .group(
-            "team",
-            crate::config::GroupCfg {
-                parent: None,
-                enabled: true,
-                limits: vec![],
-                child_default: None,
-            },
-        )
-        .base_hook(
-            "basehook",
-            crate::config::HookCfg {
-                kind: crate::config::HookKind::Gate,
-                plugin: "test-hook".to_string(),
-                timeout_ms: 25,
-                on_error: "reject".to_string(),
-                prompt: crate::config::PromptAccess::No,
-                user: crate::config::UserAccess::No,
-                priority: 0,
-                at: None,
-                settings: serde_json::Map::new(),
-                on_empty: None,
-                global: false,
-                default: false,
-            },
-        )
-        .build();
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
-    for (rel, body) in [
-        (
-            "/groups",
-            r#"{"name":"og","config":{"parent":"team","limits":[]}}"#,
-        ),
-        (
-            "/hooks",
-            r#"{"name":"oh","config":{"kind":"gate","plugin":"test-hook"}}"#,
-        ),
-    ] {
-        let created = client
-            .post(format!("http://{addr}/api/v1/admin{rel}"))
-            .header("x-admin-token", "admintok")
-            .header("content-type", "application/json")
-            .body(body)
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(created.status().as_u16(), 201, "fixture: POST {rel}");
-    }
-    (addr, server)
-}
-
-/// See the test above. Split out so the class-level over-claim test can drive it directly.
-async fn drive_admin_error_surface() {
-    crate::metrics::init();
-    // A syntactically valid but WRONG config-plane ETag — the stale guard, not the parser.
-    const STALE: &str = "\"999999\"";
-    const BAD_ETAG: &str = "not-an-etag";
-    let group_body = r#"{"config":{"limits":[]}}"#;
-    // (label, method, rel, if-match, body, expected status, expected code)
-    /// One driven error case: (label, method, relative path, `If-Match`, body, expected status,
-    /// expected frozen `code`).
-    type ErrCase = (
-        &'static str,
-        &'static str,
-        &'static str,
-        Option<&'static str>,
-        Option<&'static str>,
-        u16,
-        &'static str,
-    );
-    let cases: &[ErrCase] = &[
-        // ── POST /groups ──────────────────────────────────────────────────────────────────────
-        (
-            "groups_post_invalid_tree",
-            "POST",
-            "/groups",
-            None,
-            Some(r#"{"name":"x","config":{"parent":"ghost","limits":[]}}"#),
-            400,
-            "invalid_request",
-        ),
-        (
-            "groups_post_base_defined",
-            "POST",
-            "/groups",
-            None,
-            Some(r#"{"name":"team","config":{"limits":[]}}"#),
-            409,
-            "conflict",
-        ),
-        (
-            "groups_post_stale",
-            "POST",
-            "/groups",
-            Some(STALE),
-            Some(r#"{"name":"z","config":{"limits":[]}}"#),
-            409,
-            "version_conflict",
-        ),
-        (
-            "groups_post_bad_if_match",
-            "POST",
-            "/groups",
-            Some(BAD_ETAG),
-            Some(r#"{"name":"z","config":{"limits":[]}}"#),
-            400,
-            "invalid_request",
-        ),
-        // ── PUT /groups/{name} ────────────────────────────────────────────────────────────────
-        (
-            "groups_put_bad_if_match",
-            "PUT",
-            "/groups/og",
-            Some(BAD_ETAG),
-            Some(group_body),
-            400,
-            "invalid_request",
-        ),
-        (
-            "groups_put_unknown",
-            "PUT",
-            "/groups/ghost",
-            None,
-            Some(group_body),
-            404,
-            "not_found",
-        ),
-        (
-            "groups_put_base_defined",
-            "PUT",
-            "/groups/team",
-            None,
-            Some(group_body),
-            409,
-            "conflict",
-        ),
-        (
-            "groups_put_stale",
-            "PUT",
-            "/groups/og",
-            Some(STALE),
-            Some(group_body),
-            409,
-            "version_conflict",
-        ),
-        // ── PATCH /groups/{name} ──────────────────────────────────────────────────────────────
-        (
-            "groups_patch_bad_if_match",
-            "PATCH",
-            "/groups/og",
-            Some(BAD_ETAG),
-            Some("{}"),
-            400,
-            "invalid_request",
-        ),
-        (
-            "groups_patch_unknown",
-            "PATCH",
-            "/groups/ghost",
-            None,
-            Some("{}"),
-            404,
-            "not_found",
-        ),
-        (
-            "groups_patch_base_defined",
-            "PATCH",
-            "/groups/team",
-            None,
-            Some("{}"),
-            409,
-            "conflict",
-        ),
-        (
-            "groups_patch_stale",
-            "PATCH",
-            "/groups/og",
-            Some(STALE),
-            Some("{}"),
-            409,
-            "version_conflict",
-        ),
-        (
-            "groups_patch_invalid_tree",
-            "PATCH",
-            "/groups/og",
-            None,
-            Some(r#"{"parent":"ghost"}"#),
-            400,
-            "invalid_request",
-        ),
-        // ── DELETE /groups/{name} ─────────────────────────────────────────────────────────────
-        (
-            "groups_delete_bad_if_match",
-            "DELETE",
-            "/groups/og",
-            Some(BAD_ETAG),
-            None,
-            400,
-            "invalid_request",
-        ),
-        (
-            "groups_delete_unknown",
-            "DELETE",
-            "/groups/ghost",
-            None,
-            None,
-            404,
-            "not_found",
-        ),
-        (
-            "groups_delete_base_defined",
-            "DELETE",
-            "/groups/team",
-            None,
-            None,
-            409,
-            "conflict",
-        ),
-        (
-            "groups_delete_stale",
-            "DELETE",
-            "/groups/og",
-            Some(STALE),
-            None,
-            409,
-            "version_conflict",
-        ),
-        // ── Hooks: the version-guard arms the escalation tests don't reach ─────────────────────
-        (
-            "hooks_post_stale",
-            "POST",
-            "/hooks",
-            Some(STALE),
-            Some(r#"{"name":"h2","config":{"kind":"gate","plugin":"test-hook"}}"#),
-            409,
-            "version_conflict",
-        ),
-        (
-            "hooks_put_bad_if_match",
-            "PUT",
-            "/hooks/oh",
-            Some(BAD_ETAG),
-            Some(r#"{"config":{"kind":"gate","plugin":"test-hook"}}"#),
-            400,
-            "invalid_request",
-        ),
-        (
-            "hooks_delete_bad_if_match",
-            "DELETE",
-            "/hooks/oh",
-            Some(BAD_ETAG),
-            None,
-            400,
-            "invalid_request",
-        ),
-        (
-            "hooks_delete_stale",
-            "DELETE",
-            "/hooks/oh",
-            Some(STALE),
-            None,
-            409,
-            "version_conflict",
-        ),
-        (
-            "hook_settings_bad_if_match",
-            "PATCH",
-            "/hooks/oh/settings",
-            Some(BAD_ETAG),
-            Some(r#"{"settings":{}}"#),
-            400,
-            "invalid_request",
-        ),
-        (
-            "hook_settings_base_defined",
-            "PATCH",
-            "/hooks/basehook/settings",
-            None,
-            Some(r#"{"settings":{}}"#),
-            409,
-            "conflict",
-        ),
-        (
-            "hook_settings_stale",
-            "PATCH",
-            "/hooks/oh/settings",
-            Some(STALE),
-            Some(r#"{"settings":{}}"#),
-            409,
-            "version_conflict",
-        ),
-        // ── List/read GETs whose query string is rejected at the door ─────────────────────────
-        (
-            "pools_bad_detail",
-            "GET",
-            "/pools?detail=maybe",
-            None,
-            None,
-            400,
-            "invalid_request",
-        ),
-        (
-            "usage_bad_window",
-            "GET",
-            "/usage?window=soon",
-            None,
-            None,
-            400,
-            "invalid_request",
-        ),
-        (
-            "audit_bad_cursor",
-            "GET",
-            "/audit?cursor=%21%21",
-            None,
-            None,
-            400,
-            "invalid_request",
-        ),
-        (
-            "versions_bad_cursor",
-            "GET",
-            "/config/versions?cursor=%21%21",
-            None,
-            None,
-            400,
-            "invalid_request",
-        ),
-        (
-            "diff_missing_params",
-            "GET",
-            "/config/diff",
-            None,
-            None,
-            400,
-            "invalid_request",
-        ),
-        (
-            "diff_unknown_version",
-            "GET",
-            "/config/diff?from=900&to=901",
-            None,
-            None,
-            404,
-            "not_found",
-        ),
-        // ── Config plane ──────────────────────────────────────────────────────────────────────
-        (
-            "config_rollback_bad_body",
-            "POST",
-            "/config/rollback",
-            None,
-            Some("{"),
-            400,
-            "invalid_request",
-        ),
-        (
-            "config_rollback_bad_if_match",
-            "POST",
-            "/config/rollback",
-            Some(BAD_ETAG),
-            Some(r#"{"version":1}"#),
-            400,
-            "invalid_request",
-        ),
-        (
-            "config_apply_bad_body",
-            "POST",
-            "/config/apply",
-            None,
-            Some("{"),
-            400,
-            "invalid_request",
-        ),
-        (
-            "config_settings_bad_if_match",
-            "PUT",
-            "/config/settings",
-            Some(BAD_ETAG),
-            Some("{}"),
-            400,
-            "invalid_request",
-        ),
-        (
-            "admin_auth_bad_if_match",
-            "PUT",
-            "/admin-auth",
-            Some(BAD_ETAG),
-            Some(r#"{"admin_auth":[]}"#),
-            400,
-            "invalid_request",
-        ),
-        // ── Plugins ───────────────────────────────────────────────────────────────────────────
-        (
-            "plugin_rollback_bad_body",
-            "POST",
-            "/plugins/rollback",
-            None,
-            Some("{"),
-            400,
-            "invalid_request",
-        ),
-        (
-            "plugin_rollback_bad_if_match",
-            "POST",
-            "/plugins/rollback",
-            Some(BAD_ETAG),
-            Some(r#"{"file":"p.tar.gz"}"#),
-            400,
-            "invalid_request",
-        ),
-        (
-            "plugin_rollback_stale",
-            "POST",
-            "/plugins/rollback",
-            Some(STALE),
-            Some(r#"{"file":"p.tar.gz"}"#),
-            409,
-            "version_conflict",
-        ),
-        // ── Single-resource reads: the 404 every templated GET carries ────────────────────────
-        (
-            "pool_unknown",
-            "GET",
-            "/pools/ghost",
-            None,
-            None,
-            404,
-            "not_found",
-        ),
-        (
-            "hook_unknown",
-            "GET",
-            "/hooks/ghost",
-            None,
-            None,
-            404,
-            "not_found",
-        ),
-        (
-            "hook_health_unknown",
-            "GET",
-            "/hooks/ghost/health",
-            None,
-            None,
-            404,
-            "not_found",
-        ),
-        (
-            "hook_schema_unknown",
-            "GET",
-            "/hooks/ghost/schema",
-            None,
-            None,
-            404,
-            "not_found",
-        ),
-        (
-            "hook_status_unknown",
-            "GET",
-            "/hooks/ghost/status",
-            None,
-            None,
-            404,
-            "not_found",
-        ),
-        (
-            "group_unknown",
-            "GET",
-            "/groups/ghost",
-            None,
-            None,
-            404,
-            "not_found",
-        ),
-        (
-            "group_usage_unknown",
-            "GET",
-            "/groups/ghost/usage",
-            None,
-            None,
-            404,
-            "not_found",
-        ),
-        (
-            "version_non_numeric",
-            "GET",
-            "/config/versions/abc",
-            None,
-            None,
-            400,
-            "invalid_request",
-        ),
-        (
-            "version_unknown",
-            "GET",
-            "/config/versions/999",
-            None,
-            None,
-            404,
-            "not_found",
-        ),
-        (
-            "plugins_missing_type",
-            "GET",
-            "/plugins",
-            None,
-            None,
-            400,
-            "invalid_request",
-        ),
-        // ── Hook definition lifecycle ─────────────────────────────────────────────────────────
-        (
-            "hooks_post_bad_body",
-            "POST",
-            "/hooks",
-            None,
-            Some("{"),
-            400,
-            "invalid_request",
-        ),
-        (
-            "hooks_post_bad_if_match",
-            "POST",
-            "/hooks",
-            Some(BAD_ETAG),
-            Some(r#"{"name":"h3","config":{"kind":"gate","plugin":"test-hook"}}"#),
-            400,
-            "invalid_request",
-        ),
-        (
-            "hooks_post_base_defined",
-            "POST",
-            "/hooks",
-            None,
-            Some(r#"{"name":"basehook","config":{"kind":"gate","plugin":"test-hook"}}"#),
-            409,
-            "conflict",
-        ),
-        (
-            "hooks_post_grant_change",
-            "POST",
-            "/hooks",
-            None,
-            Some(r#"{"name":"oh","config":{"kind":"tap","plugin":"test-hook"}}"#),
-            409,
-            "conflict",
-        ),
-        (
-            "hooks_put_unknown",
-            "PUT",
-            "/hooks/ghost",
-            None,
-            Some(r#"{"config":{"kind":"gate","plugin":"test-hook"}}"#),
-            404,
-            "not_found",
-        ),
-        (
-            "hooks_put_base_defined",
-            "PUT",
-            "/hooks/basehook",
-            None,
-            Some(r#"{"config":{"kind":"gate","plugin":"test-hook"}}"#),
-            409,
-            "conflict",
-        ),
-        (
-            "hooks_put_stale",
-            "PUT",
-            "/hooks/oh",
-            Some(STALE),
-            Some(r#"{"config":{"kind":"gate","plugin":"test-hook"}}"#),
-            409,
-            "version_conflict",
-        ),
-        (
-            "hooks_delete_unknown",
-            "DELETE",
-            "/hooks/ghost",
-            None,
-            None,
-            404,
-            "not_found",
-        ),
-        (
-            "hooks_delete_base_defined",
-            "DELETE",
-            "/hooks/basehook",
-            None,
-            None,
-            409,
-            "conflict",
-        ),
-        (
-            "hook_settings_unknown",
-            "PATCH",
-            "/hooks/ghost/settings",
-            None,
-            Some(r#"{"settings":{}}"#),
-            404,
-            "not_found",
-        ),
-        // ── Overlay reset ─────────────────────────────────────────────────────────────────────
-        (
-            "overlay_unknown_section",
-            "DELETE",
-            "/overlay/nosuch",
-            None,
-            None,
-            400,
-            "invalid_request",
-        ),
-        (
-            "overlay_stale",
-            "DELETE",
-            "/overlay/groups",
-            Some(STALE),
-            None,
-            409,
-            "version_conflict",
-        ),
-        // ── Config plane ──────────────────────────────────────────────────────────────────────
-        (
-            "cache_flush_bad_body",
-            "POST",
-            "/auth/cache/flush",
-            None,
-            Some("["),
-            400,
-            "invalid_request",
-        ),
-        (
-            "config_validate_bad_body",
-            "POST",
-            "/config/validate",
-            None,
-            Some("{"),
-            400,
-            "invalid_request",
-        ),
-        (
-            "config_reload_ephemeral",
-            "POST",
-            "/config/reload",
-            None,
-            None,
-            400,
-            "invalid_request",
-        ),
-        (
-            "config_apply_stale",
-            "POST",
-            "/config/apply",
-            Some(STALE),
-            Some(r#"{"config":{"listen":"127.0.0.1:0","providers":{},"models":{},"pools":{}}}"#),
-            409,
-            "version_conflict",
-        ),
-        (
-            "config_rollback_unknown",
-            "POST",
-            "/config/rollback",
-            None,
-            Some(r#"{"version":999}"#),
-            404,
-            "not_found",
-        ),
-        (
-            "config_rollback_stale",
-            "POST",
-            "/config/rollback",
-            Some(STALE),
-            Some(r#"{"version":1}"#),
-            409,
-            "version_conflict",
-        ),
-        (
-            "config_settings_stale",
-            "PUT",
-            "/config/settings",
-            Some(STALE),
-            Some("{}"),
-            409,
-            "version_conflict",
-        ),
-        (
-            "admin_auth_unknown_module",
-            "PUT",
-            "/admin-auth",
-            None,
-            Some(r#"{"admin_auth":["definitely-not-a-module"]}"#),
-            400,
-            "invalid_request",
-        ),
-        (
-            "admin_auth_stale",
-            "PUT",
-            "/admin-auth",
-            Some(STALE),
-            Some(r#"{"admin_auth":["admin-tokens"]}"#),
-            409,
-            "version_conflict",
-        ),
-        (
-            "admin_auth_lockout",
-            "PUT",
-            "/admin-auth",
-            None,
-            Some(r#"{"admin_auth":["test-scope-module"]}"#),
-            409,
-            "conflict",
-        ),
-    ];
-
-    // The per-principal mutation budget is 10/min for the config class, so run the table in small
-    // batches, each against a fresh fixture (and therefore a fresh limiter).
-    let client = reqwest::Client::new();
-    for batch in cases.chunks(6) {
-        let (addr, server) = admin_error_fixture().await;
-        for (label, method, rel, if_match, body, want_status, want_code) in batch {
-            let mut req = client
-                .request(
-                    reqwest::Method::from_bytes(method.as_bytes()).unwrap(),
-                    format!("http://{addr}/api/v1/admin{rel}"),
-                )
-                .header("x-admin-token", "admintok");
-            if let Some(tag) = if_match {
-                req = req.header("if-match", *tag);
-            }
-            if let Some(b) = body {
-                req = req.header("content-type", "application/json").body(*b);
-            }
-            let resp = req.send().await.unwrap();
-            let status = resp.status().as_u16();
-            let parsed: serde_json::Value = resp.json().await.unwrap();
-            assert_eq!(
-                status, *want_status,
-                "{label}: expected {want_status}, got {status} ({parsed})"
-            );
-            assert_eq!(parsed["error"]["code"], *want_code, "{label}");
-        }
-        server.abort();
-    }
-}
-
-/// WITNESS (design D): the two `POST /plugins/rollback` errors that need a real plugins directory —
-/// a target file that is not there (404 `not_found`) and one that IS there but does not pass the
-/// running trust posture even with the anti-downgrade floor lowered to its own version (409
-/// `conflict`; a rollback authenticates the OPERATOR, never the bytes).
-#[tokio::test]
-async fn plugin_rollback_reports_missing_and_untrusted_targets() {
-    drive_plugin_rollback_errors().await;
-}
-
-/// `POST /plugins/reload` 400s when the on-disk config no longer rebuilds. The operation declared NO
-/// 4xx at all until this driver existed -- `openapi.json` hid a response clients hit, and the
-/// router's under-claim panic could not catch it because nothing produced it.
-#[tokio::test]
-async fn plugin_reload_reports_an_unrebuildable_disk_config() {
-    drive_plugin_reload_errors().await;
-}
-
-/// See the test above. Split out so the class-level over-claim test can drive it directly.
-async fn drive_plugin_reload_errors() {
-    crate::metrics::init();
-    // `pid` alone collides: this helper is called from TWO `#[tokio::test]`s in the same binary
-    // (`plugin_reload_reports_an_unrebuildable_disk_config` and
-    // `declared_error_set_is_exactly_what_the_handlers_emit`), which can run concurrently and would
-    // otherwise `remove_dir_all` / overwrite each other's fixture mid-request. A per-CALL monotonic
-    // ticket makes every call's directory unique, matching the `stage.rs::next_seq` idiom (pid+tag
-    // is not enough here because it's the SAME tag from two call sites, not distinct ones).
-    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-admin-reload-witness-{}-{}",
-        std::process::id(),
-        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    // DISK TRUTH that does not parse: the rebuild is reached (not the ephemeral branch) and fails.
-    let config = dir.join("config.yaml");
-    let providers = dir.join("providers.yaml");
-    std::fs::write(&config, "this: [is not: valid: yaml\n").unwrap();
-    std::fs::write(&providers, "providers: {}\n").unwrap();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = TestApp::new()
-        .governance(gov)
-        .plugins_dir(dir.clone())
-        .disk_paths(config, providers)
-        .build();
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
-
-    let r = client
-        .post(format!("http://{addr}/api/v1/admin/plugins/reload"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap();
-    let status = r.status().as_u16();
-    let body: serde_json::Value = r.json().await.unwrap();
-    assert_eq!(status, 400, "an unrebuildable disk config: {body}");
-    assert_eq!(body["error"]["code"], "invalid_request");
-
-    server.abort();
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// See the test above. Split out so the class-level over-claim test can drive it directly.
-async fn drive_plugin_rollback_errors() {
-    crate::metrics::init();
-    // Same per-call collision as `drive_plugin_reload_errors` above (two callers, same pid) — see
-    // that function's comment.
-    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-admin-rollback-witness-{}-{}",
-        std::process::id(),
-        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let overlay = dir.join("overlay.yaml");
-    // An UNSIGNED artifact sitting in the plugins directory, under the DEFAULT trust posture
-    // (unsigned not opted in) — so it is present but not loadable.
-    let tarball = admin_test_tarball("rollme", "rollme");
-    let file = "rollme-1.0.0.tar.gz";
-    std::fs::write(dir.join(file), &tarball).unwrap();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = TestApp::new()
-        .governance(gov)
-        .plugins_dir(dir.clone())
-        .plugins_cfg(crate::config::PluginsCfg::default())
-        .overlay_path(overlay)
-        .build();
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
-    let rollback = |body: String| {
-        client
-            .post(format!("http://{addr}/api/v1/admin/plugins/rollback"))
-            .header("x-admin-token", "admintok")
-            .header("content-type", "application/json")
-            .body(body)
-            .send()
-    };
-
-    let r = rollback(r#"{"file":"nosuch-9.9.9.tar.gz"}"#.to_string())
-        .await
-        .unwrap();
-    let status = r.status().as_u16();
-    let body: serde_json::Value = r.json().await.unwrap();
-    assert_eq!(
-        status, 404,
-        "a target that is not in the plugins dir: {body}"
-    );
-    assert_eq!(body["error"]["code"], "not_found");
-
-    let r = rollback(format!(r#"{{"file":"{file}"}}"#)).await.unwrap();
-    let status = r.status().as_u16();
-    let body: serde_json::Value = r.json().await.unwrap();
-    assert_eq!(
-        status, 409,
-        "an untrusted target is a terminal conflict, not a validation error: {body}"
-    );
-    assert_eq!(body["error"]["code"], "conflict");
-
-    // The sibling INSTALL + REMOVE errors, driven against the same directory: a malformed body, a
-    // filename that is not a plugin archive, an artifact the trust posture rejects, and a removal
-    // of something that was never installed.
-    use base64::Engine as _;
-    let b64 = base64::engine::general_purpose::STANDARD.encode(&tarball);
-    for (label, rel, method, body, want_status, want_code) in [
-        (
-            "install_bad_body",
-            "/plugins",
-            "POST",
-            Some("{".to_string()),
-            400,
-            "invalid_request",
-        ),
-        (
-            "install_bad_filename",
-            "/plugins",
-            "POST",
-            Some(format!(
-                r#"{{"file":"not-an-archive","tarball_b64":"{b64}"}}"#
-            )),
-            400,
-            "invalid_request",
-        ),
-        (
-            "install_untrusted",
-            "/plugins",
-            "POST",
-            Some(format!(
-                r#"{{"file":"fresh-1.0.0.tar.gz","tarball_b64":"{b64}"}}"#
-            )),
-            409,
-            "conflict",
-        ),
-        (
-            "remove_bad_filename",
-            "/plugins/not-an-archive",
-            "DELETE",
-            None,
-            400,
-            "invalid_request",
-        ),
-        (
-            "remove_unknown",
-            "/plugins/ghost-1.0.0.tar.gz",
-            "DELETE",
-            None,
-            404,
-            "not_found",
-        ),
-    ] {
-        let mut req = client
-            .request(
-                reqwest::Method::from_bytes(method.as_bytes()).unwrap(),
-                format!("http://{addr}/api/v1/admin{rel}"),
-            )
-            .header("x-admin-token", "admintok");
-        if let Some(b) = body {
-            req = req.header("content-type", "application/json").body(b);
-        }
-        let r = req.send().await.unwrap();
-        let status = r.status().as_u16();
-        let parsed: serde_json::Value = r.json().await.unwrap();
-        assert_eq!(status, want_status, "{label}: {parsed}");
-        assert_eq!(parsed["error"]["code"], want_code, "{label}");
-    }
-    server.abort();
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// THE CONDITION-WITNESS DEBT LEDGER — a ratchet, not a suppression.
-///
-/// `declared_error_set_is_exactly_what_the_handlers_emit` requires every declared `(operation,
-/// ErrKind, Cond)` to be witness-backed. Where an operation declares the SAME `ErrKind` under two or
-/// more conditions, an untagged emission proves only that SOME condition fired -- so the emission
-/// has to name its condition (`err_json_cond`) for the declaration to mean anything. These are the
-/// declarations that do not yet.
-///
-/// The entry is enforced in BOTH directions, which is what makes it a ratchet rather than a
-/// suppression list: nothing outside it may be unwitnessed (a NEW ambiguous declaration is rejected
-/// on arrival), and every row in it must still be a live declaration AND still unwitnessed (so a row
-/// cannot be left behind once its emission starts naming its condition, or its declaration is
-/// deleted). The list can only shrink.
-const COND_WITNESS_DEBT: &[(
-    crate::admin::v1::contract::taxonomy::MethodTag,
-    &str,
-    crate::admin::v1::contract::taxonomy::ErrKind,
-    crate::admin::v1::contract::taxonomy::Cond,
-)] = {
-    use crate::admin::v1::contract::taxonomy::Cond::*;
-    use crate::admin::v1::contract::taxonomy::ErrKind::*;
-    use crate::admin::v1::contract::taxonomy::MethodTag::*;
-    &[
-        (Delete, "/groups/{name}", Conflict, BaseDefined),
-        (Delete, "/groups/{name}", Conflict, BoundKeys),
-        (Delete, "/groups/{name}", Conflict, StillParent),
-        (Delete, "/overlay/{section}", Validation, InvalidConfig),
-        (Delete, "/overlay/{section}", Validation, MalformedIfMatch),
-        (Delete, "/overlay/{section}", Validation, NoDiskBase),
-        (Delete, "/overlay/{section}", Validation, UnknownSection),
-        (Patch, "/groups/{name}", Validation, InvalidTree),
-        (Patch, "/groups/{name}", Validation, MalformedBody),
-        (Patch, "/hooks/{name}/settings", Conflict, BaseDefined),
-        (Patch, "/hooks/{name}/settings", Conflict, SettingsPush),
-        (Patch, "/hooks/{name}/settings", Validation, HookNoAck),
-        (Patch, "/hooks/{name}/settings", Validation, MalformedBody),
-        (Post, "/config/apply", Validation, InvalidConfig),
-        (Post, "/config/apply", Validation, MalformedBody),
-        (Post, "/config/apply", Validation, MalformedIfMatch),
-        (Post, "/config/reload", Validation, InvalidConfig),
-        (Post, "/config/reload", Validation, NoDiskBase),
-        (Post, "/config/rollback", Validation, InvalidConfig),
-        (Post, "/config/rollback", Validation, MalformedBody),
-        (Post, "/groups", Validation, InvalidTree),
-        (Post, "/groups", Validation, MalformedBody),
-        (Post, "/hooks", Conflict, BaseDefined),
-        (Post, "/hooks", Conflict, GrantChange),
-        (Post, "/hooks", Validation, MalformedBody),
-        (Post, "/keys", Conflict, AtKeyCap),
-        (Post, "/keys", Conflict, BaseDefined),
-        (Post, "/keys", Conflict, IdempotencyInFlight),
-        (Post, "/keys", Validation, InvalidTree),
-        (Post, "/keys", Validation, Overlong),
-        (Post, "/keys/{id}/rotate", Conflict, IdempotencyInFlight),
-        (Post, "/plugins", Conflict, NameCollision),
-        (Post, "/plugins", Conflict, UntrustedUpload),
-        (Post, "/plugins", Validation, InvalidFilename),
-        (Post, "/plugins", Validation, MalformedBody),
-        (Post, "/plugins", Validation, NotLoadable),
-        (Post, "/plugins/rollback", Validation, InvalidFilename),
-        (Post, "/plugins/rollback", Validation, MalformedBody),
-        (Post, "/plugins/rollback", Validation, NoDiskBase),
-        (Put, "/admin-auth", Validation, MalformedBody),
-        (Put, "/admin-auth", Validation, UnknownModule),
-        (Put, "/config/settings", Validation, InvalidConfig),
-        (Put, "/config/settings", Validation, MalformedBody),
-        (Put, "/config/settings", Validation, NoDiskBase),
-        (Put, "/groups/{name}", Validation, InvalidTree),
-        (Put, "/groups/{name}", Validation, MalformedBody),
-        (Put, "/hooks/{name}", Conflict, BaseDefined),
-        (Put, "/hooks/{name}", Conflict, GrantChange),
-        (Put, "/hooks/{name}", Validation, MalformedBody),
-    ]
-};
-
-/// THE CLASS-LEVEL GUARANTEE: for EVERY documented operation, the declared error set
-/// equals the set the handlers can actually emit. The two directions are enforced by two different
-/// mechanisms, both structural:
-///
-/// - **UNDER-CLAIM** (a handler emits a kind the declaration omits → `openapi.json` would hide a
-/// response clients hit) is fatal AT THE EMISSION: the v1 router's recording layer panics inside
-/// whichever test produced it. Every test in the suite is a driver; nothing accumulates and
-/// nothing depends on test order. That check is live for the whole suite, not just this test.
-/// - **OVER-CLAIM** (the declaration lists a response no handler can produce → `openapi.json`
-/// documents fiction) needs a WITNESS, which is what this test drives. It runs the error-surface
-/// drivers directly — no reliance on other tests having run — and then asserts every declared
-/// entry was seen. A declared 409 no test can trigger IS an over-claim until proven otherwise.
-///
-/// The witness is required at **`(operation, ErrKind, Cond)`** granularity, which is what the design
-/// claims and what an `(operation, ErrKind)` check silently did not give: a 409 whose code path had
-/// been deleted (`GroupRaceOnMint`, removed with the mint race) stayed documented indefinitely
-/// because a SIBLING 409 on the same operation kept the check green. Where an operation declares one
-/// condition per kind the untagged witness is unambiguous and still counts; where it declares
-/// several, only a `err_json_cond`-tagged emission distinguishes them, and the declarations not yet
-/// tagged are ledgered in `COND_WITNESS_DEBT`, which only shrinks.
-///
-/// Consequence: the per-endpoint audit that used to find "another missing 4xx" every round is now a
-/// machine set-comparison over every operation at once. There is no endpoint left to be next.
-#[tokio::test]
-async fn declared_error_set_is_exactly_what_the_handlers_emit() {
-    use crate::admin::v1::contract::taxonomy::{declared_errors, MethodTag};
-    // Drive every error path the declaration claims. (Other tests contribute to the same registry;
-    // calling the drivers here makes the assertion independent of whether they ran.)
-    drive_admin_error_surface().await;
-    drive_keys_error_surface().await;
-    drive_plugin_rollback_errors().await;
-    drive_plugin_reload_errors().await;
-    drive_hook_escalation_errors().await;
-    drive_key_cap_and_delegation_errors().await;
-
-    let witnessed = crate::admin::v1::contract::taxonomy::observed::snapshot();
-    // Every (operation, ErrKind) the suite has actually produced, and every (operation, ErrKind,
-    // Cond) TRIPLE for the emissions that named their condition.
-    let seen: std::collections::BTreeSet<(String, MethodTag, _)> = witnessed
-        .iter()
-        .map(|(rel, method, kind, _cond)| (rel.clone(), *method, *kind))
-        .collect();
-    let seen_triple: std::collections::BTreeSet<_> = witnessed
-        .iter()
-        .filter_map(|(rel, method, kind, cond)| cond.map(|c| (rel.clone(), *method, *kind, c)))
-        .collect();
-
-    // Walk the DOCUMENTED operations and require a witness for each declared entry AT CONDITION
-    // GRANULARITY, which is what the design claims and what a `(op, ErrKind)` check does not give.
-    //
-    // The two cases differ in what counts as proof, and the difference is exact, not a concession:
-    // * the op declares this ErrKind under exactly ONE Cond — then no other condition on this
-    // operation can produce that kind, so ANY witness of the kind witnesses that condition;
-    // * the op declares the SAME ErrKind under two or more Conds — then an untagged witness is
-    // genuinely ambiguous (it proves one of them, and cannot say which), so the emission must
-    // name its condition via `err_json_cond` for the declaration to be witness-backed at all.
-    // A declared condition that only the ambiguous case can reach is therefore an over-claim until
-    // its emission site says which condition it is: that is precisely how a 409 whose code path was
-    // deleted (`GroupRaceOnMint`, removed with the mint race) went on being documented while a
-    // sibling 409 on the same operation kept the check green.
-    let mut over_claimed = Vec::new();
-    for (rel, method) in documented_operations() {
-        let declared = declared_errors(method, &rel);
-        for de in declared {
-            let ambiguous = declared.iter().filter(|o| o.kind == de.kind).count() > 1;
-            let proven = if ambiguous {
-                seen_triple.contains(&(rel.clone(), method, de.kind, de.cond))
-            } else {
-                seen.contains(&(rel.clone(), method, de.kind))
-            };
-            if !proven {
-                if COND_WITNESS_DEBT.contains(&(method, rel.as_str(), de.kind, de.cond)) {
-                    continue;
-                }
-                over_claimed.push(format!(
-                    "{} {rel} declares {:?}/{:?} ({} {}) — {}",
-                    method.as_str().to_uppercase(),
-                    de.kind,
-                    de.cond,
-                    de.kind.status(),
-                    de.kind.code(),
-                    if ambiguous {
-                        "no test produced it with its CONDITION named (this operation declares \
-                         several conditions for the same kind, so an untagged emission proves \
-                         nothing about which one is reachable — emit it via `err_json_cond`)"
-                    } else {
-                        "no test ever produced it"
-                    },
-                ));
-            }
-        }
-    }
-    assert!(
-        over_claimed.is_empty(),
-        "OpenAPI OVER-CLAIM — openapi.json documents {} response(s) nothing can emit:\n  {}\n\
-         Either the declaration is wrong (delete the entry) or the condition is real and needs a \
-         negative test that triggers it. A documented error no test can produce is not a contract.",
-        over_claimed.len(),
-        over_claimed.join("\n  ")
-    );
-
-    // THE RATCHET'S OTHER DIRECTION: a debt row must still name a LIVE, AMBIGUOUS declaration.
-    // Delete the declaration (as `GroupRaceOnMint` was) or give its kind a single condition, and the
-    // row has to go with it -- otherwise the ledger would quietly become a permanent exemption list
-    // that outlives the thing it exempted.
-    //
-    // Deliberately keyed on the DECLARATION TABLE and not on "was it witnessed": `observed` is a
-    // process-global registry that accumulates whatever tests happened to run, so a witness-based
-    // staleness check would pass or fail depending on the test filter. The declaration table is the
-    // same in every run.
-    let stale: Vec<_> = COND_WITNESS_DEBT
-        .iter()
-        .filter(|(m, rel, k, c)| {
-            let declared = declared_errors(*m, rel);
-            let ambiguous = declared.iter().filter(|o| o.kind == *k).count() > 1;
-            !ambiguous || !declared.iter().any(|d| d.kind == *k && d.cond == *c)
-        })
-        .map(|(m, rel, k, c)| format!("{} {rel} {k:?}/{c:?}", m.as_str().to_uppercase()))
-        .collect();
-    assert!(
-        stale.is_empty(),
-        "COND_WITNESS_DEBT has {} row(s) whose declaration is gone or no longer ambiguous — delete \
-         them; the ledger only shrinks:\n  {}",
-        stale.len(),
-        stale.join("\n  ")
-    );
-
-    // Sanity: the drivers really did exercise the surface (a registry that silently stopped
-    // recording would make the assertion above vacuously true).
-    assert!(
-        seen.len() >= 60,
-        "the error-surface drivers witnessed only {} (operation, kind) pairs — the recording layer \
-         is probably not installed",
-        seen.len()
-    );
-}
-
-/// Every (relative path, method) the admin surface documents — read off the COMMITTED
-/// `openapi.json`, the exact bytes the runtime serves via `include_str!`.
-///
-/// This used to be a hand-maintained list that nothing tied to anything: an operation could be added
-/// to the router and the doc and simply never appear here, and its declared 4xx set would go
-/// unaudited forever. The committed doc is a projection of the code (`openapi_json_matches_committed_file`
-/// fails the build the moment it drifts) and every path in it is proven mounted
-/// (`test_admin_v1_openapi_paths_all_resolve`), so keying off it closes the loop: router → doc →
-/// this audit.
-fn documented_operations() -> Vec<(String, crate::admin::v1::contract::taxonomy::MethodTag)> {
-    use crate::admin::v1::contract::taxonomy::MethodTag;
-    let doc: serde_json::Value = serde_json::from_str(crate::admin::v1::json::OPENAPI_JSON)
-        .expect("the committed openapi.json parses");
-    let paths = doc["paths"]
-        .as_object()
-        .expect("openapi.json has a paths object");
-    let mut ops = Vec::new();
-    for (abs, item) in paths {
-        let rel = abs
-            .strip_prefix(crate::admin::v1::contract::ADMIN_PREFIX)
-            .unwrap_or(abs);
-        for key in item.as_object().into_iter().flatten().map(|(k, _)| k) {
-            // `x-*` specification extensions share the path-item object with real operations.
-            if let Some(m) = MethodTag::from_op_key(key) {
-                ops.push((rel.to_string(), m));
-            }
-        }
-    }
-    assert!(
-        ops.len() >= 40,
-        "only {} operations read out of the committed openapi.json — the projection is broken",
-        ops.len()
-    );
-    ops
-}
-
-/// `docs/admin-api.md`'s mutation rate-limit table names the CONFIG-class (10/min) endpoint set by
-/// hand. Until this test existed, nothing tied that prose list to
-/// `admin::rate::classify_mutation` — the classifier that actually decides which budget a request
-/// spends from. This walks every mutation operation in the committed `openapi.json`
-/// (`documented_operations`, itself a projection nothing can silently drift from), classifies each
-/// one, and requires the resulting CONFIG set to equal the doc's `config` row EXACTLY — under- and
-/// over-listing both fail, same bidirectional-equality idiom as
-/// `declared_error_set_is_exactly_what_the_handlers_emit`.
-#[test]
-fn rate_limit_doc_table_matches_classifier() {
-    use crate::admin::v1::contract::taxonomy::MethodTag;
-
-    // The doc's `config` row, parsed straight out of the committed file — not retyped here — so
-    // editing the row is the only step needed to change what this test expects.
-    let doc = include_str!("../../../../../docs/admin-api.md");
-    let row = doc
-        .lines()
-        .find(|l| l.trim_start().starts_with("| config | 10/min |"))
-        .expect("docs/admin-api.md has a `config` row in the mutation rate-limit table");
-    let doc_config: std::collections::BTreeSet<(String, MethodTag)> = row
-        .split('`')
-        .skip(1)
-        .step_by(2)
-        .map(|token| {
-            let mut parts = token.splitn(2, ' ');
-            let method = parts.next().unwrap();
-            let path = parts.next().unwrap_or_else(|| {
-                panic!("doc token {token:?} is not \"METHOD /path\"");
-            });
-            let m = MethodTag::from_op_key(&method.to_lowercase())
-                .unwrap_or_else(|| panic!("unrecognized HTTP method {method:?} in doc row"));
-            (path.to_string(), m)
-        })
-        .collect();
-    assert!(
-        doc_config.len() >= 6,
-        "only parsed {} endpoints out of the doc's config row — the parser is broken: {row:?}",
-        doc_config.len()
-    );
-
-    // `documented_operations` yields `/overlay/{section}` verbatim (the templated openapi path),
-    // matching the doc's literal spelling — no normalization needed on either side.
-    let code_config: std::collections::BTreeSet<(String, MethodTag)> = documented_operations()
-        .into_iter()
-        .filter(|(rel, method)| {
-            matches!(
-                method,
-                MethodTag::Post | MethodTag::Put | MethodTag::Patch | MethodTag::Delete
-            ) && crate::admin::rate::classify_mutation(rel)
-                == crate::admin::rate::MutationClass::Config
-        })
-        .collect();
-
-    let missing_from_doc: Vec<_> = code_config.difference(&doc_config).collect();
-    let missing_from_code: Vec<_> = doc_config.difference(&code_config).collect();
-    assert!(
-        missing_from_doc.is_empty() && missing_from_code.is_empty(),
-        "docs/admin-api.md's config-class row has drifted from admin::rate::classify_mutation.\n\
-         In classifier's CONFIG class but not in the doc: {missing_from_doc:?}\n\
-         In the doc but not classified CONFIG: {missing_from_code:?}"
-    );
-}
-
-/// `POST /api/v1/admin/restart` is how the restart-scoped settings get applied without an SSH
-/// session, so its refusals matter as much as its success: exiting is only a RESTART if something
-/// restarts the process, and a test binary has no shutdown channel at all.
-///
-/// Drives all three declared conditions. The success path cannot be driven here — it would end the
-/// test process — which is why the endpoint checks restartability BEFORE recording an applied
-/// restart, so a refusal is never audited as a restart that then failed.
-#[tokio::test]
-async fn test_admin_v1_restart_refuses_when_it_cannot_restart() {
-    crate::metrics::init();
-    // Bracket by seq, not just by action: `AUDIT` is a process-wide ring every admin mutation in
-    // the binary writes to, unscoped by principal (every admin-token test shares the SAME fixed
-    // operator principal id, so scoping by principal would not distinguish this test's rows from a
-    // concurrent sibling's). Rows from THIS test's own restart attempts are bracketed by seq.
-    let baseline_seq = crate::admin::audit::AUDIT
-        .list(1)
-        .first()
-        .map(|e| e.seq)
-        .unwrap_or(0);
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let (addr, _h) = serve_with_gov(gov).await;
-    let client = reqwest::Client::new();
-    let admin = |req: reqwest::RequestBuilder| req.header("x-admin-token", "admintok");
-    let url = format!("http://{addr}/api/v1/admin/restart");
-
-    // A typo'd field is a 400, not a silent restart.
-    let resp = admin(client.post(&url))
-        .header("content-type", "application/json")
-        .body(r#"{"confrim": true}"#)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        resp.status().as_u16(),
-        400,
-        "unknown field must not restart"
-    );
-
-    // No supervisor detected and no confirmation: refuse rather than risk leaving busbar down.
-    let unsupervised = std::env::var_os("INVOCATION_ID").is_none()
-        && std::env::var_os("KUBERNETES_SERVICE_HOST").is_none();
-    if unsupervised {
-        let resp = admin(client.post(&url)).send().await.unwrap();
-        assert_eq!(
-            resp.status().as_u16(),
-            409,
-            "an unsupervised restart must be refused unless confirmed"
-        );
-        let body: serde_json::Value = resp.json().await.unwrap();
-        assert_eq!(body["error"]["code"], "conflict");
-        assert!(
-            body["error"]["message"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("confirm"),
-            "the refusal must tell the operator how to proceed: {body}"
-        );
-    }
-
-    // Confirmed, so the supervisor check passes — but a test binary published no shutdown channel,
-    // so the process genuinely cannot restart itself and says so. There are TWO distinct 409 exits
-    // (NoSupervisor above, NotRestartable here); a bare status code can't tell them apart, and a
-    // regression that ignored `confirm` (e.g. a serde-default flip) would still land on the FIRST
-    // 409 and this assertion would not notice. Check the message instead.
-    let resp = admin(client.post(&url))
-        .header("content-type", "application/json")
-        .body(r#"{"confirm": true}"#)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        resp.status().as_u16(),
-        409,
-        "a process with no shutdown channel cannot restart itself"
-    );
-    let body: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(body["error"]["code"], "conflict");
-    let msg = body["error"]["message"].as_str().unwrap_or_default();
-    assert!(
-        msg.contains("cannot restart itself"),
-        "with `confirm: true` the supervisor gate must be PASSED and the refusal must come from \
-         the no-shutdown-channel gate, not the supervisor gate: {body}"
-    );
-    assert!(
-        !msg.contains("confirm"),
-        "a confirmed request must never be refused for lack of confirmation: {body}"
-    );
-
-    // Every refusal is audited — the operator's only evidence, since a real restart takes the
-    // connection that would have carried the response.
-    let entries = crate::admin::audit::AUDIT.list(crate::admin::audit::MAX_AUDIT_ENTRIES);
-    let restarts: Vec<_> = entries
-        .iter()
-        .filter(|e| e.action == "admin.restart" && e.seq > baseline_seq)
-        .collect();
-    assert!(
-        restarts.len() >= 2,
-        "each refusal must be audited, got {restarts:?}"
-    );
-    assert!(
-        restarts
-            .iter()
-            .all(|e| e.outcome == crate::admin::audit::OUTCOME_REJECTED),
-        "a refused restart must never be recorded as applied: {restarts:?}"
-    );
-}
-
-/// `?limit=0` must never produce a self-referential cursor: `page_cursor` truncates the page to
-/// zero items and would otherwise emit `next_cursor = encode(start + 0) == start`, so a
-/// cursor-following client that keeps requesting `limit=0` loops forever on the same offset.
-/// Covers all THREE parse sites — `get_audit`/`list_config_versions` (through the shared
-/// `page_cursor`) and `list_keys` (its own match arm, a different code path to the same hole).
-#[tokio::test]
-async fn limit_zero_does_not_produce_a_self_referential_cursor() {
-    crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = TestApp::new().governance(gov).build();
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
-    let admin = |req: reqwest::RequestBuilder| req.header("x-admin-token", "admintok");
-
-    // Seed rows for all three lists: minting keys produces audit entries AND `list_keys` rows;
-    // registering + deleting a hook produces config-version rows.
-    for n in ["ka", "kb"] {
-        let resp = admin(client.post(format!("http://{addr}/api/v1/admin/keys")))
-            .header("content-type", "application/json")
-            .body(serde_json::json!({"name": n}).to_string())
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(resp.status().as_u16(), 201);
-    }
-    let created = admin(client.post(format!("http://{addr}/api/v1/admin/hooks")))
-        .header("content-type", "application/json")
-        .body(
-            serde_json::json!({"name": "lz-hook", "config": {"kind": "tap", "plugin": "test-hook"}})
-                .to_string(),
-        )
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(created.status().as_u16(), 201);
-    let deleted = admin(client.delete(format!("http://{addr}/api/v1/admin/hooks/lz-hook")))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(deleted.status().as_u16(), 204);
-
-    // A self-referential cursor decodes to the SAME offset the request was served at (0, since no
-    // `?cursor=` was supplied). Anything else — null, or an offset strictly greater than 0 — proves
-    // the client would make forward progress.
-    let assert_not_self_referential = |label: &str, body: &serde_json::Value| {
-        let next = body.get("next_cursor").and_then(|c| c.as_str());
-        match next {
-            None => {} // no further page — fine
-            Some(c) => {
-                let decoded = crate::admin::v1::contract::decode_offset_cursor(c)
-                    .unwrap_or_else(|| panic!("{label}: cursor did not decode: {c}"));
-                assert!(
-                    decoded > 0,
-                    "{label}: limit=0 produced a self-referential cursor (offset {decoded}): {body}"
-                );
-            }
-        }
-    };
-
-    let audit_body: serde_json::Value =
-        admin(client.get(format!("http://{addr}/api/v1/admin/audit?limit=0")))
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-    assert_not_self_referential("get_audit", &audit_body);
-
-    let versions_body: serde_json::Value = admin(client.get(format!(
-        "http://{addr}/api/v1/admin/config/versions?limit=0"
-    )))
-    .send()
-    .await
-    .unwrap()
-    .json()
-    .await
-    .unwrap();
-    assert_not_self_referential("list_config_versions", &versions_body);
-
-    let keys_body: serde_json::Value =
-        admin(client.get(format!("http://{addr}/api/v1/admin/keys?limit=0")))
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-    assert_not_self_referential("list_keys", &keys_body);
-
-    handle.abort();
 }

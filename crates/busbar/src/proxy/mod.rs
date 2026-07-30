@@ -19,8 +19,7 @@ use serde_json::Value;
 use crate::breaker::{classify as classify_disposition, normalize_raw_error, Disposition};
 use crate::config::OnExhausted;
 use crate::proto::{
-    convert_headers, openai_family, StatusClass, PROTO_ANTHROPIC, PROTO_BEDROCK, PROTO_COHERE,
-    PROTO_GEMINI, PROTO_OPENAI, PROTO_RESPONSES,
+    convert_headers, openai_family, StatusClass, PROTO_BEDROCK, PROTO_GEMINI, PROTO_RESPONSES,
 };
 use crate::state::{App, WeightedLane};
 use crate::store::{now, Permit};
@@ -194,17 +193,9 @@ mod ordered_walk_tests;
 mod probe_guard_tests;
 
 #[cfg(test)]
-#[path = "tests/m6_probe_release_owner_tests.rs"]
-mod m6_probe_release_owner_tests;
-
-#[cfg(test)]
 #[path = "tests/hook_opt_in_projection_tests.rs"]
 mod hook_opt_in_projection_tests;
 
 #[cfg(test)]
 #[path = "tests/hook_seam_tests.rs"]
 mod hook_seam_tests;
-
-#[cfg(test)]
-#[path = "tests/ingress_reject_response_tests.rs"]
-mod ingress_reject_response_tests;

@@ -1,48 +1,5 @@
 use super::*;
 
-/// class-6 6a2: an `input_file` content block (a legitimate Responses input shape) must not
-/// silently vanish. Before this fix, `responses_block`'s bare `_ => Err(..)` was swallowed by
-/// every caller's `filter_map(..ok())` with ZERO log at any level — not a 400, not a warn, just a
-/// disappeared block. It must now degrade to an empty placeholder AND warn, naming the type.
-#[test]
-fn responses_input_file_degrades_with_warn_not_silent_drop() {
-    use crate::test_support::warn_capture::WarnCapture;
-    use tracing_subscriber::layer::SubscriberExt as _;
-
-    let body = serde_json::json!({
-        "input": [{
-            "type": "message",
-            "role": "user",
-            "content": [
-                {"type": "input_text", "text": "before"},
-                {"type": "input_file", "file_id": "file-x"},
-                {"type": "input_text", "text": "after"}
-            ]
-        }]
-    });
-
-    let cap = WarnCapture::default();
-    let subscriber = tracing_subscriber::registry().with(cap.clone());
-    let ir = tracing::subscriber::with_default(subscriber, || {
-        ResponsesReader.read_request(&body).expect("read_request")
-    });
-
-    // The turn survives with its position preserved: 3 content blocks, not 2 (a silent drop would
-    // collapse it to 2 — before/after with the file gone, indistinguishable from a well-formed
-    // 2-block message).
-    assert_eq!(
-        ir.messages[0].content.len(),
-        3,
-        "the unmodeled block must not vanish — it must degrade in place: {:?}",
-        ir.messages[0].content
-    );
-    assert!(
-        cap.contains("input_file"),
-        "the drop must be logged, naming the unmodeled type: {:?}",
-        cap.messages()
-    );
-}
-
 /// LOW (lossless-by-target): the Responses create API models no `top_k`. A request carrying
 /// `top_k` must NOT emit a `top_k` field (it would 400 a real `/v1/responses` call) — it is
 /// dropped with a `warn!` (the drop-with-warn branch is exercised here). `top_p`, which the
@@ -122,7 +79,6 @@ fn test_write_request() {
             crate::ir::IrMessage {
                 role: crate::ir::IrRole::Assistant,
                 content: vec![crate::ir::IrBlock::ToolUse {
-                    thought_signature: None,
                     id: "fc_1".to_string(),
                     name: "get_weather".to_string(),
                     input: serde_json::json!({"city": "SF"}),
@@ -296,7 +252,7 @@ fn test_read_request() {
     assert_eq!(tool.name, "get_weather");
 }
 
-// A `message`-item `content` that is a BARE JSON STRING (the
+// Regression (MED #4/#5): a `message`-item `content` that is a BARE JSON STRING (the
 // Responses shorthand) must survive. The old array-only path returned `None` from
 // `as_array()` and silently dropped the whole turn, losing a user/assistant message on a
 // cross-protocol hop. Covers BOTH the typed `"type":"message"` arm and the untyped
@@ -590,7 +546,7 @@ fn test_write_response_roundtrip_text_only() {
     );
 }
 
-/// The NON-streaming `write_response` function_call
+/// Regression (MEDIUM/conformance): the NON-streaming `write_response` function_call
 /// item must carry the item-level opaque `id` (`fc_…`, distinct from `call_id`) that the streaming
 /// `output_item.done` emits, or a typed SDK reading `item.id` sees a missing field.
 #[test]
@@ -602,7 +558,6 @@ fn test_write_response_function_call_item_has_native_id() {
         model: Some("gpt-4o".to_string()),
         created: Some(1_700_000_000),
         content: vec![crate::ir::IrBlock::ToolUse {
-            thought_signature: None,
             id: "call_abc".to_string(),
             name: "get_weather".to_string(),
             input: serde_json::json!({"city": "SF"}),
@@ -634,7 +589,7 @@ fn test_write_response_function_call_item_has_native_id() {
     ); // golden wire-contract literal (kept bare on purpose)
 }
 
-/// The NON-streaming `read_response` tool-use override must NOT clobber a
+/// Regression (MED #1): the NON-streaming `read_response` tool-use override must NOT clobber a
 /// truncation reason. An `incomplete` body with `incomplete_details.reason=max_output_tokens` that
 /// also carries a (partial) `function_call` item was cut off mid-output — its stop_reason must stay
 /// `max_tokens`, NOT be promoted to `tool_use`. Before the fix the override fired unconditionally on
@@ -680,7 +635,7 @@ fn test_read_response_incomplete_with_function_call_keeps_max_tokens() {
     );
 }
 
-/// A native Responses refusal rides on a
+/// Regression (refusal data-loss): a native Responses refusal rides on a
 /// `{type:"refusal", refusal:"..."}` content part with `status:"completed"`. The prior reader
 /// matched only `output_text`, so the refusal text was SILENTLY DROPPED and the turn looked like a
 /// clean empty end_turn. The refusal text must survive as assistant content AND the stop_reason
@@ -725,7 +680,7 @@ fn read_response_refusal_part_survives_and_promotes_stop_reason() {
     );
 }
 
-/// `write_response` must build the `output` array in IR ENCOUNTER order so it
+/// Regression (LOW #5): `write_response` must build the `output` array in IR ENCOUNTER order so it
 /// mirrors the streaming `drain_output_items` order. A prior revision `insert(0)`'d the text message
 /// item at the FRONT, so a text-AFTER-tool response emitted [message, function_call] on the
 /// non-stream path while the stream emitted [function_call, message] — a client reassembling
@@ -740,7 +695,6 @@ fn test_write_response_preserves_text_after_tool_order() {
         created: Some(1_700_000_000),
         content: vec![
             crate::ir::IrBlock::ToolUse {
-                thought_signature: None,
                 id: "call_1".to_string(),
                 name: "get_weather".to_string(),
                 input: serde_json::json!({"city": "SF"}),
@@ -1060,7 +1014,7 @@ fn test_stream_fanout() {
     assert_eq!(events7.len(), 0);
 }
 
-/// A STREAMED Responses refusal carries its text only in
+/// Regression (refusal stream data-loss): a STREAMED Responses refusal carries its text only in
 /// the terminal `response.completed` frame as an `output[].content[]` `{type:"refusal"}` part
 /// (status `completed`). The streaming reader previously handled only `output_text.delta`, so it
 /// SILENTLY DROPPED the refusal text AND left stop_reason=end_turn. It must now surface the
@@ -1263,7 +1217,7 @@ fn test_done_clears_text_block_open() {
     ));
 }
 
-/// A bodyless `response.incomplete` terminal event (no nested `response`
+/// Regression (MED #4): a bodyless `response.incomplete` terminal event (no nested `response`
 /// object) must NOT decode to a successful `end_turn`. With no `incomplete_details.reason`
 /// available there is no specific truncation reason, so the stop_reason must be None — masking
 /// a truncation as end_turn would lie to a downstream client. Previously the else branch
@@ -1379,7 +1333,7 @@ fn test_stream_completed_without_function_call_stays_end_turn() {
     );
 }
 
-/// A terminal event arriving while a content block is STILL OPEN must
+/// Regression (MED #5): a terminal event arriving while a content block is STILL OPEN must
 /// close that block (BlockStop) before MessageStop. Otherwise the translated stream emits a
 /// BlockStart with no matching BlockStop — an unbalanced sequence a strict SDK rejects. This
 /// covers every terminal sub-path: bodyless completed/incomplete, body-present
@@ -1599,7 +1553,6 @@ fn test_tool_only_assistant_turn_no_empty_message_wrapper() {
         messages: vec![crate::ir::IrMessage {
             role: crate::ir::IrRole::Assistant,
             content: vec![crate::ir::IrBlock::ToolUse {
-                thought_signature: None,
                 id: "fc_1".to_string(),
                 name: "get_weather".to_string(),
                 input: serde_json::json!({"city": "SF"}),
@@ -1671,7 +1624,6 @@ fn test_assistant_text_then_tool_call_order() {
                     citations: Vec::new(),
                 },
                 crate::ir::IrBlock::ToolUse {
-                    thought_signature: None,
                     id: "fc_9".to_string(),
                     name: "lookup".to_string(),
                     input: serde_json::json!({}),
@@ -1766,7 +1718,7 @@ fn test_stream_failed_status_emits_error_not_end_turn() {
     );
 }
 
-/// A streamed `response.failed` must classify the IrError by the captured
+/// Regression (LOW #8): a streamed `response.failed` must classify the IrError by the captured
 /// provider signal, not a hardcoded ServerError. An `invalid_api_key` mid-stream failure is an
 /// Auth failure (HardDown breaker disposition), NOT a transient ServerError — hardcoding
 /// ServerError gave the wrong breaker disposition / failover. The provider_signal is preserved
@@ -1837,7 +1789,7 @@ fn test_stream_failed_invalid_api_key_classifies_as_auth() {
     );
 }
 
-/// The NON-streaming `read_response` `status:"failed"` path must
+/// Regression (LOW #8 sibling): the NON-streaming `read_response` `status:"failed"` path must
 /// also classify by the captured provider signal rather than hardcoding ServerError. A failed
 /// body carrying `code:"context_length_exceeded"` is a ContextLength failure (fail over without
 /// penalizing the lane), NOT a transient ServerError. Against the old code this asserts
@@ -1959,6 +1911,7 @@ fn test_stream_incomplete_without_details_is_none() {
     }
 }
 
+/// Regression (mirrors `openai_chat.rs::write_request_tool_result_multi_text_concatenates_without_separator`):
 /// a multi-block ToolResult must concatenate its text fragments with NO separator. A `.join(" ")`
 /// injects a spurious space that corrupts base64 / split-JSON payloads. Covers BOTH the
 /// Tool-role flat path AND the Assistant-role inline-tool_result path in `write_request`.
@@ -2524,7 +2477,7 @@ fn test_synthesize_response_id_unique() {
     assert!(ids.iter().all(|id| id.starts_with("resp_"))); // golden wire-contract literal (kept bare on purpose)
 }
 
-/// `synth_token<const N>` documents and now ENFORCES a
+/// Regression (LOW/correctness, Round 18): `synth_token<const N>` documents and now ENFORCES a
 /// `N >= 11` floor via a compile-time `const _: () = assert!(N >= 11, ...)` evaluated per
 /// monomorphization. The guard cannot be exercised from a passing runtime test (a too-small `N`
 /// fails to BUILD, which a `cargo test` body can't observe without a trybuild harness), so this
@@ -2563,7 +2516,7 @@ fn test_synth_token_meets_minimum_width() {
     );
 }
 
-/// The streaming `response.failed` terminal event
+/// Regression (LOW/conformance, Round 18 verify): the streaming `response.failed` terminal event
 /// (emitted from an IR `Error`) must carry the native non-error skeleton — specifically a
 /// present-but-empty `output` array (REQUIRED by the SDK's typed `Response`), never omitting it.
 /// A failed response produced no assistant items, so `output` is `[]`. (The `output: []` emission
@@ -2610,7 +2563,7 @@ fn test_response_failed_carries_empty_output_skeleton() {
     );
 }
 
-/// A top-level `metadata` object must NOT be in the modeled-key
+/// Regression (MEDIUM/correctness): a top-level `metadata` object must NOT be in the modeled-key
 /// exclusion set, so it flows into `IrRequest.extra` on read and is re-emitted verbatim by
 /// `write_request`. A prior revision listed `metadata` in `modeled_keys` while never emitting it,
 /// silently dropping the caller's response tagging / billing-attribution field.
@@ -2641,7 +2594,7 @@ fn test_metadata_round_trips_through_extra() {
     );
 }
 
-/// The opening `response.created`
+/// Regression (MEDIUM/conformance, class: stream-start skeleton): the opening `response.created`
 /// event must carry the FULL required Response skeleton an SDK reads unconditionally — `usage`,
 /// `output`, and `error` must be PRESENT (empty/null), not omitted. Omitting `usage` left strict
 /// SDK decoders without a `Response.usage` field on the first chunk.
@@ -2701,7 +2654,7 @@ fn test_role_only_item_still_processed() {
     }
 }
 
-/// An array `input` must be iterated without the prior
+/// Regression (HIGH/correctness): an array `input` must be iterated without the prior
 /// `is_array()` + `.as_array().unwrap()` pattern. Exercises the `if let Some(arr)` path and
 /// confirms array items are still decoded into messages.
 #[test]
@@ -2722,7 +2675,7 @@ fn test_read_request_array_input_no_unwrap() {
     assert_eq!(ir.messages[1].role, crate::ir::IrRole::Assistant);
 }
 
-/// A `response.failed` terminal event with NO nested `response`
+/// Regression (HIGH/correctness): a `response.failed` terminal event with NO nested `response`
 /// object (truncated SSE frame / body-stripping proxy) must NOT be decoded as a successful
 /// end_turn. It must surface as an explicit Error + MessageStop so downstream clients see the
 /// failure and the breaker receives the failure signal.
@@ -2782,7 +2735,7 @@ fn test_completed_event_without_body_emits_end_turn() {
     );
 }
 
-/// The writer's `IrStreamEvent::Error` arm must emit a
+/// Regression (MEDIUM/conformance): the writer's `IrStreamEvent::Error` arm must emit a
 /// `response.failed` event whose error lives inside a `response` object (the shape the official
 /// SDK streaming decoder reads via `event.response`), with a synthesized `resp_` id and
 /// `status: "failed"` — NOT a top-level `{"error":{...}}`.
@@ -2837,7 +2790,7 @@ fn test_error_event_wraps_in_response_object() {
     );
 }
 
-/// EVERY emitted
+/// Regression (CRITICAL/conformance, class: stream event `type` discriminator): EVERY emitted
 /// Responses SSE data body must carry a top-level `"type"` key equal to its event name. The
 /// official OpenAI Python/Node streaming decoders dispatch on `data["type"]`; a body missing it
 /// (the prior `{"response":{...}}` shape) yields None/undefined for the event type and the SDK
@@ -2913,7 +2866,7 @@ fn usage_fixture() -> crate::ir::IrUsage {
     }
 }
 
-/// EVERY emitted Responses SSE event must carry a top-level
+/// Regression (HIGH/conformance): EVERY emitted Responses SSE event must carry a top-level
 /// `sequence_number` that is monotonic from 0 within a single stream. The opening
 /// `response.created` (MessageStart) resets the per-stream counter, so a fresh stream starts at 0
 /// and increases by one per emitted event. Events that produce no body do not consume a number.
@@ -3129,7 +3082,7 @@ fn test_delta_and_item_added_carry_item_id_and_content_index() {
     );
 }
 
-/// The `sequence_number` counter is PER-STREAM INSTANCE state,
+/// Regression (HIGH/correctness): the `sequence_number` counter is PER-STREAM INSTANCE state,
 /// not thread-local. Two distinct writer instances model two concurrent streams sharing one
 /// worker thread. Interleave their events (A.start, B.start, A.delta, B.delta, ...) — the way a
 /// Tokio work-stealing runtime can schedule two parked stream tasks on the same thread. Each
@@ -3179,7 +3132,7 @@ fn test_sequence_number_is_per_instance_not_thread_local() {
     );
 }
 
-/// `response.output_item.done` must carry a stable `item_id`
+/// Regression (HIGH/conformance): `response.output_item.done` must carry a stable `item_id`
 /// that matches the `response.output_item.added` for the same output index, plus a typed `item`
 /// object — an SDK reading `event.item_id`/`event.item` off the `done` event must not see
 /// `undefined`. The `added` for a function call and the `done` at the same index share the id.
@@ -3228,7 +3181,7 @@ fn test_output_item_done_carries_matching_item_id_and_item() {
     );
 }
 
-/// The in-band `response.failed` error object is the
+/// Regression (MEDIUM/conformance): the in-band `response.failed` error object is the
 /// Responses-native `ResponseError` shape `{code, message}` with a NON-NULL `code` enum — NOT
 /// the Chat-Completions `{message, type, code:null, param:null}` envelope. A null `code` is
 /// impossible from real OpenAI and a distinguishability tell.
@@ -3288,7 +3241,7 @@ fn test_response_failed_uses_native_responseerror_shape() {
     );
 }
 
-/// On a cross-protocol / transport-abort path `provider_signal` carries
+/// REGRESSION (audit c2r2): on a cross-protocol / transport-abort path `provider_signal` carries
 /// a HUMAN sentence (e.g. `STREAM_ABORT_DETAIL`), NOT a Responses code enum. `error.code` must be
 /// DERIVED from the class (a valid enum an SDK can switch on), while `error.message` keeps the
 /// human text — the old code forwarded the sentence as the `code` enum, breaking typed SDKs.
@@ -3334,12 +3287,12 @@ fn test_response_failed_code_is_enum_even_for_human_provider_signal() {
     );
 }
 
-/// A TEXT block's `BlockStop` must emit NOTHING from
+/// Regression (HIGH/correctness+conformance): a TEXT block's `BlockStop` must emit NOTHING from
 /// the Responses writer. The Text `BlockStart` arm emits no `output_item.added`, so emitting an
 /// `output_item.done` (with `type:"function_call"`, as a prior revision did) would be an
 /// unmatched lifecycle event AND mis-type a text response as a function call — both break a
 /// typed Responses SDK and are distinguishability tells.
-/// A TEXT part must be bracketed inside a `message`
+/// Regression (HIGH/conformance, Round 10): a TEXT part must be bracketed inside a `message`
 /// output item. The Text BlockStart emits `response.output_item.added` (type "message") and the
 /// Text BlockStop emits the matching `response.output_item.done` (type "message") carrying the
 /// SAME `msg_…` `item_id`. Previously the text BlockStart returned None and the BlockStop
@@ -3397,7 +3350,7 @@ fn test_text_block_emits_message_item_lifecycle() {
     );
 }
 
-/// An interleaved tool+text stream closes the tool index with a
+/// Regression (HIGH): an interleaved tool+text stream closes the tool index with a
 /// `function_call` done and the text index with a `message` done — each with its own typed
 /// item, never cross-typed. Exercises the per-stream open-index tracking so a text index is
 /// never mistaken for a function-call item and vice-versa.
@@ -3452,7 +3405,7 @@ fn test_tool_and_text_block_stop_emit_correctly_typed_done() {
     );
 }
 
-/// The terminal `response.completed` event's inner `response`
+/// Regression (HIGH/conformance): the terminal `response.completed` event's inner `response`
 /// object must carry both `id` (a `resp_…` string) and `created_at` (a unix-seconds integer).
 /// The official SDKs read `event.response.id` on the terminal event to finalize the Response;
 /// omitting it breaks correlation and is a distinguishability tell (a real stream never sends a
@@ -3486,7 +3439,7 @@ fn test_completed_event_carries_id_and_created_at() {
     );
 }
 
-/// `write_error` must emit `code:"invalid_api_key"` for an
+/// Regression (MEDIUM/conformance): `write_error` must emit `code:"invalid_api_key"` for an
 /// authentication failure (mirrors `openai_chat.rs` `write_error_emits_invalid_api_key_code_for_auth_failure`).
 /// Emitting `code:null` on auth is a deterministic proxy tell vs a real OpenAI Responses 401.
 #[test]
@@ -3507,7 +3460,7 @@ fn write_error_emits_invalid_api_key_code_for_auth_failure() {
     }
 }
 
-/// Non-auth, non-quota error kinds keep `code:null` — the
+/// Regression (MEDIUM/conformance): non-auth, non-quota error kinds keep `code:null` — the
 /// native shape when no machine-readable code applies — so only the auth and quota paths are
 /// special-cased.
 #[test]
@@ -3529,7 +3482,7 @@ fn write_error_keeps_null_code_for_non_auth_errors() {
     }
 }
 
-/// The over-quota path carries a populated machine-readable
+/// Regression (LOW/conformance): the over-quota path carries a populated machine-readable
 /// `code` — native OpenAI/Responses emits `{"type":"insufficient_quota","code":"insufficient_quota"}`
 /// — so a `code:null` here (the old behavior) would be a fingerprintable divergence. The
 /// `billing` kind (router vocabulary) is normalized to the native `insufficient_quota` type.
@@ -3551,7 +3504,7 @@ fn write_error_insufficient_quota_keeps_type_and_sets_code() {
     }
 }
 
-/// A native text item is closed by BOTH `content_part.done`
+/// Regression (MEDIUM/correctness): a native text item is closed by BOTH `content_part.done`
 /// and `output_item.done` at the SAME `output_index`. The reader must emit EXACTLY ONE
 /// `BlockStop` for that index — the second terminal frame is a no-op — so a downstream writer
 /// does not emit a duplicate `content_block_stop`.
@@ -3589,7 +3542,7 @@ fn test_paired_content_and_item_done_emits_single_block_stop() {
         );
 }
 
-/// A tool item opened by `output_item.added` is closed by a
+/// Regression (MEDIUM/correctness): a tool item opened by `output_item.added` is closed by a
 /// single `output_item.done`, and a stray second `done` at that index emits nothing.
 #[test]
 fn test_tool_item_done_emits_single_block_stop() {
@@ -3623,7 +3576,7 @@ fn test_tool_item_done_emits_single_block_stop() {
     );
 }
 
-/// Every lifecycle event in ONE
+/// Regression (CRITICAL/conformance + HIGH/correctness, Round 10): every lifecycle event in ONE
 /// stream must carry the SAME `response.id`. On a cross-protocol stream the IR strips identity
 /// (id == None), so `response.created` synthesizes a `resp_` id which MUST be replayed verbatim
 /// on `response.completed`. Before the per-stream `response_id` cell, `MessageDelta` minted a
@@ -3662,7 +3615,7 @@ fn test_terminal_id_matches_created_id_cross_protocol() {
     );
 }
 
-/// A `response.failed` (from an IR Error) must carry
+/// Regression (HIGH/correctness, Round 10): a `response.failed` (from an IR Error) must carry
 /// the SAME `response.id` as the opening `response.created`, so an SDK correlates the failure
 /// with the in-flight Response. Before the carried-id cell, the Error arm synthesized a fresh
 /// id distinct from `response.created`.
@@ -3695,7 +3648,7 @@ fn test_failed_id_matches_created_id_cross_protocol() {
     );
 }
 
-/// A same-protocol passthrough forwards the upstream
+/// Regression (HIGH/correctness, Round 10): a same-protocol passthrough forwards the upstream
 /// `id` on `response.created`, and that SAME id must be replayed on the terminal event.
 #[test]
 fn test_terminal_id_matches_forwarded_created_id() {
@@ -3724,7 +3677,7 @@ fn test_terminal_id_matches_forwarded_created_id() {
     );
 }
 
-/// A fresh stream's `response.created` REPLACES the
+/// Regression (HIGH/correctness, Round 10): a fresh stream's `response.created` REPLACES the
 /// carried id, so a reused/cloned writer never leaks the previous stream's id onto a new
 /// stream's terminal event. (`reset_sequence_number` clears the cell; `MessageStart` sets it.)
 #[test]
@@ -3766,7 +3719,7 @@ fn test_carried_id_resets_per_stream() {
     );
 }
 
-/// A backend that emits a `response.output_item.added`
+/// Regression (HIGH/security, Round 10): a backend that emits a `response.output_item.added`
 /// for each of many unique `output_index` values must NOT grow `state.open_tools` without
 /// bound. After feeding more than MAX_OPEN_TOOLS distinct indices, the tracked set is capped.
 #[test]
@@ -3789,7 +3742,7 @@ fn test_reader_open_tools_is_capped() {
     );
 }
 
-/// A crafted huge `output_index` must be clamped to
+/// Regression (HIGH/security, Round 10): a crafted huge `output_index` must be clamped to
 /// MAX_OUTPUT_INDEX before the usize cast/insert, so the tracked index never exceeds the cap and
 /// downstream index arithmetic stays bounded.
 #[test]
@@ -3813,7 +3766,7 @@ fn test_reader_output_index_clamped() {
     assert!(!state.open_tools.iter().any(|&i| i > MAX_OUTPUT_INDEX));
 }
 
-/// The writer's open-text-index set is also capped so a
+/// Regression (HIGH/security, Round 10): the writer's open-text-index set is also capped so a
 /// pathological stream of unique text BlockStarts cannot grow per-stream writer memory without
 /// bound.
 #[test]
@@ -3844,7 +3797,7 @@ fn test_writer_open_text_indices_capped() {
     );
 }
 
-/// `mark_tool_open` must apply the same cardinality
+/// Regression (LOW/resource, R21 #20): `mark_tool_open` must apply the same cardinality
 /// discipline as `open_text_item` — a `contains` guard (idempotent re-mark) plus a
 /// `MAX_OPEN_TOOLS` cap — so a pathological backend streaming an unbounded run of distinct
 /// function-call indices cannot grow `open_tool_indices` without bound (memory exhaustion).
@@ -3871,7 +3824,7 @@ fn test_writer_open_tool_indices_capped() {
     );
 }
 
-/// Production `extract_error` must synthesize the
+/// Regression (MED/completeness, R21 #17): production `extract_error` must synthesize the
 /// canonical `context_length_exceeded` code when an oversized-context error carries the
 /// condition only in its MESSAGE (null/generic `code`). Without this the breaker pipeline never
 /// sees `StatusClass::ContextLength` and oversized-request failover does not trigger for this
@@ -3918,7 +3871,7 @@ fn test_extract_error_unrelated_error_not_context_length() {
     assert_eq!(raw.provider_code.as_deref(), Some("invalid_api_key"));
 }
 
-/// The message-only context-length synthesis is GATED to
+/// Regression (MED/breaker-conformance): the message-only context-length synthesis is GATED to
 /// the oversized HTTP statuses (400/413), mirroring `OpenAiReader::extract_error`. A 429 (or 401,
 /// 5xx) whose prose happens to contain "maximum context length" must NOT synthesize
 /// `context_length_exceeded` — otherwise the breaker maps it to ContextLength and the genuine
@@ -3969,7 +3922,7 @@ fn test_responses_classify_delegates() {
     );
 }
 
-/// A max_tokens-truncated stream's terminal event must
+/// Regression (HIGH/conformance, Round 11): a max_tokens-truncated stream's terminal event must
 /// be `response.incomplete` (event name AND inner `type`), NOT `response.completed`. A native
 /// stream never wraps a `status:"incomplete"` response in a `response.completed` envelope; the
 /// SDKs dispatch on the event `type`, so the previous always-`response.completed` arm mislabelled
@@ -4013,7 +3966,7 @@ fn test_terminal_incomplete_emits_response_incomplete_for_max_tokens() {
     );
 }
 
-/// A safety/content-filter stop is also `incomplete`,
+/// Regression (HIGH/conformance, Round 11): a safety/content-filter stop is also `incomplete`,
 /// so its terminal event is `response.incomplete` with reason `content_filter`.
 #[test]
 fn test_terminal_incomplete_emits_response_incomplete_for_safety() {
@@ -4040,7 +3993,7 @@ fn test_terminal_incomplete_emits_response_incomplete_for_safety() {
     );
 }
 
-/// A normally-completed stream still emits
+/// Regression (HIGH/conformance, Round 11): a normally-completed stream still emits
 /// `response.completed` with inner type/status `completed` — the fix must not regress the
 /// success path. The carried id must still match `response.created`.
 #[test]
@@ -4070,7 +4023,7 @@ fn test_terminal_completed_unchanged_for_end_turn() {
     assert_eq!(body["response"]["id"].as_str(), Some(created_id.as_str()));
 }
 
-/// Write_error must NOT leak the Anthropic-vocabulary
+/// Regression (HIGH/conformance, Round 11): write_error must NOT leak the Anthropic-vocabulary
 /// `overloaded` type to an OpenAI-family client. A 503 exhaustion/timeout (proxy engine passes
 /// kind `"overloaded"`) maps onto the native `server_error`.
 #[test]
@@ -4093,7 +4046,7 @@ fn test_write_error_maps_overloaded_to_server_error() {
     }
 }
 
-/// Synthesized `resp_` ids must be opaque base62 of
+/// Regression (MEDIUM/security, Round 11): synthesized `resp_` ids must be opaque base62 of
 /// native length with NO embedded timestamp or sequential structure, so an observer cannot
 /// fingerprint a proxied response or extract the server clock from the id.
 #[test]
@@ -4121,7 +4074,7 @@ fn test_synthesize_response_id_is_opaque_native_length() {
     );
 }
 
-/// Synthesized `msg_`/`fc_` item ids must be opaque
+/// Regression (MEDIUM/security, Round 11): synthesized `msg_`/`fc_` item ids must be opaque
 /// base62 of native length, NOT the old sequential `msg_00000000` positional hex.
 #[test]
 fn test_synthesize_item_id_is_opaque_native_length() {
@@ -4231,7 +4184,7 @@ fn test_streamed_text_item_shares_one_item_id() {
     assert_eq!(done["item"]["id"].as_str(), Some(added_id.as_str()));
 }
 
-/// The cardinality-cap guard on
+/// Regression (HIGH/correctness, Round 12): the cardinality-cap guard on
 /// `response.output_item.added` was inverted (`if already_open || ...`), re-emitting a BlockStart
 /// for an index that was already open. A repeated `output_item.added` for the SAME function-call
 /// index must NOT produce a second BlockStart (only the first added opens the block); the second
@@ -4267,7 +4220,7 @@ fn test_repeated_output_item_added_does_not_reemit_block_start() {
     );
 }
 
-/// The fixed guard must STILL bound new distinct
+/// Regression (HIGH/correctness, Round 12): the fixed guard must STILL bound new distinct
 /// indices under MAX_OPEN_TOOLS — the inversion fix must not weaken the DoS cap. Beyond the cap
 /// a NEW index emits no BlockStart and is not tracked.
 #[test]
@@ -4309,7 +4262,7 @@ fn test_cap_still_bounds_new_indices_after_guard_fix() {
     );
 }
 
-/// A `function_call_arguments.delta` for an index
+/// Regression (MEDIUM/correctness, Round 12): a `function_call_arguments.delta` for an index
 /// with no open block (suppressed by the cap, or arriving with no preceding
 /// `output_item.added`) must be dropped — never an InputJsonDelta against a block that emitted
 /// no BlockStart.
@@ -4328,7 +4281,7 @@ fn test_args_delta_dropped_for_unopened_index() {
     );
 }
 
-/// A `function_call_arguments.delta` for an index
+/// Regression (MEDIUM/correctness, Round 12): a `function_call_arguments.delta` for an index
 /// that DID open (via `output_item.added`) is routed as an InputJsonDelta to that index.
 #[test]
 fn test_args_delta_routed_for_opened_index() {
@@ -4358,7 +4311,7 @@ fn test_args_delta_routed_for_opened_index() {
     }
 }
 
-/// Every lifecycle event in a stream must carry the
+/// Regression (MEDIUM/conformance, Round 12): every lifecycle event in a stream must carry the
 /// SAME `created_at` as the opening `response.created` — the terminal event must replay the
 /// captured timestamp, not a fresh `now_unix_secs()` wall-clock read.
 #[test]
@@ -4390,7 +4343,7 @@ fn test_created_at_is_constant_across_stream_events() {
     );
 }
 
-/// The `response.failed` event must also replay the
+/// Regression (MEDIUM/conformance, Round 12): the `response.failed` event must also replay the
 /// captured `created_at`, matching `response.created`.
 #[test]
 fn test_failed_event_replays_created_at() {
@@ -4420,7 +4373,7 @@ fn test_failed_event_replays_created_at() {
     );
 }
 
-/// The proxy engine transient/upstream error kinds
+/// Regression (MEDIUM/conformance, Round 12): the proxy engine transient/upstream error kinds
 /// (`timeout`/`network`/`connect`/`5xx`/`transient`/`api_error`) must map to the native
 /// `server_error` type, and `context_length_exceeded`/`bad_request` to `invalid_request_error`,
 /// never leaking a non-native `error.type` to a Responses client.
@@ -4453,7 +4406,7 @@ fn test_write_error_maps_forward_transient_kinds() {
     }
 }
 
-/// The function-call `response.output_item.done`
+/// Regression (MEDIUM/conformance, finding 2): the function-call `response.output_item.done`
 /// must carry the FULLY finalized item — `call_id`, `name`, AND the complete accumulated
 /// `arguments` string the SDK reads off `event.item`. Previously it emitted only
 /// `{"type":"function_call","id":…}`, an impossible-from-real-OpenAI shape.
@@ -4516,7 +4469,7 @@ fn test_function_call_done_carries_finalized_item() {
     assert_eq!(item["id"], added.1["item"]["id"]);
 }
 
-/// The streaming READER must track open text blocks
+/// Regression (MEDIUM/correctness, finding 3): the streaming READER must track open text blocks
 /// PER `output_index`, not with a single index-blind bool. Two message items at distinct indices
 /// must each get their OWN BlockStart and their OWN BlockStop — no orphan delta, no mismatched
 /// close.
@@ -4576,7 +4529,7 @@ fn test_reader_multiple_text_items_distinct_indices() {
     ));
 }
 
-/// A tool item and a text item at DISTINCT indices
+/// Regression (MEDIUM/correctness, finding 3): a tool item and a text item at DISTINCT indices
 /// in the same stream must not interfere — the tool index routes its arguments delta and closes
 /// as a tool, while the text index opens/closes independently. Confirms the disjoint key-offset
 /// keeps tool routing (`open_tools.contains(&idx)`) intact.
@@ -4638,7 +4591,7 @@ fn test_reader_text_and_tool_indices_coexist() {
     ));
 }
 
-/// `write_response` must emit the SDK-required non-nullable
+/// Regression (MEDIUM/conformance): `write_response` must emit the SDK-required non-nullable
 /// `model` even when the IR carries none (cross-protocol path, e.g. Bedrock/Anthropic →
 /// Responses). A prior revision emitted `model` only when `resp.model` was `Some`, dropping the
 /// key entirely on cross-protocol responses — a strict-decoder failure and a distinguishability
@@ -4686,7 +4639,7 @@ fn test_write_response_emits_model_fallback() {
     );
 }
 
-/// On a cross-protocol stream (IR `model` is `None` on
+/// Regression (MEDIUM/conformance): on a cross-protocol stream (IR `model` is `None` on
 /// `MessageStart`), `response.created` AND every terminal lifecycle event
 /// (`response.completed`/`.incomplete`/`.failed`) must carry the same non-nullable `model`
 /// (DEFAULT_MODEL here). The terminal arms previously emitted no `model` at all — an inner
@@ -4762,7 +4715,7 @@ fn test_stream_terminal_events_carry_model_fallback() {
     );
 }
 
-/// The non-streaming `write_response` body must carry
+/// Regression (MEDIUM/conformance, Round 15): the non-streaming `write_response` body must carry
 /// the REQUIRED nullable `error` field (`null` on a non-failed response), mirroring the
 /// streaming `response.created` skeleton. A real `/v1/responses` non-streaming body always
 /// includes `error`; omitting it breaks strict SDK/Pydantic/Zod decoders that read
@@ -4809,7 +4762,7 @@ fn test_write_response_emits_error_null_for_completed_and_incomplete() {
     );
 }
 
-/// A non-streaming
+/// Regression (MEDIUM/correctness, Round 15; class-corrected R26/LOW #8): a non-streaming
 /// Responses body with `status:"failed"` and `output:null` is an upstream provider failure, NOT
 /// a parse error. The reader must surface it as an IrError carrying the upstream `error.code`,
 /// never misclassify it as an internal `ir_parse` ClientError. As of R26 the IrError `class` is
@@ -4876,7 +4829,7 @@ fn test_read_response_failed_surfaces_upstream_error() {
     assert_eq!(err_parse.provider_signal.as_deref(), Some("ir_parse")); // golden wire-contract literal (kept bare on purpose)
 }
 
-/// The writer emits a failed body as
+/// Regression (HIGH, re-audit R20): the writer emits a failed body as
 /// `{"status":"failed","output":[],"error":{...}}` — `output` is a PRESENT EMPTY array, not
 /// null/absent. Before the fix the empty array took the `if let Some(output_arr)` branch,
 /// iterated zero items, then failed the usage check and returned a ClientError `ir_parse`,
@@ -4909,7 +4862,7 @@ fn test_read_response_failed_with_empty_output_array_not_masked() {
     );
 }
 
-/// `system`/`developer` input turns carry the system
+/// Regression (MEDIUM #5, re-audit R20): `system`/`developer` input turns carry the system
 /// prompt. The reader previously dropped them (handled by neither the typed `message` arm nor
 /// the untyped role arm), losing the system prompt on a cross-protocol hop. They must now be
 /// accumulated into `IrRequest.system`. Covers typed + untyped items, and array + bare-string
@@ -4958,7 +4911,7 @@ fn test_read_request_system_and_developer_turns_feed_system() {
     );
 }
 
-/// `max_output_tokens` was read via
+/// Regression (MEDIUM #16, re-audit R20): `max_output_tokens` was read via
 /// `.as_i64()...map(|v| v as u32)`, silently truncating a value larger than `u32::MAX`. It must
 /// now drop an out-of-range value to None (matching the anthropic/bedrock readers) instead of
 /// wrapping it to a bogus small cap.
@@ -4989,7 +4942,7 @@ fn test_read_request_max_output_tokens_out_of_range_drops_to_none() {
     assert_eq!(req_ok.max_tokens, Some(4096));
 }
 
-/// The terminal `response.completed`/
+/// Regression (MEDIUM/conformance, Round 15): the terminal `response.completed`/
 /// `response.incomplete`/`response.failed` events' inner `response` object must carry the
 /// REQUIRED `output` array (present-but-empty) and (on non-failed terminals) `error: null`,
 /// mirroring the `response.created` skeleton. The SDK reads `event.response.output` to finalize
@@ -5074,7 +5027,7 @@ fn test_stream_terminal_events_carry_output_and_error() {
     );
 }
 
-/// The terminal `response.completed` event's inner
+/// Regression (MEDIUM/conformance): the terminal `response.completed` event's inner
 /// `response.output` must carry the FULLY assembled output array (the message item with its
 /// `output_text` content, and the finalized function-call item) — NOT a hard-coded `[]`. A
 /// `completed` response with nonzero `usage.output_tokens` but an empty `output` is a shape real
@@ -5194,7 +5147,7 @@ fn test_terminal_output_empty_when_no_blocks_streamed() {
     );
 }
 
-/// A function_call and a text part arriving at the SAME `output_index`
+/// Regression (MED #2): a function_call and a text part arriving at the SAME `output_index`
 /// must NOT both open a block, and a terminal event must close that index EXACTLY once.
 ///
 /// Before the fix, `output_item.added` tracked the tool under raw key `N` while
@@ -5263,7 +5216,7 @@ fn test_same_output_index_tool_and_text_single_open_single_close() {
     );
 }
 
-/// Even if two open keys for the same IR index somehow
+/// Regression (MED #2, dedup layer): even if two open keys for the same IR index somehow
 /// coexist in `open_tools` (raw `N` and `N + TEXT_INDEX_KEY_OFFSET`), the terminal drain must
 /// collapse them to a SINGLE `BlockStop{N}`. This pins the `sort`+`dedup` in `close_open_blocks`
 /// directly: before the dedup fix this drain produced two `BlockStop{N}`.
@@ -5293,7 +5246,7 @@ fn test_terminal_drain_dedups_colliding_keys() {
     );
 }
 
-/// A tool item must not open at an `output_index` already
+/// Regression (MED #2, symmetric guard): a tool item must not open at an `output_index` already
 /// held by an OPEN TEXT block. Before the fix, `output_item.added` only checked the raw key, so
 /// a text block open under `N + TEXT_INDEX_KEY_OFFSET` did not block a tool open at raw `N`.
 #[test]
@@ -5329,7 +5282,7 @@ fn test_tool_open_suppressed_when_text_block_open_at_index() {
     );
 }
 
-/// `synth_token` must emit ONLY base62 characters, drawn uniformly via
+/// Regression (LOW #9): `synth_token` must emit ONLY base62 characters, drawn uniformly via
 /// rejection sampling (no biased `byte % 62`). We assert the character class strictly, and run
 /// a targeted check of the EXACT bias `byte % 62` introduces: 256 = 4*62 + 8, so under the old
 /// reduction bytes wrap such that base62 digits at indices 0..=7 get FIVE source bytes each
@@ -5391,7 +5344,6 @@ fn test_responses_tool_choice_required_roundtrips() {
     let json = serde_json::json!({
         "model": "gpt-4o",
         "input": [{"role": "user", "content": "hi"}],
-        "tools": [{"type": "function", "name": "get_weather", "parameters": {}}],
         "tool_choice": "required",
     });
     let reader = ResponsesReader;
@@ -5415,7 +5367,6 @@ fn test_responses_tool_choice_specific_function() {
     let json = serde_json::json!({
         "model": "gpt-4o",
         "input": [{"role": "user", "content": "hi"}],
-        "tools": [{"type": "function", "name": "get_weather", "parameters": {}}],
         "tool_choice": {"type": "function", "name": "get_weather"},
     });
     let reader = ResponsesReader;
@@ -5595,41 +5546,7 @@ fn reasoning_input_item_round_trips_through_request() {
     assert_eq!(reasoning["encrypted_content"], "ENC_IN_42");
 }
 
-/// F5 role guard: a `reasoning` INPUT item asserts "this is the model's own prior reasoning" —
-/// only an Assistant-role message can truthfully carry that. A Thinking block attached to a
-/// User-role message (reachable today from an upstream reader that does not check role, e.g. the
-/// Gemini reader's `thought: true` parts on any `Content`) must NOT be re-emitted as a top-level
-/// `reasoning` item, or the caller's own content is presented back to the model as if it were the
-/// model's prior reasoning.
-#[test]
-fn user_role_thinking_is_not_emitted_as_a_reasoning_item() {
-    let req = crate::ir::IrRequest {
-        messages: vec![crate::ir::IrMessage {
-            role: crate::ir::IrRole::User,
-            content: vec![crate::ir::IrBlock::Thinking {
-                text: "user-authored text masquerading as reasoning".to_string(),
-                signature: None,
-                redacted: false,
-                cache_control: None,
-            }],
-        }],
-        ..Default::default()
-    };
-    let writer = ResponsesWriter;
-    let out = writer.write_request(&req);
-    // A dropped Thinking block leaves the User message with no content at all, so `input` may be
-    // entirely absent (not just empty) — `write_request` only inserts it when non-empty (:277-279).
-    let has_reasoning_item = out
-        .get("input")
-        .and_then(|v| v.as_array())
-        .is_some_and(|arr| arr.iter().any(|i| i["type"] == "reasoning")); // golden wire-contract literal (kept bare on purpose)
-    assert!(
-        !has_reasoning_item,
-        "a User-role Thinking block must never be emitted as a `reasoning` input item: {out}"
-    );
-}
-
-// `usage.input_tokens_details.cached_tokens` must read into the IR `cache_read_input_tokens`
+// H6: `usage.input_tokens_details.cached_tokens` must read into the IR `cache_read_input_tokens`
 // and write back to the same nested Responses location (the Bedrock-shared cache-read field).
 #[test]
 fn test_cached_tokens_mapping() {
@@ -5796,7 +5713,7 @@ fn test_response_format_text_format_round_trip() {
     );
 }
 
-// A Responses `input_image` given by `file_id` (no image_url) must NOT become an empty Image
+// L5: a Responses `input_image` given by `file_id` (no image_url) must NOT become an empty Image
 // block — it carries the file_id faithfully and round-trips back to the `file_id` form.
 #[test]
 fn test_input_image_file_id_round_trip() {
@@ -6275,7 +6192,6 @@ fn test_hosted_tools_dropped_cross_protocol() {
     // cross-proto" contract.
     let mut req = crate::ir::variant::IrReq::Chat(ir);
     req.prepare_for_egress(&crate::ir::variant::EgressPrep {
-        thought_signature_fill: false,
         ingress_protocol: "openai-responses",
         egress_requires_max_tokens: false,
         lane_default_max_tokens: None,
@@ -6283,7 +6199,6 @@ fn test_hosted_tools_dropped_cross_protocol() {
         reasoning_allowed: false,
         reasoning_budgets: [0, 0, 0, 0],
         prompt_caching_allowed: true,
-        cache_control_cap: None,
     });
     let crate::ir::variant::IrReq::Chat(ir) = req else {
         panic!("still a chat request");
@@ -6374,8 +6289,7 @@ fn test_hosted_tools_dropped_cross_protocol() {
     );
 
     // Bedrock egress.
-    let bedrock_writer = crate::proto::bedrock::BedrockWriter;
-    let bedrock = bedrock_writer.write_request(&ir);
+    let bedrock = crate::proto::bedrock::BedrockWriter.write_request(&ir);
     assert!(
         !any_empty_name(&bedrock),
         "Bedrock egress must not emit an empty-name tool: {bedrock}"
@@ -6441,383 +6355,4 @@ fn test_responses_usage_carries_all_required_fields() {
             .is_none(),
         "cache_write_tokens is not a native Responses usage field and must not be emitted: {uc}"
     );
-}
-
-/// Grounding citations were dropped on the way into Responses: the writer hardcoded
-/// `annotations: []`, so an Anthropic web-search or Gemini grounding response arrived at an
-/// OpenAI-dialect client with its sources gone.
-///
-/// The mapping is not 1:1 — `url_citation` wants url, title and a character span, and neither
-/// source carries all three — so the writer fills what it honestly can and omits the rest rather
-/// than inventing offsets or titles. These pin both halves of that policy.
-#[test]
-fn write_response_emits_url_citations_without_inventing_fields() {
-    let cite = |kind: &str,
-                cited_text: Option<&str>,
-                title: Option<&str>,
-                url: Option<&str>,
-                start: Option<i64>,
-                end: Option<i64>| crate::ir::IrCitation {
-        kind: Some(kind.to_string()),
-        cited_text: cited_text.map(str::to_string),
-        title: title.map(str::to_string),
-        url: url.map(str::to_string),
-        document_index: None,
-        start_index: start,
-        end_index: end,
-        encrypted_index: None,
-        raw: None,
-    };
-
-    let text = "The tide turns at dawn. Nothing else is known.";
-    let resp = crate::ir::IrResponse {
-        logprobs: Vec::new(),
-        role: crate::ir::IrRole::Assistant,
-        id: Some("resp_c".to_string()),
-        model: Some("gpt-4o".to_string()),
-        created: Some(1_700_000_000),
-        content: vec![crate::ir::IrBlock::Text {
-            text: text.to_string(),
-            cache_control: None,
-            citations: vec![
-                // Anthropic web search: url + title, NO offsets. Recoverable from the quote.
-                cite(
-                    "web_search_result_location",
-                    Some("The tide turns at dawn."),
-                    Some("Tide Tables"),
-                    Some("https://example.com/tides"),
-                    None,
-                    None,
-                ),
-                // Gemini grounding: url + offsets, NO title. The url stands in for the title.
-                cite(
-                    "web_search_result_location",
-                    None,
-                    None,
-                    Some("https://example.org/almanac"),
-                    Some(24),
-                    Some(45),
-                ),
-                // No url and no recoverable span: a document reference is a different wire shape
-                // keyed by a file_id the IR does not carry, so it is omitted, not mis-shaped.
-                cite(
-                    "char_location",
-                    None,
-                    Some("Internal Memo"),
-                    None,
-                    Some(0),
-                    Some(4),
-                ),
-                // A quote that does not occur in the text: the anchor would have to be guessed.
-                cite(
-                    "web_search_result_location",
-                    Some("no such sentence"),
-                    Some("Ghost"),
-                    Some("https://example.net/ghost"),
-                    None,
-                    None,
-                ),
-            ],
-        }],
-        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
-        stop_sequence: None,
-        usage: crate::ir::IrUsage {
-            input_tokens: 1,
-            output_tokens: 1,
-            cache_creation_input_tokens: None,
-            cache_read_input_tokens: None,
-        },
-        system_fingerprint: None,
-    };
-
-    let writer = ResponsesWriter;
-    let v = writer.write_response(&resp);
-    let anns = v["output"][0]["content"][0]["annotations"]
-        .as_array()
-        .expect("annotations array");
-
-    assert_eq!(
-        anns.len(),
-        2,
-        "only the honestly-mappable citations: {anns:?}"
-    );
-    assert_eq!(anns[0]["type"], "url_citation");
-    assert_eq!(anns[0]["url"], "https://example.com/tides");
-    assert_eq!(anns[0]["title"], "Tide Tables");
-    assert_eq!(anns[0]["start_index"], 0, "span recovered from the quote");
-    assert_eq!(anns[0]["end_index"], 23);
-    assert_eq!(
-        anns[1]["title"], "https://example.org/almanac",
-        "a source with no title falls back to its url, never a placeholder"
-    );
-    assert_eq!(anns[1]["start_index"], 24);
-}
-
-/// The streaming path dropped citations outright: Responses carries them as `annotations` on the
-/// assembled `output_text` part, not as a delta frame, so a `CitationsDelta` had nowhere to go at
-/// arrival time and was discarded instead of buffered until `BlockStop` built that part.
-#[test]
-fn streamed_citations_reach_the_assembled_output_item() {
-    let w = ResponsesWriter;
-    let ev = |e: crate::ir::IrStreamEvent| w.write_response_event(&e);
-
-    let _ = ev(crate::ir::IrStreamEvent::BlockStart {
-        index: 0,
-        block: crate::ir::IrBlockMeta::Text,
-    });
-    let _ = ev(crate::ir::IrStreamEvent::BlockDelta {
-        index: 0,
-        delta: crate::ir::IrDelta::TextDelta("Sourced claim.".into()),
-    });
-    let _ = ev(crate::ir::IrStreamEvent::BlockDelta {
-        index: 0,
-        delta: crate::ir::IrDelta::CitationsDelta(vec![crate::ir::IrCitation {
-            kind: Some("web_search_result_location".into()),
-            cited_text: Some("Sourced claim.".into()),
-            title: Some("A Source".into()),
-            url: Some("https://example.com/s".into()),
-            document_index: None,
-            start_index: None,
-            end_index: None,
-            encrypted_index: None,
-            raw: None,
-        }]),
-    });
-    let (name, frame) =
-        ev(crate::ir::IrStreamEvent::BlockStop { index: 0 }).expect("BlockStop finalizes the item");
-    assert_eq!(name, "response.output_item.done");
-
-    let anns = frame["item"]["content"][0]["annotations"]
-        .as_array()
-        .expect("annotations array");
-    assert_eq!(
-        anns.len(),
-        1,
-        "the streamed citation must survive: {anns:?}"
-    );
-    assert_eq!(anns[0]["url"], "https://example.com/s");
-    assert_eq!(anns[0]["end_index"], 14);
-}
-
-/// class-6 6f: a `developer`/`system` item AFTER an earlier conversational turn is still hoisted
-/// (behavior unchanged — the IR cannot express a positioned system turn), but must now WARN, since
-/// hoisting silently changes when the instruction takes effect relative to native Responses
-/// semantics. The BEFORE-any-turn case must NOT warn (that is the ordinary, non-surprising shape).
-#[test]
-fn mid_conversation_developer_item_is_flagged() {
-    use crate::test_support::warn_capture::WarnCapture;
-    use tracing_subscriber::layer::SubscriberExt as _;
-
-    let body = serde_json::json!({
-        "input": [
-            {"type": "message", "role": "user", "content": "hi"},
-            {"type": "message", "role": "assistant", "content": "hello"},
-            {"type": "message", "role": "developer", "content": "now answer in French"},
-            {"type": "message", "role": "user", "content": "and again"}
-        ]
-    });
-
-    let cap = WarnCapture::default();
-    let subscriber = tracing_subscriber::registry().with(cap.clone());
-    let ir = tracing::subscriber::with_default(subscriber, || {
-        ResponsesReader.read_request(&body).expect("read_request")
-    });
-
-    // Behavior unchanged: the instruction is still hoisted to `system` (IrRequest.system), applying
-    // from turn 1 — this is a REGRESSION PROOF half, not a red proof.
-    assert!(
-        ir.system.iter().any(|b| matches!(
-            b,
-            crate::ir::IrBlock::Text { text, .. } if text.contains("now answer in French")
-        )),
-        "the developer item's text must still be hoisted into system: {:?}",
-        ir.system
-    );
-    assert!(
-        cap.contains("appeared AFTER an earlier conversational turn"),
-        "a developer/system item after a conversational turn must warn about the hoist: {:?}",
-        cap.messages()
-    );
-}
-
-/// Negative half (REGRESSION PROOF): a `developer`/`system` item BEFORE any conversational turn is
-/// the ordinary shape and must NOT warn.
-#[test]
-fn leading_developer_item_does_not_warn() {
-    use crate::test_support::warn_capture::WarnCapture;
-    use tracing_subscriber::layer::SubscriberExt as _;
-
-    let body = serde_json::json!({
-        "input": [
-            {"type": "message", "role": "developer", "content": "be terse"},
-            {"type": "message", "role": "user", "content": "hi"}
-        ]
-    });
-
-    let cap = WarnCapture::default();
-    let subscriber = tracing_subscriber::registry().with(cap.clone());
-    let _ir = tracing::subscriber::with_default(subscriber, || {
-        ResponsesReader.read_request(&body).expect("read_request")
-    });
-
-    assert!(
-        !cap.contains("appeared AFTER an earlier conversational turn"),
-        "a leading developer item must not warn: {:?}",
-        cap.messages()
-    );
-}
-
-/// A Responses `output_text` content part's sibling `annotations` (`url_citation` entries) must be
-/// read into the IR Text block's `citations` — url/title, offsets deliberately left `None` (see
-/// `read_url_annotations` in `openai_chat/mod.rs`, shared by both readers).
-#[test]
-fn responses_output_text_annotations_read_into_ir_citations() {
-    let json = serde_json::json!({
-        "id": "resp_cite1",
-        "object": OBJ_RESPONSE,
-        "status": STATUS_COMPLETED,
-        "output": [{
-            "type": ITEM_TYPE_MESSAGE,
-            "role": "assistant",
-            "content": [{
-                "type": CONTENT_TYPE_OUTPUT_TEXT,
-                "text": "See the source for details.",
-                "annotations": [{
-                    "type": "url_citation",
-                    "url_citation": {
-                        "url": "https://example.com/r",
-                        "title": "Responses Source",
-                        "start_index": 7,
-                        "end_index": 20
-                    }
-                }]
-            }]
-        }],
-        "usage": {"input_tokens": 10, "output_tokens": 5}
-    });
-
-    let resp = ResponsesReader
-        .read_response(&json)
-        .expect("read_response should succeed");
-    let citations = resp
-        .content
-        .iter()
-        .find_map(|b| match b {
-            crate::ir::IrBlock::Text { citations, .. } => Some(citations),
-            _ => None,
-        })
-        .expect("a Text block must be present");
-    assert_eq!(citations.len(), 1, "{citations:?}");
-    let c = &citations[0];
-    assert_eq!(c.url.as_deref(), Some("https://example.com/r"));
-    assert_eq!(c.title.as_deref(), Some("Responses Source"));
-    assert!(
-        c.start_index.is_none() && c.end_index.is_none(),
-        "offsets must stay None until the byte-vs-character unit is established: {c:?}"
-    );
-}
-
-// Performance follow-up (no behavior change): `read_reasoning_text` returns `Cow<'_, str>`
-// instead of an owned `String` so `total_text_chars` (which only needs a char count and
-// immediately discards the text) does not pay an allocation on the common single-part case.
-// These tests pin the Cow discipline itself, which a plain `assert_eq!(text, "...")` would not
-// catch (an `Owned` regression still compares equal to a `Borrowed` value of the same content).
-
-/// Exactly one text-bearing part — whether it lives in `content[]` alone or `summary[]` alone —
-/// must borrow straight from the item, not allocate.
-#[test]
-fn read_reasoning_text_single_part_borrows() {
-    let content_only = serde_json::json!({
-        "type": "reasoning",
-        "content": [{"type": "reasoning_text", "text": "one part"}]
-    });
-    assert!(matches!(
-        read_reasoning_text(&content_only),
-        std::borrow::Cow::Borrowed("one part")
-    ));
-
-    let summary_only = serde_json::json!({
-        "type": "reasoning",
-        "summary": [{"type": "summary_text", "text": "just a summary"}]
-    });
-    assert!(matches!(
-        read_reasoning_text(&summary_only),
-        std::borrow::Cow::Borrowed("just a summary")
-    ));
-}
-
-/// Two `content[]` parts + one `summary[]` part must still allocate and concatenate in order —
-/// `content[]` fully, then `summary[]` — with NO separator between parts (the existing,
-/// deliberately separator-less concat behavior; this test only pins the Cow variant, not a new
-/// separator).
-#[test]
-fn read_reasoning_text_multi_part_concatenates() {
-    let item = serde_json::json!({
-        "type": "reasoning",
-        "content": [
-            {"type": "reasoning_text", "text": "first "},
-            {"type": "reasoning_text", "text": "second "}
-        ],
-        "summary": [{"type": "summary_text", "text": "third"}]
-    });
-    let text = read_reasoning_text(&item);
-    assert!(matches!(text, std::borrow::Cow::Owned(_)));
-    assert_eq!(text.as_ref(), "first second third");
-}
-
-/// Cross-array edge cases: exactly one accepted part in EITHER array alone still borrows; one in
-/// each array must allocate and concatenate BOTH (not silently drop one).
-#[test]
-fn read_reasoning_text_cross_array_borrow_vs_allocate() {
-    let content_one_summary_zero = serde_json::json!({
-        "type": "reasoning",
-        "content": [{"type": "reasoning_text", "text": "C"}],
-        "summary": []
-    });
-    assert!(matches!(
-        read_reasoning_text(&content_one_summary_zero),
-        std::borrow::Cow::Borrowed("C")
-    ));
-
-    let content_zero_summary_one = serde_json::json!({
-        "type": "reasoning",
-        "content": [],
-        "summary": [{"type": "summary_text", "text": "S"}]
-    });
-    assert!(matches!(
-        read_reasoning_text(&content_zero_summary_one),
-        std::borrow::Cow::Borrowed("S")
-    ));
-
-    let one_in_each = serde_json::json!({
-        "type": "reasoning",
-        "content": [{"type": "reasoning_text", "text": "C"}],
-        "summary": [{"type": "summary_text", "text": "S"}]
-    });
-    let text = read_reasoning_text(&one_in_each);
-    assert!(matches!(text, std::borrow::Cow::Owned(_)));
-    assert_eq!(
-        text.as_ref(),
-        "CS",
-        "must concatenate both, not drop either"
-    );
-}
-
-/// Empty-case discipline: no accepted part in either array must return `Cow::Borrowed("")`, never
-/// `Cow::Owned(String::new())` — a caller that only wants a length (`total_text_chars`) must not
-/// pay an allocation for zero text. `assert_eq!(text, "")` alone would not catch a regression to
-/// `Owned` here, since both compare equal to the empty string.
-#[test]
-fn read_reasoning_text_empty_case_borrows_not_owns() {
-    let no_arrays = serde_json::json!({"type": "reasoning"});
-    assert!(matches!(
-        read_reasoning_text(&no_arrays),
-        std::borrow::Cow::Borrowed("")
-    ));
-
-    let empty_arrays = serde_json::json!({"type": "reasoning", "content": [], "summary": []});
-    assert!(matches!(
-        read_reasoning_text(&empty_arrays),
-        std::borrow::Cow::Borrowed("")
-    ));
 }

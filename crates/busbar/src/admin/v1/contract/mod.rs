@@ -10,7 +10,7 @@
 //! contract lives here as typed Rust, a second transport reuses it verbatim and `openapi.json` can be
 //! generated from the same structs.
 //!
-//! ADDITIVE-ONLY: fields may be ADDED to a view; an error `code` string is
+//! ADDITIVE-ONLY (design-admin-api-v1 §0.2): fields may be ADDED to a view; an error `code` string is
 //! never removed or repurposed once shipped. Serde `Serialize` derives give the JSON projection for
 //! free; a non-JSON transport maps the same fields differently.
 
@@ -22,11 +22,6 @@ use serde::Serialize;
 // `$ref` for every operation. See the module doc.
 #[cfg(feature = "openapi-schema")]
 pub(crate) mod schema;
-
-// The per-endpoint error DECLARATION `openapi.json` is a projection of (design D). Always compiled:
-// the generator reads it under `openapi-schema`, the class-level drift test reads it under `test`,
-// and the emission recorder tags responses with it in a test build.
-pub(crate) mod taxonomy;
 
 /// The root every busbar-NATIVE API surface mounts under (`/api/<version>/<area>/…`). The data
 /// plane (the six mimicked SDK wire protocols) is deliberately OUTSIDE this root — its paths are
@@ -50,7 +45,7 @@ pub(crate) const PATH_GROUPS: &str = "/groups";
 /// `mint`; per-key lifecycle verbs (`/keys/{id}` PATCH/DELETE, rotate, revoke) stay `full`.
 pub(crate) const PATH_KEYS: &str = "/keys";
 
-/// Shared pagination limit policy for the admin
+/// Shared pagination limit policy (§0.4, one cursor grammar → one limit policy) for the admin
 /// lists: `?limit=` hard cap and default page size, used by the keys list (admin.rs) and the
 /// audit list (json.rs).
 pub(crate) const LIST_LIMIT_MAX: usize = 1000;
@@ -62,7 +57,7 @@ pub(crate) const VERSIONS_LIMIT_DEFAULT: usize = 100;
 
 /// The built-in authorization scopes. They form a DIAMOND lattice, NOT a strict chain:
 /// `ReadOnly` at the bottom, `Full` at the top, and `HooksRegister` + `Mint` as two INCOMPARABLE
-/// siblings in the middle. Authorization is
+/// siblings in the middle (design-admin-api-v1 §1; self-service governance D2). Authorization is
 /// checked on the PRINCIPAL per endpoint and is NEVER derived from the request body, so a crafted
 /// request cannot escalate.
 ///
@@ -72,16 +67,19 @@ pub(crate) const VERSIONS_LIMIT_DEFAULT: usize = 100;
 /// register a hook, and a hooks-register credential cannot mint a key. So `allows` is NOT
 /// `self >= needed` — it encodes the lattice explicitly (see `allows`).
 ///
-/// There is deliberately NO `Ord`/`PartialOrd` on this type. `HooksRegister` and `Mint` are
-/// INCOMPARABLE siblings, so any total order over the four variants would let `.max()`/`.min()`/
-/// `<`/`>=` silently answer a question the lattice cannot answer — that is exactly how this bug
-/// class happens (see `Grants` below, which is what role-aggregation and ceiling arithmetic use
-/// instead). A single `Scope` also cannot represent a principal's EFFECTIVE authority when it holds
-/// two incomparable grants at once (a `hooks-register` role and a `mint` role) — `Grants` is a SET
-/// for exactly that reason.
+/// `Ord` STILL derives from declaration order (low → high), but is used ONLY as an ordinal
+/// PRIVILEGE LEVEL for the `max_admin_scope:` ceiling arithmetic (`min(scope, cap)`) and the
+/// role-binding `max()` — NEVER as the authorization check. The ordinal places `Mint` above
+/// `HooksRegister` purely so that ceiling math stays TOTAL (a lattice `min`/`max` over incomparable
+/// elements is undefined); it does NOT mean mint subsumes hooks-register. The `allows` lattice is
+/// the sole truth for what a scope may DO. Practical consequence: a `max_admin_scope: hooks-register`
+/// ceiling capping a `mint`-granting role yields `hooks-register` (the ordinal floor), i.e. the cap
+/// still strictly narrows; and a `max_admin_scope: mint` ceiling never widens a `hooks-register`
+/// role into hook authority (min keeps it at hooks-register). Both directions are safe.
 ///
 /// The full variant set is the FROZEN authorization contract.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Scope {
     /// Every read (`GET`) across config, keys, hooks, versions, audit, usage, info.
     ReadOnly,
@@ -90,7 +88,7 @@ pub(crate) enum Scope {
     /// auth, or wire chains. SIBLING of `Mint` — carries NO key-mint authority.
     HooksRegister,
     /// read-only + MINT keys (`POST /keys`, INCLUDING the auto-provision-on-mint leaf-group
-    /// creation). The delegated scope for the customer's self-service portal: it
+    /// creation). The delegated scope for the customer's self-service portal (self-service §6a): it
     /// can mint a key into a group and auto-provision the `user:<sub>` leaf, but CANNOT register
     /// hooks, change auth, or mutate arbitrary config. SIBLING of `HooksRegister` — carries NO hook
     /// authority.
@@ -144,100 +142,9 @@ impl Scope {
             Scope::Mint => self == Scope::Mint || self == Scope::Full,
         }
     }
-
-    /// Every scope, for the closure operations below. Adding a 5th variant means adding it here too
-    /// (the compiler cannot enforce that — `dominates`/`meet`/`Grants` are all derived by iterating
-    /// this array, not by matching on `Scope`), and `bit`'s `u8` needs to stay wide enough for it.
-    const ALL: [Scope; 4] = [
-        Scope::ReadOnly,
-        Scope::HooksRegister,
-        Scope::Mint,
-        Scope::Full,
-    ];
-
-    /// This scope's bit in a [`Grants`] bitset — its position in `ALL`. Never exposed: callers
-    /// combine scopes through `Grants`, never through the bit pattern directly.
-    fn bit(self) -> u8 {
-        1u8 << Scope::ALL
-            .iter()
-            .position(|s| *s == self)
-            .expect("Scope::ALL enumerates every variant")
-    }
-
-    /// Does holding `self` confer everything holding `other` confers? DERIVED from `allows` (never
-    /// a hand-written table — a second encoding of the lattice is the exact drift hazard `Grants`
-    /// exists to remove): `self` dominates `other` iff every requirement `other` satisfies, `self`
-    /// also satisfies. NOT an ordinal: this is false in BOTH directions for the `HooksRegister`/
-    /// `Mint` siblings, since neither's `allows` table is a subset of the other's.
-    fn dominates(self, other: Scope) -> bool {
-        Scope::ALL
-            .iter()
-            .all(|n| !other.allows(*n) || self.allows(*n))
-    }
-
-    /// The greatest scope conferring no more than EITHER operand — the lattice MEET. This is the
-    /// ceiling operator: for the incomparable siblings it is `ReadOnly`, the two scopes' only common
-    /// authority — never one of the two siblings themselves (that would let the ceiling arithmetic
-    /// pick a side, exactly the S3 defect).
-    fn meet(self, other: Scope) -> Scope {
-        if self.dominates(other) {
-            other
-        } else if other.dominates(self) {
-            self
-        } else {
-            Scope::ReadOnly
-        }
-    }
 }
 
-/// The EFFECTIVE authority of a principal: a SET of scopes, because a principal can hold two
-/// INCOMPARABLE grants (a hooks-register role and a mint role) and no single `Scope` can express
-/// that. Roles UNION into it (`with`); a module ceiling MEETS each member (`capped_by`). Bitset over
-/// `Scope::ALL` — `Copy`, no allocation, and deliberately NOT `Ord`: combining grants is never a
-/// comparison.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) struct Grants(u8);
-
-impl Grants {
-    /// The single-scope grant.
-    pub(crate) fn of(s: Scope) -> Self {
-        Grants(s.bit())
-    }
-
-    /// UNION — add `s` to the held grants. Replaces `.max()`: folding a principal's role bindings
-    /// with `with` keeps EVERY scope a role grants, so a `hooks-register` role and a `mint` role
-    /// together keep both, instead of an ordinal `max` collapsing to one and losing the other.
-    pub(crate) fn with(self, s: Scope) -> Self {
-        Grants(self.0 | s.bit())
-    }
-
-    /// Pointwise `meet` against a ceiling — replaces `std::cmp::min`. Each held scope is capped
-    /// independently, so a principal capped below one of two incomparable grants doesn't lose the
-    /// other, and a ceiling incomparable with a grant reduces that grant to `ReadOnly` rather than
-    /// inventing or preserving hook/mint authority the ceiling was meant to cut.
-    pub(crate) fn capped_by(self, cap: Scope) -> Self {
-        Scope::ALL
-            .iter()
-            .filter(|s| self.contains(**s))
-            .fold(Grants::default(), |acc, s| acc.with(s.meet(cap)))
-    }
-
-    /// The authorization check: does ANY held scope satisfy `needed`? This is the disjunction
-    /// `allows` was always meant to be evaluated as once a principal can hold more than one grant.
-    pub(crate) fn allows(self, needed: Scope) -> bool {
-        Scope::ALL
-            .iter()
-            .any(|s| self.contains(*s) && s.allows(needed))
-    }
-
-    /// Exact membership — for the few callers that must name one specific scope (the operator-only
-    /// `Full` checks), not "does this authorize X".
-    pub(crate) fn contains(self, s: Scope) -> bool {
-        self.0 & s.bit() != 0
-    }
-}
-
-/// The AUTHORIZATION MATRIX: the scope an admin endpoint requires,
+/// The AUTHORIZATION MATRIX (design-admin-api-v1 §1, §6.3): the scope an admin endpoint requires,
 /// derived from METHOD + PATH — never from the body (a crafted request cannot escalate). NOT a
 /// ladder (the scope lattice is a diamond — see `Scope`): every read is `read-only`; the
 /// hook-DEFINITION lifecycle (`/api/v1/admin/hooks*` mutations) needs `hooks-register`; MINTING a
@@ -245,7 +152,7 @@ impl Grants {
 /// other mutation — config apply/rollback, auth chains, group_map, cache, group CRUD — needs
 /// `full`. Because `HooksRegister`/`Mint` are SIBLINGS in `allows`, a `mint` requirement is
 /// satisfied by exactly `mint` or `full` — never by `hooks-register`, and vice versa. Unknown
-/// methods fail closed to `full`. Body-derived refinements (: a `hooks-register` principal must
+/// methods fail closed to `full`. Body-derived refinements (§6.3: a `hooks-register` principal must
 /// not register a hook wired into a security-critical path) are enforced at the service layer.
 pub(crate) fn required_scope(method: &axum::http::Method, path: &str) -> Scope {
     use axum::http::Method;
@@ -263,14 +170,14 @@ pub(crate) fn required_scope(method: &axum::http::Method, path: &str) -> Scope {
     let rel = path.strip_prefix(ADMIN_PREFIX).unwrap_or(path);
     // `POST /config/validate` is a STATELESS DRY-RUN — a read in POST clothing (the body is the
     // config to lint, far past URL length limits). A read-only CI token must be able to lint
-    // configs.
+    // configs (re-audit M3; the service doc always said "Read scope" — now the matrix agrees).
     if rel == PATH_CONFIG_VALIDATE {
         return Scope::ReadOnly;
     }
     if is_mutation && (rel == PATH_HOOKS || rel.starts_with("/hooks/")) {
         return Scope::HooksRegister;
     }
-    // MINTING a key is the delegated self-service verb: `POST /keys` (only) —
+    // MINTING a key is the delegated self-service verb (self-service §6a): `POST /keys` (only) —
     // the auto-provision-on-mint leaf creation rides the same request, so the whole mint path is
     // `mint`, not `full`. Everything else under `/keys*` (list/get are reads above; PATCH/DELETE/
     // rotate/revoke are lifecycle mutations) stays `full` — a self-service portal mints, it does
@@ -293,15 +200,8 @@ pub(crate) fn required_scope(method: &axum::http::Method, path: &str) -> Scope {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub(crate) enum AdminError {
-    /// The named resource does not exist. `code = not_found`. `what` NAMES the missing thing (the
-    /// message is `"<what> not found"`), and the optional `note` appends a parenthetical reason for
-    /// the cases where "missing" has a cause worth stating — e.g. a single-key read on a server with
-    /// governance disabled, where no key CAN exist. Build one with [`AdminError::not_found`] /
-    /// [`AdminError::not_found_because`] rather than the variant, so the phrasing stays in one place.
-    NotFound {
-        what: String,
-        note: Option<&'static str>,
-    },
+    /// The named resource does not exist. `code = not_found`.
+    NotFound(String),
     /// No/invalid admin credential (the auth middleware could not authenticate the caller).
     /// `code = unauthorized`. Distinct from `forbidden` (authenticated but under-scoped).
     Unauthorized,
@@ -322,42 +222,18 @@ pub(crate) enum AdminError {
     /// (governance disabled, base-defined hook, immutable grant change, in-flight idempotency
     /// reservation). `code = conflict`.
     Conflict(String),
-    /// The principal exhausted its per-minute mutation budget. `code = rate_limited`.
+    /// The principal exhausted its per-minute mutation budget (§6.6). `code = rate_limited`.
     RateLimited,
     /// An internal failure (store/plugin). `code = internal`. The human `message` is generic; details
     /// are logged server-side, never returned.
     Internal,
-    /// A operation that is normally fast could not complete (or even START) within its bound and was
-    /// abandoned rather than left to hang the request indefinitely. `code = unavailable`. Unlike
-    /// [`AdminError::Internal`] the message is specific and caller-safe (e.g. "the plugin catalog
-    /// scan is taking too long") — this is a timeout/backpressure signal the caller can retry, not an
-    /// internal defect. First user: `GET /plugins?type=store`'s `CATALOG_SCAN_GATE` wait (round-4
-    /// audit finding 1).
-    Unavailable(String),
 }
 
 impl AdminError {
-    /// The plain "no such thing" — message `"<what> not found"`.
-    pub(crate) fn not_found(what: impl Into<String>) -> Self {
-        AdminError::NotFound {
-            what: what.into(),
-            note: None,
-        }
-    }
-
-    /// A not-found WITH a reason — message `"<what> not found (<why>)"`. For the cases where the
-    /// absence is a property of the server's configuration rather than of the request.
-    pub(crate) fn not_found_because(what: impl Into<String>, why: &'static str) -> Self {
-        AdminError::NotFound {
-            what: what.into(),
-            note: Some(why),
-        }
-    }
-
     /// The FROZEN stable code. Tooling branches on this string; it never changes for a shipped variant.
     pub(crate) fn code(&self) -> &'static str {
         match self {
-            AdminError::NotFound { .. } => "not_found",
+            AdminError::NotFound(_) => "not_found",
             AdminError::Unauthorized => "unauthorized",
             AdminError::MethodNotAllowed => "method_not_allowed",
             AdminError::Forbidden { .. } => "forbidden",
@@ -366,14 +242,13 @@ impl AdminError {
             AdminError::Conflict(_) => "conflict",
             AdminError::RateLimited => "rate_limited",
             AdminError::Internal => "internal",
-            AdminError::Unavailable(_) => "unavailable",
         }
     }
 
     /// The HTTP status the JSON-REST adapter returns for this error. A non-HTTP transport ignores it.
     pub(crate) fn http_status(&self) -> u16 {
         match self {
-            AdminError::NotFound { .. } => 404,
+            AdminError::NotFound(_) => 404,
             AdminError::Unauthorized => 401,
             AdminError::MethodNotAllowed => 405,
             AdminError::Forbidden { .. } => 403,
@@ -382,18 +257,13 @@ impl AdminError {
             AdminError::Conflict(_) => 409,
             AdminError::RateLimited => 429,
             AdminError::Internal => 500,
-            AdminError::Unavailable(_) => 503,
         }
     }
 
     /// The human-facing message. Caller-safe only — internal store/plugin detail never lands here.
     pub(crate) fn message(&self) -> String {
         match self {
-            AdminError::NotFound {
-                what,
-                note: Some(why),
-            } => format!("{what} not found ({why})"),
-            AdminError::NotFound { what, note: None } => format!("{what} not found"),
+            AdminError::NotFound(what) => format!("{what} not found"),
             AdminError::Unauthorized => {
                 "missing or invalid admin credential (Bearer or x-admin-token)".to_string()
             }
@@ -411,7 +281,6 @@ impl AdminError {
                 "admin mutation rate limit exceeded; retry next minute".to_string()
             }
             AdminError::Internal => "internal error".to_string(),
-            AdminError::Unavailable(msg) => msg.clone(),
         }
     }
 }
@@ -465,7 +334,7 @@ pub(crate) struct TopologyInfo {
 
 /// A pool in the topology read (`GET /api/v1/admin/pools`). Summary shape today: name + the member
 /// models and their weights. LIVE per-member status (breaker state, available concurrency, latency
-/// EWMA, budget/rate headroom — design-admin-api-v1) is an additive follow-up; the field set
+/// EWMA, budget/rate headroom — design-admin-api-v1 §6.9) is an additive follow-up; the field set
 /// only grows.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
@@ -483,7 +352,7 @@ pub(crate) struct PoolMemberView {
 }
 
 /// The LIVE per-pool detail read (`GET /api/v1/admin/pools/{name}`) — the reliability/capacity dashboard
-/// data: each member's breaker state, concurrency headroom, in-flight
+/// data (design-admin-api-v1 §6.9): each member's breaker state, concurrency headroom, in-flight
 /// count, latency EWMA, and success/error tallies, read from the SAME store signals the routing seam
 /// ranks on. No LLM content, no credentials.
 #[derive(Debug, Clone, Serialize)]
@@ -664,7 +533,7 @@ impl GroupView {
 
 /// `GET /groups/{name}/usage` — one group's DERIVED current-window usage, one row per
 /// enforcement bucket (each `(window, pool?)` its limits materialise), against that bucket's
-/// caps. The dashboard read: spend/tokens/requests per tier vs the budgets, straight off the
+/// caps. The §6d dashboard read: spend/tokens/requests per tier vs the budgets, straight off the
 /// ledger x the CURRENT rate card (reprice-on-read, nothing stored). The customer's self-service
 /// tool consumes this per group (`user:<sub>` leaf = one person's view) and re-scopes it.
 #[derive(Debug, Clone, Serialize)]
@@ -708,61 +577,54 @@ pub(crate) struct GroupBucketUsageView {
     pub(crate) budget_remaining_cents: Option<i64>,
 }
 
-/// The transport half of a `HookView`. As of 1.5.0 a hook is EITHER a compiled-in kind (no
-/// transport at all) or a signed `kind: hook` dlopen'd plugin (`target` = the plugin NAME, not a
-/// socket path or URL) — the retired 1.4.x socket/webhook sidecar transports are gone.
+/// The transport half of a `HookView`: which wire the hook speaks and its target (socket path or
+/// webhook URL — operator config, not a secret). Exactly one of `socket`/`webhook` is set.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub(crate) struct HookTransportView {
-    /// `"plugin"` for a signed dlopen'd hook plugin, or `"none"` for a hook with no plugin
-    /// transport (compiled-in kinds, or a misconfigured entry).
+    /// `"socket"` or `"webhook"` (or `"none"` for a misconfigured entry with neither).
     pub(crate) kind: &'static str,
-    /// The plugin's NAME (not a path or URL). `None` when `kind` is `"none"`.
+    /// The socket path or webhook URL. `None` only if the definition set neither transport.
     pub(crate) target: Option<String>,
 }
 
-/// The live health of one hook's transport (`GET /api/v1/admin/hooks/{name}/health`). Checks
-/// whether the hook resolves to a LOADED `kind: hook` plugin in the process's plugin registry —
-/// this is a plugin-LOAD status check, not a network reachability probe: it never opens a
-/// connection, and it cannot tell you whether a `kind: hook` plugin's own configured external
-/// endpoint (e.g. `busbar-webrequest-hook`'s `settings.url`) is actually reachable, only that the
-/// plugin itself is loaded. Never fires the hook. Additive-only.
+/// The live health of one hook's transport (`GET /api/v1/admin/hooks/{name}/health`). BEST-EFFORT: for a
+/// socket transport `reachable` is `Some(true/false)` from a short-timeout connect probe; for a webhook
+/// (or on a non-unix host) it is `None` (probed on demand, not here) with a `detail` note. Never fires
+/// the hook — just checks whether the endpoint accepts a connection. Additive-only.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub(crate) struct HookHealthView {
     pub(crate) name: String,
     pub(crate) transport: HookTransportView,
-    /// `Some(true)` = resolves to a loaded `kind: hook` plugin; `Some(false)` = it does not
-    /// (wrong kind, or not installed/loaded) — always `Some`, never `None`, as of 1.5.0's
-    /// in-process plugin model.
+    /// `Some(true)` = the transport accepted a connection; `Some(false)` = it did not; `None` = not
+    /// probed here (webhook / non-unix).
     pub(crate) reachable: Option<bool>,
-    /// A short human note on the resolution (why `false`, or the resolved plugin's kind). Never a
-    /// secret.
+    /// A short human note on the probe (why `None`, or the connect error class). Never a secret.
     pub(crate) detail: Option<String>,
 }
 
 /// One plugin in the plugin catalog (`GET /api/v1/admin/plugins?type=`). A plugin is either
-/// COMPILED-IN (baked into the binary, feature-gated — provably removable via `--no-default-features`)
-/// or a signed DYNAMIC-LIBRARY plugin (a loadable `.so`/`.dll`/`.dylib`, dlopen'd over the signed
-/// plugin ABI — this covers `auth`, `hooks`, and `store` plugin kinds alike as of 1.5.0; the
-/// retired 1.4.x socket/webhook "external" transport is gone). `active` is `Some(true/false)`
-/// where activation is tracked (auth modules: in the chain?; hook plugins: configured = true;
-/// dynamic store: the configured `store.module`) and `None` where it is a per-pool concern not
-/// summarized here (compiled-in ranking policies). Additive-only.
+/// COMPILED-IN (baked into the binary, feature-gated — provably removable via `--no-default-features`),
+/// EXTERNAL (registered at runtime over socket/webhook), or a DYNAMIC-LIBRARY plugin (a loadable
+/// `.so`/`.dll`/`.dylib` in the plugins directory, loaded over the store C ABI). `active` is
+/// `Some(true/false)` where activation is tracked (auth modules: in the chain?; external hooks:
+/// configured = true; dynamic store: the configured `store.module`) and `None` where it is a
+/// per-pool concern not summarized here (compiled-in ranking policies). Additive-only.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub(crate) struct PluginView {
     pub(crate) name: String,
     /// `"auth"`, `"hooks"`, or `"store"` — the plugin TYPE (each a distinct engine contract).
     pub(crate) r#type: &'static str,
-    /// `"compiled-in"` or `"plugin"` (a dlopen'd dynamic-library plugin — auth, hook, and store
-    /// kinds alike as of 1.5.0's signed plugin ABI).
+    /// `"compiled-in"`, `"external"`, or `"dynamic-library"`.
     pub(crate) loader: &'static str,
     /// Whether the plugin is currently active, where tracked; `None` when activation is not summarized
     /// at this level.
     pub(crate) active: Option<bool>,
-    /// For a dynamic-library plugin, its NAME (not a socket path or URL — the retired 1.4.x
-    /// transport target). `None` for compiled-in.
+    /// For an external plugin, its transport target (socket path / webhook URL); for a dynamic-library
+    /// plugin, its library FILENAME in the plugins directory (the handle `DELETE` takes). `None` for
+    /// compiled-in.
     pub(crate) target: Option<String>,
     /// The plugin's semantic version, from its signed sidecar manifest (dynamic-library plugins only).
     /// `None` for compiled-in/external, or a dynamic plugin with no/invalid manifest.
@@ -906,8 +768,8 @@ pub(crate) struct AuthView {
     pub(crate) open: bool,
 }
 
-/// A cursor-paginated list envelope. `items` is this page; `next_cursor` is `Some` when more remain.
-/// Generic over the item view so every list endpoint shares one shape.
+/// A cursor-paginated list envelope. `items` is this page; `next_cursor` is `Some` when more remain
+/// (design-admin-api-v1 §0.4). Generic over the item view so every list endpoint shares one shape.
 #[derive(Debug, Clone, Serialize)]
 // The generic list envelope. `rename = "Page_{T}"` interpolates the item type into the schema
 // name so each instantiation (`Page_HookView`, `Page_ModelView`, …) is a DISTINCT

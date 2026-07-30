@@ -93,24 +93,6 @@ pub(crate) enum MockResponse {
         ok_frames: Vec<(&'static str, Vec<u8>)>,
         amzn_request_id: &'static str,
     },
-    /// A non-2xx error response whose BODY delivery is deterministically gated on a
-    /// `tokio::sync::Notify`, rather than the `SseTransportError`/`EventStreamTransportError` idiom's
-    /// fixed `tokio::time::sleep` — a real-clock delay is a race by construction (this crate's own
-    /// comments on those variants note fast-localhost races), which is unacceptable for a test that
-    /// needs to land a second, direct store mutation deterministically WHILE the first request is
-    /// still parked reading this body. On first poll of the body stream this notifies `started` (so
-    /// the test knows the client has begun reading and `read_capped_body`'s `.await` is now parked),
-    /// then awaits `release` before yielding the body once and ending the stream cleanly. Used by
-    /// the M6 (owned single-flight-probe release) proof: the ONE real request that must park mid-body
-    /// read; the "second probe" side is simulated directly on the store, copied from
-    /// `probe_guard_tests.rs`'s `stalled_guard_does_not_release_a_newer_probe` pattern, rather than
-    /// driving a second concurrent HTTP dispatch through the mock server.
-    Gated {
-        status: StatusCode,
-        body: Value,
-        started: std::sync::Arc<tokio::sync::Notify>,
-        release: std::sync::Arc<tokio::sync::Notify>,
-    },
 }
 
 impl Default for MockResponse {
@@ -457,25 +439,6 @@ async fn mock_handler(
                 .body(Body::from_stream(s))
                 .unwrap()
         }
-        MockResponse::Gated {
-            status,
-            body,
-            started,
-            release,
-        } => {
-            let bytes = Bytes::from(body.to_string());
-            let s = stream::unfold(Some((bytes, started, release)), |state| async move {
-                let (bytes, started, release) = state?;
-                started.notify_one();
-                release.notified().await;
-                Some((Ok::<Bytes, std::io::Error>(bytes), None))
-            });
-            Response::builder()
-                .status(status)
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from_stream(s))
-                .unwrap()
-        }
     }
 }
 
@@ -686,9 +649,6 @@ pub(crate) struct TestApp {
     lanes: Vec<LaneSpec>,
     pools: std::collections::HashMap<String, Vec<crate::state::WeightedLane>>,
     auth: Option<std::sync::Arc<crate::auth::AuthMiddleware>>,
-    /// `admin_auth:` chain module names for the built App. `None` = the production default
-    /// (`[admin-tokens]`); `Some(vec![])` selects the explicit OPEN admin posture (dev).
-    admin_chain: Option<Vec<String>>,
     governance: Option<std::sync::Arc<crate::governance::GovState>>,
     cost: Option<std::sync::Arc<crate::cost::CostModel>>,
     failover_cfg: Option<crate::config::FailoverCfg>,
@@ -704,7 +664,6 @@ pub(crate) struct TestApp {
     plugins_dir: Option<std::path::PathBuf>,
     plugins_cfg: Option<crate::config::PluginsCfg>,
     hook_env: Option<crate::hooks::HookEnv>,
-    disk_paths: Option<(std::path::PathBuf, std::path::PathBuf)>,
 }
 
 #[allow(dead_code)]
@@ -714,7 +673,6 @@ impl TestApp {
             lanes: Vec::new(),
             pools: std::collections::HashMap::new(),
             auth: None,
-            admin_chain: None,
             governance: None,
             cost: None,
             failover_cfg: None,
@@ -730,7 +688,6 @@ impl TestApp {
             plugins_dir: None,
             plugins_cfg: None,
             hook_env: None,
-            disk_paths: None,
         }
     }
 
@@ -751,18 +708,6 @@ impl TestApp {
     /// strict disabled default.
     pub(crate) fn plugins_cfg(mut self, cfg: crate::config::PluginsCfg) -> Self {
         self.plugins_cfg = Some(cfg);
-        self
-    }
-
-    /// Give the snapshot DISK TRUTH — the `config.yaml` / `providers.yaml` paths a rebuild reads.
-    /// Without these the app is EPHEMERAL and every rebuild-from-disk path takes its no-disk branch,
-    /// so the failure modes of the rebuild itself are unreachable from a test.
-    pub(crate) fn disk_paths(
-        mut self,
-        config: std::path::PathBuf,
-        providers: std::path::PathBuf,
-    ) -> Self {
-        self.disk_paths = Some((config, providers));
         self
     }
 
@@ -836,13 +781,6 @@ impl TestApp {
         ));
         self
     }
-    /// Override the ADMIN auth chain. `vec![]` is the explicit OPEN admin posture — the only way
-    /// to reach the admin surface on a fixture that has no governance to hold an operator token.
-    pub(crate) fn admin_chain(mut self, modules: Vec<String>) -> Self {
-        self.admin_chain = Some(modules);
-        self
-    }
-
     pub(crate) fn auth(mut self, a: std::sync::Arc<crate::auth::AuthMiddleware>) -> Self {
         self.auth = Some(a);
         self
@@ -896,7 +834,6 @@ impl TestApp {
         ));
         let app = std::sync::Arc::new(crate::state::App {
             tslots,
-            probe_schedule: std::sync::Arc::new(crate::health::ProbeSchedule::new(lanes.len())),
             lanes,
             store: std::sync::Arc::new(crate::store::InMemoryStore::new(lane_data)),
             by_model,
@@ -927,19 +864,15 @@ impl TestApp {
                 std::collections::HashMap::new(),
             )),
             base_hook_names: self.base_hook_names,
-            admin_chain: self
-                .admin_chain
-                .clone()
-                .unwrap_or_else(|| vec!["admin-tokens".to_string()]),
+            admin_chain: vec!["admin-tokens".to_string()],
             credential_cache: std::sync::Arc::new(crate::auth_cache::CredentialCache::new()),
             auth_scope_caps: std::collections::HashMap::new(),
             role_bindings: crate::config::RoleBindings::new(),
-            config_path: self.disk_paths.as_ref().map(|(c, _)| c.clone()),
-            providers_path: self.disk_paths.as_ref().map(|(_, p)| p.clone()),
+            config_path: None,
+            providers_path: None,
             overlay_path: self.overlay_path,
             config_version: 0,
             max_keys_per_principal: 0,
-            max_auto_provisioned_groups: 0,
             failover_cfg: self.failover_cfg,
             pool_runtime: self.pool_runtime,
             fallback_pools: self.fallback_pools,
@@ -991,13 +924,13 @@ pub(crate) fn test_hook_env(
         candidate
     };
     let lib = std::fs::read(&cdylib).expect("read hook cdylib");
-    // A monotonic counter, NOT a clock read: two threads can read the same nanosecond, and a
-    // colliding fixture path means one test scans a tarball another is still writing.
-    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let dir = std::env::temp_dir().join(format!(
         "busbar-test-hook-env-{}-{}",
         std::process::id(),
-        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
     ));
     std::fs::create_dir_all(&dir).unwrap();
     for (i, alias) in aliases.iter().enumerate() {
@@ -1070,8 +1003,6 @@ fn weighted(members: &[(usize, u32)]) -> Vec<crate::state::WeightedLane> {
         })
         .collect()
 }
-
-pub(crate) mod warn_capture;
 
 #[cfg(test)]
 #[path = "tests/tests.rs"]

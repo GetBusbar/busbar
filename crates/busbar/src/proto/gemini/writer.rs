@@ -107,11 +107,7 @@ impl ProtocolWriter for GeminiWriter {
                         parts_arr.push(serde_json::json!({ "text": text }))
                     }
                     crate::ir::IrBlock::ToolUse {
-                        id: _,
-                        name,
-                        input,
-                        thought_signature,
-                        ..
+                        id: _, name, input, ..
                     } => {
                         // ToolUse → functionCall{name, args}. `args` MUST be a JSON OBJECT (Gemini
                         // Struct); coerce any non-object input (array/scalar/null/unparseable string)
@@ -125,17 +121,6 @@ impl ProtocolWriter for GeminiWriter {
                             FIELD_FUNCTION_CALL.to_string(),
                             serde_json::Value::Object(fc_obj),
                         );
-                        // `thoughtSignature` is a sibling of `functionCall` on the `Part` object, NOT
-                        // nested inside it — same placement as the Thinking block's signature below.
-                        // Gemini 3 REQUIRES this echoed back verbatim on the next turn or the backend
-                        // 400s. By the time this writer runs, `thought_signature` already carries the
-                        // right value — either a real one captured by Gemini's own reader, or a
-                        // sentinel injected upstream by `IrReq::prepare_for_egress` for cross-protocol
-                        // traffic — so this writer stays dumb and just emits what it's given. Omit the
-                        // key entirely when absent rather than emit an empty string.
-                        if let Some(sig) = thought_signature {
-                            part_obj.insert("thoughtSignature".to_string(), serde_json::json!(sig));
-                        }
                         parts_arr.push(serde_json::Value::Object(part_obj))
                     }
                     crate::ir::IrBlock::ToolResult {
@@ -277,18 +262,15 @@ impl ProtocolWriter for GeminiWriter {
                     if let Some(desc) = &tool.description {
                         obj.insert("description".to_string(), serde_json::json!(desc));
                     }
-                    // Gemini's tool `parameters` accept only a strict OpenAPI-3.0 Schema subset,
+                    // L3: Gemini's tool `parameters` accept only a strict OpenAPI-3.0 Schema subset,
                     // NOT full JSON Schema. A cross-protocol tool def (OpenAI/Anthropic) routinely
-                    // carries draft keywords (`$schema`, a schema-valued `additionalProperties`, …)
-                    // that Gemini 400-rejects, and a `$ref`/`$defs` nested-model shape (what every
-                    // Pydantic/Zod-generated tool schema uses) that the live API does not reliably
-                    // resolve on its own — see the research note on `GEMINI_SCHEMA_REJECTED_KEYS`.
-                    // `resolve_gemini_schema_refs` inlines `$ref` against `$defs` first so nested
-                    // structure survives, then `sanitize_gemini_schema` strips the rest recursively;
-                    // same-protocol Gemini schemas (which never carry these) are unaffected.
+                    // carries draft keywords (`$schema`, `additionalProperties`, `$ref`, …) that
+                    // Gemini 400-rejects. Strip them recursively so the tool def survives the seam
+                    // instead of hard-failing; same-protocol Gemini schemas (which never carry these)
+                    // are unaffected.
                     obj.insert(
                         "parameters".to_string(),
-                        sanitize_gemini_schema(&resolve_gemini_schema_refs(&tool.input_schema)),
+                        sanitize_gemini_schema(&tool.input_schema),
                     );
                     serde_json::Value::Object(obj)
                 })
@@ -314,37 +296,15 @@ impl ProtocolWriter for GeminiWriter {
             .cloned()
             .unwrap_or_default();
         if let Some(tc) = &req.tool_choice {
-            // A `functionCallingConfig` with no accompanying `tools` is meaningless (there is
-            // nothing to force/allow) and, like every sibling protocol's equivalent guard, the
-            // reachable case is a cross-protocol request whose hosted tools `prepare_for_egress`
-            // stripped (`ir/variant.rs`) while the tool_choice directive survived. Drop with a warn
-            // rather than emitting a directive over an empty tool set.
-            if req.tools.is_empty() {
-                tracing::warn!(
-                    "dropping tool_choice on Gemini egress: a functionCallingConfig with no \
-                     accompanying tools is meaningless (likely because the hosted tools that \
-                     carried it were stripped on the cross-protocol seam)"
-                );
-            } else {
-                tool_config.insert(
-                    "functionCallingConfig".to_string(),
-                    write_gemini_tool_choice(tc),
-                );
-            }
+            tool_config.insert(
+                "functionCallingConfig".to_string(),
+                write_gemini_tool_choice(tc),
+            );
         }
         if !tool_config.is_empty() {
             out.insert(
                 "toolConfig".to_string(),
                 serde_json::Value::Object(tool_config),
-            );
-        }
-        // class-6 6c1 egress: `generateContent` models no parallelism control at all — `None` is
-        // NOT touched here (owner decision 4: a warn on EVERY request would be noise). The
-        // `is_some()` gate means this can only fire on a request that actually carried the flag.
-        if req.parallel_tool_calls.is_some() {
-            tracing::warn!(
-                "dropping parallel_tool_calls on Gemini egress: generateContent has no parallelism \
-                 control, so the backend's default parallelism applies"
             );
         }
 
@@ -378,10 +338,7 @@ impl ProtocolWriter for GeminiWriter {
             gen_config.insert("topK".to_string(), serde_json::json!(top_k));
         }
         if !req.stop.is_empty() {
-            gen_config.insert(
-                "stopSequences".to_string(),
-                serde_json::json!(crate::proto::clamp_stop(&req.stop, 5, "Gemini")),
-            );
+            gen_config.insert("stopSequences".to_string(), serde_json::json!(req.stop));
         }
         // Promoted sampling controls in Gemini's native generationConfig shape (cross-protocol
         // survival, inverse of the reader's promotion). `n` → `candidateCount` (Gemini's name).
@@ -485,17 +442,12 @@ impl ProtocolWriter for GeminiWriter {
         // `stream` before the upstream call. (An earlier version of this comment wrongly claimed the
         // reader excludes `stream` via `modeled_keys`; it does not — the accurate behavior is here.)
 
-        // Merge extra fields (may override, but that's expected behavior). `generationConfig` AND
-        // `toolConfig` are SKIPPED here: their raw `extra` copies were already folded into the
-        // typed-overlay `gen_config` / `tool_config` objects emitted above, so re-inserting the raw
-        // copy would CLOBBER the overlay and silently revert `req.tool_choice`/the 5 typed
-        // generationConfig fields back to whatever the source request originally carried — the exact
-        // failure mode when a caller (e.g. a post-read governance/routing hook) mutates
-        // `IrRequest.tool_choice` without also touching `IrRequest.extra["toolConfig"]`: the typed
-        // override would build correctly above, then get overwritten right back to the stale raw
-        // value by this loop. Every OTHER unmodeled top-level key still round-trips verbatim.
+        // Merge extra fields (may override, but that's expected behavior). `generationConfig` is
+        // SKIPPED here: its raw `extra` copy was already folded into the typed-overlay `gen_config`
+        // object emitted above, so re-inserting the raw copy would clobber the merge and drop the 5
+        // typed overlays. Every OTHER unmodeled top-level key still round-trips verbatim.
         for (key, value) in &req.extra {
-            if key == "generationConfig" || key == "toolConfig" {
+            if key == "generationConfig" {
                 continue;
             }
             out.insert(key.clone(), value.clone());
@@ -805,16 +757,8 @@ impl ProtocolWriter for GeminiWriter {
                     if citations.is_empty() {
                         None
                     } else {
-                        // STREAMING egress has no accumulated full response text to convert a
-                        // foreign (non-Gemini-sourced) citation's character offsets back to bytes
-                        // against — the same limitation the streaming READER documents (class-6
-                        // 6e1 site 3 is scoped to the non-stream path on both sides). The `raw`
-                        // short-circuit inside `write_gemini_citation` still makes the common
-                        // same-protocol case byte-exact regardless.
-                        let sources: Vec<serde_json::Value> = citations
-                            .iter()
-                            .map(|c| write_gemini_citation(c, "", 0))
-                            .collect();
+                        let sources: Vec<serde_json::Value> =
+                            citations.iter().map(write_gemini_citation).collect();
                         Some((
                             "".to_string(),
                             serde_json::json!({
@@ -994,15 +938,10 @@ impl ProtocolWriter for GeminiWriter {
         // Build candidates array (Gemini whole-response format)
         let mut parts_arr: Vec<serde_json::Value> = Vec::new();
 
-        // Collect citations from every Text block to re-emit at the candidate level
+        // L2: collect citations from every Text block to re-emit at the candidate level
         // (`candidates[].citationMetadata.citationSources[]`) — Gemini carries citations there, not
-        // per content-part. The reader anchors them to a Text block, with indices relative to THAT
-        // block's own text (see `attach_gemini_citations_to_text_blocks`); here we hoist them back
-        // out to candidate level and un-shift each converted (non-`raw`) index by `byte_prefix` — the
-        // BYTE length of every text block already emitted — so a citation whose block is not the
-        // first text part still lands on the correct candidate-wide wire offset.
+        // per content-part. The reader anchors them to a Text block; here we hoist them back out.
         let mut citation_sources: Vec<serde_json::Value> = Vec::new();
-        let mut byte_prefix: i64 = 0;
 
         for block in &resp.content {
             match block {
@@ -1010,9 +949,8 @@ impl ProtocolWriter for GeminiWriter {
                     text, citations, ..
                 } => {
                     for c in citations {
-                        citation_sources.push(write_gemini_citation(c, text, byte_prefix));
+                        citation_sources.push(write_gemini_citation(c));
                     }
-                    byte_prefix += text.len() as i64;
                     if !text.is_empty() {
                         parts_arr.push(serde_json::json!({"text": text}));
                     }
@@ -1022,11 +960,7 @@ impl ProtocolWriter for GeminiWriter {
                 // coerce any non-object input (array/scalar/null/unparseable string) the same way
                 // `write_request` does.
                 crate::ir::IrBlock::ToolUse {
-                    id: _,
-                    name,
-                    input,
-                    thought_signature,
-                    ..
+                    id: _, name, input, ..
                 } => {
                     let args_val = coerce_tool_args(input);
                     let mut fc_obj = serde_json::Map::new();
@@ -1037,14 +971,6 @@ impl ProtocolWriter for GeminiWriter {
                         FIELD_FUNCTION_CALL.to_string(),
                         serde_json::Value::Object(fc_obj),
                     );
-                    // `thoughtSignature` sibling of `functionCall`, mirroring `write_request`. This
-                    // writer talks to a real client and `prepare_for_egress` is request-side only, so
-                    // this path never gets sentinel-injected — it only ever carries a real value, when
-                    // Gemini was the response SOURCE and its own reader captured one. Never fabricate
-                    // one here; omit the key when absent.
-                    if let Some(sig) = thought_signature {
-                        part_obj.insert("thoughtSignature".to_string(), serde_json::json!(sig));
-                    }
                     parts_arr.push(serde_json::Value::Object(part_obj));
                 }
 
@@ -1149,7 +1075,7 @@ impl ProtocolWriter for GeminiWriter {
             }
         });
         candidate[FIELD_FINISH_REASON] = serde_json::json!(finish_reason);
-        // Re-emit candidate-level citationMetadata when the IR carried citations (grounding /
+        // L2: re-emit candidate-level citationMetadata when the IR carried citations (grounding /
         // web-search). Only emitted when non-empty so a normal response stays byte-identical.
         if !citation_sources.is_empty() {
             candidate["citationMetadata"] = serde_json::json!({

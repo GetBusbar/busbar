@@ -60,7 +60,6 @@ These are the only environment variables read by Busbar (excluding test-only `BU
 |---|---|---|
 | `BUSBAR_PROVIDERS` | `main.rs` | Path to `providers.yaml`. Default: `/etc/busbar/providers.yaml`. |
 | `BUSBAR_CONFIG` | `main.rs` | Path to `config.yaml`. Default: `/etc/busbar/config.yaml`. |
-| `BUSBAR_STATE_FILE` | `state_persist.rs` | State-snapshot path. Empty string disables persistence; unset defaults to `busbar-state.json` next to the config file. |
 | `RUST_LOG` | `observability.rs` | Log level: `error`, `warn`, `info`, `debug`, or `trace`. Default: `info`. |
 | *(each provider's `api_key: { env: VAR }` reference)* | `main.rs` | The env var **named by** the secret reference holds that provider's upstream credential. Resolved once at boot per provider. |
 | *(any `${VAR}` in `config.yaml`)* | `config.rs` | Expanded before YAML is parsed. Unset → fatal boot error. |
@@ -93,37 +92,9 @@ subsystem at boot. Interpolation remains for non-secret values (hosts, paths, na
 | `${NAME}` where `NAME` is unset | Fatal boot error: `unset environment variable: NAME` |
 | `${NAME` with no closing `}` | Fatal boot error: `unclosed variable reference...` |
 | `${}` (empty name) | Fatal boot error: `empty variable name in ${}` |
-| Value contains a control character (`\n`, `\r`, `\t`, NUL, DEL, U+0085, U+2028, U+2029) | Fatal boot error, prevents newline-based YAML-structure injection via env vars |
-| Value would change the config's YAML STRUCTURE when substituted (see below) | Fatal boot error, names the offending variable(s) where identifiable |
+| Value contains a control character (`\n`, `\r`, `\t`, NUL, DEL, U+0085, U+2028, U+2029) | Fatal boot error, prevents YAML-structure injection via env vars |
 
-Ordinary punctuation (`: / @ . - # " , { } [ ] &` etc.) in env var values is allowed — there is no fixed forbidden-character list. Interpolation scans the entire raw file, including commented-out lines, so a `${VAR}` in a comment must still resolve.
-
-### Structural-equivalence check
-
-Beyond the control-character check above, every interpolated document is verified to keep the same
-YAML *shape* the template declares. Concretely: the raw template is interpolated twice — once with
-real values, once with an inert placeholder standing in for each `${VAR}` — both results are parsed,
-and the two parse trees must have the same map keys, the same sequence lengths, and the same node
-kind (map / sequence / scalar) at every position. A substituted value may change what a scalar leaf
-*contains* — that's the entire point of interpolation — but it may never change how many keys a map
-has, how long a sequence is, or what kind of node sits at a given position.
-
-This closes a class of injection the control-character check alone cannot see: inside a YAML flow
-collection (`{ }` / `[ ]` — used by this project's own examples, e.g. `client_tokens: [ "${VAR}" ]`),
-a value containing a bare `,`, `"`, or `'` can splice in extra structure on a single line, with no
-newline involved at all. Because the check is about *shape*, not content, it has no forbidden-character
-list to maintain and no false positives on legitimate values that happen to contain YAML-"special"
-characters but do not actually change the parsed shape — an LDAP DN with mandatory commas, a Windows
-path with backslashes, a URL with a query string, or a value that changes a scalar's *inferred type*
-(e.g. `port: ${PORT}` — a real `8080` infers as a number, but the check does not compare scalar values
-or types, only shape) all interpolate normally. Only a value that actually widens/narrows the parsed
-structure is rejected.
-
-A value containing an unescaped `"` still breaks a double-quoted scalar exactly as YAML's own grammar
-says it does (that is not this check's job to prevent — it is the control-character check's cousin
-concern, and an ordinary YAML parse error results either way, not a silent injection). A JSON blob
-therefore does NOT interpolate cleanly if it is spliced into a double-quoted scalar: use a `{ file: ...
-}` secret reference for that case instead of `${VAR}`.
+Ordinary punctuation (`: / @ . - # "`) in env var values is allowed. Interpolation scans the entire raw file, including commented-out lines, so a `${VAR}` in a comment must still resolve.
 
 ---
 
@@ -141,9 +112,17 @@ A map of provider name → `ProviderDef`. The shipped catalog is a curated set o
 | `path` | string | no | Protocol's standard path | Overrides the upstream request path appended to `base_url`. Must begin with `/`. Static, ignores the per-request model. Use when the API version is in `base_url` and the endpoint path differs from the protocol default (e.g. `/chat/completions` without `/v1`). |
 | `path_base` | string | no | Protocol's default base | For URL-model protocols: overrides the hardcoded base segment while the per-request suffix is still appended. Must begin with `/`. On **Gemini** it replaces `/v1beta/models` (suffix `/{model}:verb`) to reach Google Vertex AI's `/v1/projects/{project}/locations/{location}/publishers/google/models` layout; on **Anthropic** it enables Claude-on-Vertex (the model moves into a `:rawPredict`/`:streamRawPredict` suffix and the body carries `anthropic_version` in place of `model`). Config-only, no code. |
 | `auth` | string | no | Protocol's native auth | The egress auth mechanism. `bearer` (sends `Authorization: Bearer <key>`) · `api-key` (sends `api-key: <key>`, for Azure OpenAI) · `jwt-bearer` (OAuth 2.0 JWT-bearer, RFC 7523: mints + auto-refreshes a bearer from a service-account key resolved via `api_key`; e.g. Google Vertex AI) · `oauth-client-credentials` (OAuth 2.0 client-credentials, RFC 6749 §4.4: the `api_key` reference resolves to `client_id:client_secret`, exchanged at `token_url` for a bearer; e.g. Azure OpenAI via Entra ID). When unset, each protocol uses its native scheme: bearer for anthropic/openai/responses/cohere, `x-goog-api-key` for gemini, AWS SigV4 for bedrock. |
-| `token_url` | string | no | none | OAuth token endpoint for `auth: oauth-client-credentials`, where Busbar POSTs the client credentials for a bearer. Required for that auth; must be https for a public host. |
+| `token_url` | string | no | none | OAuth token endpoint for `auth: oauth-client-credentials`, where busbar POSTs the client credentials for a bearer. Required for that auth; must be https for a public host. |
 | `scope` | string | no | none | OAuth scope for `auth: oauth-client-credentials`. Required for that auth. |
 | `health` | object | no | none | Active health-probe config. See [Health probing](#health-probing). |
+
+> **OAuth self-minting (`jwt-bearer` / `oauth-client-credentials`): boot window.** These lanes mint
+> their first bearer token in the background at startup and on every config reload. For the brief window
+> before that first mint completes, the lane has no token and requests routed to it fail auth (upstream
+> 401); a burst can trip the lane's breaker, which then recovers automatically once the token lands (the
+> active health prober skips the lane until it is ready, so probing never parks it). This self-heals in
+> well under a second. But if you route heavy traffic to a freshly-booted OAuth lane, expect a few 401s
+> until the first token mints. Static-key lanes (`bearer` / `api-key` / SigV4) have no such window.
 
 Example entries:
 
@@ -214,7 +193,7 @@ The value is passed directly to `tokio::net::TcpListener::bind`. An invalid or a
 ### `tls`
 
 Optional. When present, Busbar terminates inbound TLS natively (and, with
-`client_ca`, requires mutual TLS). When **absent**, Busbar serves plain HTTP,
+`client_ca_file`, requires mutual TLS). When **absent**, Busbar serves plain HTTP,
 the historical default, unchanged.
 
 ```yaml
@@ -246,7 +225,7 @@ the files and restarting. Full operational guide:
 
 Front-door identity for the data plane plus the admin chain and role policy. Data-plane callers
 authenticate through `auth.chain` (ordered module entries); the built-in `keys` module verifies
-Busbar's own signed virtual keys, and identity-provider integrations load as `kind: auth`
+busbar's own signed virtual keys, and identity-provider integrations load as `kind: auth`
 plugins. Static token allowlists are GONE in 1.5.0: every caller carries either a minted signed
 key or an IdP credential a chain module verifies.
 
@@ -267,8 +246,8 @@ auth:
 
 | Field | Type | Required | Default | Notes |
 |---|---|---|---|---|
-| `signing_key` | secret reference | no | generated on first boot | The ed25519 key Busbar signs virtual-key tokens with. Fleet-shared (every node verifying the same tokens resolves the same key). Absent: Busbar generates a keypair on first boot and persists it with mode 0600 (dev zero-config). Rotating it revokes every outstanding key. |
-| `upstream_credentials` | string | no | `own` | Whose key hits the provider: `own` (Busbar's configured lane credential) or `passthrough` (forward the caller's own token upstream; Busbar holds no keys). |
+| `signing_key` | secret reference | no | generated on first boot | The ed25519 key busbar signs virtual-key tokens with. Fleet-shared (every node verifying the same tokens resolves the same key). Absent: busbar generates a keypair on first boot and persists it with mode 0600 (dev zero-config). Rotating it revokes every outstanding key. |
+| `upstream_credentials` | string | no | `own` | Whose key hits the provider: `own` (busbar's configured lane credential) or `passthrough` (forward the caller's own token upstream; busbar holds no keys). |
 | `chain` | list of module entries | no | `[]` | The ordered DATA-PLANE authentication chain. Each entry is a bare module name (`- keys`) or a single-key map `- <module>: { max_admin_scope?, settings? }` where `settings` is the module's own opaque config. `keys` is the built-in signed-key verifier; **any other name loads a `kind: auth` plugin** from the plugins directory (see [auth plugins](#auth-plugins) below). `[]` (default) is the open front door: development only, loud startup warning. A configured auth plugin that cannot be loaded — missing/untrusted tarball, wrong kind, `plugins.enabled: false`, or an ABI failure — is a **hard startup error** (fail-closed: the front door never silently opens). |
 | `admin_auth` | list of module entries | no | `[admin-tokens]` | The chain gating `/api/v1/admin/*`. The built-in `admin-tokens` module carries the operator credential as a secret reference (`token:`). `[]` = OPEN admin (dev only; loud warning). |
 | `role_bindings` | map | no | `{}` | Role policy, NESTED BY MODULE: `role_bindings.<module>.<role> -> { allowed_pools?, group?, admin_scope? }`. See below. |
@@ -277,7 +256,7 @@ auth:
 
 | Field | Default | Notes |
 |---|---|---|
-| `max_admin_scope` | `read-only` | Ceiling on the admin scope obtainable through this module, regardless of what `role_bindings` grants: `read-only` \| `hooks-register` \| `mint` \| `full`. `hooks-register` and `mint` are incomparable siblings (see [admin-api.md](admin-api.md#authentication--scopes)); `full` from an external module is an explicit opt-in. The built-in `admin-tokens` operator credential is exempt (it is the root credential). |
+| `max_admin_scope` | `read-only` | Ceiling on the admin scope obtainable through this module, regardless of what `role_bindings` grants: `read-only` \| `hooks-register` \| `full`. `full` from an external module is an explicit opt-in. The built-in `admin-tokens` operator credential is exempt (it is the root credential). |
 | `token` | none | The operator admin credential, for the built-in `admin-tokens` module only (a secret reference). |
 | `settings` | `{}` | The module's own opaque configuration, passed to the auth plugin verbatim. |
 
@@ -299,7 +278,7 @@ another module's binding. An unbound role grants nothing (fail closed).
 |---|---|
 | `allowed_pools` | DATA-PLANE grant: pools this role may target. OMITTED = ALL pools; an explicit `[]` = NO pools (an empty list is the empty set, everywhere in the 1.5.0 config). Pool lists union across a principal's granting roles; any omitted grant widens the union to all pools. |
 | `group` | The `groups:` bucket this role's principals charge through. Absent = no group (authed + unlimited). With several bound groups the first in role order wins. |
-| `admin_scope` | The admin authority this role grants: `read-only` \| `hooks-register` \| `mint` \| `full` (`hooks-register` and `mint` are incomparable siblings — the delegated `mint` scope lets a self-service portal mint keys without hook authority; see [admin-api.md](admin-api.md#authentication--scopes)). Absent = none. A principal holds the UNION of what its bound roles grant (two incomparable grants, e.g. `hooks-register` and `mint`, are both kept — the union is NOT `full`), then the asserting module's `max_admin_scope` ceiling applies to each; a ceiling incomparable with a grant reduces it to `read-only`. |
+| `admin_scope` | The admin authority this role grants: `read-only` \| `hooks-register` \| `full`. Absent = none. The most permissive of a principal's bound roles wins, then the asserting module's `max_admin_scope` ceiling applies. |
 
 Admin access is therefore EITHER a role's `admin_scope` (through an IdP module in `admin_auth`)
 OR the `admin-tokens` operator token. The admin chain is live-mutable over the API
@@ -315,15 +294,38 @@ plugins directory, then name the module in the chain. Its `settings:` map is pas
 verbatim as its config.
 
 Role policy is nested under the plugin's **runtime module name** — the value the plugin returns from
-`name()`, which may differ from the chain alias you gave it. Bind roles under that runtime name.
+`name()`, which for the bundled OIDC module is `oidc`. Bind roles under that name, not the config
+alias if they differ.
 
-A verified caller presents its IdP-issued token as `Authorization: Bearer <token>`; the auth plugin
-validates it and asserts the token's claims as roles, which Busbar maps through `role_bindings.<module>`
-to pools, limits, and (optionally) an admin scope capped by the module's `max_admin_scope`.
+The bundled **`oidc`** module (`busbar-auth-oidc-plugin`) verifies OIDC/JWT bearer tokens against an
+IdP's JWKS, mapping a token claim (default `groups`) to the principal's roles. Microsoft Entra ID
+(Azure AD) example — replace `<tenant-id>` and `<client-id>` with your own:
 
-Each auth plugin defines its own `settings:` (issuer, audience, claim mapping, and so on) and ships its
-own setup guide. For the first-party OIDC/SSO plugin — JWKS verification, claim-to-role mapping, and a
-full Microsoft Entra ID (Azure AD) example — see the **[OIDC auth plugin](/plugins/auth/oidc/)**.
+```yaml
+plugins:
+  enabled: true
+  dir: /etc/busbar/plugins            # the signed busbar-auth-oidc-plugin tarball lives here
+
+auth:
+  chain:
+    - keys                            # still accept busbar-minted virtual keys
+    - oidc:                           # then IdP-issued JWTs
+        settings:
+          issuer:    "https://login.microsoftonline.com/<tenant-id>/v2.0"
+          audience:  "api://<client-id>"
+          # jwks_url optional — discovered from the issuer when omitted:
+          jwks_url:  "https://login.microsoftonline.com/<tenant-id>/discovery/v2.0/keys"
+          role_claim: "groups"        # the JWT claim carrying the caller's groups
+  role_bindings:
+    oidc:                             # nested by the module's runtime name (`oidc`)
+      "<entra-group-object-id>":      # a group id from the `groups` claim
+        allowed_pools: [fast]
+        group: growth                 # charge through the `growth` limit bucket
+```
+
+A caller then presents the Entra-issued JWT as `Authorization: Bearer <jwt>`; `oidc` verifies it,
+asserts the token's groups as roles, and busbar maps them through `role_bindings.oidc` to pools,
+limits, and (optionally) an admin scope capped by `auth.chain.oidc.max_admin_scope`.
 
 ---
 
@@ -456,7 +458,7 @@ per_request_fee: 0
 | `rate_card` | map | absent (token pricing = 0) | Per-model, per-tier token rates in MICRO-units (1e-6 abstract cost unit) per token; an omitted tier prices 0. ALL-OR-NOTHING: absent = every model's tokens price at 0 (budgets count only the flat fee); present = AUTHORITATIVE and COMPLETE: every configured model must have an entry or boot/`--validate` fail with a paste-ready stub of exactly the missing models. With a card present, a request for an arbitrary passthrough model with no rate is rejected pre-forward. |
 | `per_request_fee` | integer | `0` | Flat charge per request in abstract cents, charged at admission into every chain bucket's request count (refunded on a non-2xx outcome). |
 
-The rate numbers are **abstract cost units**: Busbar does pure integer math and never knows what
+The rate numbers are **abstract cost units**: busbar does pure integer math and never knows what
 currency they represent. Currency, symbols, and FX are display concerns owned by your dashboard.
 Routing's `cheapest` strategy derives its per-member scalar from the card as
 `(input_utok + output_utok) / 2`; pool members carry no cost fields.
@@ -484,31 +486,21 @@ store:
 
 `settings` is the store module's OWN opaque configuration, passed through verbatim; a third-party
 store plugin documents its own keys. A non-`memory` store requires `plugins.enabled: true` and the
-store's tarball in `plugins.dir`, or Busbar refuses to boot naming the flag/plugin.
+store's tarball in `plugins.dir`, or busbar refuses to boot naming the flag/plugin.
 
-**Fleet semantics (honest):** with a cluster-shared store (postgres/redis) behind N Busbar nodes,
+**Fleet semantics (honest):** with a cluster-shared store (postgres/redis) behind N busbar nodes,
 virtual keys, accumulated usage, the audit log, and the revocation denylist are genuinely shared.
 The limit hard caps are enforced PER NODE from each node's in-memory counters and reconciled
 durably through ADDITIVE flushes, so the shared store converges on the true fleet total, but
 between flushes N nodes splitting traffic can admit up to ~N times a configured cap. The caps are
 not a synchronous cluster-wide gate.
 
-**Metering retention (ALL backends, not just Redis):** `usage_metering` rows are one per (key,
-metering-bucket day, model, provider), accumulated forever — Busbar has no prune path on any store
-backend (sqlite, postgres, redis, or a third-party plugin), because metering is observability only,
-never consulted for enforcement (`add_metering`'s own doc comment, `crates/api/src/store.rs`). Row
-CARDINALITY is bounded by your config (keys × buckets × models × providers), but the TIME dimension
-is not, so the table grows without bound unless you retain it yourself. `list_metering(bucket)` reads
-exactly one day, so deleting rows for buckets older than N days is safe and cannot affect admission,
-billing, or any other enforcement path — it is a plain `DELETE` against your store's own schema, on
-your own retention horizon; Busbar does not choose one for you.
-
 **Backend caveats:** the Redis store supports TLS (`rediss://`), transparent reconnect, and atomic
 multi-key cascades (MULTI/EXEC), and scrubs the URL password from error strings; it writes WITHOUT
-TTLs (usage/metering/audit grow unboundedly by design: apply your own retention, per the metering
-note above). The Postgres store currently connects `NoTls` and without automatic reconnect: run it
-over a trusted network segment (or a TLS-terminating proxy such as pgbouncer/stunnel) and let your
-supervisor restart Busbar on a persistent connection loss.
+TTLs (usage/metering/audit grow unboundedly by design: apply your own retention). The Postgres
+store currently connects `NoTls` and without automatic reconnect: run it over a trusted network
+segment (or a TLS-terminating proxy such as pgbouncer/stunnel) and let your supervisor restart
+busbar on a persistent connection loss.
 
 ---
 
@@ -623,7 +615,7 @@ pools:
         weight: 1                          # cross-provider failover lane
 ```
 
-Clients always address `sonnet`; when Anthropic rate-limits or trips its breaker, Busbar fails over in-flight to the **same model** on Bedrock. Health probes use `upstream_model` too, so a lane can't report healthy on the alias while real traffic fails on the wrong upstream id. Models without a collision (e.g. `gpt-4o`) need no `upstream_model`: the key already is the wire id.
+Clients always address `sonnet`; when Anthropic rate-limits or trips its breaker, busbar fails over in-flight to the **same model** on Bedrock. Health probes use `upstream_model` too, so a lane can't report healthy on the alias while real traffic fails on the wrong upstream id. Models without a collision (e.g. `gpt-4o`) need no `upstream_model`: the key already is the wire id.
 
 ---
 
@@ -744,22 +736,18 @@ Two spellings per entry:
 - a **bare name** is a built-in ordering strategy: `weighted` \| `cheapest` \| `fastest` \|
   `least_busy` \| `usage` (at most one per pool: it sets the base ranking; the default is
   `weighted`, the zero-cost SWRR baseline);
-- a **module ref** is a `kind: hook` plugin instance:
-  `{ module: <kind: hook plugin>, settings: {...}, kind?, timeout_ms?, on_error?,
-  on_empty?, prompt?, user?, priority?, at? }`. `module:` names a loaded `kind: hook` plugin by
-  its signed-manifest name/alias (1.5.0 retired the built-in `socket`/`webhook` transports; a hook
-  is now always a signed plugin). Out-of-process forwarding to an HTTPS sidecar is the first-party
-  `busbar-webrequest` plugin (`settings.url`). Any module ref requires `plugins.enabled: true`
-  and the tarball installed in `plugins.dir`.
+- a **module ref** is an out-of-process (or plugin) hook instance:
+  `{ module: webhook|socket|<kind: hook plugin>, settings: {...}, kind?, timeout_ms?, on_error?,
+  on_empty?, prompt?, user?, priority?, at? }`. The built-in transports are `webhook`
+  (`settings.url`, an HTTPS sidecar) and `socket` (`settings.path`, a Unix domain socket).
 
 ```yaml
-plugins: { enabled: true, dir: /etc/busbar/plugins }
 pools:
   smart:
     hooks:
       - cheapest                                       # base ordering strategy
-      - { module: busbar-webrequest, settings: { url: "https://router.internal/rank" },
-          kind: gate, timeout_ms: 5, on_error: nothing }
+      - { module: socket, settings: { path: /run/busbar/router.sock },
+          kind: gate, timeout_ms: 2, on_error: nothing }
     members:
       - model: claude-sonnet-4-5
         weight: 2
@@ -777,7 +765,7 @@ pools:
         tags: ["cheap"]
 
 global_hooks:                                          # fire on EVERY request, ordered
-  - { module: busbar-webrequest, settings: { url: "https://sidecar.internal/pii" },
+  - { module: webhook, settings: { url: "https://sidecar.internal/pii" },
       kind: gate, timeout_ms: 5, on_error: reject, prompt: ro }
 ```
 
@@ -797,7 +785,7 @@ global_hooks:                                          # fire on EVERY request, 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `kind` | `tap` \| `gate` | `gate` in a pool list, `tap` in `global_hooks` | `gate` = fire-and-wait (may rank/reject/restrict/rewrite); `tap` = fire-and-forget observation. |
-| `settings` | map | `{}` | The plugin's own opaque config, pushed to it via the `configure` wire message. For the first-party `busbar-webrequest`, `settings.url` is the sidecar endpoint (SSRF-guarded: loopback allowed; RFC-1918/CGNAT/link-local/metadata blocked; remote must be `https://`). |
+| `settings` | map | `{}` | The module's own opaque config: `url` for `webhook` (SSRF-guarded: loopback allowed; RFC-1918/CGNAT/link-local/metadata blocked; remote must be `https://`), `path` for `socket`; anything else is pushed to the hook via the `configure` wire message. |
 | `timeout_ms` | integer | `1` | Hard wall-clock deadline for a gate decision. Raise it when the hook does I/O. On timeout the decision is coerced to `on_error`. |
 | `on_error` | keyword or ref | `nothing` | Fallback when a gate times out / errors / saturates: a bare terminal (`nothing` \| `weighted` \| `reject` \| `first`) or a structured hook reference `{ hook: <name> }` (a chain, proven terminating at boot). A gate's deliberate `reject` reply is a decision, not a failure. |
 | `on_empty` | string | `reject` | A restrict gate's empty-intersection behavior: `reject` (fail closed, 503) or `weighted` (advisory escape). |
@@ -918,11 +906,11 @@ A keyword stays bare; a reference is structured (the 1.5.0 `on_X` convention):
 
 | Value | Behavior |
 |---|---|
-| `reject` | Return `503 Service Unavailable` with a `Retry-After` header set to the soonest member cooldown expiry. This is the default when `on_exhausted` is omitted. Accepted aliases: `status_503`, `status503`, `503`. |
-| `least_bad` | Route to the member whose cooldown expires soonest, even though it is Open. The request is likely to fail, but degraded service is preferred over a hard 503. This is logged as a degraded dispatch. Accepted aliases: `least-bad`, `leastbad`. |
+| `reject` | Return `503 Service Unavailable` with a `Retry-After` header set to the soonest member cooldown expiry. This is the default when `on_exhausted` is omitted. |
+| `least_bad` | Route to the member whose cooldown expires soonest, even though it is Open. The request is likely to fail, but degraded service is preferred over a hard 503. This is logged as a degraded dispatch. |
 | `{ fallback_pool: <name> }` | Route the request to another named pool and run its full selection logic. Cycles (`primary` to `overflow` back to `primary`) and self-references are detected at startup and are errors. |
 
-`reject` and `least_bad` each accept the alias spellings noted above (hyphen/underscore/joined and, for reject, the bare `503` status). **Unknown keywords or a malformed structure are a fatal startup error** (not a runtime 503).
+**Unknown keywords or a malformed structure are a fatal startup error** (not a runtime 503).
 
 ---
 
@@ -964,7 +952,7 @@ pools:
         context_max: 1000000
 ```
 
-When a member returns a context-length error, Busbar:
+When a member returns a context-length error, busbar:
 1. Excludes from the **current request** any candidate whose known `context_max` is ≤ the failed lane's.
 2. Fails over to a member with a larger (or unknown) `context_max`.
 3. Records no breaker penalty against the smaller lane.
@@ -975,7 +963,7 @@ Members without `context_max` set are always eligible for context-length failove
 
 ### `limits`
 
-Optional. Exposes thirteen operational limits (mostly previously hardcoded, plus `max_inbound_concurrent`, `pool_idle_timeout_secs`, and `request_body_read_timeout_secs`) so operators can tune them without rebuilding. All fields default to their historical values, so omitting this block is a no-op.
+Optional. Exposes eleven operational limits (mostly previously hardcoded, plus `max_inbound_concurrent`, `pool_idle_timeout_secs`, and `request_body_read_timeout_secs`) so operators can tune them without rebuilding. All fields default to their historical values, so omitting this block is a no-op.
 
 ```yaml
 limits:
@@ -990,25 +978,23 @@ limits:
   upstream_error_body_max_bytes: 262144  # 256 KiB
   max_honored_retry_after_secs: 86400 # 24 h
   default_max_tokens: 4096
-  max_keys_per_principal: 0       # 0 = unlimited; >0 caps LIVE keys bound to one group (per-user anti-sprawl)
-  max_auto_provisioned_groups: 0  # 0 = unlimited; >0 caps how many groups a mint may auto-provision
+  max_keys_per_principal: 0       # 0 = unlimited; >0 caps keys bound to one group (per-user anti-sprawl)
 ```
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `max_inbound_concurrent` | integer | `8192` | Global inbound concurrency cap, applied outermost (before request bodies are buffered), so it is the global bound on peak request memory: worst case is this limit times `request_body_max_bytes`. `0` = unlimited (no cap layer installed, the pre-1.5.0 posture). **Restart-to-apply**: it is captured once in `main()` and baked into a `tower::limit::GlobalConcurrencyLimitLayer` on the router at process start; a config apply swaps only the `App`, never the router, so the semaphore's permit count cannot change live — `reload_to_apply` flags `limits.max_inbound_concurrent` when set. |
-| `request_body_max_bytes` | integer | `33554432` | Maximum inbound request body size (bytes). Exceeding this returns a protocol-native 413. **Partially restart-to-apply, undocumented in the API today (known gap, tracked for post-1.5.0):** the inbound 413 threshold (`axum::extract::DefaultBodyLimit`) is boot-frozen the same way as `max_inbound_concurrent` above, but the coupled egress translate/buffer cap (`limits::translate_body_max_bytes()`) reads a live snapshot re-installed on every apply. A live `PUT` therefore only half-applies: **lowering** this value moves the egress cap down immediately while the inbound 413 threshold stays at the boot value, so a request body can land in the gap between the two — accepted inbound, but no longer buffer-translatable on a cross-protocol hop, breaking the "accepted implies translatable" invariant. `reload_to_apply` does not flag this field: flagging it dotted would mis-state that the whole field is stored-not-live when three of its four consumers are in fact live. The fix (make the inbound limit read the live snapshot, or otherwise pin the coupling) is deferred past 1.5.0 because it touches the request path and the router layer stack. |
-| `upstream_request_timeout_secs` | integer | `300` | Per-upstream-request wall-clock timeout. Applies to both the connect and the full response. **Restart-to-apply**: the upstream `reqwest::Client` is built once at boot and reused across config applies (warm connection pools are kept deliberately), so a live `PUT` changes the stored value but not the running client — `reload_to_apply` flags `limits.upstream_request_timeout_secs` when set. |
+| `max_inbound_concurrent` | integer | `8192` | Global inbound concurrency cap, applied outermost (before request bodies are buffered), so it is the global bound on peak request memory: worst case is this limit times `request_body_max_bytes`. `0` = unlimited (no cap layer installed, the pre-1.5.0 posture). |
+| `request_body_max_bytes` | integer | `33554432` | Maximum inbound request body size (bytes). Exceeding this returns a protocol-native 413. |
+| `upstream_request_timeout_secs` | integer | `300` | Per-upstream-request wall-clock timeout. Applies to both the connect and the full response. |
 | `tls_handshake_timeout_secs` | integer | `10` | Wall-clock cap on each inbound TLS handshake; prevents slowloris / handshake-flood. Ignored when `tls:` is absent. |
 | `request_body_read_timeout_secs` | integer | `30` | Maximum time allowed between inbound request-body frames before the connection is dropped. Closes the slow-loris body gap the header-read timeout does not cover. |
-| `pool_max_idle_per_host` | integer | `1024` | HTTP connection pool idle connection limit per upstream host. **Restart-to-apply** (same boot-scoped `UpstreamClients` reuse as above; `reload_to_apply` flags `limits.pool_max_idle_per_host`). |
-| `pool_idle_timeout_secs` | integer | `300` | How long an idle keep-alive connection stays in the upstream pool before being closed. The 300s default keeps the warm working set alive across inter-burst gaps (TCP keepalive validates idle sockets in the meantime); lower it to shed idle sockets sooner. **Restart-to-apply** (same boot-scoped `UpstreamClients` reuse; `reload_to_apply` flags `limits.pool_idle_timeout_secs`). The connect timeout (10s) and TCP keepalive (60s) baked into the same client builder are not configurable at all. |
+| `pool_max_idle_per_host` | integer | `1024` | HTTP connection pool idle connection limit per upstream host. |
+| `pool_idle_timeout_secs` | integer | `300` | How long an idle keep-alive connection stays in the upstream pool before being closed. The 300s default keeps the warm working set alive across inter-burst gaps (TCP keepalive validates idle sockets in the meantime); lower it to shed idle sockets sooner. |
 | `hard_down_cooldown_secs` | integer | `1800` | Sticky cooldown for `auth`/`billing` breaker dispositions (hard-down). Recovering these lanes requires a successful health probe. |
 | `upstream_error_body_max_bytes` | integer | `262144` | Maximum bytes buffered from a non-2xx upstream response body for error classification. |
 | `max_honored_retry_after_secs` | integer | `86400` | Maximum value honored from an upstream `Retry-After` header (to prevent overflow). |
 | `default_max_tokens` | integer | `4096` | Gateway-wide default injected on cross-protocol hops to Anthropic when the caller omitted `max_tokens`. Overridden by a per-model `default_max_tokens` when set. |
-| `max_keys_per_principal` | integer | `0` | Anti-sprawl cap: the maximum number of **live** keys (enabled and not revoked) that may be bound to one group — the unbound bucket included. `0` = unlimited. Enforced on `POST /keys` **and** on a `PATCH /keys/{id}` rebind; over cap is a terminal `409 conflict`. |
-| `max_auto_provisioned_groups` | integer | `0` | Anti-sprawl cap on the SHAPE of the limit tree: the maximum size of the runtime group set that `POST /keys` may grow by auto-provisioning (`parent:`). `0` = unlimited. Over ceiling is a terminal `409 conflict`; binding to an existing group is unaffected. |
+| `max_keys_per_principal` | integer | `0` | Anti-sprawl cap: the maximum number of keys that may be bound to one group (a group = one principal in the self-service model). `0` = unlimited. An over-cap `POST /keys` is a terminal `409 conflict`. Absent = unlimited. |
 
 ---
 
@@ -1025,9 +1011,9 @@ observability:
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `otlp_url` | string | none | When set, installs an OTLP/HTTP trace exporter. Loopback `http://` is allowed (standard collector default). Remote endpoints must use `https://`. SSRF-guarded: rejects RFC-1918, link-local, CGNAT, metadata hosts. Traces are flushed on graceful shutdown. **Restart-to-apply**: fed to a one-shot `tracing_subscriber::registry().try_init()` at process start; a second call (a live `PUT`) is a structural no-op — `reload_to_apply` flags `observability.otlp_url` when set. |
-| `request_log_webhook_url` | string | none | When set, fires a fire-and-forget JSON POST per completed request: `{ts, ingress_protocol, pool, outcome, latency_ms}`. Must be `https://`. SSRF-guarded (same classes as `otlp_url` plus broadcast). At most 64 deliveries in flight; drops rather than queues. 2-second delivery timeout. **Restart-to-apply**: seeds a process-global `OnceLock` at boot; `OnceLock::set` silently no-ops on every call after the first, so a live `PUT` cannot change the target once one has been configured — `reload_to_apply` flags `observability.request_log_webhook_url` when set. The in-flight-delivery cap (default 64, tunable via `max_inflight_webhook_deliveries`) is sized from config on the FIRST webhook delivery — not necessarily at boot — and is then frozen for the rest of the process. This means a live `PUT` to `max_inflight_webhook_deliveries` sometimes takes effect (if no delivery has fired yet) and sometimes doesn't, depending on process history the API cannot observe; `reload_to_apply` does NOT flag it (flagging it unconditionally would be wrong whenever it does still apply). Known gap, tracked for post-1.5.0; `webhook_delivery_timeout_secs` has no such caching and is genuinely live on every call. |
-| `emit_server_timing` | bool | `false` | Controls whether the `Server-Timing: busbar;dur=<ms>` response header is emitted on every response. Defaults to `false`, the header is an in-band busbar fingerprint, so it is suppressed by default for backend indistinguishability. Set to `true` to enable it as a latency probe. **Restart-to-apply**: baked into router middleware state (`from_fn_with_state`) when the router is built at process start; a config apply swaps only the `App`, never the router — `reload_to_apply` flags `observability.emit_server_timing` when set. |
+| `otlp_url` | string | none | When set, installs an OTLP/HTTP trace exporter. Loopback `http://` is allowed (standard collector default). Remote endpoints must use `https://`. SSRF-guarded: rejects RFC-1918, link-local, CGNAT, metadata hosts. Traces are flushed on graceful shutdown. |
+| `request_log_webhook_url` | string | none | When set, fires a fire-and-forget JSON POST per completed request: `{ts, ingress_protocol, pool, outcome, latency_ms}`. Must be `https://`. SSRF-guarded (same classes as `otlp_url` plus broadcast). At most 64 deliveries in flight; drops rather than queues. 2-second delivery timeout. |
+| `emit_server_timing` | bool | `false` | Controls whether the `Server-Timing: busbar;dur=<ms>` response header is emitted on every response. Defaults to `false`, the header is an in-band busbar fingerprint, so it is suppressed by default for backend indistinguishability. Set to `true` to enable it as a latency probe. |
 
 **OTLP credential hygiene.** If your OTLP endpoint requires auth, supply credentials in the URL userinfo (`https://user:pass@collector.example.com/…`): Busbar moves them to an `Authorization: Basic` header and strips them from the URL before logging, so they do not appear in logs or spans.
 
@@ -1089,7 +1075,7 @@ full admin contract (which carries its own version, independent of the binary's 
 
 ### `plugins`
 
-The dynamic plugin subsystem: signed plugin tarballs (store, secret, auth, and hook plugins share the same machinery) that Busbar verifies and loads at boot. **Off by default**: with `plugins.enabled: false` (or the whole block absent) no plugin is ever discovered or loaded, and a tarball dropped into the directory is inert. See [plugins.md](plugins.md) for the plugin author guide, the artifact format, and the full trust model.
+The dynamic plugin subsystem: signed plugin tarballs (store, secret, auth, and hook plugins share the same machinery) that busbar verifies and loads at boot. **Off by default**: with `plugins.enabled: false` (or the whole block absent) no plugin is ever discovered or loaded, and a tarball dropped into the directory is inert. See [plugins.md](plugins.md) for the plugin author guide, the artifact format, and the full trust model.
 
 ```yaml
 plugins:
@@ -1147,7 +1133,6 @@ The smallest config that parses and resolves. `providers` and `models` are the o
 
 **`config.yaml`:**
 
-<!-- doc-check: config -->
 ```yaml
 providers:
   anthropic:
@@ -1174,12 +1159,6 @@ models:
 
 This example requires: `BUSBAR_ADMIN_TOKEN`, `ANTHROPIC_KEY`, `OPENAI_KEY`, `GEMINI_KEY`.
 
-<!--
-  Not `doc-check: config`-marked: this example's `store.module: sqlite` and `plugins.enabled: true`
-  make it un-validatable without a signed plugin-tarball fixture (the design doc's "fixture cost"
-  tradeoff, same reasoning applied there to live-curl execution). The "Minimal working example"
-  below IS marked and covers the same top-level shape without the plugin dependency.
--->
 ```yaml
 listen: "0.0.0.0:8080"
 admin_listen: "127.0.0.1:8081"      # the admin API always runs on its own listener
@@ -1323,20 +1302,12 @@ pools:
 
 # ---------------------------------------------------------------------------
 # Observability: traces and per-request webhook logging.
+# /metrics is always on (no config needed).
 # ---------------------------------------------------------------------------
 observability:
   otlp_url: "http://localhost:4318/v1/traces"
   request_log_webhook_url: "https://logs.example.com/busbar"
   emit_server_timing: true
-
-# ---------------------------------------------------------------------------
-# Prometheus metrics — OPT-IN. Omit this block entirely and busbar records
-# nothing and does not mount /metrics. `buffer_seconds` is REQUIRED: it is how
-# many seconds of observations to retain (quantiles cover that window; _sum and
-# _count stay cumulative), and it bounds the memory metrics cost.
-# ---------------------------------------------------------------------------
-metrics:
-  buffer_seconds: 60
 ```
 
 Then mint a key for each caller (shown once; bind it to a group):
@@ -1364,7 +1335,7 @@ Busbar validates the merged config before accepting any traffic. Fatal errors ab
 | `error_map` value unknown | A value in `error_map` is not one of the nine canonical disposition classes |
 | `auth` value unknown | `auth` field value not `bearer`, `api-key`, `jwt-bearer`, or `oauth-client-credentials` |
 | `affinity.mode` value unknown | `affinity.mode` not `session` (the only supported value) |
-| 1.x config detected | A 1.x structural marker is present (a `governance:` block, `auth.group_map:`, `auth.mode:`, a top-level `hooks:` block, `api_key_env`, `target:` in a pool member): boot refuses with "this looks like a Busbar 1.x config; run `busbar --migrate-config`" |
+| 1.x config detected | A 1.x structural marker is present (a `governance:` block, `auth.group_map:`, `auth.mode:`, a top-level `hooks:` block, `api_key_env`, `target:` in a pool member): boot refuses with "this looks like a busbar 1.x config; run `busbar --migrate-config`" |
 | `path` malformed | `path` does not begin with `/` |
 | Model name reserved | Model named `admin` |
 | `provider` reference missing | `models.<name>.provider` does not name a configured provider |
@@ -1390,9 +1361,9 @@ Busbar validates the merged config before accepting any traffic. Fatal errors ab
 | `affinity.mode` unknown | Any value other than `session` |
 | Pool `hooks:` names more than one ordering strategy | A pool has one base ordering |
 | Pool `hooks:` bare name not a built-in strategy | An out-of-process hook is an inline `{ module: ... }` ref; bare names are only `weighted`/`cheapest`/`fastest`/`least_busy`/`usage` |
-| Unknown hook module | An inline ref's `module` does not resolve to a loaded `kind: hook` plugin (by manifest name/alias) |
-| Hook plugin subsystem disabled | An inline ref names a plugin while `plugins.enabled` is false, or the tarball is not installed in `plugins.dir` |
-| Hook `busbar-webrequest` SSRF-blocked | RFC-1918, CGNAT, link-local, and metadata hosts are blocked in its `settings.url` (loopback allowed; remote must be `https://`) |
+| Unknown hook module | An inline ref's `module` is not `webhook`, `socket`, or a loaded `kind: hook` plugin |
+| Hook transport missing | `module: webhook` without `settings.url`, or `module: socket` without `settings.path` |
+| Hook `webhook` SSRF-blocked | RFC-1918, CGNAT, link-local, and metadata hosts are blocked in `settings.url` (loopback allowed) |
 | `prompt: rw` on a `kind: tap` hook | A tap observes; it can never rewrite |
 | Groups tree faults | A `parent` that does not exist (paste-ready stub), a cycle (the path is printed), or a chain deeper than 8 |
 | Malformed group limit | A limit without exactly one metric key, a windowed metric without `per:`, or `concurrent` with a `per:` |

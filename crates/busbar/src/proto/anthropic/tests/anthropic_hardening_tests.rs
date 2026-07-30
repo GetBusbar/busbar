@@ -356,7 +356,7 @@ fn extract_error_context_length_from_message() {
     );
 }
 
-/// A streaming `content_block_start` whose `index` is an
+/// Regression (block-index clamp): a streaming `content_block_start` whose `index` is an
 /// upstream-controlled pathological value (`u64::MAX`) must be CLAMPED to
 /// `MAX_ANTHROPIC_BLOCK_INDEX` before it enters the IR, so a downstream writer (GeminiWriter
 /// `open_tools`, Bedrock `contentBlockIndex`) never allocates/serializes against the raw value.
@@ -383,7 +383,7 @@ fn content_block_start_clamps_pathological_index() {
     }
 }
 
-/// The same clamp must apply to
+/// Regression (block-index clamp, delta + stop sites): the same clamp must apply to
 /// `content_block_delta` and `content_block_stop`, not just `content_block_start` — all three
 /// share `read_clamped_block_index`. Guards that the class is fixed at every read site.
 #[test]
@@ -418,7 +418,7 @@ fn content_block_delta_and_stop_clamp_pathological_index() {
     }
 }
 
-/// A 429 whose
+/// Regression (cross-protocol sibling of the Cohere context-length gate): a 429 whose
 /// body merely MENTIONS tokens/length must NOT be reclassified to context_length. The
 /// message-scan override is now gated on a request-size status (400/413), so a 429 keeps its
 /// rate-limit disposition: `extract_error` leaves `provider_code` empty of the context-length
@@ -448,7 +448,7 @@ fn extract_error_429_with_token_body_not_reclassified_to_context_length() {
     );
 }
 
-/// A genuine 400 oversized-prompt body STILL
+/// Regression (positive case): a genuine 400 oversized-prompt body STILL
 /// synthesizes the canonical context-length code under the new 400/413 gate, so legitimate
 /// context-length fail-over is unaffected by the gating change.
 #[test]
@@ -706,7 +706,7 @@ fn cross_protocol_write_synthesizes_valid_unique_id() {
     assert_eq!(out1.get("type").and_then(|v| v.as_str()), Some("message"));
 }
 
-/// An IR carrying NEITHER `id` NOR `created` — the exact
+/// Regression (recurring across rounds): an IR carrying NEITHER `id` NOR `created` — the exact
 /// shape a Bedrock Converse reader produces (its `read_response` returns `created: None` and no
 /// Anthropic id) — must STILL emit a synthesized `msg_`-prefixed id. `Message.id` is a REQUIRED,
 /// non-optional field in the official Anthropic SDK, so omitting it (the old `(None, None)` arm)
@@ -1318,7 +1318,7 @@ fn cache_control_on_image_and_thinking_blocks_round_trips() {
     );
 }
 
-/// An Anthropic URL-type image source
+/// Regression (cross-protocol image data loss): an Anthropic URL-type image source
 /// `{"type":"url","url":...}` must round-trip through the `image_url` sentinel rather than
 /// silently flatten to empty base64 (the base64 path reads media_type/data, both absent from a
 /// url source). Old code: `media_type`/`data` both `""`; fixed code: `media_type:"image_url"`,
@@ -1423,62 +1423,7 @@ fn read_block_unmodeled_document_type_degrades_not_400() {
     }
 }
 
-/// class-6 6a1: the empty-Text degrade above holds the TURN's shape (so message/block ordering
-/// survives), but it also DESTROYS the block on its own protocol's round-trip — the corollary the
-/// Bedrock reader upholds (its unmodeled `document`/`video` blocks park verbatim under a
-/// positional `extra` sentinel) but the Anthropic reader did not. This drives a FULL
-/// `read_request` -> `write_request` round trip (not just `read_block` in isolation) and asserts
-/// the ORIGINAL `document` block reaches the Anthropic writer's output, verbatim, at its original
-/// position — not the empty-Text placeholder.
-#[test]
-fn anthropic_unmodeled_document_survives_same_protocol_round_trip() {
-    let body = serde_json::json!({
-        "model": "claude", "max_tokens": 16,
-        "messages": [{
-            "role": "user",
-            "content": [
-                {"type": "text", "text": "before"},
-                {
-                    "type": "document",
-                    "source": {"type": "base64", "media_type": "application/pdf", "data": "JVBERi0="}
-                },
-                {"type": "text", "text": "after"}
-            ]
-        }]
-    });
-    let ir = AnthropicReader.read_request(&body).expect("read_request");
-    assert!(
-        ir.extra
-            .contains_key(super::ANTHROPIC_UNMODELED_BLOCKS_SENTINEL),
-        "the unmodeled document block must be parked in extra: {:?}",
-        ir.extra
-    );
-
-    let out = AnthropicWriter.write_request(&ir);
-    let content = out["messages"][0]["content"]
-        .as_array()
-        .expect("content array");
-    assert_eq!(
-        content.len(),
-        3,
-        "all three original blocks survive: {content:?}"
-    );
-    assert_eq!(content[0]["type"], "text");
-    assert_eq!(content[0]["text"], "before");
-    assert_eq!(
-        content[1],
-        serde_json::json!({
-            "type": "document",
-            "source": {"type": "base64", "media_type": "application/pdf", "data": "JVBERi0="}
-        }),
-        "the document block must survive VERBATIM at its original position, not degrade to empty \
-         text: {content:?}"
-    );
-    assert_eq!(content[2]["type"], "text");
-    assert_eq!(content[2]["text"], "after");
-}
-
-/// The STREAMING reader must not drop a `redacted_thinking` block. The
+/// REGRESSION (audit c2r2): the STREAMING reader must not drop a `redacted_thinking` block. The
 /// opaque `data` rides inline on `content_block_start` (no deltas follow), so the reader emits a
 /// `Thinking` BlockStart + a `RedactedReasoningDelta` carrying the bytes; the later
 /// `content_block_stop` yields the BlockStop. Before the fix the block hit `_ => None` and the
@@ -1631,7 +1576,7 @@ fn synth_id_matches_native_length_and_alphabet() {
     );
 }
 
-/// `max_tokens`/`top_k` larger than `u32::MAX` must drop to
+/// Regression (unchecked cast truncation): `max_tokens`/`top_k` larger than `u32::MAX` must drop to
 /// `None` via checked `try_from`, NOT silently truncate. Old code: `4_294_967_297 as u32` == 1,
 /// forwarding a corrupted cap. Fixed code: out-of-range → None.
 #[test]
@@ -1692,7 +1637,7 @@ fn write_message_drops_unsigned_thinking_block() {
             },
         ],
     };
-    let out = write_message(&msg, 0, &[]);
+    let out = write_message(&msg);
     let content = out
         .get("content")
         .and_then(|c| c.as_array())
@@ -1721,7 +1666,7 @@ fn write_message_drops_unsigned_thinking_block() {
     assert!(!texts.contains(&"unsigned reasoning"));
 }
 
-/// When every content block is filtered out — e.g. an
+/// Regression (empty-content): when every content block is filtered out — e.g. an
 /// all-thinking assistant message whose unsigned thinking blocks are all dropped on the request
 /// path — `write_message` must emit `content: []` (an empty array, a valid zero-block message),
 /// NOT `content: ""` (an empty string, which Anthropic's Messages API rejects with a 400). The
@@ -1745,7 +1690,7 @@ fn write_message_emits_empty_array_when_all_blocks_dropped() {
             },
         ],
     };
-    let out = write_message(&msg, 0, &[]);
+    let out = write_message(&msg);
     let content = out.get("content").expect("content key present");
     assert!(
             !content.is_string(),
@@ -1773,7 +1718,7 @@ fn write_message_emits_array_for_surviving_block() {
             citations: Vec::new(),
         }],
     };
-    let out = write_message(&msg, 0, &[]);
+    let out = write_message(&msg);
     let arr = out
         .get("content")
         .and_then(|c| c.as_array())
@@ -1893,7 +1838,7 @@ fn message_start_emits_present_usage_with_cache_fields() {
     );
 }
 
-/// Reading a `message_delta` whose data omits the
+/// Regression (terminal-event drop): reading a `message_delta` whose data omits the
 /// `usage` key must STILL yield the `MessageDelta` event — `usage` is optional on read and must
 /// not be `?`-propagated, because dropping the event would discard the terminal `stop_reason` and
 /// leave the client unable to tell whether generation completed. Counters default to zero.
@@ -2434,7 +2379,7 @@ fn read_request_promotes_system_role_message_into_system_blocks() {
     }
 }
 
-/// `write_request` must NEVER emit a message with
+/// Regression (writer): `write_request` must NEVER emit a message with
 /// `role:"system"` — even for a CROSS-PROTOCOL IR that still carries an `IrRole::System` message
 /// in `req.messages` (one that never passed through Anthropic's own `read_request` promotion).
 /// The writer folds it into the top-level `system` field and filters it out of `messages`,
@@ -2511,7 +2456,7 @@ fn write_request_never_emits_system_role_message() {
     );
 }
 
-/// A direct `write_message` call on an `IrRole::System`
+/// Regression (writer unit): a direct `write_message` call on an `IrRole::System`
 /// message must NOT emit `role:"system"` (the invalid Anthropic role). Defense-in-depth: even if
 /// a future caller bypasses `write_request`, the writer can never produce the rejected role.
 #[test]
@@ -2524,7 +2469,7 @@ fn write_message_system_role_does_not_emit_system() {
             citations: Vec::new(),
         }],
     };
-    let out = write_message(&msg, 0, &[]);
+    let out = write_message(&msg);
     assert_ne!(
         out.get("role").and_then(|r| r.as_str()),
         Some("system"),
@@ -2543,7 +2488,6 @@ fn tool_choice_any_required_roundtrips() {
     // Anthropic {type:"any"} == "must call some tool" == IR Required; round-trips back to {any}.
     let ir = read_anthropic_request(serde_json::json!({
         "model": "claude", "max_tokens": 16, "messages": [],
-        "tools": [{"name": "get_weather", "input_schema": {"type": "object"}}],
         "tool_choice": {"type": "any"}
     }));
     assert_eq!(ir.tool_choice, Some(crate::ir::IrToolChoice::Required));
@@ -2555,7 +2499,6 @@ fn tool_choice_any_required_roundtrips() {
 fn tool_choice_specific_tool_roundtrips() {
     let ir = read_anthropic_request(serde_json::json!({
         "model": "claude", "max_tokens": 16, "messages": [],
-        "tools": [{"name": "get_weather", "input_schema": {"type": "object"}}],
         "tool_choice": {"type": "tool", "name": "get_weather"}
     }));
     assert_eq!(
@@ -2579,7 +2522,6 @@ fn tool_choice_auto_and_none_roundtrip() {
     ] {
         let ir = read_anthropic_request(serde_json::json!({
             "model": "c", "max_tokens": 16, "messages": [],
-            "tools": [{"name": "get_weather", "input_schema": {"type": "object"}}],
             "tool_choice": {"type": native_type}
         }));
         assert_eq!(ir.tool_choice, Some(variant));
@@ -2795,8 +2737,7 @@ fn test_openai_to_anthropic_tool_choice_directions() {
     ];
     for (tc, expected) in cases {
         let mut ir = read_anthropic_request(serde_json::json!({
-            "model": "c", "max_tokens": 16, "messages": [],
-            "tools": [{"name": "get_weather", "input_schema": {"type": "object"}}]
+            "model": "c", "max_tokens": 16, "messages": []
         }));
         ir.tool_choice = Some(tc.clone());
         let out = AnthropicWriter.write_request(&ir);
@@ -2909,7 +2850,36 @@ fn test_anthropic_streaming_safety_stop_reason_maps_to_end_turn() {
 // ---- Phase 0 fidelity items (Anthropic egress): sampling-param OMIT, response_format-drop
 // warn, and native thinking-block round-trip with signature. ----
 
-use crate::test_support::warn_capture::WarnCapture;
+/// Minimal WARN-capturing tracing layer, kept local to this test module (mirrors the helper in
+/// auth.rs / config_validate.rs). Records each WARN event's `message` field so a test can assert
+/// a particular `tracing::warn!` fired without a global subscriber.
+#[derive(Clone, Default)]
+struct WarnCapture(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for WarnCapture {
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        if *event.metadata().level() != tracing::Level::WARN {
+            return;
+        }
+        struct Vis(String);
+        impl tracing::field::Visit for Vis {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "message" {
+                    self.0 = format!("{value:?}");
+                }
+            }
+        }
+        let mut vis = Vis(String::new());
+        event.record(&mut vis);
+        if let Ok(mut msgs) = self.0.lock() {
+            msgs.push(vis.0);
+        }
+    }
+}
 
 /// SAMPLING (Phase 0): Anthropic's Messages API does NOT support `frequency_penalty`,
 /// `presence_penalty`, `seed`, or `n`. A cross-protocol IR carrying every one of them (e.g. read
@@ -3076,7 +3046,7 @@ fn write_request_warns_and_drops_response_format_on_cross_protocol_egress() {
         !out.as_object().unwrap().contains_key("response_format"),
         "Anthropic egress must NOT emit `response_format` (no native field); got {out}"
     );
-    let msgs = cap.messages();
+    let msgs = cap.0.lock().unwrap();
     assert!(
         msgs.iter().any(|m| m.contains("response_format")),
         "a response_format-drop warning must fire on cross-protocol Anthropic egress; got {msgs:?}"
@@ -3121,7 +3091,7 @@ fn write_request_warns_and_drops_json_tool_result_block() {
         !wire.contains("tool_result_json"),
         "a json-tool-result sentinel must NOT leak onto the Anthropic wire; got {wire}"
     );
-    let msgs = cap.messages();
+    let msgs = cap.0.lock().unwrap();
     assert!(
         msgs.iter().any(|m| m.contains("json tool-result")),
         "a json-tool-result drop warning must fire on Anthropic egress; got {msgs:?}"
@@ -3151,7 +3121,7 @@ fn write_request_no_response_format_warning_when_absent() {
     let subscriber = tracing_subscriber::registry().with(cap.clone());
     let _ = tracing::subscriber::with_default(subscriber, || AnthropicWriter.write_request(&req));
 
-    let msgs = cap.messages();
+    let msgs = cap.0.lock().unwrap();
     assert!(
         !msgs.iter().any(|m| m.contains("response_format")),
         "no response_format warning must fire when the directive is absent; got {msgs:?}"
@@ -3644,7 +3614,6 @@ fn cache_control_on_tool_use_block_round_trips() {
             name,
             input,
             cache_control,
-            ..
         } => {
             assert_eq!(id, "toolu_01abc");
             assert_eq!(name, "get_weather");
@@ -3810,7 +3779,7 @@ fn read_response_cache_usage_is_additive_not_subtracted() {
     );
 }
 
-/// The request-side unsigned-thinking filter in `write_message` must
+/// REGRESSION (finding P1 #1): the request-side unsigned-thinking filter in `write_message` must
 /// NOT drop a REDACTED thinking block. A `redacted_thinking` block is carried in the IR as
 /// `Thinking { redacted: true, signature: None }` (opaque encrypted `data`, no signature — the
 /// Anthropic Messages API accepts `redacted_thinking` WITHOUT a signature, unlike a plaintext
@@ -3837,7 +3806,7 @@ fn write_message_keeps_redacted_thinking_block() {
             },
         ],
     };
-    let out = write_message(&msg, 0, &[]);
+    let out = write_message(&msg);
     let content = out
         .get("content")
         .and_then(|c| c.as_array())
@@ -3872,7 +3841,7 @@ fn write_message_keeps_redacted_thinking_block() {
     );
 }
 
-/// The streaming `content_block_start` skeleton must carry the SEED
+/// REGRESSION (finding P1 #2): the streaming `content_block_start` skeleton must carry the SEED
 /// field for each block type so an SDK accumulator initializes the field before any delta arrives:
 /// a `text` start ships `text:""`, a `tool_use` start ships `input:{}`, and a `thinking` start
 /// ships `thinking:""`. Omitting the seed leaves the SDK accumulator field undefined and the first

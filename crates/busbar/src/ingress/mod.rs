@@ -180,7 +180,7 @@ fn admit_check(
     // concurrent requests can never each read "under the cap" and all charge. Infallible
     // in-memory (write-behind store): admission never blocks on or fails from the durable store.
     //
-    // BUDGET DOWNGRADE: a budget block whose limit declared
+    // BUDGET DOWNGRADE (§6c "budgets that teach"): a budget block whose limit declared
     // `on_exhaust: downgrade` re-admits through `downgrade_to` instead of refusing - the caller's
     // expensive traffic gets CHEAPER, not blocked. The chain may cascade (value's own budget may
     // downgrade further); a visited set bounds it, and every hop re-runs the key's pool ACL (a
@@ -448,6 +448,7 @@ fn finish(
 /// at admission (`charged`, from `governance_guard`). Admitting a request WITHOUT charging (store-
 /// error fail-open, or governance off) and then refunding on a non-2xx would blind-decrement OTHER
 /// requests' spend/count in the same window — so those requests must finish with `charged = false`.
+/// (found: audit c2r1.)
 #[allow(clippy::too_many_arguments)]
 fn finish_admitted(
     app: &Arc<App>,
@@ -557,7 +558,7 @@ fn finish_inner(
     resp
 }
 
-/// Render a router-side error as the ingress protocol's NATIVE error envelope (design /
+/// Render a router-side error as the ingress protocol's NATIVE error envelope (design §8.1 /
 /// Unit I — total indistinguishability). A client on a vendor's official SDK gets the typed
 /// exception it expects (JSON envelope) instead of a plain-text body it cannot decode. `proto`
 /// names the ingress protocol of the route that failed; `status` is the HTTP status; `kind` is a
@@ -1175,7 +1176,7 @@ pub(crate) async fn named(
             Ok(admitted) => admitted,
         };
     let charged = admit.is_some();
-    // A budget downgrade re-pooled the admission: dispatch where the charge landed.
+    // A budget downgrade (§6c) re-pooled the admission: dispatch where the charge landed.
     let name = downgraded.unwrap_or(name);
 
     if let Some(cands) = app.pools.get(&name) {

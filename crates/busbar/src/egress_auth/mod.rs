@@ -32,17 +32,13 @@ pub(crate) mod oauth_client_credentials;
 ///   * bounded connect + overall timeouts — a stalled token endpoint must not hang the mint/refresh
 ///     future forever (the refresh loop only retries on `Err`, so a hang would silently freeze the
 ///     lane's token and serve an empty bearer → upstream 401).
-pub(crate) fn minter_client() -> Result<reqwest::Client, String> {
-    // `build` errors only when TLS init fails (native-tls unavailable/broken). Return the error so a
-    // degraded-TLS environment disables just the OAuth egress lane with a diagnostic at boot/apply,
-    // rather than `expect`-panicking the whole process (which the callers already handle: both
-    // `build()` sites return `Result<_, String>`).
+pub(crate) fn minter_client() -> reqwest::Client {
     reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(std::time::Duration::from_secs(10))
         .timeout(std::time::Duration::from_secs(30))
         .build()
-        .map_err(|e| format!("build OAuth token-minter HTTP client: {e}"))
+        .expect("build OAuth token-minter HTTP client")
 }
 
 /// Default token TTL when a token endpoint omits `expires_in` (RFC 6749 §5.1 makes it RECOMMENDED, not
@@ -95,34 +91,6 @@ where
                 )))
             }
         }
-    }
-}
-
-/// Read a token-endpoint HTTP response body under the engine's established capped-read primitive
-/// (`proxy::read_capped`) rather than `resp.text()`, which buffers an UNBOUNDED body — a hijacked or
-/// misbehaving token endpoint returning a multi-GB response would otherwise be read entirely into
-/// memory. A real OAuth token response is well under 1 KiB, so the cap has zero effect on legitimate
-/// traffic. Shared by `jwt_bearer::Signer::mint` and `oauth_client_credentials::ClientCreds::mint` so
-/// the capped-read-and-decode logic lives in exactly one place instead of being duplicated byte-for-byte
-/// across the two mechanisms (Craft audit finding, 1.4.0).
-///
-/// Distinguishes WHY the read did not complete, mirroring how `proxy::engine`'s own `ReadEnd` call
-/// sites (`walk.rs`, `engine/mod.rs`) already report `Truncated` vs `TransportError` separately rather
-/// than folding them into one ambiguous message: an operator debugging a real connection drop needs a
-/// different signal than one debugging an oversized-response misconfiguration (Error-handling audit
-/// finding, 1.4.0).
-pub(crate) async fn read_capped_token_response(resp: reqwest::Response) -> Result<String, String> {
-    let cap = crate::proxy::max_upstream_buffered_bytes();
-    let (raw, read_end) = crate::proxy::read_capped(resp, cap).await;
-    match read_end {
-        crate::proxy::ReadEnd::Complete => Ok(String::from_utf8_lossy(&raw).into_owned()),
-        crate::proxy::ReadEnd::Truncated => Err(format!(
-            "token endpoint response exceeded the {cap}-byte cap; refusing to parse a truncated token response"
-        )),
-        crate::proxy::ReadEnd::TransportError => Err(
-            "token endpoint connection failed mid-response; refusing to parse a partial token response"
-                .to_string(),
-        ),
     }
 }
 
@@ -261,9 +229,3 @@ impl CredentialProvider for SigV4 {
 #[cfg(test)]
 #[path = "tests/license_tests.rs"]
 mod license_header_tests;
-
-// `read_capped_token_response` meta-test lives in tests/ per the repo layout rule (no inline test
-// bodies in a mod.rs); keep the module here via a #[path] decl.
-#[cfg(test)]
-#[path = "tests/helper_tests.rs"]
-mod helper_tests;

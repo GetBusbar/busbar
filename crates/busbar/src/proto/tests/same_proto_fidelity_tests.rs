@@ -158,7 +158,7 @@ fn same_proto_cross_chunk_split_is_verbatim() {
     );
 }
 
-/// BENCHMARK: same-proto streaming per-feed latency / throughput. The short-circuit's
+/// BENCHMARK (design §f): same-proto streaming per-feed latency / throughput. The short-circuit's
 /// whole point is that it does NOT re-serialize the IR back to wire — it re-emits the retained
 /// original bytes. So the meaningful no-regression baseline is the RE-SERIALIZING translator (the
 /// cross-proto path that runs the egress reader → ingress writer → reframe pipeline for every

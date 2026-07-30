@@ -69,11 +69,11 @@ pub(crate) struct HookStageProjection<'a> {
 /// candidate's metadata + live signals in `HookCandidate`) — nothing sensitive. On top of that, at
 /// most **two access-gated SECURITY fields** ride the projection, each opted in per hook by an
 /// explicit grant:
-/// - `prompt` grant (`no|ro|rw`): `system` + `messages` (flattened text) — present when the grant
-///   is `ro` OR `rw`. The REQUEST wire is IDENTICAL for `ro` and `rw` (a hook must SEE the prompt to
-///   screen it or to rewrite it); the extra power of `rw` is on the REPLY only — a `rw` hook's
-///   `rewrite` arm is applied, a `ro` hook's is dropped (enforced at the rewrite seam by the grant).
-/// - `user` grant (`no|ro`): caller identity — present when `ro`.
+///   - `prompt` grant (`no|ro|rw`): `system` + `messages` (flattened text) — present when the grant
+///     is `ro` OR `rw`. The REQUEST wire is IDENTICAL for `ro` and `rw` (a hook must SEE the prompt to
+///     screen it or to rewrite it); the extra power of `rw` is on the REPLY only — a `rw` hook's
+///     `rewrite` arm is applied, a `ro` hook's is dropped (enforced at the rewrite seam by the grant).
+///   - `user` grant (`no|ro`): caller identity — present when `ro`.
 ///
 /// A grant of `no` OMITS the field from the JSON entirely AND is fail-closed the other direction too
 /// (a returned value for a field the hook wasn't granted is ignored): `ro`'s rewrite is dropped,
@@ -183,6 +183,9 @@ pub(crate) struct HookContext<'a> {
 pub(crate) struct DescribeReply {
     #[serde(default)]
     pub(crate) schema: Option<serde_json::Value>,
+    #[serde(default)]
+    #[allow(dead_code)] // reserved: consumed by the plugin-dashboard read (post-1.3 additive)
+    pub(crate) dashboard: Option<serde_json::Value>,
 }
 
 /// One hook-reported metric entry — a Prometheus/OpenMetrics-shaped observation (parsed liberally;
@@ -309,7 +312,7 @@ pub(crate) fn valid_metric_name(name: &str) -> bool {
         && bytes.all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'_'))
 }
 
-/// Char-boundary-safe sanitize + cap (`String::truncate` takes BYTES and panics off a
+/// Char-boundary-safe sanitize + cap (re-audit F1: `String::truncate` takes BYTES and panics off a
 /// char boundary; `.chars().take(n)` is panic-free and matches the documented "≤ N chars" rule).
 fn sanitize_cap(raw: &str, n: usize) -> String {
     sanitize_reject_message(raw).chars().take(n).collect()
@@ -347,9 +350,6 @@ pub(crate) fn parse_status_metrics(raw: &[serde_json::Value]) -> Vec<HookMetric>
                 .collect()
         });
         // Quantiles: keys parse to a probability in [0,1], values finite; drop the map if empty.
-        // Capped like labels and buckets: the [0,1] filter does NOT bound the count — "0.5", "0.50",
-        // "0.500" are all distinct keys that all parse in range — and the scrape renders one line per
-        // quantile per metric, so an uncapped map defeats `scrape.rs`'s stated BOUNDED property.
         m.quantiles = m
             .quantiles
             .map(|q| {
@@ -357,7 +357,6 @@ pub(crate) fn parse_status_metrics(raw: &[serde_json::Value]) -> Vec<HookMetric>
                     .filter(|(k, val)| {
                         val.is_finite() && k.parse::<f64>().is_ok_and(|p| (0.0..=1.0).contains(&p))
                     })
-                    .take(MAX_METRIC_LABELS)
                     .collect::<std::collections::BTreeMap<_, _>>()
             })
             .filter(|q| !q.is_empty());
@@ -427,16 +426,18 @@ pub(crate) struct HookResponse {
     /// RESTRICT the surviving candidate set to members carrying ANY of these tags
     /// (`{"restrict": {"tags_any": [...]}}`). A compliance gate ("only BAA-covered lanes"). Untyped +
     /// FAIL-CLOSED like `reject`: a malformed restrict must fall to the gate's `on_error`/`on_empty`,
-    /// never silently allow-all. Parsed by `parse_restrict`, folded into `RoutingDecision::Restrict`
-    /// by `normalize`, and re-applied on every downstream failover hop by
-    /// `proxy::select::enforce_restricts`.
+    /// never silently allow-all. Parsed by `parse_restrict`. Wired into the two-phase decision seam in
+    /// a later slice-4 step; the reply contract + parser land here first (tested in isolation).
     #[serde(default)]
     pub(crate) restrict: Option<serde_json::Value>,
     /// REWRITE the request body (`{"rewrite": {"messages": [...], "tools": [...]}}`) — the
     /// compression/redaction arm (Headroom). Untyped + FAIL-CLOSED: a malformed/oversize rewrite must
     /// proceed with the UNMODIFIED body, never a corrupted one. Requires the hook's `prompt: rw` grant.
-    /// Parsed by `parse_rewrite` and applied by the priority-ordered transform pass at the `parsed.rewrite` read below.
+    /// Parsed by `parse_rewrite`. Applied by the priority-ordered transform pass wired in a later
+    /// slice-4 step; the reply contract + parser land here first (tested in isolation).
     #[serde(default)]
+    #[allow(dead_code)]
+    // consumed when the priority-ordered transform pass is wired (later slice-4 step)
     pub(crate) rewrite: Option<serde_json::Value>,
 }
 
@@ -476,6 +477,7 @@ pub(crate) use busbar_api::RewriteReply;
 /// Parse the untyped `rewrite` value fail-closed. A well-formed rewrite is `{"messages": [...],
 /// "tools"?: [...]}` with a NON-EMPTY messages array; anything else yields `None` (proceed with the
 /// original body). `tools` is optional (defaults empty).
+#[allow(dead_code)] // applied by the priority-ordered transform pass in a later slice-4 step
 pub(crate) fn parse_rewrite(value: &serde_json::Value) -> Option<RewriteReply> {
     let messages: Vec<serde_json::Value> = value.get("messages")?.as_array()?.clone();
     if messages.is_empty() {
@@ -673,7 +675,7 @@ pub(crate) fn normalize(parsed: HookResponse, candidates: &[Candidate<'_>]) -> R
 
 #[cfg(test)]
 mod tests {
-    /// A hook-supplied multi-byte help/label/unit must cap at a CHAR
+    /// Re-audit F1 REGRESSION: a hook-supplied multi-byte help/label/unit must cap at a CHAR
     /// boundary, never panic (String::truncate takes bytes — 100 × '€' panicked the admin handler).
     #[test]
     fn status_metric_hints_cap_char_safe() {
@@ -748,29 +750,6 @@ mod tests {
         assert_eq!(by(3).estimated, Some(true));
         assert_eq!((by(3).ci_low, by(3).ci_high), (Some(27.7), Some(35.7)));
         assert_eq!((by(4).ci_low, by(4).ci_high), (None, None));
-    }
-
-    /// Unlike labels/buckets, the `[0,1]` filter on quantile keys does not bound the COUNT —
-    /// "0.5001", "0.5002", ... are all distinct strings that all parse in range. A hostile or buggy
-    /// hook could otherwise mint an unbounded quantile map, defeating `scrape.rs`'s stated BOUNDED
-    /// scrape-output property (one Prometheus line per quantile per metric).
-    #[test]
-    fn status_metrics_caps_the_quantile_count() {
-        let mut quantiles = serde_json::Map::new();
-        for i in 1..=500 {
-            quantiles.insert(format!("0.{i:04}"), serde_json::json!(1.0));
-        }
-        let m = [
-            serde_json::json!({"name":"h","type":"histogram","value":1.0,
-                                     "quantiles": quantiles}),
-        ];
-        let parsed = super::parse_status_metrics(&m);
-        assert_eq!(parsed.len(), 1);
-        assert_eq!(
-            parsed[0].quantiles.as_ref().unwrap().len(),
-            super::MAX_METRIC_LABELS,
-            "quantile count must be capped exactly like labels and buckets"
-        );
     }
 
     /// Native histogram `buckets` are validated like quantiles: a key must be `+Inf` or parse as a

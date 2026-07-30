@@ -91,7 +91,7 @@ pub struct Manifest {
     /// Short config alias, e.g. `redis` - what `governance.store:` may reference. Lowercase
     /// `[a-z0-9-]+`. May equal `name`.
     pub alias: String,
-    /// Plugin category: `store` | `secret` | `auth` | `hook`. Selects the C ABI the cdylib exports and the
+    /// Plugin category: `store` | `auth` | `hook`. Selects the C ABI the cdylib exports and the
     /// engine subsystem that consumes it; everything else about the plugin machinery is shared.
     pub kind: String,
     /// The plugin's release version (semver, e.g. `1.5.0`).
@@ -201,13 +201,6 @@ pub struct TrustPolicy {
     /// anti-downgrade floor: a `publisher: busbar` plugin whose `version` is below this is rejected
     /// even with a valid signature. Empty disables the automatic floor (tests only).
     pub binary_version: String,
-    /// PER-PLUGIN first-party anti-downgrade floor OVERRIDES (1.5.0 rollback, M1). An explicit,
-    /// audited rollback of ONE first-party plugin lowers the floor for THAT NAME ONLY — every other
-    /// first-party plugin still faces the full `binary_version` floor. `name` -> the pinned target
-    /// version. Empty (the default) means every first-party plugin uses `binary_version`. Scoping the
-    /// override per name is what keeps a rollback of plugin A from silently admitting an unpinned old
-    /// plugin B (the M1 defect: a single global floor lowered it for ALL first-party plugins).
-    pub first_party_floors: BTreeMap<String, String>,
     /// THIRD-PARTY allowlist: publisher name -> ed25519 public key. The first-party publisher
     /// (`busbar`) never resolves here.
     pub publishers: BTreeMap<String, VerifyingKey>,
@@ -236,52 +229,13 @@ pub enum Verdict {
     Allowed { reason: String, allow: AllowReason },
 }
 
-/// WHY a plugin was rejected — a STRUCTURED discriminant, so consumers (e.g. the `--list-plugins`
-/// signature column) can label the outcome WITHOUT substring-matching the human-readable `reason`.
-/// The former text match was itself a defect: the reason string embeds plugin-author-controlled bytes
-/// (`manifest.publisher`), so a crafted publisher like `"anti-downgrade-bypass"` could make the reason
-/// contain `"anti-downgrade"` and mislabel an unknown-publisher reject as "trusted (below floor)".
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RejectKind {
-    /// A pinned anti-downgrade floor (first-party automatic OR configured `min_versions`) was not met
-    /// by an artifact that DID prove trust (labeled "trusted (below floor)"). Reserved for trusted
-    /// artifacts: an UNTRUSTED artifact carrying a floored name is [`RejectKind::UntrustedFloored`], so
-    /// this never mislabels an unsigned/unknown-publisher artifact as trusted.
-    AntiDowngrade,
-    /// A floored (`min_versions`) name whose artifact could NOT prove trust (unsigned/tampered/unknown
-    /// publisher). Still a HARD reject the floor forbids relaxing — the floor requires trusted proof, so
-    /// a stripped-signature copy cannot launder a downgrade past it even with `allow_unsigned`/
-    /// `allow_third_party` set. Distinct from [`RejectKind::AntiDowngrade`] SOLELY so the display label
-    /// reflects the real (untrusted) trust state instead of "trusted (below floor)".
-    UntrustedFloored,
-    /// No signature at all (or a first-party manifest in a build with no embedded key) and
-    /// `allow_unsigned` is off.
-    Unsigned,
-    /// A signature was PRESENT but failed verification against a held key, and `allow_unsigned` is
-    /// off — distinct from [`RejectKind::Unsigned`] for display purposes only.
-    Tampered,
-    /// Validly signed but by a publisher NOT in the allowlist, and `allow_third_party` is off.
-    UnknownPublisher,
-}
-
-/// Trust failure. The posture forbids loading this plugin; the message is safe to surface. `kind` is
-/// the structured category (the authority for any label/column); `reason` is the human message.
+/// Trust failure. The posture forbids loading this plugin; the message is safe to surface.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Rejected {
-    pub reason: String,
-    pub kind: RejectKind,
-}
-
-impl Rejected {
-    /// Construct a rejection from a structured `kind` and a human `reason`.
-    fn new(kind: RejectKind, reason: String) -> Self {
-        Rejected { reason, kind }
-    }
-}
+pub struct Rejected(pub String);
 
 impl std::fmt::Display for Rejected {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "plugin rejected: {}", self.reason)
+        write!(f, "plugin rejected: {}", self.0)
     }
 }
 impl std::error::Error for Rejected {}
@@ -335,11 +289,7 @@ pub fn public_key_from_hex(s: &str) -> Result<VerifyingKey, String> {
 /// the manifest's `sha256` (binding), and the signature must verify over the canonical manifest
 /// (authenticity + integrity).
 fn signature_ok(manifest: &Manifest, bytes: &[u8], key: &VerifyingKey) -> Result<(), String> {
-    // Normalize the manifest digest to lowercase before comparing, consistently with
-    // `validate_structure` (which compares against `m.sha256.to_ascii_lowercase()`). `sha256_hex`
-    // always emits lowercase hex; without this an uppercase-hex manifest digest would pass the
-    // structural integrity check yet fail here, an inconsistency between the two verifiers.
-    if sha256_hex(bytes) != manifest.sha256.to_ascii_lowercase() {
+    if sha256_hex(bytes) != manifest.sha256 {
         return Err("library hash does not match the manifest".to_string());
     }
     let sig_bytes =
@@ -371,31 +321,8 @@ fn version_components(v: &str) -> [u64; 3] {
 }
 
 /// True when `have` is greater-than-or-equal-to `floor` under [`version_components`] ordering.
-///
-/// A NON-EMPTY `floor` that is not [`valid_semver`] is UNSATISFIABLE — this returns `false` for every
-/// `have`. `version_components` truncates at the first non-numeric component, so an unparsable floor
-/// like `"v1.6.0"` would otherwise read as `0.0.0`, which every version satisfies: the anti-downgrade
-/// control would silently invert into a no-op exactly when the operator believed it was armed. An
-/// EMPTY floor is the documented "no floor" spelling and still admits everything.
 pub fn version_at_least(have: &str, floor: &str) -> bool {
-    if !floor.is_empty() && !valid_semver(floor) {
-        return false;
-    }
     version_components(have) >= version_components(floor)
-}
-
-/// Explanatory suffix for a floor rejection: empty for a well-formed floor, and for a malformed one a
-/// clause that names the real cause. Without it an operator with `min_versions: v1.6.0` reads
-/// "version 1.6.0 is below the pinned minimum v1.6.0" and concludes busbar is broken.
-fn floor_note(floor: &str) -> &'static str {
-    if floor.is_empty() || valid_semver(floor) {
-        ""
-    } else {
-        " — NOTE: this floor is not a valid MAJOR.MINOR.PATCH version (no leading 'v', e.g. \
-         '1.6.0'), so nothing can satisfy it. An unparsable floor used to read as 0.0.0, which \
-         every version satisfies, silently disarming this control; it now refuses instead. Fix or \
-         remove the entry."
-    }
 }
 
 /// Is `s` a well-formed plugin name/alias: non-empty lowercase `[a-z0-9-]+`, no leading/trailing
@@ -498,10 +425,8 @@ pub fn validate_structure(
 enum Untrusted {
     /// No valid signature: empty/tampered signature, or a first-party manifest in a build with no
     /// embedded key. Opt-in is `allow_unsigned`. A tamper of a KNOWN key's signature is still
-    /// "unsigned" for opt-in purposes - it never counts as third-party. `tampered` distinguishes a
-    /// PRESENT-but-failed signature (verification failed against a held key) from a plain
-    /// no-signature/no-key case, for display labels ONLY (both are `allow_unsigned`-gated).
-    Unsigned { reason: String, tampered: bool },
+    /// "unsigned" for opt-in purposes - it never counts as third-party.
+    Unsigned { reason: String },
     /// A manifest whose `publisher` is NOT `busbar` and NOT in the allowlist. Its signature cannot
     /// be verified here (no key held), so it is a third-party artifact. Opt-in is
     /// `allow_third_party`.
@@ -537,7 +462,6 @@ pub fn evaluate(
     let trusted_or_untrusted: Result<bool, Untrusted> = if manifest.signature.trim().is_empty() {
         Err(Untrusted::Unsigned {
             reason: "manifest carries no signature".to_string(),
-            tampered: false,
         })
     } else if manifest.publisher == FIRST_PARTY_PUBLISHER {
         match &policy.first_party_key {
@@ -546,13 +470,11 @@ pub fn evaluate(
                     "manifest claims first-party publisher '{FIRST_PARTY_PUBLISHER}' but this \
                      build embeds no busbar release key, so it cannot be verified"
                 ),
-                tampered: false,
             }),
             Some(key) => match signature_ok(manifest, bytes, key) {
                 Ok(()) => Ok(true),
                 Err(reason) => Err(Untrusted::Unsigned {
                     reason: format!("first-party signature failed: {reason}"),
-                    tampered: true,
                 }),
             },
         }
@@ -568,7 +490,6 @@ pub fn evaluate(
                         "signature from allowlisted publisher '{}' failed: {reason}",
                         manifest.publisher
                     ),
-                    tampered: true,
                 }),
             },
         }
@@ -578,64 +499,36 @@ pub fn evaluate(
     // running binary's version. A hard reject (a validly-signed but old first-party release is
     // exactly the rollback/replay this stops); no opt-in flag applies to a verified first-party.
     if let Ok(true) = trusted_or_untrusted {
-        // The floor for THIS first-party plugin: an explicit per-name rollback override
-        // (`first_party_floors`) if one exists for this exact name, else the global automatic
-        // `binary_version` floor. A rollback of plugin A therefore lowers A's floor ALONE — an
-        // unpinned first-party plugin B still faces `binary_version` (M1).
-        let floor = policy
-            .first_party_floors
-            .get(&manifest.name)
-            .map(String::as_str)
-            .unwrap_or(policy.binary_version.as_str());
-        if !floor.is_empty() && !version_at_least(&manifest.version, floor) {
-            return Err(Rejected::new(
-                RejectKind::AntiDowngrade,
-                format!(
-                    "first-party plugin '{}' version {} is below the required first-party floor {} \
-                     (automatic first-party anti-downgrade){}",
-                    manifest.name,
-                    manifest.version,
-                    floor,
-                    floor_note(floor)
-                ),
-            ));
+        if !policy.binary_version.is_empty()
+            && !version_at_least(&manifest.version, &policy.binary_version)
+        {
+            return Err(Rejected(format!(
+                "first-party plugin '{}' version {} is below this busbar binary's version {} \
+                 (automatic first-party anti-downgrade)",
+                manifest.name, manifest.version, policy.binary_version
+            )));
         }
     }
 
     // CONFIGURED anti-downgrade floor (hard reject, BEFORE any opt-in relaxation), keyed by the
     // manifest name. A floored name must be TRUSTED and its (now-verified) version must clear the
-    // floor; anything else is a hard reject no opt-in flag can relax. The reject KIND is split by trust
-    // state so the display label is honest: a TRUSTED artifact below the floor is `AntiDowngrade`
-    // ("trusted (below floor)"); an UNTRUSTED artifact carrying a floored name is `UntrustedFloored`
-    // (labeled by its real untrusted state). Both are still hard rejects — the floor requires trusted
-    // proof, so a stripped-signature copy cannot launder a downgrade past it — but the untrusted case is
-    // NO LONGER mislabeled "trusted (below floor)" in `--list-plugins` (the round-1 regression).
+    // floor; anything else is a hard reject no opt-in flag can relax.
     if let Some(floor) = policy.min_versions.get(&manifest.name) {
         match &trusted_or_untrusted {
             Ok(_) if version_at_least(&manifest.version, floor) => {}
             Ok(_) => {
-                return Err(Rejected::new(
-                    RejectKind::AntiDowngrade,
-                    format!(
-                        "plugin '{}' version {} is below the pinned minimum {floor} \
-                         (anti-downgrade){}",
-                        manifest.name,
-                        manifest.version,
-                        floor_note(floor)
-                    ),
-                ));
+                return Err(Rejected(format!(
+                    "plugin '{}' version {} is below the pinned minimum {floor} (anti-downgrade)",
+                    manifest.name, manifest.version
+                )));
             }
             Err(_) => {
-                return Err(Rejected::new(
-                    RejectKind::UntrustedFloored,
-                    format!(
-                        "plugin '{}' has a pinned minimum version {floor} but the load could not \
-                         prove it meets the floor (not signed by a trusted key); a trusted manifest \
-                         at or above the floor is required (anti-downgrade){}",
-                        manifest.name,
-                        floor_note(floor)
-                    ),
-                ));
+                return Err(Rejected(format!(
+                    "plugin '{}' has a pinned minimum version {floor} but the load could not prove \
+                     it meets the floor (not signed by a trusted key); a trusted manifest at or \
+                     above the floor is required (anti-downgrade)",
+                    manifest.name
+                )));
             }
         }
     }
@@ -645,25 +538,17 @@ pub fn evaluate(
             publisher: manifest.publisher.clone(),
             first_party,
         }),
-        Err(Untrusted::Unsigned { reason, tampered }) => {
+        Err(Untrusted::Unsigned { reason }) => {
             if policy.allow_unsigned {
                 Ok(Verdict::Allowed {
                     reason,
                     allow: AllowReason::Unsigned,
                 })
             } else {
-                let kind = if tampered {
-                    RejectKind::Tampered
-                } else {
-                    RejectKind::Unsigned
-                };
-                Err(Rejected::new(
-                    kind,
-                    format!(
-                        "{reason}; refusing to load an unsigned plugin. Set \
-                         plugins.trust.allow_unsigned=true to permit unsigned plugins."
-                    ),
-                ))
+                Err(Rejected(format!(
+                    "{reason}; refusing to load an unsigned plugin. Set \
+                     plugins.trust.allow_unsigned=true to permit unsigned plugins."
+                )))
             }
         }
         Err(Untrusted::ThirdParty { publisher }) => {
@@ -673,14 +558,11 @@ pub fn evaluate(
                     allow: AllowReason::ThirdParty,
                 })
             } else {
-                Err(Rejected::new(
-                    RejectKind::UnknownPublisher,
-                    format!(
-                        "publisher '{publisher}' is not in the allowlist; refusing to load a \
-                         third-party plugin. Add the publisher to plugins.trust.publishers, or set \
-                         plugins.trust.allow_third_party=true to permit third-party plugins."
-                    ),
-                ))
+                Err(Rejected(format!(
+                    "publisher '{publisher}' is not in the allowlist; refusing to load a \
+                     third-party plugin. Add the publisher to plugins.trust.publishers, or set \
+                     plugins.trust.allow_third_party=true to permit third-party plugins."
+                )))
             }
         }
     }
@@ -758,7 +640,6 @@ mod tests {
         TrustPolicy {
             first_party_key: first_party.map(|k| k.verifying_key()),
             binary_version: "1.5.0".to_string(),
-            first_party_floors: BTreeMap::new(),
             publishers: pairs.iter().map(|(n, k)| (n.to_string(), **k)).collect(),
             allow_unsigned,
             allow_third_party,
@@ -827,53 +708,11 @@ mod tests {
         let m = sign(&release, m, artifact);
         let pol = policy(Some(&release), &[], false, false);
         let err = evaluate(artifact, &m, &pol).unwrap_err();
-        assert!(
-            err.reason.contains("first-party anti-downgrade"),
-            "got {err:?}"
-        );
+        assert!(err.0.contains("first-party anti-downgrade"), "got {err:?}");
 
         // Loose posture cannot launder it either (verified first-party never consults opt-ins).
         let loose = policy(Some(&release), &[], true, true);
         assert!(evaluate(artifact, &m, &loose).is_err());
-    }
-
-    /// M1: a PER-NAME first-party floor override lowers the floor for the pinned name ONLY. A rollback
-    /// of plugin A (pinned to 1.4.0) must NOT admit an unpinned old first-party plugin B — B still faces
-    /// the full `binary_version` floor. This is the fix for the single-global-floor defect.
-    #[test]
-    fn first_party_floor_override_is_scoped_per_name() {
-        let release = test_key(1);
-        let artifact_a = b"old first-party A";
-        let artifact_b = b"old first-party B";
-        let mut a = manifest("busbar-store-redis", "redis", FIRST_PARTY_PUBLISHER);
-        a.version = "1.4.0".into();
-        let a = sign(&release, a, artifact_a);
-        let mut b = manifest("busbar-hook-ranker", "ranker", FIRST_PARTY_PUBLISHER);
-        b.version = "1.4.0".into();
-        let b = sign(&release, b, artifact_b);
-
-        // Pin ONLY A to 1.4.0 (an explicit, audited rollback of A).
-        let mut pol = policy(Some(&release), &[], false, false);
-        pol.first_party_floors
-            .insert("busbar-store-redis".to_string(), "1.4.0".to_string());
-
-        // A clears its lowered floor and loads.
-        assert!(
-            matches!(
-                evaluate(artifact_a, &a, &pol),
-                Ok(Verdict::Trusted {
-                    first_party: true,
-                    ..
-                })
-            ),
-            "the pinned first-party plugin clears its own lowered floor"
-        );
-        // B, unpinned, still faces the full binary_version (1.5.0) floor and is REJECTED — the M1 fix.
-        let err = evaluate(artifact_b, &b, &pol).unwrap_err();
-        assert!(
-            err.reason.contains("anti-downgrade"),
-            "an UNPINNED first-party plugin is not admitted by another plugin's rollback: {err:?}"
-        );
     }
 
     #[test]
@@ -889,7 +728,7 @@ mod tests {
         let pol = policy(None, &[], false, false);
         let err = evaluate(artifact, &m, &pol).unwrap_err();
         assert!(
-            err.reason.contains("embeds no busbar release key"),
+            err.0.contains("embeds no busbar release key"),
             "got {err:?}"
         );
         // allow_unsigned permits it (dev builds), as the Unsigned category.
@@ -924,7 +763,7 @@ mod tests {
         let pol = policy(Some(&release), &[], false, false);
         let err = evaluate(artifact, &m, &pol).unwrap_err();
         assert!(
-            err.reason.contains("first-party signature failed"),
+            err.0.contains("first-party signature failed"),
             "impersonation must be reported as a first-party signature failure, got {err:?}"
         );
         // Even allow_third_party cannot launder it: a `busbar` publisher never routes to the
@@ -967,7 +806,7 @@ mod tests {
         let pol = policy(Some(&release), &[], false, false);
         let err = evaluate(artifact, &stripped, &pol).unwrap_err();
         assert!(
-            err.reason.contains("unsigned") || err.reason.contains("no signature"),
+            err.0.contains("unsigned") || err.0.contains("no signature"),
             "a stripped-signature old first-party plugin must be rejected as unsigned, got {err:?}"
         );
     }
@@ -1028,7 +867,7 @@ mod tests {
 
         // Default: refused, naming allow_third_party (NOT allow_unsigned).
         let err = evaluate(artifact, &m, &policy(None, &[], false, false)).unwrap_err();
-        assert!(err.reason.contains("allow_third_party"), "got {err:?}");
+        assert!(err.0.contains("allow_third_party"), "got {err:?}");
         // allow_unsigned alone does NOT permit a third-party-signed plugin.
         assert!(evaluate(artifact, &m, &policy(None, &[], true, false)).is_err());
         // allow_third_party permits it.
@@ -1050,7 +889,7 @@ mod tests {
         let key = test_key(1);
         let pol = policy(None, &[("acme", &key.verifying_key())], false, false);
         let err = evaluate(artifact, &m, &pol).unwrap_err();
-        assert!(err.reason.contains("allow_unsigned"), "got {err:?}");
+        assert!(err.0.contains("allow_unsigned"), "got {err:?}");
         let loose = policy(None, &[("acme", &key.verifying_key())], true, false);
         assert!(matches!(
             evaluate(artifact, &m, &loose).unwrap(),
@@ -1203,7 +1042,7 @@ mod tests {
         pol.min_versions
             .insert("acme-store-dynamo".to_string(), "2.0.0".to_string());
         let err = evaluate(artifact, &old, &pol).unwrap_err();
-        assert!(err.reason.contains("anti-downgrade"), "got {err:?}");
+        assert!(err.0.contains("anti-downgrade"), "got {err:?}");
 
         // Stripped signature + both opt-ins: STILL rejected (the floor requires trusted proof).
         let mut stripped = old.clone();
@@ -1213,7 +1052,7 @@ mod tests {
             .min_versions
             .insert("acme-store-dynamo".to_string(), "2.0.0".to_string());
         let err = evaluate(artifact, &stripped, &loose).unwrap_err();
-        assert!(err.reason.contains("anti-downgrade"), "got {err:?}");
+        assert!(err.0.contains("anti-downgrade"), "got {err:?}");
 
         // A current signed release at the floor still passes.
         let mut cur = manifest("acme-store-dynamo", "dynamo", "acme");
@@ -1223,65 +1062,6 @@ mod tests {
             evaluate(artifact, &cur, &pol).unwrap(),
             Verdict::Trusted { .. }
         ));
-    }
-
-    /// class-12 D2: a MALFORMED `min_versions` floor (no leading `v`, so it fails [`valid_semver`])
-    /// must be UNSATISFIABLE, not silently void. Before the fix, `version_components("v2.0.0")` ==
-    /// `[0,0,0]`, so `version_at_least("1.0.0", "v2.0.0")` was `true` and the old artifact evaluated
-    /// `Verdict::Trusted` — the exact silent admission F2 describes. RED, load-bearing: revert only
-    /// the `version_at_least` hunk and this goes back to `Ok(..)`.
-    #[test]
-    fn garbage_min_version_floor_is_unsatisfiable_not_void() {
-        let acme = test_key(2);
-        let artifact = b"older vulnerable build";
-        let mut old = manifest("acme-store-dynamo", "dynamo", "acme");
-        old.version = "1.0.0".into();
-        let old = sign(&acme, old, artifact);
-
-        let mut pol = policy(None, &[("acme", &acme.verifying_key())], false, false);
-        pol.min_versions
-            .insert("acme-store-dynamo".to_string(), "v2.0.0".to_string());
-
-        let err = evaluate(artifact, &old, &pol).unwrap_err();
-        assert_eq!(err.kind, RejectKind::AntiDowngrade);
-        assert!(
-            err.reason.contains("v2.0.0"),
-            "reason must name the malformed floor: {}",
-            err.reason
-        );
-    }
-
-    /// class-12 D2: a malformed `first_party_floors` override must NOT erase the automatic
-    /// `binary_version` floor it REPLACES — the sharpest case in F2, because the override makes a
-    /// plugin the automatic floor alone would have refused instead get ADMITTED, i.e. strictly LESS
-    /// protection than configuring nothing at all. RED: before the fix, the override reads as
-    /// `[0,0,0]`, which every version satisfies.
-    #[test]
-    fn garbage_first_party_floor_does_not_erase_the_binary_floor() {
-        let release = test_key(1);
-        let artifact = b"old first-party build";
-        let mut old = manifest("busbar-store-redis", "redis", FIRST_PARTY_PUBLISHER);
-        old.version = "1.0.0".into(); // below `binary_version` ("1.5.0", set by `policy()`)
-        let old = sign(&release, old, artifact);
-
-        let mut pol = policy(Some(&release), &[], false, false);
-        pol.first_party_floors
-            .insert("busbar-store-redis".to_string(), "v9.9.9".to_string());
-
-        let err = evaluate(artifact, &old, &pol).unwrap_err();
-        assert_eq!(err.kind, RejectKind::AntiDowngrade);
-    }
-
-    /// class-12 D2: `floor_note`'s operator-facing wording, pinned by a test rather than by review.
-    /// LABEL: guard unit test on a NEW helper — it cannot go red against pre-fix source, because the
-    /// helper does not exist there. Not a RED proof.
-    #[test]
-    fn malformed_floor_reason_says_the_floor_is_malformed() {
-        assert_eq!(floor_note("1.6.0"), "");
-        assert_eq!(floor_note(""), "");
-        let note = floor_note("v1.6.0");
-        assert!(!note.is_empty());
-        assert!(note.contains("MAJOR.MINOR.PATCH"));
     }
 
     /// The embedded-release-key accessor parses a build-time hex key. In this test build the env is

@@ -21,7 +21,6 @@ fn test_query_has_alt_sse() {
 /// Minimal governance-off App for exercising `finish` in isolation.
 fn minimal_app() -> Arc<App> {
     Arc::new(App {
-        probe_schedule: Arc::new(crate::health::ProbeSchedule::new(0)),
         tslots: Arc::new(crate::telemetry::AppSlots::build(
             &[],
             &std::collections::HashMap::new(),
@@ -62,7 +61,6 @@ fn minimal_app() -> Arc<App> {
         overlay_path: None,
         config_version: 0,
         max_keys_per_principal: 0,
-        max_auto_provisioned_groups: 0,
         failover_cfg: None,
         pool_runtime: std::collections::HashMap::new(),
         fallback_pools: std::collections::HashMap::new(),
@@ -279,8 +277,8 @@ fn test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx() {
 /// blind `UPDATE` decremented the spend/requests of a PRIOR, legitimately-charged request in the
 /// same window — eroding the hard budget cap (repeatable → unbounded overspend). This drives the
 /// REAL ingress path end-to-end (not just the `finish_rejected` unit).
-// The budget charge/refund path is synchronous in-memory accounting (no offload of any kind), so
-// a regression is observable synchronously here. The `"total"` period ⇒ window 0 regardless of the
+// No-runtime `#[test]`: any (buggy) refund via `offload_store_write` runs INLINE here, so a
+// regression is observable synchronously. The `"total"` period ⇒ window 0 regardless of the
 // internal `charged_at = store::now()`, so the prior charge and any spurious refund hit one row.
 #[test]
 fn test_pre_routing_failure_does_not_refund_prior_charge() {
@@ -775,7 +773,7 @@ async fn test_gemini_path_resolves_model_and_stream() {
 }
 
 /// Direct unit test of the injected body for the path-model core: the parsed gemini body must
-/// gain `model` (from the path) and `stream` (from the action). This is the "body shim".
+/// gain `model` (from the path) and `stream` (from the action). This is the §3 "body shim".
 #[test]
 fn test_path_model_injects_model_and_stream_into_body() {
     // Mirror the injection ingress_path_model performs (kept here as a focused assertion on the
@@ -1710,7 +1708,7 @@ async fn test_gemini_stream_generate_content_alt_sse_is_event_stream() {
     server.shutdown().await;
 }
 
-/// A MID-STREAM transport failure on a gemini
+/// Round-13 HIGH/test-coverage: a MID-STREAM transport failure on a gemini
 /// `:streamGenerateContent?alt=sse` request (the SSE framer, `json_array=false`) must terminate
 /// the body with a NATIVE Gemini SSE error frame — `text/event-stream`, a trailing `data:`
 /// payload carrying a `google.rpc.Status`-shaped envelope (`error.status`), with NO `event:`
@@ -1796,7 +1794,7 @@ async fn test_gemini_alt_sse_mid_stream_transport_error_appends_native_sse_frame
     server.shutdown().await;
 }
 
-/// An UNRESOLVED model on a body-model ingress (openai) must NOT stamp
+/// Round-13 MEDIUM/security: an UNRESOLVED model on a body-model ingress (openai) must NOT stamp
 /// the raw client-supplied model string as the Prometheus `pool` label — the bounded-cardinality
 /// contract (metrics.rs) requires the fixed sentinel `"unresolved"`. A regression that
 /// passed the raw model through `finish` would let a single credential mint unbounded time
@@ -1868,7 +1866,7 @@ fn requests_total_for(scrape: &str, pool: &str, outcome: &str) -> u64 {
         .sum()
 }
 
-/// a JSON-parse failure on a BODY-MODEL ingress (openai) is a
+/// MED #4 (re-audit, completeness): a JSON-parse failure on a BODY-MODEL ingress (openai) is a
 /// PRE-ROUTING error — the model is never resolved. It must still flow through `finish` so it is
 /// counted in `REQUESTS_TOTAL` (and the duration histogram + request-log webhook), with the
 /// bounded `pool="unresolved"` label. The old code early-returned `ingress_error` directly,
@@ -1907,55 +1905,6 @@ async fn test_body_model_parse_error_is_observable() {
     assert!(
         after > before,
         "a parse-error pre-routing failure must increment REQUESTS_TOTAL \
-             (pool=unresolved,outcome=client_error): before={before} after={after}"
-    );
-    handle.abort();
-}
-
-/// `bedrock_invoke` (the `POST /model/{id}/invoke` InvokeModel ingress) returns a bare
-/// `ingress_error` when the body matches none of the recognized InvokeModel shapes
-/// (`inputText` / `textToImageParams` / the Cohere `{query,documents}` pair) — a pre-routing
-/// reject that, like the JSON-parse case above, must still flow through `finish_rejected` so it
-/// is counted. This asserts the SAME strict-increase discriminator as
-/// `test_body_model_parse_error_is_observable`, on the sibling early-return the class-9 audit
-/// found unrouted.
-#[tokio::test]
-async fn test_bedrock_invoke_unresolvable_body_is_observable() {
-    crate::metrics::init();
-    let app = TestApp::new()
-        .lane(
-            LaneSpec::new(
-                "foo",
-                crate::proto::Protocol::openai(),
-                "http://127.0.0.1:1",
-            )
-            .provider("zai"),
-        )
-        .pool("foo", &[(0, 1)])
-        .build();
-    let (addr, handle) = serve(app).await;
-
-    let before = requests_total_for(&crate::metrics::render(), "unresolved", "client_error"); // golden wire-contract literal (kept bare on purpose)
-
-    let resp = reqwest::Client::new()
-        .post(format!(
-            "http://{addr}/model/amazon.titan-embed-text-v1/invoke"
-        ))
-        .bearer_auth("t")
-        .body(json!({"nonsense": 1}).to_string())
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        resp.status().as_u16(),
-        400,
-        "an InvokeModel body matching no recognized shape is a 400"
-    );
-
-    let after = requests_total_for(&crate::metrics::render(), "unresolved", "client_error"); // golden wire-contract literal (kept bare on purpose)
-    assert!(
-        after > before,
-        "an unresolvable InvokeModel body must increment REQUESTS_TOTAL \
              (pool=unresolved,outcome=client_error): before={before} after={after}"
     );
     handle.abort();
@@ -2033,7 +1982,7 @@ async fn test_served_request_increments_hot_path_metrics() {
     server.shutdown().await;
 }
 
-/// THE GOVERNANCE RE-KEY end-to-end: with governance ON and an external data-plane
+/// THE GOVERNANCE RE-KEY end-to-end (§2.3): with governance ON and an external data-plane
 /// module in the chain, a role-bound principal gets a SYNTHESIZED key - its binding's pool ACL
 /// admits/denies (403), an omitted `allowed_pools` grants ALL pools (C6), an explicit `[]`
 /// grants nothing, and an unbound role is rejected outright (fail closed) - all keyed by the
@@ -2144,7 +2093,7 @@ async fn test_role_bound_principal_governed_like_a_virtual_key() {
 /// plus a measured batch through the REAL router against an instant in-process mock upstream
 /// and gates the measured p50/p99 full-request latency under DELIBERATELY GENEROUS bounds —
 /// busbar's real added overhead is microseconds, so these only trip on a GROSS hot-path
-/// Body walk), never on runner noise.
+/// regression (accidental sync I/O, a stray sleep, an O(n²) body walk), never on runner noise.
 /// Fine-grained overhead numbers stay the latency bench's job (the external
 /// GetBusbar/benchmarking harness).
 #[tokio::test]
@@ -2220,7 +2169,7 @@ async fn timing_gate_hot_path_p50_p99() {
     server.shutdown().await;
 }
 
-/// a MISSING `model` field on a body-model ingress is likewise a
+/// MED #4 (re-audit, completeness): a MISSING `model` field on a body-model ingress is likewise a
 /// pre-routing failure and must flow through `finish` (bounded `pool="unresolved"`), not a silent
 /// early-return. Asserts a strict counter increase, so it fails against the old early-return.
 #[tokio::test]
@@ -2260,7 +2209,7 @@ async fn test_body_model_missing_model_is_observable() {
     handle.abort();
 }
 
-/// a NON-OBJECT body on a PATH-MODEL ingress (bedrock) is a
+/// MED #4 (re-audit, completeness): a NON-OBJECT body on a PATH-MODEL ingress (bedrock) is a
 /// pre-routing failure (`v.as_object_mut()` is `None`) and must flow through `finish` with the
 /// bounded `pool="unresolved"` label. Asserts a strict counter increase; fails against the old
 /// early-return that bypassed `finish`.
@@ -2301,7 +2250,7 @@ async fn test_path_model_non_object_body_is_observable() {
     handle.abort();
 }
 
-/// an UNSUPPORTED gemini action (e.g.
+/// MED #4 (re-audit, completeness — sibling sweep): an UNSUPPORTED gemini action (e.g.
 /// `:countTokens`) rejected in `gemini_ingress` BEFORE `ingress_path_model` runs is the same
 /// pre-routing observability blind spot. It must now flow through `finish` (bounded
 /// `pool="unresolved"`, gemini protocol). Asserts a strict counter increase; fails against the
@@ -2348,7 +2297,7 @@ async fn test_gemini_unsupported_action_is_observable() {
     handle.abort();
 }
 
-/// The bounded-label mapper returns a
+/// Round-13 MEDIUM/security (unit test for `pool_label`): the bounded-label mapper returns a
 /// model verbatim ONLY when it names a configured pool or by-model lane, and the fixed sentinel
 /// `"unresolved"` for anything else.
 #[test]
@@ -2444,7 +2393,7 @@ async fn test_gemini_stream_generate_content_no_alt_sse_is_json_array() {
     server.shutdown().await;
 }
 
-/// A MID-STREAM transport failure on a gemini `:streamGenerateContent`
+/// Round-4 HIGH/correctness: a MID-STREAM transport failure on a gemini `:streamGenerateContent`
 /// request WITHOUT `?alt=sse` (the JSON-array framer is engaged) must terminate the body as a
 /// VALID JSON array — a trailing gemini-shaped error element + closing `]` — NOT raw SSE
 /// `event:`/`data:` text spliced into the array (the bug: `mid_stream_error_bytes` bypassed the
@@ -2511,7 +2460,7 @@ async fn test_gemini_json_array_mid_stream_error_closes_array_no_sse() {
     server.shutdown().await;
 }
 
-/// The router-internal `__busbar_gemini_json_array` shim
+/// Round-4 HIGH/conformance (UPDATED R9): the router-internal `__busbar_gemini_json_array` shim
 /// must NEVER reach a CROSS-protocol backend. Routes gemini `:streamGenerateContent` (no
 /// `?alt=sse`) → an OpenAI backend and asserts the upstream-received body carries no array shim
 /// key (the bug: the gemini reader swept it into IR `extra` and the egress writer re-emitted the
@@ -2576,7 +2525,7 @@ async fn test_gemini_json_array_shim_not_leaked_cross_protocol() {
     server.shutdown().await;
 }
 
-/// A CROSS-protocol stream to an Anthropic-SDK client must emit a FULL
+/// Round-4 HIGH/conformance: a CROSS-protocol stream to an Anthropic-SDK client must emit a FULL
 /// `message_start` skeleton — `id` (msg_-prefixed), `type:"message"`, `content:[]`,
 /// `stop_reason`/`stop_sequence` (null) — not the degenerate `{role,usage}` the
 /// `has_identity`-gated writer produced once `StreamTranslate` stripped the foreign id/model.
@@ -2647,7 +2596,7 @@ async fn test_anthropic_cross_protocol_message_start_full_skeleton() {
     server.shutdown().await;
 }
 
-/// A CROSS-protocol passthrough 401 must be RESHAPED into the ingress
+/// Round-4 HIGH/conformance: a CROSS-protocol passthrough 401 must be RESHAPED into the ingress
 /// protocol's native error envelope, not relayed verbatim from the egress provider. Anthropic
 /// ingress → OpenAI backend that 401s in Passthrough mode: the client must see the Anthropic error
 /// shape (`{"type":"error","error":{"type":...}}`), not the OpenAI `{"error":{...}}` shape.
@@ -3183,7 +3132,7 @@ async fn test_governance_guard_passes_when_allowed() {
     );
 }
 
-/// A request ADMITTED WITHOUT a charge (store-error fail-open) that then
+/// REGRESSION (audit c2r1): a request ADMITTED WITHOUT a charge (store-error fail-open) that then
 /// gets a non-2xx must NOT refund — `refund_request` is a blind decrement that would erode a
 /// DIFFERENT, legitimately-charged request's spend/count in the same window. `finish_admitted`
 /// gates the refund on the `charged` flag from `governance_guard`.
@@ -4833,7 +4782,7 @@ async fn test_governance_pool_acl_403_bedrock_native_envelope() {
 // the fallback chain reachable from the requested pool and re-runs the SAME `pool_authorized`
 // 403 gate against every fallback pool name BEFORE any dispatch.
 
-/// A key restricted to pool A must be DENIED (403, the same
+/// REGRESSION (SECURITY MED #3): a key restricted to pool A must be DENIED (403, the same
 /// protocol-native permission envelope as the initial-pool denial) when A is configured to fail
 /// over to a fallback pool B the key is NOT allowed on — even though the key passes A's own ACL
 /// and A's backend would itself answer 200. Against the pre-fix code this request reached A and
@@ -5665,15 +5614,15 @@ async fn test_named_by_model_fallback_round_trip_via_router() {
     server.shutdown().await;
 }
 
-// ---- breaker op_handler-key consistency for by_model routes ----
+// ---- LOW #4 (re-audit, completeness): breaker op_handler-key consistency for by_model routes ----
 //
 // A single-model lane (no pool) can be reached two ways:
-// 1. the universal body-model ingress (`/v1/chat/completions` etc.) → `forward_resolved`'s
-// `by_model` arm, which calls `forward_with_pool` directly with the ingress protocol so a
-// cross-protocol backend is translated both ways; and
-// 2. the Anthropic `/<model>/v1/messages` (`named`) / `/<provider>/<model>/v1/messages`
-// (`adhoc`) routes → `crate::proxy::forward_with_pool`, which passes `""` (the lane-default breaker
-// CELL shared by every direct/single-model route — proxy engine design intent).
+//   1. the universal body-model ingress (`/v1/chat/completions` etc.) → `forward_resolved`'s
+//      `by_model` arm, which calls `forward_with_pool` directly with the ingress protocol so a
+//      cross-protocol backend is translated both ways; and
+//   2. the Anthropic `/<model>/v1/messages` (`named`) / `/<provider>/<model>/v1/messages`
+//      (`adhoc`) routes → `crate::proxy::forward_with_pool`, which passes `""` (the lane-default breaker
+//      CELL shared by every direct/single-model route — proxy engine design intent).
 //
 // proxy engine records every breaker outcome against the CELL keyed by the `pool_name` argument
 // (`record_transient_in(pool_name, …)`). If `forward_resolved`'s by_model arm passes the MODEL
@@ -5930,7 +5879,7 @@ async fn test_unpriced_passthrough_model_rejected_when_rate_card_present() {
     assert!(ok.is_ok(), "a priced configured lane admits");
 }
 
-// ─── Budget downgrade at the ingress boundary ────────────────────────
+// ─── Budget downgrade at the ingress boundary (§6c on_exhaust: downgrade) ────────────────────────
 
 /// Governance-enabled App with pools `frontier` + `value` and a group whose frontier budget
 /// (25c/day at a 10c flat fee) declares `on_exhaust: downgrade, downgrade_to: value`.

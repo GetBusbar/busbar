@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The per-operation IR enums: `IrReq` / `IrResp`, one variant per operation. The
+//! The per-operation IR enums (design §12.4): `IrReq` / `IrResp`, one variant per operation. The
 //! design's single `enum Ir` reconciles to TWO enums because the engine already splits request from
 //! response (`IrRequest`/`IrResponse`). The inherent methods here ARE the surface the operation-blind
-//! middle sees; each exhaustive `match` is the removability / symmetry gate — adding the next
+//! middle sees; each exhaustive `match` is the removability / symmetry gate (§9) — adding the next
 //! operation (an 8th, past the current seven Chat..Rerank) is a compile error at every one.
 //!
-//! `affinity_key` and cross-protocol drop accounting are not built in 1.5.0 — they were never wired
-//! past the request/response IR split done here.
+//! `affinity_key` and `unmappable_for` (B1) land with the seam wiring (P4/P5), where they can be
+//! verified against the harness for chat-byte-identical behavior; they are intentionally not stubbed
+//! with guessed behavior here.
+#![allow(dead_code)]
 
 use super::audio::{SpeechReq, SpeechResp, TranscriptionReq, TranscriptionResp};
 use super::embeddings::{EmbeddingsReq, EmbeddingsResp};
@@ -17,22 +19,6 @@ use super::moderation::{ModerationReq, ModerationResp};
 use super::{IrRequest, IrResponse};
 use crate::billing::{Billing, TokenUsage};
 use crate::operation::Operation;
-
-/// Google's documented dummy `thoughtSignature` value that "skips validation" for a function-call
-/// part — the officially sanctioned escape hatch for migrating conversation history from another
-/// model (exactly busbar's cross-protocol case: an OpenAI/Anthropic/etc. client's tool-call history
-/// replayed against a Gemini 3 backend, which never had a real signature to echo back). Per Google's
-/// own docs: "you can set the following dummy signatures of either
-/// 'context_engineering_is_the_way_to_go' or 'skip_thought_signature_validator' in the thought
-/// signature field to skip validation". Also independently confirmed live by LiteLLM's production
-/// Gemini-3 integration doing the same substitution.
-///
-/// MUST be emitted as a literal JSON string, never as SDK-typed `bytes` — some Google client SDKs
-/// model `thoughtSignature` as `bytes` and silently base64-encode it, which breaks the bypass since
-/// the backend then sees the base64 encoding of this string, not the string itself. busbar builds
-/// raw JSON directly (see `proto::gemini::writer`), so this is correct by construction — do not
-/// "improve" this into a typed representation later.
-pub(crate) const GEMINI_SKIP_THOUGHT_SIGNATURE: &str = "skip_thought_signature_validator";
 
 /// Request-side IR — one variant per operation. `Chat` reuses the existing `IrRequest` verbatim.
 #[derive(Debug, Clone)]
@@ -47,10 +33,7 @@ pub(crate) enum IrReq {
 }
 
 impl IrReq {
-    /// Which operation this is (the coarse tag the middle carries). Called only from this module's
-    /// own tests today; kept for the exhaustive-match compile-time guarantee (adding an `IrReq`
-    /// variant without a routing story is a compile error here).
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Which operation this is (the coarse tag the middle carries).
     pub(crate) fn operation(&self) -> Operation {
         match self {
             IrReq::Chat(_) => Operation::Chat,
@@ -64,8 +47,6 @@ impl IrReq {
     }
 
     /// Did the caller ask to stream? Only chat and audio can (1.2); the JSON ops never stream.
-    /// Called only from this module's own tests today; kept for the exhaustive-match guarantee.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn wants_stream(&self) -> bool {
         match self {
             IrReq::Chat(r) => r.stream,
@@ -80,7 +61,7 @@ impl IrReq {
     /// its IR is written into a foreign egress dialect; the engine calls this without knowing which
     /// operation it holds. Chat: default `max_tokens` when the egress requires one, decode the
     /// client-echoed tool ids back to the backend's originals, and clear source-only `extra` keys
-    /// (the foreign-format leak guard). The other operations' extras are source-scoped by
+    /// (the §8.2 foreign-format leak guard). The other operations' extras are source-scoped by
     /// construction, so they need no clearing.
     pub(crate) fn prepare_for_egress(&mut self, prep: &EgressPrep) {
         match self {
@@ -165,61 +146,6 @@ impl IrReq {
                         );
                     }
                 }
-                // Anthropic cache_control CAP (class-6 6b1): "A maximum of 4 blocks with
-                // cache_control may be provided". Reachable ONLY cross-protocol — same-protocol
-                // Anthropic is a verbatim byte passthrough that never reaches a writer, so this
-                // can never clamp a request that is legal for its own backend. Walk in Anthropic's
-                // own prefix order (system -> every message's content -> every tool), `.take()`ing
-                // every breakpoint past the cap so the writer emits at most `cap` of them, and warn
-                // once with the count actually dropped.
-                if let Some(cap) = prep.cache_control_cap {
-                    let mut seen = 0usize;
-                    let mut dropped = 0usize;
-                    let mut walk_take = |blocks: &mut [crate::ir::IrBlock]| {
-                        for b in blocks {
-                            let cc = match b {
-                                crate::ir::IrBlock::Text { cache_control, .. }
-                                | crate::ir::IrBlock::Thinking { cache_control, .. }
-                                | crate::ir::IrBlock::ToolUse { cache_control, .. }
-                                | crate::ir::IrBlock::ToolResult { cache_control, .. }
-                                | crate::ir::IrBlock::Image { cache_control, .. } => cache_control,
-                                crate::ir::IrBlock::Json(_) => continue,
-                            };
-                            if cc.is_some() {
-                                if seen < cap {
-                                    seen += 1;
-                                } else {
-                                    *cc = None;
-                                    dropped += 1;
-                                }
-                            }
-                        }
-                    };
-                    walk_take(&mut ir.system);
-                    for m in &mut ir.messages {
-                        walk_take(&mut m.content);
-                    }
-                    for t in &mut ir.tools {
-                        if t.cache_control.is_some() {
-                            if seen < cap {
-                                seen += 1;
-                            } else {
-                                t.cache_control = None;
-                                dropped += 1;
-                            }
-                        }
-                    }
-                    if dropped > 0 {
-                        tracing::warn!(
-                            ingress = %prep.ingress_protocol,
-                            cap,
-                            dropped,
-                            "dropping {dropped} cache_control breakpoint(s) past the egress \
-                             dialect's cap of {cap}: the target vendor 400s past this count and \
-                             the IR carries breakpoints unbounded"
-                        );
-                    }
-                }
                 // HOSTED-TOOL cross-protocol drop (R3-B). A Responses hosted tool
                 // (`{"type":"web_search"}` → `IrTool{ name:"", hosted:Some(..) }`) has NO function-tool
                 // analog: ONLY the Responses writer honors `hosted`; every other egress writer projects
@@ -239,57 +165,6 @@ impl IrReq {
                          has no function-tool equivalent for a non-Responses backend; forwarding it \
                          would emit a malformed empty-name function tool the upstream rejects (400). \
                          Route hosted-tool requests to a Responses lane to use them"
-                    );
-                }
-                // class-6 6c2: Gemini `cachedContent` references a server-side context cache at
-                // Google that busbar cannot project into `contents` — it has no handle on the
-                // cached turns' text. `extra` is about to be wiped wholesale below (this is the
-                // cross-protocol-only seam; same-protocol Gemini->Gemini never reaches here), so a
-                // `cachedContent` key silently disappears with TWO invisible consequences: the
-                // backend answers on the VISIBLE history only (the cached turns are ABSENT, not
-                // summarized), and the caller is billed FULL UNCACHED input. Fail-closed here would
-                // be TERMINAL (both `proxy/wire.rs` callers do `Err => return`, pre-empting
-                // failover to a same-pool Gemini lane later), so — matching the two warns just
-                // above that already guard this same clear — degrade with a LOUD warn naming both
-                // consequences; that is the contract this codebase already applies at this seam.
-                // Gemini 3 thoughtSignature sentinel fill. Real production outage: an
-                // OpenAI/Anthropic/etc. client's tool-call history, replayed cross-protocol against a
-                // Gemini 3 AI-Studio backend, carries `ToolUse` blocks whose `thought_signature` is
-                // `None` (no foreign protocol has this concept to read). Gemini 3 REQUIRES a
-                // `thoughtSignature` echoed on every `functionCall` part or the backend 400s
-                // ("missing a thought_signature"). `thought_signature_fill` is resolved by the caller
-                // (true only for a Gemini AI-Studio egress lane, never Vertex — see the field's doc)
-                // so this stays the one place the gate lives, matching `reasoning_allowed` /
-                // `prompt_caching_allowed` above. A real signature (e.g. same-protocol-shaped history
-                // that genuinely carries one) is NEVER overwritten — only a `None` gets the sentinel.
-                if prep.thought_signature_fill {
-                    let fill_blocks = |blocks: &mut [crate::ir::IrBlock]| {
-                        for b in blocks {
-                            if let crate::ir::IrBlock::ToolUse {
-                                thought_signature, ..
-                            } = b
-                            {
-                                if thought_signature.is_none() {
-                                    *thought_signature =
-                                        Some(GEMINI_SKIP_THOUGHT_SIGNATURE.to_string());
-                                }
-                            }
-                        }
-                    };
-                    for m in &mut ir.messages {
-                        fill_blocks(&mut m.content);
-                    }
-                }
-                if ir.extra.contains_key("cachedContent") {
-                    tracing::warn!(
-                        ingress = %prep.ingress_protocol,
-                        key = "cachedContent",
-                        "dropping Gemini `cachedContent` on the cross-protocol seam: the referenced \
-                         context cache lives server-side at Google and cannot be projected into \
-                         `contents`, so (1) the backend answers on the VISIBLE history only — the \
-                         cached turns are absent, not summarized — and (2) the caller is billed FULL \
-                         UNCACHED input for this request. Route cachedContent requests to a Gemini \
-                         lane."
                     );
                 }
                 ir.extra.clear();
@@ -352,21 +227,6 @@ pub(crate) struct EgressPrep<'a> {
     /// they are CLEARED here with a warn — the one place the gate lives, so no writer can emit a
     /// model-gated cache marker (Bedrock `cachePoint`) to a lane that did not claim it.
     pub(crate) prompt_caching_allowed: bool,
-    /// The egress writer's `max_cache_control_breakpoints()` (`Some(4)` for Anthropic, `None`
-    /// elsewhere — see that method's doc for why Bedrock is deliberately excluded). Anthropic 400s
-    /// past this count; the IR carries breakpoints unbounded, so a cross-protocol request can
-    /// exceed it. `None` means "no cap to enforce here" — the cap walk below is a no-op.
-    pub(crate) cache_control_cap: Option<usize>,
-    /// True only for a Gemini AI-Studio egress lane — NEVER for Vertex. When true, every
-    /// `IrBlock::ToolUse` with no `thought_signature` gets Google's documented sentinel
-    /// (`GEMINI_SKIP_THOUGHT_SIGNATURE`) injected so a cross-protocol `functionCall` part (whose
-    /// history never had a real signature to echo) doesn't 400 the Gemini 3 backend. Vertex AI's
-    /// Gemini surface is NOT confirmed to honor the same sentinel-bypass value — there are real
-    /// reports of Vertex rejecting it with a 400 — so excluding Vertex lanes here is a safety
-    /// requirement, not a nicety. The caller resolves this from lane config (protocol == Gemini AND
-    /// no `path_base` override, i.e. not a Vertex-style URL-model lane) before constructing
-    /// `EgressPrep`, matching how `reasoning_allowed`/`prompt_caching_allowed` are resolved.
-    pub(crate) thought_signature_fill: bool,
 }
 
 impl IrResp {
@@ -416,8 +276,6 @@ impl IrResp {
         }
     }
 
-    /// Called only from this module's own tests today; kept for the exhaustive-match guarantee.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn operation(&self) -> Operation {
         match self {
             IrResp::Chat(_) => Operation::Chat,
@@ -430,7 +288,7 @@ impl IrResp {
         }
     }
 
-    /// The billable item for this response. Chat maps the existing `IrUsage` into
+    /// The billable item for this response (§0b/§5b). Chat maps the existing `IrUsage` into
     /// `Billing::Tokens` (preserving the uncached-input + additive-cache convention); moderation is
     /// flat; the rest project their own usage. Exhaustive match = the symmetry gate.
     pub(crate) fn usage(&self) -> Option<Billing> {

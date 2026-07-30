@@ -13,6 +13,7 @@
 //! module is compiled ONLY under `openapi-schema` (a CI-only feature), so it adds nothing to the
 //! shipped binary. `#[allow(dead_code)]` because the fields are read by schemars' derive, not by
 //! Rust code.
+#![allow(dead_code)]
 
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -34,7 +35,7 @@ pub(crate) struct KeyView {
     pub(crate) labels: std::collections::BTreeMap<String, String>,
 }
 
-/// `POST /keys` (mint) — the key metadata plus the ONCE-shown signed token, and (when an AWS SigV4
+/// `POST /keys` (mint) — the key metadata plus the ONCE-shown secret, and (when an AWS SigV4
 /// credential was requested) the AccessKeyId + secret access key. The AWS fields are absent on a
 /// bearer-only mint.
 #[derive(Serialize, JsonSchema)]
@@ -46,14 +47,8 @@ pub(crate) struct CreatedKeyView {
     pub(crate) enabled: bool,
     pub(crate) created_at: u64,
     pub(crate) labels: std::collections::BTreeMap<String, String>,
-    /// The busbar-SIGNED token — the key credential (1.5.0, S1), shown EXACTLY once and never
-    /// returned by any read. (This is the field a client must capture to authenticate.)
-    pub(crate) token: String,
-    /// Unix-seconds expiry of the signed token.
-    pub(crate) expires_at: u64,
-    /// Whether this mint AUTO-PROVISIONED its bound group leaf (self-service D2) — lets a portal
-    /// distinguish "bound to an existing bucket" from "created your personal bucket + bound".
-    pub(crate) group_provisioned: bool,
+    /// The bearer secret — shown EXACTLY once, never returned by any read.
+    pub(crate) secret: String,
     /// AWS AccessKeyId (present only when `issue_aws_credential` was set). Not secret.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) aws_access_key_id: Option<String>,
@@ -62,9 +57,7 @@ pub(crate) struct CreatedKeyView {
     pub(crate) aws_secret_access_key: Option<String>,
 }
 
-/// `POST /keys/{id}/rotate` — the key metadata plus the ONCE-shown fresh CREDENTIAL. Exactly one of
-/// `token`+`expires_at` (a 1.5.0 signed-token key: a new token at a new binding generation, every
-/// prior token now rejected) or `secret` (a legacy hashed-secret key) is present.
+/// `POST /keys/{id}/rotate` — the key metadata plus the ONCE-shown fresh bearer secret.
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct RotatedKeyView {
     pub(crate) id: String,
@@ -74,15 +67,8 @@ pub(crate) struct RotatedKeyView {
     pub(crate) enabled: bool,
     pub(crate) created_at: u64,
     pub(crate) labels: std::collections::BTreeMap<String, String>,
-    /// The fresh busbar-SIGNED token — shown EXACTLY once (signed-token keys).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) token: Option<String>,
-    /// Unix-seconds expiry of the re-minted signed token (present with `token`).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) expires_at: Option<u64>,
-    /// The fresh bearer secret — shown EXACTLY once (legacy hashed-secret keys only).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) secret: Option<String>,
+    /// The fresh bearer secret — shown EXACTLY once.
+    pub(crate) secret: String,
 }
 
 /// `GET /keys/{id}/usage`: the key's all-time attribution counters (a 1.5.0 key bucket accrues in
@@ -127,15 +113,6 @@ pub(crate) struct ConfigReloadView {
     pub(crate) config_version: u64,
 }
 
-/// `POST /restart` — accepted-and-draining result.
-#[derive(Serialize, JsonSchema)]
-pub(crate) struct RestartView {
-    pub(crate) restarting: bool,
-    /// Whether a process supervisor was detected. False means the caller confirmed explicitly.
-    pub(crate) supervisor_detected: bool,
-    pub(crate) note: String,
-}
-
 /// `POST /config/rollback` — restore-a-retained-version result (the restored version + the NEW
 /// config version the rollback produced).
 #[derive(Serialize, JsonSchema)]
@@ -149,7 +126,7 @@ pub(crate) struct ConfigRollbackView {
 /// an idempotent no-op).
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct OverlayResetView {
-    /// The section that was reset (`groups` | `hooks` | `root` | `plugin_versions`).
+    /// The section that was reset (`groups` | `hooks`).
     pub(crate) reset: String,
     pub(crate) config_version: u64,
     /// `true` when the reset discarded overlay mutations; `false` for an already-empty section.
@@ -162,48 +139,15 @@ pub(crate) struct CacheFlushView {
     pub(crate) flushed: usize,
 }
 
-/// `POST /keys/{id}/revoke` — the revoked key's id (denylisted without deleting the binding). 1.5.0.
-#[derive(Serialize, JsonSchema)]
-pub(crate) struct RevokeView {
-    /// The id that was revoked (durably denylisted; the binding record remains).
-    pub(crate) revoked: String,
-}
-
-/// `POST /signing-key/rotate` — the current key-signing key id plus the REVOKE-ALL warning. 1.5.0 is
-/// single-key: the actual swap is an operator action, so this reports intent, not an in-process swap.
-#[derive(Serialize, JsonSchema)]
-pub(crate) struct SigningKeyRotateView {
-    /// The current signing-key id (`kid`) that tokens are minted under.
-    pub(crate) current_kid: String,
-    /// Always `true`: rotating the signing key revokes every outstanding key (all must be re-minted).
-    pub(crate) revoke_all: bool,
-    /// Human-readable guidance for the operator-driven lockstep rotation.
-    pub(crate) message: String,
-}
-
 /// `GET`/`PUT /config/settings` (1.5.0 full-config coverage) — the API-settable single-value config
 /// overlay (`root` section) and, on a PUT, the apply metadata. `settings` is the CURRENT effective
-/// root override (the merge of prior overlay + this request). It is overlay-persisted so it survives
-/// a restart WHEN a config overlay is configured (`BUSBAR_CONFIG_OVERLAY`) — a busbar with none
-/// applies the change live only, and `note` says so; `PUT` with `"persist": true` makes storage
-/// mandatory, refusing (`400`) rather than silently applying in memory when no overlay exists.
-/// `reload_to_apply` names the fields whose new value is DURABLY STORED but not yet LIVE: the
-/// process-level binds (`listen`/`admin_listen` socket, `tls`/`admin_tls` bind, `admin_insecure`) are
-/// read once at process start, and the durable `store` backend is reused across a hot reload — none
-/// can hot-swap, so they take effect on the next RESTART (or a supervisor restart), NEVER on a
-/// `POST /config/reload` — a reload re-reads disk and rebuilds the `App` but does not rebind sockets,
-/// rebuild the TLS acceptor, or re-open the store. It is always EMPTY when nothing was durably stored
-/// (no overlay); `note` names the affected fields instead. Everything else
-/// (`rate_card`/`per_request_fee`/`security`/`advanced`/`metrics`/`health`/`routing`) is LIVE on the
-/// swap; `limits` is live EXCEPT four boot-scoped fields (see `reload_to_apply_fields`):
-/// `upstream_request_timeout_secs`/`pool_max_idle_per_host`/`pool_idle_timeout_secs`, which the
-/// reused `UpstreamClients` only reads once at boot, and `max_inbound_concurrent`, which is baked
-/// once into the data router's `GlobalConcurrencyLimitLayer` at process start (a config apply swaps
-/// only `Arc<App>`, never the router) — two independent freezing mechanisms. `observability` is live
-/// EXCEPT three boot-scoped fields: `emit_server_timing` (baked into router middleware state at
-/// boot), `request_log_webhook_url` (seeds a process-global `OnceLock` that no-ops after the first
-/// `main()` call), and `otlp_url` (feeds a one-shot `tracing_subscriber` init) — none rebuilt by an
-/// apply.
+/// root override (the merge of prior overlay + this request), overlay-persisted so it survives a
+/// restart. `reload_to_apply` names the fields whose new value is DURABLY STORED but not yet LIVE:
+/// the process-level binds (`listen`/`admin_listen` socket, `tls`/`admin_tls` bind, `admin_insecure`)
+/// are read once at process start, and the durable `store` backend is reused across a hot reload —
+/// none can hot-swap, so they take effect on the next RESTART. Everything else
+/// (`rate_card`/`per_request_fee`/`security`/`limits`/`observability`/`advanced`/`metrics`/`health`/
+/// `routing`) is LIVE on the swap.
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct ConfigSettingsView {
     /// `true` on a PUT that stored + swapped; `false` on a GET (a pure read).
@@ -212,11 +156,8 @@ pub(crate) struct ConfigSettingsView {
     /// The current effective root-section overlay (only the fields the operator has set; base
     /// `config.yaml` stands for the rest). An arbitrary JSON object (the `RootSettings` projection).
     pub(crate) settings: serde_json::Value,
-    /// Fields that were stored durably but are RESTART-TO-APPLY: a socket rebind, a TLS acceptor
-    /// build and a store open all happen once at process start, so a `POST /config/reload` does NOT
-    /// make them live — `POST /restart` (or a supervisor restart) does. Empty when the PUT touched
-    /// only live-swappable fields (or on a GET). The field NAME is frozen wire; only this description
-    /// changed.
+    /// Fields that were stored but are RELOAD-TO-APPLY (a `POST /config/reload` or restart makes them
+    /// live). Empty when the PUT touched only live-swappable fields (or on a GET).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) reload_to_apply: Vec<String>,
     /// A human note describing the live-vs-reload split (absent on a GET).
@@ -356,7 +297,7 @@ pub(crate) struct ErrorDetail {
 #[allow(unused)]
 fn _error_taxonomy_is_referenced(e: &AdminError) {
     match e {
-        AdminError::NotFound { .. }
+        AdminError::NotFound(_)
         | AdminError::Unauthorized
         | AdminError::MethodNotAllowed
         | AdminError::Forbidden { .. }
@@ -364,7 +305,6 @@ fn _error_taxonomy_is_referenced(e: &AdminError) {
         | AdminError::VersionConflict(_)
         | AdminError::Conflict(_)
         | AdminError::RateLimited
-        | AdminError::Internal
-        | AdminError::Unavailable(_) => {}
+        | AdminError::Internal => {}
     }
 }

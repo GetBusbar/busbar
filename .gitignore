@@ -30,10 +30,6 @@ Thumbs.db
 /rust_out
 /scratch_syms.txt
 
-# Signing keys generated locally during plugin-sign testing (never commit)
-*.key
-
 # Python bytecode (bench harness)
 __pycache__/
 *.pyc
-.wrangler/

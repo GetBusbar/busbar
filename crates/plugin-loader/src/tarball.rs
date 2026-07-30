@@ -24,15 +24,6 @@ const MAX_LIB_BYTES: u64 = 256 * 1024 * 1024;
 /// Hard cap on the DECOMPRESSED manifest member - a manifest is well under 4 KiB.
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 
-/// Hard cap on the COMPRESSED tarball FILE, checked via `fs::metadata` before it is ever read into
-/// memory (see `registry::examine`). [`unpack`] already bounds the two DECOMPRESSED members it will
-/// extract (`MAX_LIB_BYTES` + `MAX_MANIFEST_BYTES`); this is that same ceiling applied to the file on
-/// disk, one layer earlier. Gzip cannot meaningfully inflate a file's size (worst case is a few bytes
-/// of overhead per block, nowhere near doubling it), so a genuine tarball containing only a
-/// manifest + a library under the existing per-member caps is always comfortably under this sum -
-/// anything larger is rejected before the read, not after.
-pub(crate) const MAX_TARBALL_FILE_BYTES: u64 = MAX_LIB_BYTES + MAX_MANIFEST_BYTES;
-
 /// A plugin tarball unpacked in memory: the parsed signed manifest plus the exact library bytes.
 #[derive(Debug)]
 pub struct UnpackedPlugin {
@@ -74,17 +65,6 @@ pub fn package(manifest: &Manifest, lib_name: &str, lib_bytes: &[u8]) -> Result<
         .map_err(|e| format!("gzip finalize failed: {e}"))
 }
 
-/// Ceiling on the up-front allocation reserved for a member read, independent of the member's
-/// declared size. Mirrors `proxy::wire::read_capped`'s `READ_CAPPED_RESERVE_CEILING`: the DECLARED
-/// size in a tar header is unverified input at this point (this runs before any signature/trust
-/// check), so trusting it for an eager `Vec::with_capacity` reservation lets a malformed/truncated
-/// header force a large allocation before a single real byte is validated. The `size > cap`
-/// rejection below is a DIFFERENT, unrelated check that stays exactly as-is: refusing a
-/// declared-oversize member before reading is a cheap, fail-closed refusal and is fine to keep
-/// keying off the declared size — the bug this constant fixes is trusting declared size for
-/// ALLOCATION, not for rejection. Do not fold the two together.
-const MEMBER_RESERVE_CEILING: u64 = 64 * 1024;
-
 /// Read one tar entry fully, bounded at `cap` decompressed bytes. An entry whose DECLARED size
 /// exceeds the cap is refused before any read.
 fn read_entry_bounded<R: std::io::Read>(
@@ -98,11 +78,7 @@ fn read_entry_bounded<R: std::io::Read>(
             "{what} member is {size} bytes, exceeding the {cap}-byte cap"
         ));
     }
-    // Reserve only up to `MEMBER_RESERVE_CEILING` up front, regardless of `size` — `size` is the
-    // header's self-declared, as-yet-unverified value. Real reads beyond the ceiling grow the
-    // buffer amortized (alloc+copy+dealloc) via `read_to_end`, same as any other trusted-input
-    // buffer; a lying/truncated header now costs at most one bounded reservation, not up to `cap`.
-    let mut buf = Vec::with_capacity(size.min(MEMBER_RESERVE_CEILING) as usize);
+    let mut buf = Vec::with_capacity(size as usize);
     // `take(cap + 1)`: even a lying header cannot stream more than the cap into memory.
     entry
         .take(cap + 1)

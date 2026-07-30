@@ -302,7 +302,7 @@ pub(crate) fn validate_with_unset(
             .unwrap_or(false);
         // Case-INSENSITIVE scheme check (RFC 3986 §3.1) — a raw `starts_with("https://")` rejected
         // the valid uppercase spelling reqwest would accept, and diverged from the webhook guard's
-        // `scheme_is`.
+        // `scheme_is`. (found: audit c2r5.)
         let scheme_ok = is_env_placeholder(base_url)
             || scheme_is(base_url, "https")
             || (host_is_local && scheme_is(base_url, "http"));
@@ -753,7 +753,7 @@ pub(crate) fn validate_with_unset(
                 // ASCII + length checks (`"".is_ascii()` is true, `0 > 64` is false) yet silently
                 // disables affinity at runtime (`headers.get("")` is always None) — the exact
                 // "silently disable affinity" failure this validator's own comment promises to
-                // catch.
+                // catch. (found: audit c2r3.)
                 if header_name.is_empty() {
                     errors.push(format!(
                         "pool '{}' affinity.header_name must not be empty (an empty HTTP header field-name silently disables session affinity)",
@@ -1047,7 +1047,7 @@ pub(crate) fn validate_with_unset(
 
         // Rule (chain entries/max-scope): every entry's `max_admin_scope` must be a known scope
         // token (typos fail at boot), and `full` - lifting the default read-only ceiling on an
-        // external chain - is a LOUD boot warning: it is the explicit opt-in requires.
+        // external chain - is a LOUD boot warning: it is the explicit opt-in §2.4 requires.
         for entry in auth.chain.iter().chain(auth.admin_auth.iter()) {
             if let Some(scope) = entry.max_admin_scope.as_deref() {
                 match crate::admin::v1::contract::Scope::parse(scope) {
@@ -1074,53 +1074,6 @@ pub(crate) fn validate_with_unset(
                      admin-tokens: {{ token: {{ env: BUSBAR_ADMIN_TOKEN }} }}\n",
                     entry.module
                 ));
-            }
-            // Rule (ceiling/lattice cross-check): the scope model is a DIAMOND, not a ladder —
-            // `hooks-register` and `mint` are INCOMPARABLE siblings. The two loops above validate
-            // each token in ISOLATION, so a `max_admin_scope:` that is incomparable with an
-            // `admin_scope` bound under the SAME module passes both unchecked, then silently
-            // collapses that binding to `read-only` at runtime (`Grants::capped_by`'s sibling meet)
-            // — an operator writing `max_admin_scope: mint` over a `hooks-register`-bound role,
-            // intending to RAISE the ceiling, instead 403s every registrar with clean validation.
-            // Caught here instead: cross-check every bound `admin_scope` under this module against
-            // this entry's cap once both parse.
-            if let Some(cap) = entry
-                .max_admin_scope
-                .as_deref()
-                .and_then(crate::admin::v1::contract::Scope::parse)
-            {
-                if let Some(roles) = auth.role_bindings.get(&entry.module) {
-                    for (role, binding) in roles {
-                        let Some(bound) = binding
-                            .admin_scope
-                            .as_deref()
-                            .and_then(crate::admin::v1::contract::Scope::parse)
-                        else {
-                            continue;
-                        };
-                        // Incomparable iff NEITHER dominates the other — the true lattice
-                        // relation, not `bound != cap`, so a narrowing cap (e.g. `mint` capped to
-                        // `read-only`) is correctly left alone.
-                        if !cap.allows(bound) && !bound.allows(cap) {
-                            errors.push(format!(
-                                "auth chain entry '{}' sets max_admin_scope: {} which is \
-                                 INCOMPARABLE with role_bindings.{}.{}'s admin_scope: {} \
-                                 (hooks-register and mint are siblings, neither is \"more \
-                                 permissive\"); this silently collapses that role to read-only \
-                                 instead of raising or lowering its ceiling as intended - pick a \
-                                 max_admin_scope that dominates {} (mint or full), or bind {} a \
-                                 comparable admin_scope",
-                                entry.module,
-                                cap.as_str(),
-                                entry.module,
-                                role,
-                                bound.as_str(),
-                                bound.as_str(),
-                                role
-                            ));
-                        }
-                    }
-                }
             }
         }
     }
@@ -1210,7 +1163,7 @@ pub(crate) fn validate_with_unset(
     // Operational-limit sanity checks (NEVER CODED CAPS). A 0 or absurd value here would break the
     // gateway rather than tune it; reject loudly at boot. Deliberately permissive — only the few
     // values where 0/absurd is a foot-gun are constrained (e.g. `max_inbound_concurrent` accepts ANY
-    // usize incl. 0, the explicit unlimited posture — the DEFAULT is 8192, not 0).
+    // usize incl. 0, the unlimited default).
     validate_limits(&cfg.limits, &mut errors);
 
     // A model maps to ONE lane, so its `context_max` must be single-valued across every pool that
@@ -1369,58 +1322,26 @@ fn validate_limits(limits: &crate::config::LimitsResolved, errors: &mut Vec<Stri
         );
     }
     // NOTE: `max_inbound_concurrent` is intentionally UNCONSTRAINED — any usize including 0 (the
-    // explicit unlimited posture; the DEFAULT is 8192, not 0) is valid.
+    // unlimited default) is valid.
 }
 
-// NOTE: a long doc comment used to sit here describing a BLANK-ADMIN-TOKEN boot
-// guard validated at this layer. The function it documented is gone — the admin token became a
-// SecretRef, so its VALUE is not visible to this (pre-resolution) validation pass at all. The guard
-// itself now lives where the value exists: `main::resolve_admin_token`, which refuses an
-// empty/whitespace-only resolved token on boot AND on every apply/reload. It is also stricter than
-// the old prose: a blank token does not merely lock the admin API, it computes the digest over the
-// blank string, so an empty presented credential would authenticate as the operator.
-
+/// Validate the optional governance block (read separately from the resolved `RootCfg`, so it
+/// cannot ride along in `validate(&RootCfg)`). Called from `config::resolve`, whose `Err(Vec<String>)`
+/// is surfaced as a fail-loud boot error — the same channel `validate` uses.
+///
+/// A blank/whitespace-only `admin_token` leaves `GovState::admin_token_hash()` returning `None`, so
+/// the `/admin` auth branch's `authorized` is permanently `false`: the admin API is SILENTLY locked
+/// (every admin call 401s) with no startup diagnostic. An operator who set an (expanded-to-blank)
+/// token to manage virtual keys discovers this only at runtime. Mirror the `token` mode with no
+/// `client_tokens` fail-loud pattern and reject it at boot. An unset `admin_token` carries no
+/// requirement (governance is always available but inert, the admin surface off).
+///
 /// Validate the COST + GROUPS + STORE + SECRETS surface of the resolved config (S3/S5/S6/C2):
 /// rate_card completeness/wellformedness, the `groups:` limit tree (parents exist, chain acyclic —
 /// any depth, the cycle check is the bound; limit values sane), `per_request_fee` sanity, the store
 /// module reference, and every
 /// secret reference's MODULE resolvability. Paste-ready stubs throughout. Pure - shared verbatim
 /// by boot and `--validate` so the two cannot drift.
-/// Enumerate EVERY secret reference in the resolved config as `(what, &SecretRef)`, where `what` is
-/// the human-readable config path used in error messages. The SINGLE source of truth for which
-/// references are secrets: the structural check in `validate_cost_model` and the registry-backed
-/// module-existence check in `main::validate_secret_refs` (deferred until the plugin registry exists)
-/// both walk this list, so a new secret-bearing field is covered by both the moment it is added here.
-pub(crate) fn secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::config::SecretRef)> {
-    let mut refs: Vec<(String, &crate::config::SecretRef)> = Vec::new();
-    for (name, p) in &cfg.providers {
-        refs.push((format!("providers.{name}.api_key"), &p.api_key));
-    }
-    if let Some(tls) = &cfg.tls {
-        refs.push(("tls.cert".to_string(), &tls.cert));
-        refs.push(("tls.key".to_string(), &tls.key));
-        if let Some(ca) = &tls.client_ca {
-            refs.push(("tls.client_ca".to_string(), ca));
-        }
-    }
-    if let Some(tls) = &cfg.admin_tls {
-        refs.push(("admin_tls.cert".to_string(), &tls.cert));
-        refs.push(("admin_tls.key".to_string(), &tls.key));
-        if let Some(ca) = &tls.client_ca {
-            refs.push(("admin_tls.client_ca".to_string(), ca));
-        }
-    }
-    if let Some(auth) = &cfg.auth {
-        if let Some(sk) = &auth.signing_key {
-            refs.push(("auth.signing_key".to_string(), sk));
-        }
-        if let Some(tok) = auth.admin_token_ref() {
-            refs.push(("auth.admin_auth admin-tokens token".to_string(), tok));
-        }
-    }
-    refs
-}
-
 fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
     if let Some(card) = &cfg.rate_card {
         // Well-formed rates: every tier finite and >= 0 (names the exact config path).
@@ -1518,21 +1439,23 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
         }
     }
 
-    // SECRET REFERENCES (C2): every secret's MODULE must be resolvable BY NAME. The built-ins are
-    // `env` and `file`; ANY OTHER module name is a `kind: secret` PLUGIN reference (vault, aws-sm,
-    // …), which is the marquee 1.5.0 "secrets are plugins" feature. Whether such a plugin actually
-    // exists + is `kind: secret` + is trusted is resolved against the plugin REGISTRY — but this
-    // function runs at boot AND `--validate` BEFORE the plugin pre-flight builds that registry, and
-    // captures none, so it CANNOT tell an installed vault plugin from a typo. Therefore the
-    // module-EXISTENCE check for a non-built-in module is DEFERRED to the shared plugin pre-flight
-    // (`validate_secret_refs`, called from `plugins_preflight`'s two call-sites) — the SAME deferral
-    // the `store.module` plugin reference already uses (a non-`memory` store is only checked once the
-    // registry exists). Here we validate ONLY the STRUCTURE that is checkable without the registry:
-    // the built-in `env`/`file` modules' required settings. The VALUE is never resolved here (CI
-    // validates config structure without secrets present); resolution failures are boot-time
-    // fail-closed errors.
+    // SECRET REFERENCES (C2): every secret's MODULE must be resolvable BY NAME. In P1/P2 the
+    // built-ins are `env` and `file`; a `kind: secret` plugin passes once loadable. The VALUE is
+    // deliberately not resolved here (CI validates config structure without secrets present);
+    // resolution failures are boot-time fail-closed errors.
     let mut check_secret = |what: String, r: &crate::config::SecretRef| {
-        if r.module == crate::config::secret::SECRET_MODULE_ENV && r.env_var().is_none() {
+        let known = matches!(
+            r.module.as_str(),
+            crate::config::secret::SECRET_MODULE_ENV | crate::config::secret::SECRET_MODULE_FILE
+        );
+        if !known {
+            errors.push(format!(
+                "{what} references secret module '{}', which is not a built-in (`env` | `file`) \
+                 and no loadable `kind: secret` plugin provides it. Use e.g.:\n\n    {what}: \
+                 {{ env: MY_SECRET_VAR }}\n",
+                r.module
+            ));
+        } else if r.module == crate::config::secret::SECRET_MODULE_ENV && r.env_var().is_none() {
             errors.push(format!(
                 "{what}: secret module 'env' requires settings.key (the environment variable name)"
             ));
@@ -1541,30 +1464,30 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
                 "{what}: secret module 'file' requires settings.path (the file to read)"
             ));
         }
-        // A non-built-in module name (a `kind: secret` plugin reference) is NOT rejected here: its
-        // existence is proven against the registry in `validate_secret_refs` at plugin pre-flight.
     };
-    // Enumerate EVERY secret reference in the config through ONE shared walk (`secret_refs`), so the
-    // structural check here and the registry-backed module-existence check at plugin pre-flight
-    // (`validate_secret_refs`) can never drift over WHICH refs they cover.
-    for (what, r) in secret_refs(cfg) {
-        check_secret(what, r);
+    for (name, p) in &cfg.providers {
+        check_secret(format!("providers.{name}.api_key"), &p.api_key);
     }
-
-    // secrets (module-level `open()` config for `kind: secret` plugins): the built-in `env` / `file`
-    // modules take NO module config, so naming them under `secrets:` is a mistake (their settings live
-    // per-reference). A non-built-in module additionally requires the plugin subsystem, which the
-    // shared `plugins_preflight` verifies against the registry at boot.
-    for module in cfg.secrets.keys() {
-        if matches!(
-            module.as_str(),
-            crate::config::secret::SECRET_MODULE_ENV | crate::config::secret::SECRET_MODULE_FILE
-        ) {
-            errors.push(format!(
-                "secrets.{module}: the built-in '{module}' secret module takes no module-level \
-                 config; its settings (`key` / `path`) belong on each individual secret reference, \
-                 not in the top-level `secrets:` block"
-            ));
+    if let Some(tls) = &cfg.tls {
+        check_secret("tls.cert".to_string(), &tls.cert);
+        check_secret("tls.key".to_string(), &tls.key);
+        if let Some(ca) = &tls.client_ca {
+            check_secret("tls.client_ca".to_string(), ca);
+        }
+    }
+    if let Some(tls) = &cfg.admin_tls {
+        check_secret("admin_tls.cert".to_string(), &tls.cert);
+        check_secret("admin_tls.key".to_string(), &tls.key);
+        if let Some(ca) = &tls.client_ca {
+            check_secret("admin_tls.client_ca".to_string(), ca);
+        }
+    }
+    if let Some(auth) = &cfg.auth {
+        if let Some(sk) = &auth.signing_key {
+            check_secret("auth.signing_key".to_string(), sk);
+        }
+        if let Some(tok) = auth.admin_token_ref() {
+            check_secret("auth.admin_auth admin-tokens token".to_string(), tok);
         }
     }
 
@@ -1677,19 +1600,6 @@ fn strip_scheme(url: &str) -> Option<&str> {
 }
 
 pub(crate) fn extract_normalized_host(url: &str) -> Option<String> {
-    // Strip ALL ASCII tab (0x09), LF (0x0A), and CR (0x0D) characters from anywhere in the string,
-    // FIRST — before any other normalization, mirroring the WHATWG URL spec's basic parser, which
-    // removes these three bytes from the whole input as its very first step, before scheme/authority
-    // parsing even begins. reqwest's `url` crate implements this removal, so it is not merely a
-    // leading/trailing trim: a tab EMBEDDED mid-host is deleted too. Without mirroring it, a
-    // `base_url` like `"https://169.254.169\t.254/"` (a tab is a legal byte inside a YAML
-    // double-quoted scalar) is seen by this guard as the non-IP, non-metadata-matching host
-    // `169.254.169\t.254` (passes every check) while the actual connecting stack deletes the tab and
-    // connects to `169.254.169.254` — the real IMDS address. Doing this before the backslash→`/`
-    // fold matters too: a stripped tab could otherwise sit between characters that only become a
-    // delimiter after this removal (WHATWG strips tab/newline before it looks for `\`/`/` at all).
-    let url = url.replace(['\t', '\n', '\r'], "");
-    let url = url.as_str();
     // Strip the scheme (case-insensitively — see `scheme_is`). The host extraction is
     // scheme-agnostic; accept either prefix so an `http://` upstream is still metadata-checked.
     let rest = strip_scheme(url)?;
@@ -1820,9 +1730,9 @@ fn reject_cidr_metadata_entries(key: &str, entries: &[String], errors: &mut Vec<
 /// entry in `entries`, using the EXACT canonicalization the denylist block check uses for operator-
 /// supplied `blocked_metadata_hosts`. This is shared by the allow-override path so an allow entry
 /// unblocks every spelling of an IP the same way a block entry blocks every spelling:
-/// * a hostname entry matches case-insensitively, trailing dot stripped;
-/// * an IP-literal entry matches the parsed connect-host AND its IPv4-mapped/compatible-IPv6 and
-///   alternate-encoding (decimal-int / hex / octal / short-dotted) spellings.
+///   * a hostname entry matches case-insensitively, trailing dot stripped;
+///   * an IP-literal entry matches the parsed connect-host AND its IPv4-mapped/compatible-IPv6 and
+///     alternate-encoding (decimal-int / hex / octal / short-dotted) spellings.
 ///
 /// Empty / whitespace-only entries never match.
 fn host_matches_any(host: &str, entries: &[String]) -> bool {
@@ -1882,14 +1792,14 @@ fn host_matches_any(host: &str, entries: &[String]) -> bool {
 /// Ollama/vLLM "just works" with no flag).
 ///
 /// The hardcoded denylist:
-/// * link-local `169.254.0.0/16` — catches IMDS `169.254.169.254`, AWS ECS task-creds
-///   `169.254.170.2`, Tencent `169.254.0.23`, and any other link-local metadata in one range
-///   (nothing legitimate runs on link-local);
-/// * `100.100.100.200` (Alibaba Cloud ECS, inside the otherwise-allowed CGNAT /10);
-/// * `168.63.129.16` (Azure WireServer / platform);
-/// * `192.0.0.192` (Oracle Cloud / OCI IMDS — globally-routable-shaped, so it needs an explicit literal);
-/// * the EC2 IMDSv6 `fd00:ec2::254`;
-/// * the metadata hostnames in `METADATA_HOSTS`.
+///   * link-local `169.254.0.0/16` — catches IMDS `169.254.169.254`, AWS ECS task-creds
+///     `169.254.170.2`, Tencent `169.254.0.23`, and any other link-local metadata in one range
+///     (nothing legitimate runs on link-local);
+///   * `100.100.100.200` (Alibaba Cloud ECS, inside the otherwise-allowed CGNAT /10);
+///   * `168.63.129.16` (Azure WireServer / platform);
+///   * `192.0.0.192` (Oracle Cloud / OCI IMDS — globally-routable-shaped, so it needs an explicit literal);
+///   * the EC2 IMDSv6 `fd00:ec2::254`;
+///   * the metadata hostnames in `METADATA_HOSTS`.
 ///
 /// All IP entries are matched through the SAME obfuscation defenses (IPv4-mapped/compatible IPv6,
 /// decimal-int / hex / octal encoding, percent-encoded dots, trailing-dot FQDN), not just IMDS.
@@ -1956,10 +1866,10 @@ pub(crate) fn ssrf_blocked_host(
     }
 
     // The hardcoded metadata IP literals.
-    // * link-local `169.254.0.0/16` (IMDS `169.254.169.254`, ECS `169.254.170.2`, Tencent
-    // `169.254.0.23`, …);
-    // * Alibaba `100.100.100.200`; Azure `168.63.129.16`; Oracle Cloud (OCI) `192.0.0.192`;
-    // EC2 IMDSv6 `fd00:ec2::254`.
+    //  * link-local `169.254.0.0/16` (IMDS `169.254.169.254`, ECS `169.254.170.2`, Tencent
+    //    `169.254.0.23`, …);
+    //  * Alibaba `100.100.100.200`; Azure `168.63.129.16`; Oracle Cloud (OCI) `192.0.0.192`;
+    //    EC2 IMDSv6 `fd00:ec2::254`.
     let imds_v6 = Ipv6Addr::new(0xfd00, 0x0ec2, 0, 0, 0, 0, 0, 0x254);
     let alibaba_v4 = Ipv4Addr::new(100, 100, 100, 200);
     let azure_v4 = Ipv4Addr::new(168, 63, 129, 16);

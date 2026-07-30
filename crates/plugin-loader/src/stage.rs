@@ -39,23 +39,6 @@ pub(crate) enum Staged {
     TempFile { path: PathBuf },
 }
 
-impl Staged {
-    /// TEST-ONLY: the private staging file backing this load, or `None` when the load touched no
-    /// disk at all (the Linux memfd path). Tests assert on THIS instance's own artifact rather than
-    /// counting `busbar-plugins-<pid>-*` entries process-wide: the count is both flaky (a
-    /// concurrent test in the same binary stages/releases files between the two samples) and weak
-    /// (`after <= before` still passes while this load's file leaks, if someone else's file went
-    /// away). An exact path is immune to both.
-    #[cfg(test)]
-    pub(crate) fn temp_path(&self) -> Option<&std::path::Path> {
-        match self {
-            #[cfg(target_os = "linux")]
-            Staged::Memfd { .. } => None,
-            Staged::TempFile { path } => Some(path.as_path()),
-        }
-    }
-}
-
 impl Drop for Staged {
     fn drop(&mut self) {
         match self {
@@ -135,7 +118,7 @@ fn release_temp_file(path: &PathBuf) {
 }
 
 /// Monotonic per-process staging-file sequence (concurrent loads never collide on a name).
-pub(crate) fn next_seq() -> u64 {
+fn next_seq() -> u64 {
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(0);
     SEQ.fetch_add(1, Ordering::Relaxed)
@@ -213,12 +196,7 @@ pub(crate) fn load_library_from_bytes(
     // The file was created by us, in a directory we created 0700, from already-verified bytes.
     let lib = unsafe { Library::new(&path) }.map_err(|e| {
         let msg = format!("failed to load plugin '{display}': {e}");
-        // `stage_temp_file` already did `state.live += 1`, but no `Staged::TempFile` is
-        // constructed on this error path, so `release_temp_file` (the only decrementer) would never
-        // run — leaking a `live` count that keeps the clean-shutdown `live == 0` dir-removal from
-        // ever firing. Release here (removes the file AND decrements `live`, reclaiming the dir when
-        // it hits 0), not a bare `remove_file`.
-        release_temp_file(&path);
+        let _ = std::fs::remove_file(&path);
         msg
     })?;
     Ok((lib, Staged::TempFile { path }))

@@ -77,7 +77,7 @@ docker run -d -p 8080:8080 \
 
 The provider catalog ships inside the image at `/etc/busbar/providers.yaml`, so you only mount `config.yaml` (written in [Step 2](#step-2-write-a-minimal-config)). Pin an exact version (`getbusbar/busbar:1.5.0`) or ride `latest`. If you use a durable store, give it a writable volume (e.g. `-v busbar-data:/var/lib/busbar` with `store.settings.db_path: /var/lib/busbar/governance.db`).
 
-**Or build from source** (requires Rust 1.97+):
+**Or build from source** (requires Rust 1.87+):
 
 ```bash
 cargo build --release      # binary at target/release/busbar
@@ -100,7 +100,6 @@ Busbar reads two YAML files:
 
 This is the smallest config that boots and serves requests. Use it on a local machine to try Busbar quickly.
 
-<!-- doc-check: config -->
 ```yaml
 # config.yaml (dev/minimal, no client auth gate)
 providers:
@@ -231,7 +230,6 @@ The Anthropic SDK sends `x-api-key`; Busbar accepts it on the `/v1/messages` rou
 
 Once the single-provider setup is working, extend the config to introduce a pool. A pool is a named group of models with weighted load balancing, per-member circuit breaking, and automatic failover.
 
-<!-- doc-check: config -->
 ```yaml
 # config.yaml, two providers, two models, one pool, with client auth
 auth:
@@ -263,7 +261,7 @@ pools:
         weight: 1
 ```
 
-Set the additional environment variables, restart Busbar, and mint a caller key (shown once):
+Set the additional environment variables, restart busbar, and mint a caller key (shown once):
 
 ```bash
 export ANTHROPIC_KEY=sk-ant-...
@@ -275,7 +273,7 @@ BUSBAR_PROVIDERS=./providers.yaml BUSBAR_CONFIG=./config.yaml ./busbar
 # Mint a signed key for your app (expires in 90 days by default):
 BUSBAR_CLIENT_TOKEN=$(curl -s -X POST http://127.0.0.1:8081/api/v1/admin/keys \
   -H "Authorization: Bearer $BUSBAR_ADMIN_TOKEN" -H "Content-Type: application/json" \
-  -d '{"name":"quickstart"}' | jq -r .token)
+  -d '{"name":"quickstart"}' | jq -r .secret)
 ```
 
 Now call the pool by name. Both ingress styles work against a pool:
@@ -321,7 +319,7 @@ curl -s http://localhost:8080/stats \
 
 `/stats` goes through the auth middleware, so with a non-empty `auth.chain` it requires a valid key; under `chain: []` it is open. It returns a per-lane snapshot: `model`, `provider`, `max_concurrent`, `inflight`, `free_slots`, `ok`/`err`/`client_fault` counts, `usable`, `dead`, `dead_reason`, `cooldown_remaining_s`, `streak`, and `budget`. A key restricted to specific `allowed_pools` only sees the pools and lanes it can reach.
 
-**Prometheus metrics** (`/metrics`) — opt-in; add a `metrics:` block with a required `buffer_seconds` retention window first, otherwise the route is not mounted:
+**Prometheus metrics** (`/metrics`):
 
 ```bash
 curl -s http://localhost:8080/metrics \
@@ -348,7 +346,7 @@ auth:
 
 The caller's own token (`Authorization: Bearer`, `x-api-key`, or `x-goog-api-key`) is forwarded directly to the upstream provider. Use this when each caller has their own provider key and you want Busbar purely for routing and protocol translation, not credential management.
 
-Note: with `passthrough` Busbar forwards the caller's credential and holds no upstream keys; a caller with a bad key can hard-down a lane for everyone (30 minutes), so use it deliberately.
+Note: with `passthrough` busbar forwards the caller's credential and holds no upstream keys; a caller with a bad key can hard-down a lane for everyone (30 minutes), so use it deliberately.
 
 ### Bedrock egress (Busbar signs requests with SigV4)
 
@@ -409,7 +407,6 @@ Before taking Busbar out of dev mode:
 
 ## What's next
 
-- **Deploy it**: running Busbar for real — process configuration, TLS termination, the two-listener model, and running multiple instances ([`docs/operations.md`](operations.md))
 - **Full config reference**: every field, default, and validation rule ([`docs/configuration.md`](configuration.md))
 - **Pools, breakers, and failover**: weighting, breaker tuning, session affinity, context-length failover, and exhaustion policies ([`docs/configuration.md#pools`](configuration.md#pools))
 - **Running in production**: TLS termination, systemd, Docker, `/stats` monitoring, and breaker diagnosis ([`docs/operations.md`](operations.md))

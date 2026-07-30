@@ -4,7 +4,7 @@ name = "busbar-hook-test-plugin"
 version = "1.5.0"
 publish = false            # internal TEST-support cdylib; never goes to crates.io
 edition = "2021"
-rust-version = "1.97"
+rust-version = "1.87"
 description = "A hermetic trivial kind:hook plugin cdylib used to drive the end-to-end DlopenPolicy seam tests (no network; a fixed gate that ranks/transforms/reports based on the projection it is handed)."
 license = "Apache-2.0"
 

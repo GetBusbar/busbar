@@ -31,14 +31,6 @@ pub(crate) const SIGNAL_IR_PARSE: &str = "ir_parse";
 pub(crate) const SSE_DONE_SENTINEL: &str = "[DONE]";
 pub(crate) const SSE_DONE_FRAME: &[u8] = b"data: [DONE]\n\n";
 
-/// A native Anthropic stream emits `event: ping` immediately after `message_start` (and
-/// periodically thereafter); a translated cross-protocol stream never did, which is both a
-/// fingerprintable proxy tell and closes some of the idle-timeout gap a native stream survives.
-/// Injected once, right after the translated `message_start` frame, on any INGRESS-Anthropic
-/// cross-protocol stream (same-protocol Anthropic passthrough is byte-verbatim and already carries
-/// the upstream's own pings, so it never needs this).
-pub(crate) const ANTHROPIC_PING_SSE_FRAME: &[u8] = b"event: ping\ndata: {\"type\":\"ping\"}\n\n";
-
 /// The HTTP `Authorization` header name (lowercase, canonical). Emitted by the bearer/SigV4 auth-header
 /// builders across protocols; named once so no builder re-spells it.
 pub(crate) const HDR_AUTHORIZATION: &str = "authorization";
@@ -401,17 +393,6 @@ pub(crate) trait ProtocolWriter: Send + Sync {
         false
     }
 
-    /// The maximum number of `cache_control` breakpoints this writer's dialect accepts on a single
-    /// request, or `None` when the vendor publishes no fixed cap (Bedrock's cap is model-specific,
-    /// not protocol-wide, so it is deliberately left `None` here rather than guessed). Anthropic
-    /// documents a hard cap of 4 (`"A maximum of 4 blocks with cache_control may be provided"`).
-    /// The IR carries breakpoints as an unbounded per-block `Option<IrCacheControl>`, so a
-    /// cross-protocol request (same-protocol Anthropic is a verbatim passthrough that never reaches
-    /// a writer) can exceed a smaller target's cap; `prepare_for_egress` clamps against this.
-    fn max_cache_control_breakpoints(&self) -> Option<usize> {
-        None
-    }
-
     /// Write a response/stream event to wire (event_type, data).
     fn write_response_event(&self, ev: &IrStreamEvent) -> Option<(String, serde_json::Value)>;
 
@@ -436,7 +417,7 @@ pub(crate) trait ProtocolWriter: Send + Sync {
 
     /// Render a router/forward/auth-layer error as this protocol's NATIVE error envelope, so a
     /// client on the vendor's official SDK gets the typed exception it expects instead of a
-    /// plain-text body it cannot decode (the / Unit I transparency gap). `status` is the HTTP
+    /// plain-text body it cannot decode (the §8.1 / Unit I transparency gap). `status` is the HTTP
     /// status to be sent (informational; the envelope body may also embed it, e.g. Gemini's
     /// `error.code`); `kind` is a protocol-appropriate error type/category string (e.g.
     /// `"invalid_request_error"`, `"not_found"`); `message` is the human-readable detail.
@@ -1125,12 +1106,10 @@ impl Protocol {
 /// zero-sized, but a fresh instance is REQUIRED per request regardless: `GeminiWriter`,
 /// `CohereWriter`, and `ResponsesWriter` carry per-STREAM mutable state (e.g. `Mutex<Vec<…>>`,
 /// `AtomicU64`) seeded from their const constructors, so they must not be shared/cached across
-/// concurrent requests. The allocations are small (empty collections) and happen only on
-/// request/response SETUP paths — a handful of times per request as each layer resolves the
-/// protocol it needs from a name string, never inside a per-chunk loop. Callers that hold a
-/// resolution for the life of a stream resolve it once and keep it (see `FirstByteBody::new`);
-/// callers that need only a pure by-name vtable fact go through the memoized registry sweeps below
-/// (`streaming_content_types`, `array_stream_shim_keys`) rather than resolving here.
+/// concurrent requests. The allocations are small (empty collections) and confined to per-request
+/// setup paths — never per-chunk loops. Registry SWEEPS that only need pure-by-name vtable facts
+/// (`streaming_content_types`, `array_stream_shim_keys`) memoize their results to avoid repeating
+/// these allocations on the hot path.
 pub(crate) fn protocol_for(name: &str) -> Option<Protocol> {
     match name {
         PROTO_ANTHROPIC => Some(Protocol::anthropic()),
@@ -1424,7 +1403,7 @@ pub(crate) fn find_frame_terminator(buf: &[u8]) -> Option<(usize, usize)> {
 
 /// Parse one SSE frame into `(event_type, data_payload)`. `event_type` is "" when the frame has
 /// no `event:` line (OpenAI style). Multiple `data:` lines in a single frame are concatenated with
-/// `\n` per the SSE spec. Returns `None` if the frame carries no `data:` line (including a
+/// `\n` per the SSE spec (§9.2.6). Returns `None` if the frame carries no `data:` line (including a
 /// frame with only an `event:` line) or is invalid UTF-8.
 pub(crate) fn parse_sse_frame(frame: &[u8]) -> Option<(String, String)> {
     let text = std::str::from_utf8(frame).ok()?;
@@ -1661,50 +1640,14 @@ fn scan_json_value_end(bytes: &[u8], start: usize) -> Option<usize> {
     }
 }
 
-/// Truncate `stop` to the egress vendor's published cap. Vendors 400 on an over-length
-/// stop-sequence array and the IR carries an unbounded `Vec` (no protocol enforces a cap on
-/// ingress), so a cross-protocol request can always exceed a smaller target's cap. NON-SILENT:
-/// warns only when it actually truncates, naming `proto`, the cap, and how many sequences were
-/// dropped.
-pub(crate) fn clamp_stop(stop: &[String], cap: usize, proto: &'static str) -> Vec<String> {
-    if stop.len() <= cap {
-        return stop.to_vec();
+/// Re-frame an IR-derived `(event_type, data)` as INGRESS SSE bytes. A non-empty `event_type`
+/// yields Anthropic-style `event:`/`data:` frames; an empty one yields OpenAI-style bare `data:`.
+fn reframe_sse(event_type: &str, data: &serde_json::Value) -> String {
+    if event_type.is_empty() {
+        format!("data: {data}\n\n")
+    } else {
+        format!("event: {event_type}\ndata: {data}\n\n")
     }
-    let provided = stop.len();
-    // `stop.len() > cap` is guaranteed by the early return above, so this cannot underflow;
-    // `saturating_sub` would only imply a doubt that isn't there.
-    let dropped = provided - cap;
-    tracing::warn!(
-        proto,
-        cap,
-        provided,
-        dropped,
-        "truncating stop sequences to {proto}'s documented cap of {cap}; the request carried \
-         {provided}, so {dropped} were dropped"
-    );
-    stop[..cap].to_vec()
-}
-
-/// Append an IR-derived `(event_type, data)` to `out` as INGRESS SSE bytes. A non-empty
-/// `event_type` yields Anthropic-style `event:`/`data:` frames; an empty one yields OpenAI-style
-/// bare `data:`. Writes THROUGH the caller's buffer, not into a returned `String`: this is the
-/// per-chunk streaming path (`stream.rs`'s `emit_ir_event`), and every call site immediately threw
-/// the returned `String` away into its own `out: &mut Vec<u8>` — one allocation per translated
-/// frame for nothing. Serializes via `crate::json::to_vec` (the sonic seam), not `Value`'s
-/// `Display`-via-`format!`: this function used to bypass that seam even though `json.rs`'s own
-/// module doc claims every body-JSON path, including the SSE-event paths, goes through it.
-fn write_sse_frame(out: &mut Vec<u8>, event_type: &str, data: &serde_json::Value) {
-    if !event_type.is_empty() {
-        out.extend_from_slice(b"event: ");
-        out.extend_from_slice(event_type.as_bytes());
-        out.push(b'\n');
-    }
-    out.extend_from_slice(b"data: ");
-    // `unwrap_or_default()` matches the identical decision already made one call site up
-    // (`stream.rs`'s `crate::json::to_vec(&out_data).unwrap_or_default()`): a `Value` that fails to
-    // serialise is not a condition this emitter can report, and diverging here would be gratuitous.
-    out.extend_from_slice(&crate::json::to_vec(data).unwrap_or_default());
-    out.extend_from_slice(b"\n\n");
 }
 
 /// Anthropic reader implementation.

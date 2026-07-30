@@ -16,13 +16,13 @@ vendor integrations. It implements a small set of protocols losslessly:
 
 Any provider that speaks one of these is a **catalog entry** in `providers.yaml`
 (a name, a `base_url`, an env var for its key, an optional `path` override): no
-code. A client speaking any protocol can target any provider; Busbar translates
+code. A client speaking any protocol can target any provider; busbar translates
 through its superset IR when the two differ.
 
 This is why the number to watch is the **protocol count (6)**, not the provider
 count. The shipped catalog is a *curated* convenience set of verified hosted
 endpoints, verified, not scraped, because each entry's error-code mappings feed
-the breaker's fault attribution. An operator can point Busbar at *any*
+the breaker's fault attribution. An operator can point busbar at *any*
 OpenAI-compatible endpoint, including their own, with three lines of YAML and
 no wait for an "integration." We deliberately don't chase a giant provider count;
 that's a maintenance treadmill that dilutes the vetting.

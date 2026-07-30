@@ -149,7 +149,7 @@ pub(crate) struct LimitCfg {
     /// per `(group, pool)`. `None` = group-wide (every request charges it). ALWAYS `None` for
     /// `concurrent`. The pool's existence is validated against the config's `pools:` at the door.
     pub(crate) pool: Option<String>,
-    /// What BUDGET exhaustion does: `block` (the default when absent -
+    /// What BUDGET exhaustion does (§6c "budgets that teach"): `block` (the default when absent -
     /// today's 429/quota rejection) or `downgrade` (the request re-admits and dispatches through
     /// `downgrade_to` instead of being refused - expensive calls get cheaper, not blocked).
     /// `downgrade` requires `downgrade_to` + a `pool:` scope + the `budget` metric (validated).

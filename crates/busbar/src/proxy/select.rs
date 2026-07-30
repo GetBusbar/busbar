@@ -44,7 +44,7 @@ impl RequestCtx {
     /// full membership, so without re-applying here a compliance (e.g. BAA-only) restrict would be
     /// silently dropped at the pool boundary. Mirrors Reconcile-2 exactly: a `Weighted` on_empty is an
     /// advisory escape (skip this restrict on this hop); the fail-closed default returns `Err(name)`
-    /// so the caller REJECTS rather than spilling to an ineligible lane.
+    /// so the caller REJECTS rather than spilling to an ineligible lane. (found: audit c1r13.)
     pub(crate) fn enforce_restricts(
         &self,
         app: &App,
@@ -144,16 +144,7 @@ impl Drop for ProbeGuard<'_> {
 }
 
 /// Pick a lane from `cands` using session affinity (if any) then weighted selection (SWRR) over
-/// the healthy subset, returning the chosen lane index, its acquired concurrency permit, and the
-/// probe-epoch owner token captured at the moment of the win (mirroring `ProbeGuard`'s own capture,
-/// same field, same reasoning: a caller that must abandon dispatch AFTER an `.await` — a yield
-/// point where a successor could win a NEWER probe on the same cell — releases via the
-/// owner-checked `release_probe_owned_in(pool, lane, epoch)` instead of the unowned
-/// `release_probe_in`, which would revert whichever probe is live at release time regardless of
-/// which one this call actually won. Safe to use even when this pick's `acquire_for_dispatch_in`
-/// did not win a NEW probe (a normal Closed-cell dispatch): the epoch is simply whatever the cell's
-/// current value is, and `cell_release_probe_owned`'s CAS is a no-op on a non-HalfOpen cell either
-/// way.
+/// the healthy subset, returning the chosen lane index and its acquired concurrency permit.
 /// `cands` is a `&[WeightedLane]` slice where each lane carries its configured weight.
 /// `request_ctx` provides accumulated exclusions to avoid retrying failed lanes.
 /// `affinity_key_hash` enables sticky routing as a preference (not a hard constraint). It is the
@@ -172,7 +163,7 @@ pub(crate) async fn pick_among(
     // SWRR, byte-identical to pre-feature behavior. `Some(order)` makes selection walk the ranked
     // lanes through the unchanged breaker filter instead of the blind SWRR pick (see SELECTION below).
     policy_order: Option<&[usize]>,
-) -> Option<(usize, Permit, u64)> {
+) -> Option<(usize, Permit)> {
     let t = now();
 
     // Session affinity preference - try sticky lane first if usable (in this pool's breaker view).
@@ -202,17 +193,8 @@ pub(crate) async fn pick_among(
                 // wedged HalfOpen + probe_in_flight, benching it until the slow out-of-band prober
                 // resets it — the SAME leak the main loop guards below. So: keep the probe only on the
                 // dispatch (try_acquire success); release it on every other exit before falling through.
-                //
-                // Capture the owner token NOW, synchronously right after `usable_in` (the only place
-                // on this path that could have won a probe), before any await — same discipline as
-                // `ProbeGuard`'s own capture — so a caller releasing after a later yield point can use
-                // the owner-checked release. No `.await` occurs anywhere on this sticky span itself
-                // (`release_probe_in` at the `else` below is safe unowned exactly because of that), but
-                // the returned epoch still needs to be correct for the CALLER's later, post-await
-                // release sites.
-                let epoch = app.store.probe_epoch_in(pool_name, sticky);
                 if let Some(p) = app.store.try_acquire(sticky) {
-                    return Some((sticky, p, epoch));
+                    return Some((sticky, p));
                 } else {
                     app.store.release_probe_in(pool_name, sticky);
                 }
@@ -356,9 +338,8 @@ pub(crate) async fn pick_among(
         // Try to acquire the concurrency permit immediately.
         if let Some(p) = app.store.try_acquire(picked_lane_idx) {
             // Live permit → dispatched request owns the probe; disarm so Drop is a no-op.
-            let epoch = probe_guard.probe_epoch;
             probe_guard.armed = false;
-            return Some((picked_lane_idx, p, epoch));
+            return Some((picked_lane_idx, p));
         }
 
         // Permits saturated: park (not busy-spin) until a slot frees OR the deadline passes. A
@@ -383,13 +364,8 @@ pub(crate) async fn pick_among(
             // itself will record the success/failure that releases the probe). Only BOUNDED lanes
             // ever park here: an unbounded lane's `try_acquire` above always succeeds.
             Ok(Ok(permit)) => {
-                let epoch = probe_guard.probe_epoch;
                 probe_guard.armed = false;
-                return Some((
-                    picked_lane_idx,
-                    crate::store::Permit::Bounded(permit),
-                    epoch,
-                ));
+                return Some((picked_lane_idx, crate::store::Permit::Bounded(permit)));
             }
             // Semaphore closed (shutdown) — no request dispatched; `probe_guard` drops and releases.
             Ok(Err(_)) => return None,

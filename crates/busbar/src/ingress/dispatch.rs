@@ -30,7 +30,7 @@ fn multipart_model(body: &[u8]) -> Option<String> {
 
 /// Ingress for the NEW operations (embeddings/moderations/images/audio, 1.2), for EVERY dialect that
 /// speaks the op. Resolves the (protocol, operation) OperationHandler — absent ⇒ no-handler 404 in the CALLER's
-/// dialect — then forwards through `proxy::forward_with_pool_parsed` (same-proto
+/// dialect (design §3) — then forwards through `proxy::forward_with_pool_parsed` (same-proto
 /// passthrough or the cross-protocol IR bridge). Model resolution: `model_hint` for path-model dialects (gemini/bedrock —
 /// their route handler parsed it from the URL), else the JSON body `model` (openai/cohere) or the
 /// multipart form (openai transcription).
@@ -201,7 +201,7 @@ pub(crate) async fn operation_resolved(
         Ok(admitted) => admitted,
     };
     let charged = admit.is_some();
-    // A budget downgrade re-pooled the admission: dispatch through the pool the charge
+    // A budget downgrade (§6c) re-pooled the admission: dispatch through the pool the charge
     // actually landed on, not the one the client asked for.
     let model = downgraded.as_deref().unwrap_or(model);
 
@@ -439,27 +439,14 @@ pub(crate) async fn bedrock_invoke(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    // Mirror `operation_ingress`'s pre-routing accounting (`dispatch.rs:52-53`): every pre-charge
-    // exit — including this one — must flow through `finish_rejected`, or the request is invisible
-    // to Prometheus/the webhook (the invariant stated at `ingress/mod.rs:319`/`:612-615`).
-    let started = Instant::now();
-    let charged_at = crate::store::now();
     let Some(operation) = crate::handlers::request_handler(PROTO_BEDROCK)
         .and_then(|rh| rh.resolve_operation(uri.path(), &body))
     else {
-        return finish_rejected(
-            &app,
-            &gov,
+        return ingress_error(
             PROTO_BEDROCK,
-            crate::proxy::POOL_LABEL_UNRESOLVED,
-            started,
-            charged_at,
-            ingress_error(
-                PROTO_BEDROCK,
-                StatusCode::BAD_REQUEST,
-                crate::proxy::KIND_INVALID_REQUEST,
-                "InvokeModel body is not a supported operation (expected inputText or textToImageParams).",
-            ),
+            StatusCode::BAD_REQUEST,
+            crate::proxy::KIND_INVALID_REQUEST,
+            "InvokeModel body is not a supported operation (expected inputText or textToImageParams).",
         );
     };
     operation_ingress(

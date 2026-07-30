@@ -1,4 +1,4 @@
-//! The WON-but-undispatched single-flight recovery probe must be released when
+//! REGRESSION (A1): the WON-but-undispatched single-flight recovery probe must be released when
 //! the `pick_among` future is dropped (client disconnect) while parked on the permit await — none
 //! of the explicit early-returns run on drop. `ProbeGuard`'s `Drop` enforces that. These unit
 //! tests construct the guard directly: dropping an ARMED guard must clear `probe_in_flight` (the
@@ -91,7 +91,7 @@ fn disarmed_guard_leaves_probe_held() {
     );
 }
 
-/// A STALLED armed guard - one that won an earlier probe, then dropped LATE after
+/// REGRESSION (P2 #4): a STALLED armed guard - one that won an earlier probe, then dropped LATE after
 /// the cell already recorded an outcome AND a NEW probe was won - must NOT revert the fresh winner's
 /// probe. Its owner-checked Drop keys on the epoch captured at acquisition, so once that epoch is
 /// superseded the release is a strict no-op and the current probe owner keeps its HalfOpen cell.

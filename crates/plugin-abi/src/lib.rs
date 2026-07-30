@@ -71,12 +71,28 @@ pub mod kind {
     pub const HOOK: &str = "hook";
 }
 
-/// The store-plugin PAYLOAD schema version (the signed manifest's `abi_version` for `kind: store`).
-/// Bumped only on a breaking change to the wire — the request/response shape or the C signatures;
-/// additive changes (e.g. a new serde-default field) keep the version. The engine refuses a plugin
-/// whose manifest `abi_version` falls outside the supported range at load, never mis-calling a
-/// mismatched plugin.
-pub const ABI_VERSION: u32 = 1;
+/// The store-plugin ABI version this crate defines. Bumped only on a breaking change to the wire
+/// (the request/response shape or the C signatures); additive changes keep the version.
+///
+/// v2 (1.5.0, pre-release): the scalar `Usage { spend_cents, tokens, requests }` counter became the
+/// per-(model, tier) TOKEN LEDGER (`UsageLedger`/`UsageDelta`) and `Get/Put/AddUsage` re-keyed from
+/// `key_id` to `bucket_id` (key buckets and budget-group buckets share the shape). A breaking wire
+/// change, so the version bumps: a v1 plugin is refused at load, never mis-called. 1.5.0 is
+/// unreleased, so no v1 plugin exists in the wild.
+///
+/// v3 (1.5.0, pre-release): KEYS ARE PURE AUTH. `VirtualKey` (which crosses this ABI as JSON in
+/// the key CRUD messages) dropped its inline limits (`max_budget_cents` / `budget_period` /
+/// `rpm_limit` / `tpm_limit`), renamed `budget_group` to `group`, and re-encoded `allowed_pools`
+/// as an Option (`null` = all pools, `[]` = NO pools - C6). A breaking wire change to a message
+/// payload, so the version bumps; still no earlier plugin exists in the wild.
+///
+/// v4 (1.5.0, pre-release): the usage ledger SPLIT its request count. `UsageLedger`/`UsageDelta`
+/// (which cross this ABI as JSON in the `Get/Put/AddUsage` messages) gained `billable_requests`
+/// alongside `requests`: `requests` stays the admission count (never refunded, the requests-limit
+/// truth), `billable_requests` is admitted minus non-2xx refunds (the fee base for the 2xx-only
+/// charge). The field is serde-default, so an older plugin's payload still deserializes; still a
+/// wire-shape change to a message payload, so the version bumps in the same unreleased cycle.
+pub const ABI_VERSION: u32 = 4;
 
 /// The exported-symbol names the engine resolves after `dlopen`/`LoadLibrary`. A plugin of ANY kind
 /// MUST export all SIX with these exact (kind-NEUTRAL) names and the signatures in the `*Fn` type
@@ -102,42 +118,14 @@ pub mod symbol {
 /// is orders of magnitude past any real governance/auth payload, so a legitimate reply never trips it.
 pub const MAX_PLUGIN_RESPONSE_LEN: usize = 256 * 1024 * 1024;
 
-/// Status returned by `open`/`call`. The four positive/neutral codes below are DISTINCT signals the
-/// loader keys different behavior on; they are never overloaded. See each const.
-///
-/// TRANSPORT is FROZEN at [`TRANSPORT_VERSION`] = 1: adding [`STATUS_UNSUPPORTED`]/[`STATUS_PANIC`] is
-/// NOT a transport bump — the six signatures, the ptr+len rule, and the meanings of `OK`/`ERR` are
-/// unchanged; `PROTOCOL` merely stops being overloaded and two positive codes are added. A v1-era SDK
-/// plugin that predates these still returns `STATUS_PROTOCOL` WITH a `"malformed request JSON: …"`
-/// body for an undecodable variant; the loader keys its legacy-shape acceptance on exactly that body
-/// (see `plugin-loader`'s `LEGACY_V1_UNDECODABLE_PREFIX`), never on the status alone.
-///
-/// `OK`: the out buffer holds the success payload.
+/// Status returned by `open`/`call`. `OK`: the out buffer holds the success payload. `ERR`: the out
+/// buffer holds a UTF-8 error message (a [`busbar_api::StoreError`] rendered). `PROTOCOL`: an
+/// ABI-level violation (null/oversized args, a serialize failure inside the plugin) with no buffer.
 pub const STATUS_OK: i32 = 0;
-/// A DEFINED backend failure — the out buffer holds a UTF-8 error message. The op RAN and returned an
-/// error (a [`busbar_api::StoreError`]/`SecretError`/… rendered). Propagated by the loader.
+/// A store-level failure — the out buffer carries a UTF-8 error message.
 pub const STATUS_ERR: i32 = 1;
-/// A caller-PROTOCOL violation the plugin detected BEFORE running user code: a null handle, a null
-/// request buffer with `len > 0`, a garbled ABI frame. No user code ran, so the out buffer stays
-/// EMPTY. Propagated, never a fallback signal.
-///
-/// Value is negative for backward wire compatibility with the v1-era SDK, which overloaded this code.
-/// The two v1 uses are told apart by the OUT BUFFER, and the direction matters: a v1 undecodable
-/// request variant wrote `"malformed request JSON: …"` into the buffer (→ the loader's legacy
-/// unsupported signal, see [`STATUS_UNSUPPORTED`]), whereas a v1 CAUGHT PANIC returned this status
-/// bare, with NO buffer — exactly like a null handle. So an EMPTY buffer is never the unsupported
-/// signal; reading it as one re-opens the revocation fail-open [`STATUS_PANIC`] exists to close.
+/// An ABI/protocol violation (bad arguments, internal serialize failure) — no buffer produced.
 pub const STATUS_PROTOCOL: i32 = -1;
-/// The plugin could not DECODE this request variant — an older SDK build that predates the op. A
-/// forward-compat signal the loader MAY treat as "op unsupported by this build" and fall back to a
-/// safe default WHERE a fallback is defined (denylist/audit-tail/append-audit). NEVER emitted for a
-/// panic or a backend failure — that distinction is what closes the revocation fail-open. Out buffer =
-/// UTF-8 message.
-pub const STATUS_UNSUPPORTED: i32 = 2;
-/// User code PANICKED and was caught at the export boundary. A REAL failure that MUST propagate — it is
-/// explicitly NOT the unsupported signal, so a plugin panic can never open the safe-default fallback
-/// (the revocation-denylist fail-open is closed by this distinction). Out buffer = UTF-8 message.
-pub const STATUS_PANIC: i32 = 3;
 
 /// A `Store` operation and its arguments, serialized as the `call` request payload. One
 /// self-describing enum keeps the C ABI to a single `call` symbol regardless of how many methods
@@ -219,25 +207,15 @@ pub enum StoreResponse {
 }
 
 // ── SECRET-plugin wire (`kind: secret`) ─────────────────────────────────────────────────────────
-// A secret plugin rides the SAME six-symbol C shape as a store plugin (busbar_abi/
-// busbar_plugin_kind/busbar_open/busbar_call/busbar_free/busbar_close; JSON payloads over ptr+len),
-// under the SAME kind-neutral symbol names ([`symbol`]) — NOT its own — distinguished only by its
-// signed manifest's `kind` and its own tiny request enum. A plugin is a plugin: the
-// tarball/manifest/signature/trust pipeline is IDENTICAL - only the manifest `kind` (and therefore
-// which engine seam consumes it) differs.
+// A secret plugin rides the SAME five-symbol C shape as a store plugin (version/open/call/free/
+// close; JSON payloads over ptr+len), under its own symbol names and its own tiny request enum. A
+// plugin is a plugin: the tarball/manifest/signature/trust pipeline is IDENTICAL - only the
+// manifest `kind` (and therefore which engine seam consumes it) differs.
 
 /// The secret-plugin PAYLOAD schema version (the signed manifest's `abi_version` for `kind: secret`).
 /// v1 (1.5.0): the initial `Resolve` wire. This is the per-kind payload axis, NOT the transport axis
 /// — a secret plugin exports the SAME six neutral symbols ([`symbol`]) as every other kind.
 pub const SECRET_ABI_VERSION: u32 = 1;
-
-/// The auth-plugin PAYLOAD schema version (the signed manifest's `abi_version` for `kind: auth`).
-/// v1 (1.5.0): the initial wire. Named the same way `SECRET_ABI_VERSION` and `hook::HOOK_ABI_VERSION`
-/// are — auth was the one kind still floor-checked against a bare `&[1, 1]` literal duplicated in
-/// `plugin-loader::registry` AND `plugin-sdk`, with no compiler link between the two halves of the
-/// handshake; the other two kinds already share a named const, so a bump there is caught at compile
-/// time. This closes that gap without changing the value.
-pub const AUTH_ABI_VERSION: u32 = 1;
 
 /// A [`busbar_api::SecretModule`] operation, serialized as the secret `call` request payload.
 #[derive(Debug, Serialize, Deserialize)]
@@ -258,31 +236,20 @@ pub enum SecretResponse {
 
 // ── C fn-pointer signatures the engine resolves ──────────────────────────────────────────────────
 // Provided as type aliases so the engine's loader and the plugin's SDK agree on the exact ABI. All
-// are `unsafe extern "C-unwind"`. Buffers the plugin allocates (the `out*` params) are owned by the
-// engine until it calls `busbar_free` on them.
-//
-// WHY `"C-unwind"` (not plain `"C"`): under the workspace default `panic = "unwind"`, a Rust panic
-// that tries to unwind OUT OF a plain `extern "C"` function is turned by the compiler into an
-// immediate ABORT at the callee (plugin) frame — it never reaches the caller, so the engine's
-// `catch_unwind` at the call site can NEVER intercept it and a panicking plugin aborts the whole
-// gateway. `extern "C-unwind"` makes unwinding across this boundary DEFINED: a panic propagates as a
-// forced unwind that the engine's `catch_unwind` DOES catch, turning a panicking plugin into a clean
-// fail-closed error instead of a process abort. This is the load-bearing half of the L6 panic-safety
-// seam; the engine wraps every call site (open/call/close/free/handshake) in `catch_unwind` (see the
-// loader), and non-`"C-unwind"` C/Go/Zig plugins still abort on unwind exactly as before (their
-// runtimes don't unwind), which is the pre-existing, documented behavior for non-Rust plugins.
+// are `unsafe extern "C"`. Buffers the plugin allocates (the `out*` params) are owned by the engine
+// until it calls `busbar_free` on them.
 
 /// `busbar_abi` — returns the [`TRANSPORT_VERSION`] the plugin was built against.
-pub type AbiFn = unsafe extern "C-unwind" fn() -> u32;
+pub type AbiFn = unsafe extern "C" fn() -> u32;
 
 /// `busbar_plugin_kind` — returns a pointer to a NUL-terminated static string naming the ONE kind
 /// this library speaks (`"store"` | `"secret"` | `"auth"` | `"hook"`).
-pub type PluginKindFn = unsafe extern "C-unwind" fn() -> *const u8;
+pub type PluginKindFn = unsafe extern "C" fn() -> *const u8;
 
 /// `busbar_open` — construct an instance from a JSON config blob. On `STATUS_OK`, `*out_handle` is
 /// the opaque instance pointer (passed back to `call`/`close`). On `STATUS_ERR`, `*out_err` /
 /// `*out_err_len` hold a UTF-8 message the engine must `free`.
-pub type OpenFn = unsafe extern "C-unwind" fn(
+pub type OpenFn = unsafe extern "C" fn(
     cfg: *const u8,
     cfg_len: usize,
     out_handle: *mut *mut c_void,
@@ -293,7 +260,7 @@ pub type OpenFn = unsafe extern "C-unwind" fn(
 /// `busbar_call` — run one request (JSON in `req`). On `STATUS_OK`, `*out`/`*out_len` hold the JSON
 /// response; on `STATUS_ERR`, a UTF-8 error message. Either way the engine owns and must `free` the
 /// out buffer.
-pub type CallFn = unsafe extern "C-unwind" fn(
+pub type CallFn = unsafe extern "C" fn(
     handle: *mut c_void,
     req: *const u8,
     req_len: usize,
@@ -303,38 +270,15 @@ pub type CallFn = unsafe extern "C-unwind" fn(
 
 /// `busbar_free` — release a buffer the plugin allocated (`open`'s error, `call`'s payload). The
 /// plugin frees with the SAME allocator it allocated with — the engine never frees plugin memory.
-pub type FreeFn = unsafe extern "C-unwind" fn(ptr: *mut u8, len: usize);
+pub type FreeFn = unsafe extern "C" fn(ptr: *mut u8, len: usize);
 
 /// `busbar_close` — drop the instance behind `handle`. Called once, at shutdown/unload.
-pub type CloseFn = unsafe extern "C-unwind" fn(handle: *mut c_void);
+pub type CloseFn = unsafe extern "C" fn(handle: *mut c_void);
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use busbar_api::{AuditRecord, VirtualKey};
-
-    /// The five status codes are pairwise DISTINCT integers. The loader's discrimination (esp. the
-    /// revocation-denylist fallback) keys on these being different: an undecodable-variant signal
-    /// ([`STATUS_UNSUPPORTED`]) must never collide with a caught panic ([`STATUS_PANIC`]) or a backend
-    /// failure ([`STATUS_ERR`]) or a caller-protocol violation ([`STATUS_PROTOCOL`]).
-    #[test]
-    fn status_codes_are_pairwise_distinct() {
-        let all = [
-            STATUS_OK,
-            STATUS_ERR,
-            STATUS_PROTOCOL,
-            STATUS_UNSUPPORTED,
-            STATUS_PANIC,
-        ];
-        for (i, a) in all.iter().enumerate() {
-            for b in &all[i + 1..] {
-                assert_ne!(a, b, "status codes must be pairwise distinct");
-            }
-        }
-        // The two forward-compat codes are the specific values the loader/SDK agree on.
-        assert_eq!(STATUS_UNSUPPORTED, 2);
-        assert_eq!(STATUS_PANIC, 3);
-    }
 
     fn sample_audit() -> AuditRecord {
         AuditRecord {
@@ -441,9 +385,9 @@ mod tests {
     }
 
     #[test]
-    fn abi_version_is_one() {
-        // 1.5.0 is the first release to carry the store plugin ABI. A mismatched plugin is
-        // refused at the handshake.
-        assert_eq!(ABI_VERSION, 1);
+    fn abi_version_is_two() {
+        // v4 = the billable-requests ledger split (1.5.0). A mismatched plugin is refused at the
+        // handshake.
+        assert_eq!(ABI_VERSION, 4);
     }
 }

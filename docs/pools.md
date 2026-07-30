@@ -51,19 +51,46 @@ Pools are optional: you can route directly to a single model. But the moment you
 
 By default a pool uses **smooth weighted round-robin (SWRR)** over the healthy members: each request goes to the next member by weight, and a tripped, dead, or capacity-exhausted member is skipped with its share redistributed to the rest. If the chosen lane fails before the client has seen a byte, Busbar fails over to the next member, even mid-stream. That is the whole reliability story: weighting for the happy path, automatic failover for the bad one.
 
-Want a different order than weighted? Name a **selection strategy** — `cheapest`, `fastest`, `least_busy`, `usage`, or your own ordering hook — as one entry in the pool's `hooks:` list. That is all of **[Routing](/docs/routing/)**, which owns every strategy, the routing signals, and the ordering-hook contract, with worked examples. The rest of *this* page is pool **structure**: members, weights, failover, and affinity.
+Name a **selection strategy** in the pool's `hooks:` list and it decides the order instead. The strategy runs once per request, before the failover loop:
+
+| Strategy (named in `hooks:`) | Picks the member with... |
+|---|---|
+| `weighted` (default) | the next weighted turn (SWRR). Zero overhead, identical to naming no strategy. |
+| `cheapest` | the lowest cost, derived from the model's `rate_card` entry as `(input_utok + output_utok) / 2`. |
+| `fastest` | the lowest measured latency (rolling EWMA). |
+| `least_busy` | the most free concurrency. |
+| `usage` | the most rate-limit headroom. |
+| an **ordering gate hook** | the order your own compiled socket hook or HTTPS webhook returns (a `kind: gate` replying with the `order` arm). |
+
+A pool names at most one strategy (a bare name) plus any number of inline hook module refs in one `hooks: [...]` list, e.g. `hooks: [cheapest, { module: socket, settings: { path: /run/pii.sock } }]`. External ordering logic is a hook instance named inline, not a pool key: the pre-1.3 `route:` / `policy:` keys and the 1.4.x top-level `hooks:` registry were **removed** and are hard startup errors. Every strategy and the ordering-hook contract live in the [Hooks guide](hooks.md) and the pool-hooks reference in [Configuration](configuration.md#pool-hooks-ordering-and-gates). The rest of this page is about pool *structure*: members, weights, failover, and affinity.
 
 ## Config reference
 
-The field-by-field reference — every pool and member field with its type, default, and validation rule — lives in one place: **[Configuration → `pools`](/docs/configuration/#pools)**. This guide stays conceptual so the two never drift.
+**Pool fields**
 
-In short: a pool takes a list of `members` (each a `model` lane with an optional `weight`, `context_max`, `tier`, and `tags`), an optional `hooks` list (one ordering strategy — `weighted`/`cheapest`/`fastest`/`least_busy`/`usage` — plus any gates as inline `kind: hook` plugin refs), and optional `affinity`, `breaker`, `failover`, and `on_exhausted` blocks.
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `members` | list | required | The lanes in this pool (see below). |
+| `hooks` | list | `[]` | This pool's ordering strategy (`weighted`/`cheapest`/`fastest`/`least_busy`/`usage`, at most one, a bare name) plus any gates as inline module refs (`{ module: webhook\|socket\|<plugin>, settings: {...} }`). |
+| `affinity` | object | none | `mode: session` pins a session to a lane by `header_name` (default `x-session-id`). |
 
-Each block with its own guide: [Hooks](/docs/hooks/) for the selection strategies, the ordering-hook contract, and [what a gate receives](hooks.md#what-a-gate-receives); [Circuit breaker](/docs/circuit-breaker/#circuit-breaker-configuration) for the per-pool `breaker` block; and [In-flight failover](/docs/failover/) for `failover` and `on_exhausted`.
+See the [Hooks guide](/docs/hooks/) for every selection strategy, the ordering-hook contract, and the full hook model, [Circuit breaker](/docs/circuit-breaker/#circuit-breaker-configuration) for the per-pool `breaker` block, and [In-flight failover](/docs/failover/) for `failover` and `on_exhausted`.
+
+**Member fields**
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `target` | string | required | A model name (a `models:` entry). |
+| `weight` | integer | `1` | Relative SWRR share over healthy members. Must be ≥ 1. |
+| `context_max` | integer | none | This lane's context window; requests larger than it fail over to a bigger lane. |
+| `tier` | string | none | Routing tier label (e.g. `primary`, `overflow`); read by policies. |
+| `tags` | list | `[]` | Free-form labels read by ordering/gate hooks. |
+
+`tier` and `tags` are consumed by the selection strategies and ordering hooks (each candidate's cost signal derives from the top-level `rate_card`); see [What a gate receives](hooks.md#what-a-gate-receives) for the full signal set each candidate carries.
 
 ## Multi-protocol pools
 
-**Multi-protocol pools**: members can span different providers and protocols. Busbar translates through its superset IR on cross-protocol hops (see [Protocols and translation](/docs/protocols/#cross-protocol-translation)). A warning is logged at startup for heterogeneous pools because the IR models a common superset: same-protocol requests are byte-exact on the wire (the client sees the upstream's bytes verbatim, with the request side byte-for-byte only when it already names the lane's exact wire model), but cross-protocol hops drop source-only fields that have no analog on the target (e.g. `logprobs`, `n`). For pools where all members speak the same protocol there is no field loss and no re-encoding — but responses still pay a per-frame IR decode as a usage side-channel; that cost is not translation overhead in the field-loss sense, but it is not zero either.
+**Multi-protocol pools**: members can span different providers and protocols. Busbar translates through its superset IR on cross-protocol hops (see [Protocols and translation](/docs/protocols/#cross-protocol-translation)). A warning is logged at startup for heterogeneous pools because the IR models a common superset: same-protocol requests are byte-exact passthrough, but cross-protocol hops drop source-only fields that have no analog on the target (e.g. `logprobs`, `n`). For pools where all members speak the same protocol, there is no translation overhead and no field loss.
 
 ## Recipes
 
@@ -118,6 +145,6 @@ pools:
 
 ### Cost-, latency-, and custom-based routing
 
-Choosing *which* member serves a request (cheapest, fastest, least busy, or your own `kind: hook` gate plugin returning an `order`) is a routing concern, not a pool-shape one: a pool names its selection strategy plus any gates in one `hooks: [...]` list. Those recipes, with a worked pool example, live in the [Hooks guide](hooks.md) and the [pool-hooks reference](configuration.md#pool-hooks-ordering-and-gates).
+Choosing *which* member serves a request (cheapest, fastest, least busy, or your own webhook/socket gate hook returning an `order`) is a routing concern, not a pool-shape one: a pool names its selection strategy plus any gates in one `hooks: [...]` list. Those recipes, with a worked pool example, live in the [Hooks guide](hooks.md) and the [pool-hooks reference](configuration.md#pool-hooks-ordering-and-gates).
 
 See the [Hooks guide](hooks.md) for the full ordering-hook contract and the signals each strategy and gate hook receives, and [Circuit breaker](/docs/circuit-breaker/) / [In-flight failover](/docs/failover/) for how the breaker and failover behave once a strategy or gate hook has chosen an order.

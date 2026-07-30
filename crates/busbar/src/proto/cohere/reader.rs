@@ -283,7 +283,6 @@ impl ProtocolReader for CohereReader {
                                         name,
                                         input,
                                         cache_control: None,
-                                        thought_signature: None,
                                     });
                                 }
                             }
@@ -438,7 +437,7 @@ impl ProtocolReader for CohereReader {
             .get("response_format")
             .and_then(read_cohere_response_format);
 
-        // Cohere-native `documents` (RAG grounding) has NO cross-protocol analog and is NOT
+        // M4: Cohere-native `documents` (RAG grounding) has NO cross-protocol analog and is NOT
         // modeled in the IR — it stays in `extra`. On a SAME-protocol Cohere->Cohere hop it survives
         // byte-exact (it is echoed through `extra`). On a CROSS-protocol hop, `extra` is CLEARED at
         // the translation seam, so the `documents` grounding is silently DROPPED — and the Cohere
@@ -631,9 +630,8 @@ impl ProtocolReader for CohereReader {
             // Cohere v2 streams the assistant's pre-tool-call reasoning as `tool-plan-delta`
             // frames (one token each at `delta.message.tool_plan`) that PRECEDE the
             // `tool-call-start` frames — the streamed counterpart of the non-stream reader's
-            // `message.tool_plan` fold. Reading it here is what keeps a STREAMING Cohere→X hop
-            // symmetric with the non-stream hop: without it the streaming path drops the reasoning
-            // the buffered path preserves.
+            // `message.tool_plan` fold (audit H4). Without reading it here, a STREAMING Cohere→X hop
+            // still lost that reasoning while the non-stream hop preserved it (audit finding #7).
             // Map the plan onto the SAME leading Text block a `content-delta` would open (via the
             // dynamic `cohere_text_ir_index` seam): it claims IR index 0 by first appearance, and the
             // following `tool-call-start` offsets to 1+, mirroring the non-stream case where the plan
@@ -888,7 +886,7 @@ impl ProtocolReader for CohereReader {
         // Cohere v2 carries the assistant's textual plan that PRECEDES its tool calls in
         // `message.tool_plan` (a string, distinct from `content[]`). Without reading it, that reasoning
         // vanishes on any Cohere→X cross-protocol hop. Emit it as a LEADING Text block so it keeps its
-        // native position ahead of the tool calls.
+        // native position ahead of the tool calls. (audit H4)
         if let Some(plan) = message_val.get("tool_plan").and_then(|p| p.as_str()) {
             if !plan.is_empty() {
                 content.push(crate::ir::IrBlock::Text {
@@ -938,7 +936,6 @@ impl ProtocolReader for CohereReader {
                         name,
                         input,
                         cache_control: None,
-                        thought_signature: None,
                     });
                 }
             }

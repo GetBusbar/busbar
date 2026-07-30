@@ -294,8 +294,6 @@ impl ProtocolReader for BedrockReader {
                                 name,
                                 input,
                                 cache_control: None,
-                                // Bedrock's wire has no Gemini thoughtSignature concept.
-                                thought_signature: None,
                             });
                         } else if let Some(tool_result) = content_val.get("toolResult") {
                             let tu_id = tool_result
@@ -1118,7 +1116,6 @@ impl ProtocolReader for BedrockReader {
                         name,
                         input,
                         cache_control: None,
-                        thought_signature: None,
                     });
                 } else if let Some(reasoning) = block_val.get("reasoningContent") {
                     // A Converse response message can carry a `reasoningContent` (extended-thinking)

@@ -71,7 +71,6 @@ fn translate_request_a2o(body: &str) -> Vec<u8> {
     let ir = anthropic.reader().read_request(&v).expect("reads");
     let mut req = IrReq::Chat(ir);
     req.prepare_for_egress(&EgressPrep {
-        thought_signature_fill: false,
         ingress_protocol: "anthropic",
         egress_requires_max_tokens: openai.writer().requires_max_tokens(),
         lane_default_max_tokens: None,
@@ -79,7 +78,6 @@ fn translate_request_a2o(body: &str) -> Vec<u8> {
         reasoning_allowed: true,
         reasoning_budgets: crate::ir::REASONING_BUDGET_DEFAULTS,
         prompt_caching_allowed: true,
-        cache_control_cap: None,
     });
     let IrReq::Chat(ir) = req else { unreachable!() };
     let mut out = openai.writer().write_request(&ir);
