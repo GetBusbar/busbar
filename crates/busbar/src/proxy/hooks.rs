@@ -666,7 +666,9 @@ pub(crate) fn build_prompt_projection<'a>(
             .get("instructions")
             .and_then(|i| i.as_str())
             .map(Cow::Borrowed),
-        _ => v.get("system").map(|s| flatten_content(Some(s), ingress_protocol)),
+        _ => v
+            .get("system")
+            .map(|s| flatten_content(Some(s), ingress_protocol)),
     }
     .filter(|s| !s.is_empty());
     let messages = match conversation_turns(v, ingress_protocol) {
