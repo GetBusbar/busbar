@@ -1677,6 +1677,19 @@ fn strip_scheme(url: &str) -> Option<&str> {
 }
 
 pub(crate) fn extract_normalized_host(url: &str) -> Option<String> {
+    // Strip ALL ASCII tab (0x09), LF (0x0A), and CR (0x0D) characters from anywhere in the string,
+    // FIRST — before any other normalization, mirroring the WHATWG URL spec's basic parser, which
+    // removes these three bytes from the whole input as its very first step, before scheme/authority
+    // parsing even begins. reqwest's `url` crate implements this removal, so it is not merely a
+    // leading/trailing trim: a tab EMBEDDED mid-host is deleted too. Without mirroring it, a
+    // `base_url` like `"https://169.254.169\t.254/"` (a tab is a legal byte inside a YAML
+    // double-quoted scalar) is seen by this guard as the non-IP, non-metadata-matching host
+    // `169.254.169\t.254` (passes every check) while the actual connecting stack deletes the tab and
+    // connects to `169.254.169.254` — the real IMDS address. Doing this before the backslash→`/`
+    // fold matters too: a stripped tab could otherwise sit between characters that only become a
+    // delimiter after this removal (WHATWG strips tab/newline before it looks for `\`/`/` at all).
+    let url = url.replace(['\t', '\n', '\r'], "");
+    let url = url.as_str();
     // Strip the scheme (case-insensitively — see `scheme_is`). The host extraction is
     // scheme-agnostic; accept either prefix so an `http://` upstream is still metadata-checked.
     let rest = strip_scheme(url)?;

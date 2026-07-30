@@ -2116,6 +2116,44 @@ fn test_ssrf_blocks_backslash_authority_bypass() {
 }
 
 #[test]
+fn test_ssrf_blocks_embedded_tab_newline_bypass() {
+    // The WHATWG URL spec's basic parser strips ALL ASCII tab (0x09), LF (0x0A), and CR (0x0D)
+    // bytes from the ENTIRE input as its very first step, before scheme/authority parsing even
+    // begins — not just leading/trailing whitespace. reqwest's `url` crate implements this. A tab
+    // is a legal byte inside a YAML double-quoted scalar, so an operator-editable `base_url` like
+    // `"https://169.254.169\t.254/"` is a real, reachable config shape. Without mirroring the
+    // strip, the guard sees the non-IP, non-metadata-matching host `169.254.169\t.254` (passes
+    // every check) while the connecting stack deletes the tab and connects to the actual IMDS
+    // address `169.254.169.254` — an SSRF bypass.
+    for blocked in [
+        "https://169.254.169\t.254/v1/messages",
+        "https://169.254.169.254\t/v1/messages",
+        "https://169.254\n.169.254/v1/messages",
+        "https://169.254.169\r.254/v1/messages",
+    ] {
+        assert!(
+            ssrf_blocked_host(blocked, &[], false, &[]).is_some(),
+            "expected '{blocked}' to be flagged: stripping the embedded tab/newline/CR (as \
+                 the WHATWG parser and reqwest's `url` crate do) reveals the real metadata host"
+        );
+    }
+    // A full validate() pass must reject a base_url using the embedded-tab trick to reach a
+    // metadata host.
+    let mut providers = HashMap::new();
+    providers.insert(
+        "p".to_string(),
+        make_provider("anthropic", "https://169.254.169\t.254", "API_KEY"),
+    );
+    let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
+    let errs = validate(&cfg).expect_err("embedded-tab base_url must fail validation");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("blocked cloud-metadata host") && e.contains("169.254.169.254")),
+        "expected a metadata-host error naming the real metadata host; got: {errs:?}"
+    );
+}
+
+#[test]
 fn test_validate_rejects_path_override_host_fusion() {
     // A provider `path` override is appended to base_url VERBATIM
     // at request time (`format!("{base}{wire_path}")`), and the composed string chooses the
