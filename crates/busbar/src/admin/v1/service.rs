@@ -9,7 +9,10 @@
 //! atomicity, and audit live as the surface grows — one place, reused by every transport (REST now;
 //! GraphQL/MCP/gRPC later, unchanged).
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::state::App;
 
@@ -53,6 +56,59 @@ static PROCESS_START_EPOCH: std::sync::OnceLock<u64> = std::sync::OnceLock::new(
 pub(crate) fn mark_start() {
     let _ = PROCESS_START.set(std::time::Instant::now());
     let _ = PROCESS_START_EPOCH.set(crate::store::now());
+}
+
+/// One cached computation of `store_plugin_catalog`'s tarball-derived rows for one plugins
+/// directory (see `catalog_cache`).
+struct CatalogCacheEntry {
+    /// Fingerprint of the directory's contents (`plugins_dir_fingerprint`) folded together with
+    /// the trust config in effect when `rows` was computed. Either changing invalidates the entry.
+    key: u64,
+    rows: Vec<PluginView>,
+    /// Number of times this directory's entry has been (re)computed from a full
+    /// `inventory_tarballs` scan — a cache HIT never touches this. Cheap bookkeeping, exercised by
+    /// `catalog_repeat_gets_reuse_the_cached_scan` below; harmless outside tests too.
+    misses: u64,
+}
+
+/// Process-wide cache backing `store_plugin_catalog`, keyed by plugins directory path (normally
+/// there is exactly one path per running process; tests use many distinct temp directories, hence
+/// the map rather than a single slot). See `store_plugin_catalog`'s doc comment for why this cache
+/// exists: `inventory_tarballs` fully re-reads and re-unpacks every tarball on every call, and nothing
+/// else bounds how often the GET this backs can be called.
+static CATALOG_CACHE: OnceLock<Mutex<HashMap<PathBuf, CatalogCacheEntry>>> = OnceLock::new();
+
+fn catalog_cache() -> &'static Mutex<HashMap<PathBuf, CatalogCacheEntry>> {
+    CATALOG_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Cheap, order-independent fingerprint of a directory's immediate entries (filename + size +
+/// mtime of each, hashed together). NOT a security boundary — only a cache-freshness heuristic for
+/// `CATALOG_CACHE` — but adding, removing, or overwriting any file in `dir` changes at least one
+/// entry's size or mtime, so install/remove/rollback all invalidate the cache on their own, with no
+/// bespoke invalidation hook wired into any of those mutation paths. A missing/unreadable directory
+/// fingerprints as an empty entry list, matching `inventory_tarballs`'s own empty-dir behavior.
+fn plugins_dir_fingerprint(dir: &Path) -> u64 {
+    let mut entries: Vec<(std::ffi::OsString, u64, u128)> = std::fs::read_dir(dir)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .filter_map(|e| {
+                    let meta = e.metadata().ok()?;
+                    let mtime = meta
+                        .modified()
+                        .ok()?
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_nanos())
+                        .unwrap_or(0);
+                    Some((e.file_name(), meta.len(), mtime))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    entries.sort();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    entries.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// The auth modules COMPILED INTO this binary (feature-gated at compile time — real `#[cfg]` on each
@@ -967,6 +1023,18 @@ impl AdminService {
     /// policy — pure data checks; no plugin code can run from listing the catalog. Pushing/listing
     /// a plugin over the admin API therefore cannot bypass the trust model: loading only ever
     /// happens through the boot pipeline, which re-runs the same three-phase validation.
+    ///
+    /// CACHED (see `catalog_cache`): `inventory_tarballs` fully re-reads and re-unpacks (gunzip +
+    /// untar + structural + trust) EVERY tarball on EVERY call — fine for a one-off boot scan, but
+    /// this backs an authenticated GET a caller can hit as often as it likes (reads are
+    /// deliberately unmetered by the admin rate limiter — see `admin/rate.rs`'s
+    /// `CONFIG_CLASS_RULES` and the mutation-only gate in `auth::classify_for_rate_limit`). A
+    /// legitimate admin polling this endpoint, or a misbehaving admin-token holder, would otherwise
+    /// pay a full directory re-scan per request with nothing bounding the rate. The cache is keyed
+    /// off a cheap directory fingerprint (name+size+mtime per entry, no read/decompress) plus the
+    /// trust config, so any real change — install, remove, rollback, or a `plugins:` config edit —
+    /// invalidates it on the very next call with no bespoke invalidation hook wired into any of
+    /// those mutation paths.
     fn store_plugin_catalog(&self) -> Vec<PluginView> {
         // The compiled-in RAM default is always present. Which store backend is ACTIVE is a
         // `store.module` config concern (read via `GET /config`), not summarized per-row here,
@@ -981,6 +1049,24 @@ impl AdminService {
         let Ok(policy) = self.app.plugins_cfg.to_policy() else {
             return out;
         };
+
+        // Cache key: a cheap directory-content fingerprint PLUS the config that governs how each
+        // tarball is trust-evaluated. `inventory_tarballs` is a deterministic function of exactly
+        // those two things, so a match here is an EXACT cache hit, not a heuristic staleness
+        // window — nothing observable differs from re-running the scan.
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        plugins_dir_fingerprint(&self.app.plugins_dir).hash(&mut hasher);
+        format!("{:?}", self.app.plugins_cfg).hash(&mut hasher);
+        let key = hasher.finish();
+
+        if let Some(entry) = catalog_cache().lock().unwrap().get(&self.app.plugins_dir) {
+            if entry.key == key {
+                out.extend(entry.rows.iter().cloned());
+                return out;
+            }
+        }
+
+        let mut rows = Vec::new();
         for row in busbar_plugin_loader::inventory_tarballs(&self.app.plugins_dir, &policy) {
             let trust = if row.status == "ready" {
                 if row.signature == "first-party" || row.signature.starts_with("publisher:") {
@@ -998,7 +1084,7 @@ impl AdminService {
                 .as_ref()
                 .map(|m| m.name.clone())
                 .unwrap_or_else(|| row.file.clone());
-            out.push(PluginView {
+            rows.push(PluginView {
                 name,
                 r#type: "store",
                 loader: "dynamic-library",
@@ -1012,6 +1098,24 @@ impl AdminService {
                 error: (row.status != "ready").then(|| row.status.clone()),
             });
         }
+
+        let mut cache = catalog_cache().lock().unwrap();
+        let misses = cache
+            .get(&self.app.plugins_dir)
+            .map(|e| e.misses)
+            .unwrap_or(0)
+            + 1;
+        cache.insert(
+            self.app.plugins_dir.clone(),
+            CatalogCacheEntry {
+                key,
+                rows: rows.clone(),
+                misses,
+            },
+        );
+        drop(cache);
+
+        out.extend(rows);
         out
     }
 
@@ -2001,6 +2105,56 @@ mod tests {
             svc.remove_store_plugin("junk.tar.gz"),
             Err(AdminError::NotFound { .. })
         ));
+    }
+
+    /// The amplification finding this test guards against: `store_plugin_catalog` (behind `GET
+    /// /plugins?type=store`) used to fully re-read and re-unpack EVERY tarball in the plugins
+    /// directory on EVERY call, and that GET is deliberately unmetered by the admin rate limiter
+    /// (reads never reach `auth::classify_for_rate_limit`) — so nothing bounded how often a caller
+    /// could pay that cost. Repeated GETs against an UNCHANGED directory must now reuse the cached
+    /// scan (one `misses` increment total), while a real change (installing a new plugin) must
+    /// still be picked up on the very next call with no explicit invalidation call anywhere.
+    #[test]
+    fn catalog_repeat_gets_reuse_the_cached_scan() {
+        let dir = tmp_plugins_dir("cache-reuse");
+        let svc = svc_with(dir.clone(), unsigned_ok_posture());
+        let lib = b"junk lib bytes";
+        let mut m = test_manifest("acme-store-cache", "cachestore", "acme", "1.0.0");
+        m.sha256 = busbar_plugin_sign::sha256_hex(lib);
+        let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap();
+        svc.install_store_plugin("cache.tar.gz", &tarball)
+            .expect("install");
+
+        // Repeated GETs against an unchanged directory: only the FIRST one is a real scan.
+        for _ in 0..5 {
+            let cat = svc.store_plugin_catalog();
+            assert!(cat.iter().any(|p| p.name == "acme-store-cache"));
+        }
+        let misses_after_repeats = catalog_cache().lock().unwrap()[&dir].misses;
+        assert_eq!(
+            misses_after_repeats, 1,
+            "5 repeat GETs over an unchanged directory must cost exactly 1 real scan"
+        );
+
+        // A real change (a second install) is picked up on the very next call, no explicit
+        // invalidation call required.
+        let lib2 = b"junk lib bytes two";
+        let mut m2 = test_manifest("acme-store-cache-2", "cachestore2", "acme", "1.0.0");
+        m2.sha256 = busbar_plugin_sign::sha256_hex(lib2);
+        let tarball2 = busbar_plugin_loader::tarball::package(&m2, "lib.so", lib2).unwrap();
+        svc.install_store_plugin("cache2.tar.gz", &tarball2)
+            .expect("install");
+
+        let cat = svc.store_plugin_catalog();
+        assert!(
+            cat.iter().any(|p| p.name == "acme-store-cache-2"),
+            "the newly installed plugin is visible on the very next GET"
+        );
+        let misses_after_change = catalog_cache().lock().unwrap()[&dir].misses;
+        assert_eq!(
+            misses_after_change, 2,
+            "a real directory change must invalidate the cache and cost exactly 1 more scan"
+        );
     }
 
     /// ROLLBACK RESOLUTION (1.5.0), the EXPLICIT-downgrade core: a TRUSTED third-party artifact whose
