@@ -233,9 +233,8 @@ jobs:
   #     one gets the CVE fix first. One release pipeline per plugin removes the ambiguity.
   #
   # The in-tree crates (`crates/store-sqlite-plugin`, `crates/store-postgres-plugin`,
-  # `crates/store-redis-plugin`, `crates/auth-oidc-plugin`) are UNCHANGED and deliberately still
-  # live in this monorepo — do not read their removal from this file as a signal to delete them.
-  # They remain load-bearing for:
+  # `crates/auth-oidc-plugin`) are UNCHANGED and deliberately still live in this monorepo — do not
+  # read their removal from this file as a signal to delete them. They remain load-bearing for:
   #   - the real dlopen ABI-crossing tests in crates/plugin-loader/src/lib.rs
   #     (`load_and_exercise_sqlite_plugin_*`, `load_and_exercise_auth_oidc_plugin_*`), part of the
   #     normal `cargo test --workspace` gate every release already implicitly requires green;
@@ -245,4 +244,13 @@ jobs:
   #     independent of where the shipped release artifact ultimately comes from.
   # See docs/plugins.md's "Signing and packaging" section for the corrected, current release-source
   # story per plugin kind.
+  #
+  # store-redis has gone one step further than the above (full extraction, not just this file's
+  # release-job removal): its logic crate no longer lives in this monorepo AT ALL — it brings 100%
+  # of what it needs in its own repo (GetBusbar/store-redis, a same-repo 2-crate workspace). This
+  # repo's own dlopen ABI proof and release-check.sh gate now reach it via a sibling checkout of
+  # that repo, the same pattern already used for headroom-hook/webrequest-hook. The remaining store
+  # plugins (sqlite, postgres) and auth-oidc are slated for the same full extraction next; when
+  # that lands, this whole paragraph collapses to "every plugin, including its logic crate, lives
+  # in its own repo."
 

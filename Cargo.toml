@@ -21,8 +21,6 @@ members = [
     "crates/store-sqlite-plugin",
     "crates/store-postgres",
     "crates/store-postgres-plugin",
-    "crates/store-redis",
-    "crates/store-redis-plugin",
     "crates/store-memory",
 ]
 
