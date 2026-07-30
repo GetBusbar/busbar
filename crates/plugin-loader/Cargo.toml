@@ -34,6 +34,14 @@ getrandom = "0.3"
 # The end-to-end DlopenPolicy test drives the async RoutingPolicy methods, so the test needs a
 # runtime + the `#[tokio::test]` macro (the crate's own dep is `rt`/`time` only — no macros).
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+# `load_and_exercise_auth_oidc_plugin` (the kind:auth ABI-crossing test) mints a real ES256 JWT and
+# serves a real JWKS document over a real local TLS listener, so the plugin's own `ReqwestFetcher`
+# does a genuine HTTPS fetch+verify rather than a stub. Same rustls/rcgen/ring versions the workspace
+# already pins (`crates/busbar`'s own TLS tests use the identical trio).
+ring = "0.17"
+base64 = "0.22"
+rcgen = "0.14"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 
 [target.'cfg(unix)'.dependencies]
 # memfd_create (Linux zero-disk loads) + kill(pid, 0) liveness for the dead-pid staging sweep.
