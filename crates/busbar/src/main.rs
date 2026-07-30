@@ -199,13 +199,13 @@ USAGE:
                         print the effective cloud-metadata SSRF denylist and exit
 
 ENVIRONMENT:
+    BUSBAR_CONFIG       path to config.yaml     (default: /etc/busbar/config.yaml)
     BUSBAR_PROVIDERS    path to providers.yaml  (default: /etc/busbar/providers.yaml)
     BUSBAR_STATE_FILE   state-snapshot path ('' disables; default: busbar-state.json next to config)
+    RUST_LOG            log level: error|warn|info|debug|trace  (default: info)
 
 Flags:
     --safe-mode         boot on base config.yaml alone (quarantine the persisted overlay)
-    BUSBAR_CONFIG       path to config.yaml     (default: /etc/busbar/config.yaml)
-    RUST_LOG            log level: error|warn|info|debug|trace  (default: info)
 
 ENDPOINTS (once running, listen address from config.yaml `listen`):
     POST /<model>/v1/messages              Anthropic-format ingress (single model)

@@ -46,6 +46,65 @@ impl MutationClass {
     }
 }
 
+/// One rule in the CONFIG-class blast-radius set. `Exact` matches the whole relative path;
+/// `Prefix` matches every path starting with the string (used for `/config/` and `/overlay/`,
+/// whose membership is a subtree, not a single endpoint).
+enum PathRule {
+    Exact(&'static str),
+    Prefix(&'static str),
+}
+
+/// THE single source of truth for which admin mutation endpoints are in the tight CONFIG class
+/// (10/min) versus the roomy CRUD class (60/min). `classify_mutation` reads this table; nothing
+/// else decides class membership. `docs/admin-api.md`'s rate-limit table is a hand-written
+/// restatement of exactly this list — kept honest by
+/// `admin::tests::tests::rate_limit_doc_table_matches_classifier`, which enumerates every
+/// mutation operation in the committed `openapi.json`, classifies each via this table, and fails
+/// if the resulting CONFIG set differs from the doc's `config` row by even one endpoint in either
+/// direction.
+///
+/// This used to be an inline `if`/`else` boolean expression with the same six clauses — sound,
+/// but a predicate can only answer "is this one in?", never "which ones are in?", so nothing
+/// could enumerate its membership to check it against the doc. A table can be iterated as well as
+/// matched, which is what makes the cross-check test possible at all (the `reload_to_apply`
+/// structural fix, applied here).
+const CONFIG_CLASS_RULES: &[PathRule] = &[
+    // Whole-config mutations (apply/reload/rollback) — `/config/validate` is a stateless dry-run
+    // carved out below, before this prefix ever matches it.
+    PathRule::Prefix("/config/"),
+    // The admin auth chain itself — `PUT /admin-auth` (the L3 remount moved it off `/auth`).
+    PathRule::Exact(crate::admin::v1::contract::PATH_ADMIN_AUTH),
+    // A per-section overlay reset discards a whole section back to base config — a blast-radius
+    // revert (rebuilds the App).
+    PathRule::Prefix("/overlay/"),
+    // Both PLUGIN SWAP endpoints do a full `rebuild_app_from_disk` + `handle.swap` (identical
+    // blast radius to `config/reload`) — not the 6x-looser CRUD budget. `/plugins` (install/list)
+    // and `/plugins/{file}` (delete) do NOT swap the App, so they are deliberately absent here and
+    // fall through to CRUD.
+    PathRule::Exact("/plugins/reload"),
+    PathRule::Exact("/plugins/rollback"),
+    // Restarting ends the process; the 6x looser CRUD budget would be a flood knob.
+    PathRule::Exact("/restart"),
+];
+
+/// Classify a mutation request's ADMIN_PREFIX-relative path. Pure function of
+/// [`CONFIG_CLASS_RULES`] plus the one carve-out (`/config/validate` is a read-only dry-run that
+/// must not contend with the CONFIG budget despite living under `/config/`).
+pub(crate) fn classify_mutation(rel: &str) -> MutationClass {
+    if rel == crate::admin::v1::contract::PATH_CONFIG_VALIDATE {
+        return MutationClass::Crud;
+    }
+    let is_config = CONFIG_CLASS_RULES.iter().any(|rule| match rule {
+        PathRule::Exact(p) => rel == *p,
+        PathRule::Prefix(p) => rel.starts_with(p),
+    });
+    if is_config {
+        MutationClass::Config
+    } else {
+        MutationClass::Crud
+    }
+}
+
 /// Fixed-window counters keyed by (principal, class). Held on `App` behind an `Arc` (shared across
 /// config-apply snapshots — rate state survives every swap); bounded by construction: entries are
 /// per-principal-per-class and a sweep on every check drops past-window entries, so a churn of

@@ -60,6 +60,7 @@ These are the only environment variables read by Busbar (excluding test-only `BU
 |---|---|---|
 | `BUSBAR_PROVIDERS` | `main.rs` | Path to `providers.yaml`. Default: `/etc/busbar/providers.yaml`. |
 | `BUSBAR_CONFIG` | `main.rs` | Path to `config.yaml`. Default: `/etc/busbar/config.yaml`. |
+| `BUSBAR_STATE_FILE` | `state_persist.rs` | State-snapshot path. Empty string disables persistence; unset defaults to `busbar-state.json` next to the config file. |
 | `RUST_LOG` | `observability.rs` | Log level: `error`, `warn`, `info`, `debug`, or `trace`. Default: `info`. |
 | *(each provider's `api_key: { env: VAR }` reference)* | `main.rs` | The env var **named by** the secret reference holds that provider's upstream credential. Resolved once at boot per provider. |
 | *(any `${VAR}` in `config.yaml`)* | `config.rs` | Expanded before YAML is parsed. Unset → fatal boot error. |
@@ -1118,6 +1119,7 @@ The smallest config that parses and resolves. `providers` and `models` are the o
 
 **`config.yaml`:**
 
+<!-- doc-check: config -->
 ```yaml
 providers:
   anthropic:
@@ -1144,6 +1146,12 @@ models:
 
 This example requires: `BUSBAR_ADMIN_TOKEN`, `ANTHROPIC_KEY`, `OPENAI_KEY`, `GEMINI_KEY`.
 
+<!--
+  Not `doc-check: config`-marked: this example's `store.module: sqlite` and `plugins.enabled: true`
+  make it un-validatable without a signed plugin-tarball fixture (the design doc's "fixture cost"
+  tradeoff, same reasoning applied there to live-curl execution). The "Minimal working example"
+  below IS marked and covers the same top-level shape without the plugin dependency.
+-->
 ```yaml
 listen: "0.0.0.0:8080"
 admin_listen: "127.0.0.1:8081"      # the admin API always runs on its own listener

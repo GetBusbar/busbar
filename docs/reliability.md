@@ -23,6 +23,11 @@ The rest of this page ties them together with one production-like configuration.
 
 The following config creates a production-like setup: a weighted primary pool with fast failover and a cheap overflow, context-length failover between members, session affinity, aggressive tripping with a low streak threshold, and governance with a group limit tree plus a per-model rate card so spend is priced from real token counts.
 
+<!--
+  Not `doc-check: config`-marked: this example's `store.module: sqlite` + `plugins.enabled: true`
+  make it un-validatable without a signed plugin-tarball fixture (see the same note in
+  configuration.md's full annotated example).
+-->
 ```yaml
 listen: "0.0.0.0:8080"
 
