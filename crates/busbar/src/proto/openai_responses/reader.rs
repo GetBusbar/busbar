@@ -1183,10 +1183,17 @@ impl ProtocolReader for ResponsesReader {
                                     if let Some(text) =
                                         block_item.get("text").and_then(|t| t.as_str())
                                     {
+                                        // `annotations` is a sibling key on this same content-part
+                                        // object. See `read_url_annotations` for why offsets are
+                                        // deliberately not carried.
+                                        let citations = block_item
+                                            .get("annotations")
+                                            .map(crate::proto::openai_chat::read_url_annotations)
+                                            .unwrap_or_default();
                                         content.push(crate::ir::IrBlock::Text {
                                             text: text.to_string(),
                                             cache_control: None,
-                                            citations: Vec::new(),
+                                            citations,
                                         });
                                     }
                                 } else if block_type == "refusal" {

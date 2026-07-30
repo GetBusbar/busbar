@@ -840,10 +840,17 @@ impl ProtocolReader for OpenAiReader {
         if let Some(content_val) = message_val.get("content") {
             if let Some(text) = content_val.as_str() {
                 if !text.is_empty() {
+                    // `annotations` is a sibling of `content` on the `message` object (not nested
+                    // per content-part, since `content` is a plain string here). See
+                    // `read_url_annotations` for why offsets are deliberately not carried.
+                    let citations = message_val
+                        .get("annotations")
+                        .map(super::read_url_annotations)
+                        .unwrap_or_default();
                     content.push(crate::ir::IrBlock::Text {
                         text: text.to_string(),
                         cache_control: None,
-                        citations: Vec::new(),
+                        citations,
                     });
                 }
             } else if let Some(arr) = content_val.as_array() {
