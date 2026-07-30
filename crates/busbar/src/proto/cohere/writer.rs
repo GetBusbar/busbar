@@ -508,10 +508,21 @@ impl ProtocolWriter for CohereWriter {
                     // delta.message.content.text (an object), matching the content-start shape and
                     // this reader's object path. A bare string here is non-native and a client that
                     // reads content.text would accumulate nothing.
+                    //
+                    // NO `type` key inside `content` here (verified against Cohere's own API
+                    // reference): a real content-delta's `content` object is `{ "text": "…" }` only
+                    // -- `type` is carried ONLY by content-START (see the `BlockStart` arm above),
+                    // never repeated on every delta. Emitting one here was an extra field no native
+                    // Cohere client emits, which a strict parser -- or anyone fingerprinting streams
+                    // for the indistinguishability property this protocol's docs promise -- could
+                    // use to tell a busbar-translated stream from a native one. The reader already
+                    // accepts BOTH shapes (this one and the real one) for exactly this reason; this
+                    // is the writer catching up to match the real wire, not a breaking change to the
+                    // read side.
                     serde_json::json!({
                         "type": ET_CONTENT_DELTA,
                         "index": index,
-                        "delta": { "message": { "content": { "type": "text", "text": text } } }
+                        "delta": { "message": { "content": { "text": text } } }
                     }),
                 )),
                 // Streamed tool-call argument fragments map to a native `tool-call-delta` frame
