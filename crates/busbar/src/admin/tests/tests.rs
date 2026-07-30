@@ -7644,7 +7644,7 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
             serde_json::json!({
                 "per_request_fee": 7,
                 "rate_card": { "m0": { "input_utok": 1.5, "output_utok": 2.0 } },
-                "limits": { "max_inbound_concurrent": 512 }
+                "limits": { "tls_handshake_timeout_secs": 30 }
             })
             .to_string(),
         )
@@ -7661,7 +7661,7 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
             .await
             .unwrap();
     assert_eq!(body["settings"]["per_request_fee"], 7);
-    assert_eq!(body["settings"]["limits"]["max_inbound_concurrent"], 512);
+    assert_eq!(body["settings"]["limits"]["tls_handshake_timeout_secs"], 30);
     assert!(
         body["settings"]["rate_card"]["m0"].is_object(),
         "rate_card round-trips"
@@ -7829,6 +7829,103 @@ async fn test_admin_v1_config_settings_boot_scoped_limits_flagged_reload_to_appl
         flagged.contains(&"limits.pool_max_idle_per_host"),
         "a boot-scoped UpstreamClients field must be flagged reload-to-apply, not silently \
          'applied live': {flagged:?}"
+    );
+
+    handle.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `limits.max_inbound_concurrent` is frozen by a DIFFERENT mechanism than the `UpstreamClients`
+/// reuse above: `main.rs` captures it ONCE in `main()` and bakes it into a
+/// `tower::limit::GlobalConcurrencyLimitLayer` on the DATA ROUTER at process start. A config apply
+/// swaps only `Arc<App>` (`AppHandle::swap`) — the router, and therefore the semaphore's permit
+/// count, is never rebuilt. `reload_to_apply_fields` did not flag it, so a
+/// `PUT {"limits":{"max_inbound_concurrent":512}}` returned `reload_to_apply: []` and a note saying
+/// "applied live" for a change that changes nothing at runtime until a restart — the exact
+/// false-success class the sibling `UpstreamClients` fields were already fixed for. Assert the field
+/// IS flagged (dotted, its own mechanism, deserving its own regression separate from the
+/// `UpstreamClients` test above).
+#[tokio::test]
+async fn test_admin_v1_config_settings_max_inbound_concurrent_flagged_reload_to_apply() {
+    let (dir, _overlay, addr, handle) = settings_test_app("maxinboundconcurrent").await;
+    let client = reqwest::Client::new();
+    let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
+
+    let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
+        .header("content-type", "application/json")
+        .body(
+            serde_json::json!({
+                "limits": { "max_inbound_concurrent": 512 }
+            })
+            .to_string(),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(put.status().as_u16(), 200, "{:?}", put.text().await);
+    let body: serde_json::Value = put.json().await.unwrap();
+    let flagged: Vec<&str> = body["reload_to_apply"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert!(
+        flagged.contains(&"limits.max_inbound_concurrent"),
+        "the router-level GlobalConcurrencyLimitLayer is boot-frozen and must be flagged \
+         reload-to-apply, not silently 'applied live': {flagged:?}"
+    );
+
+    handle.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The `observability` section is live EXCEPT three fields the gap-sweep for
+/// `max_inbound_concurrent` also turned up: `emit_server_timing` is baked into router middleware
+/// state at boot, `request_log_webhook_url` seeds a process-global `OnceLock` that silently no-ops
+/// after the first `main()` call, and `otlp_url` feeds a one-shot `tracing_subscriber` init. None of
+/// the three are rebuilt by a config apply. Assert all three are flagged (dotted, same reasoning as
+/// `limits.*`).
+#[tokio::test]
+async fn test_admin_v1_config_settings_boot_scoped_observability_flagged_reload_to_apply() {
+    let (dir, _overlay, addr, handle) = settings_test_app("bootscopedobs").await;
+    let client = reqwest::Client::new();
+    let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
+
+    let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
+        .header("content-type", "application/json")
+        .body(
+            serde_json::json!({
+                "observability": {
+                    "emit_server_timing": true,
+                    "request_log_webhook_url": "https://example.com/hook",
+                    "otlp_url": "https://otel.example.com:4317"
+                }
+            })
+            .to_string(),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(put.status().as_u16(), 200, "{:?}", put.text().await);
+    let body: serde_json::Value = put.json().await.unwrap();
+    let flagged: Vec<&str> = body["reload_to_apply"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert!(
+        flagged.contains(&"observability.emit_server_timing"),
+        "router-baked middleware state must be flagged reload-to-apply: {flagged:?}"
+    );
+    assert!(
+        flagged.contains(&"observability.request_log_webhook_url"),
+        "the OnceLock-seeded webhook target must be flagged reload-to-apply: {flagged:?}"
+    );
+    assert!(
+        flagged.contains(&"observability.otlp_url"),
+        "the one-shot tracing-subscriber init must be flagged reload-to-apply: {flagged:?}"
     );
 
     handle.abort();
