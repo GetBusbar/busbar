@@ -965,31 +965,33 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Locate the hermetic `busbar-store-memory-plugin` cdylib in the build's target dir (like the
-    /// loader tests' `store_fixture_plugin_path`) — the loader's generic in-tree `kind: store`
-    /// fixture, used here purely to prove the tarball PIPELINE's mechanics (sign, package, scan,
-    /// resolve-by-alias, open), never sqlite-specific behavior (which now lives entirely in
-    /// `busbar-store-sqlite`'s own repo, GetBusbar/store-sqlite). CI hardening: under CI
-    /// (`cargo test --workspace` always builds it) a missing cdylib is a HARD failure, never a
-    /// silent skip.
+    /// Locate the REAL `busbar-store-sqlite-plugin` cdylib built from a SIBLING checkout of
+    /// `GetBusbar/store-sqlite` (mirrors the loader tests' `store_fixture_plugin_path` in
+    /// `crate::tests` exactly — see that function's doc comment for the full sibling-checkout
+    /// rationale). Used here purely to prove the tarball PIPELINE's mechanics (sign, package, scan,
+    /// resolve-by-alias, open), never sqlite-specific behavior (which is that repo's own job).
     fn store_fixture_cdylib() -> Option<PathBuf> {
-        let candidate = (|| {
-            let exe = std::env::current_exe().ok()?;
-            let profile_dir = exe.parent()?.parent()?;
-            let name = crate::plugin_library_filename("busbar_store_memory_plugin");
-            let candidate = profile_dir.join(&name);
+        let candidate = {
+            let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")); // .../busbarAI/crates/plugin-loader
+            let sibling_root = manifest_dir.join("../../../store-sqlite"); // sibling of busbarAI
+            let name = crate::plugin_library_filename("busbar_store_sqlite_plugin");
+            let candidate = sibling_root.join("target/release").join(&name);
             candidate.exists().then_some(candidate)
-        })();
-        if candidate.is_none() && std::env::var_os("CI").is_some() {
+        };
+        if candidate.is_none()
+            && std::env::var_os("CI").is_some()
+            && std::env::var_os("DEV_GATE").is_some()
+        {
             panic!(
-                "the store-memory-plugin cdylib is not built under CI; refusing to silently skip the \
-                 end-to-end tarball pipeline coverage"
+                "the store-sqlite-plugin cdylib is not built from the ../store-sqlite sibling \
+                 checkout under dev-gate.yml: refusing to silently skip the end-to-end tarball \
+                 pipeline coverage"
             );
         }
         candidate
     }
 
-    /// END-TO-END, REAL CODE: package the real store-memory-plugin cdylib into a SIGNED tarball, run
+    /// END-TO-END, REAL CODE: package the real store-sqlite-plugin cdylib into a SIGNED tarball, run
     /// the full three-phase pipeline, resolve by ALIAS, and open a live `dyn Store` through the
     /// memfd (Linux) / private-temp loader - exercising put/get over the C ABI. This is the exact
     /// seam the engine sees: verified bytes in, `Box<dyn Store>` out, indistinguishable from a
@@ -997,22 +999,25 @@ mod tests {
     #[test]
     fn end_to_end_open_store_from_signed_tarball() {
         let Some(path) = store_fixture_cdylib() else {
-            eprintln!("skip: store-memory-plugin cdylib not built (run under --workspace)");
+            eprintln!(
+                "skip: store-sqlite-plugin cdylib not built (run `cargo build --release -p \
+                 busbar-store-sqlite-plugin` in a sibling ../store-sqlite checkout)"
+            );
             return;
         };
-        let lib = std::fs::read(&path).expect("read store fixture cdylib");
+        let lib = std::fs::read(&path).expect("read sibling store-sqlite-plugin cdylib");
         let acme = key(3);
         let dir = tmpdir("e2e");
-        let m = sign(&acme, manifest("acme-store-memory", "memory", "acme"), &lib);
-        let bytes = tarball::package(&m, "libbusbar_store_memory_plugin.so", &lib).unwrap();
-        std::fs::write(dir.join("memory.tar.gz"), bytes).unwrap();
+        let m = sign(&acme, manifest("acme-store-sqlite", "sqlite", "acme"), &lib);
+        let bytes = tarball::package(&m, "libbusbar_store_sqlite_plugin.so", &lib).unwrap();
+        std::fs::write(dir.join("sqlite.tar.gz"), bytes).unwrap();
 
         let mut pol = policy(&key(1));
         pol.publishers
             .insert("acme".to_string(), acme.verifying_key());
         let reg = scan_and_validate(&dir, &pol).expect("scan");
         let store = reg
-            .open_store("memory", r#"{}"#)
+            .open_store("sqlite", r#"{"db_path": ":memory:"}"#)
             .expect("open the real store through the full pipeline");
         let key = busbar_api::VirtualKey {
             id: "vk_pipeline".into(),
