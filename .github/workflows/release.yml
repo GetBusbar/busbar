@@ -232,9 +232,9 @@ jobs:
   #     hazard with no offsetting benefit: which one is canonical, which one do docs point at, which
   #     one gets the CVE fix first. One release pipeline per plugin removes the ambiguity.
   #
-  # The store-plugin crates (`crates/store-sqlite-plugin`, `crates/store-postgres-plugin`,
-  # `crates/store-redis-plugin`) are UNCHANGED and deliberately still live in this monorepo — do not
-  # read their removal from THIS FILE as a signal to delete them. They remain load-bearing for:
+  # The store-plugin crates (`crates/store-sqlite-plugin`, `crates/store-postgres-plugin`) are
+  # UNCHANGED and deliberately still live in this monorepo — do not read their removal from THIS
+  # FILE as a signal to delete them. They remain load-bearing for:
   #   - the real dlopen ABI-crossing tests in crates/plugin-loader/src/lib.rs
   #     (`load_and_exercise_sqlite_plugin_*`), part of the normal `cargo test --workspace` gate
   #     every release already implicitly requires green;
@@ -242,13 +242,15 @@ jobs:
   #     (see that script's header) to prove busbar works against ALL its plugins together at a given
   #     commit — a property that requires the crates to be buildable from inside this checkout,
   #     independent of where the shipped release artifact ultimately comes from.
-  # auth-oidc has gone one step further than the above (full extraction, not just this file's
-  # release-job removal): its logic crate no longer lives in this monorepo AT ALL — it brings 100%
-  # of what it needs in its own repo (GetBusbar/auth-oidc, a same-repo 2-crate workspace). This
-  # repo's own dlopen ABI proof and release-check.sh gate now reach it via a sibling checkout of
-  # that repo, the same pattern already used for headroom-hook/webrequest-hook. Store/vault plugins
-  # are slated for the same full extraction next; when that lands, this whole paragraph collapses to
-  # "every plugin, including its logic crate, lives in its own repo."
+  #
+  # auth-oidc, secret-vault, and store-redis have all gone one step further than the above (full
+  # extraction, not just this file's release-job removal): none of their logic crates live in this
+  # monorepo AT ALL any more — each brings 100% of what it needs in its own repo (GetBusbar/auth-oidc,
+  # GetBusbar/secret-vault, GetBusbar/store-redis, each a same-repo 2-crate workspace). This repo's
+  # own dlopen ABI proof and release-check.sh gate reach each of them via a sibling checkout, the
+  # same pattern already used for headroom-hook/webrequest-hook. The remaining store plugins
+  # (sqlite, postgres) are slated for the same full extraction next; when that lands, this whole
+  # paragraph collapses to "every plugin, including its logic crate, lives in its own repo."
   # See docs/plugins.md's "Signing and packaging" section for the corrected, current release-source
   # story per plugin kind.
 

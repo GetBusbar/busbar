@@ -39,10 +39,6 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 # C ABI, and the loader entirely — via the plain `busbar-store-sqlite` `lib` crate the plugin wraps.
 # This is a normal (non-cdylib) workspace crate, so it links as an ordinary Rust dependency.
 busbar-store-sqlite = { path = "../store-sqlite" }
-# `load_and_exercise_secret_vault_plugin` (the kind:secret real-Vault ABI-crossing test) seeds a real
-# secret into a real local Vault dev-mode server via a raw HTTP PUT before reading it back through the
-# dlopen'd plugin — the same reqwest major/blocking shape busbar-secret-vault's own client uses.
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking"] }
 
 [target.'cfg(unix)'.dependencies]
 # memfd_create (Linux zero-disk loads) + kill(pid, 0) liveness for the dead-pid staging sweep.
