@@ -89,14 +89,14 @@ Client 1 makes an **OpenAI** request to `fast`; client 2 makes a **Bedrock** req
 
 Every major LLM provider ships (or is compatible with) a client SDK. Those SDKs are tightly coupled to a specific base URL and a specific wire protocol: the OpenAI Python SDK always speaks the OpenAI Chat Completions protocol; the Anthropic SDK always speaks the Anthropic Messages protocol; the Google Gen AI SDK always speaks the Gemini protocol.
 
-Busbar registers one ingress route per protocol. Because the protocol is fixed by the URL path: not by sniffing the body or headers, you configure your existing SDK to talk to Busbar by changing exactly two things:
+Every registered SDK talks to Busbar by changing exactly two things:
 
 - **`base_url`**: point it at Busbar instead of the vendor.
 - **API key**: give it a Busbar client token (or your vendor key in `passthrough` mode) instead of the vendor key.
 
-Nothing else changes in your application code. The SDK still calls the same method (`chat.completions.create`, `messages.create`, whatever). The body it constructs is valid for its native protocol. Busbar accepts it on the matching ingress route, resolves the model/pool, and forwards: translating to the lane's protocol if necessary.
+Nothing else changes in your application code. The SDK still calls the same method (`chat.completions.create`, `messages.create`, whatever). The body it constructs is valid for its native protocol. Busbar accepts it, resolves the model/pool, and forwards: translating to the lane's protocol if necessary.
 
-The key architectural guarantee: **Busbar's ingress is statically determined by the URL path**. Each protocol lives at its own routes. No heuristics, no body-sniffing, no content negotiation. (When nothing matches a registered route, Busbar's fallback handler defaults to the OpenAI error envelope for the 404: but live ingress is always path-determined.)
+**How ingress protocol identification actually works** (`proto::detect::protocol_id`): mostly path-determined, with a small, deliberate header-first exception for auth-carrier ambiguity. The URL path is authoritative for every route this doc lists below — but a request carrying one of a few protocol-specific auth headers (`anthropic-version`/`anthropic-beta`, `x-goog-api-key`, or bare `x-api-key`, or an AWS SigV4 `Authorization` header) is routed by that header FIRST, before the path is even consulted. This exists specifically so a curl user who copies Anthropic's docs (which often omit `anthropic-version` in the simplest examples) still lands on the right protocol via `x-api-key` alone. It also means: **`x-api-key`, `x-goog-api-key`, `anthropic-version`/`anthropic-beta`, and an AWS SigV4 `Authorization` header are NOT interchangeable "any carrier reaches any protocol" tokens** — sending one of these headers on a request whose BODY and PATH are for a *different* protocol routes to the header's protocol, not the path's, and typically 404s once that protocol's own operation resolver doesn't recognize the path. Stick to each protocol's own native auth carrier (or a bearer token, which never forces a specific protocol) and this never comes up in practice. No body-sniffing and no true content-negotiation either way: identification only ever looks at the path and this small, fixed set of headers.
 
 ---
 
@@ -249,7 +249,7 @@ POST /v1beta/models/{model}:generateContent
 POST /v1beta/models/{model}:streamGenerateContent
 ```
 
-Both the stable `/v1/` and the beta `/v1beta/` path prefixes are accepted by the same handler (registered as `/v1/models/{*rest}` and `/v1beta/models/{*rest}`). The Google `google-generativeai` and `google-genai` SDKs use either surface depending on the version and the method called; Busbar accepts both so you do not need to know which one your SDK version issues.
+Both the stable `/v1/` and the beta `/v1beta/` path prefixes are accepted, served through the same fallback dispatch as every other body-model/path-model protocol (see the note on ingress identification above) — anything under `/v1/models/` or `/v1beta/models/` other than a bare `GET` (which lists models) resolves to Gemini. The Google `google-generativeai` and `google-genai` SDKs use either surface depending on the version and the method called; Busbar accepts both so you do not need to know which one your SDK version issues.
 
 **Auth carrier (ingress):** `x-goog-api-key: <token>` (the header the Gemini SDK sends). Busbar also accepts `Authorization: Bearer` on this route (any of Busbar's carriers validate the same token). With a non-empty `auth.chain`, the value is verified as a Busbar key: not forwarded to Google.
 
@@ -371,7 +371,7 @@ The six protocols split into two groups based on where the target model (or pool
 
 The `"model"` field is in the JSON body. Busbar reads it, resolves it, and begins the forwarding pipeline. The `"stream"` intent is also in the body (`"stream": true`).
 
-These three protocols share one ingress implementation (`ingress::ingress_body_model`). The only difference between them is the protocol name and the shape of their native error envelopes.
+These three protocols share one ingress implementation (`ingress::dispatch::operation_ingress`, reached via the single axum fallback route `ingress::protocol_dispatch` — see the note on static routing above). The only difference between them is the protocol name and the shape of their native error envelopes.
 
 ### Path-model protocols: `gemini`, `bedrock`
 
@@ -613,7 +613,7 @@ print(response.choices[0].message.content)
 
 2. Busbar's auth middleware reads `Authorization: Bearer <token>`, verifies the signed key (signature + expiry + denylist), and admits the request.
 
-3. The route handler (`ingress::openai_ingress`) reads `"model": "fast"` from the body, resolves `fast` against the pool table, and picks `claude-sonnet` via SWRR.
+3. The ingress dispatcher (`ingress::dispatch::operation_ingress`, reached via the single fallback route) reads `"model": "fast"` from the body, resolves `fast` against the pool table, and picks `claude-sonnet` via SWRR.
 
 4. `claude-sonnet` maps to the `anthropic` provider (egress protocol `anthropic`). Ingress protocol is `openai`. They differ: translation runs.
 
