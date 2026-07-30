@@ -184,6 +184,29 @@ providers:
     api_key: { module: acme-vault, settings: { path: "kv/data/openai#api_key" } }
 ```
 
+The MODULE's own open-time config (the vault address + auth) is delivered by a top-level `secrets:`
+entry, keyed by the module name/alias, exactly as `store.settings` carries a store plugin's `open()`
+config:
+
+```yaml
+secrets:
+  acme-vault:
+    settings: { addr: "https://vault.internal:8200", token: { env: VAULT_TOKEN } }
+```
+
+**Bundled: `busbar-secret-vault-plugin`** is exactly such a plugin — the first-party HashiCorp Vault
+KV v2 backend (`crates/secret-vault` for the logic, `crates/secret-vault-plugin` for the thin cdylib
+adapter, mirroring the `busbar-auth-oidc` / `busbar-auth-oidc-plugin` split). Open-time config is
+`{ addr, token, ca_cert_pem?, timeout_secs? }`; auth is a pre-obtained `X-Vault-Token` only (Vault's
+simplest, most universal scheme — AppRole/Kubernetes login flows are a natural future extension of
+`busbar-secret-vault` itself). Per-reference `settings` accepts the `#field` suffix shown above
+(`path: "kv/data/openai#api_key"`) OR the equivalent two-key form `{ path: "kv/data/openai", field:
+"api_key" }` for callers that would rather not embed `#` in one string; `field` wins if both are
+given. `path` is the full Vault v1 API path INCLUDING the KV v2 `data/` segment (i.e. exactly what
+`vault kv get`/the Vault UI show), read via `GET {addr}/v1/{path}` with `X-Vault-Token: <token>`. A
+404 (no secret there), a 403 (bad token / missing policy), and a 5xx (Vault itself unhealthy) each
+surface as a distinct, specific error — never collapsed into a generic failure.
+
 > **Not the built-in `keys` auth module.** A `kind: secret` plugin resolves *config secret
 > references* (fetching key material from a backend). The built-in `keys` module in `auth.chain`
 > is data-plane **virtual-key auth** — it verifies the Busbar-signed caller tokens minted through
