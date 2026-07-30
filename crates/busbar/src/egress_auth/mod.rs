@@ -98,6 +98,34 @@ where
     }
 }
 
+/// Read a token-endpoint HTTP response body under the engine's established capped-read primitive
+/// (`proxy::read_capped`) rather than `resp.text()`, which buffers an UNBOUNDED body — a hijacked or
+/// misbehaving token endpoint returning a multi-GB response would otherwise be read entirely into
+/// memory. A real OAuth token response is well under 1 KiB, so the cap has zero effect on legitimate
+/// traffic. Shared by `jwt_bearer::Signer::mint` and `oauth_client_credentials::ClientCreds::mint` so
+/// the capped-read-and-decode logic lives in exactly one place instead of being duplicated byte-for-byte
+/// across the two mechanisms (Craft audit finding, 1.4.0).
+///
+/// Distinguishes WHY the read did not complete, mirroring how `proxy::engine`'s own `ReadEnd` call
+/// sites (`walk.rs`, `engine/mod.rs`) already report `Truncated` vs `TransportError` separately rather
+/// than folding them into one ambiguous message: an operator debugging a real connection drop needs a
+/// different signal than one debugging an oversized-response misconfiguration (Error-handling audit
+/// finding, 1.4.0).
+pub(crate) async fn read_capped_token_response(resp: reqwest::Response) -> Result<String, String> {
+    let cap = crate::proxy::max_upstream_buffered_bytes();
+    let (raw, read_end) = crate::proxy::read_capped(resp, cap).await;
+    match read_end {
+        crate::proxy::ReadEnd::Complete => Ok(String::from_utf8_lossy(&raw).into_owned()),
+        crate::proxy::ReadEnd::Truncated => Err(format!(
+            "token endpoint response exceeded the {cap}-byte cap; refusing to parse a truncated token response"
+        )),
+        crate::proxy::ReadEnd::TransportError => Err(
+            "token endpoint connection failed mid-response; refusing to parse a partial token response"
+                .to_string(),
+        ),
+    }
+}
+
 /// The operator's metadata-SSRF posture, threaded into a token-endpoint check so the boot/reload
 /// validation matches `config_validate`'s validate-time check EXACTLY (validate == apply). Its three
 /// fields are the SAME arguments `config_validate::ssrf_blocked_host` is called with: the union of the
@@ -233,3 +261,9 @@ impl CredentialProvider for SigV4 {
 #[cfg(test)]
 #[path = "tests/license_tests.rs"]
 mod license_header_tests;
+
+// `read_capped_token_response` meta-test lives in tests/ per the repo layout rule (no inline test
+// bodies in a mod.rs); keep the module here via a #[path] decl.
+#[cfg(test)]
+#[path = "tests/helper_tests.rs"]
+mod helper_tests;
