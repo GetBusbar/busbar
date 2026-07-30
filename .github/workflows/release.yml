@@ -211,35 +211,30 @@ jobs:
         with:
           subject-path: "busbar-${{ matrix.target }}.*"
 
-  # ── Store/auth plugin releases moved out — no upload jobs here anymore ───────────────────────────
-  # Through 1.5.0 this file had `store-plugins` (sqlite/postgres/redis) and `auth-plugins` (oidc)
-  # jobs, built from the in-tree `crates/store-*-plugin` / `crates/auth-oidc-plugin` crates and
-  # uploaded to THIS repo's GitHub Release, structured exactly like hook-plugins below. Those four
-  # plugins have since been extracted into their own standalone first-party repos
-  # (GetBusbar/store-sqlite, GetBusbar/store-postgres, GetBusbar/store-redis, GetBusbar/auth-oidc),
-  # each with its own CI and its own release workflow that builds+signs+publishes ITS OWN tarball to
-  # ITS OWN GitHub Release on a version tag. The upload jobs here were REMOVED rather than repointed
-  # at the external repos (contrast with hook-plugins, which deliberately keeps checking out and
-  # rebuilding external sources — see that job's header comment for why hook is different):
+  # ── Every plugin releases from its own repo — no plugin upload jobs live here at all ─────────────
+  # Through 1.5.0 this file built and published every first-party plugin itself: `store-plugins`
+  # (sqlite/postgres/redis) and `auth-plugins` (oidc) from the in-tree `crates/store-*-plugin` /
+  # `crates/auth-oidc-plugin` crates, and `hook-plugins` (headroom/webrequest) from external sibling
+  # checkouts — headroom was ALSO baked pre-installed into the official Docker image. All of that
+  # special-casing is gone: a plugin is a plugin, full stop. Every first-party plugin — store, auth,
+  # AND hook alike — is a standalone repo (GetBusbar/store-sqlite, store-postgres, store-redis,
+  # auth-oidc, headroom-hook, webrequest-hook) with its own CI, its own `main`/`dev` branches, and
+  # its own release workflow that builds+signs+publishes ITS OWN tarball to ITS OWN GitHub Release
+  # on a version tag, independently versioned from busbar itself. busbar's own release publishes
+  # ONLY the core binary — no plugin tarball, signed or otherwise, is uploaded from this workflow.
+  # The Docker image (docker.yml) ships with zero plugins pre-installed, same as the binary.
   #
-  #   - No convenience/zero-config argument applies. hook-plugins bundles headroom/webrequest into
-  #     busbar's OWN release because docs/plugins.md documents them as "Shipped first-party hook
-  #     plugins" and headroom is additionally pre-installed into the official Docker image
-  #     (docker.yml) for out-of-the-box prompt compression — busbar's own release is a genuine
-  #     distribution point for them. No store or auth plugin is embedded in the core binary or the
-  #     Docker image; every one of them needs external setup (a DB endpoint/credentials, an OIDC
-  #     issuer) that busbar's own release cannot make "zero-config" just by also hosting the tarball.
-  #   - No trust argument applies either. First-party verification comes from the BUSBAR_SIGN_KEY
+  #   - No trust argument favors bundling. First-party verification comes from the BUSBAR_SIGN_KEY
   #     signature + the embedded BUSBAR_RELEASE_PUBKEY, not from which repo's Release page hosts the
-  #     file — a tarball signed by the same key and published from GetBusbar/store-postgres's own
-  #     release verifies exactly as first-party as one uploaded here would.
+  #     file — a tarball signed by the same key and published from a plugin's own repo verifies
+  #     exactly as first-party as one uploaded here would.
   #   - Publishing the SAME plugin from two different repos' Releases is a real provenance/trust
   #     hazard with no offsetting benefit: which one is canonical, which one do docs point at, which
   #     one gets the CVE fix first. One release pipeline per plugin removes the ambiguity.
   #
   # The in-tree crates (`crates/store-sqlite-plugin`, `crates/store-postgres-plugin`,
   # `crates/store-redis-plugin`, `crates/auth-oidc-plugin`) are UNCHANGED and deliberately still
-  # live in this monorepo — do not read their removal from release.yml as a signal to delete them.
+  # live in this monorepo — do not read their removal from this file as a signal to delete them.
   # They remain load-bearing for:
   #   - the real dlopen ABI-crossing tests in crates/plugin-loader/src/lib.rs
   #     (`load_and_exercise_sqlite_plugin_*`, `load_and_exercise_auth_oidc_plugin_*`), part of the
@@ -251,154 +246,3 @@ jobs:
   # See docs/plugins.md's "Signing and packaging" section for the corrected, current release-source
   # story per plugin kind.
 
-  # ── Hook-plugin tarballs — one signed .tar.gz per (plugin, target) ───────────────────────────────
-  # The first-party kind:hook plugins (webrequest, headroom) ship as signed plugin tarballs
-  # {cdylib + manifest.json} exactly like the store plugins above: same busbar release PRIVATE key
-  # (BUSBAR_SIGN_KEY secret) signs the manifest, and the matching PUBLIC key embedded in the busbar
-  # binary (BUSBAR_RELEASE_PUBKEY repository variable) makes them verify as FIRST-PARTY with zero
-  # operator configuration.
-  #
-  # Two hook plugins, distinct declared intent:
-  #   - webrequest: a transparent HTTP forwarder. It relays whatever the CORE projected; a deployment
-  #     that fronts a prompt:rw gate would re-declare that need, but the shipped first-party artifact
-  #     asks for NOTHING by default (no --needs-*), the least-privilege posture. The operator still
-  #     grants explicitly, and the forwarder cannot cause content to be sent.
-  #   - headroom: a prompt-compression REWRITE gate. It MUST read + rewrite the prompt, so it packs
-  #     with --needs-prompt rw (SIGNED into the manifest, surfaced to the admin at register/load).
-  #     The operator's config grant of prompt:rw remains the enforcement (belt-and-suspenders).
-  #
-  # SOURCE: both plugins moved out of this monorepo into their own first-party repos
-  # (GetBusbar/headroom-hook, GetBusbar/webrequest-hook) — "separate source, centralized
-  # build+sign at busbarAI release time" (docs/plugins.md). This job checks each out as a SIBLING
-  # of this checkout (path: ../headroom-hook, ../webrequest-hook) and builds the cdylib from there,
-  # pinned to a fixed ref so a release is reproducible:
-  #   - headroom-hook: pinned to commit a61e7f8 ("Switch busbar-plugin-sdk to sibling-relative
-  #     path dependency", on top of the earlier dlopen ABI port). NOT the latest tag (v1.0.14) —
-  #     that tag predates the ABI port and is not loadable by busbar's plugin loader at all.
-  #     JUDGMENT CALL: pin by commit until upstream cuts a release tag that includes the port;
-  #     re-pin HEADROOM_HOOK_REF to that tag then.
-  #   - webrequest-hook: pinned to its only commit so far (5999093, the repo-extraction commit).
-  #     Re-pin to a tag once the repo starts cutting releases.
-  #
-  # Both repos declare their busbar-plugin-sdk dependency as an INTERIM local path dependency
-  # (documented in each repo's own Cargo.toml as a stopgap pending busbarAI going public), and both
-  # now use the same RELATIVE path convention (`../busbarAI/crates/...`), which resolves correctly
-  # given the sibling checkout layout below — no CI-side patching needed. Longer-term this should
-  # become a published git/crates.io busbar-plugin-sdk once busbarAI is public.
-  #
-  # TODO(release-keys): same seam as upload-assets above — until the BUSBAR_SIGN_KEY secret is provisioned
-  # this job packages UNSIGNED tarballs (loadable only under plugins.trust.allow_unsigned), so a
-  # release is never blocked on key setup. The gh step prints which mode it ran in.
-  hook-plugins:
-    needs: create-release
-    name: hook-plugins (${{ matrix.target }})
-    runs-on: ${{ matrix.os }}
-    env:
-      # Pinned refs for the external first-party plugin source repos — see the block comment above.
-      HEADROOM_HOOK_REF: dev
-      WEBREQUEST_HOOK_REF: 5999093848c7574df09faccde71b25d3b137b1e5
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-            libext: so
-            libprefix: lib
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-24.04-arm
-            libext: so
-            libprefix: lib
-          - target: x86_64-apple-darwin
-            os: macos-latest
-            libext: dylib
-            libprefix: lib
-          - target: aarch64-apple-darwin
-            os: macos-latest
-            libext: dylib
-            libprefix: lib
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            libext: dll
-            libprefix: ""
-    steps:
-      - uses: actions/checkout@v7
-      - name: Checkout headroom-hook (first-party plugin source, pinned)
-        uses: actions/checkout@v7
-        with:
-          repository: GetBusbar/headroom-hook
-          ref: ${{ env.HEADROOM_HOOK_REF }}
-          path: ../headroom-hook
-      - name: Checkout webrequest-hook (first-party plugin source, pinned)
-        uses: actions/checkout@v7
-        with:
-          repository: GetBusbar/webrequest-hook
-          ref: ${{ env.WEBREQUEST_HOOK_REF }}
-          path: ../webrequest-hook
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
-      - name: Build the hook plugin cdylibs (external first-party repos) + the packer
-        run: |
-          cargo build --release --target ${{ matrix.target }} --manifest-path ../headroom-hook/Cargo.toml
-          cargo build --release --target ${{ matrix.target }} --manifest-path ../webrequest-hook/Cargo.toml
-          cargo build --release --target ${{ matrix.target }} -p busbar-plugin-pack
-        shell: bash
-      - name: Package + sign the hook plugin tarballs
-        env:
-          BUSBAR_SIGN_KEY: ${{ secrets.BUSBAR_SIGN_KEY }}
-        run: |
-          set -euo pipefail
-          ver="${GITHUB_REF_NAME#v}"
-          target="${{ matrix.target }}"
-          outdir="plugin-dist"; mkdir -p "$outdir"
-          pack="target/${target}/release/busbar-plugin-pack"
-          [ -x "$pack" ] || pack="target/${target}/release/busbar-plugin-pack.exe"
-          unsigned_flag=""
-          if [ -z "${BUSBAR_SIGN_KEY:-}" ]; then
-            echo "::warning::BUSBAR_SIGN_KEY secret is not provisioned — packaging UNSIGNED hook plugin tarballs (loadable only under plugins.trust.allow_unsigned). See the TODO(release-keys) seam."
-            unsigned_flag="--allow-unsigned"
-          fi
-          libpfx='${{ matrix.libprefix }}'; libext='${{ matrix.libext }}'
-
-          # webrequest: transparent forwarder, declares NO needs (least privilege).
-          # Built from the external GetBusbar/webrequest-hook checkout (../webrequest-hook); its
-          # crate/package name (busbar-webrequest-hook-plugin) is unchanged from the old in-repo
-          # crate, so the lib filename is unchanged too.
-          "$pack" pack \
-            --lib "../webrequest-hook/target/${target}/release/${libpfx}busbar_webrequest_hook_plugin.${libext}" \
-            --name "busbar-webrequest" --alias "webrequest" --kind hook \
-            --version "$ver" --publisher busbar \
-            --description "busbar webrequest hook plugin: signed dlopen'd HTTP forwarder for hook ops" \
-            --license Apache-2.0 \
-            --out "${outdir}/busbar-webrequest-${ver}-${target}.tar.gz" \
-            $unsigned_flag
-
-          # headroom: prompt-compression rewrite gate, declares needs.prompt=rw (SIGNED).
-          # Built from the external GetBusbar/headroom-hook checkout (../headroom-hook); NOTE its
-          # package name is just "headroom-hook" (not "busbar-headroom-hook-plugin" like the old
-          # in-repo crate), so the built lib filename is libheadroom_hook.* — different from the
-          # pre-extraction name. The packed --name/--alias/--kind/--needs-prompt below are
-          # unchanged so the plugin's identity in busbar's registry is stable across the move.
-          "$pack" pack \
-            --lib "../headroom-hook/target/${target}/release/${libpfx}headroom_hook.${libext}" \
-            --name "busbar-headroom" --alias "headroom" --kind hook \
-            --version "$ver" --publisher busbar \
-            --needs-prompt rw \
-            --description "busbar headroom hook plugin: deterministic rule-based prompt-compression rewrite gate" \
-            --license Apache-2.0 \
-            --out "${outdir}/busbar-headroom-${ver}-${target}.tar.gz" \
-            $unsigned_flag
-
-          ls -l "$outdir"
-        shell: bash
-      - name: Attach hook plugin tarballs to Release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "${GITHUB_REF_NAME}" plugin-dist/*.tar.gz --repo "${GITHUB_REPOSITORY}" --clobber
-        shell: bash
-      - name: Attest hook plugin build provenance
-        uses: actions/attest-build-provenance@v4
-        with:
-          subject-path: "plugin-dist/*.tar.gz"
