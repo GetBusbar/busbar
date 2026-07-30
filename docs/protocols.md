@@ -576,7 +576,7 @@ BUSBAR_PROVIDERS=./providers.yaml BUSBAR_CONFIG=./config.yaml ./busbar
 # Mint a caller key (the signed token is shown once):
 BUSBAR_TOKEN=$(curl -s -X POST http://127.0.0.1:8081/api/v1/admin/keys \
   -H "Authorization: Bearer $BUSBAR_ADMIN_TOKEN" -H "Content-Type: application/json" \
-  -d '{"name":"local-dev"}' | jq -r .secret)
+  -d '{"name":"local-dev"}' | jq -r .token)
 ```
 
 ### 2. Call it with the OpenAI SDK
