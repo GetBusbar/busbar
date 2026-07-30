@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "busbar-plugin-testkit"
+version = "1.5.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "Shared kind-level contract test helpers for every first-party busbar plugin's `open(cfg: &str) -> Result<Box<dyn Trait>, String>` seam. Add a check here once, every plugin that calls it picks it up on its next dependency bump — instead of hand-copying the same assertion into 5 repos."
+license = "Apache-2.0"
+
+[dependencies]
