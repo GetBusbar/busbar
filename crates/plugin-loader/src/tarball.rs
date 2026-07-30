@@ -24,6 +24,15 @@ const MAX_LIB_BYTES: u64 = 256 * 1024 * 1024;
 /// Hard cap on the DECOMPRESSED manifest member - a manifest is well under 4 KiB.
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 
+/// Hard cap on the COMPRESSED tarball FILE, checked via `fs::metadata` before it is ever read into
+/// memory (see `registry::examine`). [`unpack`] already bounds the two DECOMPRESSED members it will
+/// extract (`MAX_LIB_BYTES` + `MAX_MANIFEST_BYTES`); this is that same ceiling applied to the file on
+/// disk, one layer earlier. Gzip cannot meaningfully inflate a file's size (worst case is a few bytes
+/// of overhead per block, nowhere near doubling it), so a genuine tarball containing only a
+/// manifest + a library under the existing per-member caps is always comfortably under this sum -
+/// anything larger is rejected before the read, not after.
+pub(crate) const MAX_TARBALL_FILE_BYTES: u64 = MAX_LIB_BYTES + MAX_MANIFEST_BYTES;
+
 /// A plugin tarball unpacked in memory: the parsed signed manifest plus the exact library bytes.
 #[derive(Debug)]
 pub struct UnpackedPlugin {
