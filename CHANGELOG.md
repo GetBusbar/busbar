@@ -352,8 +352,9 @@ the release's security headline: 1.x keys never expired; 1.5.0 keys are signed t
   migration step**: no config change is required or possible to opt back out — the previous
   behavior was the bug. If your hook logs or forwards the `prompt` projection somewhere less
   trusted than the hook itself, review that path against reasoning content now being present.
-  Opaque redacted reasoning (Anthropic `redacted_thinking`, Bedrock `redactedContent`) is
-  UNAFFECTED by this widening — it still never appears as plaintext, only as the fixed
+  Opaque redacted reasoning (Anthropic `redacted_thinking`, Bedrock `redactedContent`, a
+  Responses `reasoning` item carrying only an opaque `encrypted_content` blob) is UNAFFECTED by
+  this widening — it still never appears as plaintext, only as the fixed
   `[busbar:redacted_reasoning]` marker.
 
 ### Removed
@@ -449,14 +450,24 @@ the release's security headline: 1.x keys never expired; 1.5.0 keys are signed t
   point silently passing content it was deployed to inspect. Two of the three paths need no
   forged/valid signature at all to reach the provider: Bedrock's writer has no unsigned-drop
   filter (unlike Anthropic's egress path), and the Responses reader admits a `reasoning` item on
-  text alone (`encrypted_content` is optional). All three now route through a protocol-dispatched
-  extractor (keyed on the parsed ingress protocol, not on which JSON field happens to be
-  present) and are projected/counted like any other text. Opaque redacted reasoning
+  EITHER real text OR a non-empty `encrypted_content` blob alone. All three now route through a
+  protocol-dispatched extractor (keyed on the parsed ingress protocol, not on which JSON field
+  happens to be present) and are projected/counted like any other text. Opaque redacted reasoning
   (`redacted_thinking`/`redactedContent`, which busbar cannot decrypt) is never exposed as
   plaintext — it projects as a fixed, non-authenticated presence marker instead of silently
-  vanishing. Also fixes a related role-inference bug: a Responses `reasoning` item was
-  misattributed to `user` instead of `assistant`, contradicting the protocol reader's own
-  mapping on the same body. See **Changed** for the resulting widened `prompt` grant scope.
+  vanishing. A follow-up audit found the `encrypted_content`-only half of the Responses OR was
+  itself still a bypass after the above: a `reasoning` item admitted purely on its opaque
+  `encrypted_content` blob (no `content[]`/`summary[]` text at all) produced an empty string from
+  the text extractor and read as "nothing here" instead of the redacted-reasoning marker, and
+  separately, `content: []` (present but an EMPTY array, not absent) on a `reasoning` item bypassed
+  the reasoning-item dispatch in both `total_text_chars` and `build_prompt_projection` entirely
+  (it took the empty-array walk instead of ever reaching the reasoning extractor). Both are now
+  fixed: the extractor treats an `encrypted_content`-only item the same as the other two
+  redacted-reasoning shapes, and both callers check the item's `type` before its `content`'s
+  shape, so `content: []` no longer shadows the reasoning dispatch. Also fixes a related
+  role-inference bug: a Responses `reasoning` item was misattributed to `user` instead of
+  `assistant`, contradicting the protocol reader's own mapping on the same body. See **Changed**
+  for the resulting widened `prompt` grant scope.
 
 ## [1.4.1], 2026-07-20
 
