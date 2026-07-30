@@ -130,21 +130,10 @@ impl ClientCreds {
             .map_err(|e| format!("token endpoint request failed: {}", e.without_url()))?;
         let status = resp.status();
         // The token endpoint is not fully trusted (its `expires_in` below is already treated as
-        // attacker-influenced), so read the body under the engine's established capped-read
-        // primitive rather than `resp.text()`, which buffers an UNBOUNDED body — a hijacked or
-        // misbehaving token endpoint returning a multi-GB response would otherwise be read entirely
-        // into memory. A real OAuth token response is well under 1 KiB, so the 256 KiB
-        // `upstream_error_body_max_bytes()` cap has zero effect on legitimate traffic; a
-        // truncated/oversized response surfaces as a clear error instead of a silent partial-parse.
-        let (raw, read_end) =
-            crate::proxy::read_capped(resp, crate::proxy::max_upstream_buffered_bytes()).await;
-        if read_end != crate::proxy::ReadEnd::Complete {
-            return Err(format!(
-                "token endpoint response exceeded the {}-byte cap or failed mid-transfer; refusing to parse a truncated token response",
-                crate::proxy::max_upstream_buffered_bytes()
-            ));
-        }
-        let body = String::from_utf8_lossy(&raw).into_owned();
+        // attacker-influenced), so read the body under the shared capped-read helper rather than
+        // `resp.text()`'s unbounded read — see `super::read_capped_token_response` for the cap
+        // rationale and the truncated/transport-error distinction.
+        let body = super::read_capped_token_response(resp).await?;
         if !status.is_success() {
             // Never echo the request (carries the client_secret); status + a short snippet only.
             return Err(format!(
