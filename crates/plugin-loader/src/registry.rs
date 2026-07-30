@@ -355,6 +355,35 @@ fn examine(path: &Path, policy: &TrustPolicy) -> FileOutcome {
         .and_then(|f| f.to_str())
         .unwrap_or("plugin")
         .to_string();
+    // Check the file's size BEFORE reading it into memory: `tarball::unpack` bounds the two
+    // DECOMPRESSED members it extracts, but that check only runs after the WHOLE compressed file
+    // has already been read into a `Vec<u8>`. A huge file planted in the plugins directory (by
+    // accident or otherwise) would otherwise be read in full - unbounded - on every boot-time scan,
+    // before any validation gets a chance to reject it.
+    // Check the file's size BEFORE reading it into memory: `tarball::unpack` bounds the two
+    // DECOMPRESSED members it extracts, but that check only runs after the WHOLE compressed file
+    // has already been read into a `Vec<u8>`. A huge file planted in the plugins directory (by
+    // accident or otherwise) would otherwise be read in full - unbounded - on every boot-time scan,
+    // before any validation gets a chance to reject it.
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.len() > tarball::MAX_TARBALL_FILE_BYTES => {
+            return FileOutcome::Invalid {
+                file,
+                reason: format!(
+                    "tarball is {} bytes, exceeding the {}-byte cap",
+                    meta.len(),
+                    tarball::MAX_TARBALL_FILE_BYTES
+                ),
+            };
+        }
+        Ok(_) => {}
+        Err(e) => {
+            return FileOutcome::Invalid {
+                file,
+                reason: format!("cannot stat: {e}"),
+            };
+        }
+    }
     let bytes = match std::fs::read(path) {
         Ok(b) => b,
         Err(e) => {
@@ -688,6 +717,36 @@ mod tests {
             errs[0]
         );
         assert!(errs[0].contains("invalid plugin"), "got {}", errs[0]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A file over `tarball::MAX_TARBALL_FILE_BYTES` is rejected by its SIZE, before `fs::read`
+    /// ever runs - not by a later gzip/tar decode failure. We prove this by making the oversize
+    /// file a SPARSE all-zeros file (cheap to create, costs no real disk or memory): `fs::read`
+    /// would happily succeed on it (it is valid, if enormous, input), so if the rejection reason
+    /// names the byte cap rather than some gzip/tar decode error, the size check - not the
+    /// decoder - is what caught it, and it caught it before the whole file was read into memory.
+    #[test]
+    fn oversize_tarball_file_is_rejected_by_size_before_being_read() {
+        let release = key(1);
+        let dir = tmpdir("oversize");
+        let path = dir.join("huge.tar.gz");
+        let f = std::fs::File::create(&path).unwrap();
+        f.set_len(tarball::MAX_TARBALL_FILE_BYTES + 1).unwrap();
+        drop(f);
+
+        let errs = scan_and_validate(&dir, &policy(&release)).unwrap_err();
+        assert_eq!(errs.len(), 1);
+        assert!(
+            errs[0].contains("huge.tar.gz"),
+            "names the file: {}",
+            errs[0]
+        );
+        assert!(
+            errs[0].contains("exceeding") && errs[0].contains("byte cap"),
+            "rejected by size, not by decode: {}",
+            errs[0]
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
