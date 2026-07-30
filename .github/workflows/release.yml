@@ -232,25 +232,33 @@ jobs:
   #     hazard with no offsetting benefit: which one is canonical, which one do docs point at, which
   #     one gets the CVE fix first. One release pipeline per plugin removes the ambiguity.
   #
-  # The store-plugin crates (`crates/store-sqlite-plugin`, `crates/store-postgres-plugin`) are
-  # UNCHANGED and deliberately still live in this monorepo — do not read their removal from THIS
-  # FILE as a signal to delete them. They remain load-bearing for:
+  # Some of the in-tree plugin crates this paragraph used to name are now gone from this monorepo
+  # entirely, not just from this release workflow: `crates/auth-oidc` + `crates/auth-oidc-plugin`,
+  # `crates/secret-vault` + `crates/secret-vault-plugin`, `crates/store-redis` +
+  # `crates/store-redis-plugin`, and `crates/store-postgres` + `crates/store-postgres-plugin` were
+  # EXTRACTED to their own repos (GetBusbar/auth-oidc, GetBusbar/secret-vault, GetBusbar/store-redis,
+  # GetBusbar/store-postgres) — same-repo 2-crate Cargo workspaces bringing the real logic crate
+  # in-repo, the reference restructure GetBusbar/auth-oidc's "Restructure as a same-repo 2-crate
+  # workspace" commit established. Their coverage no longer comes from an in-tree crate here;
+  # scripts/release-check.sh's sibling-checkout phases now run each repo's own test suite (real
+  # dlopen ABI + a real backing service container, where applicable) instead. The one remaining
+  # in-tree store plugin (store-sqlite) is slated for the same full extraction next; when that
+  # lands, this whole paragraph collapses to "every plugin, including its logic crate, lives in
+  # its own repo." Don't assume any given crate's timeline from this comment alone — check which
+  # `crates/store-*`/`crates/auth-*`/`crates/secret-*` directories actually exist in this checkout
+  # (and scripts/release-check.sh's own Phase 0b/Phase-N breakdown) for the current, ground-truth
+  # state.
+  #
+  # Whichever in-tree crates remain ARE load-bearing for:
   #   - the real dlopen ABI-crossing tests in crates/plugin-loader/src/lib.rs
-  #     (`load_and_exercise_sqlite_plugin_*`), part of the normal `cargo test --workspace` gate
-  #     every release already implicitly requires green;
+  #     (e.g. `load_and_exercise_sqlite_plugin_*`, for whichever plugins still live in-tree), part
+  #     of the normal `cargo test --workspace` gate every release already implicitly requires green;
   #   - scripts/release-check.sh's own end-to-end gate, which builds and packs these crates directly
   #     (see that script's header) to prove busbar works against ALL its plugins together at a given
   #     commit — a property that requires the crates to be buildable from inside this checkout,
-  #     independent of where the shipped release artifact ultimately comes from.
-  #
-  # auth-oidc, secret-vault, and store-redis have all gone one step further than the above (full
-  # extraction, not just this file's release-job removal): none of their logic crates live in this
-  # monorepo AT ALL any more — each brings 100% of what it needs in its own repo (GetBusbar/auth-oidc,
-  # GetBusbar/secret-vault, GetBusbar/store-redis, each a same-repo 2-crate workspace). This repo's
-  # own dlopen ABI proof and release-check.sh gate reach each of them via a sibling checkout, the
-  # same pattern already used for headroom-hook/webrequest-hook. The remaining store plugins
-  # (sqlite, postgres) are slated for the same full extraction next; when that lands, this whole
-  # paragraph collapses to "every plugin, including its logic crate, lives in its own repo."
+  #     independent of where the shipped release artifact ultimately comes from. Plugins that have
+  #     already been extracted are instead gated via a sibling-checkout phase running their own test
+  #     suite (see release-check.sh's Phase 2/Phase 3/Phase 4/Phase 4.5 for examples of that pattern).
   # See docs/plugins.md's "Signing and packaging" section for the corrected, current release-source
   # story per plugin kind.
 
