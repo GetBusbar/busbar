@@ -1007,14 +1007,30 @@ impl AdminService {
     /// `GET /api/v1/admin/groups` — the `groups:` limit tree read. Read scope. Each entry is the
     /// DEFINITION (parent, enabled, limits, `child_default`), never a secret. Sorted by name (the
     /// registry is already a BTreeMap, so iteration is name-ordered).
-    pub(crate) async fn list_groups(&self) -> Result<Page<GroupView>, AdminError> {
-        let groups: Vec<GroupView> = self
+    ///
+    /// Cursor-paginated by the SAME `{items, next_cursor}` envelope every other growable admin
+    /// collection uses (keys/audit/config-versions): unlike `/pools`/`/models`/`/hooks` (bounded by
+    /// static config, still a `Page::single`), the group tree GROWS at runtime — `plan_mint_group`
+    /// auto-provisions a leaf per self-service key mint — so it needs the same bound every other
+    /// growable list has. `start`/`limit` are the caller's already-decoded cursor offset and clamped
+    /// page size (see the JSON handler, which owns cursor parsing).
+    pub(crate) async fn list_groups(
+        &self,
+        start: usize,
+        limit: usize,
+    ) -> Result<Page<GroupView>, AdminError> {
+        let all: Vec<GroupView> = self
             .app
             .groups_registry
             .iter()
             .map(|(name, cfg)| GroupView::from_cfg(name, cfg))
             .collect();
-        Ok(Page::single(groups))
+        let total = all.len();
+        let items: Vec<GroupView> = all.into_iter().skip(start).take(limit).collect();
+        let end = start.saturating_add(items.len());
+        let next_cursor =
+            (end < total).then(|| crate::admin::v1::contract::encode_offset_cursor(end));
+        Ok(Page { items, next_cursor })
     }
 
     /// `GET /api/v1/admin/groups/{name}` — one group definition, or `not_found` if the name is unknown.
@@ -3080,7 +3096,10 @@ mod tests {
             .build();
         let svc = AdminService::new(app);
 
-        let page = svc.list_groups().await.expect("list ok");
+        let page = svc
+            .list_groups(0, crate::admin::v1::contract::LIST_LIMIT_DEFAULT)
+            .await
+            .expect("list ok");
         // BTreeMap order: "team" < "user:bob".
         assert_eq!(page.items.len(), 2);
         let team = &page.items[0];
@@ -3100,6 +3119,58 @@ mod tests {
         assert_eq!(bob.name, "user:bob");
         assert_eq!(bob.parent.as_deref(), Some("team"));
         assert!(bob.child_default.is_none());
+    }
+
+    /// `GET /groups` is a GROWABLE collection (unlike `/pools`/`/models`/`/hooks`, which are bounded
+    /// by static config, `plan_mint_group` auto-provisions a leaf group per self-service key mint), so
+    /// it must obey the SAME `?limit=`/`?cursor=` cursor envelope every other growable list
+    /// (keys/audit/config-versions) does — never a single unbounded page. A `limit` below the total
+    /// bounds the page and sets `next_cursor`; feeding that cursor back resumes exactly where the
+    /// prior page ended; the final page carries `next_cursor: None`.
+    #[tokio::test]
+    async fn list_groups_is_cursor_paginated() {
+        let mut builder = TestApp::new();
+        for i in 0..5 {
+            builder = builder.group(
+                &format!("g{i}"),
+                GroupCfg {
+                    limits: vec![budget(1_000, LimitWindow::Month)],
+                    ..Default::default()
+                },
+            );
+        }
+        let app = builder.build();
+        let svc = AdminService::new(app);
+
+        let p1 = svc.list_groups(0, 2).await.expect("list ok");
+        assert_eq!(
+            p1.items.len(),
+            2,
+            "a `limit` below the total must bound the page"
+        );
+        let names: Vec<&str> = p1.items.iter().map(|g| g.name.as_str()).collect();
+        assert_eq!(names, vec!["g0", "g1"], "BTreeMap order: name-sorted");
+        let c1 = p1
+            .next_cursor
+            .as_deref()
+            .expect("more rows remain -> a next_cursor is present");
+        let start2 = crate::admin::v1::contract::decode_offset_cursor(c1).expect("valid cursor");
+
+        let p2 = svc.list_groups(start2, 2).await.expect("list ok");
+        assert_eq!(p2.items.len(), 2);
+        let names: Vec<&str> = p2.items.iter().map(|g| g.name.as_str()).collect();
+        assert_eq!(names, vec!["g2", "g3"]);
+        let c2 = p2.next_cursor.as_deref().expect("one row remains");
+        let start3 = crate::admin::v1::contract::decode_offset_cursor(c2).expect("valid cursor");
+
+        let p3 = svc.list_groups(start3, 2).await.expect("list ok");
+        assert_eq!(p3.items.len(), 1, "final page holds the remainder");
+        let names: Vec<&str> = p3.items.iter().map(|g| g.name.as_str()).collect();
+        assert_eq!(names, vec!["g4"]);
+        assert!(
+            p3.next_cursor.is_none(),
+            "last page has no next_cursor: {p3:?}"
+        );
     }
 
     /// `get_group` returns one entry by name; an unknown name is `not_found`.
