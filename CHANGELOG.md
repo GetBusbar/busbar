@@ -441,6 +441,20 @@ the release's security headline: 1.x keys never expired; 1.5.0 keys are signed t
 - **Env-var YAML injection closed.** Interpolated `${VAR}` values are rejected if they carry
   YAML-structural control characters, so a compromised environment cannot splice extra config
   nodes (e.g. widen an auth allowlist) through a quoted scalar.
+- **Remaining flow-collection env-var YAML injection closed.** The control-character check above
+  only stops the newline-based breakout; a value containing a bare `,`, `"`, or `'` could still
+  splice extra structure into a YAML flow collection (`{ }` / `[ ]`, e.g. this project's own
+  documented `client_tokens: [ "${VAR}" ]` pattern) or an opaque `settings:` map with no newline at
+  all — a flow SEQUENCE has no schema defense against an extra element, and a generic
+  `serde_json::Map` settings block has no `deny_unknown_fields` equivalent against an injected
+  sibling key. Rather than enumerate more forbidden characters (which is both under-inclusive —
+  misses anchor/alias redefinition — and over-inclusive — breaks legitimate LDAP DNs, JSON blobs,
+  and Windows paths), interpolation now runs a structural-equivalence check: the template is
+  interpolated a second time with each `${VAR}` replaced by an inert placeholder, both results are
+  parsed, and the two trees must have identical map keys, sequence lengths, and node kinds at every
+  position (scalar leaf content and inferred type are exempt, since real values are expected to
+  differ there). Any shape difference is rejected, naming the responsible variable where it can be
+  isolated.
 - **Reasoning-block `prompt: ro`/`rw` hook-visibility bypass closed.** `flatten_content` /
   `total_text_chars` / `system_text_chars` (`proxy/hooks.rs`) probed content blocks only for a
   `text` field, so Anthropic `thinking`, Bedrock `reasoningContent.reasoningText`, and Responses

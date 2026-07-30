@@ -27,17 +27,29 @@ use crate::proto::PROTO_ANTHROPIC;
 /// Reject an env-var value that could break out of the surrounding YAML scalar when substituted
 /// into the raw config text BEFORE parsing. `interpolate_env` splices each value in verbatim, so a
 /// value carrying a YAML-structural control character — most critically a NEWLINE or carriage
-/// return — can close the quoted scalar it sits inside and inject sibling YAML nodes (e.g. an extra
-/// `client_tokens` entry, or a rewritten `admin_token`). Since both `client_tokens` and
-/// `admin_token` are interpolated from env vars inside double-quoted scalars in the shipped
-/// `config.yaml`, whoever controls those env vars (a CI pipeline, secret store, orchestrator) could
-/// otherwise silently widen the auth allowlist without editing the config file.
+/// return — can close the quoted (or plain) scalar it sits inside and inject sibling YAML nodes.
+/// This is the FIRST of two layers: it is a fast, cheap, clear-error rejection of the
+/// newline-based injection shape. It is NOT sufficient on its own — see
+/// [`interpolate_env_with`]'s structural-equivalence check for the second layer, which closes the
+/// remaining injection surface that needs no newline at all: inside a YAML FLOW collection
+/// (`{ }` / `[ ]` — used by this project's own documented interpolation examples, e.g.
+/// `client_tokens: [ "${VAR}" ]`), a value containing a bare `,`, `"`, or `'` can inject sibling
+/// structure on a single line. A flow SEQUENCE has no schema-level defense against an extra
+/// element (it silently widens e.g. a client-token allowlist), and an opaque `settings:` map
+/// (`serde_json::Map`, used by auth-chain/hook module config and `SecretRef`) has no
+/// `deny_unknown_fields` to reject an injected sibling key either — both are real, exploitable
+/// shapes in this config format. (A typed struct like `PluginsCfg`, which DOES carry
+/// `#[serde(deny_unknown_fields)]` on every field, blocks a bare sibling-key injection at the
+/// deserialize layer for that specific struct — but that is struct-specific luck, not a general
+/// guarantee, and does not help flow sequences or opaque maps at all.)
 ///
 /// No legitimate secret, token, URL, or path value contains a raw control character, so blocking
 /// the entire C0 control range (plus DEL and the C1 NEL/LS/PS line-breaks YAML also treats as line
-/// boundaries) closes the structural-injection vector with effectively zero false positives. A
-/// double-quote or `#` on its own is harmless without a line break to terminate the current scalar,
-/// and YAML's own quoting handles them, so we do not over-reject those.
+/// boundaries) closes the newline-based injection vector with effectively zero false positives. A
+/// double-quote, `#`, or comma on its own is harmless without a line break to terminate the
+/// current scalar in most positions, and YAML's own quoting handles them, so we do not
+/// over-reject those here — the flow-collection case they DO enable is handled by the structural
+/// check instead, which is not a character-based check.
 fn reject_yaml_unsafe_value(var_name: &str, value: &str) -> Result<(), String> {
     if let Some(bad) = value.chars().find(|c| {
         // C0 controls (incl. \n, \r, \t, NUL) and DEL, plus the Unicode line/paragraph separators
@@ -64,21 +76,47 @@ pub(crate) enum EnvSubst {
     Lenient,
 }
 
-/// Expand `${VAR}` tokens from the environment (see [`EnvSubst`] for unset-variable behavior). A
-/// substituted value carrying a YAML-structural control character is rejected (`reject_yaml_unsafe_value`)
-/// so an env var cannot break out of the quoted scalar it lands in and inject extra YAML nodes.
+/// Expand `${VAR}` tokens from the environment (see [`EnvSubst`] for unset-variable behavior). See
+/// [`interpolate_env_with`] for the two-layer injection defense applied to every substituted value.
 pub(crate) fn interpolate_env(s: &str) -> Result<String, String> {
     interpolate_env_with(s, EnvSubst::Strict, &mut Vec::new())
 }
 
+/// A single `${VAR}` occurrence resolved during interpolation: the real substituted text and the
+/// per-occurrence placeholder token that stands in for it in the "shape" pass (see
+/// [`assert_interpolation_preserves_structure`]). Recorded in source order so a structural
+/// mismatch can be attributed back to a specific occurrence / variable, best-effort.
+struct Occurrence {
+    var_name: String,
+    real_value: String,
+    placeholder: String,
+}
+
 /// See [`interpolate_env`]. In [`EnvSubst::Lenient`] mode each unset variable name is pushed into
 /// `unset` (first-seen, deduped) and a placeholder substituted; in `Strict` mode `unset` is untouched.
+///
+/// Two independent layers guard every substituted value against breaking out of the raw YAML text
+/// it is spliced into, verbatim, BEFORE parsing:
+///
+/// 1. [`reject_yaml_unsafe_value`] rejects a NEWLINE (or other YAML-structural control character)
+///    in the value outright — cheap, and gives a precise error for that shape.
+/// 2. A structural-equivalence check (this function, below): after interpolation, the SAME raw
+///    template is interpolated a second time with every `${VAR}` replaced by a unique, YAML-inert
+///    placeholder token instead of its real value. Both results are parsed to `serde_yaml::Value`
+///    and their trees are compared for structural equivalence (same map keys, same sequence
+///    lengths, same node kind, at every position — NOT scalar leaf values, which are expected and
+///    allowed to differ in content and even inferred type). Any difference means a substituted
+///    value injected or removed YAML structure — the config would parse into a different SHAPE
+///    than the template declares — and interpolation is rejected. This closes injection shapes
+///    that need no newline at all (flow-collection `,`/`"`/`'` breakout, anchor/tag games), which
+///    (1) alone cannot see.
 pub(crate) fn interpolate_env_with(
     s: &str,
     mode: EnvSubst,
     unset: &mut Vec<String>,
 ) -> Result<String, String> {
     let mut result = String::with_capacity(s.len());
+    let mut occurrences: Vec<Occurrence> = Vec::new();
     let mut chars = s.chars().peekable();
 
     while let Some(ch) = chars.next() {
@@ -123,12 +161,203 @@ pub(crate) fn interpolate_env_with(
             // the surrounding YAML scalar and inject sibling nodes (e.g. extra client_tokens).
             reject_yaml_unsafe_value(&var_name, &value)?;
             result.push_str(&value);
+            // Unique PER OCCURRENCE (not per var name): two different `${VAR}` references never
+            // collapse to the same placeholder token, so a real shape difference between two
+            // occurrences of the same variable can never be masked by the placeholder pass
+            // accidentally making them look like "the same node twice". Reusing the SAME var's
+            // real value at multiple points needs no special handling either way — the shape
+            // check never compares scalar leaf VALUES, only node kind/keys/lengths, so two
+            // occurrences sharing a real value are indistinguishable, structurally, from two
+            // occurrences with different values; both are fine.
+            let placeholder = structural_placeholder(occurrences.len());
+            occurrences.push(Occurrence {
+                var_name,
+                real_value: value,
+                placeholder,
+            });
         } else {
             result.push(ch);
         }
     }
 
+    if !occurrences.is_empty() {
+        assert_interpolation_preserves_structure(s, &result, &occurrences)?;
+    }
+
     Ok(result)
+}
+
+/// The per-occurrence placeholder token used by the structural-equivalence check: alphanumeric +
+/// underscore only, so it can never itself introduce YAML structure (no `,` `"` `'` `&` `*` `!`
+/// `:` `[` `]` `{` `}` `#` `|` `>` `-` or whitespace) regardless of where in the template it lands.
+fn structural_placeholder(occurrence_index: usize) -> String {
+    format!("__BUSBAR_INTERP_PLACEHOLDER_{occurrence_index}__")
+}
+
+/// Re-run the interpolation of `template` with the placeholder token substituted for occurrence
+/// `keep_real` (kept as its real value) and every OTHER occurrence's placeholder for all others,
+/// re-scanning `template` for `${...}` spans in the same left-to-right order `occurrences` was
+/// built in. Used only on the (rare, boot-time-only) attribution path after a mismatch is already
+/// known, to isolate which single occurrence's real value is responsible.
+fn splice_occurrences(
+    template: &str,
+    occurrences: &[Occurrence],
+    keep_real: Option<usize>,
+) -> String {
+    let mut out = String::with_capacity(template.len());
+    let mut chars = template.chars().peekable();
+    let mut idx = 0usize;
+    while let Some(ch) = chars.next() {
+        if ch == '$' && chars.peek() == Some(&'{') {
+            chars.next();
+            for ch in chars.by_ref() {
+                if ch == '}' {
+                    break;
+                }
+            }
+            let occ = &occurrences[idx];
+            if keep_real == Some(idx) {
+                out.push_str(&occ.real_value);
+            } else {
+                out.push_str(&occ.placeholder);
+            }
+            idx += 1;
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+/// The structural-equivalence check (see [`interpolate_env_with`] doc comment). `real` is the
+/// already fully-interpolated text; `template` is the original raw source (re-scanned to build the
+/// all-placeholder text and, on the failure path, single-occurrence hybrids for attribution).
+fn assert_interpolation_preserves_structure(
+    template: &str,
+    real: &str,
+    occurrences: &[Occurrence],
+) -> Result<(), String> {
+    // If the real text doesn't even parse as YAML, that already fails safely downstream (the
+    // caller re-parses it and gets a loud, ordinary parse error) — nothing "succeeded silently",
+    // so there is nothing for this check to add. Skip rather than invent a confusing second error.
+    let real_value: serde_yaml::Value = match serde_yaml::from_str(real) {
+        Ok(v) => v,
+        Err(_) => return Ok(()),
+    };
+
+    let placeholder_text = splice_occurrences(template, occurrences, None);
+    let placeholder_value: serde_yaml::Value = match serde_yaml::from_str(&placeholder_text) {
+        Ok(v) => v,
+        Err(e) => {
+            // The placeholder text is built from YAML-inert tokens, so this should not normally
+            // happen. Real interpolation succeeded (parsed fine above) but we cannot verify it
+            // preserves the template's structure — fail closed rather than let an unverifiable
+            // interpolation through.
+            return Err(format!(
+                "could not verify that environment-variable interpolation preserves config \
+                 structure (internal placeholder document failed to parse: {e}); refusing to \
+                 proceed"
+            ));
+        }
+    };
+
+    if structural_shapes_match(&real_value, &placeholder_value) {
+        return Ok(());
+    }
+
+    // Mismatch: try to isolate which single occurrence's real value is responsible by swapping
+    // real values back in one at a time against the all-placeholder baseline. Boot-time-only,
+    // rare (error) path, so re-parsing per occurrence is a non-issue.
+    let mut culprits: Vec<String> = Vec::new();
+    for (i, occ) in occurrences.iter().enumerate() {
+        let hybrid_text = splice_occurrences(template, occurrences, Some(i));
+        let matches = match serde_yaml::from_str::<serde_yaml::Value>(&hybrid_text) {
+            Ok(hybrid_value) => structural_shapes_match(&hybrid_value, &placeholder_value),
+            Err(_) => false, // this occurrence alone breaks parsing outright: also a culprit
+        };
+        if !matches && !culprits.contains(&occ.var_name) {
+            culprits.push(occ.var_name.clone());
+        }
+    }
+
+    if culprits.is_empty() {
+        // No single occurrence reproduces the mismatch in isolation (e.g. it takes two or more
+        // values together) — name every candidate rather than guess wrong.
+        let mut all: Vec<String> = occurrences.iter().map(|o| o.var_name.clone()).collect();
+        all.sort();
+        all.dedup();
+        Err(format!(
+            "environment-variable interpolation would change the config's YAML structure (extra \
+             or missing key, different sequence length, or different node kind at some position), \
+             but no single variable reproduces it in isolation — inspect: {}",
+            all.join(", ")
+        ))
+    } else {
+        Err(format!(
+            "environment variable(s) {} would change the config's YAML structure when \
+             interpolated (extra or missing key, different sequence length, or different node \
+             kind) — a substituted value must only ever change a scalar leaf's content, never the \
+             document's shape",
+            culprits.join(", ")
+        ))
+    }
+}
+
+/// The node "kind" compared by the structural-equivalence check: every scalar variant (`Null`,
+/// `Bool`, `Number`, `String`) folds into one bucket, because interpolation legitimately changes a
+/// leaf's content and even its INFERRED TYPE (e.g. `port: ${PORT}` — a real `8080` infers as
+/// `Number`, the placeholder token infers as `String`) without that being an injection. `Mapping`,
+/// `Sequence`, and `Tagged` stay distinct: those are shapes a plain scalar substitution should
+/// never turn into, so seeing one appear only on the real side (or vice versa) IS the signal.
+fn structural_shapes_match(a: &serde_yaml::Value, b: &serde_yaml::Value) -> bool {
+    use serde_yaml::Value;
+    match (a, b) {
+        (Value::Mapping(ma), Value::Mapping(mb)) => {
+            let mut ka: Vec<String> = ma.iter().map(|(k, _)| mapping_key_repr(k)).collect();
+            let mut kb: Vec<String> = mb.iter().map(|(k, _)| mapping_key_repr(k)).collect();
+            ka.sort();
+            kb.sort();
+            // Compared as a SET, not in map order: a real injection would not necessarily
+            // preserve key order, and order carries no semantic meaning for a YAML mapping here
+            // (`serde_yaml` / the typed structs downstream don't treat map key order as
+            // significant either), so an order-sensitive compare would be both meaningless and a
+            // source of spurious failures.
+            if ka != kb {
+                return false;
+            }
+            ma.iter().all(|(k, va)| match mb.get(k.clone()) {
+                Some(vb) => structural_shapes_match(va, vb),
+                None => false,
+            })
+        }
+        (Value::Sequence(sa), Value::Sequence(sb)) => {
+            sa.len() == sb.len()
+                && sa
+                    .iter()
+                    .zip(sb.iter())
+                    .all(|(va, vb)| structural_shapes_match(va, vb))
+        }
+        (Value::Tagged(ta), Value::Tagged(tb)) => {
+            ta.tag == tb.tag && structural_shapes_match(&ta.value, &tb.value)
+        }
+        (Value::Mapping(_), _) | (_, Value::Mapping(_)) => false,
+        (Value::Sequence(_), _) | (_, Value::Sequence(_)) => false,
+        (Value::Tagged(_), _) | (_, Value::Tagged(_)) => false,
+        // Both plain scalars (Null/Bool/Number/String in any combination): shape matches
+        // regardless of content or inferred type — see the doc comment above.
+        _ => true,
+    }
+}
+
+/// A YAML mapping key rendered to a comparable string for the structural-equivalence check's
+/// key-set comparison. Every key in this project's config surface is a plain YAML string, so the
+/// common case is exact; the fallback exists only so a non-string key (not expected in practice)
+/// degrades to a still-deterministic, still-comparable representation instead of panicking.
+fn mapping_key_repr(key: &serde_yaml::Value) -> String {
+    match key {
+        serde_yaml::Value::String(s) => s.clone(),
+        other => format!("{other:?}"),
+    }
 }
 
 /// The fully-resolved runtime config. NOT deserialized from YAML: the on-disk shape is `DeployCfg`

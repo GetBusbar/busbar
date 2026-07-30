@@ -93,9 +93,30 @@ subsystem at boot. Interpolation remains for non-secret values (hosts, paths, na
 | `${NAME}` where `NAME` is unset | Fatal boot error: `unset environment variable: NAME` |
 | `${NAME` with no closing `}` | Fatal boot error: `unclosed variable reference...` |
 | `${}` (empty name) | Fatal boot error: `empty variable name in ${}` |
-| Value contains a control character (`\n`, `\r`, `\t`, NUL, DEL, U+0085, U+2028, U+2029) | Fatal boot error, prevents YAML-structure injection via env vars |
+| Value contains a control character (`\n`, `\r`, `\t`, NUL, DEL, U+0085, U+2028, U+2029) | Fatal boot error, prevents newline-based YAML-structure injection via env vars |
+| Value would change the config's YAML STRUCTURE when substituted (see below) | Fatal boot error, names the offending variable(s) where identifiable |
 
-Ordinary punctuation (`: / @ . - # "`) in env var values is allowed. Interpolation scans the entire raw file, including commented-out lines, so a `${VAR}` in a comment must still resolve.
+Ordinary punctuation (`: / @ . - # " , { } [ ] &` etc.) in env var values is allowed — there is no fixed forbidden-character list. Interpolation scans the entire raw file, including commented-out lines, so a `${VAR}` in a comment must still resolve.
+
+### Structural-equivalence check
+
+Beyond the control-character check above, every interpolated document is verified to keep the same
+YAML *shape* the template declares. Concretely: the raw template is interpolated twice — once with
+real values, once with an inert placeholder standing in for each `${VAR}` — both results are parsed,
+and the two parse trees must have the same map keys, the same sequence lengths, and the same node
+kind (map / sequence / scalar) at every position. A substituted value may change what a scalar leaf
+*contains* — that's the entire point of interpolation — but it may never change how many keys a map
+has, how long a sequence is, or what kind of node sits at a given position.
+
+This closes a class of injection the control-character check alone cannot see: inside a YAML flow
+collection (`{ }` / `[ ]` — used by this project's own examples, e.g. `client_tokens: [ "${VAR}" ]`),
+a value containing a bare `,`, `"`, or `'` can splice in extra structure on a single line, with no
+newline involved at all. Because the check is about *shape*, not content, it has no forbidden-character
+list to maintain and no false positives on legitimate values that happen to contain YAML-"special"
+characters — an LDAP DN with mandatory commas, a JSON blob, a Windows path with backslashes, a URL
+with a query string, or a value that changes a scalar's *inferred type* (e.g. `port: ${PORT}` — a
+real `8080` infers as a number, but the check does not compare scalar values or types, only shape) all
+interpolate normally. Only a value that actually widens/narrows the parsed structure is rejected.
 
 ---
 
