@@ -466,7 +466,7 @@ These fields survive a cross-protocol hop because they are first-class in the IR
 | `system` prompt | `IrRequest.system` |
 | Messages (user / assistant / tool turns) | `IrRequest.messages: Vec<IrMessage>` |
 | Text blocks | `IrBlock::Text { text, cache_control, citations }` |
-| Thinking / extended-thinking blocks | `IrBlock::Thinking { text, signature, cache_control }` |
+| Thinking / extended-thinking blocks | `IrBlock::Thinking { text, signature, redacted, cache_control }` — `redacted: true` means `text` holds opaque provider-encrypted bytes, not plaintext |
 | Tool definitions | `IrRequest.tools`: `IrTool { name, description, input_schema }` |
 | Tool-use and tool-result blocks | `IrBlock::ToolUse`, `IrBlock::ToolResult` |
 | Image blocks | `IrBlock::Image { source: IrImageSource, cache_control }` (media type and data live in `IrImageSource::Base64 { media_type, data }`) |
