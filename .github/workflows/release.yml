@@ -322,24 +322,19 @@ jobs:
   # build+sign at busbarAI release time" (docs/plugins.md). This job checks each out as a SIBLING
   # of this checkout (path: ../headroom-hook, ../webrequest-hook) and builds the cdylib from there,
   # pinned to a fixed ref so a release is reproducible:
-  #   - headroom-hook: pinned to commit dbd3d11 ("bench: rewrite for the signed dlopen
-  #     plugin ABI"). NOT the latest tag (v1.0.14) — that tag predates the ABI port and is not
-  #     loadable by busbar's plugin loader at all. JUDGMENT CALL: pin by commit until upstream
-  #     cuts a release tag that includes the port; re-pin HEADROOM_HOOK_REF to that tag then.
+  #   - headroom-hook: pinned to commit a61e7f8 ("Switch busbar-plugin-sdk to sibling-relative
+  #     path dependency", on top of the earlier dlopen ABI port). NOT the latest tag (v1.0.14) —
+  #     that tag predates the ABI port and is not loadable by busbar's plugin loader at all.
+  #     JUDGMENT CALL: pin by commit until upstream cuts a release tag that includes the port;
+  #     re-pin HEADROOM_HOOK_REF to that tag then.
   #   - webrequest-hook: pinned to its only commit so far (5999093, the repo-extraction commit).
   #     Re-pin to a tag once the repo starts cutting releases.
   #
   # Both repos declare their busbar-plugin-sdk dependency as an INTERIM local path dependency
-  # (documented in each repo's own Cargo.toml as a stopgap pending busbarAI going public):
-  #   - webrequest-hook already uses a RELATIVE path (`../busbarAI/crates/plugin-sdk`), which
-  #     resolves correctly given the sibling checkout layout below — no override needed.
-  #   - headroom-hook uses an ABSOLUTE developer-machine path
-  #     (`/Users/matthew/Developer/busbarAI/busbarAI/crates/plugin-sdk`), which does not exist on
-  #     a GitHub-hosted runner. The "Patch headroom-hook's interim path dependency" step below
-  #     rewrites it to the same sibling-relative form via `sed`, in-place, before building.
-  #     JUDGMENT CALL: this sed patch is a documented workaround, not a clean fix — the real fix is
-  #     for headroom-hook to switch to the same relative-path convention webrequest-hook already
-  #     uses (or, longer-term, a published git/crates.io busbar-plugin-sdk once busbarAI is public).
+  # (documented in each repo's own Cargo.toml as a stopgap pending busbarAI going public), and both
+  # now use the same RELATIVE path convention (`../busbarAI/crates/...`), which resolves correctly
+  # given the sibling checkout layout below — no CI-side patching needed. Longer-term this should
+  # become a published git/crates.io busbar-plugin-sdk once busbarAI is public.
   #
   # TODO(release-keys): same seam as store-plugins — until the BUSBAR_SIGN_KEY secret is provisioned
   # this job packages UNSIGNED tarballs (loadable only under plugins.trust.allow_unsigned), so a
@@ -350,7 +345,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       # Pinned refs for the external first-party plugin source repos — see the block comment above.
-      HEADROOM_HOOK_REF: dbd3d1105aa5ccffa2f376a12b901a2ce668292b
+      HEADROOM_HOOK_REF: a61e7f8
       WEBREQUEST_HOOK_REF: 5999093848c7574df09faccde71b25d3b137b1e5
     strategy:
       fail-fast: false
@@ -394,23 +389,6 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
-      - name: Patch headroom-hook's interim path dependencies for CI
-        run: |
-          set -euo pipefail
-          # See the "SOURCE" block comment above the job: headroom-hook/Cargo.toml pins THREE
-          # local deps (busbar-plugin-sdk under [dependencies]; busbar-plugin-loader and busbar-api
-          # under [dev-dependencies], used by its test harness) via the SAME ABSOLUTE
-          # developer-machine prefix. All three must be rewritten — `cargo build --release` still
-          # resolves dev-dependencies to produce a consistent Cargo.lock, so leaving any one
-          # absolute path in place fails the build even though the shipped artifact doesn't need
-          # it (verified: an earlier version of this patch that rewrote only busbar-plugin-sdk
-          # failed exactly this way). Rewrite the whole absolute prefix generically so it catches
-          # every current and future local dep, not line-by-line — matching the sibling-relative
-          # convention webrequest-hook's Cargo.toml already uses natively.
-          sed -i.bak 's#/Users/matthew/Developer/busbarAI/busbarAI/crates#../busbarAI/crates#g' ../headroom-hook/Cargo.toml
-          rm -f ../headroom-hook/Cargo.toml.bak
-          grep 'path = "\.\./busbarAI' ../headroom-hook/Cargo.toml
-        shell: bash
       - name: Build the hook plugin cdylibs (external first-party repos) + the packer
         run: |
           cargo build --release --target ${{ matrix.target }} --manifest-path ../headroom-hook/Cargo.toml
