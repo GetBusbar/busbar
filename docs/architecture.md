@@ -221,7 +221,7 @@ system blocks, messages with text / thinking (+signature) / tool-use / tool-resu
 / image blocks, tools (name + description + JSON schema), `max_tokens`,
 `temperature` (held as `f64` so a caller's value never silently mutates), a `stream`
 flag, and an `extra` passthrough map for fields outside the modeled subset
-(`top_p`, etc.). Same-protocol REQUESTS skip the IR entirely and pass through
+(provider-specific sampling knobs with no first-class IR field, etc.). Same-protocol REQUESTS skip the IR entirely and pass through
 byte-for-byte, but only when the client named the lane's exact wire model — a pool-alias route
 (e.g. `model: "fast"` resolving to a specific lane) rewrites the model and re-serializes instead.
 Same-protocol RESPONSES pass through byte-for-byte on the wire but still decode each frame through

@@ -109,7 +109,7 @@ shell. Push the new cert/key/CA through the admin API, then restart in-product:
 ```bash
 curl -X PUT http://localhost:8081/api/v1/admin/config/settings \
   -H "x-admin-token: $ADMIN_TOKEN" -H 'content-type: application/json' \
-  --data '{"tls": {"cert": "...", "key": "...", "ca": "..."}}'
+  --data '{"tls": {"cert": {"file": "..."}, "key": {"file": "..."}, "client_ca": {"file": "..."}}}'
 # -> {"reload_to_apply": ["tls"], "note": "... takes effect on the next restart ..."}
 
 curl -X POST http://localhost:8081/api/v1/admin/restart \

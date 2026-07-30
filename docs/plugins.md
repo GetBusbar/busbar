@@ -41,7 +41,7 @@ One plugin is one `.tar.gz` per (plugin, target) containing exactly two members:
   "kind": "store",
   "version": "1.5.0",
   "publisher": "busbar",
-  "abi_version": 4,
+  "abi_version": 1,
   "sha256": "<64-hex sha256 of the cdylib bytes>",
   "signature": "<128-hex ed25519 signature over the canonical manifest>",
   "description": "busbar redis store plugin",
@@ -58,8 +58,8 @@ you can name the tarball anything.
 `name` is the canonical identity (`[a-z0-9-]+`, e.g. `busbar-store-redis`); `alias` is the short
 config name (`redis`). `store.module:` accepts either. `kind` is `store`, `secret`, `auth`, or `hook`.
 `version` is strict semver. `abi_version` declares which per-kind payload-schema generation the
-cdylib was built against — it is set **per kind** (`store` is at `4`; `secret`, `auth`, and `hook`
-are at `1`). The loader enforces a supported-version RANGE per kind, so a plugin built against an
+cdylib was built against — it is set **per kind** (`store`, `secret`, `auth`, and `hook` are all
+at `1`). The loader enforces a supported-version RANGE per kind, so a plugin built against an
 outdated (or too-new) ABI is refused at load rather than mis-called. See `busbar-plugin-abi` for the
 authoritative versions.
 

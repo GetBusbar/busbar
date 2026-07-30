@@ -29,7 +29,7 @@ and the two common extension tasks.
 | `proto/mod.rs` | The protocol seam: `ProtocolReader` / `ProtocolWriter` traits, `Protocol`, `ProtocolRegistry`, `SigningContext`, `probe_body` default. `proto/detect.rs` sniffs the ingress protocol; `proto/openai_family.rs` holds the shared OpenAI-family bits; `proto/stream.rs` is the cross-protocol stream translator and SSE reframing. |
 | `proto/{anthropic,openai_chat,openai_responses,gemini,bedrock,cohere}/` | One folder-module per protocol: each holds the Reader (wire→IR + error extraction) and Writer (IR→wire + auth + paths). Bedrock's writer overrides `sign_request` for SigV4. |
 | `sigv4.rs` | Hand-rolled AWS SigV4 (RustCrypto sha2 + hmac, no AWS SDK): `sign_v4`, `signing_key`, `uri_encode_path`, `format_amz_time`, `sha256_hex`. |
-| `governance/mod.rs` | Signed virtual keys + the generic group limit engine (ADR-0009): `GovState`, `VirtualKey`, `try_admit` over the per-(group, window) buckets, the revocation denylist, and the token-ledger cost model. The governance `Store` trait itself lives in the `busbar-api` crate (`crates/api/src/store.rs`); concrete backends are separate crates (`busbar-store-memory` compiled in by default, `busbar-store-sqlite` / `-postgres` / `-redis` as static or dynamically-loaded plugins chosen by `store.module`). |
+| `governance/mod.rs` | Signed virtual keys + the generic group limit engine: `GovState`, `VirtualKey`, `try_admit` over the per-(group, window) buckets, the revocation denylist, and the token-ledger cost model. The governance `Store` trait itself lives in the `busbar-api` crate (`crates/api/src/store.rs`); concrete backends are separate crates (`busbar-store-memory` compiled in by default, `busbar-store-sqlite` / `-postgres` / `-redis` as static or dynamically-loaded plugins chosen by `store.module`). |
 | `admin/` | The admin API: `admin/mod.rs` mounts the `/api/v1/admin/*` handlers (keys, usage, config, hooks, plugins) on the separate admin listener, `admin/v1/` is the frozen JSON contract, and `admin/rate.rs` / `admin/audit.rs` carry admin rate-limiting and the hash-chained audit log. |
 | `health.rs` | Active health probing (`spawn_probers`, `probe_lane` using each protocol's `probe_body`) and the `/stats` + `/healthz` handlers. |
 | `metrics.rs` | Prometheus recorder init + the `busbar_*` metric name constants. |
@@ -119,7 +119,7 @@ provider count). To add one:
    kind the IR can't represent, extend the `IrBlock` / event enums: and then every
    other writer must handle the new variant (the exhaustive matches will tell you).
 5. **Test it** through the `MockServer` harness and the cross-protocol round-trip
-   tests in `crates/busbar/src/proto/mod.rs` (`test_probe_body_valid_for_all_protocols` already
+   tests in `crates/busbar/src/proto/tests/tests.rs` (`test_probe_body_valid_for_all_protocols` already
    asserts every protocol produces a valid probe body).
 
 The `Reader`/`Writer` files (`crates/busbar/src/proto/<name>/`) are the only per-protocol code;
@@ -192,7 +192,8 @@ checklist as authoritative.
 - **No `_ =>` catch-all in the disposition/breaker matches.** The exhaustive match
   on `StatusClass`/`Disposition` is how the compiler enforces that every failure
   mode is handled; the arms even use `unreachable!()` for classes that cannot
-  reach a given arm. This is a stated project invariant (CONTRIBUTING.md §5).
+  reach a given arm. This is a stated project invariant (CONTRIBUTING.md, "Fixing a defect: the
+  remediation contract").
 - **`error_map` is data, not code.** Provider quirks belong in YAML, not in a
   match arm.
 - **Test time is injectable, not real.** Breaker/FSM logic reads time via

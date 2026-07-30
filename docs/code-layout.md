@@ -21,7 +21,6 @@ Rust, so "code vs not-code" is obvious at a glance:
 crates/
   busbar/            the engine + binary (src/main.rs, the request path, admin plane, protocols)
   api/               the plugin CONTRACT crate — traits/types both the engine and every plugin build against
-  auth-tokens/       built-in `tokens` auth plugin        (default-on, removable feature)
   auth-admin-tokens/ built-in `admin-tokens` admin plugin (default-on, removable feature)
   hooks-ranking/     built-in cheapest/fastest/… policies (default-on, removable feature)
 ```
