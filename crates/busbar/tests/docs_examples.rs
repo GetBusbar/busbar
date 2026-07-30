@@ -164,7 +164,8 @@ fn marked_config_examples_validate() {
     assert!(
         marked.len() >= 3,
         "only found {} `doc-check: config`-marked examples — expected at least 3 \
-         (getting-started.md, configuration.md, reliability.md). Either a marker was removed, or \
+         (getting-started.md x2, configuration.md x1; reliability.md's example is deliberately \
+         left unmarked, see its own `store.module: sqlite` note). Either a marker was removed, or \
          the extractor regressed — either way this guard just went quiet.",
         marked.len()
     );

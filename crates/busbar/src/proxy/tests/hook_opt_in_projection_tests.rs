@@ -300,7 +300,7 @@ fn prompt_projection_sees_bedrock_reasoning_text() {
     let v: Value = serde_json::json!({
         "messages": [
             {"role": "assistant", "content": [
-                {"reasoningContent": {"reasoningText": {"text": "SMUGGLED"}}}
+                {"reasoningContent": {"reasoningText": {"text": "SMUGGLED", "signature": "sig-xyz"}}}
             ]}
         ]
     });
@@ -310,9 +310,13 @@ fn prompt_projection_sees_bedrock_reasoning_text() {
         vec![("assistant".into(), "SMUGGLED".into())]
             as Vec<(std::borrow::Cow<'_, str>, std::borrow::Cow<'_, str>)>
     );
-    // The generic arms must not incidentally pick up the signature field as if it were content —
-    // opaque provider material is not screenable text either.
-    assert!(!p.messages[0].1.contains("sig"));
+    // The generic arms must not incidentally pick up the sibling `signature` field as if it were
+    // content — opaque provider material is not screenable text either. The fixture above carries
+    // a real `signature` (Bedrock's `reasoningText` shape is `{text, signature}`, see
+    // `proto/bedrock/mod.rs`'s `read_bedrock_reasoning_block`), so this assertion is meaningful:
+    // without it, a naive dispatch could accidentally string-search the whole `reasoningContent`
+    // object rather than just `reasoningText.text`.
+    assert!(!p.messages[0].1.contains("sig-xyz"));
 }
 
 /// Bypass #3: a Responses `reasoning` INPUT item with NO `content` key (summary-only — the second
