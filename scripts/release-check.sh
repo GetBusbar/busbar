@@ -29,8 +29,8 @@
 #     suite already stands up a real local JWKS server + a real minted JWT and drives the plugin
 #     through the real ABI. This script sibling-checks-out that repo and runs its suite as a gate
 #     (Phase 4 below) rather than reinventing a second, lower-quality fake-IdP proof.
-#   - secret-vault's real-ABI plugin proof — busbar-secret-vault / busbar-secret-vault-plugin no
-#     longer live in this workspace (extracted to GetBusbar/secret-vault). Phase 4.5 below runs
+#   - hashicorp-vault's real-ABI plugin proof — busbar-hashicorp-vault / busbar-hashicorp-vault-plugin
+#     no longer live in this workspace (extracted to GetBusbar/hashicorp-vault). Phase 4.5 below runs
 #     THAT repo's own test suite (a sibling checkout) against a real Vault dev-mode container,
 #     rather than duplicating the proof in-tree.
 #   - Redis's real-ABI + real-persistence proof — store-redis now lives entirely in its own repo
@@ -227,7 +227,7 @@ ok "busbar-plugin-pack: $PACK_BIN"
 
 # ── Nothing left to build here. Every first-party store/auth/secret plugin has been extracted to
 #    its own repo (GetBusbar/store-sqlite, GetBusbar/store-postgres, GetBusbar/store-redis,
-#    GetBusbar/auth-oidc, GetBusbar/secret-vault; each a same-repo 2-crate workspace, the pattern
+#    GetBusbar/auth-oidc, GetBusbar/hashicorp-vault; each a same-repo 2-crate workspace, the pattern
 #    auth-oidc's own extraction established) — busbarAI's release.yml itself no longer builds or
 #    packs any of them; it only ships the busbar binary + the bundled hook plugins now (see the
 #    "Store/auth plugin releases moved out" comment there). Phase 1/Phase 2/Phase 3/Phase 4/Phase
@@ -540,18 +540,19 @@ else
   AUTH_OIDC_SKIPPED=1
 fi
 
-# ── Phase 4.5: secret-vault — real-ABI proof via a sibling checkout's own test suite ────────────────
+# ── Phase 4.5: hashicorp-vault — real-ABI proof via a sibling checkout's own test suite ──────────
 #
-# busbar-secret-vault / busbar-secret-vault-plugin no longer live in this workspace (extracted to
-# GetBusbar/secret-vault, same-repo 2-crate workspace, mirroring busbar-auth-oidc's own extraction).
-# Like Phase 4's OIDC coverage (also fully extracted, see that phase above), there is no in-tree
-# cdylib to dlopen here any more — the real-Vault ABI-crossing proof now lives entirely in that
-# repo's own test suite (its
-# `secret-vault-plugin/tests/e2e.rs`, dlopen-ing its own real-built cdylib). Running THAT suite,
+# busbar-hashicorp-vault / busbar-hashicorp-vault-plugin no longer live in this workspace (extracted
+# to GetBusbar/hashicorp-vault, same-repo 2-crate workspace, mirroring busbar-auth-oidc's own
+# extraction; formerly named secret-vault, renamed to match the plugin's actual identity). Like
+# Phase 4's OIDC coverage (also fully extracted, see that phase above), there is no in-tree cdylib
+# to dlopen here any more — the real-Vault ABI-crossing proof now lives entirely in that repo's own
+# test suite (its
+# `hashicorp-vault-plugin/tests/e2e.rs`, dlopen-ing its own real-built cdylib). Running THAT suite,
 # against a real `hashicorp/vault` dev-mode container, is the correct release-gate check: it proves
 # the actual released artifact works, not a duplicate in-tree reimplementation of the same proof.
-phase "Phase 4.5: secret-vault-plugin — real-ABI proof via sibling checkout (real Vault container)"
-SECRET_VAULT_SRC="${REPO_ROOT}/../secret-vault"
+phase "Phase 4.5: hashicorp-vault-plugin — real-ABI proof via sibling checkout (real Vault container)"
+SECRET_VAULT_SRC="${REPO_ROOT}/../hashicorp-vault"
 if [ -d "$SECRET_VAULT_SRC" ]; then
   VAULT_CONTAINER="busbar-release-check-vault-$$"
   DOCKER_CONTAINERS+=("$VAULT_CONTAINER")
@@ -572,11 +573,11 @@ if [ -d "$SECRET_VAULT_SRC" ]; then
   ( cd "$SECRET_VAULT_SRC" && \
     BUSBAR_TEST_VAULT_ADDR="http://127.0.0.1:18200" BUSBAR_TEST_VAULT_TOKEN="root" \
     cargo test --workspace )
-  ok "secret-vault real-ABI plugin tests passed (sibling checkout: ${SECRET_VAULT_SRC})"
+  ok "hashicorp-vault real-ABI plugin tests passed (sibling checkout: ${SECRET_VAULT_SRC})"
   docker rm -f "$VAULT_CONTAINER" >/dev/null 2>&1 || true
 else
-  note "SKIP: ../secret-vault not present as a sibling checkout on this machine."
-  note "Clone GetBusbar/secret-vault as a sibling of this repo to run this phase locally; CI runs"
+  note "SKIP: ../hashicorp-vault not present as a sibling checkout on this machine."
+  note "Clone GetBusbar/hashicorp-vault as a sibling of this repo to run this phase locally; CI runs"
   note "it via that repo's own ci.yml (service: vault), not from here."
   SECRET_VAULT_SKIPPED=1
 fi
@@ -669,8 +670,8 @@ else
   echo "Redis phase passed with real assertions (sibling checkout)."
 fi
 if [ -n "${SECRET_VAULT_SKIPPED:-}" ]; then
-  echo "NOTE: ../secret-vault was not present locally — Vault coverage was skipped, not passed. Run"
-  echo "on a machine with ../secret-vault checked out for full coverage before tagging, or confirm"
+  echo "NOTE: ../hashicorp-vault was not present locally — Vault coverage was skipped, not passed. Run"
+  echo "on a machine with ../hashicorp-vault checked out for full coverage before tagging, or confirm"
   echo "that repo's own CI is green."
 else
   echo "Secret-vault phase passed with real assertions (sibling checkout)."
