@@ -283,6 +283,7 @@ impl ProtocolReader for CohereReader {
                                         name,
                                         input,
                                         cache_control: None,
+                                        thought_signature: None,
                                     });
                                 }
                             }
@@ -937,6 +938,7 @@ impl ProtocolReader for CohereReader {
                         name,
                         input,
                         cache_control: None,
+                        thought_signature: None,
                     });
                 }
             }

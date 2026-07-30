@@ -47,6 +47,7 @@ fn test_write_request() {
             crate::ir::IrMessage {
                 role: crate::ir::IrRole::Assistant,
                 content: vec![crate::ir::IrBlock::ToolUse {
+                    thought_signature: None,
                     id: "t1".to_string(),
                     name: "f".to_string(),
                     input: serde_json::json!({"x": 1}),
@@ -404,18 +405,21 @@ fn test_write_response_preserves_parallel_tool_calls() {
         role: crate::ir::IrRole::Assistant,
         content: vec![
             crate::ir::IrBlock::ToolUse {
+                thought_signature: None,
                 id: "t1".to_string(),
                 name: "get_weather".to_string(),
                 input: serde_json::json!({"city": "SF"}),
                 cache_control: None,
             },
             crate::ir::IrBlock::ToolUse {
+                thought_signature: None,
                 id: "t2".to_string(),
                 name: "get_time".to_string(),
                 input: serde_json::json!({"tz": "PST"}),
                 cache_control: None,
             },
             crate::ir::IrBlock::ToolUse {
+                thought_signature: None,
                 id: "t3".to_string(),
                 name: "get_news".to_string(),
                 input: serde_json::json!({}),
@@ -467,6 +471,7 @@ fn test_write_request_sole_tooluse_omits_empty_content() {
         messages: vec![crate::ir::IrMessage {
             role: crate::ir::IrRole::Assistant,
             content: vec![crate::ir::IrBlock::ToolUse {
+                thought_signature: None,
                 id: "t1".to_string(),
                 name: "f".to_string(),
                 input: serde_json::json!({"x": 1}),
@@ -1315,12 +1320,14 @@ fn test_write_response_tool_calls_nested_and_roundtrip() {
                 citations: Vec::new(),
             },
             crate::ir::IrBlock::ToolUse {
+                thought_signature: None,
                 id: "t1".to_string(),
                 name: "get_weather".to_string(),
                 input: serde_json::json!({"city": "SF"}),
                 cache_control: None,
             },
             crate::ir::IrBlock::ToolUse {
+                thought_signature: None,
                 id: "t2".to_string(),
                 name: "get_time".to_string(),
                 input: serde_json::json!({"tz": "PST"}),
@@ -4462,6 +4469,7 @@ fn test_write_response_reemits_folded_tool_plan_as_content_not_tool_plan() {
                 citations: Vec::new(),
             },
             crate::ir::IrBlock::ToolUse {
+                thought_signature: None,
                 id: "t1".to_string(),
                 name: "get_weather".to_string(),
                 input: serde_json::json!({"city": "SF"}),

@@ -183,6 +183,7 @@ fn thinking_omits_top_k() {
 #[test]
 fn seam_gate_clears_or_stamps() {
     let prep = |allowed: bool| EgressPrep {
+        thought_signature_fill: false,
         ingress_protocol: "openai",
         egress_requires_max_tokens: true,
         lane_default_max_tokens: None,

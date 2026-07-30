@@ -3644,6 +3644,7 @@ fn cache_control_on_tool_use_block_round_trips() {
             name,
             input,
             cache_control,
+            ..
         } => {
             assert_eq!(id, "toolu_01abc");
             assert_eq!(name, "get_weather");

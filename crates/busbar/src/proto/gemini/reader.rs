@@ -322,11 +322,23 @@ impl ProtocolReader for GeminiReader {
                             // and gives cross-protocol Anthropic/OpenAI egress a non-empty id.
                             let id = synth_tool_call_id(tool_call_index, &name);
                             tool_call_index += 1;
+                            // `thoughtSignature` is a sibling of `functionCall` on the `Part` object
+                            // (NOT nested inside it) — same placement as the `thought:true` block's
+                            // signature above. Gemini 3 requires this echoed back verbatim on the
+                            // next turn; capture it here so same-protocol Gemini history round-trips
+                            // it (even though that path never actually reaches this reader — it's a
+                            // raw passthrough — capturing it is harmless and future-proof).
+                            let thought_signature = part
+                                .get("thoughtSignature")
+                                .and_then(|s| s.as_str())
+                                .filter(|s| !s.is_empty())
+                                .map(String::from);
                             msg_content.push(crate::ir::IrBlock::ToolUse {
                                 id,
                                 name,
                                 input: args,
                                 cache_control: None,
+                                thought_signature,
                             });
                         }
                         // FunctionResponse (ToolResult)
@@ -913,6 +925,17 @@ impl ProtocolReader for GeminiReader {
                                         },
                                     });
 
+                                    // NOTE: `IrBlockMeta::ToolUse` deliberately has no
+                                    // `thoughtSignature` slot, and this arm deliberately does not
+                                    // read `part.get("thoughtSignature")`. Same-protocol Gemini
+                                    // streams are relayed raw and never decoded through this reader,
+                                    // so a captured value here would never reach a same-protocol
+                                    // client. A genuine cross-protocol stream has no downstream field
+                                    // to carry a captured signature into for the client's NEXT
+                                    // request either — it's `IrReq::prepare_for_egress` (request-side,
+                                    // sentinel injection), not stream capture, that actually supplies
+                                    // the `thoughtSignature` Gemini needs on that next turn. Do not
+                                    // "fix" this as a gap without re-reading that control flow.
                                     // Emit the whole args as InputJsonDelta (Gemini doesn't stream functionCall)
                                     let args_str =
                                         crate::json::to_string(&args).unwrap_or_default();
@@ -1203,11 +1226,21 @@ impl ProtocolReader for GeminiReader {
 
                     let id = synth_tool_call_id(tool_call_index, &name_val);
                     tool_call_index += 1;
+                    // `thoughtSignature` is a sibling of `functionCall` on the `Part` object, same
+                    // placement as the thought block's signature above. Gemini 3 REQUIRES this
+                    // echoed back verbatim on the function call's next-turn replay; capture it so a
+                    // same-protocol Gemini→Gemini history round-trips it faithfully.
+                    let thought_signature = part
+                        .get("thoughtSignature")
+                        .and_then(|s| s.as_str())
+                        .filter(|s| !s.is_empty())
+                        .map(String::from);
                     content.push(crate::ir::IrBlock::ToolUse {
                         id,
                         name: name_val,
                         input: args,
                         cache_control: None,
+                        thought_signature,
                     });
                 }
             }

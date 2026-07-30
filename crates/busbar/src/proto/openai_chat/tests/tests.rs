@@ -534,6 +534,7 @@ fn write_request_keeps_tool_use_on_user_message() {
         messages: vec![IrMessage {
             role: IrRole::User,
             content: vec![IrBlock::ToolUse {
+                thought_signature: None,
                 id: "t9".to_string(),
                 name: "search".to_string(),
                 input: serde_json::json!({"q": "rust"}),
@@ -644,6 +645,7 @@ fn write_request_tool_role_mixed_content_not_dropped() {
                 },
                 text_block("stray narration"),
                 IrBlock::ToolUse {
+                    thought_signature: None,
                     id: "call_2".to_string(),
                     name: "lookup".to_string(),
                     input: serde_json::json!({"k": "v"}),
@@ -768,6 +770,7 @@ fn write_response_joins_text_blocks_and_keeps_tool_calls() {
             text_block("Hello "),
             text_block("world"),
             IrBlock::ToolUse {
+                thought_signature: None,
                 id: "c1".to_string(),
                 name: "fn".to_string(),
                 input: serde_json::json!({"a": 1}),
@@ -803,6 +806,7 @@ fn write_response_content_null_when_no_text() {
         logprobs: Vec::new(),
         role: IrRole::Assistant,
         content: vec![IrBlock::ToolUse {
+            thought_signature: None,
             id: "c1".to_string(),
             name: "fn".to_string(),
             input: serde_json::json!({}),
@@ -1270,6 +1274,7 @@ fn write_request_tool_call_only_assistant_has_null_content() {
         messages: vec![IrMessage {
             role: IrRole::Assistant,
             content: vec![IrBlock::ToolUse {
+                thought_signature: None,
                 id: "t1".to_string(),
                 name: "search".to_string(),
                 input: serde_json::json!({"q": "x"}),
@@ -3216,6 +3221,7 @@ fn write_request_string_tool_arguments_emitted_verbatim() {
         messages: vec![IrMessage {
             role: IrRole::Assistant,
             content: vec![crate::ir::IrBlock::ToolUse {
+                thought_signature: None,
                 id: "call_1".to_string(),
                 name: "do_it".to_string(),
                 input: serde_json::Value::String(raw.clone()),
@@ -3253,6 +3259,7 @@ fn write_response_string_tool_arguments_emitted_verbatim() {
         logprobs: Vec::new(),
         role: IrRole::Assistant,
         content: vec![crate::ir::IrBlock::ToolUse {
+            thought_signature: None,
             id: "call_1".to_string(),
             name: "do_it".to_string(),
             input: serde_json::Value::String(raw.clone()),
@@ -3784,6 +3791,7 @@ fn test_n_gt_1_clamped_to_one_on_cross_protocol_egress() {
 
     fn prep() -> EgressPrep<'static> {
         EgressPrep {
+            thought_signature_fill: false,
             ingress_protocol: "openai",
             egress_requires_max_tokens: false,
             lane_default_max_tokens: None,
