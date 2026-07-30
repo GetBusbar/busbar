@@ -146,25 +146,38 @@ fn handle_cli_flags() -> Option<i32> {
             let config_path =
                 std::env::var(ENV_CONFIG).unwrap_or_else(|_| DEFAULT_CONFIG_PATH.into());
             if let Ok(raw) = std::fs::read_to_string(&config_path) {
-                if let Ok(interpolated) = config::interpolate_env(&raw) {
-                    match serde_yaml::from_str::<config::DeployCfg>(&interpolated) {
-                        Ok(deploy) => {
-                            if let Some(sec) = deploy.security {
-                                entries.extend(sec.blocked_metadata_hosts);
+                match config::interpolate_env(&raw) {
+                    Ok(interpolated) => {
+                        match serde_yaml::from_str::<config::DeployCfg>(&interpolated) {
+                            Ok(deploy) => {
+                                if let Some(sec) = deploy.security {
+                                    entries.extend(sec.blocked_metadata_hosts);
+                                }
                             }
-                        }
-                        Err(_) => {
-                            // The config did not parse (e.g. an unknown/typo'd key now rejected by
-                            // deny_unknown_fields). Don't silently print an INCOMPLETE denylist that
-                            // omits the operator's `security.blocked_metadata_hosts` — warn instead.
-                            // (Deliberately NOT echoing the error, which could quote a config value;
-                            // the normal boot path surfaces the precise parse error.)
-                            eprintln!(
+                            Err(_) => {
+                                // The config did not parse (e.g. an unknown/typo'd key now rejected by
+                                // deny_unknown_fields). Don't silently print an INCOMPLETE denylist that
+                                // omits the operator's `security.blocked_metadata_hosts` — warn instead.
+                                // (Deliberately NOT echoing the error, which could quote a config value;
+                                // the normal boot path surfaces the precise parse error.)
+                                eprintln!(
                                 "warning: config at {config_path} did not parse; printing the built-in \
                                  metadata denylist only (security.blocked_metadata_hosts skipped). Run \
                                  busbar normally to see the parse error."
                             );
+                            }
                         }
+                    }
+                    Err(_) => {
+                        // Interpolation itself failed (unset var, or — since this fix — a value
+                        // that would change the config's YAML structure). Same reasoning as the
+                        // parse-failure arm above: don't silently print an incomplete denylist,
+                        // and don't echo the error (it could quote a rejected env var's value).
+                        eprintln!(
+                            "warning: config at {config_path} failed to interpolate; printing the \
+                             built-in metadata denylist only (security.blocked_metadata_hosts \
+                             skipped). Run busbar normally to see the interpolation error."
+                        );
                     }
                 }
             }
