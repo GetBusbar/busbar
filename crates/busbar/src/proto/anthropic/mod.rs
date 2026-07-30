@@ -416,6 +416,8 @@ fn read_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, IrErr
                 name,
                 input,
                 cache_control,
+                // Anthropic has no wire concept of a Gemini thoughtSignature.
+                thought_signature: None,
             })
         }
         "tool_result" => {
@@ -925,6 +927,10 @@ fn write_block(block: &crate::ir::IrBlock) -> serde_json::Value {
             name,
             input,
             cache_control,
+            // Explicit field list here is intentional documentation of every IrBlock::ToolUse
+            // field this writer considered — Anthropic has no wire concept of a Gemini
+            // thoughtSignature, so this one is deliberately unused.
+            thought_signature: _,
         } => {
             let mut obj = serde_json::Map::new();
             obj.insert("type".to_string(), serde_json::json!(STOP_TOOL_USE));

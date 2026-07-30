@@ -183,6 +183,7 @@ impl ProtocolReader for ResponsesReader {
                                     name,
                                     input,
                                     cache_control: None,
+                                    thought_signature: None,
                                 }],
                             });
                         }
@@ -1241,6 +1242,7 @@ impl ProtocolReader for ResponsesReader {
                             name,
                             input,
                             cache_control: None,
+                            thought_signature: None,
                         });
                     }
 

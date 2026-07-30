@@ -582,6 +582,7 @@ fn cache_breakpoints_gated_by_lane_capability_on_bedrock() {
     });
 
     let prep = |allowed: bool| crate::ir::variant::EgressPrep {
+        thought_signature_fill: false,
         ingress_protocol: "anthropic",
         egress_requires_max_tokens: false,
         lane_default_max_tokens: None,
@@ -1349,6 +1350,7 @@ fn string_args_writers_emit_raw_tool_args_verbatim() {
     let ir = crate::ir::IrResponse {
         role: crate::ir::IrRole::Assistant,
         content: vec![crate::ir::IrBlock::ToolUse {
+            thought_signature: None,
             id: "call_1".into(),
             name: "do_it".into(),
             input: serde_json::Value::String(raw.into()),

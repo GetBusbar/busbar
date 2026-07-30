@@ -18,6 +18,22 @@ use super::{IrRequest, IrResponse};
 use crate::billing::{Billing, TokenUsage};
 use crate::operation::Operation;
 
+/// Google's documented dummy `thoughtSignature` value that "skips validation" for a function-call
+/// part — the officially sanctioned escape hatch for migrating conversation history from another
+/// model (exactly busbar's cross-protocol case: an OpenAI/Anthropic/etc. client's tool-call history
+/// replayed against a Gemini 3 backend, which never had a real signature to echo back). Per Google's
+/// own docs: "you can set the following dummy signatures of either
+/// 'context_engineering_is_the_way_to_go' or 'skip_thought_signature_validator' in the thought
+/// signature field to skip validation". Also independently confirmed live by LiteLLM's production
+/// Gemini-3 integration doing the same substitution.
+///
+/// MUST be emitted as a literal JSON string, never as SDK-typed `bytes` — some Google client SDKs
+/// model `thoughtSignature` as `bytes` and silently base64-encode it, which breaks the bypass since
+/// the backend then sees the base64 encoding of this string, not the string itself. busbar builds
+/// raw JSON directly (see `proto::gemini::writer`), so this is correct by construction — do not
+/// "improve" this into a typed representation later.
+pub(crate) const GEMINI_SKIP_THOUGHT_SIGNATURE: &str = "skip_thought_signature_validator";
+
 /// Request-side IR — one variant per operation. `Chat` reuses the existing `IrRequest` verbatim.
 #[derive(Debug, Clone)]
 pub(crate) enum IrReq {
@@ -236,6 +252,34 @@ impl IrReq {
                 // failover to a same-pool Gemini lane later), so — matching the two warns just
                 // above that already guard this same clear — degrade with a LOUD warn naming both
                 // consequences; that is the contract this codebase already applies at this seam.
+                // Gemini 3 thoughtSignature sentinel fill. Real production outage: an
+                // OpenAI/Anthropic/etc. client's tool-call history, replayed cross-protocol against a
+                // Gemini 3 AI-Studio backend, carries `ToolUse` blocks whose `thought_signature` is
+                // `None` (no foreign protocol has this concept to read). Gemini 3 REQUIRES a
+                // `thoughtSignature` echoed on every `functionCall` part or the backend 400s
+                // ("missing a thought_signature"). `thought_signature_fill` is resolved by the caller
+                // (true only for a Gemini AI-Studio egress lane, never Vertex — see the field's doc)
+                // so this stays the one place the gate lives, matching `reasoning_allowed` /
+                // `prompt_caching_allowed` above. A real signature (e.g. same-protocol-shaped history
+                // that genuinely carries one) is NEVER overwritten — only a `None` gets the sentinel.
+                if prep.thought_signature_fill {
+                    let fill_blocks = |blocks: &mut [crate::ir::IrBlock]| {
+                        for b in blocks {
+                            if let crate::ir::IrBlock::ToolUse {
+                                thought_signature, ..
+                            } = b
+                            {
+                                if thought_signature.is_none() {
+                                    *thought_signature =
+                                        Some(GEMINI_SKIP_THOUGHT_SIGNATURE.to_string());
+                                }
+                            }
+                        }
+                    };
+                    for m in &mut ir.messages {
+                        fill_blocks(&mut m.content);
+                    }
+                }
                 if ir.extra.contains_key("cachedContent") {
                     tracing::warn!(
                         ingress = %prep.ingress_protocol,
@@ -313,6 +357,16 @@ pub(crate) struct EgressPrep<'a> {
     /// past this count; the IR carries breakpoints unbounded, so a cross-protocol request can
     /// exceed it. `None` means "no cap to enforce here" — the cap walk below is a no-op.
     pub(crate) cache_control_cap: Option<usize>,
+    /// True only for a Gemini AI-Studio egress lane — NEVER for Vertex. When true, every
+    /// `IrBlock::ToolUse` with no `thought_signature` gets Google's documented sentinel
+    /// (`GEMINI_SKIP_THOUGHT_SIGNATURE`) injected so a cross-protocol `functionCall` part (whose
+    /// history never had a real signature to echo) doesn't 400 the Gemini 3 backend. Vertex AI's
+    /// Gemini surface is NOT confirmed to honor the same sentinel-bypass value — there are real
+    /// reports of Vertex rejecting it with a 400 — so excluding Vertex lanes here is a safety
+    /// requirement, not a nicety. The caller resolves this from lane config (protocol == Gemini AND
+    /// no `path_base` override, i.e. not a Vertex-style URL-model lane) before constructing
+    /// `EgressPrep`, matching how `reasoning_allowed`/`prompt_caching_allowed` are resolved.
+    pub(crate) thought_signature_fill: bool,
 }
 
 impl IrResp {

@@ -107,7 +107,11 @@ impl ProtocolWriter for GeminiWriter {
                         parts_arr.push(serde_json::json!({ "text": text }))
                     }
                     crate::ir::IrBlock::ToolUse {
-                        id: _, name, input, ..
+                        id: _,
+                        name,
+                        input,
+                        thought_signature,
+                        ..
                     } => {
                         // ToolUse → functionCall{name, args}. `args` MUST be a JSON OBJECT (Gemini
                         // Struct); coerce any non-object input (array/scalar/null/unparseable string)
@@ -121,6 +125,17 @@ impl ProtocolWriter for GeminiWriter {
                             FIELD_FUNCTION_CALL.to_string(),
                             serde_json::Value::Object(fc_obj),
                         );
+                        // `thoughtSignature` is a sibling of `functionCall` on the `Part` object, NOT
+                        // nested inside it — same placement as the Thinking block's signature below.
+                        // Gemini 3 REQUIRES this echoed back verbatim on the next turn or the backend
+                        // 400s. By the time this writer runs, `thought_signature` already carries the
+                        // right value — either a real one captured by Gemini's own reader, or a
+                        // sentinel injected upstream by `IrReq::prepare_for_egress` for cross-protocol
+                        // traffic — so this writer stays dumb and just emits what it's given. Omit the
+                        // key entirely when absent rather than emit an empty string.
+                        if let Some(sig) = thought_signature {
+                            part_obj.insert("thoughtSignature".to_string(), serde_json::json!(sig));
+                        }
                         parts_arr.push(serde_json::Value::Object(part_obj))
                     }
                     crate::ir::IrBlock::ToolResult {
@@ -996,7 +1011,11 @@ impl ProtocolWriter for GeminiWriter {
                 // coerce any non-object input (array/scalar/null/unparseable string) the same way
                 // `write_request` does.
                 crate::ir::IrBlock::ToolUse {
-                    id: _, name, input, ..
+                    id: _,
+                    name,
+                    input,
+                    thought_signature,
+                    ..
                 } => {
                     let args_val = coerce_tool_args(input);
                     let mut fc_obj = serde_json::Map::new();
@@ -1007,6 +1026,14 @@ impl ProtocolWriter for GeminiWriter {
                         FIELD_FUNCTION_CALL.to_string(),
                         serde_json::Value::Object(fc_obj),
                     );
+                    // `thoughtSignature` sibling of `functionCall`, mirroring `write_request`. This
+                    // writer talks to a real client and `prepare_for_egress` is request-side only, so
+                    // this path never gets sentinel-injected — it only ever carries a real value, when
+                    // Gemini was the response SOURCE and its own reader captured one. Never fabricate
+                    // one here; omit the key when absent.
+                    if let Some(sig) = thought_signature {
+                        part_obj.insert("thoughtSignature".to_string(), serde_json::json!(sig));
+                    }
                     parts_arr.push(serde_json::Value::Object(part_obj));
                 }
 

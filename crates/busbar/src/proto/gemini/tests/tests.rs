@@ -3057,6 +3057,7 @@ fn test_write_response_tool_use_maps_to_stop() {
         logprobs: Vec::new(),
         role: crate::ir::IrRole::Assistant,
         content: vec![crate::ir::IrBlock::ToolUse {
+            thought_signature: None,
             id: "call_1".to_string(),
             name: "get_weather".to_string(),
             input: serde_json::json!({"city": "SF"}),
@@ -3568,6 +3569,7 @@ fn test_assistant_tool_use_stays_model_role() {
         messages: vec![crate::ir::IrMessage {
             role: crate::ir::IrRole::Assistant,
             content: vec![crate::ir::IrBlock::ToolUse {
+                thought_signature: None,
                 id: "call_1".to_string(),
                 name: "get_weather".to_string(),
                 input: serde_json::json!({ "city": "SF" }),
@@ -3793,6 +3795,7 @@ fn test_write_request_cross_protocol_function_response_name_matches_call() {
             crate::ir::IrMessage {
                 role: crate::ir::IrRole::Assistant,
                 content: vec![crate::ir::IrBlock::ToolUse {
+                    thought_signature: None,
                     id: synthetic_id.clone(),
                     name: "get_weather".to_string(),
                     input: serde_json::json!({ "city": "SF" }),
@@ -4081,6 +4084,7 @@ fn test_stream_plain_stop_terminal_stays_end_turn() {
 #[test]
 fn test_tool_use_array_input_coerced_to_object_args() {
     let block = crate::ir::IrBlock::ToolUse {
+        thought_signature: None,
         id: "call_1".to_string(),
         name: "do_thing".to_string(),
         input: serde_json::json!([1, 2, 3]),
@@ -4172,6 +4176,7 @@ fn test_tool_use_object_input_passes_through_unchanged() {
         logprobs: Vec::new(),
         role: crate::ir::IrRole::Assistant,
         content: vec![crate::ir::IrBlock::ToolUse {
+            thought_signature: None,
             id: "call_1".to_string(),
             name: "do_thing".to_string(),
             input: serde_json::json!({"city": "SF", "unit": "C"}),
@@ -5639,4 +5644,471 @@ fn system_instruction_round_trips_through_ir_system() {
         Some("You are terse."),
         "IrRequest.system must write back to systemInstruction.parts[]"
     );
+}
+
+// --- Gemini 3 thoughtSignature on functionCall parts (H-thoughtsig) ---
+//
+// Gemini 3 attaches an opaque `thoughtSignature` string to a `functionCall` PART (a sibling key,
+// NOT nested inside the `functionCall` object) and REQUIRES it echoed back verbatim on the next
+// turn's request, or the backend 400s ("Function call ... is missing a thought_signature"). These
+// tests cover the reader capture (both request and response), the writer re-emission, and the
+// cross-protocol sentinel-fill path that is the actual production fix (a foreign-protocol
+// `ToolUse` block never has a real signature to echo, so `IrReq::prepare_for_egress` injects
+// Google's documented dummy value for a Gemini AI-Studio egress lane).
+
+/// `read_response` captures a part-level `thoughtSignature` sibling of `functionCall` into
+/// `IrBlock::ToolUse.thought_signature`.
+#[test]
+fn test_read_response_captures_function_call_thought_signature() {
+    let reader = GeminiReader;
+    let body = serde_json::json!({
+        "candidates": [{
+            "content": {
+                "role": "model",
+                "parts": [{
+                    "functionCall": {"name": "get_weather", "args": {"city": "SF"}},
+                    "thoughtSignature": "resp-sig-abc123"
+                }]
+            }
+        }]
+    });
+    let ir = reader.read_response(&body).expect("read_response");
+    assert_eq!(ir.content.len(), 1, "expected one ToolUse block: {ir:?}");
+    match &ir.content[0] {
+        crate::ir::IrBlock::ToolUse {
+            thought_signature, ..
+        } => assert_eq!(
+            thought_signature.as_deref(),
+            Some("resp-sig-abc123"),
+            "the part-level thoughtSignature must be captured onto the ToolUse block"
+        ),
+        other => panic!("expected ToolUse, got {other:?}"),
+    }
+}
+
+/// `read_request` captures a part-level `thoughtSignature` from a `role:"model"` history turn
+/// (a prior assistant turn replayed back on the next request, exactly Gemini's own multi-turn
+/// tool-calling shape).
+#[test]
+fn test_read_request_captures_function_call_thought_signature_from_history() {
+    let reader = GeminiReader;
+    let body = serde_json::json!({
+        "contents": [{
+            "role": "model",
+            "parts": [{
+                "functionCall": {"name": "get_weather", "args": {"city": "SF"}},
+                "thoughtSignature": "req-sig-xyz789"
+            }]
+        }]
+    });
+    let ir = reader.read_request(&body).expect("read_request");
+    assert_eq!(ir.messages.len(), 1, "expected one message: {ir:?}");
+    match &ir.messages[0].content[0] {
+        crate::ir::IrBlock::ToolUse {
+            thought_signature, ..
+        } => assert_eq!(
+            thought_signature.as_deref(),
+            Some("req-sig-xyz789"),
+            "the part-level thoughtSignature must be captured from a model-role history turn"
+        ),
+        other => panic!("expected ToolUse, got {other:?}"),
+    }
+}
+
+/// THE OUTAGE TEST. An OpenAI-shaped `ToolUse` block (no `thought_signature` — the OpenAI wire
+/// format has no such concept) is what busbar's cross-protocol seam actually produces when an
+/// OpenAI client's tool-call history is replayed against a Gemini backend. Before the fix, the
+/// Gemini writer emitted a bare `{"functionCall": {...}}` with no signature, and a Gemini 3
+/// backend 400s on it. `prepare_for_egress` with `thought_signature_fill: true` (the gate a
+/// Gemini AI-Studio egress lane resolves) must inject Google's documented sentinel so the emitted
+/// wire part carries `"thoughtSignature": "skip_thought_signature_validator"` as a literal,
+/// non-base64, non-wrapped JSON string.
+#[test]
+fn test_outage_cross_protocol_tool_use_gets_sentinel_thought_signature() {
+    let mut ir_req = crate::ir::variant::IrReq::Chat(crate::ir::IrRequest {
+        reasoning: None,
+        reasoning_budgets: None,
+        logprobs: None,
+        top_logprobs: None,
+        user: None,
+        parallel_tool_calls: None,
+        system: Vec::new(),
+        messages: vec![crate::ir::IrMessage {
+            role: crate::ir::IrRole::Assistant,
+            content: vec![crate::ir::IrBlock::ToolUse {
+                id: "call_1".to_string(),
+                name: "get_weather".to_string(),
+                input: serde_json::json!({"city": "SF"}),
+                cache_control: None,
+                // No foreign protocol has a thoughtSignature concept to read — this is exactly
+                // what an OpenAI/Anthropic/etc. reader produces.
+                thought_signature: None,
+            }],
+        }],
+        tools: Vec::new(),
+        max_tokens: None,
+        temperature: None,
+        top_p: None,
+        top_k: None,
+        stop: vec![],
+        tool_choice: None,
+        stream: false,
+        frequency_penalty: None,
+        presence_penalty: None,
+        seed: None,
+        n: None,
+        response_format: None,
+        extra: serde_json::Map::new(),
+    });
+    ir_req.prepare_for_egress(&crate::ir::variant::EgressPrep {
+        thought_signature_fill: true,
+        ingress_protocol: "openai",
+        egress_requires_max_tokens: false,
+        lane_default_max_tokens: None,
+        global_default_max_tokens: 4096,
+        reasoning_allowed: false,
+        reasoning_budgets: [1024, 4096, 8192, 16384],
+        prompt_caching_allowed: true,
+        cache_control_cap: None,
+    });
+    let crate::ir::variant::IrReq::Chat(ir) = &ir_req else {
+        panic!("expected Chat variant");
+    };
+    let writer = GeminiWriter;
+    let wire = writer.write_request(ir);
+    assert_eq!(
+        wire.pointer("/contents/0/parts/0/thoughtSignature")
+            .and_then(|s| s.as_str()),
+        Some("skip_thought_signature_validator"),
+        "a cross-protocol functionCall with no real signature must get Google's documented \
+         sentinel injected as a literal JSON string, not omitted, not base64: {wire}"
+    );
+    // The functionCall itself must still be well-formed and NOT carry the signature nested
+    // inside it (it is a sibling of functionCall on the Part object).
+    assert_eq!(
+        wire.pointer("/contents/0/parts/0/functionCall/name")
+            .and_then(|s| s.as_str()),
+        Some("get_weather"),
+    );
+    assert!(
+        wire.pointer("/contents/0/parts/0/functionCall/thoughtSignature")
+            .is_none(),
+        "thoughtSignature must be a PART-level sibling of functionCall, never nested inside it: {wire}"
+    );
+}
+
+/// A real signature already present on the IR is NOT overwritten by `prepare_for_egress`'s fill
+/// step — the real value always wins over the sentinel.
+#[test]
+fn test_prepare_for_egress_does_not_overwrite_real_thought_signature() {
+    let mut ir_req = crate::ir::variant::IrReq::Chat(crate::ir::IrRequest {
+        reasoning: None,
+        reasoning_budgets: None,
+        logprobs: None,
+        top_logprobs: None,
+        user: None,
+        parallel_tool_calls: None,
+        system: Vec::new(),
+        messages: vec![crate::ir::IrMessage {
+            role: crate::ir::IrRole::Assistant,
+            content: vec![crate::ir::IrBlock::ToolUse {
+                id: "call_1".to_string(),
+                name: "get_weather".to_string(),
+                input: serde_json::json!({"city": "SF"}),
+                cache_control: None,
+                thought_signature: Some("a-genuinely-real-signature".to_string()),
+            }],
+        }],
+        tools: Vec::new(),
+        max_tokens: None,
+        temperature: None,
+        top_p: None,
+        top_k: None,
+        stop: vec![],
+        tool_choice: None,
+        stream: false,
+        frequency_penalty: None,
+        presence_penalty: None,
+        seed: None,
+        n: None,
+        response_format: None,
+        extra: serde_json::Map::new(),
+    });
+    ir_req.prepare_for_egress(&crate::ir::variant::EgressPrep {
+        thought_signature_fill: true,
+        ingress_protocol: "gemini",
+        egress_requires_max_tokens: false,
+        lane_default_max_tokens: None,
+        global_default_max_tokens: 4096,
+        reasoning_allowed: false,
+        reasoning_budgets: [1024, 4096, 8192, 16384],
+        prompt_caching_allowed: true,
+        cache_control_cap: None,
+    });
+    let crate::ir::variant::IrReq::Chat(ir) = &ir_req else {
+        panic!("expected Chat variant");
+    };
+    match &ir.messages[0].content[0] {
+        crate::ir::IrBlock::ToolUse {
+            thought_signature, ..
+        } => assert_eq!(
+            thought_signature.as_deref(),
+            Some("a-genuinely-real-signature"),
+            "a real signature must never be overwritten by the sentinel fill"
+        ),
+        other => panic!("expected ToolUse, got {other:?}"),
+    }
+}
+
+/// VERTEX EXCLUSION: same outage scenario, but `thought_signature_fill: false` (simulating a
+/// Vertex/path_base lane, which is NOT confirmed to honor the sentinel bypass). The emitted part
+/// must carry NO `thoughtSignature` key at all — not the sentinel, and not a silently-emitted
+/// empty string.
+#[test]
+fn test_vertex_lane_gets_no_sentinel_thought_signature() {
+    let mut ir_req = crate::ir::variant::IrReq::Chat(crate::ir::IrRequest {
+        reasoning: None,
+        reasoning_budgets: None,
+        logprobs: None,
+        top_logprobs: None,
+        user: None,
+        parallel_tool_calls: None,
+        system: Vec::new(),
+        messages: vec![crate::ir::IrMessage {
+            role: crate::ir::IrRole::Assistant,
+            content: vec![crate::ir::IrBlock::ToolUse {
+                id: "call_1".to_string(),
+                name: "get_weather".to_string(),
+                input: serde_json::json!({"city": "SF"}),
+                cache_control: None,
+                thought_signature: None,
+            }],
+        }],
+        tools: Vec::new(),
+        max_tokens: None,
+        temperature: None,
+        top_p: None,
+        top_k: None,
+        stop: vec![],
+        tool_choice: None,
+        stream: false,
+        frequency_penalty: None,
+        presence_penalty: None,
+        seed: None,
+        n: None,
+        response_format: None,
+        extra: serde_json::Map::new(),
+    });
+    ir_req.prepare_for_egress(&crate::ir::variant::EgressPrep {
+        thought_signature_fill: false,
+        ingress_protocol: "openai",
+        egress_requires_max_tokens: false,
+        lane_default_max_tokens: None,
+        global_default_max_tokens: 4096,
+        reasoning_allowed: false,
+        reasoning_budgets: [1024, 4096, 8192, 16384],
+        prompt_caching_allowed: true,
+        cache_control_cap: None,
+    });
+    let crate::ir::variant::IrReq::Chat(ir) = &ir_req else {
+        panic!("expected Chat variant");
+    };
+    let writer = GeminiWriter;
+    let wire = writer.write_request(ir);
+    assert!(
+        wire.pointer("/contents/0/parts/0/thoughtSignature")
+            .is_none(),
+        "a Vertex (thought_signature_fill:false) lane must emit NO thoughtSignature key at all, \
+         not even an empty string: {wire}"
+    );
+}
+
+/// MIXED PARALLEL CALLS: Google only signs the FIRST of N parallel function calls in a real
+/// Gemini turn. Two `ToolUse` blocks in one turn, only the first has a real signature — after
+/// `prepare_for_egress` with fill=true, the first must keep its real value and the second must
+/// get the sentinel (both end up `Some`, with different values).
+#[test]
+fn test_prepare_for_egress_fills_only_missing_signatures_in_parallel_calls() {
+    let mut ir_req = crate::ir::variant::IrReq::Chat(crate::ir::IrRequest {
+        reasoning: None,
+        reasoning_budgets: None,
+        logprobs: None,
+        top_logprobs: None,
+        user: None,
+        parallel_tool_calls: None,
+        system: Vec::new(),
+        messages: vec![crate::ir::IrMessage {
+            role: crate::ir::IrRole::Assistant,
+            content: vec![
+                crate::ir::IrBlock::ToolUse {
+                    id: "call_1".to_string(),
+                    name: "get_weather".to_string(),
+                    input: serde_json::json!({"city": "SF"}),
+                    cache_control: None,
+                    thought_signature: Some("only-the-first-is-signed".to_string()),
+                },
+                crate::ir::IrBlock::ToolUse {
+                    id: "call_2".to_string(),
+                    name: "get_time".to_string(),
+                    input: serde_json::json!({"city": "SF"}),
+                    cache_control: None,
+                    thought_signature: None,
+                },
+            ],
+        }],
+        tools: Vec::new(),
+        max_tokens: None,
+        temperature: None,
+        top_p: None,
+        top_k: None,
+        stop: vec![],
+        tool_choice: None,
+        stream: false,
+        frequency_penalty: None,
+        presence_penalty: None,
+        seed: None,
+        n: None,
+        response_format: None,
+        extra: serde_json::Map::new(),
+    });
+    ir_req.prepare_for_egress(&crate::ir::variant::EgressPrep {
+        thought_signature_fill: true,
+        ingress_protocol: "gemini",
+        egress_requires_max_tokens: false,
+        lane_default_max_tokens: None,
+        global_default_max_tokens: 4096,
+        reasoning_allowed: false,
+        reasoning_budgets: [1024, 4096, 8192, 16384],
+        prompt_caching_allowed: true,
+        cache_control_cap: None,
+    });
+    let crate::ir::variant::IrReq::Chat(ir) = &ir_req else {
+        panic!("expected Chat variant");
+    };
+    let sigs: Vec<Option<&str>> = ir.messages[0]
+        .content
+        .iter()
+        .map(|b| match b {
+            crate::ir::IrBlock::ToolUse {
+                thought_signature, ..
+            } => thought_signature.as_deref(),
+            _ => panic!("expected ToolUse"),
+        })
+        .collect();
+    assert_eq!(
+        sigs[0],
+        Some("only-the-first-is-signed"),
+        "the first call's real signature must be preserved"
+    );
+    assert_eq!(
+        sigs[1],
+        Some("skip_thought_signature_validator"),
+        "the second (unsigned) parallel call must get the sentinel"
+    );
+    assert_ne!(sigs[0], sigs[1], "the two signatures must differ");
+}
+
+/// `write_response` emits a real signature when present, never a sentinel (response-side is never
+/// touched by `prepare_for_egress`, which is request-side only), and omits the key entirely when
+/// absent rather than emitting an empty string.
+#[test]
+fn test_write_response_emits_real_signature_never_sentinel() {
+    let writer = GeminiWriter;
+    let with_sig = crate::ir::IrResponse {
+        logprobs: Vec::new(),
+        role: crate::ir::IrRole::Assistant,
+        content: vec![crate::ir::IrBlock::ToolUse {
+            id: "call_1".to_string(),
+            name: "get_weather".to_string(),
+            input: serde_json::json!({"city": "SF"}),
+            cache_control: None,
+            thought_signature: Some("real-response-sig".to_string()),
+        }],
+        stop_reason: Some(crate::ir::IrStopReason::ToolUse),
+        usage: crate::ir::IrUsage {
+            input_tokens: 1,
+            output_tokens: 1,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: None,
+        },
+        model: None,
+        id: None,
+        created: None,
+        system_fingerprint: None,
+        stop_sequence: None,
+    };
+    let wire = writer.write_response(&with_sig);
+    assert_eq!(
+        wire.pointer("/candidates/0/content/parts/0/thoughtSignature")
+            .and_then(|s| s.as_str()),
+        Some("real-response-sig"),
+        "a real captured signature must be re-emitted verbatim: {wire}"
+    );
+
+    let without_sig = crate::ir::IrResponse {
+        content: vec![crate::ir::IrBlock::ToolUse {
+            id: "call_1".to_string(),
+            name: "get_weather".to_string(),
+            input: serde_json::json!({"city": "SF"}),
+            cache_control: None,
+            thought_signature: None,
+        }],
+        ..with_sig
+    };
+    let wire2 = writer.write_response(&without_sig);
+    assert!(
+        wire2
+            .pointer("/candidates/0/content/parts/0/thoughtSignature")
+            .is_none(),
+        "write_response must never fabricate a sentinel and must omit the key when absent: {wire2}"
+    );
+}
+
+/// An empty-string `thoughtSignature` on the wire is treated as absent — it normalizes to `None`
+/// on read (matching the existing `Thinking` block's empty-string handling convention elsewhere
+/// in this reader), not `Some("")`.
+#[test]
+fn test_empty_string_thought_signature_normalizes_to_none() {
+    let reader = GeminiReader;
+    let req_body = serde_json::json!({
+        "contents": [{
+            "role": "model",
+            "parts": [{
+                "functionCall": {"name": "get_weather", "args": {}},
+                "thoughtSignature": ""
+            }]
+        }]
+    });
+    let ir = reader.read_request(&req_body).expect("read_request");
+    match &ir.messages[0].content[0] {
+        crate::ir::IrBlock::ToolUse {
+            thought_signature, ..
+        } => assert_eq!(
+            *thought_signature, None,
+            "an empty-string wire thoughtSignature must normalize to None"
+        ),
+        other => panic!("expected ToolUse, got {other:?}"),
+    }
+
+    let resp_body = serde_json::json!({
+        "candidates": [{
+            "content": {
+                "role": "model",
+                "parts": [{
+                    "functionCall": {"name": "get_weather", "args": {}},
+                    "thoughtSignature": ""
+                }]
+            }
+        }]
+    });
+    let resp_ir = reader.read_response(&resp_body).expect("read_response");
+    match &resp_ir.content[0] {
+        crate::ir::IrBlock::ToolUse {
+            thought_signature, ..
+        } => assert_eq!(
+            *thought_signature, None,
+            "an empty-string wire thoughtSignature must normalize to None on the response path too"
+        ),
+        other => panic!("expected ToolUse, got {other:?}"),
+    }
 }
