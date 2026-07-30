@@ -651,6 +651,10 @@ pub(crate) fn count_keys_bound_to(app: &App, group: &str) -> Result<usize, Admin
     let Some(gov) = &app.governance else {
         return Ok(0);
     };
+    // NOT a single-key `all_keys().find(id)` lookup (which `GovState::lookup_by_sub`/`Store::get_key`
+    // make O(1)): this counts every key bound to a GROUP, and neither `GovState` nor `Store` maintains
+    // a by-group index — only `by_hash` (secret) and `by_id` (subject id). A full scan is the only
+    // way to answer "how many", so this one stays as-is.
     Ok(gov
         .all_keys()
         .map_err(|e| {
