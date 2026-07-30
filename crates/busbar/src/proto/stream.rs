@@ -597,11 +597,11 @@ impl StreamTranslate {
             // every non-OpenAI ingress is untouched. The `[DONE]` terminator stays a separate `finish()`
             // literal — only the chunk-identity + trailing-usage logic moved here.
             if let Some(trailing) = self.framing.on_egress_chunk(&mut out_data) {
-                out.extend_from_slice(reframe_sse(&out_et, &out_data).as_bytes());
-                out.extend_from_slice(reframe_sse(&out_et, &trailing).as_bytes());
+                write_sse_frame(out, &out_et, &out_data);
+                write_sse_frame(out, &out_et, &trailing);
                 return;
             }
-            out.extend_from_slice(reframe_sse(&out_et, &out_data).as_bytes());
+            write_sse_frame(out, &out_et, &out_data);
         }
     }
 
