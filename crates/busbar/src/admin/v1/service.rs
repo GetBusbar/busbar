@@ -1387,12 +1387,15 @@ impl AdminService {
             Vec<crate::governance::MeteringRow>,
             std::collections::HashMap<String, String>,
         );
-        let joined = tokio::task::spawn_blocking(move || -> Result<Fetched, ()> {
-            let rows = gov.metering_for(bucket).map_err(|_| ())?;
+        type UsageFetchError = (&'static str, crate::governance::StoreError);
+        let joined = tokio::task::spawn_blocking(move || -> Result<Fetched, UsageFetchError> {
+            let rows = gov
+                .metering_for(bucket)
+                .map_err(|e| ("usage.metering", e))?;
             // id → display name, for the by_key rows (a deleted key's history keeps its id).
             let names = gov
                 .all_keys()
-                .map_err(|_| ())?
+                .map_err(|e| ("usage.keys", e))?
                 .into_iter()
                 .map(|k| (k.id, k.name))
                 .collect();
@@ -1402,9 +1405,24 @@ impl AdminService {
         let cost = self.app.cost.clone();
         let (rows, names) = match joined {
             Ok(Ok(f)) => f,
-            // A store failure or a blocking-join failure is an internal error (details logged
-            // upstream in the store layer); the caller never sees store internals.
-            Ok(Err(())) | Err(_) => return Err(AdminError::Internal),
+            // The real store error is logged here — this is the only place it exists, and the wire
+            // body deliberately carries none of it so store internals never reach even an
+            // authenticated admin. Same `operation`/`error` field vocabulary as `internal_error`
+            // (`admin/mod.rs`), so a broken /usage read is greppable alongside every other admin
+            // store failure. `operation` distinguishes which of the two reads failed, since each has
+            // a different remediation.
+            Ok(Err((operation, e))) => {
+                tracing::error!(operation, error = %e, "admin store operation failed");
+                return Err(AdminError::Internal);
+            }
+            Err(join_err) => {
+                tracing::error!(
+                    operation = "usage",
+                    error = %join_err,
+                    "admin blocking task failed"
+                );
+                return Err(AdminError::Internal);
+            }
         };
         // Aggregate in memory — a bucket is bounded by (keys × models) accumulation rows.
         let mut total = UsageBreakdown::default();
@@ -2682,5 +2700,91 @@ mod tests {
             .buckets
             .iter()
             .any(|b| b.budget_cap == Some(500) && b.pool.as_deref() == Some("frontier")));
+    }
+
+    // ---- fleet-wide usage read: store-failure logging ----
+
+    /// A `Store` decorator whose `list_metering` always fails, everything else delegating to a
+    /// real `MemoryStore` — proves `get_usage`'s store-failure arm without needing a real broken
+    /// backend.
+    #[derive(Default)]
+    struct FailingMeteringStore {
+        inner: MemoryStore,
+    }
+    impl busbar_api::Store for FailingMeteringStore {
+        fn put_key(&self, key: &VirtualKey) -> busbar_api::StoreResult<()> {
+            self.inner.put_key(key)
+        }
+        fn get_key(&self, id: &str) -> busbar_api::StoreResult<Option<VirtualKey>> {
+            self.inner.get_key(id)
+        }
+        fn list_keys(&self) -> busbar_api::StoreResult<Vec<VirtualKey>> {
+            self.inner.list_keys()
+        }
+        fn delete_key(&self, id: &str) -> busbar_api::StoreResult<()> {
+            self.inner.delete_key(id)
+        }
+        fn get_usage(
+            &self,
+            bucket_id: &str,
+            window_start: u64,
+        ) -> busbar_api::StoreResult<busbar_api::UsageLedger> {
+            self.inner.get_usage(bucket_id, window_start)
+        }
+        fn put_usage(
+            &self,
+            bucket_id: &str,
+            window_start: u64,
+            ledger: &busbar_api::UsageLedger,
+        ) -> busbar_api::StoreResult<()> {
+            self.inner.put_usage(bucket_id, window_start, ledger)
+        }
+        fn add_metering(&self, delta: &busbar_api::MeteringDelta) -> busbar_api::StoreResult<()> {
+            self.inner.add_metering(delta)
+        }
+        fn list_metering(
+            &self,
+            _bucket: u64,
+        ) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
+            Err(busbar_api::StoreError(
+                "simulated metering store outage".to_string(),
+            ))
+        }
+    }
+
+    /// THE RED PROOF: today, a store failure inside `get_usage`'s `spawn_blocking` is destroyed by
+    /// `map_err(|_| ())` and the comment claiming "details logged upstream in the store layer" is
+    /// false — nothing logs. Assert BOTH that the wire contract is unchanged (still
+    /// `AdminError::Internal`, unchanged before and after) AND that the real error now reaches an
+    /// `error!` log — that second half is what is red today: the capture is empty even though (a)
+    /// already passes, because the fix is purely observability.
+    #[test]
+    fn usage_read_store_failure_logs_the_real_error() {
+        use tracing_subscriber::layer::SubscriberExt as _;
+        let cap = crate::test_support::warn_capture::WarnCapture::default();
+        let subscriber = tracing_subscriber::registry().with(cap.clone());
+        tracing::subscriber::with_default(subscriber, || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(async {
+                let gov = Arc::new(
+                    GovState::new(Arc::new(FailingMeteringStore::default()), None).unwrap(),
+                );
+                let app = TestApp::new().governance(gov).build();
+                let svc = AdminService::new(app);
+                let err = svc.get_usage(None).await.unwrap_err();
+                assert!(
+                    matches!(err, AdminError::Internal),
+                    "wire contract is unchanged: still AdminError::Internal, {err:?}"
+                );
+            });
+        });
+        assert!(
+            cap.contains("usage.metering") && cap.contains("simulated metering store outage"),
+            "the real store error and which read failed must be logged: {:?}",
+            cap.messages()
+        );
     }
 }
