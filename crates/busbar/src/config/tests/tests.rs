@@ -1155,6 +1155,46 @@ fn test_anchor_redefinition_injection_is_caught_end_to_end() {
     );
 }
 
+/// The structural check's own recursion is depth-bounded (mirrors `json::MAX_JSON_DEPTH`'s
+/// reasoning, at the same 128 limit) as defense-in-depth — but `serde_yaml_ng` itself already
+/// refuses to PARSE a document this deep (verified empirically: it returns a clean "recursion
+/// limit exceeded" `Err` around the same depth, well before Rust's own call stack is at any real
+/// risk), so `assert_interpolation_preserves_structure`'s existing early-return ("the real text
+/// doesn't even parse as YAML, that already fails safely downstream") fires first in practice.
+/// This test pins that observed, safe behavior: interpolation of the TEXT still succeeds (nothing
+/// panics, nothing hangs), and the eventual failure is deferred to the real typed parse a caller
+/// runs on the returned text — exactly as the existing code comment already documents for any
+/// other unparseable-once-interpolated document. 300 levels is comfortably past both limits.
+#[test]
+fn test_structural_check_does_not_overflow_on_deeply_nested_config() {
+    let var = "BUSBAR_T_DEEP_NEST";
+    std::env::set_var(var, "leaf-value");
+    let depth = 300;
+    let mut input = String::new();
+    for i in 0..depth {
+        input.push_str(&"  ".repeat(i));
+        input.push_str("a:\n");
+    }
+    input.push_str(&"  ".repeat(depth));
+    input.push_str(&format!("b: \"${{{var}}}\"\n"));
+    // Must not panic or hang — the real assertion is that this returns at all, and quickly.
+    let result = interpolate_env(&input);
+    std::env::remove_var(var);
+    assert!(
+        result.is_ok(),
+        "text-level interpolation must still succeed for a too-deep document (the eventual \
+         failure is the downstream real parse's job, not this check's): {:?}",
+        result
+    );
+    // The deferred failure actually happens: the caller's real parse of this same text rejects it
+    // (serde_yaml_ng's own recursion guard), so the too-deep document does not silently boot.
+    let parsed: Result<serde_yaml::Value, _> = serde_yaml::from_str(&result.unwrap());
+    assert!(
+        parsed.is_err(),
+        "a document nested this deep must still fail the real downstream parse"
+    );
+}
+
 // ── two-file (providers.yaml + config.yaml) resolution ───────────────────────────────────────────
 
 #[test]

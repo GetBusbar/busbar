@@ -113,10 +113,17 @@ collection (`{ }` / `[ ]` — used by this project's own examples, e.g. `client_
 a value containing a bare `,`, `"`, or `'` can splice in extra structure on a single line, with no
 newline involved at all. Because the check is about *shape*, not content, it has no forbidden-character
 list to maintain and no false positives on legitimate values that happen to contain YAML-"special"
-characters — an LDAP DN with mandatory commas, a JSON blob, a Windows path with backslashes, a URL
-with a query string, or a value that changes a scalar's *inferred type* (e.g. `port: ${PORT}` — a
-real `8080` infers as a number, but the check does not compare scalar values or types, only shape) all
-interpolate normally. Only a value that actually widens/narrows the parsed structure is rejected.
+characters but do not actually change the parsed shape — an LDAP DN with mandatory commas, a Windows
+path with backslashes, a URL with a query string, or a value that changes a scalar's *inferred type*
+(e.g. `port: ${PORT}` — a real `8080` infers as a number, but the check does not compare scalar values
+or types, only shape) all interpolate normally. Only a value that actually widens/narrows the parsed
+structure is rejected.
+
+A value containing an unescaped `"` still breaks a double-quoted scalar exactly as YAML's own grammar
+says it does (that is not this check's job to prevent — it is the control-character check's cousin
+concern, and an ordinary YAML parse error results either way, not a silent injection). A JSON blob
+therefore does NOT interpolate cleanly if it is spliced into a double-quoted scalar: use a `{ file: ...
+}` secret reference for that case instead of `${VAR}`.
 
 ---
 

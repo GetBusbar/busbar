@@ -261,7 +261,7 @@ fn assert_interpolation_preserves_structure(
         }
     };
 
-    if structural_shapes_match(&real_value, &placeholder_value) {
+    if structural_shapes_match(&real_value, &placeholder_value, 0) {
         return Ok(());
     }
 
@@ -272,7 +272,7 @@ fn assert_interpolation_preserves_structure(
     for (i, occ) in occurrences.iter().enumerate() {
         let hybrid_text = splice_occurrences(template, occurrences, Some(i));
         let matches = match serde_yaml::from_str::<serde_yaml::Value>(&hybrid_text) {
-            Ok(hybrid_value) => structural_shapes_match(&hybrid_value, &placeholder_value),
+            Ok(hybrid_value) => structural_shapes_match(&hybrid_value, &placeholder_value, 0),
             Err(_) => false, // this occurrence alone breaks parsing outright: also a culprit
         };
         if !matches && !culprits.contains(&occ.var_name) {
@@ -309,8 +309,22 @@ fn assert_interpolation_preserves_structure(
 /// `Number`, the placeholder token infers as `String`) without that being an injection. `Mapping`,
 /// `Sequence`, and `Tagged` stay distinct: those are shapes a plain scalar substitution should
 /// never turn into, so seeing one appear only on the real side (or vice versa) IS the signal.
-fn structural_shapes_match(a: &serde_yaml::Value, b: &serde_yaml::Value) -> bool {
+///
+/// `depth` bounds the recursion (mirrors `json::MAX_JSON_DEPTH`'s reasoning, at the same limit):
+/// this walks an UNTYPED `serde_yaml::Value` tree built from a config file only "trusted but
+/// validated" per this project's own threat model (a typo shouldn't become a crash), and unlike
+/// the typed deserialize path this function has no schema to bound its own depth — a config with
+/// deeply nested (even accidentally, via a templating bug) mappings/sequences could otherwise
+/// stack-overflow the boot/reload path. Past the limit, treat the pair as a shape MISMATCH (fail
+/// closed into the ordinary "would change structure" rejection) rather than let a document too
+/// deep to safely verify slip through.
+const MAX_STRUCTURAL_COMPARE_DEPTH: usize = 128;
+
+fn structural_shapes_match(a: &serde_yaml::Value, b: &serde_yaml::Value, depth: usize) -> bool {
     use serde_yaml::Value;
+    if depth > MAX_STRUCTURAL_COMPARE_DEPTH {
+        return false;
+    }
     match (a, b) {
         (Value::Mapping(ma), Value::Mapping(mb)) => {
             let mut ka: Vec<String> = ma.iter().map(|(k, _)| mapping_key_repr(k)).collect();
@@ -326,7 +340,7 @@ fn structural_shapes_match(a: &serde_yaml::Value, b: &serde_yaml::Value) -> bool
                 return false;
             }
             ma.iter().all(|(k, va)| match mb.get(k.clone()) {
-                Some(vb) => structural_shapes_match(va, vb),
+                Some(vb) => structural_shapes_match(va, vb, depth + 1),
                 None => false,
             })
         }
@@ -335,10 +349,10 @@ fn structural_shapes_match(a: &serde_yaml::Value, b: &serde_yaml::Value) -> bool
                 && sa
                     .iter()
                     .zip(sb.iter())
-                    .all(|(va, vb)| structural_shapes_match(va, vb))
+                    .all(|(va, vb)| structural_shapes_match(va, vb, depth + 1))
         }
         (Value::Tagged(ta), Value::Tagged(tb)) => {
-            ta.tag == tb.tag && structural_shapes_match(&ta.value, &tb.value)
+            ta.tag == tb.tag && structural_shapes_match(&ta.value, &tb.value, depth + 1)
         }
         (Value::Mapping(_), _) | (_, Value::Mapping(_)) => false,
         (Value::Sequence(_), _) | (_, Value::Sequence(_)) => false,
