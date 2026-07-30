@@ -322,7 +322,7 @@ jobs:
   # build+sign at busbarAI release time" (docs/plugins.md). This job checks each out as a SIBLING
   # of this checkout (path: ../headroom-hook, ../webrequest-hook) and builds the cdylib from there,
   # pinned to a fixed ref so a release is reproducible:
-  #   - headroom-hook: pinned to commit c37b798 ("Port headroom-hook to busbar's signed dlopen
+  #   - headroom-hook: pinned to commit dbd3d11 ("bench: rewrite for the signed dlopen
   #     plugin ABI"). NOT the latest tag (v1.0.14) — that tag predates the ABI port and is not
   #     loadable by busbar's plugin loader at all. JUDGMENT CALL: pin by commit until upstream
   #     cuts a release tag that includes the port; re-pin HEADROOM_HOOK_REF to that tag then.
@@ -350,7 +350,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       # Pinned refs for the external first-party plugin source repos — see the block comment above.
-      HEADROOM_HOOK_REF: c37b798f2bcf2faa64b336956bf523445d404d41
+      HEADROOM_HOOK_REF: dbd3d1105aa5ccffa2f376a12b901a2ce668292b
       WEBREQUEST_HOOK_REF: 5999093848c7574df09faccde71b25d3b137b1e5
     strategy:
       fail-fast: false
