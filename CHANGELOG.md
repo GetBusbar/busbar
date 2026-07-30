@@ -717,7 +717,7 @@ authenticated, audited API. The routing hook grew into a hook system: gates and 
 
 This release reshapes how hooks and policies are configured. Hooks are now defined once by name and referenced
 everywhere; the old inline `policy:` block and transport-named `route:` values are replaced. **Existing
-configs need a one-time update** (see the 1.2.x → 1.3 migration guide, `docs/migration-1.3.md`). It is a clean
+configs need a one-time update** — see the [1.2.x → 1.3 migration guide](docs/migration-1.3.md). It is a clean
 cut with no silent fallbacks: an old-form key reports a clear startup error telling you exactly what to write
 instead.
 
