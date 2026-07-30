@@ -573,8 +573,19 @@ fn responses_input_image_block(item: &serde_json::Value) -> Option<crate::ir::Ir
 /// `pub(crate)`: also called from `proxy/hooks.rs`'s `block_text` dispatch for the Responses
 /// summary-only-reasoning hook-visibility fix — the hook seam must walk `content[]`/`summary[]`
 /// with the EXACT SAME accept/skip rules the reader uses, not a second hand-rolled copy.
-pub(crate) fn read_reasoning_text(item: &serde_json::Value) -> String {
-    let mut text = String::new();
+///
+/// Returns `Cow<'_, str>` rather than an owned `String`: `total_text_chars` only needs a char
+/// count and immediately discards the text, so allocating for it on every call is wasted work.
+/// The common case — exactly ONE text-bearing part across BOTH `content[]` and `summary[]`
+/// combined — borrows straight from `item` (`Cow::Borrowed`); only a SECOND accepted part
+/// anywhere (either array, not per-array independently — a part in `content[]` followed by one
+/// in `summary[]` still must concatenate, not silently keep only the first) forces an allocation,
+/// and every further part appends into that same buffer. The empty case (no accepted part in
+/// either array) returns `Cow::Borrowed("")`, never `Cow::Owned(String::new())` — a caller that
+/// only wants a length must not pay an allocation for zero text.
+pub(crate) fn read_reasoning_text(item: &serde_json::Value) -> std::borrow::Cow<'_, str> {
+    use std::borrow::Cow;
+    let mut acc: Option<Cow<'_, str>> = None;
     for (arr_key, type_key) in [
         ("content", CONTENT_TYPE_REASONING_TEXT),
         ("summary", "summary_text"),
@@ -589,15 +600,29 @@ pub(crate) fn read_reasoning_text(item: &serde_json::Value) -> String {
                     .get("type")
                     .and_then(|t| t.as_str())
                     .is_none_or(|t| t == type_key);
-                if type_ok {
-                    if let Some(t) = part.get("text").and_then(|t| t.as_str()) {
-                        text.push_str(t);
-                    }
+                if !type_ok {
+                    continue;
                 }
+                let Some(t) = part.get("text").and_then(|t| t.as_str()) else {
+                    continue;
+                };
+                acc = Some(match acc {
+                    None => Cow::Borrowed(t),
+                    Some(Cow::Borrowed(prev)) => {
+                        let mut owned = String::with_capacity(prev.len() + t.len());
+                        owned.push_str(prev);
+                        owned.push_str(t);
+                        Cow::Owned(owned)
+                    }
+                    Some(Cow::Owned(mut owned)) => {
+                        owned.push_str(t);
+                        Cow::Owned(owned)
+                    }
+                });
             }
         }
     }
-    text
+    acc.unwrap_or(Cow::Borrowed(""))
 }
 
 /// Extract the opaque `encrypted_content` blob from a Responses `reasoning` item, applying the

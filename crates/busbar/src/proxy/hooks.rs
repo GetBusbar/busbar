@@ -437,7 +437,9 @@ pub(crate) fn block_text<'a>(b: &'a Value, ingress_protocol: &str) -> BlockText<
             Some(crate::proto::openai_responses::ITEM_TYPE_REASONING) => {
                 let text = crate::proto::openai_responses::read_reasoning_text(b);
                 if !text.is_empty() {
-                    BlockText::Text(Cow::Owned(text))
+                    // `text` is already a `Cow<'_, str>` borrowing from `b` in the common
+                    // (single-part) case — no `Cow::Owned` wrapping needed here any more.
+                    BlockText::Text(text)
                 } else if crate::proto::openai_responses::read_reasoning_encrypted_content(b)
                     .is_some()
                 {
