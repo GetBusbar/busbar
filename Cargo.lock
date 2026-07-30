@@ -346,6 +346,7 @@ name = "busbar-plugin-loader"
 version = "1.5.0"
 dependencies = [
  "async-trait",
+ "base64",
  "busbar-api",
  "busbar-plugin-abi",
  "busbar-plugin-sign",
@@ -353,6 +354,9 @@ dependencies = [
  "getrandom 0.3.4",
  "libc",
  "libloading",
+ "rcgen",
+ "ring",
+ "rustls",
  "serde",
  "serde_json",
  "tar",

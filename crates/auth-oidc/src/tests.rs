@@ -126,6 +126,7 @@ fn cfg(role_claim: &str) -> OidcConfig {
         role_claim: role_claim.to_string(),
         jwks_min_refetch_secs: 60,
         jwks_ttl_secs: 3600,
+        ca_cert_pem: None,
     }
 }
 
