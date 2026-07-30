@@ -409,7 +409,7 @@ Before taking Busbar out of dev mode:
 
 ## What's next
 
-- **Deploy it**: the four ways to run Busbar for real — a systemd service, a Docker container, a Kubernetes Helm chart, or a Terraform-managed gateway, all sharing one config and the two-listener model ([`docs/deploy.md`](deploy.md))
+- **Deploy it**: running Busbar for real — process configuration, TLS termination, the two-listener model, and running multiple instances ([`docs/operations.md`](operations.md))
 - **Full config reference**: every field, default, and validation rule ([`docs/configuration.md`](configuration.md))
 - **Pools, breakers, and failover**: weighting, breaker tuning, session affinity, context-length failover, and exhaustion policies ([`docs/configuration.md#pools`](configuration.md#pools))
 - **Running in production**: TLS termination, systemd, Docker, `/stats` monitoring, and breaker diagnosis ([`docs/operations.md`](operations.md))
