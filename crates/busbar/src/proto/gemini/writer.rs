@@ -485,12 +485,17 @@ impl ProtocolWriter for GeminiWriter {
         // `stream` before the upstream call. (An earlier version of this comment wrongly claimed the
         // reader excludes `stream` via `modeled_keys`; it does not — the accurate behavior is here.)
 
-        // Merge extra fields (may override, but that's expected behavior). `generationConfig` is
-        // SKIPPED here: its raw `extra` copy was already folded into the typed-overlay `gen_config`
-        // object emitted above, so re-inserting the raw copy would clobber the merge and drop the 5
-        // typed overlays. Every OTHER unmodeled top-level key still round-trips verbatim.
+        // Merge extra fields (may override, but that's expected behavior). `generationConfig` AND
+        // `toolConfig` are SKIPPED here: their raw `extra` copies were already folded into the
+        // typed-overlay `gen_config` / `tool_config` objects emitted above, so re-inserting the raw
+        // copy would CLOBBER the overlay and silently revert `req.tool_choice`/the 5 typed
+        // generationConfig fields back to whatever the source request originally carried — the exact
+        // failure mode when a caller (e.g. a post-read governance/routing hook) mutates
+        // `IrRequest.tool_choice` without also touching `IrRequest.extra["toolConfig"]`: the typed
+        // override would build correctly above, then get overwritten right back to the stale raw
+        // value by this loop. Every OTHER unmodeled top-level key still round-trips verbatim.
         for (key, value) in &req.extra {
-            if key == "generationConfig" {
+            if key == "generationConfig" || key == "toolConfig" {
                 continue;
             }
             out.insert(key.clone(), value.clone());
@@ -808,7 +813,7 @@ impl ProtocolWriter for GeminiWriter {
                         // same-protocol case byte-exact regardless.
                         let sources: Vec<serde_json::Value> = citations
                             .iter()
-                            .map(|c| write_gemini_citation(c, ""))
+                            .map(|c| write_gemini_citation(c, "", 0))
                             .collect();
                         Some((
                             "".to_string(),
@@ -991,8 +996,13 @@ impl ProtocolWriter for GeminiWriter {
 
         // Collect citations from every Text block to re-emit at the candidate level
         // (`candidates[].citationMetadata.citationSources[]`) — Gemini carries citations there, not
-        // per content-part. The reader anchors them to a Text block; here we hoist them back out.
+        // per content-part. The reader anchors them to a Text block, with indices relative to THAT
+        // block's own text (see `attach_gemini_citations_to_text_blocks`); here we hoist them back
+        // out to candidate level and un-shift each converted (non-`raw`) index by `byte_prefix` — the
+        // BYTE length of every text block already emitted — so a citation whose block is not the
+        // first text part still lands on the correct candidate-wide wire offset.
         let mut citation_sources: Vec<serde_json::Value> = Vec::new();
+        let mut byte_prefix: i64 = 0;
 
         for block in &resp.content {
             match block {
@@ -1000,8 +1010,9 @@ impl ProtocolWriter for GeminiWriter {
                     text, citations, ..
                 } => {
                     for c in citations {
-                        citation_sources.push(write_gemini_citation(c, text));
+                        citation_sources.push(write_gemini_citation(c, text, byte_prefix));
                     }
+                    byte_prefix += text.len() as i64;
                     if !text.is_empty() {
                         parts_arr.push(serde_json::json!({"text": text}));
                     }

@@ -4331,6 +4331,117 @@ fn tool_choice_no_duplicate_function_calling_config() {
     );
 }
 
+/// RED (round7 minor #2): the raw `toolConfig` the reader preserves in `req.extra` (for
+/// same-protocol byte-identity) must NOT clobber the freshly-overlaid `functionCallingConfig` the
+/// writer builds from the TYPED `req.tool_choice`. `generationConfig` gets this treatment
+/// explicitly (skipped in the final `req.extra` merge loop, with a comment explaining why); before
+/// this fix `toolConfig` did not, so any caller that changes `IrRequest.tool_choice` WITHOUT also
+/// updating `IrRequest.extra["toolConfig"]` (e.g. a governance/routing hook that forces a tool
+/// choice post-read) got its typed override silently reverted by the raw extra copy re-inserted at
+/// the bottom of `write_request`. Uses `base_ir_request()` with a tool present (the writer's own
+/// "no tools" guard would otherwise swallow the overlay for an unrelated reason).
+#[test]
+fn tool_choice_overlay_survives_stale_raw_toolconfig_in_extra() {
+    let mut req = base_ir_request();
+    req.tools.push(crate::ir::IrTool {
+        name: "get_weather".to_string(),
+        description: None,
+        input_schema: serde_json::json!({"type": "object", "properties": {}}),
+        cache_control: None,
+        hosted: None,
+    });
+    // Typed field says: force this ONE specific tool.
+    req.tool_choice = Some(crate::ir::IrToolChoice::Tool {
+        name: "get_weather".to_string(),
+    });
+    // `extra` carries a STALE raw toolConfig disagreeing with the typed field (as it would after a
+    // post-read hook mutates `tool_choice` without touching `extra`).
+    req.extra.insert(
+        "toolConfig".to_string(),
+        serde_json::json!({"functionCallingConfig": {"mode": "AUTO"}}),
+    );
+
+    let writer = GeminiWriter;
+    let out = writer.write_request(&req);
+    assert_eq!(
+        out["toolConfig"]["functionCallingConfig"],
+        serde_json::json!({"mode": "ANY", "allowedFunctionNames": ["get_weather"]}),
+        "the typed tool_choice overlay must win over a stale raw toolConfig preserved in extra; \
+         got {out}"
+    );
+}
+
+/// RED (round7 minor #3): `synth_tool_call_id` (used by `read_response`, one call per Gemini
+/// response/turn) hashes only `(call_index, function_name)`. Both are RESPONSE-LOCAL — `call_index`
+/// restarts at 0 on every `read_response` call, and `DefaultHasher::new()` seeds from FIXED
+/// constants (not per-process random) — so two DIFFERENT LLM turns in the SAME growing conversation
+/// that each open with a call to the same-named tool (a common pattern: the model calls
+/// `get_weather` again for a different city on a later turn) synthesize the IDENTICAL tool_use id.
+/// On a cross-protocol egress (e.g. an Anthropic-speaking client talking to a Gemini backend), the
+/// client's visible conversation transcript then carries TWO DIFFERENT tool_use blocks (different
+/// turns, different arguments) sharing one id — a real protocol-conformance violation (Anthropic
+/// documents tool_use ids as unique per message) and exactly the ambiguity `synth_tool_call_id`'s
+/// own doc comment says it exists to prevent ("two tool calls sharing a function name could not be
+/// told apart"). Each Gemini response carries its own opaque `responseId` (present on essentially
+/// every real backend response — the writer even synthesizes one when absent, for exactly this
+/// "native responses always carry one" reason) which naturally distinguishes one turn's calls from
+/// another's; folding it into the hash fixes the cross-turn collision without touching the
+/// within-request determinism `read_request` (already collision-free: its `tool_call_index` is
+/// global across the WHOLE `contents` array, not per-turn) relies on.
+#[test]
+fn response_tool_call_ids_do_not_collide_across_conversation_turns() {
+    let reader = GeminiReader;
+    let turn1 = serde_json::json!({
+        "responseId": "resp-turn-1",
+        "candidates": [{
+            "content": {
+                "role": "model",
+                "parts": [{"functionCall": {"name": "get_weather", "args": {"city": "NYC"}}}]
+            },
+            "finishReason": GEMINI_FINISH_STOP
+        }],
+        "usageMetadata": {"promptTokenCount": 3, "candidatesTokenCount": 2}
+    });
+    let turn2 = serde_json::json!({
+        "responseId": "resp-turn-2",
+        "candidates": [{
+            "content": {
+                "role": "model",
+                "parts": [{"functionCall": {"name": "get_weather", "args": {"city": "LA"}}}]
+            },
+            "finishReason": GEMINI_FINISH_STOP
+        }],
+        "usageMetadata": {"promptTokenCount": 3, "candidatesTokenCount": 2}
+    });
+
+    let id1 = reader
+        .read_response(&turn1)
+        .expect("read_response turn1")
+        .content
+        .iter()
+        .find_map(|b| match b {
+            crate::ir::IrBlock::ToolUse { id, .. } => Some(id.clone()),
+            _ => None,
+        })
+        .expect("turn1 tool_use id");
+    let id2 = reader
+        .read_response(&turn2)
+        .expect("read_response turn2")
+        .content
+        .iter()
+        .find_map(|b| match b {
+            crate::ir::IrBlock::ToolUse { id, .. } => Some(id.clone()),
+            _ => None,
+        })
+        .expect("turn2 tool_use id");
+
+    assert_ne!(
+        id1, id2,
+        "two different conversation turns' first same-named tool call must NOT synthesize the \
+         same tool_use id (got {id1} for both)"
+    );
+}
+
 // ---- PF-M2: Gemini finishReason mapping ----
 
 #[test]
@@ -5288,6 +5399,85 @@ fn gemini_citations_roundtrip_and_absent_unaffected() {
             .is_none(),
         "no citationMetadata for a citation-free response; got {plain_wire}"
     );
+}
+
+/// RED (round7 minor #1): a Gemini candidate whose content splits its output across MULTIPLE text
+/// parts. Google's `citationSources[].startIndex/endIndex` are candidate-relative byte offsets into
+/// the FULL concatenation of the candidate's text parts, not offsets into any single part. The
+/// reader must (a) convert the byte offset against the FULL concatenated text, not just the first
+/// part's text, and (b) attach the citation to the Text block whose span it actually falls in, with
+/// indices re-expressed relative to THAT block's own text (matching the Anthropic `char_location`
+/// per-block contract IrCitation follows). Before the fix, `read_response` anchored the byte->char
+/// conversion against only the FIRST Text block's text and always attached every citation there,
+/// so a citation whose span lands in a later part got a garbage (clamped-to-first-block-length)
+/// index and was attached to the wrong block.
+#[test]
+fn gemini_citation_offsets_correct_across_multiple_text_parts() {
+    let reader = GeminiReader;
+    // Full candidate text: "Hello world. Paris is great." (all ASCII, so byte offset == char
+    // offset). "Paris" sits at byte 13..18 of the FULL text, inside the SECOND part.
+    let first_part = "Hello world. ";
+    let second_part = "Paris is great.";
+    assert_eq!(first_part.len(), 13);
+    let body = serde_json::json!({
+        "candidates": [{
+            "content": {
+                "role": "model",
+                "parts": [{"text": first_part}, {"text": second_part}]
+            },
+            "citationMetadata": {
+                "citationSources": [
+                    {"startIndex": 13, "endIndex": 18, "uri": "https://example.com/paris", "title": "Paris"}
+                ]
+            },
+            "finishReason": GEMINI_FINISH_STOP
+        }],
+        "usageMetadata": {"promptTokenCount": 5, "candidatesTokenCount": 8}
+    });
+    let ir = reader.read_response(&body).expect("read_response");
+
+    let text_blocks: Vec<(&str, &Vec<crate::ir::IrCitation>)> = ir
+        .content
+        .iter()
+        .filter_map(|b| match b {
+            crate::ir::IrBlock::Text {
+                text, citations, ..
+            } => Some((text.as_str(), citations)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        text_blocks.len(),
+        2,
+        "both text parts must survive as blocks"
+    );
+
+    // The FIRST block ("Hello world. ") must carry NO citation — the span does not fall in it.
+    assert!(
+        text_blocks[0].1.is_empty(),
+        "citation must not attach to the first text block when its span lands in the second: {:?}",
+        text_blocks[0].1
+    );
+
+    // The SECOND block ("Paris is great.") must carry the citation, with indices relative to
+    // *this block's own text* (0..5, spanning "Paris"), not the candidate-wide 13..18.
+    assert_eq!(
+        text_blocks[1].1.len(),
+        1,
+        "citation must attach to the second text block, whose span actually contains it"
+    );
+    let c = &text_blocks[1].1[0];
+    assert_eq!(
+        c.start_index,
+        Some(0),
+        "start_index must be re-expressed relative to the owning block's own text"
+    );
+    assert_eq!(
+        c.end_index,
+        Some(5),
+        "end_index must be re-expressed relative to the owning block's own text"
+    );
+    assert_eq!(&text_blocks[1].0[0..5], "Paris");
 }
 
 /// L2-5 STREAMING citations, cross-protocol: a Gemini stream chunk carrying candidate-level
