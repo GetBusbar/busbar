@@ -67,7 +67,15 @@ pub(crate) fn enabled() -> bool {
 
 /// Apply the operator's `observability.metrics` decision. `None` = the block was absent = metrics
 /// OFF: no recorder is installed, so every emission macro and bank helper is a no-op, `/metrics` is
-/// not mounted, and nothing is retained. `Some(buffer)` = opted in with a declared retention window.
+/// not mounted, and nothing UNBOUNDED is retained (the per-thread histogram sample buffers this
+/// gates via [`retaining`] are dropped rather than buffered). `Some(buffer)` = opted in with a
+/// declared retention window.
+///
+/// NOT a literal "nothing is retained" contract: `CounterSlot::add` stays unconditional even when
+/// metrics are off (see its doc comment) — a small, FIXED footprint bounded by thread count x chunk
+/// count survives regardless, because counters are cumulative and must not lose pre-install adds.
+/// What this rules out is UNBOUNDED, traffic-proportional retention, which is what the histogram
+/// buffers were doing before [`retaining`] existed.
 ///
 /// Called once, synchronously, from `run()` after config load. The RECORDER install is deferred to a
 /// background thread because its one-time clock calibration (~200 ms) would otherwise delay the
@@ -76,6 +84,45 @@ pub(crate) fn configure(buffer: Option<Duration>) {
     let _ = ENABLED.set(buffer.is_some());
     if let Some(buffer) = buffer {
         std::thread::spawn(move || init_with(buffer));
+    }
+}
+
+/// Should a histogram slot RETAIN a newly-recorded sample right now? Three states, not two:
+///
+/// * Recorder INSTALLED (`HANDLE` resolved to `Some(_)`) -> `true`. Samples will reach `/metrics`.
+/// * Not yet installed but the operator OPTED IN (`HANDLE` unresolved, [`enabled`] true) -> `true`.
+///   This is the ~200 ms boot window between `configure` setting `ENABLED` synchronously and
+///   `init_with` finishing recorder install on its background thread (see `configure`'s doc
+///   comment). An operator who opted in has traffic flowing during that window; gating on recorder
+///   installation alone would silently drop it even though the samples WILL be drained once install
+///   completes.
+/// * Recorder install PERMANENTLY FAILED (`HANDLE` resolved to `Some(None)`), or metrics were never
+///   configured / the operator opted out (`HANDLE` unresolved, `enabled()` false) -> `false`.
+///   Nothing will ever drain these samples, so a histogram slot must not buffer them.
+///
+/// Deliberately NOT `recorder_installed()` alone — see the boot-window case above, verified real
+/// against `configure`/`init_with`'s actual timing, not assumed.
+#[inline]
+pub(crate) fn retaining() -> bool {
+    retaining_from(HANDLE.get().map(Option::is_some), enabled)
+}
+
+/// The decision table behind [`retaining`], factored out as a pure function of explicit inputs so
+/// it is unit-testable: `HANDLE`/`ENABLED` are process-global `OnceLock`s that can only be set once
+/// per test binary, so a test cannot drive the real globals through every state in one run.
+///
+/// `handle_installed` mirrors `HANDLE.get().map(Option::is_some)`'s three shapes: `None` = `HANDLE`
+/// not yet resolved (pre-install, boot window or metrics off); `Some(false)` = resolved to install
+/// FAILURE; `Some(true)` = resolved to install SUCCESS. `opted_in` is called ONLY in the `None`
+/// (not-yet-resolved) case, matching `retaining`'s lazy call to `enabled()` — it must not be called
+/// eagerly, or a test double could observe it being invoked when the real code path wouldn't.
+pub(crate) fn retaining_from(
+    handle_installed: Option<bool>,
+    opted_in: impl FnOnce() -> bool,
+) -> bool {
+    match handle_installed {
+        Some(installed) => installed,
+        None => opted_in(),
     }
 }
 
