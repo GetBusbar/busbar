@@ -237,7 +237,8 @@ identity — NOT the config alias you write in `auth.chain`. Bind roles under th
 Like every configured plugin, an auth plugin that cannot load is a hard error and never silently
 degrades — see [Fail-closed loading](#fail-closed-loading), below.
 
-The bundled **`oidc`** module (`busbar-auth-oidc-plugin`) is exactly such a plugin — see
+The first-party **`oidc`** module (`busbar-auth-oidc-plugin`, released from `GetBusbar/auth-oidc`)
+is exactly such a plugin — see
 [configuration.md](configuration.md#auth-plugins) for the `auth.chain: [oidc]` + `settings:` recipe
 (including an Entra ID example).
 
@@ -344,9 +345,22 @@ the grant-declaration flags `--needs-prompt <no|ro|rw>` and `--needs-user <no|ro
 signed manifest `needs` field — the core enforces the actual projection, so a plugin can never
 receive more than it declared.
 
-Busbar's own plugins (store, auth, and hook) are built, signed (the `BUSBAR_SIGN_KEY` CI secret),
-and attached to each GitHub Release per target by the release workflow; release binaries embed the
-matching public key, so first-party plugins verify with zero configuration.
+Every first-party plugin is built and signed with the same `BUSBAR_SIGN_KEY` / publisher `busbar`
+signing identity, but the *release* it ships from depends on the plugin:
+
+- **Store plugins** (`busbar-store-sqlite`, `busbar-store-postgres`, `busbar-store-redis`) and the
+  **auth plugin** (`busbar-auth-oidc`) each live in their own standalone repo
+  (`GetBusbar/store-sqlite`, `GetBusbar/store-postgres`, `GetBusbar/store-redis`,
+  `GetBusbar/auth-oidc`) with its own CI and its own release workflow. Download the tarball for the
+  backend you need from *that plugin's own* GitHub Release, not from busbar's.
+- **Hook plugins** (`busbar-headroom`, `busbar-webrequest`) also live in their own repos
+  (`GetBusbar/headroom-hook`, `GetBusbar/webrequest-hook`), but busbar's own release additionally
+  builds them from those sources and re-publishes signed tarballs on busbar's own GitHub Release,
+  for operator convenience — see [Hook plugins](#hook-plugins-kind-hook) above.
+
+Regardless of which repo's Release page a tarball comes from, release binaries embed the matching
+public key, so every first-party plugin verifies with zero configuration — the signature is what
+establishes first-party trust, not the hosting repo.
 
 ## Fail-closed loading
 
