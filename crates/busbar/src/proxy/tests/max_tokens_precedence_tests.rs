@@ -39,6 +39,7 @@ fn per_model_then_global_then_4096() {
                        // The defaulting now lives on the IR (`IrReq::prepare_for_egress`) — the engine passes the
                        // lane's resolved primitives. Drive it exactly as the translate seam does.
     let prep = |lane: &Lane, global: u32| EgressPrep {
+        thought_signature_fill: false,
         ingress_protocol: "openai",
         egress_requires_max_tokens: lane.protocol.writer().requires_max_tokens(),
         lane_default_max_tokens: lane.default_max_tokens,
@@ -170,6 +171,7 @@ fn cache_control_breakpoints_clamped_to_four_on_anthropic_egress() {
     assert_eq!(count_breakpoints(&ir), 6, "fixture carries 6 breakpoints");
 
     let prep = EgressPrep {
+        thought_signature_fill: false,
         ingress_protocol: "bedrock",
         egress_requires_max_tokens: true,
         lane_default_max_tokens: None,
