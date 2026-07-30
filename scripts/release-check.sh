@@ -26,6 +26,10 @@
 #     crates/plugin-loader/src/lib.rs), which stands up a real local JWKS server + a real minted
 #     JWT and drives the plugin through the real ABI. This script just runs that suite as a gate
 #     rather than reinventing a second, lower-quality fake-IdP proof (see Phase 5 below).
+#   - secret-vault's real-ABI plugin proof — busbar-secret-vault / busbar-secret-vault-plugin no
+#     longer live in this workspace (extracted to GetBusbar/secret-vault). Phase 4.5 below runs
+#     THAT repo's own test suite (a sibling checkout) against a real Vault dev-mode container,
+#     rather than duplicating the proof in-tree.
 #
 # WHEN TO RUN
 #   Pre-tag / pre-push, NOT on every commit. This is release infrastructure, not part of the
@@ -464,6 +468,46 @@ note "hermetic, real-crypto coverage. Running that suite here (rather than reinv
 note "lower-quality proof) is the correct release-gate check for this plugin."
 cargo test -p busbar-plugin-loader --release load_and_exercise_auth_oidc_plugin -- --nocapture
 ok "OIDC real-ABI plugin tests passed"
+
+# ── Phase 4.5: secret-vault — real-ABI proof via a sibling checkout's own test suite ────────────────
+#
+# busbar-secret-vault / busbar-secret-vault-plugin no longer live in this workspace (extracted to
+# GetBusbar/secret-vault, same-repo 2-crate workspace, mirroring busbar-auth-oidc's own extraction).
+# Unlike Phase 4's OIDC coverage (which still runs in-tree because auth-oidc-plugin hasn't been
+# extracted out of this workspace yet), there is no in-tree cdylib to dlopen here any more — the
+# real-Vault ABI-crossing proof now lives entirely in that repo's own test suite (its
+# `secret-vault-plugin/tests/e2e.rs`, dlopen-ing its own real-built cdylib). Running THAT suite,
+# against a real `hashicorp/vault` dev-mode container, is the correct release-gate check: it proves
+# the actual released artifact works, not a duplicate in-tree reimplementation of the same proof.
+phase "Phase 4.5: secret-vault-plugin — real-ABI proof via sibling checkout (real Vault container)"
+SECRET_VAULT_SRC="${REPO_ROOT}/../secret-vault"
+if [ -d "$SECRET_VAULT_SRC" ]; then
+  VAULT_CONTAINER="busbar-release-check-vault-$$"
+  DOCKER_CONTAINERS+=("$VAULT_CONTAINER")
+  docker run -d --rm --name "$VAULT_CONTAINER" --cap-add=IPC_LOCK \
+    -e VAULT_DEV_ROOT_TOKEN_ID=root -p 18200:8200 hashicorp/vault >/dev/null
+  echo "  waiting for vault to report healthy (/v1/sys/health)..."
+  waited=0
+  until curl -fsS "http://127.0.0.1:18200/v1/sys/health" >/dev/null 2>&1; do
+    waited=$((waited + 1))
+    if [ "$waited" -ge 60 ]; then
+      echo "vault did not become ready within 60s" >&2
+      docker logs "$VAULT_CONTAINER" || true
+      exit 1
+    fi
+    sleep 1
+  done
+  ok "vault ready after ${waited}s"
+  ( cd "$SECRET_VAULT_SRC" && \
+    BUSBAR_TEST_VAULT_ADDR="http://127.0.0.1:18200" BUSBAR_TEST_VAULT_TOKEN="root" \
+    cargo test --workspace )
+  ok "secret-vault real-ABI plugin tests passed (sibling checkout: ${SECRET_VAULT_SRC})"
+  docker rm -f "$VAULT_CONTAINER" >/dev/null 2>&1 || true
+else
+  note "SKIP: ../secret-vault not present as a sibling checkout on this machine."
+  note "Clone GetBusbar/secret-vault as a sibling of this repo to run this phase locally; CI runs"
+  note "it via that repo's own ci.yml (service: vault), not from here."
+fi
 
 # ── Phase 5: Headroom / Webrequest — local --validate dlopen smoke test ────────────────────────────
 phase "Phase 5: headroom-hook / webrequest-hook — local busbar --validate dlopen smoke test"

@@ -243,6 +243,14 @@ jobs:
   #     (see that script's header) to prove busbar works against ALL its plugins together at a given
   #     commit — a property that requires the crates to be buildable from inside this checkout,
   #     independent of where the shipped release artifact ultimately comes from.
+  #
+  # `crates/secret-vault` / `crates/secret-vault-plugin` are the ONE exception: they have already
+  # been fully removed from this monorepo (extracted to GetBusbar/secret-vault, mirroring
+  # auth-oidc's own same-repo-workspace restructure — see that repo's commit history). Their
+  # real-ABI dlopen coverage now lives entirely in that repo's own test suite; this monorepo gates
+  # on it via scripts/release-check.sh's Phase 4.5 (a sibling checkout, not an in-tree build). The
+  # store-*/auth-oidc crates above have NOT undergone this same removal yet as of this comment —
+  # don't assume they're on the same timeline just because secret-vault went first.
   # See docs/plugins.md's "Signing and packaging" section for the corrected, current release-source
   # story per plugin kind.
 
