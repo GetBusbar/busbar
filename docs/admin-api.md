@@ -70,8 +70,9 @@ Every list endpoint speaks one envelope: `{ "items": [...], "next_cursor": "..."
 | `GET /keys` | 200 | 1000 |
 | `GET /audit` | 200 | 1000 |
 | `GET /config/versions` | 100 | 1000 |
+| `GET /groups` | 200 | 1000 |
 
-The topology reads (`/pools`, `/models`, `/providers`, `/hooks`, `/groups`, `/plugins`) return the same envelope in a single page (`next_cursor: null`).
+The topology reads (`/pools`, `/models`, `/providers`, `/hooks`, `/plugins`) return the same envelope in a single page (`next_cursor: null`) — they are bounded by static config. `/groups` is cursor-paginated like `/keys`/`/audit`/`/config/versions` instead: `plan_mint_group` auto-provisions a leaf group per self-service key mint, so the group tree grows at runtime and is not safe to return unbounded.
 
 ## Concurrency: ETag + If-Match
 
@@ -206,7 +207,7 @@ The `groups:` limit tree — where every limit lives (keys are pure auth) — is
 
 | Endpoint | Returns |
 |---|---|
-| `GET /groups` | Every group, name-sorted, single page. Carries the config-plane `ETag`, so a client reads then mutates without a second round-trip |
+| `GET /groups` | Every group, name-sorted. Carries the config-plane `ETag`, so a client reads then mutates without a second round-trip. Cursor-paginated (see Pagination above) |
 | `GET /groups/{name}` | One group definition (+ config-plane `ETag`); `404` for an unknown name |
 | `GET /groups/{name}/usage` | The group's **derived** current-window usage, one row per enforcement bucket — each `(window, pool?)` its limits materialise: `{group, enabled, buckets: [{window, pool?, requests, tokens, spend_cents, requests_cap?, tokens_cap?, budget_cap?, budget_remaining_cents?}], as_of}`. Spend is repriced at read time from the token ledger × the *current* `rate_card` (nothing dollar-shaped is stored). `buckets` is empty for a group with only a `concurrent` limit (or none): there is no windowed ledger to read. The self-service dashboard read: a `user:<sub>` leaf's usage is one person's view |
 | `GET /keys?group=<name>` | The keys bound to a group (see the keys table above): a leaf group's keys are one person's keys; a team group's are the team's |
