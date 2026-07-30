@@ -1042,36 +1042,16 @@ pub(crate) async fn auth_middleware(
             || method == axum::http::Method::DELETE;
         if is_mutation {
             // The CONFIG class (10/min) is the blast-radius set: whole-config mutations AND the
-            // admin auth chain itself (`PUT /admin-auth` — the L3 remount moved it off `/auth`).
-            // Everything else that mutates (hooks, keys, cache flush) is the CRUD class (60/min).
-            // Matched RELATIVE to the one contract prefix so this gate can never drift from the
-            // mount grammar.
+            // admin auth chain itself. Everything else that mutates (hooks, keys, cache flush) is
+            // the CRUD class (60/min). Matched RELATIVE to the one contract prefix so this gate
+            // can never drift from the mount grammar. Classification itself lives in
+            // `admin::rate::classify_mutation`, driven by a const table rather than an inline
+            // predicate, so it can be enumerated and cross-checked against
+            // `docs/admin-api.md`'s rate-limit table (see that table's doc comment).
             let rel = path
                 .strip_prefix(crate::admin::v1::contract::ADMIN_PREFIX)
                 .unwrap_or(&path);
-            // `/config/validate` is a stateless dry-run (read-only scope, no blast radius) — it
-            // meters in the roomy CRUD class so a CI pipeline linting configs never contends with
-            // the 10/min budget that guards real config mutations.
-            let class = if (rel.starts_with("/config/")
-                && rel != crate::admin::v1::contract::PATH_CONFIG_VALIDATE)
-                || rel == crate::admin::v1::contract::PATH_ADMIN_AUTH
-                // A per-section overlay reset discards a whole section back to base config — a
-                // blast-radius revert (rebuilds the App), so it meters in the tight CONFIG class.
-                || rel.starts_with("/overlay/")
-                // The two PLUGIN SWAP endpoints do a full `rebuild_app_from_disk` + `handle.swap`
-                // (identical blast radius to `config/reload`), so they belong in the tight CONFIG
-                // class too — not the 6×-looser CRUD budget (M7). `/plugins/reload` and
-                // `/plugins/rollback` only; `/plugins` (install/list) and `/plugins/{file}` (delete)
-                // do NOT swap the App, so they stay CRUD.
-                || rel == "/plugins/reload"
-                || rel == "/plugins/rollback"
-                // Restarting ends the process; the 6x looser CRUD budget would be a flood knob.
-                || rel == "/restart"
-            {
-                crate::admin::rate::MutationClass::Config
-            } else {
-                crate::admin::rate::MutationClass::Crud
-            };
+            let class = crate::admin::rate::classify_mutation(rel);
             let actor = principal
                 .as_ref()
                 .map(|p| p.id.as_str())

@@ -100,6 +100,7 @@ Busbar reads two YAML files:
 
 This is the smallest config that boots and serves requests. Use it on a local machine to try Busbar quickly.
 
+<!-- doc-check: config -->
 ```yaml
 # config.yaml (dev/minimal, no client auth gate)
 providers:
@@ -230,6 +231,7 @@ The Anthropic SDK sends `x-api-key`; Busbar accepts it on the `/v1/messages` rou
 
 Once the single-provider setup is working, extend the config to introduce a pool. A pool is a named group of models with weighted load balancing, per-member circuit breaking, and automatic failover.
 
+<!-- doc-check: config -->
 ```yaml
 # config.yaml, two providers, two models, one pool, with client auth
 auth:

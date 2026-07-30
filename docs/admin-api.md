@@ -34,7 +34,7 @@ One **body-derived refinement**: a `hooks-register` principal may define hooks b
 
 | Class | Budget | Covers |
 |---|---|---|
-| config | 10/min | `POST /config/apply`, `/config/reload`, `/config/rollback`, `PUT /admin-auth`, `DELETE /overlay/*`, `POST /plugins/reload`, `POST /plugins/rollback`, and `POST /restart` (the blast-radius set) |
+| config | 10/min | `POST /config/apply`, `PUT /config/settings`, `POST /config/reload`, `POST /config/rollback`, `PUT /admin-auth`, `DELETE /overlay/{section}`, `POST /plugins/reload`, `POST /plugins/rollback`, and `POST /restart` (the blast-radius set) |
 | CRUD | 60/min | every other mutation: hooks, keys, groups, cache flush, **and `/config/validate`** (a dry-run never contends with the config budget) |
 
 Over-budget is `429 rate_limited` with a **`Retry-After: 60`** header, and the event is audited. Reads are unmetered.

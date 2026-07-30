@@ -10287,6 +10287,69 @@ fn documented_operations() -> Vec<(String, crate::admin::v1::contract::taxonomy:
     ops
 }
 
+/// `docs/admin-api.md`'s mutation rate-limit table names the CONFIG-class (10/min) endpoint set by
+/// hand. Until this test existed, nothing tied that prose list to
+/// `admin::rate::classify_mutation` — the classifier that actually decides which budget a request
+/// spends from. This walks every mutation operation in the committed `openapi.json`
+/// (`documented_operations`, itself a projection nothing can silently drift from), classifies each
+/// one, and requires the resulting CONFIG set to equal the doc's `config` row EXACTLY — under- and
+/// over-listing both fail, same bidirectional-equality idiom as
+/// `declared_error_set_is_exactly_what_the_handlers_emit`.
+#[test]
+fn rate_limit_doc_table_matches_classifier() {
+    use crate::admin::v1::contract::taxonomy::MethodTag;
+
+    // The doc's `config` row, parsed straight out of the committed file — not retyped here — so
+    // editing the row is the only step needed to change what this test expects.
+    let doc = include_str!("../../../../../docs/admin-api.md");
+    let row = doc
+        .lines()
+        .find(|l| l.trim_start().starts_with("| config | 10/min |"))
+        .expect("docs/admin-api.md has a `config` row in the mutation rate-limit table");
+    let doc_config: std::collections::BTreeSet<(String, MethodTag)> = row
+        .split('`')
+        .skip(1)
+        .step_by(2)
+        .map(|token| {
+            let mut parts = token.splitn(2, ' ');
+            let method = parts.next().unwrap();
+            let path = parts.next().unwrap_or_else(|| {
+                panic!("doc token {token:?} is not \"METHOD /path\"");
+            });
+            let m = MethodTag::from_op_key(&method.to_lowercase())
+                .unwrap_or_else(|| panic!("unrecognized HTTP method {method:?} in doc row"));
+            (path.to_string(), m)
+        })
+        .collect();
+    assert!(
+        doc_config.len() >= 6,
+        "only parsed {} endpoints out of the doc's config row — the parser is broken: {row:?}",
+        doc_config.len()
+    );
+
+    // `documented_operations` yields `/overlay/{section}` verbatim (the templated openapi path),
+    // matching the doc's literal spelling — no normalization needed on either side.
+    let code_config: std::collections::BTreeSet<(String, MethodTag)> = documented_operations()
+        .into_iter()
+        .filter(|(rel, method)| {
+            matches!(
+                method,
+                MethodTag::Post | MethodTag::Put | MethodTag::Patch | MethodTag::Delete
+            ) && crate::admin::rate::classify_mutation(rel)
+                == crate::admin::rate::MutationClass::Config
+        })
+        .collect();
+
+    let missing_from_doc: Vec<_> = code_config.difference(&doc_config).collect();
+    let missing_from_code: Vec<_> = doc_config.difference(&code_config).collect();
+    assert!(
+        missing_from_doc.is_empty() && missing_from_code.is_empty(),
+        "docs/admin-api.md's config-class row has drifted from admin::rate::classify_mutation.\n\
+         In classifier's CONFIG class but not in the doc: {missing_from_doc:?}\n\
+         In the doc but not classified CONFIG: {missing_from_code:?}"
+    );
+}
+
 /// `POST /api/v1/admin/restart` is how the restart-scoped settings get applied without an SSH
 /// session, so its refusals matter as much as its success: exiting is only a RESTART if something
 /// restarts the process, and a test binary has no shutdown channel at all.
