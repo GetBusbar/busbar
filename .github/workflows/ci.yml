@@ -64,6 +64,21 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      # Real Vault dev-mode server for busbar-secret-vault / busbar-secret-vault-plugin's live-Vault
+      # tests (BUSBAR_TEST_VAULT_ADDR / BUSBAR_TEST_VAULT_TOKEN, set on the Test step below), same
+      # hard-fail-under-CI-if-unset discipline as postgres/redis above.
+      vault:
+        image: hashicorp/vault
+        env:
+          VAULT_DEV_ROOT_TOKEN_ID: root
+        ports:
+          - 8200:8200
+        options: >-
+          --cap-add=IPC_LOCK
+          --health-cmd "wget -qO- http://127.0.0.1:8200/v1/sys/health"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v7
 
@@ -90,6 +105,8 @@ jobs:
         env:
           BUSBAR_TEST_POSTGRES_URL: postgres://busbar:busbar@localhost:5432/busbar_test
           REDIS_URL: redis://localhost:6379
+          BUSBAR_TEST_VAULT_ADDR: http://127.0.0.1:8200
+          BUSBAR_TEST_VAULT_TOKEN: root
         run: cargo test --workspace --locked --verbose
 
   # OpenAPI schema gate (CI-ONLY `openapi-schema` feature). `openapi_doc()` derives typed response
