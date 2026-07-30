@@ -77,7 +77,7 @@ docker run -d -p 8080:8080 \
 
 The provider catalog ships inside the image at `/etc/busbar/providers.yaml`, so you only mount `config.yaml` (written in [Step 2](#step-2-write-a-minimal-config)). Pin an exact version (`getbusbar/busbar:1.5.0`) or ride `latest`. If you use a durable store, give it a writable volume (e.g. `-v busbar-data:/var/lib/busbar` with `store.settings.db_path: /var/lib/busbar/governance.db`).
 
-**Or build from source** (requires Rust 1.87+):
+**Or build from source** (requires Rust 1.97+):
 
 ```bash
 cargo build --release      # binary at target/release/busbar

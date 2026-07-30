@@ -88,4 +88,4 @@ Full walkthrough → **[Getting Started](https://getbusbar.com/docs/getting-star
 
 Full documentation is at **[getbusbar.com](https://getbusbar.com)** (agent-readable at [llms.txt](https://getbusbar.com/llms.txt)). Contributor docs (architecture, internals, ADRs) live in [`docs/`](docs/).
 
-Single Rust binary, MSRV 1.87. Contributions welcome ([CONTRIBUTING.md](CONTRIBUTING.md)). Licensed **Apache-2.0** ([LICENSE](LICENSE)): permissive, commercial-friendly, with an explicit patent grant.
+Single Rust binary, MSRV 1.97. Contributions welcome ([CONTRIBUTING.md](CONTRIBUTING.md)). Licensed **Apache-2.0** ([LICENSE](LICENSE)): permissive, commercial-friendly, with an explicit patent grant.

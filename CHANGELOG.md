@@ -295,6 +295,12 @@ the release's security headline: 1.x keys never expired; 1.5.0 keys are signed t
 
 ### Changed
 
+- **MSRV corrected to Rust 1.97.** The declared `rust-version` (1.87, set when `u32::is_multiple_of`
+  first required it) had drifted silently: no CI job ever built at that pin, and a transitive
+  dependency (`redis`) had since raised its own floor past it, so `cargo build` on a real 1.87
+  toolchain has failed for some time. CI has always floated on `dtolnay/rust-toolchain@stable`
+  (currently 1.97), so `rust-version` is corrected to match what is actually verified rather than
+  an unverified, already-false claim.
 - **THE SEMVER CONTRACT IS REDEFINED (and this is what makes 1.5.0 a minor).** The stable,
   SemVer-protected contract is the RUNTIME: the data-plane HTTP surface an application
   integrates against and the six wire-protocol contracts. The `config.yaml` is an OPERATOR

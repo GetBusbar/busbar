@@ -3,7 +3,7 @@ name = "busbar-plugin-loader"
 version = "1.5.0"
 publish = false            # internal workspace crate; never goes to crates.io
 edition = "2021"
-rust-version = "1.87"
+rust-version = "1.97"
 description = "The busbar plugin subsystem: signed-tarball discovery, in-memory unpack + verification, the three-phase (structural/trust/conflict) load validation, the name/alias registry, and the memfd/private-temp dynamic loader over the plugin C ABI. All FFI unsafe is isolated here so the engine crate keeps its forbid(unsafe_code) invariant."
 license = "Apache-2.0"
 

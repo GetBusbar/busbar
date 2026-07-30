@@ -3,7 +3,7 @@ name = "busbar-plugin-sdk"
 version = "1.5.0"
 publish = false            # internal workspace crate; never goes to crates.io
 edition = "2021"
-rust-version = "1.87"
+rust-version = "1.97"
 description = "SDK for writing busbar store plugins in Rust: implement the Store trait, call export_store_plugin!(ctor), build as a cdylib. Emits the extern-C glue for the busbar store ABI."
 license = "Apache-2.0"
 
