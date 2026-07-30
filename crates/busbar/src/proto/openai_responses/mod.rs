@@ -600,6 +600,21 @@ pub(crate) fn read_reasoning_text(item: &serde_json::Value) -> String {
     text
 }
 
+/// Extract the opaque `encrypted_content` blob from a Responses `reasoning` item, applying the
+/// EXACT same accept/skip rule the reader uses at both its call sites (input-item arm and
+/// output-item arm, `reader.rs`): a string value, and non-empty. `None` for a missing key, a
+/// non-string value, or an empty string — the reader drops such an item entirely when it also
+/// carries no text (see both call sites' `!text.is_empty() || signature.is_some()` guard).
+///
+/// `pub(crate)`: also called from `proxy/hooks.rs`'s `block_text` dispatch (the Responses
+/// encrypted-content-only hook-visibility fix) so the hook seam recognizes the SAME opaque-blob
+/// shape the reader admits to the provider, instead of a second hand-rolled copy of this rule.
+pub(crate) fn read_reasoning_encrypted_content(item: &serde_json::Value) -> Option<&str> {
+    item.get("encrypted_content")
+        .and_then(|s| s.as_str())
+        .filter(|s| !s.is_empty())
+}
+
 /// Responses `incomplete_details.reason` → canonical [`crate::ir::IrStopReason`]. The ONLY place that
 /// knows the Responses truncation-reason vocabulary; an unmodeled reason maps to `Other`.
 fn read_responses_incomplete_reason(reason: &str) -> crate::ir::IrStopReason {
