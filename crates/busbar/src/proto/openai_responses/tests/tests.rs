@@ -6660,3 +6660,53 @@ fn leading_developer_item_does_not_warn() {
         cap.messages()
     );
 }
+
+/// A Responses `output_text` content part's sibling `annotations` (`url_citation` entries) must be
+/// read into the IR Text block's `citations` — url/title, offsets deliberately left `None` (see
+/// `read_url_annotations` in `openai_chat/mod.rs`, shared by both readers).
+#[test]
+fn responses_output_text_annotations_read_into_ir_citations() {
+    let json = serde_json::json!({
+        "id": "resp_cite1",
+        "object": OBJ_RESPONSE,
+        "status": STATUS_COMPLETED,
+        "output": [{
+            "type": ITEM_TYPE_MESSAGE,
+            "role": "assistant",
+            "content": [{
+                "type": CONTENT_TYPE_OUTPUT_TEXT,
+                "text": "See the source for details.",
+                "annotations": [{
+                    "type": "url_citation",
+                    "url_citation": {
+                        "url": "https://example.com/r",
+                        "title": "Responses Source",
+                        "start_index": 7,
+                        "end_index": 20
+                    }
+                }]
+            }]
+        }],
+        "usage": {"input_tokens": 10, "output_tokens": 5}
+    });
+
+    let resp = ResponsesReader
+        .read_response(&json)
+        .expect("read_response should succeed");
+    let citations = resp
+        .content
+        .iter()
+        .find_map(|b| match b {
+            crate::ir::IrBlock::Text { citations, .. } => Some(citations),
+            _ => None,
+        })
+        .expect("a Text block must be present");
+    assert_eq!(citations.len(), 1, "{citations:?}");
+    let c = &citations[0];
+    assert_eq!(c.url.as_deref(), Some("https://example.com/r"));
+    assert_eq!(c.title.as_deref(), Some("Responses Source"));
+    assert!(
+        c.start_index.is_none() && c.end_index.is_none(),
+        "offsets must stay None until the byte-vs-character unit is established: {c:?}"
+    );
+}

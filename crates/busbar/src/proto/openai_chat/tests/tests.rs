@@ -4846,3 +4846,137 @@ fn anthropic_sourced_citation_indices_are_not_double_converted() {
         "an already-character offset must pass through UNCHANGED, not be converted again: {anns:?}"
     );
 }
+
+/// A Chat response's `message.annotations` (`url_citation` entries) must be read into the IR
+/// Text block's `citations`, carrying url/title — but NOT the offsets: `IrCitation::start_index`/
+/// `end_index` are deliberately left `None` because OpenAI does not document whether its
+/// `start_index`/`end_index` count bytes or characters (see `read_url_annotations`). A future
+/// "helpful" copy of the offsets across must turn this test red, not ship a unit bug.
+#[test]
+fn chat_response_annotations_read_into_ir_citations() {
+    let body = serde_json::json!({
+        "id": "chatcmpl-cite1",
+        "object": OBJ_COMPLETION,
+        "created": 1_700_000_000u64,
+        "model": "gpt-4o",
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": "See the source for details.",
+                "annotations": [{
+                    "type": "url_citation",
+                    "url_citation": {
+                        "url": "https://example.com/a",
+                        "title": "Example A",
+                        "start_index": 7,
+                        "end_index": 20
+                    }
+                }]
+            },
+            "finish_reason": FINISH_STOP
+        }],
+        "usage": {"prompt_tokens": 3, "completion_tokens": 4}
+    });
+    let ir = OpenAiReader.read_response(&body).expect("read_response");
+    let text_block = ir
+        .content
+        .iter()
+        .find_map(|b| match b {
+            crate::ir::IrBlock::Text { citations, .. } => Some(citations),
+            _ => None,
+        })
+        .expect("a Text block must be present");
+    assert_eq!(text_block.len(), 1, "{text_block:?}");
+    let c = &text_block[0];
+    assert_eq!(c.url.as_deref(), Some("https://example.com/a"));
+    assert_eq!(c.title.as_deref(), Some("Example A"));
+    assert_eq!(
+        c.kind.as_deref(),
+        Some("web_search_result_location"),
+        "routes downstream writers to their web-search citation shape"
+    );
+    assert!(
+        c.start_index.is_none() && c.end_index.is_none(),
+        "offsets must stay None until the byte-vs-character unit is established: {c:?}"
+    );
+}
+
+/// A `url_citation` annotation with no usable `url` must be skipped — symmetric with
+/// `url_annotations`' never-invent-a-fact rule in the write direction.
+#[test]
+fn openai_annotation_without_a_url_is_skipped() {
+    let body = serde_json::json!({
+        "id": "chatcmpl-cite2",
+        "object": OBJ_COMPLETION,
+        "created": 1_700_000_000u64,
+        "model": "gpt-4o",
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": "No usable source.",
+                "annotations": [{
+                    "type": "url_citation",
+                    "url_citation": {"title": "Untitled", "start_index": 0, "end_index": 5}
+                }]
+            },
+            "finish_reason": FINISH_STOP
+        }],
+        "usage": {"prompt_tokens": 3, "completion_tokens": 4}
+    });
+    let ir = OpenAiReader.read_response(&body).expect("read_response");
+    let text_block = ir
+        .content
+        .iter()
+        .find_map(|b| match b {
+            crate::ir::IrBlock::Text { citations, .. } => Some(citations),
+            _ => None,
+        })
+        .expect("a Text block must be present");
+    assert!(
+        text_block.is_empty(),
+        "a url_citation with no url must be skipped, not fabricated: {text_block:?}"
+    );
+}
+
+/// THE DELIVERY TEST: an OpenAI citation must survive the hop to Anthropic — before this fix, the
+/// citation ceased to exist entirely on this hop (url/title lost, not just the offsets).
+#[test]
+fn openai_chat_citation_survives_the_hop_to_anthropic() {
+    let body = serde_json::json!({
+        "id": "chatcmpl-cite3",
+        "object": OBJ_COMPLETION,
+        "created": 1_700_000_000u64,
+        "model": "gpt-4o",
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": "See the source for details.",
+                "annotations": [{
+                    "type": "url_citation",
+                    "url_citation": {
+                        "url": "https://example.com/hop",
+                        "title": "Hop Source",
+                        "start_index": 7,
+                        "end_index": 20
+                    }
+                }]
+            },
+            "finish_reason": FINISH_STOP
+        }],
+        "usage": {"prompt_tokens": 3, "completion_tokens": 4}
+    });
+    let ir = OpenAiReader.read_response(&body).expect("read_response");
+    let out = crate::proto::anthropic::AnthropicWriter.write_response(&ir);
+    let content = out["content"].as_array().expect("content array");
+    let citation = content
+        .iter()
+        .find_map(|block| block.get("citations").and_then(|c| c.as_array()))
+        .and_then(|arr| arr.first())
+        .unwrap_or_else(|| panic!("no citation emitted on the Anthropic hop: {out}"));
+    assert_eq!(citation["type"], "web_search_result_location");
+    assert_eq!(citation["url"], "https://example.com/hop");
+    assert_eq!(citation["title"], "Hop Source");
+}

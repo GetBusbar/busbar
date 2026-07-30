@@ -489,6 +489,60 @@ pub(crate) fn url_annotations(
     out
 }
 
+/// Read an OpenAI-family `annotations` array (`url_citation` entries) into IR citations. Shared by
+/// the Chat and Responses readers, mirroring `url_annotations` above in the write direction.
+///
+/// KNOWN LIMITATION — offsets are deliberately NOT carried. `IrCitation::start_index`/`end_index`
+/// are CHARACTER offsets by contract (`ir/mod.rs`), and OpenAI does not document whether its
+/// `start_index`/`end_index` count bytes or characters. Copying them across unconverted would
+/// silently assert one of the two, and on non-ASCII text that is a wrong span — the same class of
+/// defect the Gemini byte/char conversion (`gemini/mod.rs`) exists to prevent. Dropping an offset
+/// we cannot interpret is a gap; asserting a unit we cannot verify is a lie. Until the unit is
+/// established (one upstream response with a multi-byte character ahead of the cited span settles
+/// it), the url and title — which need no unit — are preserved and the span is left `None`, which
+/// every writer already treats as optional.
+pub(crate) fn read_url_annotations(annotations: &serde_json::Value) -> Vec<crate::ir::IrCitation> {
+    let mut out = Vec::new();
+    let Some(arr) = annotations.as_array() else {
+        return out;
+    };
+    for entry in arr {
+        if entry.get("type").and_then(|t| t.as_str()) != Some("url_citation") {
+            continue;
+        }
+        let Some(citation) = entry.get("url_citation") else {
+            continue;
+        };
+        // Never invent a fact: an entry with no usable url is skipped, symmetric with
+        // `url_annotations`' own rule in the write direction (a citation with no url is not
+        // emitted there either).
+        let Some(url) = citation
+            .get("url")
+            .and_then(|u| u.as_str())
+            .filter(|u| !u.is_empty())
+        else {
+            continue;
+        };
+        let title = citation
+            .get("title")
+            .and_then(|t| t.as_str())
+            .filter(|t| !t.is_empty())
+            .map(String::from);
+        out.push(crate::ir::IrCitation {
+            kind: Some("web_search_result_location".to_string()),
+            cited_text: None,
+            title,
+            url: Some(url.to_string()),
+            document_index: None,
+            start_index: None,
+            end_index: None,
+            encrypted_index: None,
+            raw: None,
+        });
+    }
+    out
+}
+
 pub(crate) fn tool_arguments_to_string(input: &serde_json::Value) -> String {
     match input {
         serde_json::Value::String(s) => s.clone(),
