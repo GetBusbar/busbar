@@ -26,9 +26,11 @@ pub(crate) const GEMINI_JSON_ARRAY_SHIM_KEY: &str = "__busbar_gemini_json_array"
 pub(crate) const GEMINI_BAD_KEY_MESSAGE: &str = "API key not valid. Please pass a valid API key.";
 
 /// Hard cap on the number of distinct tool-call block indices recorded in `state.open_tools` for a
-/// single Gemini SSE stream. The set is only drained when a `finishReason` chunk arrives (the
-/// terminal frame closes every open tool block), so a hostile or buggy upstream that streams an
-/// unbounded run of `functionCall` parts WITHOUT ever emitting `finishReason` would grow it without
+/// single Gemini SSE stream. The set is drained on either of the stream's TWO terminal paths — a
+/// `finishReason` chunk (the normal candidate-terminated close) or a mid-stream prompt-block envelope
+/// (`candidates_absent` + `promptFeedback.blockReason`, which also closes every open block before its
+/// terminal `MessageDelta`/`MessageStop`) — so a hostile or buggy upstream that streams an unbounded
+/// run of `functionCall` parts WITHOUT ever reaching either terminal path would grow it without
 /// bound — one inserted index per part — until the process is OOM-killed. No legitimate Gemini
 /// response approaches this many parallel tool calls in a single turn; past the cap we stop both
 /// recording new tool frames and emitting their BlockStart/BlockDelta events, so per-request heap
@@ -238,20 +240,34 @@ fn synth_response_id() -> String {
 /// `tool_result`/`tool` message. With an empty id, two tool calls sharing a function name could not
 /// be told apart and `tool_result` routing broke.
 ///
-/// We derive a deterministic id from `(call_index, function_name)` via the stdlib
+/// We derive a deterministic id from `(call_index, function_name, turn_salt)` via the stdlib
 /// `std::collections::hash_map::DefaultHasher` (SipHash-1-3; no new dependency). Determinism within a
 /// run is all we need here — `DefaultHasher::new()` seeds from fixed constants (it is NOT the
-/// per-process randomized `RandomState` used by `HashMap`), so the same `(index, name)` always hashes
-/// to the same id. The id only needs to be stable WITHIN a single request so the
+/// per-process randomized `RandomState` used by `HashMap`), so the same `(index, name, salt)` always
+/// hashes to the same id. The id only needs to be stable WITHIN a single request/response so the
 /// synthesized `tool_result` (which the reader keys by function name — Gemini's only correlation
 /// handle) and the `tool_use` agree; including the call index disambiguates repeated function
-/// names. The `call_` prefix keeps it visibly synthetic and matches no native id shape we must
-/// preserve. An empty `name` still yields a non-empty id (the index disambiguates).
-fn synth_tool_call_id(call_index: usize, function_name: &str) -> String {
+/// names within one turn. The `call_` prefix keeps it visibly synthetic and matches no native id
+/// shape we must preserve. An empty `name` still yields a non-empty id (the index disambiguates).
+///
+/// `turn_salt` disambiguates ACROSS turns: `call_index` alone restarts at 0 on every independent
+/// `read_response`/`read_response_events` call (each Gemini response is exactly one turn, decoded in
+/// isolation with no visibility into any other turn), so two DIFFERENT turns in the SAME growing
+/// conversation whose first tool call shares a name (e.g. `get_weather` called again for a different
+/// city on a later turn) used to synthesize the IDENTICAL id — a real cross-protocol correlation bug
+/// (Anthropic/OpenAI require a tool_use id to be unique per message/conversation) and exactly the
+/// ambiguity this function exists to prevent. Response call sites pass the response's own
+/// `responseId` (present on essentially every real Gemini response — see `write_response`'s own
+/// synth-when-absent handling) as the salt, so different turns produce different ids. The
+/// REQUEST reader (`read_request`) passes `""`: its `call_index` is already global across the WHOLE
+/// `contents` array (every turn in the visible history, not reset per turn — see its call site), so
+/// it has no cross-turn collision to begin with and needs no additional salt.
+fn synth_tool_call_id(call_index: usize, function_name: &str, turn_salt: &str) -> String {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     call_index.hash(&mut hasher);
     function_name.hash(&mut hasher);
+    turn_salt.hash(&mut hasher);
     format!("call_{:016x}", hasher.finish())
 }
 
@@ -512,6 +528,93 @@ fn read_gemini_citations(
         .collect()
 }
 
+/// Attach a Gemini candidate's `citationMetadata.citationSources[]` onto the RIGHT Text block(s) of
+/// `content`, with indices re-expressed RELATIVE TO THAT BLOCK'S OWN TEXT — the non-stream (buffered)
+/// response path only, mirroring [`read_gemini_citations`]'s own NON-STREAM-PATH-ONLY scoping.
+///
+/// Google's `citationSources[].startIndex`/`endIndex` are byte offsets into the candidate's FULL
+/// output text — the concatenation of every text part in order, NOT any single part. A candidate
+/// commonly emits its answer as one `text` part, so anchoring against "the" text block used to be
+/// harmless; but a candidate CAN split its output across multiple text parts (each of which becomes
+/// its own `IrBlock::Text` — see the `content.push` loop above), and Gemini's offsets still address
+/// the FULL concatenation, not the part they happen to land in.
+///
+/// The PRE-FIX code anchored the byte->char conversion against only the FIRST Text block's own text
+/// and always attached every citation to that first block. Once a response had more than one text
+/// part, any citation whose span fell in a LATER part got silently CLAMPED to the first part's
+/// length (a garbage, off-by-however-much index) and was attached to the wrong block entirely — a
+/// citation regression invisible on the single-part case this function's predecessor was written
+/// against.
+///
+/// Fix: convert against the FULL concatenated candidate text (matching Google's actual offset
+/// contract), then locate the Text block whose span (by cumulative char length) contains the
+/// citation's start, and re-express `start_index`/`end_index` RELATIVE TO THAT BLOCK — matching the
+/// per-block-relative contract Anthropic's own `char_location` variant already uses for
+/// [`crate::ir::IrCitation`] (see its doc comment: "char index (`char_location`)" is scoped to
+/// whichever content block the citation is attached to, not the whole message). A citation whose
+/// start lands past every block's end (an out-of-range upstream value) falls back to the LAST text
+/// block, mirroring [`gemini_byte_offset_to_char`]'s own clamp-to-end fallback.
+fn attach_gemini_citations_to_text_blocks(
+    candidate: &serde_json::Value,
+    content: &mut [crate::ir::IrBlock],
+) {
+    // Every Text block's content-array index + its own text, in candidate order.
+    let text_positions: Vec<(usize, String)> = content
+        .iter()
+        .enumerate()
+        .filter_map(|(i, b)| match b {
+            crate::ir::IrBlock::Text { text, .. } => Some((i, text.clone())),
+            _ => None,
+        })
+        .collect();
+    if text_positions.is_empty() {
+        return; // No text block to anchor against (e.g. a tool-only turn) — nothing to attach.
+    }
+
+    // The candidate's FULL output text — the actual anchor Google's byte offsets are measured
+    // against — is every text part concatenated IN ORDER, with no separator (Gemini streams answer
+    // text as a single logical run split across parts; there is no implicit whitespace between them).
+    let full_text: String = text_positions.iter().map(|(_, t)| t.as_str()).collect();
+
+    let citations = read_gemini_citations(candidate, Some(&full_text));
+    if citations.is_empty() {
+        return;
+    }
+
+    // Cumulative CHAR start offset of each Text block within `full_text`, so a candidate-relative
+    // citation index can be mapped to (owning block, block-relative index).
+    let mut block_char_ranges: Vec<(usize, i64, i64)> = Vec::with_capacity(text_positions.len());
+    let mut cursor: i64 = 0;
+    for (content_idx, text) in &text_positions {
+        let len = text.chars().count() as i64;
+        block_char_ranges.push((*content_idx, cursor, cursor + len));
+        cursor += len;
+    }
+
+    for citation in citations {
+        let start = citation.start_index.unwrap_or(0);
+        let owner = block_char_ranges
+            .iter()
+            .find(|&&(_, s, e)| start >= s && start < e)
+            // An out-of-range start (upstream garbage, or a start exactly at the end of the last
+            // block) falls back to the last text block rather than being silently dropped.
+            .or_else(|| block_char_ranges.last());
+        let Some(&(content_idx, block_start, _)) = owner else {
+            continue; // Unreachable (text_positions non-empty guarantees at least one range).
+        };
+        let mut relative = citation;
+        relative.start_index = relative.start_index.map(|s| s - block_start);
+        relative.end_index = relative.end_index.map(|e| e - block_start);
+        if let Some(crate::ir::IrBlock::Text {
+            citations: block_citations,
+            ..
+        }) = content.get_mut(content_idx)
+        {
+            block_citations.push(relative);
+        }
+    }
+}
+
 /// Map a neutral [`crate::ir::IrCitation`] → a Gemini `citationSources[]` entry.
 ///
 /// SAME-PROTOCOL FIDELITY: when `raw` is present AND it is a Gemini citation source (has a `uri` or
@@ -522,7 +625,20 @@ fn read_gemini_citations(
 /// neutral fields — which are CHARACTERS (the IR contract) and must be converted back to the BYTES
 /// Gemini's wire format expects (the inverse of `gemini_byte_offset_to_char`),
 /// against `text` (this block's own text, the same anchor the reader converted against).
-fn write_gemini_citation(c: &crate::ir::IrCitation, text: &str) -> serde_json::Value {
+///
+/// `byte_prefix` is the BYTE length of every text part that precedes this block's text in the
+/// candidate's full output (0 for the first/only text block). The IR's `start_index`/`end_index` on
+/// `c` are relative to THIS block's own text (the per-block-relative contract
+/// `attach_gemini_citations_to_text_blocks` establishes on read), but Gemini's wire
+/// `startIndex`/`endIndex` are candidate-relative byte offsets into the FULL concatenated text — so
+/// the block-local converted byte offset must be shifted by `byte_prefix` to become candidate-wide
+/// again. Callers with no multi-part accumulation (single text block, or the streaming call site
+/// with no anchor at all) pass `0`.
+fn write_gemini_citation(
+    c: &crate::ir::IrCitation,
+    text: &str,
+    byte_prefix: i64,
+) -> serde_json::Value {
     if let Some(raw) = &c.raw {
         if raw.get("uri").is_some()
             || raw.get("startIndex").is_some()
@@ -539,7 +655,7 @@ fn write_gemini_citation(c: &crate::ir::IrCitation, text: &str) -> serde_json::V
         if text.is_empty() {
             v
         } else {
-            gemini_char_offset_to_byte(text, v)
+            gemini_char_offset_to_byte(text, v) + byte_prefix
         }
     };
     let mut obj = serde_json::Map::new();
