@@ -917,10 +917,10 @@
         "type": "object"
       },
       "HookHealthView": {
-        "description": "The live health of one hook's transport (`GET /api/v1/admin/hooks/{name}/health`). BEST-EFFORT: for a\nsocket transport `reachable` is `Some(true/false)` from a short-timeout connect probe; for a webhook\n(or on a non-unix host) it is `None` (probed on demand, not here) with a `detail` note. Never fires\nthe hook — just checks whether the endpoint accepts a connection. Additive-only.",
+        "description": "The live health of one hook's transport (`GET /api/v1/admin/hooks/{name}/health`). Checks\nwhether the hook resolves to a LOADED `kind: hook` plugin in the process's plugin registry —\nthis is a plugin-LOAD status check, not a network reachability probe: it never opens a\nconnection, and it cannot tell you whether a `kind: hook` plugin's own configured external\nendpoint (e.g. `busbar-webrequest-hook`'s `settings.url`) is actually reachable, only that the\nplugin itself is loaded. Never fires the hook. Additive-only.",
         "properties": {
           "detail": {
-            "description": "A short human note on the probe (why `None`, or the connect error class). Never a secret.",
+            "description": "A short human note on the resolution (why `false`, or the resolved plugin's kind). Never a\nsecret.",
             "type": [
               "string",
               "null"
@@ -930,7 +930,7 @@
             "type": "string"
           },
           "reachable": {
-            "description": "`Some(true)` = the transport accepted a connection; `Some(false)` = it did not; `None` = not\nprobed here (webhook / non-unix).",
+            "description": "`Some(true)` = resolves to a loaded `kind: hook` plugin; `Some(false)` = it does not\n(wrong kind, or not installed/loaded) — always `Some`, never `None`, as of 1.5.0's\nin-process plugin model.",
             "type": [
               "boolean",
               "null"
@@ -1048,14 +1048,14 @@
         "type": "object"
       },
       "HookTransportView": {
-        "description": "The transport half of a `HookView`: which wire the hook speaks and its target (socket path or\nwebhook URL — operator config, not a secret). Exactly one of `socket`/`webhook` is set.",
+        "description": "The transport half of a `HookView`. As of 1.5.0 a hook is EITHER a compiled-in kind (no\ntransport at all) or a signed `kind: hook` dlopen'd plugin (`target` = the plugin NAME, not a\nsocket path or URL) — the retired 1.4.x socket/webhook sidecar transports are gone.",
         "properties": {
           "kind": {
-            "description": "`\"socket\"` or `\"webhook\"` (or `\"none\"` for a misconfigured entry with neither).",
+            "description": "`\"plugin\"` for a signed dlopen'd hook plugin, or `\"none\"` for a hook with no plugin\ntransport (compiled-in kinds, or a misconfigured entry).",
             "type": "string"
           },
           "target": {
-            "description": "The socket path or webhook URL. `None` only if the definition set neither transport.",
+            "description": "The plugin's NAME (not a path or URL). `None` when `kind` is `\"none\"`.",
             "type": [
               "string",
               "null"
@@ -1809,7 +1809,7 @@
         "type": "object"
       },
       "PluginView": {
-        "description": "One plugin in the plugin catalog (`GET /api/v1/admin/plugins?type=`). A plugin is either\nCOMPILED-IN (baked into the binary, feature-gated — provably removable via `--no-default-features`),\nEXTERNAL (registered at runtime over socket/webhook), or a DYNAMIC-LIBRARY plugin (a loadable\n`.so`/`.dll`/`.dylib` in the plugins directory, loaded over the store C ABI). `active` is\n`Some(true/false)` where activation is tracked (auth modules: in the chain?; external hooks:\nconfigured = true; dynamic store: the configured `store.module`) and `None` where it is a\nper-pool concern not summarized here (compiled-in ranking policies). Additive-only.",
+        "description": "One plugin in the plugin catalog (`GET /api/v1/admin/plugins?type=`). A plugin is either\nCOMPILED-IN (baked into the binary, feature-gated — provably removable via `--no-default-features`)\nor a signed DYNAMIC-LIBRARY plugin (a loadable `.so`/`.dll`/`.dylib`, dlopen'd over the signed\nplugin ABI — this covers `auth`, `hooks`, and `store` plugin kinds alike as of 1.5.0; the\nretired 1.4.x socket/webhook \"external\" transport is gone). `active` is `Some(true/false)`\nwhere activation is tracked (auth modules: in the chain?; hook plugins: configured = true;\ndynamic store: the configured `store.module`) and `None` where it is a per-pool concern not\nsummarized here (compiled-in ranking policies). Additive-only.",
         "properties": {
           "active": {
             "description": "Whether the plugin is currently active, where tracked; `None` when activation is not summarized\nat this level.",
@@ -1835,7 +1835,7 @@
             ]
           },
           "loader": {
-            "description": "`\"compiled-in\"`, `\"external\"`, or `\"dynamic-library\"`.",
+            "description": "`\"compiled-in\"` or `\"plugin\"` (a dlopen'd dynamic-library plugin — auth, hook, and store\nkinds alike as of 1.5.0's signed plugin ABI).",
             "type": "string"
           },
           "name": {
@@ -1849,7 +1849,7 @@
             ]
           },
           "target": {
-            "description": "For an external plugin, its transport target (socket path / webhook URL); for a dynamic-library\nplugin, its library FILENAME in the plugins directory (the handle `DELETE` takes). `None` for\ncompiled-in.",
+            "description": "For a dynamic-library plugin, its NAME (not a socket path or URL — the retired 1.4.x\ntransport target). `None` for compiled-in.",
             "type": [
               "string",
               "null"
