@@ -301,6 +301,88 @@ jobs:
         with:
           subject-path: "plugin-dist/*.tar.gz"
 
+  # ── Auth-plugin tarballs — the 1.5.0 "plugin release" identity-provider plugin ───────────────────
+  # `busbar-auth-oidc-plugin` (the `kind: auth` OIDC adapter over `busbar-auth-oidc`'s JWKS/JWT/claim
+  # logic) ships as a signed .tar.gz exactly like the store plugins above: same busbar release PRIVATE
+  # key (BUSBAR_SIGN_KEY secret) signs the manifest, same fallback to an unsigned tarball when that
+  # secret isn't provisioned (loadable only under plugins.trust.allow_unsigned). One job per auth
+  # plugin kept separate from store-plugins because it's a distinct kind with its own release cadence,
+  # but the structure is copied 1:1 — same 5-target matrix, same pack/sign/upload/attest shape.
+  auth-plugins:
+    needs: create-release
+    name: auth-plugins (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            libext: so
+            libprefix: lib
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            libext: so
+            libprefix: lib
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            libext: dylib
+            libprefix: lib
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            libext: dylib
+            libprefix: lib
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            libext: dll
+            libprefix: ""
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the auth-oidc plugin cdylib + the packer
+        run: |
+          cargo build --release --target ${{ matrix.target }} \
+            -p busbar-auth-oidc-plugin -p busbar-plugin-pack
+        shell: bash
+      - name: Package + sign the auth-oidc plugin tarball
+        env:
+          BUSBAR_SIGN_KEY: ${{ secrets.BUSBAR_SIGN_KEY }}
+        run: |
+          set -euo pipefail
+          ver="${GITHUB_REF_NAME#v}"
+          target="${{ matrix.target }}"
+          outdir="plugin-dist"; mkdir -p "$outdir"
+          pack="target/${target}/release/busbar-plugin-pack"
+          [ -x "$pack" ] || pack="target/${target}/release/busbar-plugin-pack.exe"
+          unsigned_flag=""
+          if [ -z "${BUSBAR_SIGN_KEY:-}" ]; then
+            echo "::warning::BUSBAR_SIGN_KEY secret is not provisioned — packaging UNSIGNED plugin tarballs (loadable only under plugins.trust.allow_unsigned). See the TODO(release-keys) seam."
+            unsigned_flag="--allow-unsigned"
+          fi
+          lib="target/${target}/release/${{ matrix.libprefix }}busbar_auth_oidc_plugin.${{ matrix.libext }}"
+          "$pack" pack \
+            --lib "$lib" \
+            --name "busbar-auth-oidc" --alias "oidc" --kind auth \
+            --version "$ver" --publisher busbar \
+            --description "busbar OIDC auth plugin: verify caller identity against an OIDC provider" \
+            --license Apache-2.0 \
+            --out "${outdir}/busbar-auth-oidc-${ver}-${target}.tar.gz" \
+            $unsigned_flag
+          ls -l "$outdir"
+        shell: bash
+      - name: Attach plugin tarball to Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${GITHUB_REF_NAME}" plugin-dist/*.tar.gz --repo "${GITHUB_REPOSITORY}" --clobber
+        shell: bash
+      - name: Attest plugin build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: "plugin-dist/*.tar.gz"
+
   # ── Hook-plugin tarballs — one signed .tar.gz per (plugin, target) ───────────────────────────────
   # The first-party kind:hook plugins (webrequest, headroom) ship as signed plugin tarballs
   # {cdylib + manifest.json} exactly like the store plugins above: same busbar release PRIVATE key

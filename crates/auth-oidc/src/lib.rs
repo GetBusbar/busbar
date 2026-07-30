@@ -74,6 +74,13 @@ pub struct OidcConfig {
     /// JWKS cache TTL (seconds). Default 3600.
     #[serde(default = "default_ttl_secs")]
     pub jwks_ttl_secs: u64,
+    /// An ADDITIONAL trusted root CA certificate (PEM), layered on top of the built-in public root
+    /// store, for a self-hosted/internal-CA OIDC provider whose JWKS/discovery endpoint doesn't chain
+    /// to a public root (e.g. an on-prem Keycloak signed by a corporate CA). Optional; absent means
+    /// the fetcher trusts only the built-in public roots, as before. Certificate validation is never
+    /// disabled by this — it only widens the trusted-root set.
+    #[serde(default)]
+    pub ca_cert_pem: Option<String>,
 }
 
 fn default_role_claim() -> String {
