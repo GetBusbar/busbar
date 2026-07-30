@@ -327,6 +327,13 @@ pub(crate) enum AdminError {
     /// An internal failure (store/plugin). `code = internal`. The human `message` is generic; details
     /// are logged server-side, never returned.
     Internal,
+    /// A operation that is normally fast could not complete (or even START) within its bound and was
+    /// abandoned rather than left to hang the request indefinitely. `code = unavailable`. Unlike
+    /// [`AdminError::Internal`] the message is specific and caller-safe (e.g. "the plugin catalog
+    /// scan is taking too long") — this is a timeout/backpressure signal the caller can retry, not an
+    /// internal defect. First user: `GET /plugins?type=store`'s `CATALOG_SCAN_GATE` wait (round-4
+    /// audit finding 1).
+    Unavailable(String),
 }
 
 impl AdminError {
@@ -359,6 +366,7 @@ impl AdminError {
             AdminError::Conflict(_) => "conflict",
             AdminError::RateLimited => "rate_limited",
             AdminError::Internal => "internal",
+            AdminError::Unavailable(_) => "unavailable",
         }
     }
 
@@ -374,6 +382,7 @@ impl AdminError {
             AdminError::Conflict(_) => 409,
             AdminError::RateLimited => 429,
             AdminError::Internal => 500,
+            AdminError::Unavailable(_) => 503,
         }
     }
 
@@ -402,6 +411,7 @@ impl AdminError {
                 "admin mutation rate limit exceeded; retry next minute".to_string()
             }
             AdminError::Internal => "internal error".to_string(),
+            AdminError::Unavailable(msg) => msg.clone(),
         }
     }
 }

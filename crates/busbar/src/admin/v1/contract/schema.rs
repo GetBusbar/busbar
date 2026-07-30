@@ -364,6 +364,7 @@ fn _error_taxonomy_is_referenced(e: &AdminError) {
         | AdminError::VersionConflict(_)
         | AdminError::Conflict(_)
         | AdminError::RateLimited
-        | AdminError::Internal => {}
+        | AdminError::Internal
+        | AdminError::Unavailable(_) => {}
     }
 }
