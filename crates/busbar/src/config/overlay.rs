@@ -570,15 +570,33 @@ pub(crate) fn read_state(path: &Path) -> OverlayReadState {
 }
 
 /// Atomically + durably write the overlay via the crate's ONE durable-write choke point
-/// ([`crate::durable::write`]): serialize to a sibling temp, fsync its CONTENTS, rename over `path`,
-/// then fsync the parent DIRECTORY — so a reader (or a crash) never observes a half-written file AND
-/// a power loss cannot surface a torn/zero-length overlay after the rename (L3). This is the former
-/// reference implementation of the dance; it is now SUBSUMED (behavior identical: same temp-in-same-
-/// dir, same fsync order, same empty-parent→"." resolution, same tmp cleanup on error) so a future
-/// facet fix lands once, in the primitive, for every durable write.
+/// ([`crate::durable::write_with`]): serialize to a sibling temp, fsync its CONTENTS, rename over
+/// `path`, then fsync the parent DIRECTORY — so a reader (or a crash) never observes a half-written
+/// file AND a power loss cannot surface a torn/zero-length overlay after the rename (L3). This is the
+/// former reference implementation of the dance; it is now SUBSUMED (behavior identical: same temp-in-
+/// same-dir, same fsync order, same empty-parent→"." resolution, same tmp cleanup on error) so a
+/// future facet fix lands once, in the primitive, for every durable write.
+///
+/// `mode: Some(0o600)` — the overlay can carry operator-supplied credential material verbatim (e.g. a
+/// postgres `store.settings.url` of the form `postgres://user:pass@host:5432/busbar`), the same class
+/// of secret the signing key gets 0600 treatment for; the temp (and therefore the published overlay)
+/// is created 0600 AT OPEN, so it is never briefly world-readable between write and a later chmod (no
+/// TOCTOU window). `exclusive` is left at its default (`false`), unlike the signing key: the signing
+/// key's `exclusive: true` guards a first-boot, predictable-path secret MINTING moment (anti-pre-plant
+/// so a decoy left at that exact path is never adopted). The overlay is instead written repeatedly
+/// during normal operation, and `write_with` already gives every call a per-call-unique
+/// `.<name>.<pid>-<seq>.tmp` temp name, so there is no fixed, guessable temp name for a pre-planted
+/// decoy to occupy in the first place — the anti-pre-plant posture would add no protection here.
 pub(crate) fn write(path: &Path, doc: &OverlayDoc) -> std::io::Result<()> {
     let json = serde_json::to_vec_pretty(doc).map_err(std::io::Error::other)?;
-    crate::durable::write(path, &json)
+    crate::durable::write_with(
+        path,
+        &json,
+        crate::durable::DurableOpts {
+            mode: Some(0o600),
+            ..Default::default()
+        },
+    )
 }
 
 /// Build an overlay from a hook state (registry + global-hook names), no tombstones — a test helper
@@ -765,6 +783,33 @@ mod tests {
         write(&path, &doc).expect("write despite a pre-existing stale temp");
         assert!(no_durable_temp(), "no durable temp should remain");
         let _ = std::fs::remove_file(path.with_extension("overlay.tmp"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The overlay can carry operator-supplied credential material verbatim (e.g. a postgres
+    /// `store.settings.url` of `postgres://user:pass@host:5432/busbar`), so `write` must publish it
+    /// 0600 (owner read/write only) rather than at OS/umask-default permissions (typically 0644,
+    /// world-readable) — the same posture the signing key gets, and for the same reason.
+    #[test]
+    #[cfg(unix)]
+    fn write_is_0600() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "busbar-overlay-perm-test-{}.json",
+            std::process::id()
+        ));
+        let doc = from_state(
+            &HashMap::from([("compress".to_string(), gate())]),
+            &["compress".to_string()],
+        );
+        write(&path, &doc).expect("atomic write");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "overlay file must be 0600 (credential-bearing), got {mode:#o}"
+        );
         let _ = std::fs::remove_file(&path);
     }
 
