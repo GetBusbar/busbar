@@ -117,6 +117,21 @@ fn catalog_cache() -> &'static Mutex<HashMap<PathBuf, CatalogCacheEntry>> {
 static CATALOG_SCAN_GATE: std::sync::LazyLock<tokio::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
+/// How long a caller will wait to ACQUIRE [`CATALOG_SCAN_GATE`] before giving up (round-4 audit
+/// finding 1). Mirrors `auth::AUTH_OFFLOAD_PERMITS`'s own `AUTH_OFFLOAD_WAIT` idiom exactly, same
+/// value and same reasoning: `GET /plugins?type=store` is deliberately unmetered by the admin rate
+/// limiter (see [`Self::store_plugin_catalog_async`]'s doc comment), so an ungated wait here is a
+/// PERMANENT-until-restart wedge, not a self-healing one — a stale/hung `plugins_dir` mount (e.g. a
+/// wedged NFS read) never returns from `inventory_tarballs`, so the caller that won the gate never
+/// releases it, and every subsequent caller would otherwise queue behind it forever. A call that
+/// cannot even START the scan within this bound is answered with a clear, retryable error
+/// ([`AdminError::Unavailable`]) rather than left to hang — the same fail-fast posture
+/// `AUTH_OFFLOAD_WAIT` documents for its own gate. This does NOT fix the underlying hang (the
+/// thread that actually won the gate is still parked on the wedged read, same as a wedged auth
+/// plugin still burns one blocking-pool thread forever) — it only stops the wedge from cascading
+/// into every OTHER caller of this endpoint.
+const CATALOG_SCAN_GATE_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Cheap, order-independent fingerprint of a directory's immediate entries (filename + size +
 /// mtime of each, hashed together). NOT a security boundary — only a cache-freshness heuristic for
 /// `CATALOG_CACHE` — but adding, removing, or overwriting any file in `dir` changes at least one
@@ -160,6 +175,96 @@ fn plugins_dir_fingerprint(dir: &Path) -> std::io::Result<u64> {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     entries.hash(&mut hasher);
     Ok(hasher.finish())
+}
+
+// ── `#[cfg(test)]`-only catalog-scan injection seam (round-4 audit findings 2 + 4) ─────────────────
+// `scan_store_plugin_rows` calls `catalog_scan_test_hook!()` once per invocation. In a release build
+// (or any test that never arms it) it expands to nothing / is a no-op — the production scan carries
+// zero extra indirection. Under test it can inject a DETERMINISTIC artificial delay (finding 2: the
+// reactor-parking proof must not depend on real gzip/unpack/sig-verify throughput being consistently
+// slow across CI hardware) and/or a real panic (finding 4: exercises `store_plugin_catalog_async`'s
+// `spawn_blocking` join-error fallback with genuine unwind, not by exploiting an unrelated defect).
+// Global atomics, not a thread-local: the scan runs on a `spawn_blocking` pool thread, a different OS
+// thread than the test that arms the hook, so a thread-local (this file's usual `durable.rs`-style
+// fault-injection idiom) would not be visible where it is read. Same idiom `durable.rs`'s
+// `fault_point!` establishes for zero-cost test-only injection, adapted for the cross-thread case.
+#[cfg(test)]
+macro_rules! catalog_scan_test_hook {
+    ($dir:expr) => {
+        catalog_scan_test_hooks::maybe_delay_or_panic($dir)
+    };
+}
+#[cfg(not(test))]
+macro_rules! catalog_scan_test_hook {
+    ($dir:expr) => {};
+}
+// No `use` needed here (unlike `durable.rs`'s `fault_point!`): both `macro_rules!` arms above are
+// defined BEFORE their one call site in `scan_store_plugin_rows` further down this same file, so
+// plain textual macro scoping already resolves the invocation.
+
+#[cfg(test)]
+mod catalog_scan_test_hooks {
+    use std::path::PathBuf;
+    use std::sync::Mutex;
+    use std::time::Duration;
+
+    /// What to inject, and for WHICH `plugins_dir` — the whole suite's tests run concurrently on
+    /// separate OS threads within one process (`cargo test` default), and `spawn_blocking` moves the
+    /// scan to yet another thread than the one that armed the hook, so this cannot be a thread-local.
+    /// It is instead a single global slot SCOPED to one directory: `maybe_delay_or_panic` only acts
+    /// when the scan it is called from is scanning the exact `dir` a test armed, so a concurrently
+    /// running, unrelated test's scan (a different `tmp_plugins_dir(...)`) is never affected — only
+    /// two tests racing on the SAME directory could collide, and none in this suite share one.
+    enum Armed {
+        Delay(Duration),
+        Panic,
+    }
+    static SLOT: Mutex<Option<(PathBuf, Armed)>> = Mutex::new(None);
+
+    pub(super) fn maybe_delay_or_panic(dir: &std::path::Path) {
+        let armed = SLOT.lock().unwrap();
+        let Some((armed_dir, kind)) = armed.as_ref() else {
+            return;
+        };
+        if armed_dir != dir {
+            return;
+        }
+        match kind {
+            // `std::thread::sleep` is safe here: always called from a `spawn_blocking` pool thread
+            // or a synchronous test, never inline on the reactor.
+            Armed::Delay(d) => std::thread::sleep(*d),
+            Armed::Panic => {
+                drop(armed); // release the lock before unwinding through this frame
+                panic!(
+                    "catalog_scan_test_hooks: injected panic for {} (spawn_blocking join-error \
+                     fallback proof)",
+                    dir.display()
+                );
+            }
+        }
+    }
+
+    /// RAII guard: clears the armed slot on drop — even on an early return or a panic inside the
+    /// scope that armed it — so an armed hook can never leak past the test that set it.
+    #[must_use]
+    pub(super) struct HookGuard;
+    impl Drop for HookGuard {
+        fn drop(&mut self) {
+            *SLOT.lock().unwrap() = None;
+        }
+    }
+
+    /// Arm a deterministic minimum scan duration for `dir`, for the life of the returned guard.
+    pub(super) fn set_delay(dir: std::path::PathBuf, d: Duration) -> HookGuard {
+        *SLOT.lock().unwrap() = Some((dir, Armed::Delay(d)));
+        HookGuard
+    }
+
+    /// Arm a scan-time panic for `dir`, for the life of the returned guard.
+    pub(super) fn set_panic(dir: std::path::PathBuf) -> HookGuard {
+        *SLOT.lock().unwrap() = Some((dir, Armed::Panic));
+        HookGuard
+    }
 }
 
 /// The auth modules COMPILED INTO this binary (feature-gated at compile time — real `#[cfg]` on each
@@ -1054,7 +1159,7 @@ impl AdminService {
             // handshake) and its signed sidecar manifest read + re-evaluated against the running trust
             // posture. The store the operator configured (`store.module`) is `active`.
             "store" | "db" => {
-                plugins.append(&mut self.store_plugin_catalog_async().await);
+                plugins.append(&mut self.store_plugin_catalog_async().await?);
             }
             other => {
                 return Err(AdminError::Validation(format!(
@@ -1123,10 +1228,17 @@ impl AdminService {
         // Bound the cache (RESOURCE-MEDIUM finding) with the same TTL+`retain()` idiom
         // `admin/mod.rs`'s `idempotency_cache` uses: prune before every read, not just on write, so
         // an abandoned path's entry cannot sit forever just because nothing keeps writing to it.
-        catalog_cache()
-            .lock()
-            .unwrap()
-            .retain(|_, e| now.saturating_sub(e.inserted_at) < CATALOG_CACHE_TTL_SECS);
+        // ROUND-4 AUDIT FINDING 5: `saturating_sub` alone avoids an underflow PANIC if `inserted_at`
+        // is somehow in the future (a backward system-clock jump), but silently floors the computed
+        // age at 0 — which means the entry looks brand-new and never ages out, quietly defeating the
+        // TTL bound for exactly that entry until real time catches back up to `inserted_at`. Treating
+        // `inserted_at > now` as ALSO immediately-stale (rather than ageless) closes that: a clock
+        // that jumped backward means this entry's true age is UNKNOWN, and unknown age is treated the
+        // same as "old" — the safe default for a cache, same posture the fingerprint-freshness check
+        // above takes toward any signal it cannot trust.
+        catalog_cache().lock().unwrap().retain(|_, e| {
+            e.inserted_at <= now && now.saturating_sub(e.inserted_at) < CATALOG_CACHE_TTL_SECS
+        });
 
         // ERROR-HANDLING-MEDIUM finding: a real I/O error (NOT a missing directory — see the doc
         // comment on `plugins_dir_fingerprint`) means the fingerprint cannot be trusted as a
@@ -1205,6 +1317,10 @@ impl AdminService {
         dir: &Path,
         policy: &busbar_plugin_sign::TrustPolicy,
     ) -> Vec<PluginView> {
+        // TEST-ONLY injection point (round-4 audit findings 2 + 4): expands to nothing outside
+        // `#[cfg(test)]`, so the release path carries zero indirection. See
+        // `catalog_scan_test_hooks` above for what it does and why.
+        catalog_scan_test_hook!(dir);
         let mut rows = Vec::new();
         for row in busbar_plugin_loader::inventory_tarballs(dir, policy) {
             let trust = if row.status == "ready" {
@@ -1258,13 +1374,35 @@ impl AdminService {
     /// `reload_store_plugins` is UNCHANGED and does not go through here — it already runs inside a
     /// `txn.read_store` closure on `spawn_blocking` (see `admin/v1/json/txn.rs`'s `apply()`), so it
     /// calls the synchronous [`Self::store_plugin_catalog`] directly.
-    async fn store_plugin_catalog_async(&self) -> Vec<PluginView> {
-        let _gate = CATALOG_SCAN_GATE.lock().await;
+    ///
+    /// GATE TIMEOUT (round-4 audit finding 1): acquiring [`CATALOG_SCAN_GATE`] is bounded by
+    /// [`CATALOG_SCAN_GATE_WAIT`] — see that constant's doc comment for why an unbounded wait here
+    /// would be a permanent wedge, not a self-healing one, on an endpoint this rate limiter never
+    /// meters. A caller that cannot even START the scan within the bound gets a clear
+    /// [`AdminError::Unavailable`] rather than a hang.
+    async fn store_plugin_catalog_async(&self) -> Result<Vec<PluginView>, AdminError> {
+        let _gate = match tokio::time::timeout(CATALOG_SCAN_GATE_WAIT, CATALOG_SCAN_GATE.lock())
+            .await
+        {
+            Ok(guard) => guard,
+            Err(_elapsed) => {
+                tracing::warn!(
+                    operation = "list_plugins.store",
+                    wait = ?CATALOG_SCAN_GATE_WAIT,
+                    "catalog scan gate could not be acquired within the wait bound; a prior scan \
+                     is not returning (e.g. a stale/hung plugins_dir mount). Answering with a \
+                     retryable error rather than hanging this request too."
+                );
+                return Err(AdminError::Unavailable(
+                    "the plugin catalog scan is taking too long; try again shortly".to_string(),
+                ));
+            }
+        };
         let app = self.app.clone();
         match tokio::task::spawn_blocking(move || AdminService::new(app).store_plugin_catalog())
             .await
         {
-            Ok(rows) => rows,
+            Ok(rows) => Ok(rows),
             Err(join_err) => {
                 tracing::error!(
                     operation = "list_plugins.store",
@@ -1274,13 +1412,13 @@ impl AdminService {
                 // Fail soft to the always-true compiled-in row rather than an admin 500 for what is
                 // just a plugin CATALOG read — same posture `store_plugin_catalog` itself takes on
                 // an unparseable `plugins_cfg` (`to_policy()` failing) just above.
-                vec![PluginView::basic(
+                Ok(vec![PluginView::basic(
                     "memory".to_string(),
                     "store",
                     "compiled-in",
                     None,
                     None,
-                )]
+                )])
             }
         }
     }
@@ -2326,13 +2464,17 @@ mod tests {
     /// THE RED PROOF FOR CONCURRENCY-HIGH: `list_plugins("store")`'s catalog read — the fingerprint
     /// I/O AND, on a cold cache, the full tarball scan — must not park the single worker of a
     /// `worker_threads = 1` multi-thread runtime. Mirrors `admin::audit`'s
-    /// `valve_write_through_does_not_park_the_reactor` proof shape exactly: a concurrently-spawned
-    /// task does nothing but a short `tokio::time::sleep`, and if the catalog read ran inline on the
-    /// reactor instead of on `spawn_blocking`, that sleep could not be polled promptly. 2000 signed,
-    /// trust-evaluated tarballs make the real scan genuinely slow (several hundred ms on ordinary
-    /// hardware — gzip + tar-unpack + signature verify per file), so the timing margin below is
-    /// generous in both directions: comfortably above scheduler jitter, comfortably below how long
-    /// the scan itself takes.
+    /// `valve_write_through_does_not_park_the_reactor` proof shape, with one deliberate difference
+    /// (round-4 audit finding 2): that precedent proves its point with a DETERMINISTIC artificial
+    /// delay (`SlowAuditStore` sleeps a fixed 500ms), not real I/O volume — this test originally
+    /// relied on 2000 real signed tarballs being "genuinely slow… on ordinary hardware", but
+    /// inline-vs-offloaded changes only WHETHER the scan blocks other work, never how long the scan
+    /// itself takes, so on fast-enough CI hardware the real scan could finish under the 300ms
+    /// threshold even with the bug present (`spawn_blocking` removed), silently defeating the
+    /// proof. `catalog_scan_test_hooks::set_delay` injects a fixed, hardware-independent minimum
+    /// scan duration well above the threshold, so the distinction is observable regardless of how
+    /// fast the machine is; the 2000 real tarballs stay (smaller count would do for timing alone)
+    /// purely to keep the `page.items.len() > 2000` correctness assertion meaningful.
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn list_plugins_store_scan_does_not_park_the_reactor() {
         let dir = tmp_plugins_dir("no-park");
@@ -2349,10 +2491,18 @@ mod tests {
             std::fs::write(dir.join(format!("p{i}.tar.gz")), &tarball).unwrap();
         }
         let app = TestApp::new()
-            .plugins_dir(dir)
+            .plugins_dir(dir.clone())
             .plugins_cfg(publisher_posture("acme", &key))
             .build();
         let svc = AdminService::new(app);
+
+        // Deterministic floor, independent of hardware speed: if the scan ran inline on the
+        // reactor, the concurrently-spawned sleep below could not be polled until AT LEAST this
+        // long had passed, comfortably clearing the 300ms assertion threshold on any hardware.
+        // Scoped to `dir` (see `catalog_scan_test_hooks`), so it cannot slow down any other test's
+        // concurrently-running scan of a different directory.
+        let _delay_guard =
+            catalog_scan_test_hooks::set_delay(dir, std::time::Duration::from_millis(400));
 
         let scanner =
             tokio::spawn(async move { svc.list_plugins("store").await.expect("catalog read ok") });
@@ -2368,6 +2518,71 @@ mod tests {
             page.items.len() > 2000,
             "the scan actually ran and produced rows: got {}",
             page.items.len()
+        );
+    }
+
+    /// THE RED PROOF FOR ROUND-4 AUDIT FINDING 4: `store_plugin_catalog_async`'s `match` on
+    /// `spawn_blocking`'s result has an `Err(join_err)` arm for when the CLOSURE ITSELF PANICS (not
+    /// just returns an error) — it logs and falls back to the compiled-in `memory`-only row rather
+    /// than propagating the panic to the caller. That arm was untested: nothing in the suite ever
+    /// made the blocking closure actually panic. `catalog_scan_test_hooks::set_panic` injects a
+    /// real, deliberate panic into the scan (a genuine unwind on the `spawn_blocking` thread,
+    /// exactly the scenario the fallback exists for) rather than exploiting some unrelated
+    /// malformed-input defect, so this proves the fallback ARM, not an accidental bug elsewhere.
+    #[tokio::test]
+    async fn store_plugin_catalog_async_survives_a_spawn_blocking_panic() {
+        let dir = tmp_plugins_dir("panic-fallback");
+        let app = TestApp::new()
+            .plugins_dir(dir.clone())
+            .plugins_cfg(unsigned_ok_posture())
+            .build();
+        let svc = AdminService::new(app);
+
+        // Scoped to `dir` (see `catalog_scan_test_hooks`) so no other concurrently-running test's
+        // scan of a different directory is affected by this panic.
+        let _panic_guard = catalog_scan_test_hooks::set_panic(dir);
+
+        let page = svc
+            .list_plugins("store")
+            .await
+            .expect("a panicking scan must fall back gracefully, never propagate as an error");
+        assert_eq!(
+            page.items.len(),
+            1,
+            "the panic fallback must be exactly the one compiled-in `memory` row: {:?}",
+            page.items
+        );
+        assert_eq!(page.items[0].name, "memory");
+        assert_eq!(page.items[0].loader, "compiled-in");
+    }
+
+    /// THE RED PROOF FOR ROUND-4 AUDIT FINDING 1: a caller that cannot even ACQUIRE
+    /// `CATALOG_SCAN_GATE` within `CATALOG_SCAN_GATE_WAIT` (simulating the scenario the finding
+    /// describes — a scan holding the gate that never returns, e.g. a stale/hung `plugins_dir`
+    /// mount) must be answered with a clear, retryable error rather than hang forever. Runs on
+    /// PAUSED virtual time (`start_paused = true` + `tokio::time::advance`) so the test proves the
+    /// bound without a real multi-second sleep.
+    #[tokio::test(start_paused = true)]
+    async fn store_plugin_catalog_async_times_out_when_gate_is_held() {
+        let dir = tmp_plugins_dir("gate-timeout");
+        let app = TestApp::new()
+            .plugins_dir(dir)
+            .plugins_cfg(unsigned_ok_posture())
+            .build();
+        let svc = AdminService::new(app);
+
+        // Hold the gate ourselves for the life of this test — standing in for a scan that started
+        // and never came back (the wedged-mount scenario), which is exactly what a caller queued
+        // behind `CATALOG_SCAN_GATE.lock().await` with no timeout would see forever.
+        let _held = CATALOG_SCAN_GATE.lock().await;
+
+        let call = tokio::spawn(async move { svc.list_plugins("store").await });
+        tokio::time::advance(CATALOG_SCAN_GATE_WAIT + std::time::Duration::from_millis(1)).await;
+        let result = call.await.expect("caller task must not panic");
+        assert!(
+            matches!(result, Err(AdminError::Unavailable(_))),
+            "a caller that cannot acquire the gate within the wait bound must get a clear, \
+             retryable error instead of hanging: {result:?}"
         );
     }
 
@@ -2453,6 +2668,41 @@ mod tests {
         );
     }
 
+    /// THE RED PROOF FOR ROUND-4 AUDIT FINDING 5: a bare `now.saturating_sub(inserted_at)` avoids an
+    /// underflow PANIC when `inserted_at` is in the future (a backward system-clock jump) but
+    /// silently floors the computed age at 0 — the entry then looks brand-new and never ages out
+    /// until real time catches back up to `inserted_at`, quietly defeating the TTL bound for that
+    /// one entry. An `inserted_at` in the future means the entry's true age is UNKNOWN, and this
+    /// treats unknown-age as stale (the safe default), not as ageless.
+    #[test]
+    fn catalog_cache_future_inserted_at_is_treated_as_stale() {
+        let dir = tmp_plugins_dir("ttl-future-clock");
+        let svc = svc_with(dir.clone(), unsigned_ok_posture());
+        let _ = svc.store_plugin_catalog();
+        assert!(
+            catalog_cache().lock().unwrap().contains_key(&dir),
+            "the scan above must have seeded a cache entry"
+        );
+
+        // Simulate a backward clock jump: the entry's `inserted_at` is now AHEAD of `now()`.
+        {
+            let mut cache = catalog_cache().lock().unwrap();
+            let entry = cache.get_mut(&dir).expect("entry present");
+            entry.inserted_at = crate::store::now() + CATALOG_CACHE_TTL_SECS + 1;
+        }
+
+        // Any cache access prunes it — a future `inserted_at` must not make the entry immortal.
+        let other_dir = tmp_plugins_dir("ttl-future-clock-other");
+        let other_svc = svc_with(other_dir.clone(), unsigned_ok_posture());
+        let _ = other_svc.store_plugin_catalog();
+
+        assert!(
+            !catalog_cache().lock().unwrap().contains_key(&dir),
+            "an entry whose inserted_at is in the future (backward clock jump) must be treated as \
+             stale, not ageless"
+        );
+    }
+
     /// THE RED PROOF FOR ERROR-HANDLING-MEDIUM: the staleness scenario the finding describes.
     /// FIRST, an empty-but-READABLE plugins dir caches fine (unchanged behavior — same as a MISSING
     /// dir, both legitimately mean "no plugins"). THEN the directory becomes UNREADABLE (permission
@@ -2479,13 +2729,37 @@ mod tests {
             "an empty dir's (empty) scan is cached, exactly like a missing dir would be"
         );
 
+        // ROUND-4 AUDIT FINDING 3: restoring permissions with a bare `set_permissions` call at the
+        // END of the test left a window — the two `store_plugin_catalog()` reads below AND the
+        // `read_dir` probe above all run un-guarded, and a panic (e.g. an assertion failure inside
+        // `store_plugin_catalog`, or any future change to it) during that window would leave the
+        // temp dir at `0o000` permanently: nothing later ever restores it, potentially breaking
+        // this test's OWN cleanup or a later test that reuses the same `temp_dir()` infrastructure.
+        // An RAII guard restores the original mode on drop — including on an early return or a
+        // panic unwinding through this scope — so there is no code path that leaves the directory
+        // unreadable.
+        struct RestorePermsOnDrop<'a> {
+            dir: &'a std::path::Path,
+            mode: u32,
+        }
+        impl Drop for RestorePermsOnDrop<'_> {
+            fn drop(&mut self) {
+                let _ =
+                    std::fs::set_permissions(self.dir, std::fs::Permissions::from_mode(self.mode));
+            }
+        }
+
         let original_mode = std::fs::metadata(&dir).unwrap().permissions().mode();
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let _restore = RestorePermsOnDrop {
+            dir: &dir,
+            mode: original_mode,
+        };
 
         // Some environments (containers running as root) ignore permission bits entirely — skip
-        // rather than false-fail if `read_dir` still succeeds.
+        // rather than false-fail if `read_dir` still succeeds. `_restore` drops (restoring
+        // permissions) when this early return unwinds the scope.
         if std::fs::read_dir(&dir).is_ok() {
-            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(original_mode)).unwrap();
             eprintln!("skip: running with privileges that bypass directory permission bits");
             return;
         }
@@ -2493,11 +2767,7 @@ mod tests {
         let cat_after = svc.store_plugin_catalog();
         // And every SUBSEQUENT read while STILL unreadable surfaces the SAME real row again — the
         // scan is never memoized while it's failing, so there is no stale state to fall back to.
-        // Permissions are restored only after BOTH reads, below, even if an assertion panics first
-        // (via the `original_mode` restore right after) so the temp dir is left in a state that can
-        // be cleaned up / doesn't wedge anything else touching temp_dir().
         let cat_again = svc.store_plugin_catalog();
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(original_mode)).unwrap();
 
         let row = cat_after
             .iter()

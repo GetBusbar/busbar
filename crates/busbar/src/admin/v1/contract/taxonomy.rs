@@ -107,6 +107,12 @@ pub(crate) fn err_kind_of(e: &AdminError) -> Option<ErrKind> {
         AdminError::MethodNotAllowed => None,
         AdminError::RateLimited => None,
         AdminError::Internal => None,
+        // Emitted by exactly one operation today (`GET /plugins?type=store`'s catalog-scan-gate
+        // timeout), same posture as `RateLimited` above (which is likewise only ACTUALLY emitted by
+        // mutation endpoints despite being classified algorithmic): documenting it per-endpoint would
+        // be one entry with no cross-endpoint reuse, so it rides the same global 5xx bucket as
+        // `Internal` rather than growing the declared-error machinery for a single call site.
+        AdminError::Unavailable(_) => None,
     }
 }
 
