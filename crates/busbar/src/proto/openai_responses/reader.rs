@@ -286,11 +286,8 @@ impl ProtocolReader for ResponsesReader {
                             // paired writer (`write_request`) re-emits this as a `reasoning` input
                             // item, so a same-protocol Responses->Responses round-trip is preserved.
                             let text = read_reasoning_text(item);
-                            let signature = item
-                                .get("encrypted_content")
-                                .and_then(|s| s.as_str())
-                                .filter(|s| !s.is_empty())
-                                .map(String::from);
+                            let signature =
+                                read_reasoning_encrypted_content(item).map(String::from);
                             if !text.is_empty() || signature.is_some() {
                                 messages.push(crate::ir::IrMessage {
                                     role: crate::ir::IrRole::Assistant,
@@ -1270,11 +1267,7 @@ impl ProtocolReader for ResponsesReader {
                     // explicit rather than an implied promise of cross-vendor reasoning continuation.
                     ITEM_TYPE_REASONING => {
                         let text = read_reasoning_text(item);
-                        let signature = item
-                            .get("encrypted_content")
-                            .and_then(|s| s.as_str())
-                            .filter(|s| !s.is_empty())
-                            .map(String::from);
+                        let signature = read_reasoning_encrypted_content(item).map(String::from);
                         // Skip a wholly-empty reasoning item (no text and no encrypted_content)
                         // rather than emitting a blank Thinking block.
                         if !text.is_empty() || signature.is_some() {

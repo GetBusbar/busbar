@@ -373,6 +373,101 @@ fn prompt_projection_marks_bedrock_redacted_content() {
     assert!(!p.messages[0].1.contains("OPAQUE_CIPHERTEXT_BYTES"));
 }
 
+/// Follow-up bypass (Bug A): a Responses `reasoning` item admitted by the reader on its opaque
+/// `encrypted_content` blob ALONE (no `content`/`summary` text at all — no `content` key present)
+/// must project the redacted marker, not silently read as "nothing here". Before the fix,
+/// `read_reasoning_text` returned `""` for this shape and `block_text`'s Responses arm collapsed
+/// straight to `BlockText::None`.
+#[test]
+fn prompt_projection_marks_responses_encrypted_content_only_reasoning() {
+    let v: Value = serde_json::json!({
+        "input": [
+            {"type": "reasoning", "encrypted_content": "OPAQUE_BLOB_XYZ"}
+        ]
+    });
+    let p = build_prompt_projection(&v, "responses");
+    assert_eq!(
+        p.messages,
+        vec![("assistant".into(), REDACTED_REASONING_MARKER.into())]
+            as Vec<(std::borrow::Cow<'_, str>, std::borrow::Cow<'_, str>)>
+    );
+    assert!(!p.messages[0].1.contains("OPAQUE_BLOB_XYZ"));
+}
+
+/// THE MOST IMPORTANT regression test (Bug B): the SAME encrypted-content-only reasoning item, but
+/// with `"content": []` explicitly PRESENT (an empty array, not absent). Before the fix, both
+/// `total_text_chars` and `build_prompt_projection` dispatched on `m.get("content")`'s SHAPE
+/// first — `Some(Value::Array([]))` took the array-walk branch (zero blocks, contributes nothing)
+/// and never called `block_text` on the item root at all, so the item was invisible to BOTH
+/// callers even after `block_text`'s reasoning arm itself learned to recognize
+/// `encrypted_content` (Bug A). This exercises the CALLER dispatch, not `block_text` in isolation,
+/// which is exactly the level Bug B lived at.
+#[test]
+fn prompt_projection_and_total_chars_mark_responses_reasoning_with_empty_content_array() {
+    let v: Value = serde_json::json!({
+        "input": [
+            {"type": "reasoning", "content": [], "encrypted_content": "OPAQUE_BLOB_XYZ"}
+        ]
+    });
+    let p = build_prompt_projection(&v, "responses");
+    assert_eq!(
+        p.messages,
+        vec![("assistant".into(), REDACTED_REASONING_MARKER.into())]
+            as Vec<(std::borrow::Cow<'_, str>, std::borrow::Cow<'_, str>)>
+    );
+    assert!(!p.messages[0].1.contains("OPAQUE_BLOB_XYZ"));
+
+    let total = total_text_chars(&v, "responses", 0);
+    assert_eq!(
+        total,
+        REDACTED_REASONING_MARKER.chars().count(),
+        "total_text_chars must count the marker's length, not silently contribute 0"
+    );
+}
+
+/// Malformed `encrypted_content` (empty string, non-string) must NOT be treated as a real opaque
+/// blob — matches the reader's own filter (`read_reasoning_encrypted_content`, mirroring
+/// `reader.rs`'s `.and_then(Value::as_str).filter(|s| !s.is_empty())`), which drops such an item
+/// entirely (never ships it) when it also carries no text. `block_text` must agree: `None`, not
+/// `Redacted`.
+#[test]
+fn block_text_responses_reasoning_rejects_malformed_encrypted_content() {
+    let empty_string: Value = serde_json::json!({"type": "reasoning", "encrypted_content": ""});
+    assert!(matches!(
+        block_text(&empty_string, "responses"),
+        BlockText::None
+    ));
+
+    let non_string: Value = serde_json::json!({"type": "reasoning", "encrypted_content": 123});
+    assert!(matches!(
+        block_text(&non_string, "responses"),
+        BlockText::None
+    ));
+}
+
+/// Non-regression / ordering guard: a realistic round-trip shape (mirrors
+/// `test_reasoning_item_thinking_round_trip` in `proto/openai_responses/tests/tests.rs`) carrying
+/// BOTH real `content[reasoning_text]` text AND a non-empty `encrypted_content` signature. The
+/// plaintext must win — project as real text, not the redacted marker — and neither the marker
+/// nor the raw blob's bytes leak into the wrong place.
+#[test]
+fn prompt_projection_responses_reasoning_prefers_text_over_encrypted_content() {
+    let v: Value = serde_json::json!({
+        "input": [
+            {
+                "type": "reasoning",
+                "content": [{"type": "reasoning_text", "text": "VISIBLE"}],
+                "encrypted_content": "ENC_BLOB_123"
+            }
+        ]
+    });
+    let p = build_prompt_projection(&v, "responses");
+    assert_eq!(p.messages.len(), 1);
+    assert_eq!(p.messages[0].1.as_ref(), "VISIBLE");
+    assert!(!p.messages[0].1.contains(REDACTED_REASONING_MARKER));
+    assert!(!p.messages[0].1.contains("ENC_BLOB_123"));
+}
+
 /// Role-inference bug: a Responses `reasoning` item is assistant-authored (the reader already
 /// maps it to a standalone assistant `IrMessage`, `responses/reader.rs`), but the old `_ => "user"`
 /// fallback attributed it to the caller. Isolated from the summary-only test above by using a
@@ -526,6 +621,15 @@ fn every_known_protocol_has_a_declared_reasoning_wire_shape() {
             })),
             expect_text_contains: Some("W"),
             expect_redacted: false,
+        },
+        Row {
+            protocol: "responses",
+            sample: Some(serde_json::json!({
+                "type": "reasoning",
+                "encrypted_content": "OPAQUE_BLOB"
+            })),
+            expect_text_contains: None,
+            expect_redacted: true,
         },
         // gemini/openai/cohere: no dialect-specific reasoning shape declared in `block_text` —
         // every block's text (if any) goes through the generic `text`-field probe.
