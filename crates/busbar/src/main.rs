@@ -2867,7 +2867,7 @@ pub(crate) fn build_app_from_config(
                 // config (mint validates it; a shared durable store can carry keys minted under a
                 // config another node no longer has). A dangling reference is a boot error naming
                 // the offender with the paste-ready fix.
-                // M9: a store error reading the keys here must NOT be swallowed (the old `if let
+                // A store error reading the keys here must NOT be swallowed (the old `if let
                 // Ok(keys)` skipped the whole dangling-reference check on error, so a boot-time store
                 // blip published a config whose keys were never validated). Propagate it - fail boot.
                 let keys = gs.all_keys().map_err(|e| {

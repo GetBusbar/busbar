@@ -428,7 +428,7 @@ fn coerce_tool_args(input: &serde_json::Value) -> serde_json::Value {
 
 /// Convert a Gemini `startIndex`/`endIndex` BYTE offset (Google's `CitationSource` is documented
 /// measured in bytes) into a CHARACTER offset — the IR's `IrCitation::start_index`/`end_index`
-/// contract (`ir/mod.rs`; class-6 6e1 site 3). `byte_idx` is clamped to `text.len()` so an
+/// contract (`ir/mod.rs`). `byte_idx` is clamped to `text.len()` so an
 /// out-of-range upstream value degrades to "end of text" rather than panicking on a non-boundary
 /// slice.
 fn gemini_byte_offset_to_char(text: &str, byte_idx: i64) -> i64 {
@@ -453,10 +453,10 @@ fn gemini_char_offset_to_byte(text: &str, char_idx: i64) -> i64 {
     }
 }
 
-/// L2: map a Gemini candidate's `citationMetadata.citationSources[]` → neutral
+/// Map a Gemini candidate's `citationMetadata.citationSources[]` → neutral
 /// [`crate::ir::IrCitation`]s. A Gemini citation source is a grounding/web-search reference carrying
 /// `startIndex`/`endIndex` — measured in BYTES per Google's `CitationSource` reference, converted to
-/// CHARACTERS here (class-6 6e1 site 3) since the IR's contract is characters — plus `uri`, `title`,
+/// CHARACTERS here since the IR's contract is characters — plus `uri`, `title`,
 /// and `license`. We project it onto the neutral fields (uri→url, indices→start/end, title→title)
 /// and stash the source object verbatim in `raw` so a same-protocol Gemini path can re-emit the
 /// UNCONVERTED original (see `write_gemini_citation`'s raw short-circuit). The neutral `kind` is
@@ -512,7 +512,7 @@ fn read_gemini_citations(
         .collect()
 }
 
-/// L2: map a neutral [`crate::ir::IrCitation`] → a Gemini `citationSources[]` entry.
+/// Map a neutral [`crate::ir::IrCitation`] → a Gemini `citationSources[]` entry.
 ///
 /// SAME-PROTOCOL FIDELITY: when `raw` is present AND it is a Gemini citation source (has a `uri` or
 /// the Gemini index fields), re-emit it verbatim so a Gemini→IR→Gemini path is byte-exact — `raw`
@@ -520,7 +520,7 @@ fn read_gemini_citations(
 /// FOREIGN protocol (e.g. an Anthropic citation object on an Anthropic→Gemini hop, or no `raw` at
 /// all) would not be a valid Gemini source, so we ignore it and BUILD a Gemini source from the
 /// neutral fields — which are CHARACTERS (the IR contract) and must be converted back to the BYTES
-/// Gemini's wire format expects (class-6 6e1 site 3, the inverse of `gemini_byte_offset_to_char`),
+/// Gemini's wire format expects (the inverse of `gemini_byte_offset_to_char`),
 /// against `text` (this block's own text, the same anchor the reader converted against).
 fn write_gemini_citation(c: &crate::ir::IrCitation, text: &str) -> serde_json::Value {
     if let Some(raw) = &c.raw {

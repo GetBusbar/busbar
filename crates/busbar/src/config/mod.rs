@@ -788,7 +788,7 @@ impl<'de> Deserialize<'de> for PoolCfg {
     where
         D: serde::Deserializer<'de>,
     {
-        // M8: deny unknown keys so a typo'd pool key fails boot.
+        // Deny unknown keys so a typo'd pool key fails boot.
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct RawPoolCfg {

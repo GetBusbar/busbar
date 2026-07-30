@@ -391,7 +391,7 @@ fn test_validate_rejects_unknown_member_ref() {
 #[test]
 fn test_validate_token_url_ssrf_and_scheme() {
     // token_url carries the client secret in the POST body, so it must clear BOTH the https
-    // requirement (case-INSENSITIVELY) and the SSRF/metadata denylist — same as base_url. (audit H1.)
+    // requirement (case-INSENSITIVELY) and the SSRF/metadata denylist — same as base_url.
     let build = |token_url: &str| -> Vec<String> {
         let mut providers = HashMap::new();
         let mut entra = make_provider("openai", "https://myres.openai.azure.com", "API_KEY");
@@ -1782,7 +1782,7 @@ fn test_ssrf_blocks_metadata_denylist_by_default() {
         "https://169.254.43518/", // 3-part inet_aton of 169.254.169.254
         "https://169.16689662/",  // 2-part inet_aton of 169.254.169.254
     ] {
-        // M2: assert the ACTUAL returned host is a non-empty string (so a bug returning
+        // Assert the ACTUAL returned host is a non-empty string (so a bug returning
         // Some("") / Some("garbage") cannot pass). The returned host is the normalized authority.
         let got = ssrf_blocked_host(blocked, &[], false, &[]);
         let host = got.as_deref().unwrap_or_else(|| {
@@ -1797,7 +1797,7 @@ fn test_ssrf_blocks_metadata_denylist_by_default() {
 
 #[test]
 fn test_ssrf_blocked_returns_exact_host_string() {
-    // M2: pin the EXACT host string `ssrf_blocked_host` returns for representative targets, so a
+    // Pin the EXACT host string `ssrf_blocked_host` returns for representative targets, so a
     // regression returning `Some("")` / `Some("garbage")` (which `.is_some()` would accept) fails.
     assert_eq!(
         ssrf_blocked_host("https://169.254.169.254/latest", &[], false, &[]).as_deref(),
@@ -1820,7 +1820,7 @@ fn test_ssrf_blocked_returns_exact_host_string() {
 
 #[test]
 fn test_expand_alternate_ipv4_imds_obfuscations() {
-    // H5: DIRECT unit tests for the inet_aton canonicalizer. The 1-, 2-, and 3-part obfuscated
+    // DIRECT unit tests for the inet_aton canonicalizer. The 1-, 2-, and 3-part obfuscated
     // forms of the IMDS address all canonicalize to 169.254.169.254. (0xA9FEA9FE = 2852039166.)
     let imds: std::net::Ipv4Addr = "169.254.169.254".parse().unwrap();
     assert_eq!(
@@ -1907,7 +1907,7 @@ fn test_expand_alternate_ipv4_imds_hex_octal_forms() {
 
 #[test]
 fn test_reject_cidr_metadata_entries() {
-    // F1: a `/`-bearing entry in any metadata host-list is a no-op (these lists match by EXACT
+    // A `/`-bearing entry in any metadata host-list is a no-op (these lists match by EXACT
     // IP/hostname), so validate() must REJECT it at boot with a clear, key+value-naming error.
 
     // Global blocked list.
@@ -1978,7 +1978,7 @@ fn test_reject_cidr_metadata_entries() {
 
 #[test]
 fn test_global_allow_overrides_blocked_metadata_hosts() {
-    // M3: global security.allow_metadata_hosts must override an entry in blocked_metadata_hosts
+    // global security.allow_metadata_hosts must override an entry in blocked_metadata_hosts
     // (allow always wins) — both at the guard level and through full validate().
     let blocked = vec!["10.77.77.77".to_string()];
     let allow = vec!["10.77.77.77".to_string()];
@@ -2008,7 +2008,7 @@ fn test_global_allow_overrides_blocked_metadata_hosts() {
 
 #[test]
 fn test_allow_all_metadata_beats_nonempty_blocked_list() {
-    // M3: allow_all_metadata: true wins even with a NON-EMPTY blocked_metadata_hosts — the nuclear
+    // allow_all_metadata: true wins even with a NON-EMPTY blocked_metadata_hosts — the nuclear
     // override disables the guard wholesale.
     let blocked = vec!["10.0.0.7".to_string(), "metadata.x.example".to_string()];
     for base in [

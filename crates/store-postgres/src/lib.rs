@@ -237,7 +237,7 @@ impl PostgresStore {
     /// `postgres://user:pass@host:5432/dbname`) and ensure the schema. TLS is not wired in this
     /// build (`NoTls`); front the database with a TLS-terminating proxy or a local socket.
     pub fn connect(conn_str: &str) -> StoreResult<Self> {
-        // L2: a connect error's string can embed the DSN (and thus the password). Scrub it before it
+        // A connect error's string can embed the DSN (and thus the password). Scrub it before it
         // leaves the crate, matching the Redis backend. Handles both the URL form
         // (`postgres://user:pass@host/db`) and the libpq keyword form (`password=secret`), in raw and
         // percent-decoded shapes.

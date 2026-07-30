@@ -938,7 +938,7 @@ impl ProtocolReader for GeminiReader {
             // yet) and emit the citations delta against it BEFORE the finishReason path closes the
             // block below. Without this arm a streamed Gemini citation was silently dropped.
             //
-            // `anchor_text: None` — DELIBERATELY left as raw byte offsets (class-6 6e1 site 3): a
+            // `anchor_text: None` — DELIBERATELY left as raw byte offsets: a
             // citation's indices address the FULL response text, which `GeminiStreamState` does not
             // accumulate (it carries `text_index`, an index, not text). Adding a full-text
             // accumulator to this hot streaming path for an offset correction would fail the
@@ -1008,7 +1008,7 @@ impl ProtocolReader for GeminiReader {
             if let Some(finish_reason_val) =
                 candidate.get(FIELD_FINISH_REASON).and_then(|r| r.as_str())
             {
-                // PF-M2: map Gemini's full FinishReason set to the canonical IR stop reasons (no
+                // Map Gemini's full FinishReason set to the canonical IR stop reasons (no
                 // verbatim-lowercased Gemini-only token leaks to a non-Gemini client).
                 let mut stop_reason = map_gemini_finish_reason(finish_reason_val);
 
@@ -1213,7 +1213,7 @@ impl ProtocolReader for GeminiReader {
             }
         }
 
-        // L2: grounding/web-search citations. Gemini reports them at the CANDIDATE level
+        // Grounding/web-search citations. Gemini reports them at the CANDIDATE level
         // (`candidates[].citationMetadata.citationSources[]`), not per content-part, whereas the IR
         // carries citations ON a Text block. Attach the mapped citations to the FIRST Text block of
         // the candidate so they survive the seam (cross-protocol Anthropic egress re-emits them, and
@@ -1222,7 +1222,7 @@ impl ProtocolReader for GeminiReader {
         // citations for such turns in practice, so dropping is faithful.
         // Resolve the anchor Text block's own text FIRST (before mutating `content`) so
         // `read_gemini_citations` can convert Gemini's byte offsets into the IR's character
-        // contract against it (class-6 6e1 site 3) — this is the non-stream path, which HAS the
+        // contract against it — this is the non-stream path, which HAS the
         // full text, unlike the streaming arm above.
         let anchor_text = content.iter().find_map(|b| match b {
             crate::ir::IrBlock::Text { text, .. } => Some(text.clone()),
@@ -1244,9 +1244,9 @@ impl ProtocolReader for GeminiReader {
         let stop_reason = candidate
             .get(FIELD_FINISH_REASON)
             .and_then(|r| r.as_str())
-            // PF-M2: canonical-map the full Gemini FinishReason set (see
-            // `map_gemini_finish_reason`) so a Gemini-only reason never reaches a non-Gemini
-            // client as an unrecognized lowercased token.
+            // Canonical-map the full Gemini FinishReason set (see `map_gemini_finish_reason`) so a
+            // Gemini-only reason never reaches a non-Gemini client as an unrecognized lowercased
+            // token.
             .map(map_gemini_finish_reason);
 
         // Gemini's `FinishReason` enum has NO TOOL_USE member: a tool-call turn ends with STOP, which

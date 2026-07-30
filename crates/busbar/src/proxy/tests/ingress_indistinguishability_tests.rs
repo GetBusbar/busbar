@@ -917,7 +917,7 @@ fn nonstream_tap_cap_is_read_once_per_decision() {
     );
 }
 
-/// audit H3 (CHARACTERIZATION, FULL PATH): terminal token usage MUST reach the client on a
+/// CHARACTERIZATION, FULL PATH: terminal token usage MUST reach the client on a
 /// cross-protocol STREAM even when the egress reports usage in a SEPARATE trailing chunk (the OpenAI
 /// `include_usage` convention). This drives the REAL `FirstByteBody` translate → finish → json-array
 /// framer path for a gemini-ingress / openai-egress stream — the level the isolated translator tests
@@ -994,7 +994,7 @@ async fn test_cross_protocol_stream_delivers_trailing_usage_gemini_json_array() 
     );
 }
 
-/// audit H3 (CHARACTERIZATION, plain-SSE sibling): the terminal-usage fold must also deliver on the
+/// CHARACTERIZATION, plain-SSE sibling: the terminal-usage fold must also deliver on the
 /// PLAIN SSE path (no json-array framer), not just gemini json-array — find-1-solve-6 across the two
 /// delivery paths. anthropic ingress / openai egress with include_usage: the client's terminal
 /// `message_delta` must carry the real `usage.output_tokens` (400), not 0.

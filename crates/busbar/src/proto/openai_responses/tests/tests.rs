@@ -5624,7 +5624,7 @@ fn user_role_thinking_is_not_emitted_as_a_reasoning_item() {
     );
 }
 
-// H6: `usage.input_tokens_details.cached_tokens` must read into the IR `cache_read_input_tokens`
+// `usage.input_tokens_details.cached_tokens` must read into the IR `cache_read_input_tokens`
 // and write back to the same nested Responses location (the Bedrock-shared cache-read field).
 #[test]
 fn test_cached_tokens_mapping() {
@@ -5791,7 +5791,7 @@ fn test_response_format_text_format_round_trip() {
     );
 }
 
-// L5: a Responses `input_image` given by `file_id` (no image_url) must NOT become an empty Image
+// A Responses `input_image` given by `file_id` (no image_url) must NOT become an empty Image
 // block — it carries the file_id faithfully and round-trips back to the `file_id` form.
 #[test]
 fn test_input_image_file_id_round_trip() {

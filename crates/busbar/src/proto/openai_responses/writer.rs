@@ -57,7 +57,7 @@ impl ProtocolWriter for ResponsesWriter {
                                 }));
                             }
                             crate::ir::IrBlock::Image { source, .. } => match source {
-                                // L5: a Responses-produced vendor reference is a `file_id` — re-emit
+                                // A Responses-produced vendor reference is a `file_id` — re-emit
                                 // the native `input_image.file_id` form (a data URI would corrupt it).
                                 crate::ir::IrImageSource::Vendor { vendor, value }
                                     if *vendor == VENDOR_NAME =>

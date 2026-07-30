@@ -4004,7 +4004,7 @@ fn test_cohere_tool_choice_auto_omitted() {
     assert!(out.get("tool_choice").is_none());
 }
 
-// PF-M1: OpenAI/Responses ingress accepts temperature up to 2.0, but Cohere's native range is
+// OpenAI/Responses ingress accepts temperature up to 2.0, but Cohere's native range is
 // [0.0, 1.0] and rejects >1 with a hard 400 ValidationException. The writer must clamp.
 #[test]
 fn test_cohere_writer_clamps_temperature_above_one() {
@@ -4019,7 +4019,7 @@ fn test_cohere_writer_clamps_temperature_above_one() {
     );
 }
 
-// M2: the temperature clamp must be NON-SILENT — `clamp_temperature_for_cohere` returns
+// The temperature clamp must be NON-SILENT — `clamp_temperature_for_cohere` returns
 // `(clamped, was_clamped)` and `was_clamped` is true IFF the value actually changed, so the
 // writer can `warn!` only on a real mutation. Unit-tested without a tracing subscriber.
 #[test]
@@ -4090,7 +4090,7 @@ fn test_cohere_sampling_controls_survive_roundtrip() {
     );
 }
 
-// H7: a Cohere v2 image content part (`{"type":"image_url","image_url":{"url":...}}`) reads into
+// A Cohere v2 image content part (`{"type":"image_url","image_url":{"url":...}}`) reads into
 // `IrBlock::Image` and writes back as the same native part — both a base64 data-URI image (split
 // into a real MIME media_type + base64 data) and a bare https URL (preserved under the
 // "image_url" sentinel).
@@ -4351,7 +4351,7 @@ fn n_candidate_count_never_emitted_on_cohere() {
     assert_eq!(ir.n, None, "the Cohere reader must never populate n");
 }
 
-/// audit finding #7 (streaming symmetry): the STREAMING Cohere reader must preserve
+/// Streaming symmetry: the STREAMING Cohere reader must preserve
 /// `tool-plan-delta` the same way the non-stream `read_response` folds `message.tool_plan` — as a
 /// LEADING Text block ahead of the tool call. Without it a STREAMING Cohere→X hop lost the
 /// assistant's pre-tool-call reasoning while the non-stream hop preserved it.
@@ -4438,7 +4438,7 @@ fn test_stream_tool_plan_delta_becomes_leading_text_before_tool_call() {
     );
 }
 
-/// audit finding #7 (known writer limitation): the IR carries a folded `tool_plan` as a plain
+/// Known writer limitation: the IR carries a folded `tool_plan` as a plain
 /// leading `IrBlock::Text` with no distinguishing flag, so an X→Cohere hop re-emits it as `content`,
 /// NOT as the native `tool_plan` slot. This test pins that documented, non-lossy behavior (the text
 /// survives; only its native slot is reshaped) so a future accidental change is caught.
@@ -4494,7 +4494,7 @@ fn test_write_response_reemits_folded_tool_plan_as_content_not_tool_plan() {
     );
 }
 
-/// audit finding #7 follow-up (MAJOR, balanced-stream): drive a REAL Cohere v2 tool-plan stream
+/// Follow-up (MAJOR, balanced-stream): drive a REAL Cohere v2 tool-plan stream
 /// (`message-start` → `tool-plan-delta`× → `tool-call-start`/`-delta`/`-end` → `message-end`)
 /// through the ANTHROPIC writer and assert every `content_block_start` has a matching
 /// `content_block_stop`. The `tool-plan-delta` arm opens a LEADING text block that Cohere never

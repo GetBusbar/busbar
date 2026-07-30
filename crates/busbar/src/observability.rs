@@ -1429,12 +1429,12 @@ mod tests {
 
     #[test]
     fn test_url_parse_canonicalizes_alternate_ipv4_encodings() {
-        // Documentation lock (finding #22): pins the corrected comments' truth that for an http(s)
-        // URL `reqwest::Url::parse` (WHATWG special-scheme host parsing) is the PRIMARY guard — it
-        // canonicalizes every alternate IPv4 encoding to a dotted-quad BEFORE `host_str()` is read,
-        // so `is_alternate_ipv4_encoding` is a defense-in-depth parity mirror, not the primary block.
-        // If a future url/reqwest bump ever stopped normalizing these, this test fails and the comment
-        // (and the reliance on the parity mirror as a fallback) must be revisited.
+        // Documentation lock: pins what the surrounding comments assert — for an http(s) URL
+        // `reqwest::Url::parse` (WHATWG special-scheme host parsing) is the PRIMARY guard,
+        // canonicalizing every alternate IPv4 encoding to a dotted-quad BEFORE `host_str()` is
+        // read, so `is_alternate_ipv4_encoding` is a defense-in-depth parity mirror rather than
+        // the primary block. If a future url/reqwest bump stops normalizing these, this test fails
+        // and both the comment and the reliance on the parity mirror must be revisited.
         for (raw, want) in [
             ("https://2130706433/log", "127.0.0.1"),        // decimal
             ("https://0x7f000001/log", "127.0.0.1"),        // hex

@@ -125,7 +125,7 @@ impl ProtocolReader for ResponsesReader {
                             });
                         }
                         Some("input_image") => {
-                            // L5: a Responses `input_image` can reference an uploaded file by
+                            // A Responses `input_image` can reference an uploaded file by
                             // `file_id` INSTEAD of carrying an inline `image_url`. The prior code only
                             // read `image_url`, so a file_id-only image produced an EMPTY Image block
                             // (media_type/data both ""), a lossy degradation. Carry the file_id
@@ -1022,7 +1022,7 @@ impl ProtocolReader for ResponsesReader {
                                     .and_then(|v| v.as_u64())
                                     .unwrap_or(0),
                                 cache_creation_input_tokens: None,
-                                // H6: carry the streamed prompt-cache hit count
+                                // Carry the streamed prompt-cache hit count
                                 // (`usage.input_tokens_details.cached_tokens`) into the IR's
                                 // read-side cache field so a streaming Responses terminal preserves
                                 // the cache saving.
@@ -1337,7 +1337,7 @@ impl ProtocolReader for ResponsesReader {
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0),
             cache_creation_input_tokens: None,
-            // H6: the Responses API reports prompt-cache hits under
+            // The Responses API reports prompt-cache hits under
             // `usage.input_tokens_details.cached_tokens`. Map it into the IR's
             // `cache_read_input_tokens` (the read-side cache field Bedrock already uses) so the cache
             // saving survives a cross-protocol hop instead of being dropped. No new IR field is added.

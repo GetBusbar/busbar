@@ -149,7 +149,7 @@ impl RawPlugin {
             .map_err(|e| TransportError::engine(format!("plugin request encode failed: {e}")))?;
         let mut out: *mut u8 = std::ptr::null_mut();
         let mut out_len: usize = 0;
-        // L6: catch any panic that unwinds across the `busbar_call` ABI boundary, for PARITY with the
+        // Catch any panic that unwinds across the `busbar_call` ABI boundary, for PARITY with the
         // hook seam (`DlopenPolicy::call`). SDK-built plugins catch panics plugin-side, but a signed
         // third-party (trust=signature, in-process) plugin NOT built with the busbar SDK that panics
         // outside a caught region would otherwise unwind across the boundary. This `catch_unwind` is
@@ -330,7 +330,7 @@ fn wire_up_raw(
     manifest_kind: &str,
     backing: Option<stage::Staged>,
 ) -> Result<RawPlugin, String> {
-    // L2: hold the mapped library + its staged backing in a guard whose fields drop in the CORRECT
+    // Hold the mapped library + its staged backing in a guard whose fields drop in the CORRECT
     // order — `lib` BEFORE `backing` — so that on ANY early `?`/error return below the library is
     // UNLOADED before the staged file is removed (Windows refuses `remove_file` on a still-mapped DLL;
     // the inverted order silently leaked the orphan). Function parameters otherwise drop in REVERSE

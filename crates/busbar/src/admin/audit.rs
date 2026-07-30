@@ -199,7 +199,7 @@ impl AuditLog {
         &self,
         store: &dyn busbar_api::Store,
     ) -> Result<usize, String> {
-        // BOUNDED read (audit issue): the durable log is never pruned and can dwarf the RAM ring; over
+        // BOUNDED read: the durable log is never pruned and can dwarf the RAM ring; over
         // the plugin ABI the full list can exceed the response cap or OOM. Restore only the most-recent
         // `MAX_AUDIT_ENTRIES` - exactly what the ring keeps - so the read is bounded regardless of how
         // large the durable history grew. The tail is the NEWEST records, so its max seq IS the durable
@@ -384,7 +384,7 @@ impl AuditLog {
         }
     }
 
-    /// RESILIENT durable write-through with GAP BACKFILL (audit chain-corruption fix). A TRANSIENT
+    /// RESILIENT durable write-through with GAP BACKFILL. A TRANSIENT
     /// `append_audit` failure used to be swallowed while the mutation still succeeded, leaving a
     /// PERMANENT hole in the durable chain (seq N missing, N+1 present with `prev_hash` pointing at N):
     /// on restart the strict contiguous linkage check in [`restore_from_store`] hits the gap, rejects
@@ -1715,7 +1715,7 @@ mod tests {
         );
     }
 
-    // ── finding #5: durable write-through offload (write-behind flusher + pressure valve) ────────
+    // ── durable write-through offload (write-behind flusher + pressure valve) ──────────────────────
 
     /// A `Store` decorator that sleeps on `append_audit` — the FIRST call only, then runs at full
     /// speed — a stand-in for a slow durable store's write round-trip. All other methods delegate.

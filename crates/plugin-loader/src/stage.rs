@@ -213,7 +213,7 @@ pub(crate) fn load_library_from_bytes(
     // The file was created by us, in a directory we created 0700, from already-verified bytes.
     let lib = unsafe { Library::new(&path) }.map_err(|e| {
         let msg = format!("failed to load plugin '{display}': {e}");
-        // M8: `stage_temp_file` already did `state.live += 1`, but no `Staged::TempFile` is
+        // `stage_temp_file` already did `state.live += 1`, but no `Staged::TempFile` is
         // constructed on this error path, so `release_temp_file` (the only decrementer) would never
         // run — leaking a `live` count that keeps the clean-shutdown `live == 0` dir-removal from
         // ever firing. Release here (removes the file AND decrements `live`, reclaiming the dir when

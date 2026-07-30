@@ -406,7 +406,7 @@ impl ProtocolWriter for CohereWriter {
                 write_cohere_response_format(response_format),
             );
         }
-        // M4: Cohere-native `documents` (RAG grounding) has no cross-protocol analog and is not
+        // Cohere-native `documents` (RAG grounding) has no cross-protocol analog and is not
         // modeled in the IR; on a same-protocol hop it flows through `extra` byte-exact below. The
         // non-silent loss warn for the cross-protocol case lives in `read_request` (the only Cohere
         // site that still sees an inbound `documents` before `extra` is cleared at the seam).
@@ -669,7 +669,7 @@ impl ProtocolWriter for CohereWriter {
         for block in &resp.content {
             match block {
                 crate::ir::IrBlock::Text { text, .. } => {
-                    // KNOWN LIMITATION (audit finding #7): Cohere's `message.tool_plan` (the
+                    // KNOWN LIMITATION: Cohere's `message.tool_plan` (the
                     // assistant's pre-tool-call reasoning) is READ into a plain leading `IrBlock::Text`
                     // by both cohere readers (non-stream `read_response`, streaming
                     // `tool-plan-delta`). The IR has NO flag distinguishing that Text FROM an ordinary
