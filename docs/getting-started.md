@@ -273,7 +273,7 @@ BUSBAR_PROVIDERS=./providers.yaml BUSBAR_CONFIG=./config.yaml ./busbar
 # Mint a signed key for your app (expires in 90 days by default):
 BUSBAR_CLIENT_TOKEN=$(curl -s -X POST http://127.0.0.1:8081/api/v1/admin/keys \
   -H "Authorization: Bearer $BUSBAR_ADMIN_TOKEN" -H "Content-Type: application/json" \
-  -d '{"name":"quickstart"}' | jq -r .secret)
+  -d '{"name":"quickstart"}' | jq -r .token)
 ```
 
 Now call the pool by name. Both ingress styles work against a pool:
