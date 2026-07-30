@@ -42,6 +42,7 @@ pub(crate) fn persist(
     global_hooks: &[String],
     deleted_add: Option<&str>,
     deleted_remove: Option<&str>,
+    base_hook_names: &std::collections::HashSet<String>,
 ) -> Result<(), String> {
     let Some(p) = path else {
         return Ok(()); // persistence disabled (the default) — a no-op success.
@@ -74,7 +75,14 @@ pub(crate) fn persist(
     // covers the WHOLESALE-registry writes (config ROLLBACK, which passes both args `None`):
     // rollback restores a registry that may contain a name still tombstoned from an earlier
     // API delete, and without this the rollback would not survive a restart.
-    doc.deleted.retain(|name| !hooks.contains_key(name));
+    //
+    // ALSO prune any tombstone whose name is not (or no longer) in BASE `config.yaml`
+    // (`base_hook_names`): such a tombstone can never be reconciled by the "name comes back" rule
+    // above, since nothing at boot ever re-inserts a non-base name into `hooks` on its own — it is
+    // permanently inert dead weight that would otherwise grow the overlay file forever. A tombstone
+    // for a name still present in base config is kept: it is still actively shadowing that entry.
+    doc.deleted
+        .retain(|name| !hooks.contains_key(name) && base_hook_names.contains(name));
     doc.version = OVERLAY_VERSION;
     write(p, &doc).map_err(|e| format!("overlay write to '{}' failed: {e}", p.display()))
 }
@@ -121,6 +129,7 @@ pub(crate) fn persist_groups(
     groups: &BTreeMap<String, GroupCfg>,
     deleted_add: Option<&str>,
     deleted_remove: Option<&str>,
+    base_group_names: &std::collections::HashSet<String>,
 ) -> Result<(), String> {
     let Some(p) = path else {
         return Ok(());
@@ -141,7 +150,11 @@ pub(crate) fn persist_groups(
         doc.deleted_groups.retain(|n| n != name);
     }
     doc.groups = groups.clone();
-    doc.deleted_groups.retain(|name| !groups.contains_key(name));
+    // Prune on "name comes back" (as above) AND on "name is absent from base config.yaml" (a
+    // tombstone that can never be reconciled the first way, since nothing at boot re-adds a
+    // non-base name — see `persist`'s matching comment).
+    doc.deleted_groups
+        .retain(|name| !groups.contains_key(name) && base_group_names.contains(name));
     doc.version = OVERLAY_VERSION;
     write(p, &doc).map_err(|e| format!("overlay write to '{}' failed: {e}", p.display()))
 }
@@ -904,6 +917,7 @@ mod tests {
             &["newhook".to_string()],
             Some("deleteme"),
             None,
+            &std::collections::HashSet::new(),
         );
         assert!(
             err.is_err(),
@@ -944,6 +958,7 @@ mod tests {
             &["x".to_string()],
             None,
             None,
+            &std::collections::HashSet::new(),
         )
         .expect("persist");
         let doc = read(&path).expect("read back");
@@ -957,6 +972,51 @@ mod tests {
         assert!(
             cfg.hooks.contains_key("x"),
             "rollback is durable across restart"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// REGRESSION: a tombstone for a name that is ABSENT from base `config.yaml` (never defined there,
+    /// or since removed from it) can never be reconciled by the "name comes back" rule — nothing will
+    /// ever re-add it as a HOOK, since the boot-merge only inserts base-config names. Such a tombstone
+    /// is permanently inert dead weight and must be pruned at persist time. A tombstone whose name IS
+    /// still in base config is kept (it is still actively shadowing that base entry).
+    #[test]
+    fn persist_prunes_tombstone_for_a_name_absent_from_base_config() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("busbar-ovl-prune-hook-{}.json", std::process::id()));
+        write(
+            &path,
+            &OverlayDoc {
+                hooks: HashMap::new(),
+                global_hooks: Vec::new(),
+                deleted: vec!["ghost".to_string(), "shadowed_base".to_string()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let base_hook_names: std::collections::HashSet<String> =
+            ["shadowed_base".to_string()].into_iter().collect();
+        persist(
+            Some(&path),
+            &HashMap::from([("newhook".to_string(), gate())]),
+            &["newhook".to_string()],
+            None,
+            None,
+            &base_hook_names,
+        )
+        .expect("persist");
+        let doc = read(&path).expect("read back");
+        assert!(
+            !doc.deleted.iter().any(|n| n == "ghost"),
+            "a tombstone for a name absent from base config.yaml is permanently inert and must be \
+             pruned: {:?}",
+            doc.deleted
+        );
+        assert!(
+            doc.deleted.iter().any(|n| n == "shadowed_base"),
+            "a tombstone for a name STILL in base config must be kept (it still shadows it): {:?}",
+            doc.deleted
         );
         let _ = std::fs::remove_file(&path);
     }
@@ -1011,6 +1071,7 @@ mod tests {
             &["h".to_string()],
             None,
             None,
+            &std::collections::HashSet::new(),
         )
         .expect("persist");
         let doc = read(&path).expect("read back");
@@ -1051,6 +1112,7 @@ mod tests {
             &BTreeMap::from([("x".to_string(), group_with_budget())]),
             None,
             None,
+            &std::collections::HashSet::new(),
         )
         .expect("persist groups");
         let doc = read(&path).expect("read back");
@@ -1062,6 +1124,52 @@ mod tests {
         assert!(
             !doc.deleted_groups.iter().any(|n| n == "x"),
             "tombstone reconciled away for a restored group, else it vanishes on restart"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// REGRESSION (groups half of the hook test above): a group tombstone for a name absent from base
+    /// `config.yaml` can never come back via the "name comes back" reconciliation (nothing re-adds a
+    /// non-base name at boot), so it is permanently inert and must be pruned at persist time. A
+    /// tombstone for a name still in base config is kept.
+    #[test]
+    fn persist_groups_prunes_tombstone_for_a_name_absent_from_base_config() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "busbar-ovl-prune-group-{}.json",
+            std::process::id()
+        ));
+        write(
+            &path,
+            &OverlayDoc {
+                deleted_groups: vec!["ghost_group".to_string(), "shadowed_base_group".to_string()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let base_group_names: std::collections::HashSet<String> =
+            ["shadowed_base_group".to_string()].into_iter().collect();
+        persist_groups(
+            Some(&path),
+            &BTreeMap::from([("newgroup".to_string(), group_with_budget())]),
+            None,
+            None,
+            &base_group_names,
+        )
+        .expect("persist groups");
+        let doc = read(&path).expect("read back");
+        assert!(
+            !doc.deleted_groups.iter().any(|n| n == "ghost_group"),
+            "a group tombstone for a name absent from base config.yaml is permanently inert and \
+             must be pruned: {:?}",
+            doc.deleted_groups
+        );
+        assert!(
+            doc.deleted_groups
+                .iter()
+                .any(|n| n == "shadowed_base_group"),
+            "a group tombstone for a name STILL in base config must be kept: {:?}",
+            doc.deleted_groups
         );
         let _ = std::fs::remove_file(&path);
     }

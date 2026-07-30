@@ -67,11 +67,29 @@ pub(crate) async fn get_hook(
 }
 
 /// `GET /api/v1/admin/groups` — the `groups:` limit-tree read (+ config-plane `ETag` for `If-Match`
-/// chaining, so a client reads then mutates without a second round-trip).
-pub(crate) async fn list_groups(State(handle): State<Arc<AppHandle>>) -> Response {
+/// chaining, so a client reads then mutates without a second round-trip). Paginated by the shared
+/// cursor envelope: `?limit=N` (cap 1000) + opaque `?cursor=`, response `{items, next_cursor}` —
+/// the group tree grows at runtime (auto-provisioned leaves), so it is bounded like every other
+/// growable admin collection (keys/audit/config-versions), never a single unbounded page.
+pub(crate) async fn list_groups(
+    State(handle): State<Arc<AppHandle>>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let limit = q
+        .get("limit")
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(crate::admin::v1::contract::LIST_LIMIT_DEFAULT)
+        .clamp(1, crate::admin::v1::contract::LIST_LIMIT_MAX);
+    let start = match cursor_offset(&q) {
+        Ok(n) => n,
+        Err(resp) => return resp,
+    };
     let version = handle.load().config_version;
     with_config_etag(
-        respond(StatusCode::OK, service(&handle).list_groups().await),
+        respond(
+            StatusCode::OK,
+            service(&handle).list_groups(start, limit).await,
+        ),
         version,
     )
 }
@@ -661,6 +679,7 @@ pub(crate) async fn register_hook(
                     &p.global_hooks,
                     None,
                     Some(&txn_name),
+                    &p.base_hook_names,
                 )
                 .map_err(|e| {
                     format!(
@@ -768,6 +787,7 @@ pub(crate) async fn put_hook(
                     &p.global_hooks,
                     None,
                     Some(&txn_name),
+                    &p.base_hook_names,
                 )
                 .map_err(|e| {
                     format!(
@@ -872,6 +892,7 @@ pub(crate) async fn delete_hook(
                     &p.global_hooks,
                     Some(&txn_name),
                     None,
+                    &p.base_hook_names,
                 )
                 .map_err(|e| {
                     format!(
@@ -1036,6 +1057,7 @@ pub(crate) fn persist_provisioned_group(
             &installed.groups_registry,
             None,
             Some(&group),
+            &installed.base_group_names,
         )
         .map_err(|e| {
             audit::AUDIT.record_by(
@@ -1106,6 +1128,7 @@ pub(crate) async fn register_group(
                     &p.groups_registry,
                     None,
                     Some(&txn_name),
+                    &p.base_group_names,
                 )
                 .map_err(|e| {
                     format!(
@@ -1192,6 +1215,7 @@ pub(crate) async fn put_group(
                     &p.groups_registry,
                     None,
                     Some(&txn_name),
+                    &p.base_group_names,
                 )
                 .map_err(|e| {
                     format!(
@@ -1282,6 +1306,7 @@ pub(crate) async fn patch_group(
                     &p.groups_registry,
                     None,
                     Some(&txn_name),
+                    &p.base_group_names,
                 )
                 .map_err(|e| {
                     format!(
@@ -1368,6 +1393,7 @@ pub(crate) async fn delete_group(
                         &p.groups_registry,
                         Some(&txn_name),
                         None,
+                        &p.base_group_names,
                     )
                     .map_err(|e| {
                         format!(
@@ -1895,6 +1921,7 @@ pub(crate) async fn rollback_config(
                     &p.global_hooks,
                     None,
                     None,
+                    &p.base_hook_names,
                 )
                 .map_err(|e| {
                     format!(
@@ -3043,6 +3070,7 @@ pub(crate) async fn patch_hook_settings(
                     &p.global_hooks,
                     None,
                     Some(&txn_name),
+                    &p.base_hook_names,
                 )
                 .map_err(|e| {
                     format!(
