@@ -66,7 +66,7 @@ jobs:
           --health-retries 5
       # NOTE: there used to be a `vault:` service here for busbar-secret-vault /
       # busbar-secret-vault-plugin's live-Vault tests. That coverage moved with the crates to
-      # GetBusbar/secret-vault (its own ci.yml boots the same real hashicorp/vault dev-mode
+      # GetBusbar/hashicorp-vault (its own ci.yml boots the same real hashicorp/vault dev-mode
       # container) — see docs/plugins.md and scripts/release-check.sh's Vault phase for how the
       # monorepo now gates on that repo's own test suite via a sibling checkout instead.
     steps:

@@ -237,7 +237,7 @@ jobs:
   # `crates/secret-vault-plugin`, `crates/store-redis` + `crates/store-redis-plugin`,
   # `crates/store-postgres` + `crates/store-postgres-plugin`, and `crates/store-sqlite` +
   # `crates/store-sqlite-plugin` all now live in their own repos (GetBusbar/auth-oidc,
-  # GetBusbar/secret-vault, GetBusbar/store-redis, GetBusbar/store-postgres,
+  # GetBusbar/hashicorp-vault, GetBusbar/store-redis, GetBusbar/store-postgres,
   # GetBusbar/store-sqlite) — same-repo 2-crate Cargo workspaces bringing the real logic crate
   # in-repo, the reference restructure GetBusbar/auth-oidc's "Restructure as a same-repo 2-crate
   # workspace" commit established. None of their coverage comes from an in-tree crate any more;

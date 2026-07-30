@@ -194,14 +194,14 @@ secrets:
     settings: { addr: "https://vault.internal:8200", token: { env: VAULT_TOKEN } }
 ```
 
-The first-party **`vault`** module (`busbar-secret-vault-plugin`, released from
-[`GetBusbar/secret-vault`](https://github.com/GetBusbar/secret-vault)) is exactly such a plugin —
-the first-party HashiCorp Vault KV v2 backend (a same-repo `secret-vault` crate for the logic,
-`secret-vault-plugin` for the thin cdylib adapter, mirroring the `busbar-auth-oidc` /
+The first-party **`vault`** module (`busbar-hashicorp-vault-plugin`, released from
+[`GetBusbar/hashicorp-vault`](https://github.com/GetBusbar/hashicorp-vault)) is exactly such a
+plugin — the first-party HashiCorp Vault KV v2 backend (a same-repo `hashicorp-vault` crate for the
+logic, `hashicorp-vault-plugin` for the thin cdylib adapter, mirroring the `busbar-auth-oidc` /
 `busbar-auth-oidc-plugin` split). Open-time config is
 `{ addr, token, ca_cert_pem?, timeout_secs? }`; auth is a pre-obtained `X-Vault-Token` only (Vault's
 simplest, most universal scheme — AppRole/Kubernetes login flows are a natural future extension of
-`busbar-secret-vault` itself). Per-reference `settings` accepts the `#field` suffix shown above
+`busbar-hashicorp-vault` itself). Per-reference `settings` accepts the `#field` suffix shown above
 (`path: "kv/data/openai#api_key"`) OR the equivalent two-key form `{ path: "kv/data/openai", field:
 "api_key" }` for callers that would rather not embed `#` in one string; `field` wins if both are
 given. `path` is the full Vault v1 API path INCLUDING the KV v2 `data/` segment (i.e. exactly what
@@ -374,10 +374,10 @@ Every first-party plugin is built and signed with the same `BUSBAR_SIGN_KEY` / p
 signing identity, but the *release* it ships from depends on the plugin:
 
 - **Store plugins** (`busbar-store-sqlite`, `busbar-store-postgres`, `busbar-store-redis`), the
-  **auth plugin** (`busbar-auth-oidc`), and the **secret plugin** (`busbar-secret-vault`) each live
-  in their own standalone repo (`GetBusbar/store-sqlite`, `GetBusbar/store-postgres`,
-  `GetBusbar/store-redis`, `GetBusbar/auth-oidc`, `GetBusbar/secret-vault`) with its own CI and its
-  own release workflow. Download the tarball for the backend you need from *that plugin's own*
+  **auth plugin** (`busbar-auth-oidc`), and the **secret plugin** (`busbar-hashicorp-vault`) each
+  live in their own standalone repo (`GetBusbar/store-sqlite`, `GetBusbar/store-postgres`,
+  `GetBusbar/store-redis`, `GetBusbar/auth-oidc`, `GetBusbar/hashicorp-vault`) with its own CI and
+  its own release workflow. Download the tarball for the backend you need from *that plugin's own*
   GitHub Release, not from busbar's.
 - **Hook plugins** (`busbar-headroom`, `busbar-webrequest`) also live in their own repos
   (`GetBusbar/headroom-hook`, `GetBusbar/webrequest-hook`) with their own CI and release workflow —
