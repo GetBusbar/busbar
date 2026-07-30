@@ -11,7 +11,27 @@ use busbar_api::{
     VirtualKey,
 };
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::RwLock;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Retention ceiling for `usage`/`metering` rows, keyed by their epoch-second period-start field
+/// (`window_start` / `bucket`). Mirrors `busbar::governance`'s own 31-day `max_window` sweep of its
+/// in-memory rate-map cells (`crates/busbar/src/governance/mod.rs`): this store's ledgers are a
+/// durability shadow of that engine state, so retaining them exactly as long as the engine keeps
+/// its own cells is the right correspondence, not an arbitrary shorter/longer number.
+const MAX_RETENTION_SECS: u64 = 31 * 86_400;
+
+/// Amortized sweep cadence: one `retain()` pass per this many writes. Mirrors
+/// `DEFAULT_RATE_SWEEP_INTERVAL` (`crates/busbar/src/config/mod.rs`).
+const SWEEP_INTERVAL: u64 = 256;
+
+fn now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
 
 /// In-memory `Store`: keys by id, AWS credentials by access-key-id, token ledgers keyed by
 /// (bucket_id, window_start), metering rows keyed by (key_id, bucket, model, provider).
@@ -24,6 +44,10 @@ pub struct MemoryStore {
     /// The revocation DENYLIST: denied subject ids (1.5.0 signed-token keys). A set (the reason is
     /// audit-only and not needed for the enforcement read).
     denylist: RwLock<std::collections::HashSet<String>>,
+    /// Amortized-sweep write counters for `usage`/`metering` (see `MAX_RETENTION_SECS`). Separate
+    /// per map since the two maps see independent write rates.
+    usage_sweep_ticker: AtomicU64,
+    metering_sweep_ticker: AtomicU64,
 }
 
 impl MemoryStore {
@@ -109,6 +133,21 @@ impl Store for MemoryStore {
             .entry((bucket_id.to_string(), window_start))
             .or_default();
         u.apply_delta(delta);
+
+        // Amortized bounded eviction of stale windows, on the write-behind hot path
+        // (`flush_budgets` calls `add_usage` on every tick). `put_usage` (the absolute-set path) is
+        // deliberately NOT swept: `add_usage` is the common/hot path so sweeping it alone is
+        // sufficient to bound growth, and skipping `put_usage` keeps this change minimal.
+        let sweep_needed = self
+            .usage_sweep_ticker
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1)
+            .is_multiple_of(SWEEP_INTERVAL);
+        if sweep_needed {
+            let n = now();
+            usage
+                .retain(|(_, window_start), _| window_start.saturating_add(MAX_RETENTION_SECS) > n);
+        }
         Ok(())
     }
 
@@ -138,6 +177,17 @@ impl Store for MemoryStore {
             .tokens_cache_creation
             .saturating_add(d.tokens_cache_creation);
         e.requests = e.requests.saturating_add(d.requests);
+
+        // Amortized bounded eviction of stale buckets, mirroring `add_usage` above.
+        let sweep_needed = self
+            .metering_sweep_ticker
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1)
+            .is_multiple_of(SWEEP_INTERVAL);
+        if sweep_needed {
+            let n = now();
+            m.retain(|(_, bucket, _, _), _| bucket.saturating_add(MAX_RETENTION_SECS) > n);
+        }
         Ok(())
     }
 
@@ -309,5 +359,124 @@ mod tests {
         assert_eq!(rows[0].tokens_input, 20);
         assert_eq!(rows[0].requests, 2);
         assert!(s.list_metering(999).unwrap().is_empty());
+    }
+
+    /// Regression: `usage` must not grow unbounded forever. A window older than the 31-day
+    /// retention ceiling gets swept once `add_usage` has been called `SWEEP_INTERVAL` times
+    /// (the amortized sweep cadence), even though nothing ever explicitly deletes it.
+    #[test]
+    fn add_usage_sweeps_stale_windows() {
+        let s = MemoryStore::new();
+        let old_window = now().saturating_sub(40 * 86_400); // 40 days old > 31-day retention
+        let d = UsageDelta {
+            requests: 1,
+            billable_requests: 1,
+            models: vec![],
+        };
+        for _ in 0..SWEEP_INTERVAL {
+            s.add_usage("old-bucket", old_window, &d).unwrap();
+        }
+        // The sweep fired on the SWEEP_INTERVAL-th write and evicted the stale row (including the
+        // one just written in that same call, since it's aged by its window_start, not by
+        // recency-of-write).
+        assert_eq!(
+            s.get_usage("old-bucket", old_window).unwrap(),
+            UsageLedger::default()
+        );
+
+        // A fresh window written afterward is unaffected.
+        let fresh_window = now();
+        s.add_usage("fresh-bucket", fresh_window, &d).unwrap();
+        assert_eq!(
+            s.get_usage("fresh-bucket", fresh_window).unwrap().requests,
+            1
+        );
+    }
+
+    /// Regression: the sweep must not over-prune. A window well within the 31-day retention
+    /// ceiling survives a sweep triggered by writes to an unrelated, genuinely stale window.
+    #[test]
+    fn add_usage_sweep_preserves_fresh_windows() {
+        let s = MemoryStore::new();
+        let young_window = now().saturating_sub(5 * 86_400); // 5 days old, well within retention
+        let old_window = now().saturating_sub(40 * 86_400); // 40 days old, past retention
+        let d = UsageDelta {
+            requests: 1,
+            billable_requests: 1,
+            models: vec![],
+        };
+        s.add_usage("young-bucket", young_window, &d).unwrap();
+        for _ in 0..(SWEEP_INTERVAL - 1) {
+            s.add_usage("old-bucket", old_window, &d).unwrap();
+        }
+        // That's SWEEP_INTERVAL total add_usage calls, so the sweep just fired.
+        assert_eq!(
+            s.get_usage("young-bucket", young_window).unwrap().requests,
+            1
+        );
+        assert_eq!(
+            s.get_usage("old-bucket", old_window).unwrap(),
+            UsageLedger::default()
+        );
+    }
+
+    /// Regression: `metering` must not grow unbounded forever either — same amortized sweep, keyed
+    /// by the (day) `bucket` field this time.
+    #[test]
+    fn add_metering_sweeps_stale_buckets() {
+        let s = MemoryStore::new();
+        let old_bucket = now().saturating_sub(40 * 86_400);
+        let d = MeteringDelta {
+            key_id: "k".to_string(),
+            bucket: old_bucket,
+            model: "m".to_string(),
+            provider: "p".to_string(),
+            tokens_input: 1,
+            tokens_output: 0,
+            tokens_cache_read: 0,
+            tokens_cache_creation: 0,
+            requests: 1,
+        };
+        for _ in 0..SWEEP_INTERVAL {
+            s.add_metering(&d).unwrap();
+        }
+        assert!(s.list_metering(old_bucket).unwrap().is_empty());
+
+        let fresh_bucket = now();
+        let fresh = MeteringDelta {
+            bucket: fresh_bucket,
+            ..d.clone()
+        };
+        s.add_metering(&fresh).unwrap();
+        assert_eq!(s.list_metering(fresh_bucket).unwrap().len(), 1);
+    }
+
+    /// Regression: metering sweep must not over-prune fresh buckets either.
+    #[test]
+    fn add_metering_sweep_preserves_fresh_buckets() {
+        let s = MemoryStore::new();
+        let young_bucket = now().saturating_sub(5 * 86_400);
+        let old_bucket = now().saturating_sub(40 * 86_400);
+        let young = MeteringDelta {
+            key_id: "k".to_string(),
+            bucket: young_bucket,
+            model: "m".to_string(),
+            provider: "p".to_string(),
+            tokens_input: 1,
+            tokens_output: 0,
+            tokens_cache_read: 0,
+            tokens_cache_creation: 0,
+            requests: 1,
+        };
+        let old = MeteringDelta {
+            bucket: old_bucket,
+            ..young.clone()
+        };
+        s.add_metering(&young).unwrap();
+        for _ in 0..(SWEEP_INTERVAL - 1) {
+            s.add_metering(&old).unwrap();
+        }
+        assert_eq!(s.list_metering(young_bucket).unwrap().len(), 1);
+        assert!(s.list_metering(old_bucket).unwrap().is_empty());
     }
 }
