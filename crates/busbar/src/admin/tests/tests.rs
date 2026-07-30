@@ -4922,6 +4922,291 @@ async fn test_delete_missing_key_returns_404() {
     handle.abort();
 }
 
+/// A `Store` wrapper that counts calls to `list_keys` (the O(n) full table scan) and `get_key`
+/// (the O(1) single-row lookup) separately, delegating everything else to an inner `MemoryStore`.
+/// Used to prove the single-key admin read/write paths resolve one key via `get_key`, not by
+/// scanning the whole table and filtering by id.
+struct CountingStore {
+    inner: MemoryStore,
+    list_keys_calls: std::sync::atomic::AtomicUsize,
+    get_key_calls: std::sync::atomic::AtomicUsize,
+}
+impl CountingStore {
+    fn new() -> Self {
+        Self {
+            inner: MemoryStore::new(),
+            list_keys_calls: std::sync::atomic::AtomicUsize::new(0),
+            get_key_calls: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+    fn reset(&self) {
+        self.list_keys_calls
+            .store(0, std::sync::atomic::Ordering::SeqCst);
+        self.get_key_calls
+            .store(0, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+impl crate::governance::Store for CountingStore {
+    fn put_key(&self, key: &busbar_api::VirtualKey) -> crate::governance::StoreResult<()> {
+        self.inner.put_key(key)
+    }
+    fn get_key(&self, id: &str) -> crate::governance::StoreResult<Option<busbar_api::VirtualKey>> {
+        self.get_key_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.inner.get_key(id)
+    }
+    fn list_keys(&self) -> crate::governance::StoreResult<Vec<busbar_api::VirtualKey>> {
+        self.list_keys_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.inner.list_keys()
+    }
+    fn delete_key(&self, id: &str) -> crate::governance::StoreResult<()> {
+        self.inner.delete_key(id)
+    }
+    fn get_usage(
+        &self,
+        bucket_id: &str,
+        window_start: u64,
+    ) -> crate::governance::StoreResult<busbar_api::UsageLedger> {
+        self.inner.get_usage(bucket_id, window_start)
+    }
+    fn put_usage(
+        &self,
+        bucket_id: &str,
+        window_start: u64,
+        ledger: &busbar_api::UsageLedger,
+    ) -> crate::governance::StoreResult<()> {
+        self.inner.put_usage(bucket_id, window_start, ledger)
+    }
+    fn add_metering(
+        &self,
+        delta: &crate::governance::MeteringDelta,
+    ) -> crate::governance::StoreResult<()> {
+        self.inner.add_metering(delta)
+    }
+    fn list_metering(
+        &self,
+        bucket: u64,
+    ) -> crate::governance::StoreResult<Vec<crate::governance::MeteringRow>> {
+        self.inner.list_metering(bucket)
+    }
+    fn add_denylist(&self, sub: &str, reason: &str) -> crate::governance::StoreResult<()> {
+        self.inner.add_denylist(sub, reason)
+    }
+    fn list_denylist(&self) -> crate::governance::StoreResult<Vec<String>> {
+        self.inner.list_denylist()
+    }
+}
+
+/// GET /keys/{id}, GET /keys/{id}/usage and POST /keys/{id}/revoke are pure single-key reads (no
+/// cache refresh follows them), so a fixed handler must resolve the key via exactly one
+/// `Store::get_key` call and never fall back to `Store::list_keys` (a full table scan) to find it.
+/// Before the O(1) fix each of these called `gov.all_keys()` (→ `list_keys`) and filtered for the
+/// id by hand.
+#[tokio::test]
+async fn test_single_key_reads_use_get_key_not_list_keys() {
+    crate::metrics::init();
+    let store = Arc::new(CountingStore::new());
+    let gov = gov_with_signer(store.clone(), Some("admintok".to_string()));
+    let (key_a, _) = gov
+        .create_key(
+            NewKeySpec {
+                name: "a".to_string(),
+                allowed_pools: None,
+                group: None,
+                labels: Default::default(),
+            },
+            0,
+        )
+        .unwrap();
+    let (key_b, _) = gov
+        .create_key(
+            NewKeySpec {
+                name: "b".to_string(),
+                allowed_pools: None,
+                group: None,
+                labels: Default::default(),
+            },
+            0,
+        )
+        .unwrap();
+    let (key_c, _) = gov
+        .create_key(
+            NewKeySpec {
+                name: "c".to_string(),
+                allowed_pools: None,
+                group: None,
+                labels: Default::default(),
+            },
+            0,
+        )
+        .unwrap();
+    let (addr, handle) = serve_with_gov(gov).await;
+    let client = reqwest::Client::new();
+
+    store.reset();
+    let resp = client
+        .get(format!("http://{addr}/api/v1/admin/keys/{}", key_a.id))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    assert_eq!(
+        store
+            .list_keys_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "GET /keys/{{id}} must not scan the whole table"
+    );
+    assert!(
+        store
+            .get_key_calls
+            .load(std::sync::atomic::Ordering::SeqCst)
+            >= 1,
+        "GET /keys/{{id}} must resolve the key via Store::get_key"
+    );
+
+    store.reset();
+    let resp = client
+        .get(format!(
+            "http://{addr}/api/v1/admin/keys/{}/usage",
+            key_b.id
+        ))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    assert_eq!(
+        store
+            .list_keys_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "GET /keys/{{id}}/usage must not scan the whole table"
+    );
+    assert!(
+        store
+            .get_key_calls
+            .load(std::sync::atomic::Ordering::SeqCst)
+            >= 1,
+        "GET /keys/{{id}}/usage must resolve the key via Store::get_key"
+    );
+
+    store.reset();
+    let resp = client
+        .post(format!(
+            "http://{addr}/api/v1/admin/keys/{}/revoke",
+            key_c.id
+        ))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    assert_eq!(
+        store
+            .list_keys_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "POST /keys/{{id}}/revoke must not scan the whole table to check existence"
+    );
+    assert!(
+        store
+            .get_key_calls
+            .load(std::sync::atomic::Ordering::SeqCst)
+            >= 1,
+        "POST /keys/{{id}}/revoke must resolve the key via Store::get_key"
+    );
+    handle.abort();
+}
+
+/// PATCH /keys/{id} and DELETE /keys/{id} both refresh the in-memory cache (one legitimate
+/// `list_keys` call) after a successful mutation, so they cannot be zero — but the pre-fix code
+/// called `list_keys` a SECOND time (via `gov.all_keys().find(...)`) just to locate the row before
+/// mutating it. A fixed handler resolves that existence/If-Match read via `Store::get_key`, so only
+/// the one unavoidable refresh-driven `list_keys` call remains.
+#[tokio::test]
+async fn test_single_key_writes_use_get_key_for_their_existence_check() {
+    crate::metrics::init();
+    let store = Arc::new(CountingStore::new());
+    let gov = gov_with_signer(store.clone(), Some("admintok".to_string()));
+    let (key_a, _) = gov
+        .create_key(
+            NewKeySpec {
+                name: "a".to_string(),
+                allowed_pools: None,
+                group: None,
+                labels: Default::default(),
+            },
+            0,
+        )
+        .unwrap();
+    let (key_b, _) = gov
+        .create_key(
+            NewKeySpec {
+                name: "b".to_string(),
+                allowed_pools: None,
+                group: None,
+                labels: Default::default(),
+            },
+            0,
+        )
+        .unwrap();
+    let (addr, handle) = serve_with_gov(gov).await;
+    let client = reqwest::Client::new();
+
+    store.reset();
+    let resp = client
+        .patch(format!("http://{addr}/api/v1/admin/keys/{}", key_a.id))
+        .header("x-admin-token", "admintok")
+        .json(&serde_json::json!({"enabled": false}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    assert_eq!(
+        store
+            .list_keys_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "PATCH /keys/{{id}} must call list_keys only once, for the post-write cache refresh — \
+         not a second time to locate the row"
+    );
+    assert!(
+        store
+            .get_key_calls
+            .load(std::sync::atomic::Ordering::SeqCst)
+            >= 1,
+        "PATCH /keys/{{id}} must resolve the pre-image via Store::get_key"
+    );
+
+    store.reset();
+    let resp = client
+        .delete(format!("http://{addr}/api/v1/admin/keys/{}", key_b.id))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 204);
+    assert_eq!(
+        store
+            .list_keys_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "DELETE /keys/{{id}} must call list_keys only once, for the post-write cache refresh — \
+         not a second time to locate the row"
+    );
+    assert!(
+        store
+            .get_key_calls
+            .load(std::sync::atomic::Ordering::SeqCst)
+            >= 1,
+        "DELETE /keys/{{id}} must resolve the pre-image via Store::get_key"
+    );
+    handle.abort();
+}
+
 #[tokio::test]
 async fn test_delete_key_is_not_idempotent_204() {
     // After a successful delete, a second delete of the same id must 404 (proves the 204 was a

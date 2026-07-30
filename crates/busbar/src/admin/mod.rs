@@ -1136,7 +1136,10 @@ pub(crate) async fn update_key(
                 // ONE read of the pre-image, inside the gate: it answers If-Match staleness,
                 // existence, AND the cap guard below, so the three cannot disagree about which
                 // record they are talking about.
-                let Some(before) = gov.all_keys()?.into_iter().find(|k| k.id == id) else {
+                // O(1) row lookup instead of a full-table `all_keys()` scan filtered by id: this
+                // runs under `EXISTENCE_GATE`, where a fresh single-row store read is exactly what
+                // the If-Match compare below needs (see `Store::get_key`).
+                let Some(before) = gov.store().get_key(&id)? else {
                     return Ok(UpdateOutcome::NotFound);
                 };
                 if let Some(tag) = &if_match {
@@ -1510,7 +1513,8 @@ pub(crate) async fn revoke_key(
         // key in the window between this check-then-act, producing a phantom `key.revoke APPLIED`
         // audit record for a key another operation already fully disposed of (audit non-repudiation).
         let _existence_guard = EXISTENCE_GATE.lock().unwrap_or_else(|e| e.into_inner());
-        let exists = gov.all_keys()?.iter().any(|k| k.id == id_for_task);
+        // O(1) row lookup instead of a full-table `all_keys()` scan filtered by id.
+        let exists = gov.store().get_key(&id_for_task)?.is_some();
         if !exists {
             return Ok(false);
         }
@@ -1601,13 +1605,9 @@ pub(crate) async fn get_key(
     }
     let gov = gov.clone();
     let id2 = id.clone();
-    // The synchronous store read runs on the blocking pool (the SQLite backend is sync). Read via
-    // `all_keys` + find (the same accessor the list handler uses) — admin scale, no hot path.
-    let res = tokio::task::spawn_blocking(move || {
-        gov.all_keys()
-            .map(|keys| keys.into_iter().find(|k| k.id == id2))
-    })
-    .await;
+    // The synchronous store read runs on the blocking pool (the SQLite backend is sync). O(1) row
+    // lookup via `Store::get_key`, not a full-table `all_keys()` scan filtered by id.
+    let res = tokio::task::spawn_blocking(move || gov.store().get_key(&id2)).await;
     match res {
         Ok(Ok(Some(k))) => {
             let etag = key_etag(&k);
@@ -1657,7 +1657,8 @@ pub(crate) async fn key_usage(
         // DERIVED at read time: spend_cents = ledger x CURRENT rate card (+ fee x requests) - a
         // rate-card correction changes this number on the very next read (tokens are the truth).
         let usage = gov2.usage_for(&cost, &id2, now)?;
-        let key = gov2.all_keys()?.into_iter().find(|k| k.id == id2);
+        // O(1) row lookup instead of a full-table `all_keys()` scan filtered by id.
+        let key = gov2.store().get_key(&id2)?;
         Ok::<_, crate::governance::StoreError>(usage.map(|u| (u, key)))
     })
     .await;
@@ -1762,8 +1763,9 @@ pub(crate) async fn delete_key(
     let res = tokio::task::spawn_blocking(move || {
         let _existence_guard = EXISTENCE_GATE.lock().unwrap_or_else(|e| e.into_inner());
         // The key RECORD (not just existence) is read under the gate: the If-Match compare must be
-        // atomic with the delete, exactly like PATCH's compare-and-put.
-        let key = gov.all_keys()?.into_iter().find(|k| k.id == id_for_task);
+        // atomic with the delete, exactly like PATCH's compare-and-put. O(1) row lookup instead of
+        // a full-table `all_keys()` scan filtered by id.
+        let key = gov.store().get_key(&id_for_task)?;
         match key {
             None => Ok(DeleteOutcome::NotFound),
             Some(k) => {
