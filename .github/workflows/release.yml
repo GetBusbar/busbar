@@ -357,7 +357,7 @@ jobs:
       - name: Build the hook plugin cdylibs + the packer
         run: |
           cargo build --release --target ${{ matrix.target }} \
-            -p busbar-webrequest-hook-plugin -p busbar-headroom-hook-plugin \
+            -p busbar-webrequest-hook-plugin \
             -p busbar-plugin-pack
         shell: bash
       - name: Package + sign the hook plugin tarballs
