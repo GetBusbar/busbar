@@ -1270,30 +1270,53 @@ mod tests {
     /// WEAKEST TEST IN THIS FILE, labeled as such per the design doc: if `t(1000)` is too fast to be
     /// above timer-granularity noise, the ratio is meaningless. The assertion checks that floor first
     /// and panics with a clear message rather than silently passing on noise.
+    ///
+    /// MIN-OF-`TRIALS`, not a single sample: contention from other tests running concurrently in the
+    /// same `cargo test --workspace` invocation can only ever ADD delay to one `Instant::now()` /
+    /// `elapsed()` pair — a scheduler preemption, a cache eviction from a neighboring thread, GC-style
+    /// jemalloc housekeeping — never subtract below the true uncontended cost of the drain. So the
+    /// MINIMUM across several independent trials converges toward that true cost regardless of how
+    /// loaded the machine is, while a single sample has no such guarantee and can land on an
+    /// arbitrarily contended instant for `t(8000)`, `t(32000)`, or both, skewing the ratio in either
+    /// direction. This is a structural hardening of the MEASUREMENT, not a widened tolerance: the
+    /// asserted ratio, its rationale, and the floor check are all unchanged.
     #[test]
     fn drain_frames_checked_scales_linearly_in_frame_count() {
+        /// Independent trials per data point; the reported duration is the minimum observed.
+        const TRIALS: u32 = 7;
+
         fn bench(n: usize) -> std::time::Duration {
-            let mut buf = Vec::new();
-            for i in 0..n {
-                let payload = format!("{{\"i\":{i}}}");
-                buf.extend_from_slice(&encode_frame("contentBlockDelta", payload.as_bytes()));
+            let mut best: Option<std::time::Duration> = None;
+            for _ in 0..TRIALS {
+                let mut buf = Vec::new();
+                for i in 0..n {
+                    let payload = format!("{{\"i\":{i}}}");
+                    buf.extend_from_slice(&encode_frame("contentBlockDelta", payload.as_bytes()));
+                }
+                let start = std::time::Instant::now();
+                let (_, status, _) = drain_frames_checked(&mut buf, None);
+                assert_eq!(status, DrainStatus::Ok);
+                let elapsed = start.elapsed();
+                best = Some(match best {
+                    Some(b) if b <= elapsed => b,
+                    _ => elapsed,
+                });
             }
-            let start = std::time::Instant::now();
-            let (_, status, _) = drain_frames_checked(&mut buf, None);
-            assert_eq!(status, DrainStatus::Ok);
-            start.elapsed()
+            best.expect("TRIALS is a nonzero constant, so the loop runs at least once")
         }
         let t1000 = bench(8000);
         assert!(
             t1000 >= std::time::Duration::from_millis(1),
-            "t(8000) = {t1000:?} is too fast to be above timer-granularity noise; the ratio below \
-             would be meaningless — WITHDRAWN rather than tuned, per the design doc's own guidance"
+            "min-of-{TRIALS} t(8000) = {t1000:?} is too fast to be above timer-granularity noise; \
+             the ratio below would be meaningless — WITHDRAWN rather than tuned, per the design \
+             doc's own guidance"
         );
         let t4000 = bench(32000);
         assert!(
             t4000 < t1000 * 6,
-            "drain_frames_checked scaled worse than linear: t(8000)={t1000:?} t(32000)={t4000:?} \
-             (ratio {:.1}x, quadratic predicts ~16x, linear predicts ~4x)",
+            "drain_frames_checked scaled worse than linear: min-of-{TRIALS} t(8000)={t1000:?} \
+             min-of-{TRIALS} t(32000)={t4000:?} (ratio {:.1}x, quadratic predicts ~16x, linear \
+             predicts ~4x)",
             t4000.as_secs_f64() / t1000.as_secs_f64()
         );
     }
