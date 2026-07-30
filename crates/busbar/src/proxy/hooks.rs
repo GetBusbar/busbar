@@ -325,8 +325,21 @@ pub(crate) const REDACTED_REASONING_MARKER: &str = "[busbar:redacted_reasoning]"
 pub(crate) enum BlockText<'a> {
     /// Real, screenable content — project it, count its chars.
     Text(std::borrow::Cow<'a, str>),
-    /// Opaque provider-encrypted reasoning; no plaintext exists (Anthropic `redacted_thinking`,
-    /// Bedrock `redactedContent`). Caller substitutes [`REDACTED_REASONING_MARKER`].
+    /// Opaque provider-encrypted reasoning; no plaintext exists to show a hook (Anthropic
+    /// `redacted_thinking`, Bedrock `redactedContent`, a Responses `reasoning` item carrying only
+    /// `encrypted_content` with no `content[]`/`summary[]` text). Caller substitutes
+    /// [`REDACTED_REASONING_MARKER`].
+    ///
+    /// This is a HOOK-VISIBILITY category — "opaque content ships to the provider but there is no
+    /// screenable text for it" — keyed on THAT question, not a mirror of `IrBlock::Thinking`'s own
+    /// `redacted: bool` field (`ir/mod.rs`). The two do NOT coincide for Responses: a Responses
+    /// `reasoning` item with only `encrypted_content` still reads into `IrBlock::Thinking` with
+    /// `redacted: false` (Responses has no IR-level redacted-reasoning concept; `redacted` is an
+    /// Anthropic/Bedrock-only distinction — see `read_response`/the request-item reader in
+    /// `proto/openai_responses/reader.rs`), yet `block_text` must still report `Redacted` here
+    /// because there is no plaintext to show. A future "harmonization" that keys this variant off
+    /// `IrBlock::Thinking.redacted` instead of the wire shape would silently reopen this exact
+    /// bypass for the Responses encrypted-content-only case.
     Redacted,
     /// Structurally text-less (image, tool_use, tool_result) or a block/item this dialect has no
     /// declared text field for.
@@ -346,12 +359,20 @@ pub(crate) enum BlockText<'a> {
 /// operator's network unscreened) — not "the client attacking itself" (the client controls the
 /// payload either way; the gate exists because the client is untrusted).
 ///
-/// TWO of the three bypasses need no forged/valid `signature` at all to reach the provider
-/// verbatim: Bedrock's writer re-emits `reasoningContent.reasoningText` with no unsigned-drop
-/// filter (unlike Anthropic's egress path, which drops an unsigned plaintext `Thinking` block),
-/// and the Responses reader admits a `reasoning` item on `!text.is_empty()` alone —
-/// `encrypted_content` is `Option` and is never required. Both are clean, no-forgery-required
-/// screening bypasses, not one clean path and one lesser one.
+/// TWO of the three original bypasses need no forged/valid `signature` at all to reach the
+/// provider verbatim: Bedrock's writer re-emits `reasoningContent.reasoningText` with no
+/// unsigned-drop filter (unlike Anthropic's egress path, which drops an unsigned plaintext
+/// `Thinking` block), and the Responses reader admits a `reasoning` item on `!text.is_empty() ||
+/// signature.is_some()` — EITHER a real text part OR a non-empty `encrypted_content` blob is
+/// sufficient on its own (`proto/openai_responses/reader.rs`, both the input-item and
+/// output-item arms). A later audit found the `encrypted_content`-only half of that OR was itself
+/// a fourth bypass: this fn's Responses arm called only `read_reasoning_text` and returned `None`
+/// (not `Redacted`) when it came back empty, so an item admitted purely on its opaque blob was
+/// invisible to a hook exactly like the other two. Fixed alongside the caller-dispatch gap that
+/// let it slip past even after the arm itself was fixed (a `reasoning` item with `content: []` —
+/// present but empty, not absent — took `total_text_chars`/`build_prompt_projection`'s
+/// content-shape branch instead of reaching this fn at all; both callers now check the item
+/// `type` before the `content`-shape match).
 ///
 /// Dispatch is keyed on `ingress_protocol` (the PARSED, authenticated dialect this request was
 /// read as), never on "does this JSON object happen to have a `reasoningContent` key": an
@@ -415,10 +436,20 @@ pub(crate) fn block_text<'a>(b: &'a Value, ingress_protocol: &str) -> BlockText<
         PROTO_RESPONSES => match b.get("type").and_then(Value::as_str) {
             Some(crate::proto::openai_responses::ITEM_TYPE_REASONING) => {
                 let text = crate::proto::openai_responses::read_reasoning_text(b);
-                if text.is_empty() {
-                    BlockText::None
+                if !text.is_empty() {
+                    // `text` is already a `Cow<'_, str>` borrowing from `b` in the common
+                    // (single-part) case — no `Cow::Owned` wrapping needed here any more.
+                    BlockText::Text(text)
+                } else if crate::proto::openai_responses::read_reasoning_encrypted_content(b)
+                    .is_some()
+                {
+                    // Opaque `encrypted_content`-only item (no `content[]`/`summary[]` text): the
+                    // reader admits this shape to the provider on the signature alone (see this
+                    // fn's doc comment), so it must not read as "nothing here" any more than the
+                    // Anthropic/Bedrock redacted shapes do. Never leak the raw blob to a hook.
+                    BlockText::Redacted
                 } else {
-                    BlockText::Text(Cow::Owned(text))
+                    BlockText::None
                 }
             }
             _ => generic_block_text(b),
@@ -502,16 +533,41 @@ pub(crate) fn system_text_chars(v: &Value, ingress_protocol: &str) -> usize {
 /// text/thinking blocks, Bedrock `[{text}]`/`reasoningContent`, or Responses `input_text` blocks
 /// NESTED inside a message's `content[]`); gemini turns carry `parts[].text` instead. The
 /// Responses API ALSO allows a TOP-LEVEL typed item directly in `input[]`
-/// (`{type: "input_text"/"reasoning", …}`, no `content` key) — that text lives at the item root
-/// (or, for a summary-only `reasoning` item, under `summary[]`), so a responses turn with no
-/// `content` is dispatched through [`block_text`] on the item itself (mirroring the proto
-/// reader). A best-effort projection over the pristine ingress body — never fails.
+/// (`{type: "input_text"/"output_text", …}`, no `content` key) — that text lives at the item
+/// root, so such an item is dispatched through [`block_text`] on itself (mirroring the proto
+/// reader). A `reasoning` item is dispatched through [`block_text`] on its item root
+/// UNCONDITIONALLY (checked before the `content`-shape match, not folded into the "no `content`
+/// key" fallback above): its text/opaque-blob can live under `summary[]`/`content[]`/
+/// `encrypted_content`, and `content` on a reasoning item may be ABSENT, an EMPTY array, or a
+/// populated array — an empty array must still reach `block_text`'s reasoning arm rather than
+/// being treated as "zero blocks to walk". A best-effort projection over the pristine ingress
+/// body — never fails.
 pub(crate) fn total_text_chars(v: &Value, ingress_protocol: &str, system_chars: usize) -> usize {
     let mut total = system_chars;
     if let Some(turns) = conversation_turns(v, ingress_protocol) {
         for m in turns {
             if ingress_protocol == PROTO_GEMINI {
                 total += gemini_parts_chars(m);
+                continue;
+            }
+            // A Responses `reasoning` item is dispatched through `block_text` on the ITEM ROOT
+            // regardless of whether `content` is absent, an empty array, or a populated array:
+            // `content: []` (present but empty) is a real, client-triggerable shape the reader
+            // still admits on `encrypted_content` alone (`ITEM_TYPE_REASONING` in
+            // `proto/openai_responses/reader.rs`), and matching on `m.get("content")` shape
+            // FIRST would route it through the (empty) array-walk below and never reach
+            // `block_text`'s reasoning arm at all — invisible to the SIZE signal even after that
+            // arm itself learned to recognize `encrypted_content`. Checked before the
+            // `content`-shape match so this can never fall through to it.
+            if ingress_protocol == PROTO_RESPONSES
+                && m.get("type").and_then(Value::as_str)
+                    == Some(crate::proto::openai_responses::ITEM_TYPE_REASONING)
+            {
+                total += match block_text(m, PROTO_RESPONSES) {
+                    BlockText::Text(t) => t.chars().count(),
+                    BlockText::Redacted => REDACTED_REASONING_MARKER.chars().count(),
+                    BlockText::None => 0,
+                };
                 continue;
             }
             match m.get("content") {
@@ -525,10 +581,9 @@ pub(crate) fn total_text_chars(v: &Value, ingress_protocol: &str, system_chars: 
                         };
                     }
                 }
-                // A top-level Responses `input_text`/`output_text`/`reasoning` item carries its
-                // text at the item root (or under `summary[]`/`content[]` for `reasoning`), not
-                // under `content` — dispatch it through `block_text` so a summary-only reasoning
-                // item is counted instead of silently under-counting the SIZE signal.
+                // A top-level Responses `input_text`/`output_text` item (non-reasoning; the
+                // reasoning case is handled above) carries its text at the item root, not under
+                // `content` — dispatch it through `block_text` too.
                 _ if ingress_protocol == PROTO_RESPONSES => {
                     total += match block_text(m, PROTO_RESPONSES) {
                         BlockText::Text(t) => t.chars().count(),
@@ -598,12 +653,17 @@ pub(crate) fn body_end_user(v: &Value) -> Option<String> {
 ///
 /// GUARANTEE: no content block can carry text to the provider that this projection does not
 /// either project or explicitly mark. As of this fix that includes reasoning/thinking text
-/// (Anthropic `thinking`, Bedrock `reasoningText`, Responses `reasoning`) — a `prompt: ro`/`rw`
-/// grant now sees the SAME chain-of-thought content the provider receives when a client replays
-/// it into a multi-turn body. This is a widened disclosure for an already-opt-in, `full`-scope-
-/// gated grant (see CHANGELOG), not a new grant. `apply_rewrite_to_body` is a SEPARATE, pre-
-/// existing, out-of-scope hazard: it is not index-aligned, so a `prompt: rw` hook that echoes
-/// this projection verbatim promotes reasoning text (or, for a redacted turn, the marker) into a
+/// (Anthropic `thinking`, Bedrock `reasoningText`, Responses `reasoning` text under
+/// `content[]`/`summary[]`) AND opaque provider-encrypted reasoning that ships on the signature
+/// alone with no plaintext at all (Anthropic `redacted_thinking`, Bedrock `redactedContent`,
+/// Responses `reasoning` carrying only `encrypted_content` — including when `content` is present
+/// but an EMPTY array, not just absent, which still reaches `block_text`'s reasoning arm here) —
+/// a `prompt: ro`/`rw` grant now sees the SAME chain-of-thought content the provider receives
+/// when a client replays it into a multi-turn body, or the redacted-reasoning marker when it
+/// can't. This is a widened disclosure for an already-opt-in, `full`-scope-gated grant (see
+/// CHANGELOG), not a new grant. `apply_rewrite_to_body` is a SEPARATE, pre-existing,
+/// out-of-scope hazard: it is not index-aligned, so a `prompt: rw` hook that echoes this
+/// projection verbatim promotes reasoning text (or, for a redacted turn, the marker) into a
 /// visible assistant text block shipped upstream — see that function's doc comment.
 pub(crate) fn build_prompt_projection<'a>(
     v: &'a Value,
@@ -677,12 +737,30 @@ pub(crate) fn build_prompt_projection<'a>(
             .map(|m| {
                 let text = if ingress_protocol == PROTO_GEMINI {
                     flatten_gemini_parts(m)
+                } else if ingress_protocol == PROTO_RESPONSES
+                    && m.get("type").and_then(Value::as_str)
+                        == Some(crate::proto::openai_responses::ITEM_TYPE_REASONING)
+                {
+                    // A Responses `reasoning` item is dispatched through `block_text` on the ITEM
+                    // ROOT UNCONDITIONALLY — checked by `type` BEFORE looking at `content`'s
+                    // shape, not folded into the "no `content` key" branch below. Its text/opaque
+                    // blob can live under `summary[]`/`content[]`/`encrypted_content`, and
+                    // `content` on a reasoning item may be ABSENT, an EMPTY array, or a populated
+                    // array; `content: []` (present but empty, a real client-triggerable shape —
+                    // the reader still admits the item on `encrypted_content` alone) must still
+                    // reach `block_text`'s reasoning arm rather than falling into
+                    // `flatten_content`'s empty-array walk below, which would silently drop an
+                    // `encrypted_content`-only item instead of marking it `Redacted`.
+                    match block_text(m, PROTO_RESPONSES) {
+                        BlockText::Text(t) => t,
+                        BlockText::Redacted => Cow::Borrowed(REDACTED_REASONING_MARKER),
+                        BlockText::None => Cow::Borrowed(""),
+                    }
                 } else if ingress_protocol == PROTO_RESPONSES && m.get("content").is_none() {
                     // A top-level Responses typed item — `{type: "input_text"/"output_text",
-                    // text}` OR a summary-only `{type: "reasoning", summary: [...]}` with no
-                    // `content` key — carries its text at the item root or nested under
-                    // `summary[]`/`content[]`, not under a `content` string/array. Dispatch the
-                    // ITEM ITSELF through `block_text` so the `reasoning` arm applies.
+                    // text}` — carries its text at the item root, not under a `content`
+                    // string/array (the `reasoning` case is handled above). Dispatch the ITEM
+                    // ITSELF through `block_text`.
                     match block_text(m, PROTO_RESPONSES) {
                         BlockText::Text(t) => t,
                         BlockText::Redacted => Cow::Borrowed(REDACTED_REASONING_MARKER),
