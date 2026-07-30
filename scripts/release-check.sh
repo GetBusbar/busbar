@@ -21,11 +21,11 @@
 #   - The release-SIGNING pipeline (BUSBAR_SIGN_KEY) — out of scope by design. Every tarball
 #     here is packed with `--allow-unsigned`, exactly like CI's fallback path when the signing
 #     secret isn't provisioned (see the TODO(release-keys) seam in release.yml).
-#   - OIDC's real-ABI plugin proof — that already exists as genuine, hermetic, real-crypto
-#     coverage in `cargo test -p busbar-plugin-loader` (`load_and_exercise_auth_oidc_plugin_*`,
-#     crates/plugin-loader/src/lib.rs), which stands up a real local JWKS server + a real minted
-#     JWT and drives the plugin through the real ABI. This script just runs that suite as a gate
-#     rather than reinventing a second, lower-quality fake-IdP proof (see Phase 5 below).
+#   - OIDC's real-ABI plugin proof — auth-oidc now lives entirely in its own repo (GetBusbar/auth-oidc,
+#     a same-repo 2-crate workspace bringing 100% of its own logic + adapter). That repo's own test
+#     suite already stands up a real local JWKS server + a real minted JWT and drives the plugin
+#     through the real ABI. This script sibling-checks-out that repo and runs its suite as a gate
+#     (Phase 4 below) rather than reinventing a second, lower-quality fake-IdP proof.
 #
 # WHEN TO RUN
 #   Pre-tag / pre-push, NOT on every commit. This is release infrastructure, not part of the
@@ -202,14 +202,14 @@ PACK_BIN="${REPO_ROOT}/target/release/busbar-plugin-pack"
 ok "busbar binary: $BUSBAR_BIN"
 ok "busbar-plugin-pack: $PACK_BIN"
 
-# ── Build + pack every store plugin + the auth-oidc plugin, in the same host-native/unsigned
-#    shape each plugin's own standalone-repo release workflow packs it (busbarAI's release.yml
-#    itself no longer builds or packs these — it only ships the busbar binary + the bundled hook
-#    plugins now; see the "Store/auth plugin releases moved out" comment there). ──────────────────
-phase "Phase 0b: build + pack store-sqlite / store-postgres / store-redis / auth-oidc plugin tarballs"
+# ── Build + pack every store plugin still in-tree, in the same host-native/unsigned shape each
+#    plugin's own standalone-repo release workflow packs it (busbarAI's release.yml itself no
+#    longer builds or packs these — it only ships the busbar binary + the bundled hook plugins
+#    now; see the "Store/auth plugin releases moved out" comment there). auth-oidc is built from
+#    its own sibling checkout in Phase 4 below, not here — it fully owns its logic crate now. ──
+phase "Phase 0b: build + pack store-sqlite / store-postgres / store-redis plugin tarballs"
 cargo build --release \
-  -p busbar-store-sqlite-plugin -p busbar-store-postgres-plugin -p busbar-store-redis-plugin \
-  -p busbar-auth-oidc-plugin
+  -p busbar-store-sqlite-plugin -p busbar-store-postgres-plugin -p busbar-store-redis-plugin
 
 pack_store_plugin() {
   local store="$1"
@@ -454,16 +454,24 @@ else
   docker rm -f "$REDIS_CONTAINER" >/dev/null 2>&1 || true
 fi
 
-# ── Phase 4: OIDC — proof already lives in the real test suite; run it as a gate, not a duplicate ──
-phase "Phase 4: auth-oidc-plugin — real-ABI proof via cargo test (no duplicate fake-IdP scaffolding)"
-note "A full local IdP (Keycloak, etc.) is disproportionate scaffolding for a release-gate script."
-note "crates/plugin-loader/src/lib.rs's load_and_exercise_auth_oidc_plugin_success and"
-note "..._bad_config_fails_over_abi tests already stand up a REAL local mock JWKS server, mint a"
-note "REAL JWT, and drive the busbar-auth-oidc-plugin cdylib through the REAL dlopen ABI — genuine,"
-note "hermetic, real-crypto coverage. Running that suite here (rather than reinventing a second,"
-note "lower-quality proof) is the correct release-gate check for this plugin."
-cargo test -p busbar-plugin-loader --release load_and_exercise_auth_oidc_plugin -- --nocapture
-ok "OIDC real-ABI plugin tests passed"
+# ── Phase 4: OIDC — sibling checkout; auth-oidc now owns 100% of its own logic + real-ABI proof ──
+phase "Phase 4: auth-oidc — sibling checkout: real dlopen ABI proof via its own test suite"
+AUTH_OIDC_SRC="${REPO_ROOT}/../auth-oidc"
+if [ -d "$AUTH_OIDC_SRC" ]; then
+  note "auth-oidc no longer lives in-tree — it brings 100% of what it needs in its own repo, a"
+  note "same-repo 2-crate workspace (busbar-auth-oidc + busbar-auth-oidc-plugin). Its own"
+  note "auth-oidc-plugin/tests/e2e.rs stands up a REAL local mock JWKS server over real TLS, mints"
+  note "a REAL JWT, and drives the built cdylib through the REAL dlopen ABI — genuine, hermetic,"
+  note "real-crypto coverage. Running its own workspace test suite here (rather than reinventing a"
+  note "second, lower-quality proof in this repo) is the correct release-gate check for this plugin."
+  cargo test --release --manifest-path "${AUTH_OIDC_SRC}/Cargo.toml" --workspace -- --nocapture
+  ok "OIDC real-ABI plugin tests passed (sibling checkout)"
+else
+  echo "SKIP: ../auth-oidc not present as a sibling checkout on this machine." >&2
+  echo "Gate incomplete — OIDC coverage could not run. Check out ../auth-oidc for full coverage" >&2
+  echo "before tagging, or confirm that repo's own CI is green." >&2
+  AUTH_OIDC_SKIPPED=1
+fi
 
 # ── Phase 5: Headroom / Webrequest — local --validate dlopen smoke test ────────────────────────────
 phase "Phase 5: headroom-hook / webrequest-hook — local busbar --validate dlopen smoke test"
@@ -476,7 +484,7 @@ run_validate_smoke() {
   mkdir -p "${work}/plugins"
   echo "  building ${name} cdylib from ${manifest_path}..."
   cargo build --release --manifest-path "$manifest_path"
-  local built_dir; built_dir="$(dirname "$(dirname "$manifest_path")")/target/release"
+  local built_dir; built_dir="$(dirname "$manifest_path")/target/release"
   local lib="${built_dir}/${LIBPREFIX}${crate_lib_name}.${LIBEXT}"
   [ -f "$lib" ] || { echo "expected built cdylib not found: $lib" >&2; exit 1; }
   local pack_extra=()
@@ -530,7 +538,14 @@ fi
 
 phase "RELEASE GATE PASSED"
 echo "Total elapsed: ${SECONDS}s"
-echo "SQLite, Postgres, Redis, and OIDC phases all passed with real assertions."
+echo "SQLite, Postgres, and Redis phases all passed with real assertions."
+if [ -n "${AUTH_OIDC_SKIPPED:-}" ]; then
+  echo "NOTE: ../auth-oidc was not present locally — OIDC coverage was skipped, not passed. Run on"
+  echo "a machine with ../auth-oidc checked out for full coverage before tagging, or confirm that"
+  echo "repo's own CI is green."
+else
+  echo "OIDC phase passed with real assertions (sibling checkout)."
+fi
 if [ ! -d "$HEADROOM_SRC" ] || [ ! -d "$WEBREQUEST_SRC" ]; then
   echo "NOTE: one or both hook-plugin sibling repos were not present locally — that phase was"
   echo "partially or fully skipped. Run on a machine with ../headroom-hook and ../webrequest-hook"
