@@ -46,6 +46,11 @@ jobs:
         with:
           repository: GetBusbar/headroom-hook
           ref: a61e7f8
+          # a61e7f8 is an abbreviated commit SHA, not the default branch tip — the default shallow
+          # fetch-depth:1 cannot resolve it (checkout silently leaves the directory empty rather
+          # than erroring the step, which is why this surfaced downstream as a cargo "manifest path
+          # does not exist" failure instead of at the checkout step itself). Full history required.
+          fetch-depth: 0
           path: headroom-hook
         continue-on-error: true
 
