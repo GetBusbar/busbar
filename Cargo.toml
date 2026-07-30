@@ -5,6 +5,7 @@ members = [
     "crates/api",
     "crates/plugin-abi",
     "crates/plugin-sdk",
+    "crates/plugin-testkit",
     "crates/plugin-loader",
     "crates/plugin-sign",
     "crates/plugin-pack",
