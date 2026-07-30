@@ -42,13 +42,27 @@ pub struct ReqwestFetcher {
 
 impl ReqwestFetcher {
     /// Build a fetcher with the given total request timeout.
-    pub fn new(timeout: Duration) -> Result<Self, String> {
-        let client = reqwest::blocking::Client::builder()
+    ///
+    /// `extra_root_cert_pem`, when present, is an ADDITIONAL trusted root CA (PEM) layered on top of
+    /// the built-in webpki root store — never a replacement for it, and cert validation stays fully
+    /// enabled (this is not `danger_accept_invalid_certs`). This is a real operator-facing need: a
+    /// self-hosted/internal-CA OIDC provider (e.g. an on-prem Keycloak signed by a corporate CA) whose
+    /// JWKS/discovery endpoint doesn't chain to a public root. It doubles as the hook that lets tests
+    /// stand up a real local HTTPS JWKS fixture (self-signed, added here) and exercise the genuine
+    /// TLS + fetch path instead of stubbing it out.
+    pub fn new(timeout: Duration, extra_root_cert_pem: Option<&str>) -> Result<Self, String> {
+        let mut builder = reqwest::blocking::Client::builder()
             .timeout(timeout)
             .connect_timeout(timeout)
             // HTTPS-only: a JWKS/discovery endpoint fetched over plaintext could be MITM'd to serve
             // attacker keys. `https_only` refuses any non-TLS URL.
-            .https_only(true)
+            .https_only(true);
+        if let Some(pem) = extra_root_cert_pem {
+            let cert = reqwest::Certificate::from_pem(pem.as_bytes())
+                .map_err(|e| format!("invalid ca_cert_pem: {e}"))?;
+            builder = builder.add_root_certificate(cert);
+        }
+        let client = builder
             .build()
             .map_err(|e| format!("failed to build JWKS HTTP client: {e}"))?;
         Ok(Self { client })
