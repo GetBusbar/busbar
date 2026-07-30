@@ -10,12 +10,11 @@
 #   out" comment in .github/workflows/release.yml) load into a REAL busbar binary, that busbar
 #   serves REAL HTTP traffic through each backend exactly the way docs/getting-started.md and
 #   docs/configuration.md tell an operator to configure it, and that keys/usage genuinely
-#   SURVIVE A PROCESS RESTART against sqlite and postgres. It builds real artifacts, spins up a
-#   real `docker run` postgres server with a real readiness probe (no fixed sleeps), mints a real
-#   virtual key over the real admin API, drives a real chat-completion request through a real (if
-#   minimal) mock upstream, and asserts real response bodies and real usage counters — not just
-#   exit codes. (Redis's own real-ABI + real-persistence proof now lives in its own repo — see
-#   Phase 3 below.)
+#   SURVIVE A PROCESS RESTART against sqlite. It builds real artifacts, mints a real virtual key
+#   over the real admin API, drives a real chat-completion request through a real (if minimal) mock
+#   upstream, and asserts real response bodies and real usage counters — not just exit codes.
+#   (Redis's and Postgres's own real-ABI + real-persistence proofs now live in their own repos —
+#   see Phase 2/Phase 3 below.)
 #
 # WHAT THIS DOES NOT TEST
 #   - Store-sqlite's hermetic in-process dlopen path — that's a separate, parallel test.
@@ -38,6 +37,11 @@
 #     plain busbar-store-redis lib crate — genuine, hermetic, real-Redis coverage. This script
 #     sibling-checks-out that repo and runs its suite as a gate (Phase 3 below) rather than
 #     reinventing a second, lower-quality proof in-tree.
+#   - Postgres's full-busbar-binary + real-HTTP-traffic + process-restart-durability proof —
+#     store-postgres was likewise extracted to its own repo (GetBusbar/store-postgres); Phase 2
+#     below runs THAT repo's own real-dlopen-ABI + real-Postgres test suite (against the same real
+#     postgres:16 container this script always spun up) as the gate instead, the same trade-off
+#     already made for OIDC and Redis above.
 #
 # WHEN TO RUN
 #   Pre-tag / pre-push, NOT on every commit. This is release infrastructure, not part of the
@@ -51,9 +55,12 @@
 #     the script still exits non-zero, because "gate incomplete" must never look like "gate green".
 #   - python3 (stdlib only) — used for a tiny local mock upstream server. No network access
 #     beyond localhost and the Docker daemon is required.
-#   - Optionally, sibling checkouts `../headroom-hook` and `../webrequest-hook` next to this
-#     repo (GetBusbar/headroom-hook, GetBusbar/webrequest-hook) for the hook-plugin --validate
-#     phase. If absent, that phase is skipped loudly and does not fail the gate (documented,
+#   - A sibling checkout `../store-postgres` (GetBusbar/store-postgres) next to this repo — REQUIRED
+#     (not optional): Phase 2 runs that repo's own `cargo test --workspace` as the Postgres gate.
+#   - Optionally, a sibling checkout `../store-redis` (GetBusbar/store-redis) for Phase 3's Redis
+#     gate, and sibling checkouts `../headroom-hook` and `../webrequest-hook` next to this repo
+#     (GetBusbar/headroom-hook, GetBusbar/webrequest-hook) for the hook-plugin --validate phase. If
+#     any of these are absent, that phase is skipped loudly and does not fail the gate (documented,
 #     matches the task's explicit instruction not to fail the whole run over a missing sibling).
 #
 # USAGE
@@ -214,15 +221,18 @@ PACK_BIN="${REPO_ROOT}/target/release/busbar-plugin-pack"
 ok "busbar binary: $BUSBAR_BIN"
 ok "busbar-plugin-pack: $PACK_BIN"
 
-# ── Build + pack every store plugin still in-tree, in the same host-native/unsigned shape each
-#    plugin's own standalone-repo release workflow packs it (busbarAI's release.yml itself no
-#    longer builds or packs these — it only ships the busbar binary + the bundled hook plugins
-#    now; see the "Store/auth plugin releases moved out" comment there). auth-oidc and store-redis
-#    are both built from their own sibling checkouts in Phase 3/4 below, not here — they fully own
-#    their own logic crates now. ─────────────────────────────────────────────────────────────────
-phase "Phase 0b: build + pack store-sqlite / store-postgres plugin tarballs"
+# ── Build + pack the one remaining IN-TREE store plugin, in the same host-native/unsigned shape
+#    each plugin's own standalone-repo release workflow packs it (busbarAI's release.yml itself no
+#    longer builds or packs these — it only ships the busbar binary + the bundled hook plugins now;
+#    see the "Store/auth plugin releases moved out" comment there). Neither store-postgres,
+#    store-redis, auth-oidc, nor secret-vault are built here anymore — all four were extracted to
+#    their own repos (GetBusbar/store-postgres, GetBusbar/store-redis, GetBusbar/auth-oidc,
+#    GetBusbar/secret-vault; same-repo 2-crate workspaces, the pattern auth-oidc's own extraction
+#    established); Phase 2/Phase 3/Phase 4/Phase 4.5 below now gate on each repo's own test suite
+#    via a sibling checkout instead of building/packing them in-tree. ───────────────────────────────
+phase "Phase 0b: build + pack store-sqlite plugin tarball"
 cargo build --release \
-  -p busbar-store-sqlite-plugin -p busbar-store-postgres-plugin
+  -p busbar-store-sqlite-plugin
 
 pack_store_plugin() {
   local store="$1"
@@ -239,7 +249,6 @@ pack_store_plugin() {
   ok "packed busbar-store-${store}"
 }
 pack_store_plugin sqlite
-pack_store_plugin postgres
 ls -l "$PLUGIN_DIST"
 
 # ── Shared traffic-and-restart-survival driver, parameterized by store module/settings ─────────────
@@ -404,8 +413,33 @@ else
     exit 1
   fi
 
-  # ── Phase 2: Postgres ──────────────────────────────────────────────────────────────────────────
-  phase "Phase 2: store-postgres-plugin — real postgres:16 container, real busbar, restart durability"
+  # ── Phase 2: Postgres — proof now lives in GetBusbar/store-postgres's own test suite ────────────
+  # store-postgres was extracted to its own repo (a same-repo 2-crate workspace, same pattern as
+  # auth-oidc's extraction): the logic crate + the plugin adapter both left busbarAI entirely. There
+  # is no more in-tree busbar-store-postgres-plugin to build/pack/drive through a local busbar
+  # binary here. Instead of reinventing that coverage, this phase stands up the SAME real
+  # postgres:16 container + readiness probe as before and runs THAT repo's own `cargo test
+  # --workspace` against it — which already includes real dlopen-ABI + real-Postgres coverage
+  # (store-postgres-plugin/tests/e2e.rs: dlopen the built cdylib, write through it, close it, then
+  # prove the data survived two independent ways — a fresh dlopen'd instance AND a direct
+  # PostgresStore connection that never touches the cdylib/ABI/loader at all) plus the logic
+  # crate's own live-DB regression tests (store-postgres/src/tests.rs).
+  #
+  # This trades the full busbar-binary + real-HTTP-traffic + process-restart-durability proof
+  # `run_store_backend_e2e` gives sqlite/redis for the plugin repo's own (still real-ABI,
+  # still real-Postgres, just not full-binary-driven) coverage — the same trade-off Phase 4 below
+  # already makes for auth-oidc. Requires a sibling checkout `../store-postgres`
+  # (GetBusbar/store-postgres) next to this repo; unlike the headroom/webrequest hook-plugin phase
+  # (Phase 5), this is NOT optional — Postgres coverage is a required part of the release gate, so a
+  # missing sibling checkout hard-fails here rather than silently skipping.
+  phase "Phase 2: store-postgres — real postgres:16 container, sibling repo's own test suite as the gate"
+  STORE_POSTGRES_SRC="${REPO_ROOT}/../store-postgres"
+  if [ ! -d "$STORE_POSTGRES_SRC" ]; then
+    echo "../store-postgres (GetBusbar/store-postgres) is not checked out as a sibling of this repo." >&2
+    echo "This is a REQUIRED part of the release gate (Postgres coverage now lives in that repo's" >&2
+    echo "own test suite) — clone GetBusbar/store-postgres to ${STORE_POSTGRES_SRC} and re-run." >&2
+    exit 1
+  fi
   PG_CONTAINER="busbar-release-check-pg-$$"
   DOCKER_CONTAINERS+=("$PG_CONTAINER")
   docker run -d --rm --name "$PG_CONTAINER" \
@@ -424,9 +458,13 @@ else
     sleep 1
   done
   ok "postgres ready after ${waited}s"
-  run_store_backend_e2e "postgres" "postgres" \
-    "{ url: \"postgres://busbar:busbar@127.0.0.1:15432/busbar_release_check\" }" \
-    18090 18091 18089
+  echo "  running GetBusbar/store-postgres's own cargo test --workspace against it..."
+  (
+    cd "$STORE_POSTGRES_SRC"
+    BUSBAR_TEST_POSTGRES_URL="postgres://busbar:busbar@127.0.0.1:15432/busbar_release_check" \
+      cargo test --workspace --release
+  )
+  ok "store-postgres real-ABI + real-Postgres tests passed (sibling checkout)"
   ok "Postgres phase complete: elapsed=${SECONDS}s"
   docker rm -f "$PG_CONTAINER" >/dev/null 2>&1 || true
 
