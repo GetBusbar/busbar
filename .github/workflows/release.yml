@@ -232,23 +232,62 @@ jobs:
   #     hazard with no offsetting benefit: which one is canonical, which one do docs point at, which
   #     one gets the CVE fix first. One release pipeline per plugin removes the ambiguity.
   #
-  # The remaining in-tree crates (`crates/store-postgres-plugin`, `crates/store-redis-plugin`,
-  # `crates/auth-oidc-plugin`) are UNCHANGED and deliberately still live in this monorepo — do not
-  # read their removal from THIS FILE as a signal to delete them. They remain load-bearing for:
-  #   - the real dlopen ABI-crossing tests in crates/plugin-loader/src/lib.rs
-  #     (`load_and_exercise_auth_oidc_plugin_*`), part of the normal `cargo test --workspace` gate
-  #     every release already implicitly requires green;
-  #   - scripts/release-check.sh's own end-to-end gate, which builds and packs these crates directly
-  #     (see that script's header) to prove busbar works against ALL its plugins together at a given
-  #     commit — a property that requires the crates to be buildable from inside this checkout,
-  #     independent of where the shipped release artifact ultimately comes from.
-  # store-sqlite has followed auth-oidc's full extraction (not just this file's release-job
-  # removal): its logic crate no longer lives in this monorepo at all — it brings 100% of what it
-  # needs in its own repo (GetBusbar/store-sqlite, a same-repo 2-crate workspace). This repo's own
-  # release-check.sh gate now reaches it via a sibling checkout, the same pattern already used for
-  # auth-oidc/headroom-hook/webrequest-hook. store-postgres and store-redis are still in-tree,
-  # slated for the same full extraction next; when that lands, this whole paragraph collapses to
-  # "every plugin, including its logic crate, lives in its own repo."
+  # Every first-party store/auth/secret plugin crate has now been EXTRACTED out of this monorepo
+  # entirely: `crates/auth-oidc` + `crates/auth-oidc-plugin`, `crates/secret-vault` +
+  # `crates/secret-vault-plugin`, `crates/store-redis` + `crates/store-redis-plugin`,
+  # `crates/store-postgres` + `crates/store-postgres-plugin`, and `crates/store-sqlite` +
+  # `crates/store-sqlite-plugin` all now live in their own repos (GetBusbar/auth-oidc,
+  # GetBusbar/secret-vault, GetBusbar/store-redis, GetBusbar/store-postgres,
+  # GetBusbar/store-sqlite) — same-repo 2-crate Cargo workspaces bringing the real logic crate
+  # in-repo, the reference restructure GetBusbar/auth-oidc's "Restructure as a same-repo 2-crate
+  # workspace" commit established. None of their coverage comes from an in-tree crate any more;
+  # scripts/release-check.sh's sibling-checkout phases run each repo's own test suite (real dlopen
+  # ABI + a real backing service container, where applicable) instead — see that script's
+  # Phase 1/Phase 2/Phase 3/Phase 4/Phase 4.5. "Every plugin, including its logic crate, lives in
+  # its own repo" is no longer an aspiration — it's the current state.
   # See docs/plugins.md's "Signing and packaging" section for the corrected, current release-source
   # story per plugin kind.
 
+
+  # ── Fan out an instant "a real release just happened" signal to every downstream repo that
+  #    self-heals off busbar's releases (Homebrew tap, Helm chart, and whatever else gets added to
+  #    .github/release-notify-targets.txt). Each target already has its OWN daily-poll workflow as
+  #    the durable fallback (so a missed/failed dispatch here is never a silent miss, just a same-day
+  #    catch-up) — this job only makes the common case instant instead of up-to-24h-later. Adding a
+  #    new downstream consumer to the fan-out is a one-line addition to that text file, no workflow
+  #    changes needed here or in this job.
+  notify-downstream:
+    needs: [sbom, openapi, upload-assets]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Dispatch upstream-release to every listed downstream repo
+        env:
+          # A fine-grained PAT (or GitHub App installation token) with Contents:read + Actions:write
+          # on every repo listed in release-notify-targets.txt. NOT the default GITHUB_TOKEN — that
+          # token cannot dispatch to OTHER repos, only this one. TODO(release-dispatch): provision
+          # this secret (org-level, so every downstream repo's own workflow can also use it if
+          # needed) before this job can do anything; until then it fails loudly rather than
+          # silently no-op'ing, so a missing token can't masquerade as "nothing to notify."
+          # GH_TOKEN is what `gh api` itself reads; DISPATCH_TOKEN is the same value under a
+          # separate name purely so the emptiness check below reads clearly.
+          GH_TOKEN: ${{ secrets.RELEASE_DISPATCH_TOKEN }}
+          DISPATCH_TOKEN: ${{ secrets.RELEASE_DISPATCH_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${DISPATCH_TOKEN:-}" ]; then
+            echo "::error::RELEASE_DISPATCH_TOKEN is not provisioned — cannot fan out the release" \
+                 "notification. Every downstream repo's own daily poll will still pick this release" \
+                 "up within 24h (self-healing fallback intact), but the instant path is unavailable." >&2
+            exit 1
+          fi
+          while IFS= read -r repo; do
+            # Skip blank lines and comments.
+            case "$repo" in ''|'#'*) continue ;; esac
+            echo "Dispatching upstream-release to ${repo}..."
+            gh api "repos/${repo}/dispatches" \
+              -f event_type=upstream-release \
+              -f "client_payload[tag]=${GITHUB_REF_NAME}" \
+              -f "client_payload[repo]=${GITHUB_REPOSITORY}"
+          done < .github/release-notify-targets.txt

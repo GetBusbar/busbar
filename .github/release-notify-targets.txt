@@ -1,0 +1,15 @@
+# Master list of GetBusbar repos to notify (via repository_dispatch, event_type=upstream-release)
+# whenever busbar itself cuts a real release (release.yml, on a v* tag push).
+#
+# Each of these repos already has its own daily-poll self-heal workflow (the Homebrew-tap pattern —
+# see GetBusbar/homebrew-busbar/.github/workflows/bump.yml, GetBusbar/helm-charts/.github/workflows/
+# bump-chart.yml) that ALREADY accepts this dispatch as an optional instant trigger, layered on top
+# of its own daily cron fallback. Polling never goes away — it's the safety net for a missed/failed
+# dispatch; this list is what makes the common case same-minute instead of up-to-24h-later.
+#
+# To add a new downstream consumer to the release-notify fan-out: add its repo name here (one per
+# line, `GetBusbar/<repo>` form) — no workflow-file edits needed elsewhere. The repo itself is
+# responsible for having a workflow that accepts `repository_dispatch: types: [upstream-release]`;
+# adding a name here without that workflow existing is a harmless no-op dispatch that repo ignores.
+GetBusbar/homebrew-busbar
+GetBusbar/helm-charts
