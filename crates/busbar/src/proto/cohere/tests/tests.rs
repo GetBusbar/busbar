@@ -383,13 +383,14 @@ fn test_write_response_event() {
             .and_then(|t| t.as_str()),
         Some("hi")
     );
+    // A real content-delta's content object carries NO type key (verified against Cohere's own
+    // API reference) -- type is carried only by content-start, never repeated on every delta.
     assert_eq!(
         data.get("delta")
             .and_then(|d| d.get("message"))
             .and_then(|m| m.get("content"))
-            .and_then(|c| c.get("type"))
-            .and_then(|t| t.as_str()),
-        Some("text")
+            .and_then(|c| c.get("type")),
+        None
     );
 }
 
@@ -1379,8 +1380,11 @@ fn test_write_response_tool_calls_nested_and_roundtrip() {
 }
 
 /// The streaming `content-delta` frame must carry text at
-/// `delta.message.content.text` (an object), matching `content-start` and the native Cohere v2
-/// stream — not a bare string. A native SDK reads `content.text`.
+/// `delta.message.content.text` (an object), matching `content-start`'s content shape and the
+/// native Cohere v2 stream — not a bare string. A native SDK reads `content.text`. Verified
+/// against Cohere's own API reference: a real `content-delta`'s `content` object is `{"text":
+/// "…"}` with NO `type` key (`type` is carried only by `content-start`, never repeated on every
+/// delta) — this test pins the real, type-less shape.
 #[test]
 fn test_write_response_event_content_delta_is_object() {
     let ev = IrStreamEvent::BlockDelta {
@@ -1400,16 +1404,20 @@ fn test_write_response_event_content_delta_is_object() {
         content.is_object(),
         "content-delta content must be an object, got {content}"
     );
-    assert_eq!(content.get("type").and_then(|t| t.as_str()), Some("text"));
+    assert_eq!(
+        content.get("type"),
+        None,
+        "a real content-delta's content object never carries a type key (only content-start does)"
+    );
     assert_eq!(content.get("text").and_then(|t| t.as_str()), Some("chunk"));
 }
 
 /// The content-delta WRITER emits `delta.message.content` as a
-/// `{type:text, text:…}` object (the native Cohere v2 shape), so the READER must decode that
-/// exact object back to a TextDelta. Before the object branch was added, the reader handled only
-/// the bare-string and array forms, so the writer's own frame round-tripped to ZERO events —
-/// streamed assistant text was silently dropped on the Cohere read/proxy path. Lock the
-/// writer→reader symmetry.
+/// `{text:…}` object (the real, type-less native Cohere v2 shape — verified against Cohere's own
+/// API reference), so the READER must decode that exact object back to a TextDelta. Before the
+/// object branch was added, the reader handled only the bare-string and array forms, so the
+/// writer's own frame round-tripped to ZERO events — streamed assistant text was silently dropped
+/// on the Cohere read/proxy path. Lock the writer→reader symmetry.
 #[test]
 fn test_content_delta_writer_reader_roundtrip_object_shape() {
     let writer = CohereWriter;
