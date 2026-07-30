@@ -9,8 +9,6 @@ members = [
     "crates/plugin-sign",
     "crates/plugin-pack",
     "crates/auth-admin-tokens",
-    "crates/auth-oidc",
-    "crates/auth-oidc-plugin",
     "crates/auth-static-plugin",
     "crates/hook-test-plugin",
     "crates/secret-example-plugin",

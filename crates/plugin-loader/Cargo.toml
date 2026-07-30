@@ -39,14 +39,6 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 # C ABI, and the loader entirely — via the plain `busbar-store-sqlite` `lib` crate the plugin wraps.
 # This is a normal (non-cdylib) workspace crate, so it links as an ordinary Rust dependency.
 busbar-store-sqlite = { path = "../store-sqlite" }
-# `load_and_exercise_auth_oidc_plugin` (the kind:auth ABI-crossing test) mints a real ES256 JWT and
-# serves a real JWKS document over a real local TLS listener, so the plugin's own `ReqwestFetcher`
-# does a genuine HTTPS fetch+verify rather than a stub. Same rustls/rcgen/ring versions the workspace
-# already pins (`crates/busbar`'s own TLS tests use the identical trio).
-ring = "0.17"
-base64 = "0.22"
-rcgen = "0.14"
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 # `load_and_exercise_secret_vault_plugin` (the kind:secret real-Vault ABI-crossing test) seeds a real
 # secret into a real local Vault dev-mode server via a raw HTTP PUT before reading it back through the
 # dlopen'd plugin — the same reqwest major/blocking shape busbar-secret-vault's own client uses.

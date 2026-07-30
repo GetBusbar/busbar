@@ -282,29 +282,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "busbar-auth-oidc"
-version = "1.5.0"
-dependencies = [
- "base64",
- "busbar-api",
- "reqwest",
- "ring",
- "serde",
- "serde_json",
- "tracing",
-]
-
-[[package]]
-name = "busbar-auth-oidc-plugin"
-version = "1.5.0"
-dependencies = [
- "busbar-api",
- "busbar-auth-oidc",
- "busbar-plugin-sdk",
- "serde_json",
-]
-
-[[package]]
 name = "busbar-auth-static-plugin"
 version = "1.5.0"
 dependencies = [
@@ -346,7 +323,6 @@ name = "busbar-plugin-loader"
 version = "1.5.0"
 dependencies = [
  "async-trait",
- "base64",
  "busbar-api",
  "busbar-plugin-abi",
  "busbar-plugin-sign",
@@ -355,10 +331,7 @@ dependencies = [
  "getrandom 0.3.4",
  "libc",
  "libloading",
- "rcgen",
  "reqwest",
- "ring",
- "rustls",
  "serde",
  "serde_json",
  "tar",
