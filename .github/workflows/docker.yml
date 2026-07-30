@@ -46,7 +46,7 @@ env:
   # bundled pre-installed into the image below. Same pin (and same rationale — this is the commit
   # that ports the plugin to busbar's dlopen ABI, NOT the latest tag which predates the port) as
   # .github/workflows/release.yml's HEADROOM_HOOK_REF. Keep the two in sync when re-pinning.
-  HEADROOM_HOOK_REF: c37b798f2bcf2faa64b336956bf523445d404d41
+  HEADROOM_HOOK_REF: dbd3d1105aa5ccffa2f376a12b901a2ce668292b
 
 permissions:
   contents: read
