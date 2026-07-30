@@ -129,10 +129,22 @@ impl ClientCreds {
             // strip the URL from the error before formatting it.
             .map_err(|e| format!("token endpoint request failed: {}", e.without_url()))?;
         let status = resp.status();
-        let body = resp
-            .text()
-            .await
-            .map_err(|e| format!("reading token response failed: {}", e.without_url()))?;
+        // The token endpoint is not fully trusted (its `expires_in` below is already treated as
+        // attacker-influenced), so read the body under the engine's established capped-read
+        // primitive rather than `resp.text()`, which buffers an UNBOUNDED body — a hijacked or
+        // misbehaving token endpoint returning a multi-GB response would otherwise be read entirely
+        // into memory. A real OAuth token response is well under 1 KiB, so the 256 KiB
+        // `upstream_error_body_max_bytes()` cap has zero effect on legitimate traffic; a
+        // truncated/oversized response surfaces as a clear error instead of a silent partial-parse.
+        let (raw, read_end) =
+            crate::proxy::read_capped(resp, crate::proxy::max_upstream_buffered_bytes()).await;
+        if read_end != crate::proxy::ReadEnd::Complete {
+            return Err(format!(
+                "token endpoint response exceeded the {}-byte cap or failed mid-transfer; refusing to parse a truncated token response",
+                crate::proxy::max_upstream_buffered_bytes()
+            ));
+        }
+        let body = String::from_utf8_lossy(&raw).into_owned();
         if !status.is_success() {
             // Never echo the request (carries the client_secret); status + a short snippet only.
             return Err(format!(
@@ -248,5 +260,45 @@ mod tests {
         let decimal_str: TokenResponse =
             serde_json::from_str(r#"{"access_token":"a","expires_in":"3600.9"}"#).unwrap();
         assert_eq!(decimal_str.expires_in, 3600);
+    }
+
+    /// The token endpoint is an untrusted network peer (its `expires_in` is already treated as
+    /// attacker-influenced above), so `mint()` must read the response body under a size cap rather
+    /// than `resp.text()`'s unbounded read: a hijacked/misbehaving token endpoint returning a body
+    /// past the `upstream_error_body_max_bytes()` cap must surface a clear error, never silently
+    /// buffer the whole thing or attempt a partial JSON parse of a truncated fragment.
+    #[tokio::test]
+    async fn mint_rejects_a_response_body_over_the_cap() {
+        let state = std::sync::Arc::new(crate::test_support::MockServerState::new());
+        // A single oversized field pushes the serialized body past the 256 KiB default cap; the
+        // fixture only needs to be a legal JSON document once truncated is irrelevant, since the
+        // cap must trip and short-circuit BEFORE any JSON parsing happens.
+        let oversized_token = "a".repeat(300 * 1024);
+        state.push(crate::test_support::MockResponse::Ok {
+            status: axum::http::StatusCode::OK,
+            body: serde_json::json!({ "access_token": oversized_token, "expires_in": 3600 }),
+        });
+        let server = crate::test_support::MockServer::new(state).await;
+
+        let creds = ClientCreds {
+            client_id: "id".to_string(),
+            client_secret: "secret".to_string(),
+            token_url: server.base_url(),
+            scope: "s".to_string(),
+            http: super::super::minter_client().unwrap(),
+        };
+        let result = creds.mint().await;
+        server.shutdown().await;
+
+        let err = match result {
+            Ok(_) => {
+                panic!("an over-cap token response must be a clear error, not a buffered success")
+            }
+            Err(e) => e,
+        };
+        assert!(
+            err.contains("cap") || err.contains("truncat"),
+            "expected an error naming the size cap / truncation, got: {err}"
+        );
     }
 }
