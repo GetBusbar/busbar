@@ -130,6 +130,15 @@ impl CounterSlot {
     /// Owner-writes-only add into THIS thread's cell. Relaxed load+store (not `fetch_add`) is
     /// sufficient and cheapest: the owning thread is the only writer, the atomic type only makes the
     /// aggregator's concurrent reads defined. No-op for INVALID slots and during TLS teardown.
+    ///
+    /// DELIBERATELY unconditional even when metrics are off — unlike `HistogramSlot::record`, this
+    /// does NOT gate on `metrics::retaining()`. Counters are cumulative: an add from before the
+    /// recorder installs must still be reflected in the post-install total, so it cannot simply be
+    /// dropped the way an off-metrics histogram sample can. And unlike a histogram's raw-sample
+    /// buffer, a counter cell's footprint is bounded by thread count x chunk count, not by traffic
+    /// volume — an idle process's counters cost the same few bytes whether metrics are on or off, so
+    /// there is no unbounded-retention problem here to fix. (This is why `configure`'s doc comment
+    /// says "nothing UNBOUNDED is retained" rather than a literal "nothing is retained".)
     pub(crate) fn add(self, n: u64) {
         if !self.is_valid() {
             return;
@@ -160,11 +169,36 @@ impl HistogramSlot {
         self.0 != u32::MAX
     }
 
-    /// Buffer one observation in THIS thread's sample vector. The mutex is uncontended in steady
-    /// state (the aggregator takes it only during a scrape drain, and no other thread ever touches
-    /// it), so the lock is a single uncontended CAS on a cache line this core owns.
+    /// Buffer one observation in THIS thread's sample vector — but ONLY if something will ever
+    /// drain it. See [`Self::record_inner`] for the gating rationale; this wrapper just supplies
+    /// the live decision from `metrics::retaining()`.
     pub(crate) fn record(self, value: f64) {
+        self.record_inner(value, crate::metrics::retaining());
+    }
+
+    /// `retaining` is passed in explicitly (rather than read here) so this is testable without
+    /// process-global `OnceLock` state: `metrics::HANDLE`/`ENABLED` can only be set once per
+    /// process, so a test can't reset them to exercise every branch — it can, however, call this
+    /// directly with a hand-picked `retaining`.
+    ///
+    /// When `retaining` is `false` (metrics off, or the recorder never installed / failed to
+    /// install), the sample is dropped immediately and the per-thread `HistChunk` for this slot is
+    /// never even materialized — nothing here will ever be drained (not by a scrape, not by the
+    /// `HIST_DRAIN_THRESHOLD` overflow backstop, not by anything else), so buffering it would only
+    /// grow memory with traffic volume for no eventual consumer. This is checked BEFORE the
+    /// `BANK`/`try_with` TLS access precisely so an off-metrics process never allocates a histogram
+    /// buffer it will never use.
+    ///
+    /// KNOWN RESIDUAL: if recorder install FAILS after the boot-window traffic already buffered
+    /// some samples (see `metrics::retaining`'s doc comment for that window), those already-buffered
+    /// samples are not proactively freed here — they sit until `HIST_DRAIN_THRESHOLD` or thread
+    /// exit reclaims them. Bounded by one ~200 ms window's traffic, and the install failure itself
+    /// is already logged (`tracing::error!` in `metrics::init_with`), so the cause is discoverable.
+    fn record_inner(self, value: f64, retaining: bool) {
         if !self.is_valid() {
+            return;
+        }
+        if !retaining {
             return;
         }
         let idx = self.0 as usize;
