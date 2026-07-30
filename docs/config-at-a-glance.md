@@ -27,6 +27,27 @@ tls:                            # absent = plain HTTP. Each field is a SECRET RE
 # admin_tls: { cert: {...}, key: {...}, client_ca: {...} }   # same shape; client_ca = admin mTLS
 ```
 
+## Plugins — [`plugins`](configuration.md#plugins)
+
+One signed artifact format, trust model, and loader for all four plugin kinds — **store**,
+**secret**, **auth**, and **hook** — every one loaded **in-process** over the hybrid ABI (see
+[plugins.md](plugins.md)). For out-of-process isolation, the first-party `busbar-webrequest-hook`
+plugin forwards to an HTTPS sidecar.
+
+```yaml
+plugins:
+  enabled: false                # MASTER SWITCH (default false): nothing loads while off
+  dir: plugins                  # where signed tarballs live
+  trust:                        # Busbar's release key is embedded; untrusted plugins never dlopen
+    publishers: [ { name: acme, public_key: "<64-hex ed25519>" } ]
+    allow_unsigned: false
+    allow_third_party: false
+  # min_versions: { acme-store-dynamo: "2.0.0" }   # anti-downgrade floors
+```
+
+Referenced below wherever a section names a `module:` outside the built-in default — `auth.chain`
+(an IdP), `store.module` (a durable backend), a `secret` reference, or a hook.
+
 ## Identity — [`auth`](configuration.md#auth)
 
 ```yaml
@@ -112,24 +133,6 @@ pools:                                      # a pool is weighted lanes with shar
 
 global_hooks:                               # hook instances firing on EVERY request, ordered  → hooks.md
   - { module: busbar-headroom-hook, kind: gate, prompt: rw }
-```
-
-## Plugins — [`plugins`](configuration.md#plugins)
-
-One signed artifact format, trust model, and loader for all four plugin kinds — **store**,
-**secret**, **auth**, and **hook** — every one loaded **in-process** over the hybrid ABI (see
-[plugins.md](plugins.md)). For out-of-process isolation, the first-party `busbar-webrequest-hook`
-plugin forwards to an HTTPS sidecar.
-
-```yaml
-plugins:
-  enabled: false                # MASTER SWITCH (default false): nothing loads while off
-  dir: plugins                  # where signed tarballs live
-  trust:                        # Busbar's release key is embedded; untrusted plugins never dlopen
-    publishers: [ { name: acme, public_key: "<64-hex ed25519>" } ]
-    allow_unsigned: false
-    allow_third_party: false
-  # min_versions: { acme-store-dynamo: "2.0.0" }   # anti-downgrade floors
 ```
 
 ## Operational — [`security`](configuration.md#security) · [`observability`](configuration.md#observability) · [`limits`](configuration.md#limits) · [`health`](configuration.md#health-probing)
