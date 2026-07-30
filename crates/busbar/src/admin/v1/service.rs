@@ -69,7 +69,24 @@ struct CatalogCacheEntry {
     /// `inventory_tarballs` scan — a cache HIT never touches this. Cheap bookkeeping, exercised by
     /// `catalog_repeat_gets_reuse_the_cached_scan` below; harmless outside tests too.
     misses: u64,
+    /// Unix-seconds epoch this entry was last (re)computed — the `CATALOG_CACHE_TTL_SECS`
+    /// eviction stamp. Not a freshness signal (the fingerprint+trust `key` already detects any
+    /// real change); purely bounds how long a stale directory's entry can sit in the map.
+    inserted_at: u64,
 }
+
+/// How long a `CATALOG_CACHE` entry may sit unpruned (RESOURCE-MEDIUM finding): the map has no
+/// other eviction and grows once per distinct `plugins_dir` path the process has ever served
+/// `GET /plugins?type=store` for — normally one path for the life of the process, but every test in
+/// this file uses its own temp directory, and a long-lived process that has rotated through several
+/// `plugins.dir` values (config reloads across deploys, multi-tenant test harnesses, etc.) would
+/// otherwise accumulate one entry per path forever. Same TTL+`retain()` idiom `admin/mod.rs`'s
+/// `IDEMPOTENCY_TTL_SECS`/`idempotency_cache` already establishes for this exact "unbounded map
+/// keyed by something caller-influenced" shape — see its `cache.retain(|_, (t, _)| ...)` pruning.
+/// Deliberately SHORTER than `IDEMPOTENCY_TTL_SECS` (600s): a pruned catalog entry costs only a
+/// re-scan on the next read (no client-visible replay semantics to preserve, unlike an idempotency
+/// record), so there is no reason to hold it as long.
+const CATALOG_CACHE_TTL_SECS: u64 = 120;
 
 /// Process-wide cache backing `store_plugin_catalog`, keyed by plugins directory path (normally
 /// there is exactly one path per running process; tests use many distinct temp directories, hence
@@ -82,33 +99,67 @@ fn catalog_cache() -> &'static Mutex<HashMap<PathBuf, CatalogCacheEntry>> {
     CATALOG_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// The bound on CONCURRENT catalog re-scans (CONCURRENCY-HIGH finding, single-flight half):
+/// `spawn_blocking` alone is not a fix for a hot cache-miss path — this codebase's own established
+/// doctrine, per `auth::AUTH_OFFLOAD_PERMITS`'s doc comment and
+/// `governance::revocation::RevocationSync`'s `inflight` bound. Unlike those two (which bound
+/// concurrent *offloads* of an operation every caller pays for independently), this gate makes N
+/// concurrent misses single-flight into exactly ONE real `inventory_tarballs` scan: the caller that
+/// wins the gate scans and populates `CATALOG_CACHE`; every caller that queues behind it re-runs
+/// `store_plugin_catalog`'s cheap fingerprint+cache check under the gate and finds the entry the
+/// winner just wrote, rather than each independently unpacking every tarball. Same single-permit
+/// shape as `state_persist::SNAPSHOT_GATE`, for the same reason (serialize an expensive operation
+/// callers would otherwise duplicate) — and, like that gate, this also serializes cache HITS behind
+/// whichever call currently holds it, trading a little request-path throughput for the simplicity of
+/// one lock with no separate fast path. That trade is deliberate: the work under the gate is either
+/// a cheap fingerprint compare (hit) or the scan this gate exists to de-duplicate (miss), never
+/// anything slower.
+static CATALOG_SCAN_GATE: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
 /// Cheap, order-independent fingerprint of a directory's immediate entries (filename + size +
 /// mtime of each, hashed together). NOT a security boundary — only a cache-freshness heuristic for
 /// `CATALOG_CACHE` — but adding, removing, or overwriting any file in `dir` changes at least one
 /// entry's size or mtime, so install/remove/rollback all invalidate the cache on their own, with no
-/// bespoke invalidation hook wired into any of those mutation paths. A missing/unreadable directory
-/// fingerprints as an empty entry list, matching `inventory_tarballs`'s own empty-dir behavior.
-fn plugins_dir_fingerprint(dir: &Path) -> u64 {
-    let mut entries: Vec<(std::ffi::OsString, u64, u128)> = std::fs::read_dir(dir)
-        .map(|rd| {
-            rd.filter_map(|e| e.ok())
-                .filter_map(|e| {
-                    let meta = e.metadata().ok()?;
-                    let mtime = meta
-                        .modified()
-                        .ok()?
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_nanos())
-                        .unwrap_or(0);
-                    Some((e.file_name(), meta.len(), mtime))
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+/// bespoke invalidation hook wired into any of those mutation paths.
+///
+/// ERROR HANDLING (ERROR-HANDLING-MEDIUM finding): a MISSING directory is a legitimate, cacheable
+/// state — `Ok` with the empty-entries fingerprint — matching `registry::discover`'s own
+/// `NotFound` ⇒ `Ok(empty)` treatment (an absent plugins dir is "no plugins", not a failure). Any
+/// OTHER I/O error (permission denied, a bad NFS mount, a per-entry `DirEntry`/`metadata()` read
+/// failure mid-iteration) is propagated rather than collapsed to the same empty fingerprint: the
+/// previous behavior (`unwrap_or_default()` over every failure, including per-entry
+/// `.ok()?`/`filter_map` drops) made a directory that was readable-then-unreadable fingerprint
+/// IDENTICALLY to an empty one, so a cache entry seeded while the directory was legitimately empty
+/// (`[]`, key = empty fingerprint) would keep matching forever and serve that stale `[]` even after
+/// the directory became unreadable — instead of the `INVALID: cannot read plugins dir` row
+/// `inventory_tarballs`/`registry::discover` would otherwise surface on every call. Fail-closed on
+/// per-entry iteration errors too (never silently drop one — same posture as `discover()`'s own
+/// `entry.map_err(...)?` propagation), so a single corrupted `DirEntry` can't quietly shrink the
+/// fingerprint's view of the directory while the scan below sees the full (correctly failing) set.
+fn plugins_dir_fingerprint(dir: &Path) -> std::io::Result<u64> {
+    let mut entries: Vec<(std::ffi::OsString, u64, u128)> = Vec::new();
+    match std::fs::read_dir(dir) {
+        Ok(rd) => {
+            for entry in rd {
+                let entry = entry?;
+                let meta = entry.metadata()?;
+                let mtime = meta
+                    .modified()?
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0);
+                entries.push((entry.file_name(), meta.len(), mtime));
+            }
+        }
+        // A missing directory is NOT a failure — see the doc comment above.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
     entries.sort();
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     entries.hash(&mut hasher);
-    hasher.finish()
+    Ok(hasher.finish())
 }
 
 /// The auth modules COMPILED INTO this binary (feature-gated at compile time — real `#[cfg]` on each
@@ -1003,7 +1054,7 @@ impl AdminService {
             // handshake) and its signed sidecar manifest read + re-evaluated against the running trust
             // posture. The store the operator configured (`store.module`) is `active`.
             "store" | "db" => {
-                plugins.append(&mut self.store_plugin_catalog());
+                plugins.append(&mut self.store_plugin_catalog_async().await);
             }
             other => {
                 return Err(AdminError::Validation(format!(
@@ -1035,6 +1086,24 @@ impl AdminService {
     /// trust config, so any real change — install, remove, rollback, or a `plugins:` config edit —
     /// invalidates it on the very next call with no bespoke invalidation hook wired into any of
     /// those mutation paths.
+    ///
+    /// SYNCHRONOUS, BLOCKING FILESYSTEM I/O — both the fingerprint read(s) and, on a cache miss, the
+    /// full tarball scan. Safe to call directly only from a context that is already off the Tokio
+    /// reactor: `reload_store_plugins` (always invoked inside a `txn.read_store` closure, which
+    /// `config_transaction`'s `apply()` runs via `spawn_blocking`), tests, and `--validate`/boot
+    /// paths. The `GET /plugins?type=store` request path goes through
+    /// [`Self::store_plugin_catalog_async`] instead — never this method directly.
+    ///
+    /// RACE (CONCURRENCY-LOW finding): the fingerprint read and the scan are two independent,
+    /// non-atomic directory reads, so a concurrent install/remove between them could let a scan and
+    /// its "before" fingerprint observe different directory states. To narrow that window this
+    /// re-fingerprints the directory AFTER the scan and only memoizes when the two fingerprints
+    /// still match — but this is a NARROWING, not a CLOSING, of the race: an ABA sequence (the
+    /// directory changes and then changes back to the same fingerprint mid-scan — plausible on
+    /// filesystems with coarse mtime granularity) could still memoize a torn read. Self-healing
+    /// either way: the cache is a pure performance layer over a deterministic scan, so the worst
+    /// case is one extra rescan on the next call, never a wrong answer served indefinitely (the
+    /// fingerprint fix below is what actually prevents a wrong answer being served indefinitely).
     fn store_plugin_catalog(&self) -> Vec<PluginView> {
         // The compiled-in RAM default is always present. Which store backend is ACTIVE is a
         // `store.module` config concern (read via `GET /config`), not summarized per-row here,
@@ -1050,24 +1119,94 @@ impl AdminService {
             return out;
         };
 
-        // Cache key: a cheap directory-content fingerprint PLUS the config that governs how each
-        // tarball is trust-evaluated. `inventory_tarballs` is a deterministic function of exactly
-        // those two things, so a match here is an EXACT cache hit, not a heuristic staleness
-        // window — nothing observable differs from re-running the scan.
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        plugins_dir_fingerprint(&self.app.plugins_dir).hash(&mut hasher);
-        format!("{:?}", self.app.plugins_cfg).hash(&mut hasher);
-        let key = hasher.finish();
+        let now = crate::store::now();
+        // Bound the cache (RESOURCE-MEDIUM finding) with the same TTL+`retain()` idiom
+        // `admin/mod.rs`'s `idempotency_cache` uses: prune before every read, not just on write, so
+        // an abandoned path's entry cannot sit forever just because nothing keeps writing to it.
+        catalog_cache()
+            .lock()
+            .unwrap()
+            .retain(|_, e| now.saturating_sub(e.inserted_at) < CATALOG_CACHE_TTL_SECS);
 
-        if let Some(entry) = catalog_cache().lock().unwrap().get(&self.app.plugins_dir) {
-            if entry.key == key {
-                out.extend(entry.rows.iter().cloned());
-                return out;
+        // ERROR-HANDLING-MEDIUM finding: a real I/O error (NOT a missing directory — see the doc
+        // comment on `plugins_dir_fingerprint`) means the fingerprint cannot be trusted as a
+        // freshness signal at all. Skip the cache entirely (no read, no write) and fall through to
+        // the real scan, whose own `discover()` call fails the same way and surfaces the
+        // `INVALID: cannot read plugins dir` row — on EVERY call, honestly, until the directory
+        // becomes readable again, rather than silently serving whatever was cached before.
+        let before = match plugins_dir_fingerprint(&self.app.plugins_dir) {
+            Ok(fp) => Some(fp),
+            Err(e) => {
+                tracing::warn!(
+                    dir = %self.app.plugins_dir.display(),
+                    error = %e,
+                    "cannot fingerprint plugins dir; bypassing the catalog cache for this read"
+                );
+                None
             }
-        }
+        };
 
+        if let Some(before) = before {
+            // Cache key: a cheap directory-content fingerprint PLUS the config that governs how
+            // each tarball is trust-evaluated. `inventory_tarballs` is a deterministic function of
+            // exactly those two things, so a match here is an EXACT cache hit, not a heuristic
+            // staleness window — nothing observable differs from re-running the scan.
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            before.hash(&mut hasher);
+            format!("{:?}", self.app.plugins_cfg).hash(&mut hasher);
+            let key = hasher.finish();
+
+            if let Some(entry) = catalog_cache().lock().unwrap().get(&self.app.plugins_dir) {
+                if entry.key == key {
+                    out.extend(entry.rows.iter().cloned());
+                    return out;
+                }
+            }
+
+            let rows = Self::scan_store_plugin_rows(&self.app.plugins_dir, &policy);
+
+            // "After" fingerprint: only memoize if the directory still looks like it did before the
+            // scan started (see the race caveat in the doc comment above — this narrows, it does
+            // not close, the window). A mismatch, or the directory becoming unreadable mid-scan,
+            // just means this call doesn't memoize; the data returned below is still the real scan
+            // result, correct for THIS call either way.
+            if matches!(plugins_dir_fingerprint(&self.app.plugins_dir), Ok(after) if after == before)
+            {
+                let mut cache = catalog_cache().lock().unwrap();
+                let misses = cache
+                    .get(&self.app.plugins_dir)
+                    .map(|e| e.misses)
+                    .unwrap_or(0)
+                    + 1;
+                cache.insert(
+                    self.app.plugins_dir.clone(),
+                    CatalogCacheEntry {
+                        key,
+                        rows: rows.clone(),
+                        misses,
+                        inserted_at: now,
+                    },
+                );
+            }
+
+            out.extend(rows);
+            out
+        } else {
+            out.extend(Self::scan_store_plugin_rows(&self.app.plugins_dir, &policy));
+            out
+        }
+    }
+
+    /// The pure scan half of [`Self::store_plugin_catalog`]: run `inventory_tarballs` and project
+    /// each row to a [`PluginView`]. No cache read, no cache write — split out so both the
+    /// cache-miss path above and (indirectly, via the whole-method `spawn_blocking`)
+    /// [`Self::store_plugin_catalog_async`] share exactly one implementation of "what a scan is."
+    fn scan_store_plugin_rows(
+        dir: &Path,
+        policy: &busbar_plugin_sign::TrustPolicy,
+    ) -> Vec<PluginView> {
         let mut rows = Vec::new();
-        for row in busbar_plugin_loader::inventory_tarballs(&self.app.plugins_dir, &policy) {
+        for row in busbar_plugin_loader::inventory_tarballs(dir, policy) {
             let trust = if row.status == "ready" {
                 if row.signature == "first-party" || row.signature.starts_with("publisher:") {
                     Some("trusted")
@@ -1098,25 +1237,52 @@ impl AdminService {
                 error: (row.status != "ready").then(|| row.status.clone()),
             });
         }
+        rows
+    }
 
-        let mut cache = catalog_cache().lock().unwrap();
-        let misses = cache
-            .get(&self.app.plugins_dir)
-            .map(|e| e.misses)
-            .unwrap_or(0)
-            + 1;
-        cache.insert(
-            self.app.plugins_dir.clone(),
-            CatalogCacheEntry {
-                key,
-                rows: rows.clone(),
-                misses,
-            },
-        );
-        drop(cache);
-
-        out.extend(rows);
-        out
+    /// The `GET /plugins?type=store` REQUEST-PATH entry point — the async, reactor-safe wrapper
+    /// around [`Self::store_plugin_catalog`] (CONCURRENCY-HIGH finding). The synchronous version
+    /// performs blocking filesystem I/O on EVERY call, not just a cache miss: the fingerprint
+    /// read(s) alone are a `read_dir` + a `metadata()`/`modified()` per entry, and a miss adds the
+    /// full `inventory_tarballs` unpack on top — none of it safe to run inline in an `async fn` on a
+    /// Tokio worker thread, on an endpoint this codebase deliberately leaves unmetered by the admin
+    /// rate limiter (see the doc comment above). Mirrors [`Self::get_usage`]'s `spawn_blocking`
+    /// wrapper shape.
+    ///
+    /// Serialized through [`CATALOG_SCAN_GATE`] (see its doc comment for why, and for the
+    /// acknowledged hit-path throughput trade-off): N callers that all miss at the same instant
+    /// (e.g. right after boot or a config reload, before any entry exists) single-flight into
+    /// exactly one real scan, and every other caller wakes up to find the cache already populated
+    /// rather than each independently unpacking every tarball.
+    ///
+    /// `reload_store_plugins` is UNCHANGED and does not go through here — it already runs inside a
+    /// `txn.read_store` closure on `spawn_blocking` (see `admin/v1/json/txn.rs`'s `apply()`), so it
+    /// calls the synchronous [`Self::store_plugin_catalog`] directly.
+    async fn store_plugin_catalog_async(&self) -> Vec<PluginView> {
+        let _gate = CATALOG_SCAN_GATE.lock().await;
+        let app = self.app.clone();
+        match tokio::task::spawn_blocking(move || AdminService::new(app).store_plugin_catalog())
+            .await
+        {
+            Ok(rows) => rows,
+            Err(join_err) => {
+                tracing::error!(
+                    operation = "list_plugins.store",
+                    error = %join_err,
+                    "admin blocking task failed"
+                );
+                // Fail soft to the always-true compiled-in row rather than an admin 500 for what is
+                // just a plugin CATALOG read — same posture `store_plugin_catalog` itself takes on
+                // an unparseable `plugins_cfg` (`to_policy()` failing) just above.
+                vec![PluginView::basic(
+                    "memory".to_string(),
+                    "store",
+                    "compiled-in",
+                    None,
+                    None,
+                )]
+            }
+        }
     }
 
     /// `POST /api/v1/admin/plugins` — INSTALL a plugin: the caller uploads a SIGNED plugin tarball
@@ -2155,6 +2321,201 @@ mod tests {
             misses_after_change, 2,
             "a real directory change must invalidate the cache and cost exactly 1 more scan"
         );
+    }
+
+    /// THE RED PROOF FOR CONCURRENCY-HIGH: `list_plugins("store")`'s catalog read — the fingerprint
+    /// I/O AND, on a cold cache, the full tarball scan — must not park the single worker of a
+    /// `worker_threads = 1` multi-thread runtime. Mirrors `admin::audit`'s
+    /// `valve_write_through_does_not_park_the_reactor` proof shape exactly: a concurrently-spawned
+    /// task does nothing but a short `tokio::time::sleep`, and if the catalog read ran inline on the
+    /// reactor instead of on `spawn_blocking`, that sleep could not be polled promptly. 2000 signed,
+    /// trust-evaluated tarballs make the real scan genuinely slow (several hundred ms on ordinary
+    /// hardware — gzip + tar-unpack + signature verify per file), so the timing margin below is
+    /// generous in both directions: comfortably above scheduler jitter, comfortably below how long
+    /// the scan itself takes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn list_plugins_store_scan_does_not_park_the_reactor() {
+        let dir = tmp_plugins_dir("no-park");
+        let key = SigningKey::from_bytes(&[2u8; 32]);
+        for i in 0..2000 {
+            let lib = format!("lib bytes {i}").into_bytes();
+            let m = test_manifest(
+                &format!("acme-store-{i}"),
+                &format!("s{i}"),
+                "acme",
+                "1.0.0",
+            );
+            let tarball = signed_tarball(&key, m, &lib);
+            std::fs::write(dir.join(format!("p{i}.tar.gz")), &tarball).unwrap();
+        }
+        let app = TestApp::new()
+            .plugins_dir(dir)
+            .plugins_cfg(publisher_posture("acme", &key))
+            .build();
+        let svc = AdminService::new(app);
+
+        let scanner =
+            tokio::spawn(async move { svc.list_plugins("store").await.expect("catalog read ok") });
+        let start = std::time::Instant::now();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let elapsed = start.elapsed();
+        let page = scanner.await.unwrap();
+        assert!(
+            elapsed < std::time::Duration::from_millis(300),
+            "a 50ms sleep took {elapsed:?} — the catalog scan parked the reactor"
+        );
+        assert!(
+            page.items.len() > 2000,
+            "the scan actually ran and produced rows: got {}",
+            page.items.len()
+        );
+    }
+
+    /// THE RED PROOF FOR THE SINGLE-FLIGHT HALF OF CONCURRENCY-HIGH: N concurrent
+    /// `list_plugins("store")` callers that ALL miss the cache at the same instant (the very first
+    /// reads against a freshly-built `App`, before any entry exists — e.g. right after boot or a
+    /// config reload) must cost exactly ONE real `inventory_tarballs` scan, not one per caller. Every
+    /// caller still gets a correct, complete catalog — single-flighting must never mean 9 of the 10
+    /// see a truncated or stale result.
+    #[tokio::test]
+    async fn list_plugins_store_single_flights_concurrent_misses() {
+        let dir = tmp_plugins_dir("single-flight");
+        let lib = b"junk lib bytes";
+        let mut m = test_manifest("acme-store-sf", "sfstore", "acme", "1.0.0");
+        m.sha256 = busbar_plugin_sign::sha256_hex(lib);
+        let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap();
+        std::fs::write(dir.join("sf.tar.gz"), &tarball).unwrap();
+
+        let app = TestApp::new()
+            .plugins_dir(dir.clone())
+            .plugins_cfg(unsigned_ok_posture())
+            .build();
+
+        let mut tasks = Vec::new();
+        for _ in 0..10 {
+            let app = app.clone();
+            tasks.push(tokio::spawn(async move {
+                AdminService::new(app)
+                    .list_plugins("store")
+                    .await
+                    .expect("catalog read ok")
+            }));
+        }
+        for t in tasks {
+            let page = t.await.unwrap();
+            assert!(
+                page.items.iter().any(|p| p.name == "acme-store-sf"),
+                "every one of the 10 concurrent callers must see the real (not truncated) catalog"
+            );
+        }
+
+        let misses = catalog_cache().lock().unwrap()[&dir].misses;
+        assert_eq!(
+            misses, 1,
+            "10 concurrent cache-miss callers must single-flight into exactly 1 real scan, got {misses}"
+        );
+    }
+
+    /// THE RED PROOF FOR RESOURCE-MEDIUM: `CATALOG_CACHE` has no eviction of its own beyond the
+    /// fingerprint/trust `key` match, so an entry for a `plugins_dir` the process no longer serves
+    /// would sit in the map forever. Mirrors how `admin/mod.rs` proves `idempotency_cache`'s own
+    /// TTL+`retain()` bound (reaching into the cache directly — there is no public "age an entry"
+    /// API, by design, same as the idempotency cache has none): age an entry past
+    /// `CATALOG_CACHE_TTL_SECS` by rewriting its `inserted_at` stamp, then prove the NEXT cache
+    /// access anywhere (not necessarily a read of the SAME directory — `retain()` runs on every
+    /// call, exactly like `idempotency_cache`'s prune-before-check) sweeps it.
+    #[test]
+    fn catalog_cache_ttl_prunes_stale_entries() {
+        let dir = tmp_plugins_dir("ttl");
+        let svc = svc_with(dir.clone(), unsigned_ok_posture());
+        let _ = svc.store_plugin_catalog();
+        assert!(
+            catalog_cache().lock().unwrap().contains_key(&dir),
+            "the scan above must have seeded a cache entry"
+        );
+
+        // Age the entry past the TTL directly.
+        {
+            let mut cache = catalog_cache().lock().unwrap();
+            let entry = cache.get_mut(&dir).expect("entry present");
+            entry.inserted_at = crate::store::now().saturating_sub(CATALOG_CACHE_TTL_SECS + 1);
+        }
+
+        // A cache access against a DIFFERENT directory still prunes the aged entry — `retain()` runs
+        // unconditionally at the top of every `store_plugin_catalog` call, not scoped to `dir`.
+        let other_dir = tmp_plugins_dir("ttl-other");
+        let other_svc = svc_with(other_dir.clone(), unsigned_ok_posture());
+        let _ = other_svc.store_plugin_catalog();
+
+        assert!(
+            !catalog_cache().lock().unwrap().contains_key(&dir),
+            "an entry older than CATALOG_CACHE_TTL_SECS must be pruned on the next cache access"
+        );
+    }
+
+    /// THE RED PROOF FOR ERROR-HANDLING-MEDIUM: the staleness scenario the finding describes.
+    /// FIRST, an empty-but-READABLE plugins dir caches fine (unchanged behavior — same as a MISSING
+    /// dir, both legitimately mean "no plugins"). THEN the directory becomes UNREADABLE (permission
+    /// denied) with its CONTENTS unchanged — the exact case the old `unwrap_or_default()` collapsed
+    /// to the SAME fingerprint as the empty dir, serving the stale cached `[]` forever instead of
+    /// the real `INVALID` row. The fixed version must never serve that stale cache and must surface
+    /// the real `INVALID: ...` row on every read while unreadable, not just the first.
+    #[cfg(unix)]
+    #[test]
+    fn catalog_unreadable_dir_does_not_serve_stale_cache() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tmp_plugins_dir("unreadable");
+        let svc = svc_with(dir.clone(), unsigned_ok_posture());
+
+        // Empty + readable: caches fine, no dynamic-library rows — the unchanged half of the fix.
+        let cat = svc.store_plugin_catalog();
+        assert!(
+            cat.iter().all(|p| p.loader != "dynamic-library"),
+            "an empty, readable plugins dir has no dynamic-library rows"
+        );
+        assert!(
+            catalog_cache().lock().unwrap().contains_key(&dir),
+            "an empty dir's (empty) scan is cached, exactly like a missing dir would be"
+        );
+
+        let original_mode = std::fs::metadata(&dir).unwrap().permissions().mode();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        // Some environments (containers running as root) ignore permission bits entirely — skip
+        // rather than false-fail if `read_dir` still succeeds.
+        if std::fs::read_dir(&dir).is_ok() {
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(original_mode)).unwrap();
+            eprintln!("skip: running with privileges that bypass directory permission bits");
+            return;
+        }
+
+        let cat_after = svc.store_plugin_catalog();
+        // And every SUBSEQUENT read while STILL unreadable surfaces the SAME real row again — the
+        // scan is never memoized while it's failing, so there is no stale state to fall back to.
+        // Permissions are restored only after BOTH reads, below, even if an assertion panics first
+        // (via the `original_mode` restore right after) so the temp dir is left in a state that can
+        // be cleaned up / doesn't wedge anything else touching temp_dir().
+        let cat_again = svc.store_plugin_catalog();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(original_mode)).unwrap();
+
+        let row = cat_after
+            .iter()
+            .find(|p| p.loader == "dynamic-library")
+            .expect(
+                "an unreadable dir must surface a row, never silently serve the stale empty cache",
+            );
+        assert_eq!(row.valid, Some(false));
+        assert!(
+            row.error.as_deref().is_some_and(|e| e.starts_with("INVALID:")),
+            "must be the real INVALID row surfaced by inventory_tarballs/discover, not stale data: {row:?}"
+        );
+
+        let row_again = cat_again
+            .iter()
+            .find(|p| p.loader == "dynamic-library")
+            .expect("a second read while still unreadable surfaces the row again, every time");
+        assert_eq!(row_again.error, row.error);
     }
 
     /// ROLLBACK RESOLUTION (1.5.0), the EXPLICIT-downgrade core: a TRUSTED third-party artifact whose
