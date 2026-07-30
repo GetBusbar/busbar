@@ -1,0 +1,70 @@
+# dev-gate — the automated inverse of each plugin's own CI.
+#
+# Each first-party plugin repo runs its OWN lightweight CI on every push, proving "this plugin
+# works" against a real backend where one applies (see e.g. GetBusbar/store-postgres's real
+# postgres: service container). This workflow is the other direction: on every push to `dev`
+# (the permanent, standing bleeding-edge integration branch — see the branch-model note in
+# scripts/release-check.sh's header) or any `*-dev` version-scoped branch, it runs the real
+# end-to-end release gate, proving "busbar works against ALL its plugins together" at this exact
+# commit. Neither direction substitutes for the other.
+#
+# This intentionally does NOT run on `main` or on PRs — `scripts/release-check.sh` documents
+# itself as a pre-tag gate, not a per-commit one (it can take up to ~2 hours). `dev`/`*-dev` is
+# where that cost belongs: proving the moving integration branch stays real before it ever reaches
+# `main`/a release tag.
+name: dev-gate
+
+on:
+  push:
+    branches:
+      - dev
+      - '*-dev'
+  workflow_dispatch: {}
+
+# release-check.sh documents up to ~2h; give real headroom before GitHub's own job timeout bites.
+concurrency:
+  group: dev-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release-check:
+    name: release-check.sh (full plugin gate)
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout busbar
+        uses: actions/checkout@v7
+        with:
+          path: busbarAI
+
+      # Same first-party hook plugin sources release.yml/docker.yml already check out as siblings,
+      # so release-check.sh's Phase 5 (headroom/webrequest --validate) runs for real here instead
+      # of skipping — see .github/workflows/docker.yml's HEADROOM_HOOK_REF comment for the pin
+      # rationale; kept in sync with that same pin.
+      - name: Checkout headroom-hook (first-party plugin source, pinned)
+        uses: actions/checkout@v7
+        with:
+          repository: GetBusbar/headroom-hook
+          ref: a61e7f8
+          path: headroom-hook
+        continue-on-error: true
+
+      - name: Checkout webrequest-hook (first-party plugin source, pinned)
+        uses: actions/checkout@v7
+        with:
+          repository: GetBusbar/webrequest-hook
+          path: webrequest-hook
+        continue-on-error: true
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: busbarAI
+
+      - name: Confirm Docker is available (Postgres/Redis phases need it)
+        run: docker ps
+        working-directory: busbarAI
+
+      - name: Run the real end-to-end release gate
+        run: ./scripts/release-check.sh
+        working-directory: busbarAI
