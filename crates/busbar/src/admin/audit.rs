@@ -351,9 +351,33 @@ impl AuditLog {
             // proxy for "is a flusher currently draining this ring", verified by inspection of
             // today's call graph (nothing calls `record_by` with a `Handle` but no flusher spawned)
             // rather than an invariant this check itself enforces — see WRITE_THROUGH_HEADROOM.
-            let no_flusher = tokio::runtime::Handle::try_current().is_err();
+            let handle = tokio::runtime::Handle::try_current();
+            let no_flusher = handle.is_err();
             if no_flusher || unpersisted >= WRITE_THROUGH_HEADROOM {
-                self.durable_write_through(store.as_ref(), record.seq);
+                // `record_by` is sync and cannot `.await`, so every caller — not just the ones deep
+                // inside a `spawn_blocking` closure — reaches this store round-trip on whatever OS
+                // thread called it. On a multi-thread runtime, that thread is a Tokio worker core:
+                // parking it on a synchronous store call also stalls every OTHER task the scheduler
+                // would otherwise run on that core, not just the caller's own task. `block_in_place`
+                // hands the worker's core off to a freshly-promoted thread for the duration of the
+                // call, so the scheduler keeps servicing other tasks while this one still waits
+                // (backpressure is unchanged — the caller still blocks until the write lands, only
+                // WHICH thread is parked changes). Called from a blocking-pool thread (e.g. from
+                // inside another `spawn_blocking` closure) it is a documented no-op: there is no
+                // worker core to hand off, so the closure just runs inline, identical to today.
+                //
+                // `block_in_place` PANICS on a `current_thread` runtime, which has no second thread
+                // to promote. Production always builds a multi-thread runtime (`main.rs`), so this
+                // guard is a defensive fallback for `#[tokio::test]`'s default flavor and any future
+                // current-thread embedding, not a production code path.
+                match handle {
+                    Ok(h) if h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+                        tokio::task::block_in_place(|| {
+                            self.durable_write_through(store.as_ref(), record.seq)
+                        });
+                    }
+                    _ => self.durable_write_through(store.as_ref(), record.seq),
+                }
             }
             // Otherwise: headroom remains, the write-behind flusher owns this seq. Return immediately
             // without touching the store.
@@ -1788,6 +1812,69 @@ mod tests {
             elapsed < std::time::Duration::from_millis(300),
             "a 50ms sleep took {elapsed:?} — the reactor was parked by the durable write-through"
         );
+    }
+
+    /// THE RED PROOF FOR THE VALVE'S `block_in_place` HANDOFF: unlike its sibling above (which never
+    /// trips the valve — headroom is untouched, so the write-behind flusher owns the write), this
+    /// test drives `unpersisted` past `WRITE_THROUGH_HEADROOM` so `record_by` itself performs the
+    /// slow, synchronous store round-trip. Flavor choice is deliberately DIFFERENT from the sibling:
+    /// the sibling uses `current_thread` so there is provably only one worker to park (proving the
+    /// defect). Here `worker_threads = 1` gives the same "exactly one worker" property while still
+    /// being `RuntimeFlavor::MultiThread`, which is what `block_in_place` requires to hand its core
+    /// off — on `current_thread` the fix cannot engage (there is no second thread to promote) and
+    /// this test would never go green under that flavor.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn valve_write_through_does_not_park_the_reactor() {
+        let log = std::sync::Arc::new(AuditLog::new());
+        // Push past the valve threshold BEFORE attaching a sink: with no sink, `record_by` never
+        // touches a store, so this costs nothing and leaves `durable_high` at 0.
+        for i in 0..751 {
+            log.record_by(
+                "hook.register",
+                &format!("hook:{i}"),
+                OUTCOME_APPLIED,
+                "admin",
+            );
+        }
+        let store = std::sync::Arc::new(SlowAuditStore {
+            inner: busbar_store_sqlite::SqliteStore::open_in_memory().unwrap(),
+            delay: std::time::Duration::from_millis(500),
+            fired: std::sync::atomic::AtomicBool::new(false),
+        });
+        log.set_sink(store.clone());
+
+        // seq becomes 752; unpersisted = 752 - 0 >= 750 ⇒ the valve trips and this call performs the
+        // slow write-through itself.
+        let recorder = {
+            let log = log.clone();
+            tokio::spawn(async move {
+                log.record_by("hook.register", "hook:valve", OUTCOME_APPLIED, "admin");
+            })
+        };
+        let start = std::time::Instant::now();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let elapsed = start.elapsed();
+        recorder.await.unwrap();
+        assert!(
+            elapsed < std::time::Duration::from_millis(300),
+            "a 50ms sleep took {elapsed:?} — the valve's write-through parked the only worker"
+        );
+        // Backpressure must be unchanged: the write really did land before the recorder task
+        // finished, not fire-and-forgotten. This second assertion is what a bare `tokio::spawn` of
+        // the write (which would also make the sleep above prompt) could not pass.
+        let persisted = store.list_audit().unwrap();
+        assert_eq!(
+            persisted.len(),
+            752,
+            "the valve-tripped write must have landed durably before record_by returned"
+        );
+        for (i, r) in persisted.iter().enumerate() {
+            assert_eq!(
+                r.seq,
+                (i + 1) as u64,
+                "durable entries must be contiguous 1..=752"
+            );
+        }
     }
 
     /// Regression proof (passes before and after the valve exists): `flush_durable` drains the

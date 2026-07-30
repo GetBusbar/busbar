@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A `tracing::Layer` that records the messages (and other structured fields) of WARN-level
-//! events, so a test can assert a particular `tracing::warn!` fired without a global subscriber.
+//! A `tracing::Layer` that records the messages (and other structured fields) of WARN-and-ABOVE
+//! events (WARN, ERROR), so a test can assert a particular `tracing::warn!`/`tracing::error!` fired
+//! without a global subscriber.
 //!
 //! Driving idiom (unchanged from the four call sites this replaces):
 //! ```ignore
@@ -38,7 +39,9 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for WarnCapture {
         event: &tracing::Event<'_>,
         _ctx: tracing_subscriber::layer::Context<'_, S>,
     ) {
-        if *event.metadata().level() != tracing::Level::WARN {
+        if *event.metadata().level() > tracing::Level::WARN {
+            // `tracing::Level` orders ERROR < WARN < INFO < ... (lower = more severe), so this
+            // admits WARN and ERROR and still excludes INFO/DEBUG/TRACE.
             return;
         }
         // Capture the rendered `message` AND every other field (e.g. a structured `pool`/`hook`
