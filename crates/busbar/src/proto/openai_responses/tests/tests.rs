@@ -122,6 +122,7 @@ fn test_write_request() {
             crate::ir::IrMessage {
                 role: crate::ir::IrRole::Assistant,
                 content: vec![crate::ir::IrBlock::ToolUse {
+                    thought_signature: None,
                     id: "fc_1".to_string(),
                     name: "get_weather".to_string(),
                     input: serde_json::json!({"city": "SF"}),
@@ -601,6 +602,7 @@ fn test_write_response_function_call_item_has_native_id() {
         model: Some("gpt-4o".to_string()),
         created: Some(1_700_000_000),
         content: vec![crate::ir::IrBlock::ToolUse {
+            thought_signature: None,
             id: "call_abc".to_string(),
             name: "get_weather".to_string(),
             input: serde_json::json!({"city": "SF"}),
@@ -738,6 +740,7 @@ fn test_write_response_preserves_text_after_tool_order() {
         created: Some(1_700_000_000),
         content: vec![
             crate::ir::IrBlock::ToolUse {
+                thought_signature: None,
                 id: "call_1".to_string(),
                 name: "get_weather".to_string(),
                 input: serde_json::json!({"city": "SF"}),
@@ -1596,6 +1599,7 @@ fn test_tool_only_assistant_turn_no_empty_message_wrapper() {
         messages: vec![crate::ir::IrMessage {
             role: crate::ir::IrRole::Assistant,
             content: vec![crate::ir::IrBlock::ToolUse {
+                thought_signature: None,
                 id: "fc_1".to_string(),
                 name: "get_weather".to_string(),
                 input: serde_json::json!({"city": "SF"}),
@@ -1667,6 +1671,7 @@ fn test_assistant_text_then_tool_call_order() {
                     citations: Vec::new(),
                 },
                 crate::ir::IrBlock::ToolUse {
+                    thought_signature: None,
                     id: "fc_9".to_string(),
                     name: "lookup".to_string(),
                     input: serde_json::json!({}),
@@ -6270,6 +6275,7 @@ fn test_hosted_tools_dropped_cross_protocol() {
     // cross-proto" contract.
     let mut req = crate::ir::variant::IrReq::Chat(ir);
     req.prepare_for_egress(&crate::ir::variant::EgressPrep {
+        thought_signature_fill: false,
         ingress_protocol: "openai-responses",
         egress_requires_max_tokens: false,
         lane_default_max_tokens: None,

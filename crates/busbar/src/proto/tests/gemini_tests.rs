@@ -740,6 +740,7 @@ fn gemini_cached_content_warns_naming_truncation_and_billing() {
     );
 
     let prep = EgressPrep {
+        thought_signature_fill: false,
         ingress_protocol: "gemini",
         egress_requires_max_tokens: false,
         lane_default_max_tokens: None,

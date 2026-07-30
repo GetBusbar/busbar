@@ -368,6 +368,12 @@ pub(crate) fn translate_request_cross_protocol(
                     .protocol
                     .writer()
                     .max_cache_control_breakpoints(),
+                // Gemini 3 thoughtSignature sentinel fill — Gemini AI-Studio egress only, NEVER
+                // Vertex (`path_base.is_some()` marks a Vertex-style URL-model lane; Vertex is not
+                // confirmed to honor the sentinel bypass and has real reports of rejecting it).
+                // Mirrors the `path_base` check used for the Claude-on-Vertex body shape below.
+                thought_signature_fill: app.lanes[i].protocol.name() == crate::proto::PROTO_GEMINI
+                    && app.lanes[i].path_base.is_none(),
             });
             ir_req.set_model(app.lanes[i].wire_model());
             return Ok(eh.write_request(&ir_req));
@@ -433,6 +439,11 @@ pub(crate) fn translate_request_cross_protocol(
                         .protocol
                         .writer()
                         .max_cache_control_breakpoints(),
+                    // Gemini 3 thoughtSignature sentinel fill — Gemini AI-Studio egress only, NEVER
+                    // Vertex. See the sibling `EgressPrep` construction above for the full rationale.
+                    thought_signature_fill: app.lanes[i].protocol.name()
+                        == crate::proto::PROTO_GEMINI
+                        && app.lanes[i].path_base.is_none(),
                 });
                 let Some(eh) = egress_handler else {
                     return Err(Box::new(ingress_error(

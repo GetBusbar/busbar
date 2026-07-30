@@ -70,6 +70,7 @@ fn buffered_tool_use_wraps_into_converse_stream_tool_frames() {
         logprobs: Vec::new(),
         role: IrRole::Assistant,
         content: vec![IrBlock::ToolUse {
+            thought_signature: None,
             id: "toolu_abc123".to_string(),
             name: "get_weather".to_string(),
             input: serde_json::json!({"city": "Paris"}),
@@ -143,6 +144,7 @@ fn buffered_multi_block_assigns_distinct_monotonic_content_block_indices() {
                 citations: Vec::new(),
             },
             IrBlock::ToolUse {
+                thought_signature: None,
                 id: "toolu_abc123".to_string(),
                 name: "get_weather".to_string(),
                 input: serde_json::json!({"city": "Paris"}),
@@ -246,6 +248,7 @@ fn buffered_tool_use_with_absent_stop_reason_defaults_to_tool_use() {
         logprobs: Vec::new(),
         role: IrRole::Assistant,
         content: vec![IrBlock::ToolUse {
+            thought_signature: None,
             id: "toolu_xyz".to_string(),
             name: "get_weather".to_string(),
             input: serde_json::json!({"city": "Paris"}),
@@ -325,6 +328,7 @@ fn buffered_explicit_stop_reason_overrides_content_default() {
         logprobs: Vec::new(),
         role: IrRole::Assistant,
         content: vec![IrBlock::ToolUse {
+            thought_signature: None,
             id: "toolu_xyz".to_string(),
             name: "get_weather".to_string(),
             input: serde_json::json!({"city": "Paris"}),

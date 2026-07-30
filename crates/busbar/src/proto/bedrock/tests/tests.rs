@@ -168,6 +168,7 @@ fn test_write_request() {
             crate::ir::IrMessage {
                 role: crate::ir::IrRole::Assistant,
                 content: vec![crate::ir::IrBlock::ToolUse {
+                    thought_signature: None,
                     id: "tool_123".to_string(),
                     name: "get_weather".to_string(),
                     input: serde_json::json!({"city": "San Francisco"}),
@@ -2091,6 +2092,7 @@ fn eventstream_every_content_block_start_has_exactly_one_stop() {
                 citations: Vec::new(),
             },
             crate::ir::IrBlock::ToolUse {
+                thought_signature: None,
                 id: "toolu_1".to_string(),
                 name: "get_weather".to_string(),
                 input: serde_json::json!({"city": "SF"}),
@@ -4719,6 +4721,7 @@ fn consecutive_user_turns_coalesce_for_alternation() {
             crate::ir::IrMessage {
                 role: crate::ir::IrRole::Assistant,
                 content: vec![crate::ir::IrBlock::ToolUse {
+                    thought_signature: None,
                     id: "t1".to_string(),
                     name: "get".to_string(),
                     input: serde_json::json!({}),
@@ -5563,6 +5566,7 @@ fn consecutive_tool_result_turns_coalesce_into_single_user_message() {
             crate::ir::IrMessage {
                 role: crate::ir::IrRole::Assistant,
                 content: vec![crate::ir::IrBlock::ToolUse {
+                    thought_signature: None,
                     id: "t1".to_string(),
                     name: "a".to_string(),
                     input: serde_json::json!({}),

@@ -463,6 +463,18 @@ pub(crate) enum IrBlock {
         /// (cost/latency regression). Only the Anthropic reader populates it and only the Anthropic
         /// writer emits it; other protocols have no native analog and leave it `None`.
         cache_control: Option<CacheControl>,
+        /// Opaque, vendor-scoped continuation token — Gemini 3's `thoughtSignature`, a sibling of
+        /// `functionCall` on the wire `Part`, that MUST be echoed back verbatim on the next turn or
+        /// the Gemini backend 400s ("missing a thought_signature"). Mirrors [`IrBlock::Thinking`]'s
+        /// `signature` field, but scoped to a tool-use block instead of a thinking block. Populated
+        /// two ways: (1) read off the wire by Gemini's own readers when Gemini is the SOURCE
+        /// protocol (round-tripped verbatim; harmless to capture even though same-protocol
+        /// Gemini→Gemini traffic never actually passes through the IR), and (2) INJECTED by
+        /// [`IrReq::prepare_for_egress`] with Google's documented sentinel value when the egress lane
+        /// is Gemini AI Studio and the block has no real signature — this is the path that matters
+        /// for cross-protocol traffic (e.g. OpenAI history replayed against a Gemini backend), since
+        /// no foreign protocol has a `thoughtSignature` concept of its own to read.
+        thought_signature: Option<String>,
     },
     ToolResult {
         tool_use_id: String,
