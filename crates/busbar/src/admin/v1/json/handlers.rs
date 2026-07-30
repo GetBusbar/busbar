@@ -679,6 +679,7 @@ pub(crate) async fn register_hook(
                     &p.global_hooks,
                     None,
                     Some(&txn_name),
+                    &p.base_hook_names,
                 )
                 .map_err(|e| {
                     format!(
@@ -786,6 +787,7 @@ pub(crate) async fn put_hook(
                     &p.global_hooks,
                     None,
                     Some(&txn_name),
+                    &p.base_hook_names,
                 )
                 .map_err(|e| {
                     format!(
@@ -890,6 +892,7 @@ pub(crate) async fn delete_hook(
                     &p.global_hooks,
                     Some(&txn_name),
                     None,
+                    &p.base_hook_names,
                 )
                 .map_err(|e| {
                     format!(
@@ -1054,6 +1057,7 @@ pub(crate) fn persist_provisioned_group(
             &installed.groups_registry,
             None,
             Some(&group),
+            &installed.base_group_names,
         )
         .map_err(|e| {
             audit::AUDIT.record_by(
@@ -1124,6 +1128,7 @@ pub(crate) async fn register_group(
                     &p.groups_registry,
                     None,
                     Some(&txn_name),
+                    &p.base_group_names,
                 )
                 .map_err(|e| {
                     format!(
@@ -1210,6 +1215,7 @@ pub(crate) async fn put_group(
                     &p.groups_registry,
                     None,
                     Some(&txn_name),
+                    &p.base_group_names,
                 )
                 .map_err(|e| {
                     format!(
@@ -1300,6 +1306,7 @@ pub(crate) async fn patch_group(
                     &p.groups_registry,
                     None,
                     Some(&txn_name),
+                    &p.base_group_names,
                 )
                 .map_err(|e| {
                     format!(
@@ -1386,6 +1393,7 @@ pub(crate) async fn delete_group(
                         &p.groups_registry,
                         Some(&txn_name),
                         None,
+                        &p.base_group_names,
                     )
                     .map_err(|e| {
                         format!(
@@ -1913,6 +1921,7 @@ pub(crate) async fn rollback_config(
                     &p.global_hooks,
                     None,
                     None,
+                    &p.base_hook_names,
                 )
                 .map_err(|e| {
                     format!(
@@ -3061,6 +3070,7 @@ pub(crate) async fn patch_hook_settings(
                     &p.global_hooks,
                     None,
                     Some(&txn_name),
+                    &p.base_hook_names,
                 )
                 .map_err(|e| {
                     format!(
