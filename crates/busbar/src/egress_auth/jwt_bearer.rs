@@ -168,10 +168,22 @@ impl Signer {
             // secret-hygiene hazard. The status/body branch below already redacts.
             .map_err(|e| format!("token endpoint request failed: {}", e.without_url()))?;
         let status = resp.status();
-        let body = resp
-            .text()
-            .await
-            .map_err(|e| format!("reading token response failed: {e}"))?;
+        // The token endpoint is not fully trusted (its `expires_in` below is already treated as
+        // attacker-influenced), so read the body under the engine's established capped-read
+        // primitive rather than `resp.text()`, which buffers an UNBOUNDED body — a hijacked or
+        // misbehaving token endpoint returning a multi-GB response would otherwise be read entirely
+        // into memory. A real OAuth token response is well under 1 KiB, so the 256 KiB
+        // `upstream_error_body_max_bytes()` cap has zero effect on legitimate traffic; a
+        // truncated/oversized response surfaces as a clear error instead of a silent partial-parse.
+        let (raw, read_end) =
+            crate::proxy::read_capped(resp, crate::proxy::max_upstream_buffered_bytes()).await;
+        if read_end != crate::proxy::ReadEnd::Complete {
+            return Err(format!(
+                "token endpoint response exceeded the {}-byte cap or failed mid-transfer; refusing to parse a truncated token response",
+                crate::proxy::max_upstream_buffered_bytes()
+            ));
+        }
+        let body = String::from_utf8_lossy(&raw).into_owned();
         if !status.is_success() {
             // Never log the assertion/body wholesale (may echo claims); status + a short snippet only.
             return Err(format!(
@@ -405,6 +417,83 @@ mod tests {
             v.as_object().unwrap().len(),
             5,
             "exactly iss/scope/aud/iat/exp — no injected claim: {v}"
+        );
+    }
+
+    /// A test-only 2048-bit PKCS#8 RSA private key (generated for this test suite only; not used
+    /// anywhere else and grants no real access) so [`Signer::mint`] can actually sign an assertion
+    /// and exercise the real HTTP exchange against a mock token endpoint.
+    const TEST_PRIVATE_KEY_PEM: &str = "-----BEGIN PRIVATE KEY-----\n\
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCu2RTBghXyuvqd\n\
+v/4AIq1NcPzdRUCr0wyjEH35avOM9vSW+fuira0UtCQcyTHJZswoJqgwcdO2SRav\n\
+/QMZhnjB/sCzuvHrbILd/T0nK19Fdld/wKMQlQlqz94OpS5b0J/nEc7/IOTxszbq\n\
+4B2geG7lJc5wm3dMjKwr7IPbnWs5fMEVyZFaFsctrejOTURx8duff8eM2L+Lf5No\n\
+H2k0h+6blyDTq1Iu+9UM5/AfycgvdhPlcKCL1VZq9+YY5zW5GuXj997TnEWEeiam\n\
+ZfaHklhdSX3zzSUkShqayzaxX6YRdlUvE6yEIkjq/AVRVrMZDynyD7J0nsyjykhx\n\
+WVh79c5fAgMBAAECggEALHaz2onUPwfhl6AtXadz3s+u3i4wRgHDouwcvQK/sMdU\n\
+Z9hmb3YvH6a30EIx0P+9RzCdcMRhjGeFx3dWBHW3282G/624u5+6n+04Ue+rqKRx\n\
+l+FLFnpwDKOT2rGS2nJxV3el5iddUUG743rezeISgV9d4jEG44aaegkJdx3PGKz/\n\
+E76BIyi9H4oUgiqIyPW2trPEeg5n/1oVMHLGDBhotuM7VPUCegh/J3e1jSxcYvi8\n\
+0CutgOLynZAS1xSatbbp8nWrUSRHOUYrgE9OYbS7TSgGz1PjzdcmLEsHEGcor0wm\n\
+cT4oePDjZmuxICFBSg96Ffb82t6UGXC7xLQbglsfQQKBgQDlBOBtVQafWVJiEj83\n\
+fG2YfKTMx1neGO/6ftBMn7XUt4D/AbL0Kx0/Z5lfxm2cixlxcGWT6e96CmZmEsyA\n\
+RFSyuG/bvbTF1c0vaKXcjghtPH5TaB6MjgP3VmjOHR5V5o3JMQX0Xayxf/kBP//f\n\
+wfolsPUM5hcB7pMjVDQz0OZacQKBgQDDcm0i42UA1wrh4XUTNAbVHfacTm/zBhVB\n\
+zvtEC3WGkBCRdU9JSwFAJitPmxrVS3+w2fxO47IiSngeQEyC2neew/H5FrWSNs+L\n\
+xV9Jystubq6oTCulEGBP4gb99FkDY2RToNYOjVrEQDsmiijv3CeZyHnes0/8uMQq\n\
+5ekEveH9zwKBgBZvR9zt+1wYz+0zhGXXFpVdgHde//q1zqxnR9h5vMI9x7EzZWht\n\
+4MuZRnkPYyV2quNl801uGTuHUUimhsn556IqVyrbhp3qt9LxGW5lq4Wn62gYRwXV\n\
+06WjHVkzmQkpMLKIzuCFXKl2s9nffx1YTzzp/Ndqos5ZpKhNU1/QEwDBAoGAfVvA\n\
+WldFqmNDbJwCTp3ZIAqG6bx5m4O0ULBkg0FiUTvIFLQMdbMxCycwMnAGpvY04Yb/\n\
+iM4MrGfdYXHWYTuk6+U8J4sETNLxDfI7awYysxM03Wd1uvqk+7e6ylpWWZD/gZAw\n\
+m8bYh/W2usJ0/VvU3pMyb7/NNwh/chBjBBKSiAsCgYEAsTCMDD6CYdncyFWMtWpK\n\
+vaTrTko3xPDigybk5520jK5UkEaZr0meRn1CFYFAnfUs0sKB4EbWkcmkZOayPPtQ\n\
+su3l06s8o+WrP8Bp2GikIg+jVz9sdz9Vph0Vr0VOPwdBKbWUT4As0r6Muceq+sH6\n\
+oy3z0wnL4GXkIelYmU1zCk0=\n\
+-----END PRIVATE KEY-----\n";
+
+    fn test_signer(token_uri: String) -> Signer {
+        let der = pem_to_pkcs8_der(TEST_PRIVATE_KEY_PEM).expect("test key parses");
+        let key_pair =
+            ring::signature::RsaKeyPair::from_pkcs8(&der).expect("test key is valid PKCS#8 RSA");
+        Signer {
+            key_pair,
+            rng: ring::rand::SystemRandom::new(),
+            issuer: "svc@proj.iam.gserviceaccount.com".to_string(),
+            token_uri,
+            scope: DEFAULT_SCOPE.to_string(),
+            http: super::super::minter_client().unwrap(),
+        }
+    }
+
+    /// The token endpoint is an untrusted network peer (its `expires_in` is already treated as
+    /// attacker-influenced in `mint`), so `mint()` must read the response body under a size cap
+    /// rather than `resp.text()`'s unbounded read: a hijacked/misbehaving token endpoint returning a
+    /// body past the `upstream_error_body_max_bytes()` cap must surface a clear error, never
+    /// silently buffer the whole thing or attempt a partial JSON parse of a truncated fragment.
+    #[tokio::test]
+    async fn mint_rejects_a_response_body_over_the_cap() {
+        let state = std::sync::Arc::new(crate::test_support::MockServerState::new());
+        let oversized_token = "a".repeat(300 * 1024);
+        state.push(crate::test_support::MockResponse::Ok {
+            status: axum::http::StatusCode::OK,
+            body: serde_json::json!({ "access_token": oversized_token, "expires_in": 3600 }),
+        });
+        let server = crate::test_support::MockServer::new(state).await;
+
+        let signer = test_signer(server.base_url());
+        let result = signer.mint().await;
+        server.shutdown().await;
+
+        let err = match result {
+            Ok(_) => {
+                panic!("an over-cap token response must be a clear error, not a buffered success")
+            }
+            Err(e) => e,
+        };
+        assert!(
+            err.contains("cap") || err.contains("truncat"),
+            "expected an error naming the size cap / truncation, got: {err}"
         );
     }
 }
