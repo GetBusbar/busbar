@@ -350,6 +350,7 @@ dependencies = [
  "busbar-api",
  "busbar-plugin-abi",
  "busbar-plugin-sign",
+ "busbar-store-sqlite",
  "flate2",
  "getrandom 0.3.4",
  "libc",
