@@ -333,6 +333,22 @@ the release's security headline: 1.x keys never expired; 1.5.0 keys are signed t
   derived-from-the-rate-card; scoping is per-key attribution / per-group enforcement; the store
   default is documented as in-memory; the budget hard cap carries the per-node fleet caveat
   everywhere it is described.
+- **`prompt: ro`/`rw` hook projections now include reasoning/thinking text (behavior change, not
+  just a bugfix).** Anthropic `thinking`, Bedrock `reasoningContent.reasoningText`, and Responses
+  `reasoning` block text now flow into the flattened `system`/`messages` projection like any
+  other text block, closing a screening bypass (see **Security**). This widens what an
+  already-opt-in, `full`-scope-gated grant exposes: an operator who wired `prompt: ro` before
+  this release for PII/DLP screening will now also see replayed chain-of-thought text in that
+  projection (and, for a `prompt: rw` hook that echoes its projection verbatim rather than
+  abstaining, that text — or the redacted-reasoning marker — can be promoted into a real,
+  visible content block on the outgoing request via the pre-existing, not-index-aligned
+  `apply_rewrite_to_body` write-back; see `docs/hooks.md`'s `rewrite` arm). **Awareness, not a
+  migration step**: no config change is required or possible to opt back out — the previous
+  behavior was the bug. If your hook logs or forwards the `prompt` projection somewhere less
+  trusted than the hook itself, review that path against reasoning content now being present.
+  Opaque redacted reasoning (Anthropic `redacted_thinking`, Bedrock `redactedContent`) is
+  UNAFFECTED by this widening — it still never appears as plaintext, only as the fixed
+  `[busbar:redacted_reasoning]` marker.
 
 ### Removed
 
@@ -419,6 +435,22 @@ the release's security headline: 1.x keys never expired; 1.5.0 keys are signed t
 - **Env-var YAML injection closed.** Interpolated `${VAR}` values are rejected if they carry
   YAML-structural control characters, so a compromised environment cannot splice extra config
   nodes (e.g. widen an auth allowlist) through a quoted scalar.
+- **Reasoning-block `prompt: ro`/`rw` hook-visibility bypass closed.** `flatten_content` /
+  `total_text_chars` / `system_text_chars` (`proxy/hooks.rs`) probed content blocks only for a
+  `text` field, so Anthropic `thinking`, Bedrock `reasoningContent.reasoningText`, and Responses
+  summary-only `reasoning` blocks were invisible to a `prompt: ro` screening gate even though
+  they ship to the provider in full — an operator-owned PII/DLP/guardrail policy-enforcement
+  point silently passing content it was deployed to inspect. Two of the three paths need no
+  forged/valid signature at all to reach the provider: Bedrock's writer has no unsigned-drop
+  filter (unlike Anthropic's egress path), and the Responses reader admits a `reasoning` item on
+  text alone (`encrypted_content` is optional). All three now route through a protocol-dispatched
+  extractor (keyed on the parsed ingress protocol, not on which JSON field happens to be
+  present) and are projected/counted like any other text. Opaque redacted reasoning
+  (`redacted_thinking`/`redactedContent`, which busbar cannot decrypt) is never exposed as
+  plaintext — it projects as a fixed, non-authenticated presence marker instead of silently
+  vanishing. Also fixes a related role-inference bug: a Responses `reasoning` item was
+  misattributed to `user` instead of `assistant`, contradicting the protocol reader's own
+  mapping on the same body. See **Changed** for the resulting widened `prompt` grant scope.
 
 ## [1.4.1], 2026-07-20
 

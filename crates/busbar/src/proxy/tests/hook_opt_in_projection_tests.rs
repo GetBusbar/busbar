@@ -285,8 +285,11 @@ fn prompt_projection_sees_anthropic_thinking_text() {
         ]
     });
     let p = build_prompt_projection(&v, "anthropic");
-    assert_eq!(p.messages, vec![("assistant".into(), "SMUGGLED".into())]
-        as Vec<(std::borrow::Cow<'_, str>, std::borrow::Cow<'_, str>)>);
+    assert_eq!(
+        p.messages,
+        vec![("assistant".into(), "SMUGGLED".into())]
+            as Vec<(std::borrow::Cow<'_, str>, std::borrow::Cow<'_, str>)>
+    );
 }
 
 /// Bypass #2 — the highest-value case: Bedrock's writer re-emits `reasoningContent.reasoningText`
@@ -302,8 +305,11 @@ fn prompt_projection_sees_bedrock_reasoning_text() {
         ]
     });
     let p = build_prompt_projection(&v, "bedrock");
-    assert_eq!(p.messages, vec![("assistant".into(), "SMUGGLED".into())]
-        as Vec<(std::borrow::Cow<'_, str>, std::borrow::Cow<'_, str>)>);
+    assert_eq!(
+        p.messages,
+        vec![("assistant".into(), "SMUGGLED".into())]
+            as Vec<(std::borrow::Cow<'_, str>, std::borrow::Cow<'_, str>)>
+    );
     // The generic arms must not incidentally pick up the signature field as if it were content —
     // opaque provider material is not screenable text either.
     assert!(!p.messages[0].1.contains("sig"));
@@ -502,17 +508,13 @@ fn every_known_protocol_has_a_declared_reasoning_wire_shape() {
         },
         Row {
             protocol: "bedrock",
-            sample: Some(
-                serde_json::json!({"reasoningContent": {"reasoningText": {"text": "W"}}}),
-            ),
+            sample: Some(serde_json::json!({"reasoningContent": {"reasoningText": {"text": "W"}}})),
             expect_text_contains: Some("W"),
             expect_redacted: false,
         },
         Row {
             protocol: "bedrock",
-            sample: Some(
-                serde_json::json!({"reasoningContent": {"redactedContent": "b64"}}),
-            ),
+            sample: Some(serde_json::json!({"reasoningContent": {"redactedContent": "b64"}})),
             expect_text_contains: None,
             expect_redacted: true,
         },
@@ -571,7 +573,8 @@ fn every_known_protocol_has_a_declared_reasoning_wire_shape() {
         let Some(sample) = &row.sample else { continue };
         match block_text(sample, row.protocol) {
             BlockText::Text(t) => assert!(
-                row.expect_text_contains.is_some_and(|needle| t.contains(needle)),
+                row.expect_text_contains
+                    .is_some_and(|needle| t.contains(needle)),
                 "protocol {} sample unexpectedly produced Text({t:?})",
                 row.protocol
             ),
@@ -623,7 +626,10 @@ fn apply_rewrite_to_body_echoes_redacted_marker_as_visible_text() {
     // The marker is now the LITERAL, VISIBLE assistant content that ships upstream — inert text,
     // never the raw ciphertext (which never left this projection in the first place), but a real
     // content injection into the request the hook did not compose from scratch.
-    let msgs = v.get("messages").and_then(Value::as_array).expect("messages array");
+    let msgs = v
+        .get("messages")
+        .and_then(Value::as_array)
+        .expect("messages array");
     assert_eq!(msgs.len(), 1);
     assert_eq!(
         msgs[0].get("content").and_then(Value::as_str),
