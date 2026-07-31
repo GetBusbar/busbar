@@ -21,6 +21,14 @@ pub(crate) const MUTATION_RATE_WINDOW_SECS: u64 = 60;
 pub(crate) enum MutationClass {
     Config,
     Crud,
+    /// `POST /plugins/inspect`'s OWN dedicated budget (plugin-settings-schema-SPEC.md checklist
+    /// item 4, question #7's round-2/4 hardening correction) — NOT the shared 60/min CRUD bucket
+    /// (already shared across key/group/hook/cache-flush mutations; inspecting N candidate
+    /// artifacts during a fleet-wide plugin upgrade would burn N of the same 60/min an operator
+    /// needs for real mutating work in that window) and NOT the unmetered-read bucket either,
+    /// since decompressing + parsing an attacker-controlled archive is a mutation-like cost profile
+    /// even though the endpoint changes no state.
+    PluginInspect,
     /// NOT a budget: the FORBIDDEN path uses this class purely for its per-(principal, window)
     /// "already audited once" counter. The 403 is the answer; the verdict is never used to shed.
     Forbidden,
@@ -32,6 +40,11 @@ impl MutationClass {
         match self {
             MutationClass::Config => 10,
             MutationClass::Crud => 60,
+            // Roomier than CONFIG (a fleet-wide upgrade preview legitimately inspects many
+            // candidates in one operator session) but deliberately tighter than the general-purpose
+            // CRUD budget (60/min) it must not share, since its cost profile — decompress + parse an
+            // attacker-controlled archive — is heavier per call than an ordinary CRUD mutation.
+            MutationClass::PluginInspect => 30,
             MutationClass::Forbidden => 0,
         }
     }
@@ -41,6 +54,7 @@ impl MutationClass {
         match self {
             MutationClass::Config => "config",
             MutationClass::Crud => "crud",
+            MutationClass::PluginInspect => "plugin-inspect",
             MutationClass::Forbidden => "forbidden",
         }
     }
@@ -88,11 +102,16 @@ const CONFIG_CLASS_RULES: &[PathRule] = &[
 ];
 
 /// Classify a mutation request's ADMIN_PREFIX-relative path. Pure function of
-/// [`CONFIG_CLASS_RULES`] plus the one carve-out (`/config/validate` is a read-only dry-run that
-/// must not contend with the CONFIG budget despite living under `/config/`).
+/// [`CONFIG_CLASS_RULES`] plus the carve-outs: `/config/validate` is a read-only dry-run that must
+/// not contend with the CONFIG budget despite living under `/config/`, and `/plugins/inspect` is a
+/// read-only archive preview that must not contend with EITHER the CONFIG or the shared CRUD budget
+/// — it gets its own dedicated [`MutationClass::PluginInspect`] bucket (checklist item 4).
 pub(crate) fn classify_mutation(rel: &str) -> MutationClass {
     if rel == crate::admin::v1::contract::PATH_CONFIG_VALIDATE {
         return MutationClass::Crud;
+    }
+    if rel == crate::admin::v1::contract::PATH_PLUGINS_INSPECT {
+        return MutationClass::PluginInspect;
     }
     let is_config = CONFIG_CLASS_RULES.iter().any(|rule| match rule {
         PathRule::Exact(p) => rel == *p,
@@ -235,5 +254,53 @@ mod tests {
                 first_in_window: true
             }
         );
+    }
+
+    /// `POST /plugins/inspect` gets its OWN dedicated budget — neither the CONFIG class nor the
+    /// shared CRUD class (checklist item 4, question #7's round-2/4 hardening correction: burning
+    /// the shared 60/min CRUD budget on N candidate-artifact inspections during a fleet-wide plugin
+    /// upgrade would starve real mutating work in the same window).
+    #[test]
+    fn plugin_inspect_is_classified_into_its_own_dedicated_bucket() {
+        use crate::admin::v1::contract::PATH_PLUGINS_INSPECT;
+        let class = classify_mutation(PATH_PLUGINS_INSPECT);
+        assert!(matches!(class, MutationClass::PluginInspect));
+        assert_ne!(class.label(), MutationClass::Crud.label());
+        assert_ne!(class.label(), MutationClass::Config.label());
+
+        // Exhausting the CRUD budget must not touch the plugin-inspect budget, and vice versa —
+        // proof the two are genuinely independent counters, not aliases of the same class.
+        let l = MutationLimiter::new();
+        let t = 2_000_000;
+        for _ in 0..60 {
+            assert!(l.check("op", MutationClass::Crud, t).admitted());
+        }
+        assert!(
+            matches!(
+                l.check("op", MutationClass::Crud, t),
+                RateCheck::Denied { .. }
+            ),
+            "CRUD budget (60/min) is now exhausted"
+        );
+        assert!(
+            l.check("op", MutationClass::PluginInspect, t).admitted(),
+            "plugin-inspect has its own untouched budget"
+        );
+    }
+
+    /// `/config/validate` and `/plugins/inspect` are BOTH `read-only`-scoped, stateless dry-run/
+    /// preview POSTs, but they must NOT share a rate bucket with each other or with CRUD — each has
+    /// its own dedicated class.
+    #[test]
+    fn config_validate_and_plugin_inspect_do_not_share_a_bucket() {
+        use crate::admin::v1::contract::{PATH_CONFIG_VALIDATE, PATH_PLUGINS_INSPECT};
+        assert!(matches!(
+            classify_mutation(PATH_CONFIG_VALIDATE),
+            MutationClass::Crud
+        ));
+        assert!(matches!(
+            classify_mutation(PATH_PLUGINS_INSPECT),
+            MutationClass::PluginInspect
+        ));
     }
 }

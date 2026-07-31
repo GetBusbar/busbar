@@ -88,6 +88,7 @@ impl AdminTransport for JsonV1 {
                 axum::routing::delete(reset_overlay_section),
             )
             .route("/plugins", get(list_plugins).post(install_plugin))
+            .route("/plugins/inspect", post(inspect_plugin))
             .route("/plugins/reload", post(reload_plugins))
             .route("/plugins/rollback", post(rollback_plugin))
             .route("/plugins/{file}", axum::routing::delete(remove_plugin))

@@ -6084,6 +6084,343 @@ async fn test_admin_v1_plugin_install_list_reload_remove() {
     handle.abort();
 }
 
+/// As `admin_test_tarball_versioned`, but for an arbitrary plugin `kind` (checklist item 5's
+/// `type=secret` support / richer `auth` rows need a non-`store` fixture to test against).
+fn admin_test_tarball_kind(name: &str, alias: &str, kind: &str) -> Vec<u8> {
+    let lib = format!("junk library bytes for {name} (never dlopened)").into_bytes();
+    let lib = lib.as_slice();
+    let m = busbar_plugin_sign::Manifest {
+        name: name.into(),
+        alias: alias.into(),
+        kind: kind.into(),
+        version: "1.0.0".into(),
+        publisher: "acme".into(),
+        abi_version: *busbar_plugin_loader::supported_abi(kind)
+            .iter()
+            .max()
+            .unwrap_or(&1),
+        sha256: busbar_plugin_sign::sha256_hex(lib),
+        signature: String::new(),
+        description: String::new(),
+        homepage: String::new(),
+        license: String::new(),
+        needs: Default::default(),
+        settings_schema: None,
+        schema_derived: false,
+    };
+    busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap()
+}
+
+/// `GET /plugins?type=secret` (checklist item 5) lists `kind: secret` plugins ONLY — a `kind: store`
+/// tarball dropped in the same directory does not leak into it, and vice versa (the pre-existing
+/// scan used to be unfiltered by kind at all, so this also proves the fix rather than just the
+/// addition). `type=secret` previously did not exist as an accepted value (400 `invalid_request`
+/// before this change; question #9's round-4 correction).
+#[tokio::test]
+async fn test_admin_v1_plugins_type_secret_lists_secret_kind_only() {
+    use base64::Engine as _;
+    crate::metrics::init();
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-admin-plugins-secret-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (addr, handle) = serve_with_plugins_dir(dir.clone()).await;
+    let client = reqwest::Client::new();
+
+    let install = |file: &'static str, tarball: Vec<u8>| {
+        let client = client.clone();
+        async move {
+            let body = serde_json::json!({
+                "file": file,
+                "tarball_b64": base64::engine::general_purpose::STANDARD.encode(&tarball),
+            });
+            let resp = client
+                .post(format!("http://{addr}/api/v1/admin/plugins"))
+                .header("x-admin-token", "admintok")
+                .json(&body)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(resp.status().as_u16(), 201, "install must succeed");
+        }
+    };
+    install(
+        "acme-secret-vault.tar.gz",
+        admin_test_tarball_kind("acme-secret-vault", "vault", "secret"),
+    )
+    .await;
+    install(
+        "acme-store-junk.tar.gz",
+        admin_test_tarball_kind("acme-store-junk", "junkstore", "store"),
+    )
+    .await;
+
+    let secret_list: serde_json::Value = client
+        .get(format!("http://{addr}/api/v1/admin/plugins?type=secret"))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let secret_names: Vec<&str> = secret_list["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        secret_names,
+        vec!["acme-secret-vault"],
+        "type=secret lists ONLY the secret-kind plugin: {secret_list}"
+    );
+    for row in secret_list["items"].as_array().unwrap() {
+        assert_eq!(row["type"], "secret");
+    }
+
+    let store_list: serde_json::Value = client
+        .get(format!("http://{addr}/api/v1/admin/plugins?type=store"))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let store_names: Vec<&str> = store_list["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["name"].as_str().unwrap())
+        .collect();
+    assert!(
+        store_names.contains(&"memory") && store_names.contains(&"acme-store-junk"),
+        "type=store still lists the compiled-in default + the store plugin: {store_list}"
+    );
+    assert!(
+        !store_names.contains(&"acme-secret-vault"),
+        "type=store must NOT leak the secret-kind plugin: {store_list}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+    handle.abort();
+}
+
+/// `GET /plugins` list rows carry `schema_url` (checklist item 6, questions #10/#11): non-null,
+/// admin-prefixed RELATIVE path whenever the manifest declared `settings_schema` at all — and
+/// following it returns the SAME schema `GET /plugins/{name}/schema` would. A plugin with no
+/// `settings_schema` gets `schema_url: null` (absence, not an empty string or omitted field).
+#[tokio::test]
+async fn test_admin_v1_plugins_list_row_carries_schema_url() {
+    crate::metrics::init();
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-admin-plugins-schemaurl-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let schema = serde_json::json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {"url": {"type": "string"}},
+    });
+    let lib = b"junk lib bytes for acme-store-schemaurl".to_vec();
+    let m = busbar_plugin_sign::Manifest {
+        name: "acme-store-schemaurl".into(),
+        alias: "schemaurl".into(),
+        kind: "store".into(),
+        version: "1.0.0".into(),
+        publisher: "acme".into(),
+        abi_version: *busbar_plugin_loader::supported_abi("store")
+            .iter()
+            .max()
+            .unwrap(),
+        sha256: busbar_plugin_sign::sha256_hex(&lib),
+        signature: String::new(),
+        description: String::new(),
+        homepage: String::new(),
+        license: String::new(),
+        needs: Default::default(),
+        settings_schema: Some(schema.to_string()),
+        schema_derived: false,
+    };
+    let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", &lib).unwrap();
+    // Write directly to disk (not via `POST /plugins`) so `hook_env.registry` — which the
+    // per-plugin `GET /plugins/{name}/schema` endpoint resolves against, a SEPARATE path from the
+    // directory-scanning list endpoint below — can be built from the same directory's real
+    // contents up front (mirrors `test_admin_v1_plugin_schema_round_trips_from_manifest`, since the
+    // plain `TestApp`/`serve_with_plugins_dir` builder otherwise defaults `hook_env` to an empty
+    // registry regardless of `plugins_dir`).
+    std::fs::write(dir.join("acme-store-schemaurl.tar.gz"), &tarball).unwrap();
+    let policy = busbar_plugin_sign::TrustPolicy {
+        allow_unsigned: true,
+        ..Default::default()
+    };
+    let registry = busbar_plugin_loader::scan_and_validate(&dir, &policy).unwrap();
+    let hook_env = crate::hooks::HookEnv::new(
+        std::sync::Arc::new(registry),
+        std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
+    );
+    let (addr, handle) = serve_with_plugins_dir_and_hook_env(dir.clone(), hook_env).await;
+    let client = reqwest::Client::new();
+
+    let list: serde_json::Value = client
+        .get(format!("http://{addr}/api/v1/admin/plugins?type=store"))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let row = list["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "acme-store-schemaurl")
+        .expect("the schema-carrying row is present");
+    let schema_url = row["schema_url"].as_str().expect("schema_url is non-null");
+    assert_eq!(
+        schema_url, "/api/v1/admin/plugins/acme-store-schemaurl/schema",
+        "always the admin-prefixed relative path — never absolute, never a catalog URL"
+    );
+    assert_eq!(row["schema_error"], serde_json::Value::Null);
+
+    // Following it returns the same schema.
+    let followed: serde_json::Value = client
+        .get(format!("http://{addr}{schema_url}"))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(followed["schema"], schema);
+
+    // The `memory` compiled-in row (no manifest at all) has `schema_url: null` — absence, not an
+    // error, and distinct from "declared but unparseable".
+    let memory_row = list["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "memory")
+        .expect("compiled-in memory row present");
+    assert_eq!(memory_row["schema_url"], serde_json::Value::Null);
+
+    let _ = std::fs::remove_dir_all(&dir);
+    handle.abort();
+}
+
+// ── POST /plugins/inspect (checklist item 4, question #7) ──────────────────────────────────────
+
+/// Over the wire: a candidate tarball previews cleanly, NEVER lands on disk, and never appears in
+/// `GET /plugins?type=store` afterward — inspect is genuinely stateless, not "install with extra
+/// steps".
+#[tokio::test]
+async fn test_admin_v1_plugins_inspect_previews_without_installing() {
+    use base64::Engine as _;
+    crate::metrics::init();
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-admin-plugins-inspect-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (addr, handle) = serve_with_plugins_dir(dir.clone()).await;
+    let client = reqwest::Client::new();
+
+    let tarball = admin_test_tarball("acme-store-candidate", "candidate");
+    let body = serde_json::json!({
+        "file": "candidate.tar.gz",
+        "tarball_b64": base64::engine::general_purpose::STANDARD.encode(&tarball),
+    });
+    let resp = client
+        .post(format!("http://{addr}/api/v1/admin/plugins/inspect"))
+        .header("x-admin-token", "admintok")
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    let v: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(v["name"], "acme-store-candidate");
+    assert_eq!(v["version"], "1.0.0");
+    assert_eq!(v["kind"], "store");
+    assert_eq!(v["source"], "manifest");
+    assert_eq!(v["trust"], "unverified");
+
+    // NOTHING was written — a subsequent list shows no such plugin, and the directory is empty.
+    assert_eq!(
+        std::fs::read_dir(&dir).unwrap().count(),
+        0,
+        "inspect must never write to plugins.dir"
+    );
+    let list: serde_json::Value = client
+        .get(format!("http://{addr}/api/v1/admin/plugins?type=store"))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        !list["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["name"] == "acme-store-candidate"),
+        "an inspected candidate must not appear in the catalog: {list}"
+    );
+
+    // A read-only-scoped token (no `full`/`mint`/`hooks-register`) can still call it — `read-only`
+    // scope, not a mutation scope (docs/admin-api.md).
+    // (This server's operator token already holds `full`, which trivially satisfies `read-only` —
+    // the scope MATRIX assignment itself is asserted structurally in contract::mod.rs's own tests;
+    // this test's job is the wire behavior, not re-deriving the scope lattice.)
+
+    // Malformed body (bad base64) is a 400, never a panic/500.
+    let bad = serde_json::json!({"file": "x.tar.gz", "tarball_b64": "not-base64!!"});
+    let bad_resp = client
+        .post(format!("http://{addr}/api/v1/admin/plugins/inspect"))
+        .header("x-admin-token", "admintok")
+        .json(&bad)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad_resp.status().as_u16(), 400);
+    let bad_body: serde_json::Value = bad_resp.json().await.unwrap();
+    assert_eq!(bad_body["error"]["code"], "invalid_request");
+
+    // Malformed JSON body entirely is also a 400.
+    let malformed_resp = client
+        .post(format!("http://{addr}/api/v1/admin/plugins/inspect"))
+        .header("x-admin-token", "admintok")
+        .header("content-type", "application/json")
+        .body("not json")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(malformed_resp.status().as_u16(), 400);
+
+    // No admin token at all → 401, same as every other admin endpoint.
+    let unauth = client
+        .post(format!("http://{addr}/api/v1/admin/plugins/inspect"))
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unauth.status().as_u16(), 401);
+
+    let _ = std::fs::remove_dir_all(&dir);
+    handle.abort();
+}
+
 /// The manifest-embedded `settings_schema` (plugin-settings-schema-SPEC.md) round-trips over the
 /// wire: install a tarball whose SIGNED manifest carries a JSON Schema document, then `GET
 /// /plugins/{file}/schema` returns it as real parsed JSON (not a JSON string containing JSON). A

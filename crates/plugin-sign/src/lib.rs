@@ -262,6 +262,71 @@ pub enum Verdict {
     Allowed { reason: String, allow: AllowReason },
 }
 
+/// The engine's BINDING LIFECYCLE default for whether a settings change needs a process restart,
+/// derived from plugin `kind` — never plugin-declared (plugin-settings-schema-SPEC.md question
+/// #14). `store`/`secret` plugins bind once at process start (every field is restart-scoped by
+/// construction, regardless of what a plugin author writes); `hook`/`auth` plugin registries
+/// rebuild hot. An unrecognized kind defaults to the SAFE direction (restart-required) — the same
+/// fail-safe posture [`effective_restart_required`]'s override gate takes.
+pub fn kind_restart_default(kind: &str) -> bool {
+    match kind {
+        "hook" | "auth" => false,
+        // "store" | "secret" | anything else: restart-required is the safe default. An unknown
+        // kind should never have reached here (KNOWN_KINDS gates it earlier in the pipeline), but
+        // this function must still answer something rather than panic, and restart-required is
+        // the fail-safe direction to guess wrong in.
+        _ => true,
+    }
+}
+
+/// The EFFECTIVE restart-required verdict for one settings field: the kind-derived default
+/// ([`kind_restart_default`]), with a per-field `x-busbar-restart-required` override honored
+/// ASYMMETRICALLY (question #14, round-4 correction):
+///   * an override to `true` against a kind default of `false` is ALWAYS honored — claiming a field
+///     needs a restart when the kind default says it doesn't is the safe direction to be wrong in
+///     (worst case: one unnecessary restart);
+///   * an override to `false` against a kind default of `true` is honored ONLY when the manifest
+///     verifiably came from a TRUSTED, first-party (`publisher == "busbar"`) artifact — the same
+///     trust+publisher gate `schema_derived`'s load-bearing rule uses (question #4's round-3/5
+///     corrections), for the identical reason: a third-party claim in the direction that could
+///     cause a setting to silently fail to apply is not trusted; a claim in the fail-safe direction
+///     is. `publisher` ALONE is never sufficient proof — `Verdict::Trusted { first_party: true, .. }`
+///     is what `evaluate()` only ever returns for a manifest that verified against the EMBEDDED
+///     release key, never a self-declared string (see `crates/plugin-loader/src/registry.rs`'s
+///     existing refusal to trust `manifest.publisher` alone for the identical reason).
+pub fn effective_restart_required(
+    kind: &str,
+    field_override: Option<bool>,
+    verdict: &Verdict,
+) -> bool {
+    let default = kind_restart_default(kind);
+    match field_override {
+        None => default,
+        Some(true) => true,
+        Some(false) => {
+            if !default {
+                // The kind default is already hot-appliable; a `false` override changes nothing
+                // observable, so there is nothing to gate — this is not the silent-data-loss
+                // direction question #14 is guarding against.
+                false
+            } else if matches!(
+                verdict,
+                Verdict::Trusted {
+                    first_party: true,
+                    ..
+                }
+            ) {
+                // Trusted first-party: the override is HONORED — the field is hot-appliable.
+                false
+            } else {
+                // Not trusted-first-party: the override is IGNORED — the kind default (true,
+                // restart-required) is enforced regardless of what the manifest claims.
+                true
+            }
+        }
+    }
+}
+
 /// WHY a plugin was rejected — a STRUCTURED discriminant, so consumers (e.g. the `--list-plugins`
 /// signature column) can label the outcome WITHOUT substring-matching the human-readable `reason`.
 /// The former text match was itself a defect: the reason string embeds plugin-author-controlled bytes
@@ -1318,5 +1383,102 @@ mod tests {
     fn embedded_key_absent_in_dev_builds() {
         // The build for tests does not set BUSBAR_RELEASE_PUBKEY.
         assert!(embedded_release_pubkey().is_none());
+    }
+
+    /// `store`/`secret` default to restart-required; `hook`/`auth` default to hot-appliable
+    /// (question #14) — derived from `kind`, never plugin-declared.
+    #[test]
+    fn kind_restart_default_matches_binding_lifecycle() {
+        assert!(kind_restart_default("store"));
+        assert!(kind_restart_default("secret"));
+        assert!(!kind_restart_default("hook"));
+        assert!(!kind_restart_default("auth"));
+        // An unrecognized kind fails to the SAFE direction (restart-required), never the
+        // hot-appliable one.
+        assert!(kind_restart_default("widget"));
+    }
+
+    fn trusted_first_party() -> Verdict {
+        Verdict::Trusted {
+            publisher: FIRST_PARTY_PUBLISHER.to_string(),
+            first_party: true,
+        }
+    }
+
+    fn trusted_third_party() -> Verdict {
+        Verdict::Trusted {
+            publisher: "acme".to_string(),
+            first_party: false,
+        }
+    }
+
+    fn allowed_unsigned() -> Verdict {
+        Verdict::Allowed {
+            reason: "dev opt-in".to_string(),
+            allow: AllowReason::Unsigned,
+        }
+    }
+
+    /// The override direction that INCREASES caution (`true` against a `false` kind default) is
+    /// ALWAYS honored, regardless of trust — the safe direction to be wrong in.
+    #[test]
+    fn restart_override_to_true_is_always_honored() {
+        for verdict in [
+            trusted_first_party(),
+            trusted_third_party(),
+            allowed_unsigned(),
+        ] {
+            assert!(effective_restart_required("hook", Some(true), &verdict));
+            assert!(effective_restart_required("auth", Some(true), &verdict));
+        }
+    }
+
+    /// The override direction that DECREASES caution (`false` against a `true` kind default) is
+    /// honored ONLY for a trusted, first-party (`publisher == "busbar"`) manifest — the exact same
+    /// trust+publisher gate `schema_derived`'s load-bearing rule uses (question #4/#14). A
+    /// trusted THIRD-PARTY publisher, or an unsigned/allowed artifact, does NOT clear the gate —
+    /// `publisher` alone is never sufficient; only `Verdict::Trusted { first_party: true, .. }` does.
+    #[test]
+    fn restart_override_to_false_requires_trusted_first_party() {
+        assert!(
+            !effective_restart_required("store", Some(false), &trusted_first_party()),
+            "trusted first-party clears the gate: the false override is honored"
+        );
+        assert!(
+            effective_restart_required("store", Some(false), &trusted_third_party()),
+            "trusted THIRD-PARTY does not clear the gate: kind default (true) is enforced"
+        );
+        assert!(
+            effective_restart_required("secret", Some(false), &allowed_unsigned()),
+            "an unsigned/allowed artifact does not clear the gate: kind default enforced"
+        );
+    }
+
+    /// With no per-field override, the kind default applies unconditionally (trust is irrelevant
+    /// when there is nothing to override).
+    #[test]
+    fn restart_no_override_uses_kind_default_regardless_of_trust() {
+        assert!(effective_restart_required(
+            "store",
+            None,
+            &allowed_unsigned()
+        ));
+        assert!(!effective_restart_required(
+            "hook",
+            None,
+            &allowed_unsigned()
+        ));
+    }
+
+    /// A `false` override against an ALREADY hot-appliable kind default changes nothing observable
+    /// (there is no restart-required claim being weakened), so it is honored regardless of trust —
+    /// this is not the silent-data-loss direction question #14 guards against.
+    #[test]
+    fn restart_override_to_false_against_hot_default_is_a_no_op_honored_unconditionally() {
+        assert!(!effective_restart_required(
+            "hook",
+            Some(false),
+            &allowed_unsigned()
+        ));
     }
 }

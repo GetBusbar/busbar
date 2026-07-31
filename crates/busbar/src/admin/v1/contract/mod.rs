@@ -43,6 +43,11 @@ pub(crate) const ADMIN_PREFIX: &str = "/api/v1/admin";
 /// single-sourced here so the three surfaces cannot drift.
 pub(crate) const PATH_ADMIN_AUTH: &str = "/admin-auth";
 pub(crate) const PATH_CONFIG_VALIDATE: &str = "/config/validate";
+/// `POST /plugins/inspect` (plugin-settings-schema-SPEC.md checklist item 4, question #7) — a
+/// stateless, `read-only`-scope preview of a candidate plugin tarball. Single-sourced here for the
+/// same reason as `PATH_CONFIG_VALIDATE`: the scope matrix, the mutation-rate classifier, and the
+/// router all key off this exact string.
+pub(crate) const PATH_PLUGINS_INSPECT: &str = "/plugins/inspect";
 pub(crate) const PATH_HOOKS: &str = "/hooks";
 pub(crate) const PATH_GROUPS: &str = "/groups";
 /// The keys collection path — `POST` here MINTS a key (the delegated `mint` scope; auto-provision
@@ -264,7 +269,7 @@ pub(crate) fn required_scope(method: &axum::http::Method, path: &str) -> Scope {
     // `POST /config/validate` is a STATELESS DRY-RUN — a read in POST clothing (the body is the
     // config to lint, far past URL length limits). A read-only CI token must be able to lint
     // configs.
-    if rel == PATH_CONFIG_VALIDATE {
+    if rel == PATH_CONFIG_VALIDATE || rel == PATH_PLUGINS_INSPECT {
         return Scope::ReadOnly;
     }
     if is_mutation && (rel == PATH_HOOKS || rel.starts_with("/hooks/")) {
@@ -788,12 +793,31 @@ pub(crate) struct PluginView {
     /// Why a dynamic-library plugin did not validate (`valid: false`) — a short, secret-free reason.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) error: Option<String>,
+    /// Server-resolved path to this plugin's `GET /plugins/{name}/schema` endpoint (questions
+    /// #10/#11 of plugin-settings-schema-SPEC.md) — ALWAYS a relative path under the admin origin
+    /// (the client MUST reject an absolute/cross-origin value rather than fetch it; this endpoint
+    /// only ever emits the admin-prefixed relative form, never anything else). Non-null whenever the
+    /// manifest declared a `settings_schema` AT ALL, even if it's unparseable (following it then
+    /// surfaces `schema_error` — question #11, round-8 correction: a present-but-corrupt schema is a
+    /// worse, distinct condition from "no schema declared", never folded into the same `null`).
+    /// `null` for a compiled-in/external row (no manifest to carry a schema at all) and for any
+    /// dynamic-library row whose manifest never set `settings_schema`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) schema_url: Option<String>,
+    /// A manifest that SET `settings_schema` but whose value fails to parse (question #3's round-4
+    /// correction, carried onto the list row too) — distinct from a manifest that never set the
+    /// field at all (`schema_url: null`, this field also `None`). `schema_url` stays non-null in
+    /// this case; the operator sees the row is degraded from the list alone, before ever following
+    /// the URL.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) schema_error: Option<String>,
 }
 
 impl PluginView {
     /// A COMPILED-IN or EXTERNAL plugin row (no manifest metadata) — the historical shape. The
-    /// dynamic-library fields (`version`/`publisher`/`interface_version`/`trust`/`valid`/`error`) are
-    /// `None` and skip serialization, so the wire is byte-identical to before this addition.
+    /// dynamic-library fields (`version`/`publisher`/`interface_version`/`trust`/`valid`/`error`/
+    /// `schema_url`/`schema_error`) are `None` and skip serialization, so the wire is byte-identical
+    /// to before this addition.
     pub(crate) fn basic(
         name: String,
         r#type: &'static str,
@@ -813,6 +837,8 @@ impl PluginView {
             trust: None,
             valid: None,
             error: None,
+            schema_url: None,
+            schema_error: None,
         }
     }
 }

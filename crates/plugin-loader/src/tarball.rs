@@ -31,7 +31,11 @@ const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 /// of overhead per block, nowhere near doubling it), so a genuine tarball containing only a
 /// manifest + a library under the existing per-member caps is always comfortably under this sum -
 /// anything larger is rejected before the read, not after.
-pub(crate) const MAX_TARBALL_FILE_BYTES: u64 = MAX_LIB_BYTES + MAX_MANIFEST_BYTES;
+// `pub`, not `pub(crate)`: `POST /plugins/inspect` (plugin-settings-schema-SPEC.md checklist item
+// 4) needs this SAME ceiling to size its own request-body cap on the base64-encoded upload,
+// checked BEFORE the decoder ever runs — one source of truth for "how big can a plugin tarball
+// legitimately be", not a second guessed constant that could silently drift from this one.
+pub const MAX_TARBALL_FILE_BYTES: u64 = MAX_LIB_BYTES + MAX_MANIFEST_BYTES;
 
 /// A plugin tarball unpacked in memory: the parsed signed manifest plus the exact library bytes.
 #[derive(Debug)]

@@ -53,6 +53,20 @@ const SECRET_NAME_HINTS: &[&str] = &[
     "api_key",
 ];
 
+/// The `x-busbar-ref` schema vocabulary entry (plugin-settings-schema-SPEC.md, consumer question
+/// #5): `x-busbar-ref: "pool" | "group" | "model" | "provider"` on a field tells busbar-ui to render
+/// a picker populated from the relevant admin API listing endpoint, not a free-text box. This is a
+/// UI-ONLY rendering hint — there is deliberately NO server-side enforcement of it (the values it
+/// names are per-fleet-member runtime data, not something a manifest schema or this pack-time tool
+/// could ever validate against; see the spec's round-6 correction under question #5). The only
+/// pack-time requirement is that it not be silently swallowed as an unrecognized `x-*` extension:
+/// `jsonschema::validator_for` already tolerates unknown keywords by design (JSON Schema itself is
+/// forward-compatible with unrecognized keys), so `x-busbar-ref` passes through pack-time validation
+/// with no code change required — this constant exists purely so the accepted value set is named
+/// ONE place instead of only in prose, for the (optional, non-blocking) sanity check below.
+#[cfg(test)]
+const BUSBAR_REF_VALUES: &[&str] = &["pool", "group", "model", "provider"];
+
 /// Parse a `--needs-*` flag value into a [`NeedLevel`] (`no` | `ro` | `rw`). This is the ADVISORY
 /// declared-intent a `kind: hook` plugin's manifest carries — it is SIGNED (so it cannot be spoofed)
 /// and surfaced to the admin at register/load, but the operator's config grant remains the
@@ -777,6 +791,54 @@ mod tests {
             },
         });
         validate_secret_fields(&one_of_clean).unwrap();
+    }
+
+    /// `x-busbar-ref: "pool" | "group" | "model" | "provider"` (question #5) is a recognized schema
+    /// vocabulary entry that passes pack-time validation untouched — it is a UI rendering hint with
+    /// deliberately NO server-side enforcement (the referenced names are per-fleet-member runtime
+    /// data, unvalidatable at authoring/pack time; see the spec's round-6 correction). This proves
+    /// it is not rejected as an unrecognized `x-*` extension, on a field of any type (not just
+    /// `type: string` — a `pool`/`group`/`model`/`provider` reference is ordinarily a string, but
+    /// nothing about this keyword is secret-shaped, so it carries none of `x-busbar-secret`'s type
+    /// restrictions).
+    #[test]
+    fn x_busbar_ref_passes_pack_time_validation_untouched() {
+        for value in BUSBAR_REF_VALUES {
+            let schema = serde_json::json!({
+                "$schema": SCHEMA_2020_12, "type": "object",
+                "properties": {
+                    "target": {"type": "string", "x-busbar-ref": value},
+                },
+            });
+            validate_secret_fields(&schema).unwrap_or_else(|e| {
+                panic!("x-busbar-ref: {value:?} must not be rejected as an unknown extension: {e}")
+            });
+            jsonschema::validator_for(&schema)
+                .unwrap_or_else(|e| panic!("x-busbar-ref: {value:?} schema must validate: {e}"));
+        }
+    }
+
+    /// `busbar-plugin-pack` can now reach `SecretRef` directly (checklist #1: it used to be
+    /// `pub(crate)` inside the `busbar` binary crate, unreachable from any tooling) and derive the
+    /// `x-busbar-secret` reference `oneOf` FROM the real type instead of a hand-written parallel
+    /// copy — this is the fragment busbar-ui composes a secret reference against, matching exactly
+    /// what `SecretRef::deserialize` accepts (env/file sugar + the canonical module/settings form),
+    /// with no special-casing needed to exclude `{ literal: ... }` (question #2, round-4
+    /// correction — full derivation already excludes it, since `literal` was never a `SecretRef`
+    /// shape to begin with).
+    #[test]
+    fn derives_secret_ref_oneof_from_the_shared_type() {
+        let oneof = busbar_secret_ref::oneof_schema();
+        let alts = oneof["oneOf"].as_array().expect("oneOf array");
+        assert_eq!(alts.len(), 3, "module/settings + env + file, nothing else");
+        // Sanity: the derived fragment is a valid JSON Schema (full round-trip fidelity against
+        // SecretRef::deserialize is asserted in busbar-secret-ref's own test suite, the single
+        // source of truth for the derivation).
+        let mut full = serde_json::json!({"type": "object"});
+        for (k, v) in oneof.as_object().unwrap() {
+            full[k] = v.clone();
+        }
+        jsonschema::validator_for(&full).expect("derived oneOf is a valid JSON Schema fragment");
     }
 
     /// An unmarked field whose name looks like a secret is a hard error (question #12);
