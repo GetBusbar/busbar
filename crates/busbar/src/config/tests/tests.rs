@@ -2335,6 +2335,7 @@ fn to_policy_floor_distinguishes_automatic_from_explicit_downgrade() {
             homepage: String::new(),
             license: String::new(),
             needs: Default::default(),
+            settings_schema: None,
         },
         artifact,
     );
@@ -2386,6 +2387,7 @@ fn to_policy_floor_distinguishes_automatic_from_explicit_downgrade() {
             homepage: String::new(),
             license: String::new(),
             needs: Default::default(),
+            settings_schema: None,
         },
         artifact,
     );

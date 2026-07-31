@@ -158,6 +158,7 @@ fn real_multi_mb_library_round_trips_byte_for_byte() {
         homepage: String::new(),
         license: "Apache-2.0".into(),
         needs: Default::default(),
+        settings_schema: None,
     };
     let manifest = sign(&key, manifest, &lib_bytes);
 

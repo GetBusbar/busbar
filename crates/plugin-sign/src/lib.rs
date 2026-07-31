@@ -126,6 +126,19 @@ pub struct Manifest {
     /// manifests (and every non-hook plugin) parse unchanged.
     #[serde(default)]
     pub needs: HookNeeds,
+    /// The plugin's `settings` shape as a JSON Schema (2020-12) document, serialized to a string
+    /// (kept as a string, not a nested `serde_json::Value`, so `canonical_manifest_bytes`'s
+    /// sorted-key re-serialization can never reorder keys INSIDE the schema and silently change
+    /// what was signed - the schema's own byte-for-byte text is what's covered). SIGNED, so an
+    /// operator (or `GET /plugins/{name}/schema`) can trust it without ever loading the plugin -
+    /// `GET /plugins` is manifest-only and never dlopens anything. Absent (`None`) for a plugin
+    /// that hasn't been re-packed with a schema yet; serde-default so every existing manifest
+    /// this session already produced still parses unchanged. A field marked `"x-busbar-secret":
+    /// true` in the schema is validated by callers against a `oneOf` secret-reference shape
+    /// (`{"env": "..."}` / `{"file": "..."}` / `{"module": "...", "key": "..."}`), never a bare
+    /// string - see `busbarAI-private/design/plugin-settings-schema-SPEC.md`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings_schema: Option<String>,
 }
 
 /// The advisory declared-intent block a `kind: hook` plugin's manifest may carry (`needs:`). Each
@@ -710,6 +723,7 @@ mod tests {
             homepage: "https://example.dev".to_string(),
             license: "Apache-2.0".to_string(),
             needs: HookNeeds::default(),
+            settings_schema: None,
         }
     }
 
