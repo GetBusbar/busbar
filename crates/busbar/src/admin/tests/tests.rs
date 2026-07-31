@@ -6316,6 +6316,175 @@ async fn test_admin_v1_plugins_list_row_carries_schema_url() {
     handle.abort();
 }
 
+/// E-003 (busbar-ui/docs/ENGINE-BUGS.md): `GET /plugins` list rows carry `file` (the artifact
+/// filename — the exact string `DELETE /plugins/{file}` and `GET /plugins/{file}/schema` key off)
+/// and `has_schema` (mirrors `schema_url.is_some()`, so a catalog can flag configurable rows
+/// without a fetch per row). Covers a dynamic-library row WITH a schema, a dynamic-library row
+/// WITHOUT one, and the compiled-in `memory` row (no backing artifact at all).
+#[tokio::test]
+async fn test_admin_v1_plugins_list_row_carries_file_and_has_schema() {
+    crate::metrics::init();
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-admin-plugins-file-hasschema-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let schema = serde_json::json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {"url": {"type": "string"}},
+    });
+    let lib_with = b"junk lib bytes for acme-store-filecheck-with".to_vec();
+    let m_with = busbar_plugin_sign::Manifest {
+        name: "acme-store-filecheck-with".into(),
+        alias: "filecheckwith".into(),
+        kind: "store".into(),
+        version: "1.0.0".into(),
+        publisher: "acme".into(),
+        abi_version: *busbar_plugin_loader::supported_abi("store")
+            .iter()
+            .max()
+            .unwrap(),
+        sha256: busbar_plugin_sign::sha256_hex(&lib_with),
+        signature: String::new(),
+        description: String::new(),
+        homepage: String::new(),
+        license: String::new(),
+        needs: Default::default(),
+        settings_schema: Some(schema.to_string()),
+        schema_derived: false,
+    };
+    let tarball_with =
+        busbar_plugin_loader::tarball::package(&m_with, "lib.so", &lib_with).unwrap();
+    // Deliberately different FILENAME than the manifest NAME, so a test that only checked `name`
+    // could not accidentally pass — `file` must be the on-disk artifact filename.
+    std::fs::write(
+        dir.join("acme-store-filecheck-with-1.0.0.tar.gz"),
+        &tarball_with,
+    )
+    .unwrap();
+
+    let lib_without = b"junk lib bytes for acme-store-filecheck-without".to_vec();
+    let m_without = busbar_plugin_sign::Manifest {
+        name: "acme-store-filecheck-without".into(),
+        alias: "filecheckwithout".into(),
+        kind: "store".into(),
+        version: "1.0.0".into(),
+        publisher: "acme".into(),
+        abi_version: *busbar_plugin_loader::supported_abi("store")
+            .iter()
+            .max()
+            .unwrap(),
+        sha256: busbar_plugin_sign::sha256_hex(&lib_without),
+        signature: String::new(),
+        description: String::new(),
+        homepage: String::new(),
+        license: String::new(),
+        needs: Default::default(),
+        settings_schema: None,
+        schema_derived: false,
+    };
+    let tarball_without =
+        busbar_plugin_loader::tarball::package(&m_without, "lib.so", &lib_without).unwrap();
+    std::fs::write(
+        dir.join("acme-store-filecheck-without-1.0.0.tar.gz"),
+        &tarball_without,
+    )
+    .unwrap();
+
+    let policy = busbar_plugin_sign::TrustPolicy {
+        allow_unsigned: true,
+        ..Default::default()
+    };
+    let registry = busbar_plugin_loader::scan_and_validate(&dir, &policy).unwrap();
+    let hook_env = crate::hooks::HookEnv::new(
+        std::sync::Arc::new(registry),
+        std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
+    );
+    let (addr, handle) = serve_with_plugins_dir_and_hook_env(dir.clone(), hook_env).await;
+    let client = reqwest::Client::new();
+
+    let list: serde_json::Value = client
+        .get(format!("http://{addr}/api/v1/admin/plugins?type=store"))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let items = list["items"].as_array().unwrap();
+
+    let with_row = items
+        .iter()
+        .find(|p| p["name"] == "acme-store-filecheck-with")
+        .expect("the schema-carrying row is present");
+    assert_eq!(
+        with_row["file"], "acme-store-filecheck-with-1.0.0.tar.gz",
+        "`file` is the on-disk artifact filename, not the manifest name"
+    );
+    assert_eq!(with_row["has_schema"], true);
+    assert!(
+        with_row["schema_url"].is_string(),
+        "sanity: has_schema tracks schema_url"
+    );
+
+    // Round-trip: `file` is exactly what `DELETE /plugins/{file}` and `GET /plugins/{file}/schema`
+    // take.
+    let file = with_row["file"].as_str().unwrap();
+    let schema_resp: serde_json::Value = client
+        .get(format!(
+            "http://{addr}/api/v1/admin/plugins/{}/schema",
+            with_row["name"].as_str().unwrap()
+        ))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(schema_resp["schema"], schema);
+    let delete_status = client
+        .delete(format!("http://{addr}/api/v1/admin/plugins/{file}"))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(
+        delete_status, 204,
+        "`file` from the list row is a valid DELETE key"
+    );
+
+    let without_row = items
+        .iter()
+        .find(|p| p["name"] == "acme-store-filecheck-without")
+        .expect("the schema-less row is present");
+    assert_eq!(
+        without_row["file"], "acme-store-filecheck-without-1.0.0.tar.gz",
+        "`file` is populated even when the manifest has no schema"
+    );
+    assert_eq!(without_row["has_schema"], false);
+    assert_eq!(without_row["schema_url"], serde_json::Value::Null);
+
+    let memory_row = items
+        .iter()
+        .find(|p| p["name"] == "memory")
+        .expect("compiled-in memory row present");
+    assert_eq!(
+        memory_row["file"],
+        serde_json::Value::Null,
+        "no backing artifact for a compiled-in row"
+    );
+    assert_eq!(memory_row["has_schema"], false);
+
+    let _ = std::fs::remove_dir_all(&dir);
+    handle.abort();
+}
+
 // ── POST /plugins/inspect (checklist item 4, question #7) ──────────────────────────────────────
 
 /// Over the wire: a candidate tarball previews cleanly, NEVER lands on disk, and never appears in

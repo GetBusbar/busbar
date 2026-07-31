@@ -170,6 +170,56 @@ fn openapi_paths_annotate_required_scope() {
     assert!(checked > 0, "no operations were checked");
 }
 
+/// E-004 item 1 (busbar-ui/docs/ENGINE-BUGS.md): every operation carries a stable `operationId`,
+/// PascalCase METHOD+path (`GetKeysId`, `PostKeysIdRotate`, …), so third-party generators (Go/TS)
+/// get a method name that does not churn when a path is touched. Locks presence, uniqueness, and
+/// the exact naming scheme busbar-ui's own `scripts/openapi-prep.py::op_id` synthesizes — so a spec
+/// generated here and one synthesized client-side always agree.
+#[cfg(feature = "openapi-schema")]
+#[test]
+fn openapi_operations_carry_stable_operation_ids() {
+    use std::collections::HashMap;
+    let doc = openapi_doc();
+    let paths = doc["paths"].as_object().expect("paths object");
+    let mut seen: HashMap<String, (String, String)> = HashMap::new();
+    let mut checked = 0usize;
+    for (path, methods) in paths {
+        for (method, op) in methods.as_object().expect("methods") {
+            if !matches!(method.as_str(), "get" | "post" | "put" | "patch" | "delete") {
+                continue;
+            }
+            let oid = op["operationId"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{method} {path} missing operationId"));
+            assert!(!oid.is_empty(), "{method} {path} has an empty operationId");
+            if let Some((prev_method, prev_path)) =
+                seen.insert(oid.to_string(), (method.clone(), path.clone()))
+            {
+                panic!("operationId {oid} collides: {prev_method} {prev_path} vs {method} {path}");
+            }
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 55, "expected exactly 55 admin operations");
+    // Spot-check the exact naming scheme against a few representative paths.
+    assert_eq!(
+        doc["paths"]["/api/v1/admin/keys"]["get"]["operationId"],
+        "GetKeys"
+    );
+    assert_eq!(
+        doc["paths"]["/api/v1/admin/keys/{id}/rotate"]["post"]["operationId"],
+        "PostKeysIdRotate"
+    );
+    assert_eq!(
+        doc["paths"]["/api/v1/admin/plugins/{file}/schema"]["get"]["operationId"],
+        "GetPluginsFileSchema"
+    );
+    assert_eq!(
+        doc["paths"]["/api/v1/admin/admin-auth"]["put"]["operationId"],
+        "PutAdminAuth"
+    );
+}
+
 /// CONTRACT LOCK: the openapi Error-schema `code` enum must EXACTLY match the frozen `AdminError`
 /// codes — no drift between the discovery doc and the taxonomy tooling actually receives. Every
 /// variant's `code()` must appear in the enum, and the enum must list nothing else.

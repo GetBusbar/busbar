@@ -1523,6 +1523,8 @@ impl AdminService {
                 loader: "dynamic-library",
                 active: None,
                 target: Some(row.file.clone()),
+                file: Some(row.file.clone()),
+                has_schema: schema_url.is_some(),
                 version: row.manifest.as_ref().map(|m| m.version.clone()),
                 publisher: row.manifest.as_ref().map(|m| m.publisher.clone()),
                 interface_version: row.manifest.as_ref().map(|m| m.abi_version),
