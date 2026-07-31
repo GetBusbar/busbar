@@ -4590,37 +4590,38 @@ async fn governed_pool_acl_router(
     model: &str,
     protocol: crate::proto::Protocol,
     provider: &str,
-) -> (
-    std::net::SocketAddr,
-    tokio::task::JoinHandle<()>,
-    &'static str,
-) {
-    use crate::governance::{GovState, MemoryStore, Store, VirtualKey};
+) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>, String) {
+    use crate::governance::{GovState, MemoryStore};
     // The lane needs a base_url, but the pool-ACL 403 short-circuits before any forward, so an
     // unreachable upstream is fine.
-    const SECRET: &str = "sk-vk-acl-denied";
     let store = StdArc::new(MemoryStore::new());
-    store
-        .put_key(&VirtualKey {
-            id: "kacl".to_string(),
-            key_hash: crate::sigv4::sha256_hex(SECRET.as_bytes()),
-            name: "acl".to_string(),
-            // Allowed ONLY on a pool the requests never use → every request is pool-rejected 403.
-            allowed_pools: Some(vec!["other-pool".to_string()]),
-            enabled: true,
-            created_at: 0,
-            group: None,
-            labels: Default::default(),
-        })
+    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+        &[7u8; 32],
+        crate::governance::signing::DEFAULT_KID,
+    );
+    let gov = StdArc::new(
+        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
+    );
+    let (_key, secret) = gov
+        .mint_signed(
+            crate::governance::NewKeySpec {
+                name: "acl".to_string(),
+                // Allowed ONLY on a pool the requests never use → every request is pool-rejected 403.
+                allowed_pools: Some(vec!["other-pool".to_string()]),
+                group: None,
+                labels: Default::default(),
+            },
+            2_000_000_000,
+            1_000_000_000,
+        )
         .unwrap();
-    let gov = StdArc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
     let app = TestApp::new()
         .governance(gov)
         .lane(LaneSpec::new(model, protocol, "http://127.0.0.1:1").provider(provider))
         .pool(model, &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
-    (addr, handle, SECRET)
+    (addr, handle, secret)
 }
 
 /// Cohere `/v2/chat` governance pool-ACL 403 must carry the Cohere-native error envelope
@@ -4841,7 +4842,7 @@ async fn test_governance_pool_acl_403_bedrock_native_envelope() {
 /// is reachable from A on exhaustion and the key may not use B.
 #[tokio::test]
 async fn test_fallback_pool_acl_denies_key_not_allowed_on_fallback_target() {
-    use crate::governance::{GovState, MemoryStore, Store, VirtualKey};
+    use crate::governance::{GovState, MemoryStore};
     crate::metrics::init();
 
     // Pool A's backend would succeed (200) if the request ever reached it — proving the 403 is
@@ -4854,22 +4855,27 @@ async fn test_fallback_pool_acl_denies_key_not_allowed_on_fallback_target() {
     let server = MockServer::new(state).await;
     let a_url = server.base_url();
 
-    const SECRET: &str = "sk-vk-fallback-acl";
     let store = StdArc::new(MemoryStore::new());
-    store
-        .put_key(&VirtualKey {
-            id: "kfb".to_string(),
-            key_hash: crate::sigv4::sha256_hex(SECRET.as_bytes()),
-            name: "fb".to_string(),
-            // Allowed ONLY on pool A. Pool B (the fallback target) is NOT in the list.
-            allowed_pools: Some(vec!["A".to_string()]),
-            enabled: true,
-            created_at: 0,
-            group: None,
-            labels: Default::default(),
-        })
+    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+        &[7u8; 32],
+        crate::governance::signing::DEFAULT_KID,
+    );
+    let gov = StdArc::new(
+        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
+    );
+    let (_key, secret) = gov
+        .mint_signed(
+            crate::governance::NewKeySpec {
+                name: "fb".to_string(),
+                // Allowed ONLY on pool A. Pool B (the fallback target) is NOT in the list.
+                allowed_pools: Some(vec!["A".to_string()]),
+                group: None,
+                labels: Default::default(),
+            },
+            2_000_000_000,
+            1_000_000_000,
+        )
         .unwrap();
-    let gov = StdArc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
 
     // Lane 0 → pool A (reachable mock). Lane 1 → pool B (the disallowed fallback target).
     let app = TestApp::new()
@@ -4898,7 +4904,7 @@ async fn test_fallback_pool_acl_denies_key_not_allowed_on_fallback_target() {
     // is configured and the key is not allowed on B, so the request must be rejected upfront.
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/A/v1/messages"))
-        .bearer_auth(SECRET)
+        .bearer_auth(secret)
         .body(json!({"model": "A", "messages": [{"role": "user", "content": "hi"}]}).to_string())
         .send()
         .await
@@ -4927,7 +4933,7 @@ async fn test_fallback_pool_acl_denies_key_not_allowed_on_fallback_target() {
 /// fix over-rejecting legitimate fallback configurations.
 #[tokio::test]
 async fn test_fallback_pool_acl_allows_key_permitted_on_both_pools() {
-    use crate::governance::{GovState, MemoryStore, Store, VirtualKey};
+    use crate::governance::{GovState, MemoryStore};
     crate::metrics::init();
 
     let state = StdArc::new(MockServerState::new());
@@ -4938,22 +4944,27 @@ async fn test_fallback_pool_acl_allows_key_permitted_on_both_pools() {
     let server = MockServer::new(state).await;
     let a_url = server.base_url();
 
-    const SECRET: &str = "sk-vk-fallback-ok";
     let store = StdArc::new(MemoryStore::new());
-    store
-        .put_key(&VirtualKey {
-            id: "kfb2".to_string(),
-            key_hash: crate::sigv4::sha256_hex(SECRET.as_bytes()),
-            name: "fb2".to_string(),
-            // Allowed on BOTH A and the fallback target B → no ACL rejection on either.
-            allowed_pools: Some(vec!["A".to_string(), "B".to_string()]),
-            enabled: true,
-            created_at: 0,
-            group: None,
-            labels: Default::default(),
-        })
+    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+        &[7u8; 32],
+        crate::governance::signing::DEFAULT_KID,
+    );
+    let gov = StdArc::new(
+        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
+    );
+    let (_key, secret) = gov
+        .mint_signed(
+            crate::governance::NewKeySpec {
+                name: "fb2".to_string(),
+                // Allowed on BOTH A and the fallback target B → no ACL rejection on either.
+                allowed_pools: Some(vec!["A".to_string(), "B".to_string()]),
+                group: None,
+                labels: Default::default(),
+            },
+            2_000_000_000,
+            1_000_000_000,
+        )
         .unwrap();
-    let gov = StdArc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
 
     let app = TestApp::new()
         .governance(gov)
@@ -4978,7 +4989,7 @@ async fn test_fallback_pool_acl_allows_key_permitted_on_both_pools() {
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/A/v1/messages"))
-        .bearer_auth(SECRET)
+        .bearer_auth(&secret)
         .body(json!({"model": "A", "messages": [{"role": "user", "content": "hi"}]}).to_string())
         .send()
         .await
@@ -5105,23 +5116,28 @@ async fn test_adhoc_provider_mismatch_400_anthropic_envelope_via_router() {
 /// which passes a default no-key GovCtx).
 #[tokio::test]
 async fn test_adhoc_governance_pool_acl_403_via_router() {
-    use crate::governance::{GovState, MemoryStore, Store, VirtualKey};
+    use crate::governance::{GovState, MemoryStore};
     crate::metrics::init();
-    const SECRET: &str = "sk-vk-adhoc-acl";
     let store = StdArc::new(MemoryStore::new());
-    store
-        .put_key(&VirtualKey {
-            id: "kadhoc".to_string(),
-            key_hash: crate::sigv4::sha256_hex(SECRET.as_bytes()),
-            name: "adhoc-acl".to_string(),
-            allowed_pools: Some(vec!["other-pool".to_string()]),
-            enabled: true,
-            created_at: 0,
-            group: None,
-            labels: Default::default(),
-        })
+    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+        &[7u8; 32],
+        crate::governance::signing::DEFAULT_KID,
+    );
+    let gov = StdArc::new(
+        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
+    );
+    let (_key, secret) = gov
+        .mint_signed(
+            crate::governance::NewKeySpec {
+                name: "adhoc-acl".to_string(),
+                allowed_pools: Some(vec!["other-pool".to_string()]),
+                group: None,
+                labels: Default::default(),
+            },
+            2_000_000_000,
+            1_000_000_000,
+        )
         .unwrap();
-    let gov = StdArc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
     let app = TestApp::new()
         .governance(gov)
         .lane(
@@ -5137,7 +5153,7 @@ async fn test_adhoc_governance_pool_acl_403_via_router() {
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/anthropic/claude-x/v1/messages"))
-        .bearer_auth(SECRET)
+        .bearer_auth(&secret)
         .body(json!({"model": "claude-x", "messages": [], "max_tokens": 16}).to_string())
         .send()
         .await
@@ -5417,28 +5433,29 @@ async fn test_gemini_v1_stable_stream_generate_content_no_alt_sse() {
 /// `(addr, handle, secret)`.
 async fn governed_limit_router(
     over: &'static str,
-) -> (
-    std::net::SocketAddr,
-    tokio::task::JoinHandle<()>,
-    &'static str,
-) {
+) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>, String) {
     use crate::config::groups::{LimitCfg, LimitMetric, LimitWindow};
-    use crate::governance::{GovState, MemoryStore, Store, VirtualKey};
-    const SECRET: &str = "sk-vk-limit-route";
+    use crate::governance::{GovState, MemoryStore};
     let store = StdArc::new(MemoryStore::new());
-    store
-        .put_key(&VirtualKey {
-            id: "klimit".to_string(),
-            key_hash: crate::sigv4::sha256_hex(SECRET.as_bytes()),
-            name: "limit".to_string(),
-            allowed_pools: None, // all pools; ACL never short-circuits
-            enabled: true,
-            created_at: 0,
-            group: Some("tripped".to_string()),
-            labels: Default::default(),
-        })
+    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+        &[7u8; 32],
+        crate::governance::signing::DEFAULT_KID,
+    );
+    let gov = StdArc::new(
+        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
+    );
+    let (_key, secret) = gov
+        .mint_signed(
+            crate::governance::NewKeySpec {
+                name: "limit".to_string(),
+                allowed_pools: None, // all pools; ACL never short-circuits
+                group: Some("tripped".to_string()),
+                labels: Default::default(),
+            },
+            2_000_000_000,
+            1_000_000_000,
+        )
         .unwrap();
-    let gov = StdArc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
     let tripping = if over == "requests" {
         LimitCfg {
             metric: LimitMetric::Requests,
@@ -5472,7 +5489,7 @@ async fn governed_limit_router(
         .cost(crate::cost::CostModel::resolve_parts(None, 0, &groups))
         .build();
     let (addr, handle) = serve(app).await;
-    (addr, handle, SECRET)
+    (addr, handle, secret)
 }
 
 /// Each first-class ingress route: an over-RPM virtual key is rejected with a PROTOCOL-NATIVE
