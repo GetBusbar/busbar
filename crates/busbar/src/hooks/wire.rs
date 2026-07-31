@@ -889,7 +889,7 @@ mod tests {
         assert_eq!(v["candidates"][0]["tags"][0], "team-a");
         assert_eq!(v["candidates"][0]["tags"][1], "eu");
         // The identity projection is built from the key RECORD: no token/secret field exists.
-        for key in ["\"token\"", "\"secret\"", "\"key_hash\""] {
+        for key in ["\"token\"", "\"secret\"", "\"generation_hash\""] {
             assert!(!json.contains(key), "payload leaked {key}: {json}");
         }
     }

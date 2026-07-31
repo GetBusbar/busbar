@@ -68,13 +68,16 @@ fn model_with_card(groups: &[(&str, GroupCfg)], fee: i64, card: &[(&str, f64, f6
 fn key(id: &str, group: Option<&str>) -> VirtualKey {
     VirtualKey {
         id: id.to_string(),
-        key_hash: format!("h:{id}"),
+        generation_hash: format!("h:{id}"),
         name: id.to_string(),
         allowed_pools: None,
         enabled: true,
         created_at: 0,
         group: group.map(String::from),
         labels: BTreeMap::new(),
+        expires_at: None,
+        deleted_at: None,
+        revision: 1,
     }
 }
 

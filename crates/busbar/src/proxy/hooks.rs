@@ -882,26 +882,22 @@ pub(crate) async fn decide_policy_order(
     // across candidates today — rate limits are per-key; see `Candidate.rate_headroom`) and, behind
     // `policy.send_user`, the caller identity projection. Prefer `resolved_gov_key` — the SAME key
     // `auth::mod`'s middleware already resolved and installed as `GovCtx.key` — over re-deriving it
-    // here. Auth's resolution is authoritative and stricter than a bare `lookup`: it only installs a
-    // legacy hashed-secret key under `Some(key) if key.enabled` (`auth/mod.rs`), having already
-    // filtered revoked keys, and otherwise falls through to a SYNTHESIZED principal key for a
-    // GROUP/SSO caller (whose token is not a virtual-key secret, so a raw `lookup` misses). A raw
-    // `g.lookup(tok)` here applies NEITHER the `enabled` nor the `is_revoked` filter, so trying it
-    // FIRST could resolve `rate_headroom`/`identity` against a revoked or disabled key that auth
-    // already rejected in favor of the synthesized one — a correctness bug, not just wasted work.
-    // The `lookup` fallback below is reached only by the `#[cfg(test)]` bytes-only `forward_with_pool`
-    // helper: every production ingress route installs a `GovCtx` via `forward_with_pool_keyed`
-    // (`engine/mod.rs`), so `resolved_gov_key` is always `Some` whenever `app.governance` is `Some`
-    // and this closure never runs there. Cfg-gated rather than deleted per the house rule against
-    // dead code — the branch is provably unreachable outside tests (many tests DO exercise the raw
-    // token-resolution path without building a full `GovCtx`), so it is compiled out of the
-    // production binary entirely instead of shipping unreachable logic behind a live-looking arm.
+    // here. Auth's resolution is authoritative: it consults the revocation denylist internally
+    // (`verify_token`) and otherwise falls through to a SYNTHESIZED principal key for a GROUP/SSO
+    // caller. The fallback below is reached only by the `#[cfg(test)]` bytes-only
+    // `forward_with_pool` helper: every production ingress route installs a `GovCtx` via
+    // `forward_with_pool_keyed` (`engine/mod.rs`), so `resolved_gov_key` is always `Some` whenever
+    // `app.governance` is `Some` and this closure never runs there. Cfg-gated rather than deleted
+    // per the house rule against dead code — the branch is provably unreachable outside tests (many
+    // tests DO exercise the raw token-resolution path without building a full `GovCtx`), so it is
+    // compiled out of the production binary entirely instead of shipping unreachable logic behind a
+    // live-looking arm.
     let gov = app.governance.as_ref();
     let gov_key = resolved_gov_key.cloned().or_else(|| {
         #[cfg(test)]
         {
             match (gov, caller_token) {
-                (Some(g), Some(tok)) => g.lookup(tok),
+                (Some(g), Some(tok)) => g.verify_token(tok, crate::store::now()),
                 _ => None,
             }
         }

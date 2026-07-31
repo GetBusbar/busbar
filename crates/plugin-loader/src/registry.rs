@@ -1021,13 +1021,16 @@ mod tests {
             .expect("open the real store through the full pipeline");
         let key = busbar_api::VirtualKey {
             id: "vk_pipeline".into(),
-            key_hash: "h".into(),
+            generation_hash: "h".into(),
             name: "pipeline".into(),
             allowed_pools: Some(vec!["p".into()]),
             enabled: true,
             created_at: 1,
             group: Some("growth".into()),
             labels: std::collections::BTreeMap::new(),
+            expires_at: None,
+            deleted_at: None,
+            revision: 1,
         };
         store.put_key(&key).expect("put over the ABI");
         let got = store.get_key("vk_pipeline").unwrap().unwrap();

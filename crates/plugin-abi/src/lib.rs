@@ -43,7 +43,8 @@
 //! `Box<dyn AuthModule>`). From there kind is a Rust TYPE, not a wire tag.
 
 use busbar_api::{
-    AuditRecord, AwsCredential, MeteringDelta, MeteringRow, UsageDelta, UsageLedger, VirtualKey,
+    AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, UsageDelta,
+    UsageLedger, VirtualKey,
 };
 use serde::{Deserialize, Serialize};
 use std::os::raw::c_void;
@@ -76,7 +77,16 @@ pub mod kind {
 /// additive changes (e.g. a new serde-default field) keep the version. The engine refuses a plugin
 /// whose manifest `abi_version` falls outside the supported range at load, never mis-calling a
 /// mismatched plugin.
-pub const ABI_VERSION: u32 = 1;
+///
+/// v1 -> v2 (1.5.0, credentials generalization): the AWS-specific `PutAwsCredential`/
+/// `PutKeyWithAwsCredential`/`ListAwsCredentials` request variants and the `AwsCreds` response
+/// variant are REMOVED (not additive — `AwsCredential` itself no longer exists in `busbar-api`) in
+/// favor of the kind-polymorphic `PutCredential`/`PutKeyWithCredential`/`ListCredentials`/
+/// `LookupCredentialSecret`/`RevokeCredential`/`ListCredentialsSince`/`ListKeysSince` variants
+/// carrying `CredentialMeta`/`CredentialSecret`. A v1-built plugin cannot speak v2 at all — this is
+/// a real breaking bump, correctly gated by the engine's `supported_abi` range check at load,
+/// unlike every other change on this axis so far.
+pub const ABI_VERSION: u32 = 2;
 
 /// The exported-symbol names the engine resolves after `dlopen`/`LoadLibrary`. A plugin of ANY kind
 /// MUST export all SIX with these exact (kind-NEUTRAL) names and the signatures in the `*Fn` type
@@ -147,7 +157,14 @@ pub enum StoreRequest {
     PutKey(VirtualKey),
     GetKey(String),
     ListKeys,
+    /// TOMBSTONE `id` — see [`busbar_api::Store::delete_key`]'s doc. The row survives; the plugin
+    /// implements the cascade (destroy credentials, `enabled=false`, `deleted_at=now()`).
     DeleteKey(String),
+    /// PII-erasure-only on an already-tombstoned key. See
+    /// [`busbar_api::Store::scrub_key`].
+    ScrubKey(String),
+    /// Incremental hydration delta for keys — see [`busbar_api::Store::list_keys_since`].
+    ListKeysSince(u64),
     /// `get_usage` - the (bucket, window) token ledger. `bucket_id` is a key id or a budget-group
     /// bucket id; no dollar field crosses this wire (spend derives from ledger x rate card).
     GetUsage {
@@ -169,12 +186,32 @@ pub enum StoreRequest {
     },
     AddMetering(MeteringDelta),
     ListMetering(u64),
-    PutAwsCredential(AwsCredential),
-    PutKeyWithAwsCredential {
+    /// Retention purge for the rate-limit window ledger. See
+    /// [`busbar_api::Store::purge_windows_before`].
+    PurgeWindowsBefore(u64),
+    /// Retention purge for the durable billing ledger. Admin-triggered only, never automatic — see
+    /// [`busbar_api::Store::purge_metering_before`].
+    PurgeMeteringBefore(String),
+    /// `put_credential` — see [`busbar_api::Store::put_credential`]. Kind-polymorphic (today only
+    /// `kind: "sigv4"`), the generalized replacement for the old AWS-specific
+    /// `PutAwsCredential`/`AwsCredential` shape.
+    PutCredential(CredentialSecret),
+    PutKeyWithCredential {
         key: VirtualKey,
-        cred: AwsCredential,
+        secret: CredentialSecret,
     },
-    ListAwsCredentials,
+    ListCredentials(String),
+    LookupCredentialSecret {
+        kind: String,
+        public_id: String,
+    },
+    RevokeCredential {
+        id: String,
+        reason: String,
+    },
+    /// Incremental hydration delta for credentials — see
+    /// [`busbar_api::Store::list_credentials_since`].
+    ListCredentialsSince(u64),
     /// `append_audit` — persist one admin audit record durably. ADDITIVE (ABI stays v1): a plugin
     /// built against the older SDK never sees this variant; the engine's loader maps its
     /// "unexpected/unsupported response" into the trait's default no-op, so old plugins are safe.
@@ -204,14 +241,22 @@ pub enum StoreResponse {
     Unit,
     /// `get_key` — the key, or `None` if absent.
     Key(Option<VirtualKey>),
-    /// `list_keys` — every key.
+    /// `list_keys` / `list_keys_since` — every key (unfiltered — see
+    /// [`busbar_api::Store::list_keys`]'s doc; tombstones included).
     Keys(Vec<VirtualKey>),
     /// `get_usage` - the (bucket, window) token ledger.
     Usage(UsageLedger),
     /// `list_metering` — the bucket's rows.
     Metering(Vec<MeteringRow>),
-    /// `list_aws_credentials` — every credential.
-    AwsCreds(Vec<AwsCredential>),
+    /// A retention-purge count (`purge_windows_before`/`purge_metering_before`).
+    Purged(u64),
+    /// `list_credentials` — a key's credential metadata rows (never the secret).
+    Credentials(Vec<CredentialMeta>),
+    /// `lookup_credential_secret` — the resolved credential, or `None` if unknown.
+    CredentialSecret(Option<CredentialSecret>),
+    /// `list_credentials_since` — the hydration delta, secrets included (see that method's doc for
+    /// why the verify-path hydration cache needs the plaintext in-process).
+    CredentialSecrets(Vec<CredentialSecret>),
     /// `list_audit` — every persisted audit record, oldest-first. ADDITIVE (ABI stays v1).
     Audit(Vec<AuditRecord>),
     /// `list_denylist` - every denied subject id (1.5.0 signed-token revocation). ADDITIVE.
@@ -352,13 +397,36 @@ mod tests {
     fn sample_key() -> VirtualKey {
         VirtualKey {
             id: "vk_1".into(),
-            key_hash: "deadbeef".into(),
+            generation_hash: "deadbeef".into(),
             name: "test".into(),
             allowed_pools: Some(vec!["p1".into()]),
             enabled: true,
             created_at: 42,
             group: Some("growth".into()),
             labels: std::collections::BTreeMap::new(),
+            expires_at: None,
+            deleted_at: None,
+            revision: 1,
+        }
+    }
+
+    fn sample_credential_secret() -> CredentialSecret {
+        CredentialSecret {
+            meta: CredentialMeta {
+                id: "cred_1".into(),
+                key_id: "vk_1".into(),
+                kind: "sigv4".into(),
+                slot: 0,
+                public_id: "AKIA_TEST".into(),
+                secret_form: busbar_api::SecretForm::Recoverable,
+                created_at: 42,
+                updated_at: 42,
+                expires_at: None,
+                revoked_at: None,
+                revoke_reason: None,
+                revision: 1,
+            },
+            secret: "v1:plain:s3cr3t".into(),
         }
     }
 
@@ -410,7 +478,25 @@ mod tests {
                 },
             },
             StoreRequest::ListMetering(9),
-            StoreRequest::ListAwsCredentials,
+            StoreRequest::PurgeWindowsBefore(100),
+            StoreRequest::PurgeMeteringBefore("2026-07-30".into()),
+            StoreRequest::PutCredential(sample_credential_secret()),
+            StoreRequest::PutKeyWithCredential {
+                key: sample_key(),
+                secret: sample_credential_secret(),
+            },
+            StoreRequest::ListCredentials("vk_1".into()),
+            StoreRequest::LookupCredentialSecret {
+                kind: "sigv4".into(),
+                public_id: "AKIA_TEST".into(),
+            },
+            StoreRequest::RevokeCredential {
+                id: "cred_1".into(),
+                reason: "rotated".into(),
+            },
+            StoreRequest::ListCredentialsSince(0),
+            StoreRequest::ScrubKey("vk_1".into()),
+            StoreRequest::ListKeysSince(0),
             StoreRequest::AppendAudit(sample_audit()),
             StoreRequest::ListAudit,
             StoreRequest::ListAuditTail(500),
@@ -441,9 +527,9 @@ mod tests {
     }
 
     #[test]
-    fn abi_version_is_one() {
-        // 1.5.0 is the first release to carry the store plugin ABI. A mismatched plugin is
-        // refused at the handshake.
-        assert_eq!(ABI_VERSION, 1);
+    fn abi_version_is_two() {
+        // Bumped 1 -> 2 for the credentials generalization (a real breaking wire change — see
+        // ABI_VERSION's doc). A mismatched plugin is refused at the handshake.
+        assert_eq!(ABI_VERSION, 2);
     }
 }

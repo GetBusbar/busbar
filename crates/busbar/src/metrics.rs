@@ -911,13 +911,16 @@ mod tests {
     fn sample_vkey(id: &str) -> VirtualKey {
         VirtualKey {
             id: id.to_string(),
-            key_hash: format!("hash-{id}"),
+            generation_hash: format!("hash-{id}"),
             name: format!("key-{id}"),
             allowed_pools: None,
             enabled: true,
             created_at: 1_700_000_000,
             group: None,
             labels: Default::default(),
+            expires_at: None,
+            deleted_at: None,
+            revision: 1,
         }
     }
 
@@ -1249,13 +1252,16 @@ mod tests {
             let id = format!("vk_limit_{i:04x}");
             let key = VirtualKey {
                 id: id.clone(),
-                key_hash: format!("hash-limit-{i}"),
+                generation_hash: format!("hash-limit-{i}"),
                 name: format!("key-limit-{i}"),
                 allowed_pools: None,
                 enabled: true,
                 created_at: 1_700_000_000,
                 group: None,
                 labels: Default::default(),
+                expires_at: None,
+                deleted_at: None,
+                revision: 1,
             };
             store.put_key(&key).unwrap();
             // Seed minimal usage so the key has a row in usage_counters and the spend gauge is

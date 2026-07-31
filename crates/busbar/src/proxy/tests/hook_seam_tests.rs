@@ -1381,18 +1381,25 @@ async fn max_tokens_saturates_not_wraps() {
 async fn send_user_projects_governance_key_identity() {
     use crate::governance::{GovState, MemoryStore, NewKeySpec};
     let store = std::sync::Arc::new(MemoryStore::new());
-    let gov = std::sync::Arc::new(GovState::new(store, None).expect("gov state"));
+    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+        &[7u8; 32],
+        crate::governance::signing::DEFAULT_KID,
+    );
+    let gov = std::sync::Arc::new(
+        GovState::new_with_signer(store, None, Some(signer)).expect("gov state"),
+    );
     let (key, secret) = gov
-        .create_key(
+        .mint_signed(
             NewKeySpec {
                 name: "sales-team".to_string(),
                 allowed_pools: None,
                 group: None,
                 labels: Default::default(),
             },
-            1,
+            2_000_000_000,
+            1_000_000_000,
         )
-        .expect("create key");
+        .expect("mint signed key");
 
     let app = TestApp::new()
         .lane(LaneSpec::new(
@@ -1481,16 +1488,19 @@ async fn send_user_falls_back_to_synthesized_group_key_identity() {
         attempt_timeout_ms: None,
     }];
     // A synthesized principal key exactly as the auth layer builds one for a group/SSO caller:
-    // id/name carry the principal, key_hash is a non-secret marker never inserted into by_hash.
+    // id/name carry the principal, generation_hash is a non-secret marker never inserted into by_hash.
     let synth = std::sync::Arc::new(crate::governance::VirtualKey {
         id: "eng-oncall".to_string(),
-        key_hash: "principal:eng-oncall".to_string(),
+        generation_hash: "principal:eng-oncall".to_string(),
         name: "eng-oncall".to_string(),
         allowed_pools: None,
         enabled: true,
         created_at: 0,
         group: None,
         labels: Default::default(),
+        expires_at: None,
+        deleted_at: None,
+        revision: 1,
     });
     let rc = RequestCtx::new(60);
     let v = body();
@@ -1581,13 +1591,16 @@ async fn send_user_prefers_resolved_key_over_disabled_legacy_lookup() {
     // key.enabled` produces for a disabled-key caller re-admitted via a group binding).
     let synth = std::sync::Arc::new(crate::governance::VirtualKey {
         id: "synthesized-principal".to_string(),
-        key_hash: "principal:synthesized-principal".to_string(),
+        generation_hash: "principal:synthesized-principal".to_string(),
         name: "synthesized-principal".to_string(),
         allowed_pools: None,
         enabled: true,
         created_at: 0,
         group: None,
         labels: Default::default(),
+        expires_at: None,
+        deleted_at: None,
+        revision: 1,
     });
     let rc = RequestCtx::new(60);
     let v = body();
@@ -1647,13 +1660,16 @@ async fn forward_with_pool_keyed_threads_group_key_to_pool_policy() {
         .build();
     let synth = std::sync::Arc::new(crate::governance::VirtualKey {
         id: "eng-oncall".to_string(),
-        key_hash: "principal:eng-oncall".to_string(),
+        generation_hash: "principal:eng-oncall".to_string(),
         name: "eng-oncall".to_string(),
         allowed_pools: None,
         enabled: true,
         created_at: 0,
         group: None,
         labels: Default::default(),
+        expires_at: None,
+        deleted_at: None,
+        revision: 1,
     });
     let body = Bytes::from(serde_json::to_vec(&body()).unwrap());
     let cands = vec![WeightedLane {

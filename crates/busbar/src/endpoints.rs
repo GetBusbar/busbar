@@ -255,7 +255,7 @@ mod tests {
     fn vkey(allowed_pools: &[&str]) -> std::sync::Arc<VirtualKey> {
         std::sync::Arc::new(VirtualKey {
             id: "k-test".to_string(),
-            key_hash: "deadbeef".to_string(),
+            generation_hash: "deadbeef".to_string(),
             name: "test".to_string(),
             allowed_pools: (!allowed_pools.is_empty())
                 .then(|| allowed_pools.iter().map(|s| s.to_string()).collect()),
@@ -263,6 +263,9 @@ mod tests {
             created_at: 1_700_000_000,
             group: None,
             labels: Default::default(),
+            expires_at: None,
+            deleted_at: None,
+            revision: 1,
         })
     }
 

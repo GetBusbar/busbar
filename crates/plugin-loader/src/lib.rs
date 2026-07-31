@@ -19,8 +19,8 @@
 //! the time-of-check/time-of-use gap a `verify(path)` + `dlopen(path)` pair would leave open.
 
 use busbar_api::{
-    AuditRecord, AwsCredential, MeteringDelta, MeteringRow, Store, StoreError, StoreResult,
-    UsageDelta, UsageLedger, VirtualKey,
+    AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, Store, StoreError,
+    StoreResult, UsageDelta, UsageLedger, VirtualKey,
 };
 use busbar_plugin_abi::{
     kind as abi_kind, symbol, CallFn, CloseFn, FreeFn, PluginKindFn, StoreRequest, StoreResponse,
@@ -604,6 +604,20 @@ impl Store for DynStore {
         }
     }
 
+    fn scrub_key(&self, id: &str) -> StoreResult<()> {
+        match self.call_raw(StoreRequest::ScrubKey(id.to_string()))? {
+            StoreResponse::Unit => Ok(()),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    fn list_keys_since(&self, since: u64) -> StoreResult<Vec<VirtualKey>> {
+        match self.call_raw(StoreRequest::ListKeysSince(since))? {
+            StoreResponse::Keys(k) => Ok(k),
+            other => Err(unexpected(other)),
+        }
+    }
+
     fn get_usage(&self, bucket_id: &str, window_start: u64) -> StoreResult<UsageLedger> {
         match self.call_raw(StoreRequest::GetUsage {
             bucket_id: bucket_id.to_string(),
@@ -660,30 +674,75 @@ impl Store for DynStore {
         }
     }
 
-    fn put_aws_credential(&self, cred: &AwsCredential) -> StoreResult<()> {
-        match self.call_raw(StoreRequest::PutAwsCredential(cred.clone()))? {
+    fn purge_windows_before(&self, before: u64) -> StoreResult<u64> {
+        match self.call_raw(StoreRequest::PurgeWindowsBefore(before))? {
+            StoreResponse::Purged(n) => Ok(n),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    fn purge_metering_before(&self, bucket: &str) -> StoreResult<u64> {
+        match self.call_raw(StoreRequest::PurgeMeteringBefore(bucket.to_string()))? {
+            StoreResponse::Purged(n) => Ok(n),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    fn put_credential(&self, secret: &CredentialSecret) -> StoreResult<()> {
+        match self.call_raw(StoreRequest::PutCredential(secret.clone()))? {
             StoreResponse::Unit => Ok(()),
             other => Err(unexpected(other)),
         }
     }
 
-    fn put_key_with_aws_credential(
+    fn put_key_with_credential(
         &self,
         key: &VirtualKey,
-        cred: &AwsCredential,
+        secret: &CredentialSecret,
     ) -> StoreResult<()> {
-        match self.call_raw(StoreRequest::PutKeyWithAwsCredential {
+        match self.call_raw(StoreRequest::PutKeyWithCredential {
             key: key.clone(),
-            cred: cred.clone(),
+            secret: secret.clone(),
         })? {
             StoreResponse::Unit => Ok(()),
             other => Err(unexpected(other)),
         }
     }
 
-    fn list_aws_credentials(&self) -> StoreResult<Vec<AwsCredential>> {
-        match self.call_raw(StoreRequest::ListAwsCredentials)? {
-            StoreResponse::AwsCreds(c) => Ok(c),
+    fn list_credentials(&self, key_id: &str) -> StoreResult<Vec<CredentialMeta>> {
+        match self.call_raw(StoreRequest::ListCredentials(key_id.to_string()))? {
+            StoreResponse::Credentials(c) => Ok(c),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    fn lookup_credential_secret(
+        &self,
+        kind: &str,
+        public_id: &str,
+    ) -> StoreResult<Option<CredentialSecret>> {
+        match self.call_raw(StoreRequest::LookupCredentialSecret {
+            kind: kind.to_string(),
+            public_id: public_id.to_string(),
+        })? {
+            StoreResponse::CredentialSecret(c) => Ok(c),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    fn revoke_credential(&self, id: &str, reason: &str) -> StoreResult<()> {
+        match self.call_raw(StoreRequest::RevokeCredential {
+            id: id.to_string(),
+            reason: reason.to_string(),
+        })? {
+            StoreResponse::Unit => Ok(()),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    fn list_credentials_since(&self, since: u64) -> StoreResult<Vec<CredentialSecret>> {
+        match self.call_raw(StoreRequest::ListCredentialsSince(since))? {
+            StoreResponse::CredentialSecrets(c) => Ok(c),
             other => Err(unexpected(other)),
         }
     }
@@ -1199,13 +1258,16 @@ mod tests {
             .expect("load from verified bytes");
         let key = VirtualKey {
             id: "vk_b".into(),
-            key_hash: "h".into(),
+            generation_hash: "h".into(),
             name: "b".into(),
             allowed_pools: Some(vec!["p".into()]),
             enabled: true,
             created_at: 1,
             group: None,
             labels: std::collections::BTreeMap::new(),
+            expires_at: None,
+            deleted_at: None,
+            revision: 1,
         };
         store.put_key(&key).expect("put_key over from-bytes load");
         assert_eq!(
@@ -1340,13 +1402,16 @@ mod tests {
         }
         let key = busbar_api::VirtualKey {
             id: "vk_old".into(),
-            key_hash: "h".into(),
+            generation_hash: "h".into(),
             name: "old".into(),
             allowed_pools: Some(vec!["p".into()]),
             enabled: true,
             created_at: 1,
             group: None,
             labels: std::collections::BTreeMap::new(),
+            expires_at: None,
+            deleted_at: None,
+            revision: 1,
         };
         old.put_key(&key).expect("old put");
 
@@ -1393,13 +1458,16 @@ mod tests {
         // The NEW instance keeps serving with no restart — its library was untouched by the old drop.
         new.put_key(&busbar_api::VirtualKey {
             id: "vk_new".into(),
-            key_hash: "h".into(),
+            generation_hash: "h".into(),
             name: "new".into(),
             allowed_pools: Some(vec!["p".into()]),
             enabled: true,
             created_at: 2,
             group: None,
             labels: std::collections::BTreeMap::new(),
+            expires_at: None,
+            deleted_at: None,
+            revision: 1,
         })
         .expect("new keeps serving after old unmaps");
         assert_eq!(

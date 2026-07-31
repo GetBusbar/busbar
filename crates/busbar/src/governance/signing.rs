@@ -44,7 +44,7 @@ pub(crate) struct TokenClaims {
     /// Signing-key id (selects the verifying key; single-key `k1` for 1.5.0).
     pub(crate) kid: String,
     /// The BINDING GENERATION this token was minted against (wire name `g`), mirrored in the
-    /// binding row's `key_hash` marker (`binding:<id>:<generation>`). `POST /keys/{id}/rotate`
+    /// binding row's `generation_hash` marker (`binding:<id>:<generation>`). `POST /keys/{id}/rotate`
     /// stamps a FRESH generation into the durable binding, so every token carrying the previous one
     /// stops verifying immediately and fleet-wide — the subject id (and with it the ledger bucket,
     /// budgets and usage history) stays stable. `None` = a token minted before generations existed;
