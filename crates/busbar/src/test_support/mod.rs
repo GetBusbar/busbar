@@ -974,6 +974,18 @@ pub(crate) fn test_hook_env(
     aliases: &[&str],
     needs: busbar_plugin_sign::HookNeeds,
 ) -> Option<crate::hooks::HookEnv> {
+    test_hook_env_with_schema(aliases, needs, None)
+}
+
+/// As [`test_hook_env`], but lets a test stamp the loaded plugin's manifest with a
+/// `settings_schema` — needed to exercise `GET /plugins/{name}/schema`'s describe→manifest
+/// fallback (a real loaded hook whose live `describe` answers `schema: null` still has a real
+/// manifest baseline to fall back to).
+pub(crate) fn test_hook_env_with_schema(
+    aliases: &[&str],
+    needs: busbar_plugin_sign::HookNeeds,
+    settings_schema: Option<&str>,
+) -> Option<crate::hooks::HookEnv> {
     let cdylib = {
         let exe = std::env::current_exe().ok()?;
         let profile_dir = exe.parent()?.parent()?;
@@ -1017,7 +1029,7 @@ pub(crate) fn test_hook_env(
             homepage: String::new(),
             license: String::new(),
             needs: needs.clone(),
-            settings_schema: None,
+            settings_schema: settings_schema.map(str::to_string),
             schema_derived: false,
         };
         m.sha256 = busbar_plugin_sign::sha256_hex(&lib);

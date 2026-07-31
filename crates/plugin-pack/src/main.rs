@@ -324,6 +324,23 @@ fn validate_secret_fields(root: &serde_json::Value) -> Result<(), String> {
         if let Some(items) = eff.get("items") {
             scan(items, defs, depth + 1, resolving)?;
         }
+        // `oneOf`/`anyOf`/`prefixItems` are also places a field can hide — walked the same way as
+        // `properties`/`items` (one nesting level deeper), or both the root-only placement rule
+        // and the unmarked-secret-name heuristic can be evaded by putting the violating field
+        // inside one of these composition keywords instead of a plain nested object (round-8
+        // finding against `b843992` — real code gap, not spec ambiguity).
+        for combinator in ["oneOf", "anyOf"] {
+            if let Some(alts) = eff.get(combinator).and_then(|v| v.as_array()) {
+                for alt in alts {
+                    scan(alt, defs, depth + 1, resolving)?;
+                }
+            }
+        }
+        if let Some(prefix_items) = eff.get("prefixItems").and_then(|v| v.as_array()) {
+            for item in prefix_items {
+                scan(item, defs, depth + 1, resolving)?;
+            }
+        }
         Ok(())
     }
     scan(root, defs, 0, &mut HashSet::new())
@@ -697,6 +714,69 @@ mod tests {
             "properties": {"tls_key": {"type": "string", "x-busbar-secret": true}},
         });
         validate_secret_fields(&flattened).unwrap();
+    }
+
+    /// `oneOf`/`anyOf`/`prefixItems` are also places a field can hide — a marked OR unmarked
+    /// secret-looking field placed inside one of these composition keywords must be caught the
+    /// same as a plain nested object (round-8 finding against `b843992`: the scanner used to only
+    /// walk `properties`/`items`, so both the root-only placement rule and the unmarked-name
+    /// heuristic were silently evadable through `oneOf`/`anyOf`/`prefixItems`).
+    #[test]
+    fn oneof_anyof_prefixitems_are_scanned_for_secret_violations() {
+        // Marked `x-busbar-secret` nested inside a `oneOf` alternative is rejected, same as any
+        // other nested placement.
+        let one_of_marked = serde_json::json!({
+            "$schema": SCHEMA_2020_12, "type": "object",
+            "properties": {
+                "auth": {
+                    "oneOf": [
+                        {"type": "object", "properties": {"token": {"type": "string", "x-busbar-secret": true}}},
+                        {"type": "object", "properties": {"anonymous": {"type": "boolean"}}},
+                    ],
+                },
+            },
+        });
+        assert!(validate_secret_fields(&one_of_marked).is_err());
+
+        // An UNMARKED secret-looking field name nested inside an `anyOf` alternative is rejected.
+        let any_of_unmarked = serde_json::json!({
+            "$schema": SCHEMA_2020_12, "type": "object",
+            "properties": {
+                "auth": {
+                    "anyOf": [
+                        {"type": "object", "properties": {"password": {"type": "string"}}},
+                    ],
+                },
+            },
+        });
+        assert!(validate_secret_fields(&any_of_unmarked).is_err());
+
+        // Same for a tuple-typed `prefixItems` entry.
+        let prefix_items_unmarked = serde_json::json!({
+            "$schema": SCHEMA_2020_12, "type": "object",
+            "properties": {
+                "pair": {
+                    "type": "array",
+                    "prefixItems": [
+                        {"type": "object", "properties": {"api_key": {"type": "string"}}},
+                    ],
+                },
+            },
+        });
+        assert!(validate_secret_fields(&prefix_items_unmarked).is_err());
+
+        // A oneOf alternative with no secret-shaped fields at all is untouched.
+        let one_of_clean = serde_json::json!({
+            "$schema": SCHEMA_2020_12, "type": "object",
+            "properties": {
+                "auth": {
+                    "oneOf": [
+                        {"type": "object", "properties": {"mode": {"type": "string"}}},
+                    ],
+                },
+            },
+        });
+        validate_secret_fields(&one_of_clean).unwrap();
     }
 
     /// An unmarked field whose name looks like a secret is a hard error (question #12);
