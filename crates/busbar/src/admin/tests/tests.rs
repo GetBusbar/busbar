@@ -534,7 +534,10 @@ async fn test_admin_v1_get_single_key() {
     let body: serde_json::Value = serde_json::from_str(&text).unwrap();
     assert_eq!(body["id"], minted.id);
     assert_eq!(body["name"], "svc");
-    assert!(body.get("key_hash").is_none(), "never expose the hash");
+    assert!(
+        body.get("generation_hash").is_none(),
+        "never expose the hash"
+    );
     assert!(
         !text.contains(&minted_secret),
         "never expose the secret on a read"
@@ -4076,7 +4079,7 @@ async fn test_admin_v1_all_reads_require_admin_token() {
 #[tokio::test]
 async fn test_create_key_with_aws_credential_returns_secret_once_and_hides_on_reads() {
     // Minting with `issue_aws_credential: true` returns the AccessKeyId AND the secret access key
-    // ONCE at creation; neither the AWS secret nor the key_hash is ever returned by a later read.
+    // ONCE at creation; neither the AWS secret nor the generation_hash is ever returned by a later read.
     crate::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
@@ -4119,7 +4122,7 @@ async fn test_create_key_with_aws_credential_returns_secret_once_and_hides_on_re
         "a bearer-only key must not carry AWS fields: {plain}"
     );
 
-    // The list endpoint must NEVER expose the AWS secret (nor key_hash).
+    // The list endpoint must NEVER expose the AWS secret (nor generation_hash).
     let listed: serde_json::Value = client
         .get(format!("http://{addr}/api/v1/admin/keys"))
         .header("x-admin-token", "admintok")
@@ -4139,7 +4142,10 @@ async fn test_create_key_with_aws_credential_returns_secret_once_and_hides_on_re
             k["aws_secret_access_key"].is_null(),
             "list must not leak the AWS secret"
         );
-        assert!(k["key_hash"].is_null(), "list must not leak key_hash");
+        assert!(
+            k["generation_hash"].is_null(),
+            "list must not leak generation_hash"
+        );
     }
 
     handle.abort();
@@ -4173,7 +4179,10 @@ async fn test_create_list_usage_roundtrip_through_spawn_blocking() {
             .is_some_and(|t| t.starts_with("bbk_")),
         "signed token returned once on create"
     );
-    assert!(body["key_hash"].is_null(), "key_hash must never be exposed");
+    assert!(
+        body["generation_hash"].is_null(),
+        "generation_hash must never be exposed"
+    );
 
     // list
     let listed = client

@@ -11,7 +11,8 @@
 //! - **hooks** — the [`RoutingPolicy`] trait (decide/transform/notify + configure/describe) and
 //!   the read-only projections it is invoked with.
 //! - **store** — the [`Store`] trait a `db` plugin implements, plus the durable-store records
-//!   ([`VirtualKey`], [`UsageLedger`], [`AwsCredential`], …) it reads and writes.
+//!   ([`VirtualKey`], [`UsageLedger`], [`CredentialMeta`], [`CredentialSecret`], …) it reads and
+//!   writes.
 //! - **secret** - the [`SecretModule`] trait a `kind: secret` plugin implements (a config secret
 //!   reference's `settings` map in, the secret bytes out; fail-closed).
 //!
@@ -32,7 +33,7 @@ pub use hooks::{
 };
 pub use secret::{SecretError, SecretModule, SecretResult};
 pub use store::{
-    AuditRecord, AwsCredential, AwsKeyEntry, MeteringDelta, MeteringRow, ModelTokens,
-    ModelTokensDelta, Store, StoreError, StoreResult, TierTokens, TierTokensDelta, UsageDelta,
-    UsageLedger, VirtualKey,
+    AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, ModelTokens,
+    ModelTokensDelta, SecretForm, Store, StoreError, StoreResult, TierTokens, TierTokensDelta,
+    UsageDelta, UsageLedger, VirtualKey,
 };

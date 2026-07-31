@@ -3,7 +3,7 @@
 
 //! Virtual-key management API. Admin CRUD over `/api/v1/admin/keys`, guarded by the
 //! configured admin token (enforced in `auth_middleware`, not here). Mutations refresh the
-//! `GovState` cache. Responses never include a key's `key_hash`; the plaintext secret is returned
+//! `GovState` cache. Responses never include a key's `generation_hash`; the plaintext secret is returned
 //! exactly once, on creation.
 
 use axum::body::Bytes;
@@ -333,7 +333,7 @@ pub(crate) mod versions;
 pub(crate) use v1::json::JsonV1;
 pub(crate) use v1::service::mark_start;
 
-/// Key metadata for API responses — deliberately omits `key_hash`.
+/// Key metadata for API responses — deliberately omits `generation_hash`.
 /// A key record's ETag: a short digest of its mutable metadata. Changes whenever any PATCHable
 /// field changes, so `If-Match` detects a concurrent modification (409, no lost update).
 fn key_etag(k: &VirtualKey) -> String {
@@ -1303,6 +1303,11 @@ pub(crate) async fn list_keys(
         Ok(Ok(keys)) => {
             let mut filtered: Vec<_> = keys
                 .iter()
+                // TOMBSTONE (1.5.0): `gov.all_keys()` -> `Store::list_keys` is deliberately
+                // unfiltered (billing/audit attribution needs tombstoned rows to keep resolving by
+                // id) — the admin LISTING is the caller responsible for filtering live-only, same
+                // as every other "does this key exist" surface on this handler set.
+                .filter(|k| k.deleted_at.is_none())
                 .filter(|k| enabled.is_none_or(|e| k.enabled == e))
                 .filter(|k| prefix.as_deref().is_none_or(|p| k.id.starts_with(p)))
                 .filter(|k| {
@@ -1428,18 +1433,11 @@ pub(crate) async fn rotate_key(
     match res {
         Ok(Ok(Some(rotated))) => {
             audit::AUDIT.record_by("key.rotate", &resource, audit::OUTCOME_APPLIED, &actor);
-            let mut body = key_meta(rotated.key());
-            // Shown exactly once, exactly like mint — the field names the credential the key
-            // actually carries (a signed-token binding is never handed a legacy bearer secret).
-            match rotated {
-                crate::governance::RotatedCredential::Token { token, exp, .. } => {
-                    body["token"] = json!(token);
-                    body["expires_at"] = json!(exp);
-                }
-                crate::governance::RotatedCredential::Secret { secret, .. } => {
-                    body["secret"] = json!(secret);
-                }
-            }
+            let mut body = key_meta(&rotated.key);
+            // Shown exactly once, exactly like mint. 1.5.0 has exactly one bearer-credential shape,
+            // so rotation always re-issues a signed token.
+            body["token"] = json!(rotated.token);
+            body["expires_at"] = json!(rotated.exp);
             // COMMIT the idempotency slot with the real response (replaces the reservation) and
             // disarm the drop-guard — a retry inside the window replays THIS body verbatim.
             if let Some(ref ck) = idem_ckey {
@@ -1590,7 +1588,7 @@ pub(crate) async fn rotate_signing_key(
 }
 
 /// GET /api/v1/admin/keys/{id} — one key's metadata (id/name/pools/budgets/limits/enabled; never the
-/// secret or key_hash). 404 when no key with `id` exists. Fills the single-key read gap in the key
+/// secret or generation_hash). 404 when no key with `id` exists. Fills the single-key read gap in the key
 /// surface; it stays on the legacy `{type}` envelope + `key_meta` shape so
 /// it is consistent with the sibling key routes (the full `{code}`-envelope migration is a follow-up).
 pub(crate) async fn get_key(
@@ -1659,6 +1657,14 @@ pub(crate) async fn key_usage(
         let usage = gov2.usage_for(&cost, &id2, now)?;
         // O(1) row lookup instead of a full-table `all_keys()` scan filtered by id.
         let key = gov2.store().get_key(&id2)?;
+        // TOMBSTONE (1.5.0): `get_key` (and `usage_for`, which may still find a residual/derived
+        // bucket) can both still answer for a deleted key — attribution rows survive on purpose.
+        // The admin-facing "does this key exist" surface must not, though: a tombstoned key reads
+        // as absent here, same as an unknown id, so DELETE stays a real removal from every reader's
+        // point of view.
+        if key.as_ref().is_some_and(|k| k.deleted_at.is_some()) {
+            return Ok::<_, crate::governance::StoreError>(None);
+        }
         Ok::<_, crate::governance::StoreError>(usage.map(|u| (u, key)))
     })
     .await;
@@ -1768,6 +1774,11 @@ pub(crate) async fn delete_key(
         let key = gov.store().get_key(&id_for_task)?;
         match key {
             None => Ok(DeleteOutcome::NotFound),
+            // TOMBSTONE (1.5.0): `get_key` returns a deleted key's row forever (billing/admin
+            // attribution needs it to), so a second DELETE — or N concurrent ones — must not treat
+            // an already-tombstoned row as "found, proceed": that is exactly what made every
+            // concurrent delete report 204 and made a second delete report 204 instead of 404.
+            Some(k) if k.deleted_at.is_some() => Ok(DeleteOutcome::NotFound),
             Some(k) => {
                 if let Some(expected) = &if_match {
                     if key_etag(&k) != *expected {

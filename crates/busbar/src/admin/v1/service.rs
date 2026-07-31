@@ -37,7 +37,7 @@ fn derive_spend_micros_row(cost: &crate::cost::CostModel, model: &str, b: &Usage
         input: b.tokens_input,
         output: b.tokens_output,
         cache_read: b.tokens_cache_read,
-        cache_write: b.tokens_cache_creation,
+        cache_write: b.tokens_cache_creation, // UsageBreakdown's OWN field name (public admin-API JSON contract, unchanged)
     };
     let resolved = cost.resolve_model_alias(model);
     cost.derive_spend_micros([(resolved, &tier)].into_iter(), b.requests, true)
@@ -1866,7 +1866,9 @@ impl AdminService {
                 tokens_input: r.tokens_input,
                 tokens_output: r.tokens_output,
                 tokens_cache_read: r.tokens_cache_read,
-                tokens_cache_creation: r.tokens_cache_creation,
+                // `r` is a store MeteringRow (internal field: tokens_cache_write); UsageBreakdown
+                // is the public admin-API view struct and keeps its own JSON field name unchanged.
+                tokens_cache_creation: r.tokens_cache_write,
                 requests: r.requests,
                 spend_micros: 0,
             };
@@ -1881,9 +1883,8 @@ impl AdminService {
                 b.tokens_input = b.tokens_input.saturating_add(r.tokens_input);
                 b.tokens_output = b.tokens_output.saturating_add(r.tokens_output);
                 b.tokens_cache_read = b.tokens_cache_read.saturating_add(r.tokens_cache_read);
-                b.tokens_cache_creation = b
-                    .tokens_cache_creation
-                    .saturating_add(r.tokens_cache_creation);
+                b.tokens_cache_creation =
+                    b.tokens_cache_creation.saturating_add(r.tokens_cache_write);
                 b.requests = b.requests.saturating_add(r.requests);
                 b.spend_micros = b.spend_micros.saturating_add(row_spend);
             }
@@ -3336,13 +3337,16 @@ mod tests {
         store
             .put_key(&crate::governance::VirtualKey {
                 id: "vk_bound".to_string(),
-                key_hash: "h:vk_bound".to_string(),
+                generation_hash: "h:vk_bound".to_string(),
                 name: "bound".to_string(),
                 allowed_pools: None,
                 enabled: true,
                 created_at: 0,
                 group: Some("team".to_string()),
                 labels: Default::default(),
+                expires_at: None,
+                deleted_at: None,
+                revision: 1,
             })
             .unwrap();
         let gov = Arc::new(GovState::new(store, None).unwrap());
@@ -3419,13 +3423,16 @@ mod tests {
     fn usage_key(group: &str) -> VirtualKey {
         VirtualKey {
             id: "vk_usage_probe".to_string(),
-            key_hash: "h:vk_usage_probe".to_string(),
+            generation_hash: "h:vk_usage_probe".to_string(),
             name: "usage-probe".to_string(),
             allowed_pools: None,
             enabled: true,
             created_at: 0,
             group: Some(group.to_string()),
             labels: Default::default(),
+            expires_at: None,
+            deleted_at: None,
+            revision: 1,
         }
     }
 

@@ -15,10 +15,14 @@
 #[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct VirtualKey {
     pub id: String,
-    /// SHA-256 hex of the presented secret (the secret itself is never stored). For a 1.5.0
-    /// signed-token key this is a non-authenticating `binding:<id>` marker (the token is the
-    /// credential).
-    pub key_hash: String,
+    /// A ROTATION FINGERPRINT, not a lookup credential. For a 1.5.0 signed-token key this is the
+    /// non-authenticating `binding:<id>:<generation>` marker (the token itself is the credential);
+    /// `verify_token` reads it ONLY after resolving the key by `sub`, to compare against the
+    /// token's `generation` claim and detect a stale (pre-rotation) token. It is never looked up
+    /// BY, so it deliberately carries no uniqueness constraint. (Named `generation_hash` rather
+    /// than `key_hash` for exactly this reason — the 1.4.x hashed-secret shape this field used to
+    /// double as a lookup key for was retired in 1.5.0; see `docs/migration-1.5.md`.)
+    pub generation_hash: String,
     pub name: String,
     /// Pools this key may target. `None` = ALL pools (the grant was omitted at mint);
     /// `Some(list)` = exactly those pools; `Some([])` = NO pools (C6: an empty list is the empty
@@ -36,6 +40,22 @@ pub struct VirtualKey {
     /// "team" means. Never interpreted by enforcement. BTreeMap for a deterministic label order.
     #[serde(default)]
     pub labels: std::collections::BTreeMap<String, String>,
+    /// Principal-level hard expiry (distinct from a signed token's own `exp` claim — this is the
+    /// KEY's, checked on every resolution regardless of which token names it). `None` = never.
+    #[serde(default)]
+    pub expires_at: Option<u64>,
+    /// TOMBSTONE marker. `None` = live. `Some(ts)` = this key was hard-deleted at `ts`: `enabled`
+    /// is false, every credential row for it has been destroyed, and the id will never be
+    /// reissued — but the row itself (id/name/group/labels) is KEPT so anything that attributes by
+    /// key id (billing, audit) keeps resolving forever. See [`Store::delete_key`].
+    #[serde(default)]
+    pub deleted_at: Option<u64>,
+    /// Store-global monotonic revision, bumped on every mutation to this row. Used by
+    /// [`Store::list_keys_since`] for incremental hydration. `0` for a row a pre-revision backend
+    /// never stamped (treated as "always changed" by a delta consumer, which is safe — a bare
+    /// full-scan degrades to correct-but-inefficient, never incorrect).
+    #[serde(default)]
+    pub revision: u64,
 }
 
 impl VirtualKey {
@@ -47,9 +67,20 @@ impl VirtualKey {
             Some(list) => list.iter().any(|p| p == pool),
         }
     }
+
+    /// `false` once this key has been tombstoned (`delete_key`). Every admin-mutation existence
+    /// check (PATCH, rotate, revoke, GET-by-id-for-display, and DELETE's own idempotency check)
+    /// MUST call this — not just check `Option::is_some()` — now that `delete_key` no longer
+    /// removes the row: a raw `get_key(id).is_some()` is true FOREVER for an id that ever existed,
+    /// tombstoned or not. The row surviving is deliberate (billing/audit attribution keeps
+    /// resolving it), but a tombstoned key must present as "not found" to every admin surface that
+    /// used to mean "gone" by a row's absence.
+    pub fn is_live(&self) -> bool {
+        self.deleted_at.is_none()
+    }
 }
 
-// MANUAL Debug that REDACTS `key_hash`. A derived `Debug` would print the SHA-256 of the key's
+// MANUAL Debug that REDACTS `generation_hash`. A derived `Debug` would print the SHA-256 of the key's
 // secret in PLAINTEXT — a latent credential leak any time a `VirtualKey` (or `GovCtx`, which embeds
 // one and whose derived Debug delegates here transitively) is debug-logged. The hash is the stored
 // authenticator (a presented secret is matched by hashing it and looking up this value), so it is
@@ -61,8 +92,8 @@ impl std::fmt::Debug for VirtualKey {
         f.debug_struct("VirtualKey")
             .field("id", &self.id)
             .field(
-                "key_hash",
-                &if self.key_hash.is_empty() {
+                "generation_hash",
+                &if self.generation_hash.is_empty() {
                     "<absent>"
                 } else {
                     "<redacted; present>"
@@ -74,70 +105,131 @@ impl std::fmt::Debug for VirtualKey {
             .field("created_at", &self.created_at)
             .field("group", &self.group)
             .field("labels", &self.labels)
+            .field("expires_at", &self.expires_at)
+            .field("deleted_at", &self.deleted_at)
+            .field("revision", &self.revision)
             .finish()
     }
 }
 
-/// A durable AWS-style credential row (the `aws_credentials` table), tying an AccessKeyId + secret
-/// access key to a virtual key's id (the MinIO/S3-compatible model). Stored separately from the
-/// `VirtualKey` row so the key's shape is unchanged. The `secret_access_key` is the SYMMETRIC SigV4
-/// signing secret (stored plaintext because HMAC verification needs the same value the client signs
-/// with), so this type carries a manual redacting `Debug`.
-#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct AwsCredential {
-    /// The plaintext AccessKeyId carried in the inbound SigV4 `Authorization` header (not secret).
-    pub access_key_id: String,
+/// A credential kind's storage form for [`CredentialMeta::secret_form`]/[`CredentialSecret::secret`]:
+/// whether a `secret` value exists at all, and if so whether it is recoverable (the store hands the
+/// plaintext back, needed for symmetric schemes like SigV4 HMAC where verification requires the same
+/// value the client signed with) or a one-way digest (verified by re-hashing the presented value,
+/// never handed back). A future kind MUST pick one explicitly — there is no default — so a digest-only
+/// scheme can never accidentally inherit a recoverable kind's plaintext-storage pattern by omission.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum SecretForm {
+    /// No `secret` value at all (the credential's `public_id` alone is the whole check — not used by
+    /// any kind today, reserved for a future presence-only credential shape).
+    None,
+    /// The store returns the plaintext `secret` on demand (SigV4: HMAC verification needs the exact
+    /// value the client signed with, so it cannot be hashed).
+    Recoverable,
+    /// The store never returns the plaintext; a presented value is checked by re-deriving and
+    /// comparing a one-way digest.
+    Digest,
+}
+
+/// A credential verified by ROW LOOKUP from a wire-supplied public identifier — the generalized
+/// replacement for the AWS-specific `AwsCredential`/`aws_credentials` (found, mid-audit, to be
+/// vendor-shaped rather than designed: it only ever held SigV4 credentials under an AWS-specific
+/// name). A kind belongs here ONLY if its verification path resolves a row FROM a wire-supplied
+/// public identifier — bearer/signed-token auth is deliberately NEVER represented here:
+/// `GovState::verify_token` never looks up a row, it only compares [`VirtualKey::generation_hash`]
+/// (a post-resolution fingerprint) against the token's own `generation` claim. Today's only `kind`
+/// is `"sigv4"` (`public_id` = AccessKeyId); a future auth mechanism (mTLS, HTTP Basic, …) is a new
+/// `kind` value on this SAME type, not a new type/table/trait-method set — that repeatable-accretion
+/// pattern is exactly what this generalization exists to close off.
+///
+/// NEVER carries the secret — see [`CredentialSecret`] for the one place that does. Used by every
+/// listing/admin-API path, so a `SELECT *`-shaped bug in a backend cannot leak a secret through this
+/// type: there is no field to leak.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CredentialMeta {
+    pub id: String,
     /// The owning `VirtualKey.id`.
     pub key_id: String,
-    /// The symmetric SigV4 secret access key — SECRET-EQUIVALENT (never log it).
-    pub secret_access_key: String,
+    /// Allowlisted by callers, not this type — today only `"sigv4"`. The admission rule for adding
+    /// a new value: only if that kind's verification path resolves a row from a wire-supplied
+    /// public identifier (see the type doc).
+    pub kind: String,
+    /// 0 or 1. Bounds credential cardinality to exactly two rows per `(key_id, kind)`, which is what
+    /// makes safe OVERLAP-WINDOW rotation possible: mint into the free slot, hand out the new
+    /// credential, then revoke the old slot once callers have migrated — never a window with zero
+    /// live credentials of that kind, and never an unbounded pile of old ones either.
+    pub slot: u8,
+    /// The non-secret, wire-supplied lookup handle (sigv4: the AccessKeyId carried in the
+    /// `Authorization` header's `Credential=` field).
+    pub public_id: String,
+    pub secret_form: SecretForm,
+    pub created_at: u64,
+    pub updated_at: u64,
+    pub expires_at: Option<u64>,
+    /// `Some(ts)` once this SPECIFIC credential has been revoked (independent of the owning key —
+    /// this is what makes "rotate a leaked SigV4 secret without touching the key's bearer token or
+    /// re-minting anything" possible). Distinct from the key-level revocation denylist, which blocks
+    /// EVERY credential of a subject at once; this blocks only this one row.
+    pub revoked_at: Option<u64>,
+    pub revoke_reason: Option<String>,
+    /// Store-global monotonic revision — see [`VirtualKey::revision`].
+    #[serde(default)]
+    pub revision: u64,
 }
 
-// MANUAL Debug that REDACTS `secret_access_key` (the symmetric SigV4 signing secret). A derived Debug
-// would print it verbatim — a credential leak the moment an `AwsCredential` is debug-logged. The
-// AccessKeyId and key_id are NOT secret and are shown for diagnosability; the secret prints presence
-// only, never the value/length (a length is a small oracle).
-impl std::fmt::Debug for AwsCredential {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AwsCredential")
-            .field("access_key_id", &self.access_key_id)
-            .field("key_id", &self.key_id)
-            .field(
-                "secret_access_key",
-                &if self.secret_access_key.is_empty() {
-                    "<absent>"
-                } else {
-                    "<redacted; present>"
-                },
-            )
-            .finish()
+// MANUAL Debug even though this type has no secret field — `derive(Debug)` would be equally safe
+// here today, but writing it out is what makes it a compile-time-visible decision if a future field
+// addition ever needs the same discipline as `CredentialSecret`'s. Kept deliberately boring.
+impl CredentialMeta {
+    /// Whether this credential currently admits (not revoked, not expired as of `now`).
+    pub fn is_live(&self, now: u64) -> bool {
+        self.revoked_at.is_none() && self.expires_at.is_none_or(|exp| now < exp)
     }
 }
 
-/// A resolved AWS-credential cache entry: the owning `VirtualKey` plus the secret access key needed to
-/// verify the inbound SigV4 signature. Returned by `GovState::lookup_by_access_key_id`. Carries a
-/// manual redacting `Debug` for the same reason as `AwsCredential` — the secret must never reach a log.
+/// [`CredentialMeta`] plus the actual secret material. Reachable from exactly two places: the verify
+/// path's hydration (SigV4 admission needs the plaintext in-process — the hot path is FORBIDDEN from
+/// a synchronous store call, so this is what the boot/refresh hydrate carries) and the one-time mint
+/// response. `secret` carries the versioned envelope format `"v1:<scheme>:<payload>"` (e.g.
+/// `"v1:plain:…"` today; a future `"v1:aead:<kid>:<nonce>:<ct>"` for at-rest encryption needs no
+/// schema change, just a new scheme tag) — never LOG it raw.
 ///
-/// NOT `Serialize`/`Deserialize` - deliberately. Unlike `VirtualKey`/`AwsCredential` (which the redis
-/// store round-trips as JSON, so their derives are a load-bearing PERSISTENCE contract that must stay
-/// faithful), this is a purely in-memory lookup return type built fresh from the store on each hydrate
-/// (`GovState::hydrate_aws_index`). It is never persisted or wire-encoded, so a serde derive would add
-/// no capability - only a latent way for a future `serde_json::to_*` on it to emit the plaintext
-/// `secret_access_key`. Withholding the derive makes that leak a COMPILE error, not a runtime footgun.
-#[derive(Clone, PartialEq)]
-pub struct AwsKeyEntry {
-    pub key: VirtualKey,
-    /// The symmetric SigV4 secret access key — SECRET-EQUIVALENT (never log it).
-    pub secret_access_key: String,
+/// DOES carry `Serialize`/`Deserialize` — this is the successor to `AwsCredential` (which also
+/// carried the plaintext secret and also derived serde), not to the old `AwsKeyEntry` (a purely
+/// in-memory type that withheld it): a real plugin `Store` crosses the plugin ABI as JSON over a
+/// ptr+len boundary (see `plugin-abi`), and this type is exactly what a backend both persists and
+/// returns across that wire, so the derive is load-bearing, not optional. The leak surface this
+/// closes is DEBUG-LOGGING (`tracing` records via `Debug`, never serde), so that is where the
+/// redaction lives: the manual `Debug` below never prints `secret`, mirroring
+/// `VirtualKey`'s own `generation_hash` — same pattern, same reasoning, applied consistently.
+#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CredentialSecret {
+    pub meta: CredentialMeta,
+    /// SECRET-EQUIVALENT for a `Recoverable`-form credential — never log it. Format
+    /// `"v1:<scheme>:<payload>"`.
+    pub secret: String,
 }
 
-impl std::fmt::Debug for AwsKeyEntry {
+impl CredentialSecret {
+    /// Extract the raw plaintext for a `"v1:plain:<payload>"`-scheme secret — the ONLY scheme that
+    /// exists today (HMAC verification needs the exact bytes the client signed with, so it cannot
+    /// be at rest in any transformed form for a `Recoverable`-form credential). Returns `None` for
+    /// any other version/scheme tag (e.g. a future `"v1:aead:…"` at-rest-encrypted form, which a
+    /// caller must decrypt through a dedicated path, not this one) — callers MUST NOT fall back to
+    /// using `secret` verbatim on a `None`, since that would use ciphertext (or an unrecognized
+    /// future format) as if it were the plaintext HMAC key.
+    pub fn plaintext(&self) -> Option<&str> {
+        self.secret.strip_prefix("v1:plain:")
+    }
+}
+
+impl std::fmt::Debug for CredentialSecret {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AwsKeyEntry")
-            .field("key", &self.key)
+        f.debug_struct("CredentialSecret")
+            .field("meta", &self.meta)
             .field(
-                "secret_access_key",
-                &if self.secret_access_key.is_empty() {
+                "secret",
+                &if self.secret.is_empty() {
                     "<absent>"
                 } else {
                     "<redacted; present>"
@@ -318,13 +410,33 @@ pub struct MeteringDelta {
     pub tokens_input: u64,
     pub tokens_output: u64,
     pub tokens_cache_read: u64,
-    pub tokens_cache_creation: u64,
+    /// Renamed from `tokens_cache_creation`: the identical concept as `TierTokens::cache_write`
+    /// above, just named differently because this type was added later without matching its
+    /// sibling — a naming-drift finding from the credentials-generalization audit, fixed here since
+    /// everything on this seam is still unreleased.
+    pub tokens_cache_write: u64,
     /// The number of completed responses this delta accumulates. On the wire (not derivable by the
     /// store) because a delta produced by a write-behind flush can coalesce more than one response
     /// under the same (key, bucket, model, provider) key — the store cannot infer that count from
     /// the token fields alone (a zero-token flat-fee response contributes to `requests` but nothing
     /// else).
     pub requests: u64,
+    /// BILLABLE portion of `requests` (admitted minus non-2xx refunds) — the durable ledger was
+    /// missing this despite `UsageDelta`/`UsageLedger` (the rate-limit ledger) carrying it, so the
+    /// billing ledger could not distinguish a charged request from a refunded/cached one without
+    /// re-deriving it. `#[serde(default)]` so a pre-field persisted delta still deserializes.
+    #[serde(default)]
+    pub billable_requests: u64,
+    /// The key's `group` AT THE TIME this response was served, denormalized onto the row so
+    /// group-level rollups stay correct even if the key is later regrouped or PII-scrubbed (see
+    /// [`Store::scrub_key`]). Empty string = no group, matching `VirtualKey::group`'s `None`.
+    #[serde(default)]
+    pub key_group_at_use: String,
+    /// Which price table was in force when this usage occurred, so a later price-table correction
+    /// cannot silently re-price historical buckets with no record that it happened. Empty = not
+    /// tracked (a pre-field persisted delta, or an operator not using versioned pricing).
+    #[serde(default)]
+    pub pricing_version: String,
 }
 
 /// One accumulated metering row read back for a bucket (the raw material of `GET usage` by_model /
@@ -337,8 +449,15 @@ pub struct MeteringRow {
     pub tokens_input: u64,
     pub tokens_output: u64,
     pub tokens_cache_read: u64,
-    pub tokens_cache_creation: u64,
+    /// Renamed from `tokens_cache_creation` — see [`MeteringDelta::tokens_cache_write`].
+    pub tokens_cache_write: u64,
     pub requests: u64,
+    #[serde(default)]
+    pub billable_requests: u64,
+    #[serde(default)]
+    pub key_group_at_use: String,
+    #[serde(default)]
+    pub pricing_version: String,
 }
 
 /// One admin AUDIT record, as it crosses the store seam for DURABLE persistence. Mirrors the engine's
@@ -394,19 +513,76 @@ impl From<&str> for StoreError {
 }
 
 /// The durable governance store — the `db` plugin contract. A backend (the built-in `SqliteStore`,
-/// or a plugin `PostgresStore`/`RedisStore`/…) implements this to persist the bounded ENFORCEMENT
-/// state: virtual keys + AWS credentials, and per-key usage counters per budget window.
+/// or a plugin `PostgresStore`/`ValkeyStore`/`MySqlStore`/…) implements this to persist the bounded
+/// ENFORCEMENT state: virtual keys + row-looked-up credentials (today: SigV4), and per-key usage
+/// counters per budget window.
 ///
 /// The engine keeps the AUTHORITATIVE enforcement counters in memory and treats this store as a
 /// write-behind durability layer (boot-hydrate + periodic flush), so every method here is off the
 /// request hot path — a plain synchronous call is fine, and a backend that needs async I/O runs it
-/// on its own runtime behind the sync signature. The four AWS-credential methods are DEFAULTED so a
-/// backend with no SigV4 support (or a lightweight test double) need not implement them.
+/// on its own runtime behind the sync signature. The credential/hydration-delta methods are
+/// DEFAULTED so a backend with no credential support (or a lightweight test double) need not
+/// implement them — see each method's own doc for its specific default behavior and why it's safe.
 pub trait Store: Send + Sync + 'static {
     fn put_key(&self, key: &VirtualKey) -> StoreResult<()>;
     fn get_key(&self, id: &str) -> StoreResult<Option<VirtualKey>>;
+    /// EVERY key, live or tombstoned (`deleted_at` set or not) — deliberately UNFILTERED, so this
+    /// one method serves both the admin-listing caller (which filters `deleted_at.is_none()`
+    /// itself before rendering) and [`Store::list_keys_since`]'s default incremental-hydration
+    /// fallback (which needs to SEE tombstones to evict cached credentials — see that method's
+    /// doc). A backend must not filter here; filtering belongs at the call site that actually wants
+    /// a "live only" view.
     fn list_keys(&self) -> StoreResult<Vec<VirtualKey>>;
+    /// TOMBSTONE `id`: the row is NOT removed. An implementation must, atomically:
+    /// 1. Destroy every credential row for this key (see [`Store::list_credentials`]) — secret
+    ///    material must not outlive the key.
+    /// 2. Set `enabled = false`, `deleted_at = now()`.
+    /// 3. Leave every other field (`id`/`name`/`group`/`labels`) untouched, so anything that
+    ///    attributes by key id — billing/metering rows, audit records — keeps resolving forever.
+    ///    The id is never reissued.
+    ///
+    /// This is a CONTRACT CHANGE from an earlier hard-delete semantics: a raw row removal would
+    /// make `usage_metering`-shaped durable ledgers (in a real backend) either orphan their
+    /// `key_id` or require a CASCADE that destroys billing evidence — tombstoning avoids both by
+    /// construction. Idempotent: deleting an already-tombstoned key is a no-op, not an error.
+    ///
+    /// PII erasure (nulling `name`/`labels`) is a SEPARATE, explicit operation — see
+    /// [`Store::scrub_key`] — so "this key is gone" and "this key's personal data is gone" stay
+    /// independently auditable.
     fn delete_key(&self, id: &str) -> StoreResult<()>;
+    /// PII-erasure-only: null `name` and `labels` on an ALREADY-tombstoned key (`deleted_at` set).
+    /// Every other field, and every attribution that reads this row by id, is untouched — this
+    /// exists to satisfy "erase personal data" without touching financial/billing records, which is
+    /// what a right-to-erasure request actually needs. Errors if `id` is unknown or not yet
+    /// tombstoned (scrubbing a live key would be silent, un-auditable data loss on an active
+    /// principal — go through `delete_key` first).
+    ///
+    /// DEFAULTED to an error so a backend that has not implemented it fails loud rather than
+    /// silently no-op-ing a compliance-relevant request.
+    fn scrub_key(&self, _id: &str) -> StoreResult<()> {
+        Err(StoreError(
+            "this Store does not support scrub_key".to_string(),
+        ))
+    }
+    /// Every key with `revision > since` — the INCREMENTAL hydration delta, used instead of a full
+    /// [`Store::list_keys`] reload on each staleness tick. UNLIKE `list_keys`, this does NOT filter
+    /// tombstones: a hydrator needs to observe a newly-tombstoned key (via its `deleted_at` now
+    /// being `Some`) so it can evict that key's cached credentials from its in-process map — see
+    /// [`Store::list_credentials_since`] for why that eviction cannot rely on the credential rows'
+    /// own deltas. `since = 0` returns every key (the boot/full-load case).
+    ///
+    /// DEFAULTED to a full-scan-and-filter over `list_keys` — CORRECT for any backend (it degrades
+    /// to "always changed" for a row the backend hasn't stamped with a real `revision`, per
+    /// `VirtualKey::revision`'s doc, and `list_keys` is unfiltered so tombstones are always visible
+    /// here) but not incremental; a backend that wants real delta-fetch efficiency overrides this
+    /// with an indexed `WHERE revision > ?`-shaped query.
+    fn list_keys_since(&self, since: u64) -> StoreResult<Vec<VirtualKey>> {
+        Ok(self
+            .list_keys()?
+            .into_iter()
+            .filter(|k| k.revision > since)
+            .collect())
+    }
     /// The TOKEN LEDGER for one (bucket, window). `bucket_id` is a key's own budget bucket (its
     /// key id) OR a budget-group bucket - same shape either way. An untouched (bucket, window)
     /// reads as the empty ledger. NO dollar field crosses this seam: spend is derived at read time
@@ -448,37 +624,112 @@ pub trait Store: Send + Sync + 'static {
     /// by-model / by-key aggregations.
     fn list_metering(&self, bucket: u64) -> StoreResult<Vec<MeteringRow>>;
 
-    /// Persist an AWS-style credential (the MinIO/S3-compatible model) for inbound SigV4 verification.
-    /// UPSERTs on the `access_key_id` PRIMARY KEY. The `secret_access_key` is the symmetric SigV4
-    /// signing secret stored in plaintext (HMAC verification needs the same value the client signs
-    /// with); callers must never log it.
+    /// Retention sweep for the (bucket_id, window_start) token ledger: purge every window whose
+    /// `window_start < before`. Returns the number of windows purged. Called only from a background
+    /// sweeper on a config interval — NEVER from the request path.
     ///
-    /// DEFAULTED so the (many) lightweight test-double stores need not implement the AWS surface —
-    /// only a real backend does. The default is a no-op-shaped error so a misconfigured store that
-    /// silently dropped a credential cannot pass as success.
-    fn put_aws_credential(&self, _cred: &AwsCredential) -> StoreResult<()> {
+    /// DEFAULTED to `Ok(0)` (a no-op that reports nothing purged): a backend has no obligation to
+    /// bound its own storage this way (e.g. an in-memory store already self-sweeps via a different
+    /// mechanism — see `MemoryStore`'s amortized eviction), and an in-tree default that silently did
+    /// nothing real would be misleading if it claimed to purge. Real durable backends (Postgres,
+    /// MySQL, Valkey, SQLite) each override this with whatever's idiomatic for their storage shape
+    /// (a native TTL, a partition drop, a chunked `DELETE`, …).
+    fn purge_windows_before(&self, _before: u64) -> StoreResult<u64> {
+        Ok(0)
+    }
+
+    /// Retention purge for the DURABLE billing ledger (`MeteringRow`/`MeteringDelta`): purge every
+    /// row in `bucket`. Unlike [`Store::purge_windows_before`], this must NEVER be wired to an
+    /// automatic sweeper — billing evidence is opt-in-purge-only, exactly like [`Store::delete_key`]
+    /// tombstones rather than removes for the same reason. The engine's admin surface is the only
+    /// intended caller, and only behind an explicit, audit-logged operator action.
+    ///
+    /// DEFAULTED to `Ok(0)`, same reasoning as `purge_windows_before`.
+    fn purge_metering_before(&self, _bucket: &str) -> StoreResult<u64> {
+        Ok(0)
+    }
+
+    /// Persist a row-looked-up credential (today: only `kind = "sigv4"`) — see [`CredentialSecret`]
+    /// and the [`Store::list_credentials`] doc for the generalized-from-AWS-specific rationale.
+    /// UPSERTs on `(key_id, kind, slot)`: minting into an occupied LIVE slot (not `revoked_at`) MUST
+    /// fail rather than silently destroy a working credential mid-overlap-window — an explicit slot
+    /// pointed at a live credential is almost certainly an operator mistake, not an intended
+    /// rotation. `secret.meta.id`/`secret.meta.key_id`/`secret.meta.kind`/`secret.meta.slot` name
+    /// the row; the rest of `secret.meta` plus `secret.secret` is the full row to write.
+    ///
+    /// DEFAULTED so the (many) lightweight test-double stores need not implement the credential
+    /// surface — only a real backend does. The default is a no-op-shaped error so a misconfigured
+    /// store that silently dropped a credential cannot pass as success.
+    fn put_credential(&self, _secret: &CredentialSecret) -> StoreResult<()> {
         Err(StoreError(
-            "this Store does not support AWS credentials".to_string(),
+            "this Store does not support row-looked-up credentials".to_string(),
         ))
     }
 
-    /// ATOMIC key+credential mint. Persist the bearer `VirtualKey` row AND its paired `AwsCredential`
-    /// row together or not at all. A real transactional backend overrides this to wrap both writes in
-    /// one transaction. DEFAULT fallback: sequential writes (for test doubles with no transaction).
-    fn put_key_with_aws_credential(
+    /// ATOMIC key+credential mint. Persist the bearer `VirtualKey` row AND its paired credential row
+    /// together or not at all. A real transactional backend overrides this to wrap both writes in one
+    /// transaction. DEFAULT fallback: sequential writes (for test doubles with no transaction).
+    fn put_key_with_credential(
         &self,
         key: &VirtualKey,
-        cred: &AwsCredential,
+        secret: &CredentialSecret,
     ) -> StoreResult<()> {
         self.put_key(key)?;
-        self.put_aws_credential(cred)?;
+        self.put_credential(secret)?;
         Ok(())
     }
 
-    /// All AWS credentials (used to rebuild the in-memory AccessKeyId index at boot / on refresh).
-    /// DEFAULTED to an empty list: a store with no AWS-credential support simply has none to index, so
-    /// SigV4 ingress is unavailable — never an auth bypass.
-    fn list_aws_credentials(&self) -> StoreResult<Vec<AwsCredential>> {
+    /// Every credential row for `key_id`, metadata only (never the secret — see
+    /// [`Store::lookup_credential_secret`] for the one place that returns it). The admin/listing
+    /// surface.
+    ///
+    /// DEFAULTED to empty: a store with no credential support simply has none to list.
+    fn list_credentials(&self, _key_id: &str) -> StoreResult<Vec<CredentialMeta>> {
+        Ok(Vec::new())
+    }
+
+    /// Resolve `(kind, public_id)` to its full secret material — the verify-path / hydration
+    /// lookup. `None` for an unknown `(kind, public_id)` pair (never an error: an unrecognized
+    /// AccessKeyId is a normal, expected outcome of the SigV4 admit path, not a store failure).
+    ///
+    /// DEFAULTED to `Ok(None)`: a store with no credential support resolves nothing, so that
+    /// credential kind's ingress is simply unavailable — never an auth bypass.
+    fn lookup_credential_secret(
+        &self,
+        _kind: &str,
+        _public_id: &str,
+    ) -> StoreResult<Option<CredentialSecret>> {
+        Ok(None)
+    }
+
+    /// Revoke ONE credential by id (independent of the owning key — see
+    /// [`CredentialMeta::revoked_at`]). Idempotent. DEFAULTED to a loud error, matching
+    /// [`Store::add_denylist`]'s reasoning: a silent no-op here would let an operator believe a
+    /// leaked SigV4 secret was killed when it was not.
+    fn revoke_credential(&self, _id: &str, _reason: &str) -> StoreResult<()> {
+        Err(StoreError(
+            "this Store does not support credential revocation".to_string(),
+        ))
+    }
+
+    /// Every credential row with `revision > since`, SECRET included — the incremental hydration
+    /// delta for the in-process verify-path cache (which must never make a synchronous store call,
+    /// so it needs the actual secret material in hand, not just metadata). `since = 0` returns every
+    /// row (boot/full-load).
+    ///
+    /// CONTRACT a hydration consumer MUST implement, not just this method: revision-based deltas
+    /// CANNOT observe a hard delete (a deleted row produces no further delta — it simply stops
+    /// appearing). Since [`Store::delete_key`]'s tombstone destroys every credential row for that
+    /// key, a delta-only consumer that ONLY reacts to credential-row deltas would keep serving a
+    /// deleted key's SigV4 credential from cache forever — an authentication bypass. The fix is on
+    /// the CONSUMER side: whenever a [`Store::list_keys_since`] delta shows a key's `deleted_at`
+    /// newly set, the consumer MUST evict every cached credential for that key id itself, rather
+    /// than waiting for (or relying on) a corresponding credential-row delta that will never come.
+    ///
+    /// DEFAULTED to a full-scan-and-filter over an internal full-credential enumeration; a backend
+    /// with no credential support returns empty (nothing to hydrate). Concrete backends should
+    /// override for real delta-fetch efficiency once they have their own storage to query.
+    fn list_credentials_since(&self, _since: u64) -> StoreResult<Vec<CredentialSecret>> {
         Ok(Vec::new())
     }
 
@@ -551,13 +802,36 @@ mod tests {
     fn sample_key() -> VirtualKey {
         VirtualKey {
             id: "vk_1".to_string(),
-            key_hash: "deadbeefdeadbeef".to_string(),
+            generation_hash: "deadbeefdeadbeef".to_string(),
             name: "test".to_string(),
             allowed_pools: Some(vec!["p".to_string()]),
             enabled: true,
             created_at: 42,
             group: Some("growth".to_string()),
             labels: std::collections::BTreeMap::from([("team".to_string(), "growth".to_string())]),
+            expires_at: None,
+            deleted_at: None,
+            revision: 1,
+        }
+    }
+
+    fn sample_credential() -> CredentialSecret {
+        CredentialSecret {
+            meta: CredentialMeta {
+                id: "cred_1".to_string(),
+                key_id: "vk_1".to_string(),
+                kind: "sigv4".to_string(),
+                slot: 0,
+                public_id: "AKIA_TEST".to_string(),
+                secret_form: SecretForm::Recoverable,
+                created_at: 42,
+                updated_at: 42,
+                expires_at: None,
+                revoked_at: None,
+                revoke_reason: None,
+                revision: 1,
+            },
+            secret: "v1:plain:s3cr3t-signing-key".to_string(),
         }
     }
 
@@ -580,7 +854,7 @@ mod tests {
 
     /// The redacting `Debug` - the guard for the structured-logging surface, since
     /// `tracing` records fields via `Debug`/`Display`, never serde - must NEVER emit the secret-
-    /// equivalent `key_hash` / `secret_access_key`. This is the leak the finding is about: any place a
+    /// equivalent `generation_hash` / `secret_access_key`. This is the leak the finding is about: any place a
     /// record reaches a log must show presence only.
     #[test]
     fn debug_redacts_secret_equivalents() {
@@ -588,76 +862,89 @@ mod tests {
         let key_dbg = format!("{key:?}");
         assert!(
             !key_dbg.contains("deadbeefdeadbeef"),
-            "VirtualKey Debug leaked key_hash: {key_dbg}"
+            "VirtualKey Debug leaked generation_hash: {key_dbg}"
         );
         assert!(key_dbg.contains("<redacted; present>"));
 
-        let cred = AwsCredential {
-            access_key_id: "AKIA_TEST".to_string(),
-            key_id: "vk_1".to_string(),
-            secret_access_key: "s3cr3t-signing-key".to_string(),
-        };
+        let cred = sample_credential();
         let cred_dbg = format!("{cred:?}");
         assert!(
             !cred_dbg.contains("s3cr3t-signing-key"),
-            "AwsCredential Debug leaked secret_access_key: {cred_dbg}"
+            "CredentialSecret Debug leaked the secret: {cred_dbg}"
         );
-        // The AccessKeyId is NOT secret and stays visible for diagnosability.
+        // The AccessKeyId (public_id) is NOT secret and stays visible for diagnosability, via the
+        // embedded CredentialMeta's ordinary (derived) Debug.
         assert!(cred_dbg.contains("AKIA_TEST"));
-
-        let entry = AwsKeyEntry {
-            key: sample_key(),
-            secret_access_key: "s3cr3t-signing-key".to_string(),
-        };
-        let entry_dbg = format!("{entry:?}");
-        assert!(
-            !entry_dbg.contains("s3cr3t-signing-key"),
-            "AwsKeyEntry Debug leaked secret_access_key: {entry_dbg}"
-        );
-        // The embedded VirtualKey's hash is redacted transitively through its own Debug.
-        assert!(!entry_dbg.contains("deadbeefdeadbeef"));
     }
 
-    /// The `Serialize`/`Deserialize` on `VirtualKey` and `AwsCredential` is a load-bearing PERSISTENCE
-    /// contract (the redis store round-trips them as JSON): it MUST stay faithful, so it is emphatically
-    /// NOT redacted. This pins that contract so a well-meaning "redact the Serialize too" change (which
-    /// would silently corrupt every redis-persisted key/credential) fails loudly here instead. The
+    /// The `Serialize`/`Deserialize` on `VirtualKey` is a load-bearing PERSISTENCE contract (a
+    /// redis-shaped store round-trips it as JSON): it MUST stay faithful, so it is emphatically NOT
+    /// redacted. This pins that contract so a well-meaning "redact the Serialize too" change (which
+    /// would silently corrupt every redis-persisted key) fails loudly here instead. The
     /// logging-surface leak is closed by the redacting `Debug` above, not by lossy serialization.
+    /// `CredentialSecret` deliberately has NO `Serialize` at all (see its doc) — persisting the raw
+    /// `secret` string is a backend-owned concern, not this crate's, so there is no equivalent
+    /// round-trip test for it here.
     #[test]
     fn serialize_roundtrip_is_faithful_for_persistence() {
         let key = sample_key();
         let json = serde_json::to_string(&key).unwrap();
         assert!(
             json.contains("deadbeefdeadbeef"),
-            "persistence must keep key_hash"
+            "persistence must keep generation_hash"
         );
         let back: VirtualKey = serde_json::from_str(&json).unwrap();
         assert_eq!(key, back);
 
-        let cred = AwsCredential {
-            access_key_id: "AKIA_TEST".to_string(),
-            key_id: "vk_1".to_string(),
-            secret_access_key: "s3cr3t-signing-key".to_string(),
-        };
+        // CredentialSecret DOES round-trip faithfully too — it crosses the plugin ABI wire and is
+        // what a backend persists, so its Serialize/Deserialize is load-bearing (see the type doc);
+        // the leak surface it must NOT have is Debug (covered by the redaction test above), not
+        // serde.
+        let cred = sample_credential();
         let json = serde_json::to_string(&cred).unwrap();
         assert!(
             json.contains("s3cr3t-signing-key"),
-            "persistence must keep secret_access_key for SigV4 HMAC verification"
+            "persistence must keep the secret material"
         );
-        let back: AwsCredential = serde_json::from_str(&json).unwrap();
+        let back: CredentialSecret = serde_json::from_str(&json).unwrap();
         assert_eq!(cred, back);
     }
 
     /// The minimal pure-auth JSON round-trips, and the optional fields default: a row with no
-    /// `allowed_pools` / `group` / `labels` deserializes to all-pools / no-group / no labels.
-    /// Guards the redis-style JSON persistence for the 1.5.0 pure-auth key shape.
+    /// `allowed_pools` / `group` / `labels` / `expires_at` / `deleted_at` / `revision` deserializes
+    /// to all-pools / no-group / no labels / never-expires / live / revision-0. Guards the
+    /// redis-style JSON persistence for the 1.5.0 pure-auth key shape, including the fields added by
+    /// the credentials-generalization redesign.
     #[test]
     fn virtual_key_minimal_json_defaults_optionals() {
-        let minimal = r#"{"id":"vk_1","key_hash":"h","name":"n","enabled":true,"created_at":1}"#;
+        let minimal =
+            r#"{"id":"vk_1","generation_hash":"h","name":"n","enabled":true,"created_at":1}"#;
         let k: VirtualKey = serde_json::from_str(minimal).unwrap();
         assert_eq!(k.allowed_pools, None, "absent grant = all pools");
         assert_eq!(k.group, None);
         assert!(k.labels.is_empty());
+        assert_eq!(k.expires_at, None);
+        assert_eq!(k.deleted_at, None);
+        assert_eq!(k.revision, 0);
+    }
+
+    /// `CredentialMeta::is_live` is the exact predicate the SigV4 admit path consults (in addition
+    /// to the KEY-level `enabled`/denylist checks, which are unaffected by per-credential
+    /// revocation): not revoked, and not expired as of `now`.
+    #[test]
+    fn credential_meta_is_live_checks_revocation_and_expiry() {
+        let mut m = sample_credential().meta;
+        assert!(m.is_live(100), "fresh credential, no expiry: live");
+        m.expires_at = Some(200);
+        assert!(m.is_live(100), "before expiry: live");
+        assert!(!m.is_live(200), "at expiry: not live");
+        assert!(!m.is_live(300), "past expiry: not live");
+        m.expires_at = None;
+        m.revoked_at = Some(50);
+        assert!(
+            !m.is_live(100),
+            "revoked (even with no expiry set): not live"
+        );
     }
 
     /// The ledger's additive delta application: model rows materialize on first sight, tiers

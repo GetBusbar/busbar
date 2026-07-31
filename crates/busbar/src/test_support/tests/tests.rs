@@ -359,7 +359,7 @@ async fn test_cross_protocol_nonstream_preserves_model() {
 /// TPM never tripped. After recording, a second request in the same window is rejected (429).
 #[tokio::test]
 async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
-    use crate::governance::{GovState, MemoryStore, Store, VirtualKey};
+    use crate::governance::{GovState, MemoryStore};
     crate::metrics::init();
 
     let state = Arc::new(MockServerState::new());
@@ -376,21 +376,27 @@ async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
     let server = MockServer::new(state.clone()).await;
 
     let store = Arc::new(MemoryStore::new());
-    let secret = "sk-vk-tpm";
-    store
-        .put_key(&VirtualKey {
-            id: "ktpm".to_string(),
-            key_hash: crate::sigv4::sha256_hex(secret.as_bytes()),
-            name: "tpm".to_string(),
-            allowed_pools: Some(vec!["pa".to_string()]),
-            enabled: true,
-            created_at: 0,
-            // The TPM cap lives on the bound GROUP now (keys are pure auth): 30 tokens/minute.
-            group: Some("tpmgrp".to_string()),
-            labels: Default::default(),
-        })
+    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+        &[7u8; 32],
+        crate::governance::signing::DEFAULT_KID,
+    );
+    let gov = Arc::new(
+        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
+    );
+    let (_key, token) = gov
+        .mint_signed(
+            crate::governance::NewKeySpec {
+                name: "tpm".to_string(),
+                // The TPM cap lives on the bound GROUP now (keys are pure auth): 30 tokens/minute.
+                allowed_pools: Some(vec!["pa".to_string()]),
+                group: Some("tpmgrp".to_string()),
+                labels: Default::default(),
+            },
+            2_000_000_000,
+            1_000_000_000,
+        )
         .unwrap();
-    let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
+    let secret = token.as_str();
     let groups = std::collections::BTreeMap::from([(
         "tpmgrp".to_string(),
         crate::config::GroupCfg {
@@ -477,7 +483,7 @@ async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
 /// stream fully drains (160 tokens charged), a second request in the same window is rejected (429).
 #[tokio::test]
 async fn test_cross_protocol_stream_records_tokens_for_tpm() {
-    use crate::governance::{GovState, MemoryStore, Store, VirtualKey};
+    use crate::governance::{GovState, MemoryStore};
     crate::metrics::init();
 
     // OpenAI-protocol SSE stream whose final chunk carries usage totalling 160 tokens
@@ -501,21 +507,27 @@ async fn test_cross_protocol_stream_records_tokens_for_tpm() {
     let server = MockServer::new(state.clone()).await;
 
     let store = Arc::new(MemoryStore::new());
-    let secret = "sk-vk-tpm-stream";
-    store
-        .put_key(&VirtualKey {
-            id: "ktpmstream".to_string(),
-            key_hash: crate::sigv4::sha256_hex(secret.as_bytes()),
-            name: "tpm-stream".to_string(),
-            allowed_pools: Some(vec!["pas".to_string()]),
-            enabled: true,
-            created_at: 0,
-            // The TPM cap lives on the bound GROUP now (keys are pure auth): 30 tokens/minute.
-            group: Some("tpmsgrp".to_string()),
-            labels: Default::default(),
-        })
+    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+        &[7u8; 32],
+        crate::governance::signing::DEFAULT_KID,
+    );
+    let gov = Arc::new(
+        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
+    );
+    let (_key, token) = gov
+        .mint_signed(
+            crate::governance::NewKeySpec {
+                name: "tpm-stream".to_string(),
+                // The TPM cap lives on the bound GROUP now (keys are pure auth): 30 tokens/minute.
+                allowed_pools: Some(vec!["pas".to_string()]),
+                group: Some("tpmsgrp".to_string()),
+                labels: Default::default(),
+            },
+            2_000_000_000,
+            1_000_000_000,
+        )
         .unwrap();
-    let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
+    let secret = token.as_str();
     let groups = std::collections::BTreeMap::from([(
         "tpmsgrp".to_string(),
         crate::config::GroupCfg {
@@ -917,24 +929,30 @@ async fn test_metrics_requires_auth_in_chain_mode() {
 /// governance-enabled router enforces virtual-key auth + allowed-pools over real HTTP.
 #[tokio::test]
 async fn test_governance_vkey_auth_and_pool_acl() {
-    use crate::governance::{GovState, MemoryStore, Store, VirtualKey};
+    use crate::governance::{GovState, MemoryStore};
 
     crate::metrics::init();
     let store = Arc::new(MemoryStore::new());
-    let secret = "sk-vk-allowed";
-    store
-        .put_key(&VirtualKey {
-            id: "k1".to_string(),
-            key_hash: crate::sigv4::sha256_hex(secret.as_bytes()),
-            name: "tester".to_string(),
-            allowed_pools: Some(vec!["allowedpool".to_string()]),
-            enabled: true,
-            created_at: 0,
-            group: None,
-            labels: Default::default(),
-        })
+    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+        &[7u8; 32],
+        crate::governance::signing::DEFAULT_KID,
+    );
+    let gov = Arc::new(
+        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
+    );
+    let (_key, token) = gov
+        .mint_signed(
+            crate::governance::NewKeySpec {
+                name: "tester".to_string(),
+                allowed_pools: Some(vec!["allowedpool".to_string()]),
+                group: None,
+                labels: Default::default(),
+            },
+            2_000_000_000,
+            1_000_000_000,
+        )
         .unwrap();
-    let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
+    let secret = token.as_str();
 
     let app = TestApp::new().governance(gov).build();
 
@@ -988,24 +1006,32 @@ async fn test_governance_vkey_auth_and_pool_acl() {
 /// a virtual key over its budget is rejected (429 for body/Anthropic ingress) before forwarding.
 #[tokio::test]
 async fn test_governance_budget_over_quota() {
-    use crate::governance::{GovState, MemoryStore, Store, VirtualKey};
+    use crate::governance::{GovState, MemoryStore, Store};
 
     crate::metrics::init();
     let store = Arc::new(MemoryStore::new());
-    let secret = "sk-vk-broke";
-    store
-        .put_key(&VirtualKey {
-            id: "kb".to_string(),
-            key_hash: crate::sigv4::sha256_hex(secret.as_bytes()),
-            name: "broke".to_string(),
-            allowed_pools: None, // all pools
-            enabled: true,
-            created_at: 0,
-            // The 100c budget cap lives on the bound GROUP (keys are pure auth).
-            group: Some("bgrp".to_string()),
-            labels: Default::default(),
-        })
+    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+        &[7u8; 32],
+        crate::governance::signing::DEFAULT_KID,
+    );
+    let gov = Arc::new(
+        GovState::new_with_signer(store.clone(), Some("admintok".to_string()), Some(signer))
+            .unwrap(),
+    );
+    let (_key, token) = gov
+        .mint_signed(
+            crate::governance::NewKeySpec {
+                name: "broke".to_string(),
+                allowed_pools: None, // all pools
+                // The 100c budget cap lives on the bound GROUP (keys are pure auth).
+                group: Some("bgrp".to_string()),
+                labels: Default::default(),
+            },
+            2_000_000_000,
+            1_000_000_000,
+        )
         .unwrap();
+    let secret = token.as_str();
     // Pre-seed usage past the group's 100c budget (window 0 = "total") in the DURABLE store:
     // 250 requests at a 1c flat fee derive to 250 cents of spend on the group's total bucket.
     store
@@ -1019,7 +1045,6 @@ async fn test_governance_budget_over_quota() {
             },
         )
         .unwrap();
-    let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
     let groups = std::collections::BTreeMap::from([(
         "bgrp".to_string(),
         crate::config::GroupCfg {
@@ -1095,28 +1120,32 @@ async fn test_governance_budget_over_quota() {
 /// Returns the bound address, the serve handle, and the secret to present. Shared by the
 /// per-protocol over-quota envelope tests below: the rejection fires before resolution, so no lane/pool/backend is
 /// needed — only a parseable body that carries `model` where the protocol expects it.
-async fn over_budget_router() -> (
-    std::net::SocketAddr,
-    tokio::task::JoinHandle<()>,
-    &'static str,
-) {
-    use crate::governance::{GovState, MemoryStore, Store, VirtualKey};
+async fn over_budget_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>, String) {
+    use crate::governance::{GovState, MemoryStore, Store};
 
     let store = Arc::new(MemoryStore::new());
-    let secret = "sk-vk-broke-multi";
-    store
-        .put_key(&VirtualKey {
-            id: "kbm".to_string(),
-            key_hash: crate::sigv4::sha256_hex(secret.as_bytes()),
-            name: "broke-multi".to_string(),
-            allowed_pools: None, // all pools
-            enabled: true,
-            created_at: 0,
-            // The 100c budget cap lives on the bound GROUP (keys are pure auth).
-            group: Some("bgrpm".to_string()),
-            labels: Default::default(),
-        })
+    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+        &[7u8; 32],
+        crate::governance::signing::DEFAULT_KID,
+    );
+    let gov = Arc::new(
+        GovState::new_with_signer(store.clone(), Some("admintok".to_string()), Some(signer))
+            .unwrap(),
+    );
+    let (_key, token) = gov
+        .mint_signed(
+            crate::governance::NewKeySpec {
+                name: "broke-multi".to_string(),
+                allowed_pools: None, // all pools
+                // The 100c budget cap lives on the bound GROUP (keys are pure auth).
+                group: Some("bgrpm".to_string()),
+                labels: Default::default(),
+            },
+            2_000_000_000,
+            1_000_000_000,
+        )
         .unwrap();
+    let secret = token;
     // Seed 250 requests on the GROUP's total bucket: at a 1c flat fee the DERIVED spend is
     // 250 cents, past the group's 100-cent cap, so admission rejects before any forwarding.
     store
@@ -1130,7 +1159,6 @@ async fn over_budget_router() -> (
             },
         )
         .unwrap();
-    let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
     let groups = std::collections::BTreeMap::from([(
         "bgrpm".to_string(),
         crate::config::GroupCfg {
@@ -1332,25 +1360,31 @@ async fn test_budget_over_quota_bedrock_envelope() {
 /// a virtual key over its RPM is rejected with 429 + Retry-After.
 #[tokio::test]
 async fn test_governance_rate_limit_429() {
-    use crate::governance::{GovState, MemoryStore, Store, VirtualKey};
+    use crate::governance::{GovState, MemoryStore};
 
     crate::metrics::init();
     let store = Arc::new(MemoryStore::new());
-    let secret = "sk-vk-rl";
-    store
-        .put_key(&VirtualKey {
-            id: "krl".to_string(),
-            key_hash: crate::sigv4::sha256_hex(secret.as_bytes()),
-            name: "rl".to_string(),
-            allowed_pools: None,
-            enabled: true,
-            created_at: 0,
-            // The 2-requests-per-minute limit lives on the bound GROUP (keys are pure auth).
-            group: Some("rl2".to_string()),
-            labels: Default::default(),
-        })
+    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+        &[7u8; 32],
+        crate::governance::signing::DEFAULT_KID,
+    );
+    let gov = Arc::new(
+        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
+    );
+    let (_key, token) = gov
+        .mint_signed(
+            crate::governance::NewKeySpec {
+                name: "rl".to_string(),
+                allowed_pools: None,
+                // The 2-requests-per-minute limit lives on the bound GROUP (keys are pure auth).
+                group: Some("rl2".to_string()),
+                labels: Default::default(),
+            },
+            2_000_000_000,
+            1_000_000_000,
+        )
         .unwrap();
-    let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
+    let secret = token.as_str();
 
     let groups = std::collections::BTreeMap::from([(
         "rl2".to_string(),
@@ -1435,28 +1469,30 @@ async fn test_governance_rate_limit_429() {
 /// before resolution, so no lane/pool/backend is needed, only a parseable body that carries
 /// `model` where the protocol expects it. An omitted `allowed_pools` admits every pool so the ACL
 /// never short-circuits the rate gate.
-async fn over_rpm_router() -> (
-    std::net::SocketAddr,
-    tokio::task::JoinHandle<()>,
-    &'static str,
-) {
-    use crate::governance::{GovState, MemoryStore, Store, VirtualKey};
+async fn over_rpm_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>, String) {
+    use crate::governance::{GovState, MemoryStore};
 
     let store = Arc::new(MemoryStore::new());
-    let secret = "sk-vk-rl-multi";
-    store
-        .put_key(&VirtualKey {
-            id: "krlm".to_string(),
-            key_hash: crate::sigv4::sha256_hex(secret.as_bytes()),
-            name: "rl-multi".to_string(),
-            allowed_pools: None, // all pools
-            enabled: true,
-            created_at: 0,
-            group: Some("rl0".to_string()),
-            labels: Default::default(),
-        })
+    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+        &[7u8; 32],
+        crate::governance::signing::DEFAULT_KID,
+    );
+    let gov = Arc::new(
+        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
+    );
+    let (_key, token) = gov
+        .mint_signed(
+            crate::governance::NewKeySpec {
+                name: "rl-multi".to_string(),
+                allowed_pools: None, // all pools
+                group: Some("rl0".to_string()),
+                labels: Default::default(),
+            },
+            2_000_000_000,
+            1_000_000_000,
+        )
         .unwrap();
-    let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
+    let secret = token;
 
     let groups = std::collections::BTreeMap::from([(
         "rl0".to_string(),
@@ -1717,7 +1753,10 @@ async fn test_governance_admin_api() {
     // The key credential is a busbar-SIGNED token (1.5.0), returned once - never a stored secret.
     let secret = created["token"].as_str().unwrap().to_string();
     assert!(secret.starts_with("bbk_"), "signed token returned once");
-    assert!(created.get("key_hash").is_none(), "hash never returned");
+    assert!(
+        created.get("generation_hash").is_none(),
+        "hash never returned"
+    );
     assert!(created.get("secret").is_none(), "no legacy secret in 1.5.0");
 
     // List shows it (no hash).
@@ -1729,7 +1768,7 @@ async fn test_governance_admin_api() {
         .unwrap();
     let listed: serde_json::Value = r.json().await.unwrap();
     assert_eq!(listed["items"].as_array().unwrap().len(), 1);
-    assert!(listed["items"][0].get("key_hash").is_none());
+    assert!(listed["items"][0].get("generation_hash").is_none());
 
     // Usage endpoint works.
     let r = client

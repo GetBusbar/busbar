@@ -1233,32 +1233,16 @@ pub(crate) async fn auth_middleware(
         }
 
         // Reject a missing / empty token BEFORE the governance lookup, mirroring the
-        // `validate_token` guard that the static-token path applies. Without this, an
-        // unauthenticated request would call `gov.lookup(sha256(""))` — admitting the caller if any
-        // virtual key in the store ever hashed an empty secret (reachable via direct DB writes or a
-        // future seeding path that bypasses `generate_secret`). Making the empty-token reject
-        // explicit removes that latent hash-collision dependency rather than relying on the absence
-        // of a `sha256("")` entry in the key store.
+        // `validate_token` guard that the static-token path applies.
         let Some(client_token) = client_token.as_deref().filter(|t| !t.is_empty()) else {
             return Err(unauthorized_with_completion_taps(&app, &path));
         };
         // 1.5.0 SIGNED-TOKEN KEYS (S1): a busbar-minted key is a signed token verified statelessly
-        // (signature + expiry + revocation-denylist), then policy is resolved by `sub`. Verify it
-        // FIRST (it carries the `bbk_` prefix, so `verify_token` cheaply rejects a non-token and
-        // this falls through to the legacy hash lookup for any credential that is not a busbar
-        // token). A tampered/expired/revoked token, or one for a deleted key, is `None` = 401.
-        let resolved_key = gov
-            .verify_token(client_token, crate::store::now())
-            // LEGACY hashed-secret path: `lookup` is a `by_hash` hit for pre-1.5.0 keys hydrated
-            // by `GovState::load`. Unlike `verify_token` (which consults the denylist internally)
-            // this path admits on the raw binding, so a `revoke`d hashed-secret key would keep
-            // authenticating. Gate it on `!is_revoked` here, mirroring the SigV4 admit path — a
-            // revoked subject's Bearer secret is treated as no match (opaque 401). `revoke`
-            // deliberately preserves `enabled` for history, so the enabled check is not enough.
-            .or_else(|| {
-                gov.lookup(client_token)
-                    .filter(|key| !gov.is_revoked(&key.id))
-            });
+        // (signature + expiry + revocation-denylist), then policy is resolved by `sub`. This is the
+        // ONLY bearer-credential shape in 1.5.0 — the legacy hashed-secret verify path was retired
+        // (`docs/migration-1.5.md`: "1.4.x keys no longer authenticate"). A tampered/expired/revoked
+        // token, or one for a deleted key, is `None` = 401.
+        let resolved_key = gov.verify_token(client_token, crate::store::now());
         match resolved_key {
             Some(key) if key.enabled => {
                 // The governance principal: id = the virtual-key id (stable), name = its label.
@@ -1490,36 +1474,57 @@ fn verify_bedrock_sigv4(
         amzdate: &amzdate,
     };
 
-    // Resolve the AccessKeyId to (key, secret). On an UNKNOWN AccessKeyId, verify against a fixed dummy
-    // secret so the work — and the timing/response — is indistinguishable from a wrong-signature
-    // rejection (no AccessKeyId-enumeration oracle). The dummy is a constant, never a real secret.
+    // Resolve (kind="sigv4", AccessKeyId) to (key, credential). On an UNKNOWN AccessKeyId, verify
+    // against a fixed dummy secret so the work — and the timing/response — is indistinguishable
+    // from a wrong-signature rejection (no AccessKeyId-enumeration oracle). The dummy is a
+    // constant, never a real secret.
     let now = crate::store::now();
-    let (secret, resolved): (String, Option<crate::governance::VirtualKey>) =
-        match gov.lookup_by_access_key_id(&parsed.access_key_id) {
-            Some(entry) => (entry.secret_access_key, Some(entry.key)),
+    let (secret, resolved): (String, Option<(crate::governance::VirtualKey, bool)>) =
+        match gov.lookup_credential("sigv4", &parsed.access_key_id) {
+            Some((key, cred)) => {
+                let live = cred.meta.is_live(now);
+                // `plaintext()` strips the "v1:plain:" envelope — HMAC verification needs the exact
+                // raw bytes the client signed with, never the versioned-envelope string itself. An
+                // unrecognized scheme (e.g. a future at-rest-encrypted form reached through the wrong
+                // path) falls back to the dummy secret, same treatment as an unknown AccessKeyId — it
+                // must never surface as a distinguishable rejection reason.
+                let secret = cred
+                    .plaintext()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| DUMMY_SECRET.to_string());
+                (secret, Some(((*key).clone(), live)))
+            }
             None => (DUMMY_SECRET.to_string(), None),
         };
 
     let verify = verify_inbound_sigv4(&parsed, &inbound, &secret, now);
 
-    // Decide admission. The signature must verify; the resolved key must exist AND be enabled. All
-    // three conditions are evaluated, and only the combined success admits — a failure in any one
-    // rejects with the same opaque `Err(())`. An unknown AccessKeyId has `resolved == None`, so even a
-    // (cryptographically impossible) signature match against the dummy secret cannot admit.
+    // Decide admission. The signature must verify; the resolved key must exist AND be enabled; the
+    // resolved CREDENTIAL itself must be live (not revoked, not expired — independent of the key,
+    // per CredentialMeta::is_live: this is what lets a leaked SigV4 secret be killed via
+    // revoke_credential without touching the key's bearer token or re-minting anything); AND the
+    // subject not on the KEY-level revocation denylist. All conditions are evaluated, and only the
+    // combined success admits — a failure in any one rejects with the same opaque `Err(())`. An
+    // unknown AccessKeyId has `resolved == None`, so even a (cryptographically impossible)
+    // signature match against the dummy secret cannot admit.
+    //
+    // The denylist clause mirrors the signed-token path (`verify_token`), which consults
+    // `denylist.contains(&claims.sub)` before resolving. A dual-credential key (signed token +
+    // SigV4) is bound to ONE subject id; `revoke` denylists that id but deliberately preserves
+    // `enabled` for history — so WITHOUT this check the SigV4 credential of a revoked key would keep
+    // authenticating even though its signed token is rejected. Gating here closes that bypass.
     match (verify, resolved) {
-        // Admission requires: signature verified, a resolved+enabled binding, AND the subject not on
-        // the revocation denylist. The last clause mirrors the signed-token path (`verify_token`), which
-        // consults `denylist.contains(&claims.sub)` before resolving. A dual-credential key (signed token
-        // + SigV4) is bound to ONE subject id; `revoke` denylists that id but deliberately preserves
-        // `enabled` for history — so WITHOUT this check the SigV4 credential of a revoked key would keep
-        // authenticating even though its signed token is rejected. Gating here closes that bypass.
-        (Ok(()), Some(key)) if key.enabled && !gov.is_revoked(&key.id) => Ok(key),
-        (Ok(()), Some(key)) if key.enabled => {
+        (Ok(()), Some((key, true))) if key.enabled && !gov.is_revoked(&key.id) => Ok(key),
+        (Ok(()), Some((key, true))) if key.enabled => {
             tracing::debug!(id = %key.id, "inbound SigV4 rejected: subject is revoked");
             Err(())
         }
-        (Ok(()), Some(_key)) => {
+        (Ok(()), Some((_key, true))) => {
             tracing::debug!("inbound SigV4 rejected: virtual key disabled");
+            Err(())
+        }
+        (Ok(()), Some((key, false))) => {
+            tracing::debug!(id = %key.id, "inbound SigV4 rejected: this credential is revoked or expired");
             Err(())
         }
         (Ok(()), None) => {

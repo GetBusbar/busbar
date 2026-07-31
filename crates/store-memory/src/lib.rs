@@ -7,8 +7,8 @@
 //! for persistence. Poison-recovering locks (the governance surface must never panic on a request).
 
 use busbar_api::{
-    AwsCredential, MeteringDelta, MeteringRow, Store, StoreResult, UsageDelta, UsageLedger,
-    VirtualKey,
+    CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, Store, StoreError, StoreResult,
+    UsageDelta, UsageLedger, VirtualKey,
 };
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -33,12 +33,13 @@ fn now() -> u64 {
         .unwrap_or(0)
 }
 
-/// In-memory `Store`: keys by id, AWS credentials by access-key-id, token ledgers keyed by
-/// (bucket_id, window_start), metering rows keyed by (key_id, bucket, model, provider).
+/// In-memory `Store`: keys by id, row-looked-up credentials by id (indexed by `(kind, public_id)`
+/// for lookup and by `key_id` for the per-key listing/cascade), token ledgers keyed by (bucket_id,
+/// window_start), metering rows keyed by (key_id, bucket, model, provider).
 #[derive(Default)]
 pub struct MemoryStore {
     keys: RwLock<HashMap<String, VirtualKey>>,
-    creds: RwLock<HashMap<String, AwsCredential>>,
+    creds: RwLock<HashMap<String, CredentialSecret>>,
     usage: RwLock<HashMap<(String, u64), UsageLedger>>,
     metering: RwLock<HashMap<(String, u64, String, String), MeteringRow>>,
     /// The revocation DENYLIST: denied subject ids (1.5.0 signed-token keys). A set (the reason is
@@ -48,6 +49,9 @@ pub struct MemoryStore {
     /// per map since the two maps see independent write rates.
     usage_sweep_ticker: AtomicU64,
     metering_sweep_ticker: AtomicU64,
+    /// The store-global monotonic revision counter (see `VirtualKey::revision`). Bumped on every
+    /// mutation to `keys`/`creds`/the denylist.
+    revision: AtomicU64,
 }
 
 impl MemoryStore {
@@ -57,7 +61,7 @@ impl MemoryStore {
     fn keys(&self) -> std::sync::RwLockWriteGuard<'_, HashMap<String, VirtualKey>> {
         self.keys.write().unwrap_or_else(|e| e.into_inner())
     }
-    fn creds(&self) -> std::sync::RwLockWriteGuard<'_, HashMap<String, AwsCredential>> {
+    fn creds(&self) -> std::sync::RwLockWriteGuard<'_, HashMap<String, CredentialSecret>> {
         self.creds.write().unwrap_or_else(|e| e.into_inner())
     }
     fn usage(&self) -> std::sync::RwLockWriteGuard<'_, HashMap<(String, u64), UsageLedger>> {
@@ -68,11 +72,16 @@ impl MemoryStore {
     ) -> std::sync::RwLockWriteGuard<'_, HashMap<(String, u64, String, String), MeteringRow>> {
         self.metering.write().unwrap_or_else(|e| e.into_inner())
     }
+    fn next_revision(&self) -> u64 {
+        self.revision.fetch_add(1, Ordering::Relaxed) + 1
+    }
 }
 
 impl Store for MemoryStore {
     fn put_key(&self, key: &VirtualKey) -> StoreResult<()> {
-        self.keys().insert(key.id.clone(), key.clone());
+        let mut key = key.clone();
+        key.revision = self.next_revision();
+        self.keys().insert(key.id.clone(), key);
         Ok(())
     }
 
@@ -81,29 +90,66 @@ impl Store for MemoryStore {
     }
 
     fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
+        // Deliberately UNFILTERED — see the trait doc. Tombstones are included so both the admin
+        // listing caller (which filters live-only itself) and the default `list_keys_since` (which
+        // needs tombstones visible) are served by this one method.
         let mut v: Vec<VirtualKey> = self.keys().values().cloned().collect();
         v.sort_by_key(|k| k.created_at); // mirror SqliteStore's ORDER BY created_at
         Ok(v)
     }
 
     fn delete_key(&self, id: &str) -> StoreResult<()> {
-        // Cascade, mirroring SqliteStore::delete_key: the key, its usage counters, and its AWS
-        // credentials go together — a revoked key's credential must not outlive it.
+        // TOMBSTONE (1.5.0 redesign): the key row SURVIVES, so anything that attributes by key id
+        // (billing/metering rows, audit records) keeps resolving forever, and the id is never
+        // reissued. Only the CREDENTIALS (live secret material) and the rate/budget `usage` ledger
+        // are actually removed — `metering` is durable billing evidence and was never cascaded here
+        // even before this redesign (confirmed: it has its own independent lifecycle from `usage`).
         //
-        // ATOMICITY (audit LOW): hold ALL THREE write guards for the WHOLE cascade rather than taking
-        // them one-at-a-time. The prior sequential form released the `keys` guard before touching
-        // `usage`, so a concurrent write-behind `add_usage` (flush_budgets) could re-insert a usage row
-        // for the just-deleted key in the gap — resurrecting a ledger the delete was meant to remove.
-        // Under a single held set the delete is atomic across the maps. Acquire in a FIXED order
-        // (keys → usage → creds); `delete_key` is the only method taking more than one lock, so this
-        // order cannot deadlock against any other method.
+        // ATOMICITY: hold ALL THREE write guards for the WHOLE cascade rather than taking them
+        // one-at-a-time, for the same reason as before this redesign — a concurrent write-behind
+        // `add_usage` must not be able to resurrect a ledger row in the gap. Fixed lock order
+        // (keys → usage → creds) so this cannot deadlock against any other method.
         let mut keys = self.keys();
         let mut usage = self.usage();
         let mut creds = self.creds();
-        keys.remove(id);
+        let Some(key) = keys.get_mut(id) else {
+            return Ok(()); // idempotent: deleting an unknown id is a no-op, not an error
+        };
+        if key.deleted_at.is_some() {
+            return Ok(()); // idempotent: already tombstoned
+        }
+        let rev = self.next_revision();
+        key.enabled = false;
+        key.deleted_at = Some(now());
+        key.revision = rev;
         usage.retain(|(k, _), _| k != id);
-        creds.retain(|_, c| c.key_id != id);
+        creds.retain(|_, c| c.meta.key_id != id);
         Ok(())
+    }
+
+    fn scrub_key(&self, id: &str) -> StoreResult<()> {
+        let mut keys = self.keys();
+        let Some(key) = keys.get_mut(id) else {
+            return Err(StoreError(format!("scrub_key: unknown key '{id}'")));
+        };
+        if key.deleted_at.is_none() {
+            return Err(StoreError(format!(
+                "scrub_key: '{id}' is not tombstoned — delete it first"
+            )));
+        }
+        key.name.clear();
+        key.labels.clear();
+        key.revision = self.next_revision();
+        Ok(())
+    }
+
+    fn list_keys_since(&self, since: u64) -> StoreResult<Vec<VirtualKey>> {
+        Ok(self
+            .keys()
+            .values()
+            .filter(|k| k.revision > since)
+            .cloned()
+            .collect())
     }
 
     fn get_usage(&self, bucket_id: &str, window_start: u64) -> StoreResult<UsageLedger> {
@@ -167,16 +213,18 @@ impl Store for MemoryStore {
                 tokens_input: 0,
                 tokens_output: 0,
                 tokens_cache_read: 0,
-                tokens_cache_creation: 0,
+                tokens_cache_write: 0,
                 requests: 0,
+                billable_requests: 0,
+                key_group_at_use: d.key_group_at_use.clone(),
+                pricing_version: d.pricing_version.clone(),
             });
         e.tokens_input = e.tokens_input.saturating_add(d.tokens_input);
         e.tokens_output = e.tokens_output.saturating_add(d.tokens_output);
         e.tokens_cache_read = e.tokens_cache_read.saturating_add(d.tokens_cache_read);
-        e.tokens_cache_creation = e
-            .tokens_cache_creation
-            .saturating_add(d.tokens_cache_creation);
+        e.tokens_cache_write = e.tokens_cache_write.saturating_add(d.tokens_cache_write);
         e.requests = e.requests.saturating_add(d.requests);
+        e.billable_requests = e.billable_requests.saturating_add(d.billable_requests);
 
         // Amortized bounded eviction of stale buckets, mirroring `add_usage` above.
         let sweep_needed = self
@@ -200,14 +248,84 @@ impl Store for MemoryStore {
             .collect())
     }
 
-    fn put_aws_credential(&self, cred: &AwsCredential) -> StoreResult<()> {
-        self.creds()
-            .insert(cred.access_key_id.clone(), cred.clone());
+    fn put_credential(&self, secret: &CredentialSecret) -> StoreResult<()> {
+        let mut creds = self.creds();
+        // Reject an explicit slot pointed at a LIVE credential of the same (key_id, kind) — see the
+        // trait doc: silently clobbering a working credential mid-overlap-window is almost always an
+        // operator mistake, not an intended rotation.
+        let occupied = creds.values().any(|c| {
+            c.meta.id != secret.meta.id
+                && c.meta.key_id == secret.meta.key_id
+                && c.meta.kind == secret.meta.kind
+                && c.meta.slot == secret.meta.slot
+                && c.meta.revoked_at.is_none()
+        });
+        if occupied {
+            return Err(StoreError(format!(
+                "put_credential: slot {} for key '{}' kind '{}' holds a live credential; revoke it first",
+                secret.meta.slot, secret.meta.key_id, secret.meta.kind
+            )));
+        }
+        // UNIQUE(kind, public_id): a public_id must never resolve to two different credentials,
+        // even across keys (an AccessKeyId is a global lookup handle).
+        let public_id_taken = creds.values().any(|c| {
+            c.meta.id != secret.meta.id
+                && c.meta.kind == secret.meta.kind
+                && c.meta.public_id == secret.meta.public_id
+        });
+        if public_id_taken {
+            return Err(StoreError(format!(
+                "put_credential: public_id '{}' is already in use for kind '{}'",
+                secret.meta.public_id, secret.meta.kind
+            )));
+        }
+        let mut secret = secret.clone();
+        secret.meta.revision = self.next_revision();
+        creds.insert(secret.meta.id.clone(), secret);
         Ok(())
     }
 
-    fn list_aws_credentials(&self) -> StoreResult<Vec<AwsCredential>> {
-        Ok(self.creds().values().cloned().collect())
+    fn list_credentials(&self, key_id: &str) -> StoreResult<Vec<CredentialMeta>> {
+        Ok(self
+            .creds()
+            .values()
+            .filter(|c| c.meta.key_id == key_id)
+            .map(|c| c.meta.clone())
+            .collect())
+    }
+
+    fn lookup_credential_secret(
+        &self,
+        kind: &str,
+        public_id: &str,
+    ) -> StoreResult<Option<CredentialSecret>> {
+        Ok(self
+            .creds()
+            .values()
+            .find(|c| c.meta.kind == kind && c.meta.public_id == public_id)
+            .cloned())
+    }
+
+    fn revoke_credential(&self, id: &str, reason: &str) -> StoreResult<()> {
+        let mut creds = self.creds();
+        let Some(c) = creds.get_mut(id) else {
+            return Err(StoreError(format!("revoke_credential: unknown id '{id}'")));
+        };
+        if c.meta.revoked_at.is_none() {
+            c.meta.revoked_at = Some(now());
+            c.meta.revoke_reason = Some(reason.to_string());
+            c.meta.revision = self.next_revision();
+        } // idempotent: already revoked
+        Ok(())
+    }
+
+    fn list_credentials_since(&self, since: u64) -> StoreResult<Vec<CredentialSecret>> {
+        Ok(self
+            .creds()
+            .values()
+            .filter(|c| c.meta.revision > since)
+            .cloned()
+            .collect())
     }
 
     fn add_denylist(&self, sub: &str, _reason: &str) -> StoreResult<()> {
@@ -232,17 +350,41 @@ impl Store for MemoryStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use busbar_api::SecretForm;
 
     fn key(id: &str) -> VirtualKey {
         VirtualKey {
             id: id.to_string(),
-            key_hash: format!("h_{id}"),
+            generation_hash: format!("h_{id}"),
             name: "t".to_string(),
             allowed_pools: None,
             enabled: true,
             created_at: 0,
             group: None,
             labels: std::collections::BTreeMap::new(),
+            expires_at: None,
+            deleted_at: None,
+            revision: 0,
+        }
+    }
+
+    fn credential(id: &str, key_id: &str, public_id: &str) -> CredentialSecret {
+        CredentialSecret {
+            meta: CredentialMeta {
+                id: id.to_string(),
+                key_id: key_id.to_string(),
+                kind: "sigv4".to_string(),
+                slot: 0,
+                public_id: public_id.to_string(),
+                secret_form: SecretForm::Recoverable,
+                created_at: 0,
+                updated_at: 0,
+                expires_at: None,
+                revoked_at: None,
+                revoke_reason: None,
+                revision: 0,
+            },
+            secret: "v1:plain:sek".to_string(),
         }
     }
 
@@ -322,20 +464,64 @@ mod tests {
     }
 
     #[test]
-    fn delete_key_cascades_usage_and_creds() {
+    fn delete_key_tombstones_and_cascades_usage_and_creds() {
         let s = MemoryStore::new();
         s.put_key(&key("a")).unwrap();
         s.put_usage("a", 0, &ledger(1, "m", 5, 0)).unwrap();
-        s.put_aws_credential(&AwsCredential {
-            access_key_id: "AKIA1".to_string(),
-            key_id: "a".to_string(),
-            secret_access_key: "sek".to_string(),
-        })
-        .unwrap();
+        s.put_credential(&credential("c1", "a", "AKIA1")).unwrap();
         s.delete_key("a").unwrap();
-        assert!(s.get_key("a").unwrap().is_none());
+        // TOMBSTONE, not removed: the row survives, disabled, with deleted_at set.
+        let tombstone = s.get_key("a").unwrap().unwrap();
+        assert!(!tombstone.enabled);
+        assert!(tombstone.deleted_at.is_some());
         assert_eq!(s.get_usage("a", 0).unwrap(), UsageLedger::default());
-        assert!(s.list_aws_credentials().unwrap().is_empty());
+        assert!(s.list_credentials("a").unwrap().is_empty());
+        // Idempotent: a second delete of an already-tombstoned key is a no-op, not an error.
+        s.delete_key("a").unwrap();
+    }
+
+    #[test]
+    fn put_credential_rejects_a_slot_already_holding_a_live_credential() {
+        let s = MemoryStore::new();
+        s.put_key(&key("a")).unwrap();
+        s.put_credential(&credential("c1", "a", "AKIA1")).unwrap();
+        // Same (key_id, kind, slot), different id/public_id: must fail, not silently clobber.
+        let clobber = credential("c2", "a", "AKIA2");
+        assert!(s.put_credential(&clobber).is_err());
+        // Revoking the occupant frees the slot for a fresh mint.
+        s.revoke_credential("c1", "rotated").unwrap();
+        assert!(s.put_credential(&clobber).is_ok());
+    }
+
+    #[test]
+    fn lookup_credential_secret_resolves_by_kind_and_public_id() {
+        let s = MemoryStore::new();
+        s.put_key(&key("a")).unwrap();
+        s.put_credential(&credential("c1", "a", "AKIA1")).unwrap();
+        let found = s
+            .lookup_credential_secret("sigv4", "AKIA1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.meta.key_id, "a");
+        assert_eq!(found.secret, "v1:plain:sek");
+        assert!(s
+            .lookup_credential_secret("sigv4", "unknown")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn scrub_key_requires_tombstone_first() {
+        let s = MemoryStore::new();
+        s.put_key(&key("a")).unwrap();
+        // A live key must not be scrubbable — that would be silent, un-auditable data loss on an
+        // active principal.
+        assert!(s.scrub_key("a").is_err());
+        s.delete_key("a").unwrap();
+        s.scrub_key("a").unwrap();
+        let scrubbed = s.get_key("a").unwrap().unwrap();
+        assert!(scrubbed.name.is_empty());
+        assert!(scrubbed.labels.is_empty());
     }
 
     #[test]
@@ -349,8 +535,11 @@ mod tests {
             tokens_input: 10,
             tokens_output: 5,
             tokens_cache_read: 0,
-            tokens_cache_creation: 0,
+            tokens_cache_write: 0,
             requests: 1,
+            billable_requests: 1,
+            key_group_at_use: String::new(),
+            pricing_version: String::new(),
         };
         s.add_metering(&d).unwrap();
         s.add_metering(&d).unwrap();
@@ -434,8 +623,11 @@ mod tests {
             tokens_input: 1,
             tokens_output: 0,
             tokens_cache_read: 0,
-            tokens_cache_creation: 0,
+            tokens_cache_write: 0,
             requests: 1,
+            billable_requests: 1,
+            key_group_at_use: String::new(),
+            pricing_version: String::new(),
         };
         for _ in 0..SWEEP_INTERVAL {
             s.add_metering(&d).unwrap();
@@ -465,8 +657,11 @@ mod tests {
             tokens_input: 1,
             tokens_output: 0,
             tokens_cache_read: 0,
-            tokens_cache_creation: 0,
+            tokens_cache_write: 0,
             requests: 1,
+            billable_requests: 1,
+            key_group_at_use: String::new(),
+            pricing_version: String::new(),
         };
         let old = MeteringDelta {
             bucket: old_bucket,

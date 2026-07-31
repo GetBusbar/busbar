@@ -58,13 +58,16 @@ fn group(parent: Option<&str>, limits: Vec<LimitCfg>) -> GroupCfg {
 pub(crate) fn key(group: Option<&str>) -> VirtualKey {
     VirtualKey {
         id: "vk_1".into(),
-        key_hash: "h".into(),
+        generation_hash: "h".into(),
         name: "k".into(),
         allowed_pools: None,
         enabled: true,
         created_at: 0,
         group: group.map(String::from),
         labels: BTreeMap::new(),
+        expires_at: None,
+        deleted_at: None,
+        revision: 1,
     }
 }
 
