@@ -52,16 +52,14 @@ pub(crate) async fn forward_with_pool_keyed(
     cands: Vec<WeightedLane>,
     body: Bytes,
     caller_token: Option<&str>,
-    resolved_gov_key: Option<&std::sync::Arc<crate::governance::VirtualKey>>,
+    resolved_gov_key: Option<&crate::governance::VirtualKey>,
     pool_name: &str,
     affinity_key: Option<&str>,
     ingress_protocol: &str,
     op: crate::handlers::Op,
     usage_sink: Option<UsageSink>,
 ) -> Response {
-    // Validate + head-project WITHOUT building a DOM (same malformed-body 400 contract as the old
-    // eager parse — `LazyBody::parse` goes through the identical `crate::json` guard + parser).
-    let v: LazyBody = match LazyBody::parse(&body) {
+    let v: Value = match crate::json::parse(&body) {
         Ok(v) => v,
         Err(_) => {
             tracing::debug!(detail = %crate::json::parse_err_log(body.len()), "request body JSON parse failed");
@@ -98,12 +96,7 @@ pub(crate) async fn forward_with_pool_keyed(
 // Plumbing function: each parameter is an independent request input (state, candidates, body, parsed
 // body, caller token, pool name, affinity key, ingress protocol, usage sink) with no natural grouping.
 #[allow(clippy::too_many_arguments)]
-// `level = "debug"`: at the default info filter this span is DISABLED at the callsite (one relaxed
-// atomic check) instead of allocating a span + formatting three fields on every request. The
-// info-level events on the rejection paths carry their own pool/policy fields, so no info-level
-// log line loses context; run with RUST_LOG=busbar=debug to get the span back.
 #[tracing::instrument(
-    level = "debug",
     name = "forward",
     skip_all,
     fields(pool = %pool_name, ingress = %ingress_protocol, op = op.name())
@@ -112,10 +105,10 @@ pub(crate) async fn forward_with_pool_parsed(
     app: Arc<App>,
     cands: Vec<WeightedLane>,
     body: Bytes,
-    mut v: Option<LazyBody>,
+    v: Option<Value>,
     req_content_type: &str,
     caller_token: Option<&str>,
-    resolved_gov_key: Option<&std::sync::Arc<crate::governance::VirtualKey>>,
+    resolved_gov_key: Option<&crate::governance::VirtualKey>,
     pool_name: &str,
     affinity_key: Option<&str>,
     ingress_protocol: &str,
@@ -130,23 +123,14 @@ pub(crate) async fn forward_with_pool_parsed(
     let completion_shape = if app.tap_hooks_completion.is_empty() {
         None
     } else {
-        // `stream` is a captured head key — read it via `probe` (no DOM needed); the SHAPE capture
-        // reads arbitrary body fields, so materialize the DOM (taps are configured — the DOM was
-        // going to be built for the request stages anyway).
-        let stream = v
-            .as_ref()
-            .and_then(|b| b.probe().get("stream"))
-            .and_then(|s| s.as_bool())
-            .unwrap_or(false);
-        let dom: Option<&Value> = match v.as_mut() {
-            Some(l) => l.ensure_dom().ok().map(|m| &*m),
-            None => None,
-        };
         Some(capture_stage_shape(
-            dom,
+            v.as_ref(),
             pool_name,
             ingress_protocol,
-            stream,
+            v.as_ref()
+                .and_then(|b| b.get("stream"))
+                .and_then(|s| s.as_bool())
+                .unwrap_or(false),
         ))
     };
     let completion_app = app.clone();
@@ -199,20 +183,17 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     app: Arc<App>,
     cands: Vec<WeightedLane>,
     mut body: Bytes,
-    // The request body VALIDATED once by the caller for JSON-body operations, carried as a
-    // `LazyBody` (head projection + on-demand DOM); `None` for an OPAQUE ingress body (multipart
-    // transcription, binary) — those relay/translate at the BYTE level via the operation codecs and
-    // skip every JSON-only read below. The top-level point reads below (`stream`, affinity `system`,
-    // shim keys) go through the head `probe`; the full DOM is materialized ONLY when a consumer
-    // needs the tree (rewrite hooks, taps, gates/policies, cross-protocol translation, failover).
-    // `mut` so the global rewrite pass can materialize + mutate it before dispatch.
-    mut v: Option<LazyBody>,
+    // The request body parsed ONCE by the caller for JSON-body operations; `None` for an OPAQUE
+    // ingress body (multipart transcription, binary) — those relay/translate at the BYTE level via
+    // the operation codecs and skip every JSON-only read below. `mut` so the global rewrite pass can
+    // mutate it before dispatch.
+    mut v: Option<Value>,
     // The ingress request Content-Type — the byte-level codec's parse hint (multipart boundary).
     req_content_type: &str,
     caller_token: Option<&str>,
     // The key the auth layer already resolved/synthesized for this caller (`GovCtx.key`) — used as
     // the routing-signal source when the token is not a virtual-key secret (group/SSO principals).
-    resolved_gov_key: Option<&std::sync::Arc<crate::governance::VirtualKey>>,
+    resolved_gov_key: Option<&crate::governance::VirtualKey>,
     pool_name: &str,
     affinity_key: Option<&str>,
     ingress_protocol: &str,
@@ -223,40 +204,27 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     op: crate::handlers::Op,
     usage_sink: Option<UsageSink>,
 ) -> Response {
-    // Stage profiler: PREPARE spans all pre-dispatch bookkeeping (op-support filter, wants_stream +
-    // affinity derivation, failover/breaker config) up to the failover loop. Zero cost when
-    // `BUSBAR_PROFILE` is unset — `start` returns `None` and takes no `Instant`.
-    let _prep = crate::profile::start(crate::profile::Stage::Prepare);
     // EGRESS deletion switch (design §3, same contract as `forward_operation`): every candidate
     // lane's protocol must HOLD this operation's handler. A protocol whose handler was deleted is
     // not a valid egress for the operation — a clean no-handler 404 in the CALLER's dialect, never a
     // silent dispatch. Dormant while all six protocols serve chat; load-bearing the moment one is
     // removed (the deletion test).
     let mut cands: Vec<WeightedLane> = {
-        let supports = |wl: &WeightedLane| {
-            crate::handlers::request_handler(app.lanes[wl.idx].protocol.name())
-                .and_then(|rh| rh.operation_handler(op.operation))
-                .is_some()
-        };
-        // Fast path (the norm: every registered protocol serves every 1.x operation): all candidates
-        // support the operation, so keep the caller's Vec as-is — no partition, no re-allocation.
-        // Only when at least one lane lacks the handler do we pay the filter; semantics identical to
-        // the previous `partition` (an all-dropped non-empty set is the same no-handler 404, and an
-        // initially-empty set passes through to the pool-empty 503 below either way).
-        if cands.iter().all(supports) {
-            cands
-        } else {
-            let kept: Vec<WeightedLane> = cands.into_iter().filter(|wl| supports(wl)).collect();
-            if kept.is_empty() {
-                return ingress_error(
-                    ingress_protocol,
-                    StatusCode::NOT_FOUND,
-                    KIND_NOT_FOUND,
-                    DETAIL_MODEL_UNSUPPORTED_OPERATION,
-                );
-            }
-            kept
+        let (kept, dropped): (Vec<WeightedLane>, Vec<WeightedLane>) =
+            cands.into_iter().partition(|wl| {
+                crate::handlers::request_handler(app.lanes[wl.idx].protocol.name())
+                    .and_then(|rh| rh.operation_handler(op.operation))
+                    .is_some()
+            });
+        if kept.is_empty() && !dropped.is_empty() {
+            return ingress_error(
+                ingress_protocol,
+                StatusCode::NOT_FOUND,
+                KIND_NOT_FOUND,
+                DETAIL_MODEL_UNSUPPORTED_OPERATION,
+            );
         }
+        kept
     };
     // `v` is the PRISTINE parsed request body (parsed once by the caller). Never mutated after this
     // point: each failover hop derives a fresh per-hop `hop_v` (the first hop consumes `v`; hops 2+
@@ -269,42 +237,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // translation rewrites `v` (Gemini routes streaming requests to a different upstream endpoint).
     // Delegated to the operation: chat reads the OpenAI-family `stream` boolean (byte-identical to
     // the previous inline read); a non-streaming op always returns false.
-    // `probe()` answers this from the head projection (chat reads only the top-level `stream`
-    // boolean — a captured head key) without materializing the DOM; once a DOM exists, `probe()` IS
-    // the DOM, so the read is byte-identical either way.
-    let wants_stream = v
-        .as_ref()
-        .map(|l| op.wants_stream(l.probe()))
-        .unwrap_or(false);
-
-    // Capture whether the ORIGINAL client opted into streaming token usage
-    // (`stream_options.include_usage == true`) BEFORE any rewrite/translation touches `v` (Findings
-    // 2+3). Meaningful only for an OpenAI-family ingress that speaks the `stream_options` convention;
-    // any other ingress body simply lacks the key and reads `false`. Busbar ALWAYS injects
-    // `include_usage` on the upstream request (so it can bill a streaming call — Finding 3), so this
-    // flag alone decides whether the resulting trailing usage chunk is surfaced to THIS client
-    // (Finding 2): a client that did not opt in must not receive the unsolicited `{choices:[], usage}`
-    // chunk. Read from the head projection where available (`probe()` is the head projection until a
-    // DOM is materialized, then the DOM itself), so no DOM is forced for the common non-opt-in case.
-    let client_include_usage = wants_stream
-        && v.as_ref()
-            .map(|l| {
-                l.probe()
-                    .pointer("/stream_options/include_usage")
-                    .and_then(|b| b.as_bool())
-                    .unwrap_or(false)
-            })
-            .unwrap_or(false);
-    // Companion point-read (also free off the head projection): does the client body carry a
-    // top-level `stream_options` key AT ALL? Drives the byte-level upstream include_usage injection
-    // below - a body with NO `stream_options` can have the flag inserted with a single splice that
-    // preserves the pristine same-proto re-emit (no DOM parse); a body that DOES carry one (but did
-    // not opt in - e.g. `include_usage:false` or a sibling-only object) is the rare case that falls
-    // to the DOM-materializing injector. Meaningful only for a streaming OpenAI-family body.
-    let client_has_stream_options = wants_stream
-        && v.as_ref()
-            .map(|l| l.probe().get("stream_options").is_some())
-            .unwrap_or(false);
+    let wants_stream = v.as_ref().map(|v| op.wants_stream(v)).unwrap_or(false);
 
     // ── GLOBAL REWRITE (transform) PASS ─────────────────────────────────────────────────────────
     // Fire the global `prompt: rw` gates (compression/redaction) BEFORE dispatch AND before the
@@ -322,7 +255,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         .map(|r| r.rewrite_hooks.as_slice())
         .unwrap_or(&[]);
     if !app.rewrite_hooks.is_empty() || !pool_rewrites.is_empty() {
-        if let Some(lazy) = v.as_mut() {
+        if let Some(parsed) = v.as_mut() {
             // A rewrite hook's REJECT stops the request here — the same client shaping a decide-
             // path gate rejection gets (clamped status, sanitized message, native envelope).
             let reject = |status: u16, message: String| {
@@ -338,16 +271,6 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     reject_kind_for_status(status),
                     &message,
                 ))
-            };
-            // Rewrite hooks mutate the tree — materialize the DOM (rewrite paths always paid this
-            // parse). The unreachable-in-practice parse failure (these bytes already validated)
-            // fails CLOSED, matching the rewrite guarantee's serialize guard below.
-            let Ok(parsed) = lazy.ensure_dom() else {
-                tracing::error!(
-                    "materializing the validated request body for the rewrite pass failed; \
-                     rejecting rather than forwarding un-rewritten"
-                );
-                return reject(500, "request rewrite could not be applied".to_string());
             };
             let mut applied = match apply_global_rewrites(
                 &app.rewrite_hooks,
@@ -405,12 +328,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // gets the prompt-content projection, a `prompt: no` (default) tap gets shape-only — so a tap
     // never over-shares. At most TWO projections are built (shape-only + with-prompt), regardless of
     // tap count. ZERO COST when no tap is configured (empty-list branch).
-    // Hoisted empty check (mirrors `fire_global_taps`'s own first-line early return) so the DOM is
-    // only materialized when a tap is actually configured — ZERO COST stays zero-parse.
-    if !app.tap_hooks.is_empty() {
-        if let Some(Ok(body)) = v.as_mut().map(|l| l.ensure_dom()) {
-            fire_global_taps(&app, body, pool_name, ingress_protocol, wants_stream);
-        }
+    if let Some(body) = v.as_ref() {
+        fire_global_taps(&app, body, pool_name, ingress_protocol, wants_stream);
     }
 
     // Gemini ingress streaming WITHOUT `?alt=sse`: the native client expects a JSON-array streamed
@@ -428,25 +347,21 @@ pub(crate) async fn forward_with_pool_parsed_inner(
             .map(|p| {
                 p.writer().uses_array_stream_shim()
                     && v.as_ref()
-                        // The shim key is a captured head key — `probe()` answers without a DOM.
-                        .map(|l| p.writer().wants_array_stream(l.probe()))
+                        .map(|v| p.writer().wants_array_stream(v))
                         .unwrap_or(false)
             })
             .unwrap_or(false);
 
-    // Derive the affinity HASH early (before any mutations to v), from BORROWED bytes — the sticky
-    // preference needs only `stable_hash(key)`, never the owned string, so hashing here avoids a
-    // per-request `String` allocation. Prefer the supplied header key; else fall back to the
-    // operation's body-derived key (chat: the top-level `system` string — byte-identical selection to
-    // the previous owned-String read; other ops: no body affinity). `None` = no sticky preference.
-    let affinity_key_hash: Option<u64> =
-        affinity_key.map(crate::proxy::stable_hash).or_else(|| {
-            v.as_ref()
-                // Chat's body affinity key is the top-level `system` string — a captured head key,
-                // so `probe()` answers without materializing the DOM.
-                .and_then(|l| op.body_affinity_key(l.probe()))
-                .map(crate::proxy::stable_hash)
-        });
+    // Derive affinity key early (before any mutations to v). When no affinity header was supplied,
+    // fall back to the operation's body-derived key: chat uses the top-level `system` string
+    // (byte-identical to the previous inline read); other ops default to no body affinity.
+    let affinity_key_str: Option<String> = if let Some(k) = affinity_key {
+        Some(k.to_string())
+    } else {
+        v.as_ref()
+            .and_then(|v| op.body_affinity_key(v))
+            .map(String::from)
+    };
 
     // Before-first-byte failover boundary:
     // Failover is allowed ONLY until the first upstream byte reaches the client.
@@ -472,10 +387,13 @@ pub(crate) async fn forward_with_pool_parsed_inner(
 
     // Breaker config: prefer this pool's own settings, fall back to ADR-0002 defaults. Resolved
     // once and shared (Arc) so the streaming guard can record mid-stream failures with the same
-    // thresholds the synchronous path used. The default (no per-pool breaker — the common case) is
-    // a process-wide cached Arc, so the hot path pays no per-request allocation for it.
-    let breaker_cfg: std::sync::Arc<crate::store::BreakerCfg> =
-        resolve_breaker_cfg(&app, pool_name);
+    // thresholds the synchronous path used.
+    let breaker_cfg: std::sync::Arc<crate::store::BreakerCfg> = std::sync::Arc::new(
+        app.pool_runtime
+            .get(pool_name)
+            .and_then(|r| r.breaker.clone())
+            .unwrap_or_default(),
+    );
 
     let mut request_ctx = RequestCtx::new(deadline_secs);
 
@@ -534,16 +452,9 @@ pub(crate) async fn forward_with_pool_parsed_inner(
             app.global_gates.iter().chain(pool_gates.iter()).collect();
         chain.sort_by_key(|(p, _)| *p);
         // Every concurrently-firing gate borrows the same parsed body; the shared Null stands in
-        // for a non-JSON body (the same projection the sequential path used). Gates project
-        // arbitrary body fields, so a configured gate materializes the DOM (as it always did).
+        // for a non-JSON body (the same projection the sequential path used).
         static NULL_BODY: Value = Value::Null;
-        let gate_body: &Value = match v.as_mut() {
-            Some(l) => match l.ensure_dom() {
-                Ok(m) => &*m,
-                Err(()) => &NULL_BODY,
-            },
-            None => &NULL_BODY,
-        };
+        let gate_body: &Value = v.as_ref().unwrap_or(&NULL_BODY);
         let outcomes: Vec<PolicyOutcome> =
             futures::future::join_all(chain.iter().map(|(_, gate)| {
                 decide_policy_order(
@@ -720,22 +631,12 @@ pub(crate) async fn forward_with_pool_parsed_inner(
             // A non-default policy is configured: build the projection, run the decision (bounded by its
             // timeout), and coerce the outcome to a ranked order (or `None` ⇒ SWRR) per `on_error`.
             Some(resolved) => {
-                // A configured routing policy projects the body — materialize the DOM (this pool
-                // always paid the parse). `NULL_BODY_POLICY` stands in for non-JSON, as before.
-                static NULL_BODY_POLICY: Value = Value::Null;
-                let policy_body: &Value = match v.as_mut() {
-                    Some(l) => match l.ensure_dom() {
-                        Ok(m) => &*m,
-                        Err(()) => &NULL_BODY_POLICY,
-                    },
-                    None => &NULL_BODY_POLICY,
-                };
                 let outcome = decide_policy_order(
                     &app,
                     resolved,
                     &cands,
                     &request_ctx,
-                    policy_body,
+                    v.as_ref().unwrap_or(&Value::Null),
                     pool_name,
                     ingress_protocol,
                     wants_stream,
@@ -903,14 +804,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     let stage_shape = if app.tap_hooks_route.is_empty() && app.tap_hooks_attempt.is_empty() {
         None
     } else {
-        // Stage taps read arbitrary body fields for the shape — materialize the DOM (taps are
-        // configured, so this request always paid the parse).
-        let dom: Option<&Value> = match v.as_mut() {
-            Some(l) => l.ensure_dom().ok().map(|m| &*m),
-            None => None,
-        };
         Some(capture_stage_shape(
-            dom,
+            v.as_ref(),
             pool_name,
             ingress_protocol,
             wants_stream,
@@ -934,8 +829,6 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // Why the PREVIOUS attempt failed — feeds the attempt-stage tap payload (the failover story).
     let mut last_failure: Option<&'static str> = None;
 
-    // PREPARE ends here (dispatch loop begins).
-    drop(_prep);
     let mut first_hop_v = v;
     for attempt in 0..=max_cap {
         // Check deadline first (propagated across hops)
@@ -948,12 +841,11 @@ pub(crate) async fn forward_with_pool_parsed_inner(
             );
         }
 
-        let _pick = crate::profile::start(crate::profile::Stage::LanePick);
         let (i, permit) = match pick_among(
             &app,
             &cands,
             &mut request_ctx,
-            affinity_key_hash,
+            affinity_key_str.as_deref(),
             pool_name,
             policy_order.as_deref(),
         )
@@ -973,11 +865,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 // No usable lane — whether the members were tripped before this request
                 // arrived or excluded during its failover attempts, apply the configured
                 // exhaustion mode (Status503 / FallbackPool / LeastBad) with loop prevention.
-                // Box::pin: the exhaustion future (~2.1 KB) is COLD (no usable lane), but awaited
-                // inline it alone sets this fn's coroutine union max — boxing it shrinks the
-                // per-request future every happy-path request carries; the alloc only happens on
-                // the already-degraded path. (Same pattern as walk.rs's recursive box.)
-                return Box::pin(handle_exhaustion_for_pool(
+                return handle_exhaustion_for_pool(
                     app.clone(),
                     &cands,
                     now(),
@@ -989,12 +877,10 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     op,
                     req_content_type,
                     usage_sink.clone(),
-                ))
+                )
                 .await;
             }
         };
-        // LANE_PICK ends here (a lane + permit are in hand).
-        drop(_pick);
 
         // Mark this lane as excluded for future attempts in this request
         request_ctx.exclude(i);
@@ -1028,13 +914,18 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         // Resolves to the routed lane's model name on the default (`""`) cell so these series
         // correlate with REQUESTS_TOTAL (which labels model-routed traffic by model, not `""`);
         // the breaker-cell key below stays `pool_name` (`""`) — only the metric LABEL is decoupled.
-        // Held as a borrow; every metric emit below goes through the TELEMETRY BANK (telemetry.rs),
-        // which resolves `(metric_pool, i)` to this generation's pre-registered per-thread slots —
-        // no label allocation and no shared-atomic contention on the walk.
+        // Held as a borrow (no up-front allocation); each metric emit owns it (`.to_owned()`) only on
+        // the branch that actually fires, so an attempt allocates the label once per emitted series
+        // instead of eagerly building a `String` and cloning it at every (mostly-unreached) site.
         let metric_pool: &str = metric_pool_label(&app, pool_name, i);
 
         // count this upstream attempt (re-entrant across failover hops — each is a real attempt).
-        crate::telemetry::upstream_attempt(&app, metric_pool, i);
+        metrics::counter!(
+            crate::metrics::UPSTREAM_ATTEMPTS_TOTAL,
+            "pool" => metric_pool.to_owned(),
+            "lane" => app.lanes[i].model.clone()
+        )
+        .increment(1);
         tracing::debug!(pool = %pool_name, lane = %app.lanes[i].model, "upstream attempt");
 
         let egress_name = app.lanes[i].protocol.name();
@@ -1044,41 +935,17 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         // parsed `Value` tree per hop: a single JSON parse is far cheaper in time and peak heap than
         // an O(n) `Value::clone` of a large request (long histories / base64 images / big tool
         // schemas), which under sustained failover compounded to O(n × max_cap) allocations.
-        let _xlate = crate::profile::start(crate::profile::Stage::TranslateReq);
-        // REQUEST SHORT-CIRCUIT WITHOUT A DOM (perf/throughput-1.5.0): hop 1 of a SAME-protocol
-        // JSON dispatch whose head projection PROVES no same-proto invalidator (#1-#4, Vertex)
-        // fires re-emits the retained bytes verbatim — the exact bytes the translate seam's own
-        // pristine short-circuit would emit — without ever materializing the `Value` tree.
-        // `head_provably_pristine` is one-sided (see its docs + parity test): any doubt falls
-        // through to the unchanged materialize-and-translate path below, so the wire bytes are
-        // byte-identical on every branch. When the DOM was already materialized (hooks/taps/gates/
-        // path-model ingress), `probe()` IS the (possibly hook-rewritten) DOM and `body` was
-        // re-serialized in lockstep by the rewrite pass — the check stays sound.
-        let head_pristine = ingress_protocol == egress_name
-            && first_hop_v
-                .as_ref()
-                .is_some_and(|l| head_provably_pristine(&app, i, l.probe()));
-        let payload = if head_pristine {
-            // Consume the hop-1 body exactly as the translate path does; failover hops 2+ re-parse
-            // from the retained pristine bytes, unchanged. `Bytes::clone` = refcount bump.
-            first_hop_v = None;
-            body.clone()
+        let hop_v: Option<Value> = if !body_is_json {
+            None // opaque ingress body: byte-level relay/translate; nothing to re-parse.
         } else {
-            let hop_v: Option<Value> = if !body_is_json {
-                None // opaque ingress body: byte-level relay/translate; nothing to re-parse.
-            } else {
-                let parsed = match first_hop_v.take() {
-                    // First hop: consume the carried body — the memoized DOM when one was
-                    // materialized (hooks/taps/gates/path-model), else ONE parse of the validated
-                    // bytes (the parse the old eager path performed at ingress).
-                    Some(l) => l.into_value(),
-                    // Failover hops: re-parse from the retained pristine bytes (sonic-rs: SIMD parse).
-                    None => crate::json::parse(&body).map_err(|_| ()),
-                };
-                match parsed {
-                    Ok(v) => Some(v),
-                    // `body` already validated/parsed once successfully above; this is infallible.
-                    Err(()) => {
+            Some(match first_hop_v.take() {
+                // First hop: reuse the pristine parse from above (no second parse on the common path).
+                Some(v) => v,
+                // Failover hops: re-parse from the retained pristine bytes (sonic-rs: SIMD parse).
+                None => match crate::json::parse(&body) {
+                    Ok(v) => v,
+                    // `body` already parsed once successfully above; this re-parse is infallible.
+                    Err(_) => {
                         // Probe class guard: this lane may have CAS-won the single-flight recovery probe in
                         // `pick_among`. We bail BEFORE dispatching any request, so no outcome will be
                         // recorded to clear `probe_in_flight` — release it here or the recovering lane stays
@@ -1092,74 +959,33 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                             DETAIL_INTERNAL_ERROR,
                         );
                     }
-                }
-            };
-            // SINGLE shared cross-protocol request-shaping seam (shared verbatim with `forward_once`'s
-            // degraded path): read→clear-extra→write, shim-key strip, model rewrite, serialize. Both
-            // paths route through `translate_request_cross_protocol` so neither can carry a translation
-            // step the other lacks (the recurring drift class this round's unification ends).
-            match translate_request_cross_protocol(
-                &app,
-                i,
-                ingress_protocol,
-                op,
-                hop_v,
-                req_content_type,
-                effective_reasoning(&cands, i, app.lanes[i].reasoning),
-                &body,
-            ) {
-                Ok(p) => p,
-                Err(resp) => {
-                    // Probe class guard: a translation failure also bails before dispatch, so release
-                    // the (possibly won) single-flight probe before returning — same wedged-HalfOpen
-                    // leak as the re-parse path above.
-                    app.store.release_probe_in(pool_name, i);
-                    drop(permit);
-                    return *resp;
-                }
+                },
+            })
+        };
+        // SINGLE shared cross-protocol request-shaping seam (shared verbatim with `forward_once`'s
+        // degraded path): read→clear-extra→write, shim-key strip, model rewrite, serialize. Both
+        // paths route through `translate_request_cross_protocol` so neither can carry a translation
+        // step the other lacks (the recurring drift class this round's unification ends).
+        let payload = match translate_request_cross_protocol(
+            &app,
+            i,
+            ingress_protocol,
+            op,
+            hop_v,
+            req_content_type,
+            effective_reasoning(&cands, i, app.lanes[i].reasoning),
+            &body,
+        ) {
+            Ok(p) => p,
+            Err(resp) => {
+                // Probe class guard: a translation failure also bails before dispatch, so release
+                // the (possibly won) single-flight probe before returning — same wedged-HalfOpen
+                // leak as the re-parse path above.
+                app.store.release_probe_in(pool_name, i);
+                drop(permit);
+                return *resp;
             }
         };
-        // STREAMING-USAGE UPSTREAM INJECTION (Finding 3, round-3 regression fix): busbar bills a
-        // streaming chat call from the token usage it decodes off the upstream stream, but an OpenAI
-        // Chat Completions upstream only emits that usage (in a trailing chunk) when the request
-        // carried `stream_options.include_usage: true`. A client that did not opt in would otherwise
-        // leave the upstream silent on tokens and busbar would bill ZERO. So force
-        // `stream_options.include_usage` on a streaming request to an OpenAI Chat egress.
-        //
-        // Round-3 regression (R3-A-a) PERF: the prior form ran the DOM-parse+re-serialize injector
-        // UNCONDITIONALLY for every streaming OpenAI egress, including the same-protocol pristine
-        // passthrough the head short-circuit exists to keep parse-free (the flagship lazy_body win).
-        // Two gates fix that:
-        //   1. If the CLIENT already opted in (`client_include_usage`), the upstream body ALREADY
-        //      carries `include_usage:true` - injection is a pure no-op re-serialize. Skip it entirely,
-        //      preserving the pristine re-emit for the opted-in same-proto path.
-        //   2. Otherwise inject via the HEAD-GATED byte-level path when the body carries no top-level
-        //      `stream_options` (`!client_has_stream_options`): a single splice after the opening `{`
-        //      that never materializes the DOM, so an opted-out pristine same-proto body stays
-        //      parse-free too. Only the rare body that DOES carry a non-opted-in `stream_options`
-        //      (e.g. `include_usage:false`, or sibling keys only) falls to the DOM injector.
-        // Scoped to `egress_name == "openai"` (Chat Completions) - the Responses egress carries usage
-        // unconditionally and non-OpenAI egresses always report usage. The client-facing trailing
-        // chunk is then gated on the CLIENT's own opt-in at the framing seam (both the cross-proto
-        // `on_egress_chunk` un-fold/strip AND the same-proto verbatim strip - R3-A-b), so this
-        // injection never leaks an unsolicited usage chunk to an opted-out client (Finding 2).
-        let payload = if wants_stream
-            && body_is_json
-            && egress_name == crate::proto::PROTO_OPENAI
-            && !client_include_usage
-        {
-            if client_has_stream_options {
-                inject_openai_stream_include_usage(payload)
-            } else {
-                inject_openai_stream_include_usage_pristine(payload)
-            }
-        } else {
-            payload
-        };
-        // TRANSLATE_REQ ends here (egress payload bytes in hand). CLIENT_BUILD spans the egress auth
-        // + URL/path build + reqwest RequestBuilder construction that follows.
-        drop(_xlate);
-        let _cbuild = crate::profile::start(crate::profile::Stage::ClientBuild);
         let base = &app.lanes[i].base_url;
 
         // Mode-aware key selection: passthrough uses caller token, others use lane's api_key
@@ -1203,17 +1029,15 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         // reserved chars like `:` signs `%3A` but a raw send transmits `:`). Encode the path ONCE and
         // use it for both signing and the wire URL — the percent-encoded `%XX` sequences pass through
         // the `url` crate's path parser unchanged, so transmitted path == signed canonical path.
-        let _cb_auth = crate::profile::start(crate::profile::Stage::CbAuth);
         let (wire_path, canonical_uri) = sign_and_wire_path_parts(&url_path);
         let signing_ctx = crate::proto::SigningContext {
-            host: &app.lanes[i].signing_host,
+            host: host_from_base(base),
             canonical_uri,
             body: &payload,
             timestamp_epoch: now(),
             upstream_creds: app.upstream_creds(),
         };
         let auth = lane_auth_headers(&app.lanes[i], key, &signing_ctx);
-        drop(_cb_auth);
 
         // Egress request Content-Type: JSON bodies stay JSON (chat byte-identical). An OPAQUE body
         // relays the caller's own CT same-protocol (multipart boundary preserved verbatim) and uses
@@ -1229,10 +1053,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 .map(|h| h.egress_request_content_type())
                 .unwrap_or(APPLICATION_JSON)
         };
-        let _cb_reqwest = crate::profile::start(crate::profile::Stage::CbReqwest);
         let mut req = app
             .client
-            .get()
             .post(format!("{base}{wire_path}"))
             .headers(convert_headers(auth))
             .header(CONTENT_TYPE, egress_ct)
@@ -1247,7 +1069,6 @@ pub(crate) async fn forward_with_pool_parsed_inner(
             // response chooses its own. Not part of SigV4 SignedHeaders, so no signature impact.
             .header(ACCEPT, op.egress_accept(writer, wants_stream))
             .body(payload);
-        drop(_cb_reqwest);
         // reqwest's per-request `.timeout()` bounds the ENTIRE request lifecycle, INCLUDING reading
         // the response body. For a STREAMING response that body is a long-lived generation stream
         // (SSE / Bedrock eventstream) that a real vendor holds open for as long as the model emits
@@ -1263,10 +1084,6 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 request_ctx.remaining(now()).max(1),
             )); // min 1s timeout
         }
-        // CLIENT_BUILD ends here (the RequestBuilder is fully assembled). UPSTREAM_SEND spans the
-        // `req.send().await` round-trip to response headers.
-        drop(_cbuild);
-        let _send = crate::profile::start(crate::profile::Stage::UpstreamSend);
         // Wall-clock start of the upstream call, for the `metrics.latencyMs` a native bedrock
         // ConverseStream `metadata` frame carries on the buffered-synthesis path below.
         let upstream_started = std::time::Instant::now();
@@ -1298,13 +1115,19 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                         if tripped {
                             emit_breaker_trip(&app, pool_name, i);
                         }
-                        crate::telemetry::upstream_failure(
-                            &app,
-                            metric_pool,
-                            i,
-                            DISPOSITION_ATTEMPT_TIMEOUT,
-                        );
-                        crate::telemetry::failover(&app, metric_pool, DISPOSITION_ATTEMPT_TIMEOUT);
+                        metrics::counter!(
+                            crate::metrics::UPSTREAM_FAILURES_TOTAL,
+                            "pool" => metric_pool.to_owned(),
+                            "lane" => app.lanes[i].model.clone(),
+                            "disposition" => DISPOSITION_ATTEMPT_TIMEOUT
+                        )
+                        .increment(1);
+                        metrics::counter!(
+                            crate::metrics::FAILOVERS_TOTAL,
+                            "pool" => metric_pool.to_owned(),
+                            "reason" => DISPOSITION_ATTEMPT_TIMEOUT
+                        )
+                        .increment(1);
                         tracing::warn!(
                             pool = %pool_name,
                             lane = %app.lanes[i].model,
@@ -1319,8 +1142,6 @@ pub(crate) async fn forward_with_pool_parsed_inner(
             }
             None => req.send().await,
         };
-        // UPSTREAM_SEND ends here (response headers received or transport error).
-        drop(_send);
         record_upstream_rtt(upstream_started.elapsed());
 
         match res {
@@ -1341,8 +1162,19 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 if tripped {
                     emit_breaker_trip(&app, pool_name, i);
                 }
-                crate::telemetry::upstream_failure(&app, metric_pool, i, DISPOSITION_TRANSIENT);
-                crate::telemetry::failover(&app, metric_pool, err_type);
+                metrics::counter!(
+                    crate::metrics::UPSTREAM_FAILURES_TOTAL,
+                    "pool" => metric_pool.to_owned(),
+                    "lane" => app.lanes[i].model.clone(),
+                    "disposition" => DISPOSITION_TRANSIENT
+                )
+                .increment(1);
+                metrics::counter!(
+                    crate::metrics::FAILOVERS_TOTAL,
+                    "pool" => metric_pool.to_owned(),
+                    "reason" => err_type.to_string()
+                )
+                .increment(1);
                 last_failure = Some(err_type);
                 drop(permit);
                 continue;
@@ -1563,13 +1395,19 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                             if tripped {
                                 emit_breaker_trip(&app, pool_name, i);
                             }
-                            crate::telemetry::upstream_failure(
-                                &app,
-                                metric_pool,
-                                i,
-                                DISPOSITION_TRANSIENT,
-                            );
-                            crate::telemetry::failover(&app, metric_pool, DISPOSITION_TRANSIENT);
+                            metrics::counter!(
+                                crate::metrics::UPSTREAM_FAILURES_TOTAL,
+                                "pool" => metric_pool.to_owned(),
+                                "lane" => app.lanes[i].model.clone(),
+                                "disposition" => DISPOSITION_TRANSIENT
+                            )
+                            .increment(1);
+                            metrics::counter!(
+                                crate::metrics::FAILOVERS_TOTAL,
+                                "pool" => metric_pool.to_owned(),
+                                "reason" => DISPOSITION_TRANSIENT
+                            )
+                            .increment(1);
                             last_failure = Some(DISPOSITION_TRANSIENT);
                             drop(permit);
                             continue;
@@ -1613,15 +1451,21 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                             // on `newly_tripped` stops BREAKER_TRIPS_TOTAL inflating once per cooldown
                             // for a stuck lane (the metric's "once per logical trip" contract).
                             if newly_tripped {
-                                crate::telemetry::breaker_trip(&app, metric_pool, i);
+                                metrics::counter!(
+                                    crate::metrics::BREAKER_TRIPS_TOTAL,
+                                    "pool" => metric_pool.to_owned(),
+                                    "lane" => app.lanes[i].model.clone()
+                                )
+                                .increment(1);
                             }
                             tracing::warn!(pool = %pool_name, lane = %app.lanes[i].model, reason = %reason, "lane hard-down (breaker trip)");
-                            crate::telemetry::upstream_failure(
-                                &app,
-                                metric_pool,
-                                i,
-                                DISPOSITION_HARD_DOWN,
-                            );
+                            metrics::counter!(
+                                crate::metrics::UPSTREAM_FAILURES_TOTAL,
+                                "pool" => metric_pool.to_owned(),
+                                "lane" => app.lanes[i].model.clone(),
+                                "disposition" => DISPOSITION_HARD_DOWN
+                            )
+                            .increment(1);
                             drop(permit);
 
                             // For auth failures: return error to caller. In NON-passthrough mode the
@@ -1663,7 +1507,12 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                             }
 
                             // For billing hard downs: continue to next lane (failover)
-                            crate::telemetry::failover(&app, metric_pool, DISPOSITION_HARD_DOWN);
+                            metrics::counter!(
+                                crate::metrics::FAILOVERS_TOTAL,
+                                "pool" => metric_pool.to_owned(),
+                                "reason" => DISPOSITION_HARD_DOWN
+                            )
+                            .increment(1);
                             last_failure = Some(DISPOSITION_HARD_DOWN);
                             continue;
                         }
@@ -1689,17 +1538,19 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                                 }
                             }
 
-                            crate::telemetry::upstream_failure(
-                                &app,
-                                metric_pool,
-                                i,
-                                DISPOSITION_CONTEXT_LENGTH,
-                            );
-                            crate::telemetry::failover(
-                                &app,
-                                metric_pool,
-                                DISPOSITION_CONTEXT_LENGTH,
-                            );
+                            metrics::counter!(
+                                crate::metrics::UPSTREAM_FAILURES_TOTAL,
+                                "pool" => metric_pool.to_owned(),
+                                "lane" => app.lanes[i].model.clone(),
+                                "disposition" => DISPOSITION_CONTEXT_LENGTH
+                            )
+                            .increment(1);
+                            metrics::counter!(
+                                crate::metrics::FAILOVERS_TOTAL,
+                                "pool" => metric_pool.to_owned(),
+                                "reason" => DISPOSITION_CONTEXT_LENGTH
+                            )
+                            .increment(1);
                             // Probe class guard: ContextLength is a client-fault variant (the request
                             // is too large for THIS lane's window) — no breaker penalty, so nothing
                             // records an outcome to clear `probe_in_flight`. If this lane won the
@@ -1714,8 +1565,6 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     }
                 }
 
-                // RECORD_SUCCESS: the post-2xx breaker/latency/budget bookkeeping (store lock ops).
-                let _rec = crate::profile::start(crate::profile::Stage::RecordSuccess);
                 // SUCCESS case: the upstream served a 2xx. Record the success for this lane (feeds
                 // the per-lane `ok` counter and the breaker's success window) and consume one unit
                 // of its lifetime request budget (the `max_requests` cost cap; `usable()` stops
@@ -1741,14 +1590,6 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 // is a no-op success there) and `refund_budget` is likewise a no-op there, so an
                 // unlimited lane neither over-counts nor under-counts.
                 let budget_spent = app.store.spend_budget(i);
-                // RECORD_SUCCESS ends; RESP_BUILD spans everything from here to the returned Response
-                // (usage/CT capture, SSE-vs-buffered branch, FirstByteBody wiring, response builder).
-                drop(_rec);
-                let _resp = crate::profile::start(crate::profile::Stage::RespBuild);
-                // RB_PRE sub-stage: header/CT/relay-id capture + SSE detection + translate resolution,
-                // up to `FirstByteBody::new`. (The cross-protocol buffered branch returns before the
-                // streaming builder, so on that path RB_PRE covers the pre-buffer work only.)
-                let _rb_pre = crate::profile::start(crate::profile::Stage::RbPre);
 
                 // stream the response body incrementally with first-byte boundary tracking
                 let ct = r.headers().get(CONTENT_TYPE).cloned();
@@ -1888,7 +1729,11 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                             );
                         }
                         if let Some(Ok(mut ir)) = decoded {
-                            record_resp_usage(&ir, &usage_sink, app.lanes.get(i));
+                            record_resp_usage(
+                                &ir,
+                                &usage_sink,
+                                Some((&app.lanes[i].model, &app.lanes[i].provider)),
+                            );
                             ir.prepare_for_ingress(ingress_protocol, now());
                             if let Some(wire) = crate::handlers::request_handler(ingress_protocol)
                                 .and_then(|rh| rh.operation_handler(op.operation))
@@ -1931,7 +1776,11 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                                 // delivering this body (every exit from this block is a delivered
                                 // response). No FirstByteBody on this buffered path, so bill here —
                                 // straight from the IR usage the egress reader just decoded (Change A).
-                                record_resp_usage(&ir, &usage_sink, app.lanes.get(i));
+                                record_resp_usage(
+                                    &ir,
+                                    &usage_sink,
+                                    Some((&app.lanes[i].model, &app.lanes[i].provider)),
+                                );
                                 // OPERATION-BLIND ingress preparation: the IR reshapes ITSELF for
                                 // delivery in the caller's dialect (chat: native-identity strip, the
                                 // protocol-agnostic `created` boundary signal, tool-id remap — see
@@ -2123,15 +1972,6 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 } else {
                     None
                 };
-                // Thread the client's streaming-usage opt-in to the framing (Findings 2+3). Busbar
-                // always injected `include_usage` UPSTREAM, so the upstream stream carries a trailing
-                // usage chunk; the OpenAI-ingress framing surfaces it to the client ONLY when the client
-                // itself opted in, and STRIPS it otherwise so an opted-out client never sees the
-                // unsolicited `{choices:[], usage}` chunk. No-op for every non-OpenAI ingress framing.
-                let translate = translate.map(|mut t| {
-                    t.set_client_include_usage(client_include_usage);
-                    t
-                });
                 // Gemini non-`alt=sse` ingress: engage the JSON-array framer (only when this is in
                 // fact a streamed SSE response — a same-protocol non-stream gemini response never
                 // reaches the streaming builder).
@@ -2141,9 +1981,6 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                             .and_then(|p| p.writer().make_array_stream_framer())
                     })
                     .flatten();
-                // RB_PRE ends; RB_BODY spans the FirstByteBody wiring + response builder + return.
-                drop(_rb_pre);
-                let _rb_body = crate::profile::start(crate::profile::Stage::RbBody);
                 let upstream_stream = r.bytes_stream();
                 let guarded_body = FirstByteBody::new(
                     upstream_stream,
@@ -2205,9 +2042,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         }
     }
 
-    // Box::pin: cold path (candidates exhausted), boxed for the same coroutine-size reason as the
-    // in-loop exhaustion return above — the happy path never allocates here.
-    Box::pin(handle_exhaustion_for_pool(
+    handle_exhaustion_for_pool(
         app.clone(),
         &cands,
         now(),
@@ -2219,7 +2054,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         op,
         req_content_type,
         usage_sink,
-    ))
+    )
     .await
 }
 
@@ -2231,108 +2066,6 @@ pub(crate) async fn forward_with_pool_parsed_inner(
 /// `prompt: ro` tap gets the prompt-content projection, a `prompt: no` (default) tap gets shape-only.
 /// At most TWO projections are built (shape-only + with-prompt) regardless of tap count. ZERO COST
 /// when no tap is configured (the empty-list early return).
-/// Force `stream_options.include_usage: true` on an OpenAI Chat Completions streaming request body so
-/// the upstream emits token usage busbar can bill (Finding 3). Parses `payload`, sets the nested flag
-/// (creating `stream_options` if absent, overwriting a `false`), and re-serializes. On any parse/shape
-/// failure the ORIGINAL bytes are returned unchanged — a malformed body is the upstream's to reject,
-/// not busbar's to mangle, and the worst case is the pre-existing zero-usage billing gap rather than a
-/// corrupted request. A body that already opted in re-serializes identically in effect.
-fn inject_openai_stream_include_usage(payload: Bytes) -> Bytes {
-    let mut v: Value = match crate::json::parse(&payload) {
-        Ok(v) => v,
-        Err(_) => return payload,
-    };
-    let Some(obj) = v.as_object_mut() else {
-        return payload;
-    };
-    let so = obj
-        .entry("stream_options".to_string())
-        .or_insert_with(|| Value::Object(serde_json::Map::new()));
-    let Some(so_obj) = so.as_object_mut() else {
-        // `stream_options` present but not an object: leave the body untouched (the upstream will 400
-        // on the malformed field; busbar must not silently reshape a caller's value).
-        return payload;
-    };
-    so_obj.insert("include_usage".to_string(), Value::Bool(true));
-    match crate::json::to_vec(&v) {
-        Ok(bytes) => Bytes::from(bytes),
-        Err(_) => payload,
-    }
-}
-
-/// Cheap forward substring scan (needle is a short constant `"stream_options"` key literal). Avoids
-/// pulling a dependency for the one idempotency check below; the haystack is a request body scanned
-/// at most once, so the naive O(n*m) walk is well within the byte-level path's budget.
-fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
-    if needle.is_empty() || needle.len() > haystack.len() {
-        return needle.is_empty();
-    }
-    haystack.windows(needle.len()).any(|w| w == needle)
-}
-
-/// PRISTINE-PRESERVING variant of [`inject_openai_stream_include_usage`] for a body the head
-/// projection already proved carries NO top-level `stream_options` key (R3-A-a). Splices
-/// `"stream_options":{"include_usage":true},` in immediately after the opening `{` instead of
-/// parsing + re-serializing the whole DOM, so a same-protocol pristine passthrough body stays
-/// parse-free while still forcing the upstream to emit billable token usage.
-///
-/// SOUNDNESS: the caller gates entry on `!client_has_stream_options`, but that decision was captured
-/// off the PRE-rewrite ingress body; a `prompt: rw` hook that injects a top-level `stream_options`
-/// key leaves it STALE (`false`), and a blind leading-member splice would then produce a DUPLICATE
-/// top-level `stream_options`. Under JSON last-wins the rewrite's copy would be honored and busbar's
-/// injected `include_usage` silently discarded, so the upstream emits no usage and busbar bills ZERO
-/// tokens for the stream. To stay correct regardless of what a rewrite did, this injector is itself
-/// IDEMPOTENT: it first scans the (post-any-rewrite) body being sent for the `"stream_options"` key
-/// bytes and, if present, defers to the DOM injector [`inject_openai_stream_include_usage`], which is
-/// duplicate-safe via `entry()` (it upgrades the existing object in place). The substring scan is
-/// conservative: a body that merely mentions `stream_options` inside a string value would also defer
-/// (a rare, harmless extra DOM parse, never a correctness or duplicate-key issue). The common
-/// no-rewrite pristine path carries no such bytes, so it still takes the cheap byte-splice with no
-/// DOM parse. The splice is a LEADING member, so it never lands after the object's final key without
-/// a comma, and the object is known non-empty on the streaming path (`stream` at minimum). Any body
-/// that is not a JSON object starting with `{` (or the degenerate empty `{}`) falls back to the DOM
-/// injector, which itself returns the bytes unchanged on a non-object - so a malformed/edge body is
-/// never corrupted.
-fn inject_openai_stream_include_usage_pristine(payload: Bytes) -> Bytes {
-    const INSERT: &[u8] = br#""stream_options":{"include_usage":true},"#;
-    // IDEMPOTENCY GUARD: if the body being sent already carries a `stream_options` key (e.g. a rewrite
-    // hook injected one after the caller's has-stream_options decision was captured), a blind splice
-    // would duplicate the top-level key and last-wins would drop busbar's include_usage, billing
-    // zero. Defer to the duplicate-safe DOM injector. Cheap byte scan; the no-rewrite fast path (no
-    // such bytes present) is unaffected and still takes the splice below.
-    if contains_subslice(&payload, br#""stream_options""#) {
-        return inject_openai_stream_include_usage(payload);
-    }
-    // Find the first `{`, skipping only leading ASCII whitespace (the sole bytes JSON permits before
-    // the top-level value). Anything else at the front is not a plain object body - defer to the DOM
-    // injector rather than splice blindly.
-    let mut i = 0usize;
-    while i < payload.len() && payload[i].is_ascii_whitespace() {
-        i += 1;
-    }
-    // The byte AFTER the brace must begin a KEY (`"`) for the leading-member splice to stay valid
-    // JSON; on `{}` (next non-space is `}`) or any non-object body, fall back to the DOM path.
-    let opens_object = payload.get(i) == Some(&b'{');
-    let next = {
-        let mut j = i + 1;
-        while j < payload.len() && payload[j].is_ascii_whitespace() {
-            j += 1;
-        }
-        payload.get(j).copied()
-    };
-    if !opens_object || next != Some(b'"') {
-        return inject_openai_stream_include_usage(payload);
-    }
-    // Splice: [ .. up to and including `{` ] + INSERT + [ first key .. end ]. `i+1` is the byte just
-    // past the brace; the retained tail is byte-for-byte the caller's, so nothing else is disturbed.
-    let brace_end = i + 1;
-    let mut out = Vec::with_capacity(payload.len() + INSERT.len());
-    out.extend_from_slice(&payload[..brace_end]);
-    out.extend_from_slice(INSERT);
-    out.extend_from_slice(&payload[brace_end..]);
-    Bytes::from(out)
-}
-
 fn fire_global_taps(
     app: &Arc<App>,
     body: &Value,
@@ -2346,14 +2079,11 @@ fn fire_global_taps(
     let ctx = crate::hooks::RoutingContext {
         pool: pool_name,
         budget_remaining: None,
-        // Taps observe request shape; the budget-chain projection is a routing-policy signal
-        // (decide_policy_order), not a tap payload.
-        budget: &[],
     };
     let build_proj = |with_prompt: bool| {
         let req =
             build_rewrite_request(body, pool_name, ingress_protocol, wants_stream, with_prompt);
-        crate::json::to_vec(&crate::hooks::wire::build(
+        serde_json::to_vec(&crate::hooks::wire::build(
             crate::hooks::wire::OP_NOTIFY,
             &req,
             &[],
@@ -2389,189 +2119,5 @@ fn fire_global_taps(
     }
 }
 
-/// Resolve the effective `BreakerCfg` Arc for a pool: the pool's own settings when configured, else
-/// a PROCESS-WIDE cached default Arc. The default is by far the common case, and the previous
-/// per-request `Arc::new(clone().unwrap_or_default())` paid a heap allocation + struct clone on
-/// EVERY forwarded request for a value that never changes; the cached Arc reduces that to a refcount
-/// bump. Behavior is identical — the resolved thresholds are byte-for-byte the same.
-pub(crate) fn resolve_breaker_cfg(
-    app: &Arc<App>,
-    pool_name: &str,
-) -> std::sync::Arc<crate::store::BreakerCfg> {
-    match app
-        .pool_runtime
-        .get(pool_name)
-        .and_then(|r| r.breaker.as_ref())
-    {
-        Some(cfg) => std::sync::Arc::new(cfg.clone()),
-        None => {
-            static DEFAULT: std::sync::OnceLock<std::sync::Arc<crate::store::BreakerCfg>> =
-                std::sync::OnceLock::new();
-            DEFAULT
-                .get_or_init(|| std::sync::Arc::new(crate::store::BreakerCfg::default()))
-                .clone()
-        }
-    }
-}
-
 mod walk;
 pub(crate) use walk::*;
-
-#[cfg(test)]
-mod inject_include_usage_tests {
-    use super::{inject_openai_stream_include_usage, inject_openai_stream_include_usage_pristine};
-    use bytes::Bytes;
-
-    /// R3-A-a: the byte-level pristine injector splices `stream_options.include_usage:true` into a body
-    /// with NO existing `stream_options` WITHOUT parsing - but the result must still be valid JSON with
-    /// the flag set and every original key preserved.
-    #[test]
-    fn pristine_injector_splices_include_usage() {
-        let body =
-            br#"{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"hi"}]}"#;
-        let out = inject_openai_stream_include_usage_pristine(Bytes::from_static(body));
-        let v: serde_json::Value =
-            crate::json::parse(&out).expect("spliced body must be valid JSON");
-        assert_eq!(
-            v.pointer("/stream_options/include_usage"),
-            Some(&serde_json::json!(true)),
-            "include_usage must be spliced: {v}"
-        );
-        assert_eq!(v.pointer("/model"), Some(&serde_json::json!("gpt-4o")));
-        assert_eq!(v.pointer("/stream"), Some(&serde_json::json!(true)));
-        assert_eq!(
-            v.pointer("/messages/0/content"),
-            Some(&serde_json::json!("hi")),
-            "original keys must survive the splice: {v}"
-        );
-    }
-
-    /// BILLING-SAFETY: the pristine injector's `!client_has_stream_options` gate is decided off the
-    /// PRE-rewrite ingress body, so a `prompt: rw` hook that injects a top-level `stream_options` can
-    /// leave that decision stale and route a body that ALREADY has `stream_options` into the pristine
-    /// splice. A blind splice would then produce a DUPLICATE top-level key and last-wins would discard
-    /// busbar's injected include_usage - billing zero for the stream. The injector must instead be
-    /// idempotent: detect the existing key and defer to the duplicate-safe DOM injector, so the body
-    /// ends up with a SINGLE `stream_options` whose `include_usage` is honored true.
-    #[test]
-    fn pristine_injector_idempotent_when_stream_options_already_present() {
-        // As if a rewrite hook injected `stream_options` after the has-stream_options decision was
-        // captured false: the pristine injector is (wrongly, per the stale flag) selected.
-        let body = br#"{"model":"gpt-4o","stream":true,"stream_options":{"include_usage":false},"messages":[]}"#;
-        let out = inject_openai_stream_include_usage_pristine(Bytes::from_static(body));
-        let v: serde_json::Value = crate::json::parse(&out).expect("body must remain valid JSON");
-        // No duplicate top-level key: a single stream_options object survives.
-        assert_eq!(
-            v.pointer("/stream_options/include_usage"),
-            Some(&serde_json::json!(true)),
-            "include_usage must be forced true and honored (no duplicate key): {v}"
-        );
-        // Guard against the duplicate-key regression directly: the raw bytes must contain the
-        // `"stream_options"` key exactly ONCE (a duplicate would appear twice).
-        let occurrences = out
-            .windows(br#""stream_options""#.len())
-            .filter(|w| *w == br#""stream_options""#)
-            .count();
-        assert_eq!(
-            occurrences,
-            1,
-            "exactly one top-level stream_options key must exist, found {occurrences}: \
-             {}",
-            String::from_utf8_lossy(&out)
-        );
-    }
-
-    /// R3-A-a: leading whitespace before the opening `{` is tolerated (the only bytes JSON permits
-    /// ahead of the top-level value) - the splice still lands right after the brace.
-    #[test]
-    fn pristine_injector_tolerates_leading_whitespace() {
-        let body = b"  \n\t{\"model\":\"m\",\"stream\":true}";
-        let out = inject_openai_stream_include_usage_pristine(Bytes::copy_from_slice(body));
-        let v: serde_json::Value = crate::json::parse(&out).expect("valid JSON");
-        assert_eq!(
-            v.pointer("/stream_options/include_usage"),
-            Some(&serde_json::json!(true))
-        );
-        assert_eq!(v.pointer("/model"), Some(&serde_json::json!("m")));
-    }
-
-    /// R3-A-a: a degenerate `{}` (no first key) and a non-object body fall back to the DOM injector
-    /// rather than producing invalid JSON via a blind splice.
-    #[test]
-    fn pristine_injector_falls_back_on_empty_or_non_object() {
-        // `{}` - next non-space is `}`, not a key: DOM injector inserts stream_options.
-        let out = inject_openai_stream_include_usage_pristine(Bytes::from_static(b"{}"));
-        let v: serde_json::Value = crate::json::parse(&out).expect("valid JSON");
-        assert_eq!(
-            v.pointer("/stream_options/include_usage"),
-            Some(&serde_json::json!(true)),
-            "empty object must still gain include_usage via fallback: {v}"
-        );
-        // Non-object top level: DOM injector returns it unchanged (nothing to reshape).
-        let arr = br#"[1,2,3]"#;
-        let out = inject_openai_stream_include_usage_pristine(Bytes::from_static(arr));
-        assert_eq!(
-            &out[..],
-            &arr[..],
-            "non-object body must pass through verbatim"
-        );
-    }
-
-    /// FINDING 3: an OpenAI Chat streaming body with NO `stream_options` gains
-    /// `stream_options.include_usage: true` so the upstream reports usage busbar can bill.
-    #[test]
-    fn adds_include_usage_when_absent() {
-        let body = br#"{"model":"gpt-4o","stream":true,"messages":[]}"#;
-        let out = inject_openai_stream_include_usage(Bytes::from_static(body));
-        let v: serde_json::Value = crate::json::parse(&out).expect("valid JSON");
-        assert_eq!(
-            v.pointer("/stream_options/include_usage"),
-            Some(&serde_json::json!(true)),
-            "include_usage must be injected: {v}"
-        );
-    }
-
-    /// A body that already carries `stream_options` (with other keys, or include_usage:false) has the
-    /// flag set to true WITHOUT dropping sibling options.
-    #[test]
-    fn upgrades_existing_stream_options_preserving_siblings() {
-        let body = br#"{"model":"gpt-4o","stream":true,"stream_options":{"include_usage":false,"foo":1},"messages":[]}"#;
-        let out = inject_openai_stream_include_usage(Bytes::from_static(body));
-        let v: serde_json::Value = crate::json::parse(&out).expect("valid JSON");
-        assert_eq!(
-            v.pointer("/stream_options/include_usage"),
-            Some(&serde_json::json!(true)),
-            "include_usage must be forced true: {v}"
-        );
-        assert_eq!(
-            v.pointer("/stream_options/foo"),
-            Some(&serde_json::json!(1)),
-            "sibling stream_options keys must be preserved: {v}"
-        );
-    }
-
-    /// A body whose `stream_options` is NOT an object is left untouched (busbar must not reshape a
-    /// caller's malformed value; the upstream will reject it).
-    #[test]
-    fn leaves_non_object_stream_options_untouched() {
-        let body = br#"{"stream":true,"stream_options":"bogus"}"#;
-        let out = inject_openai_stream_include_usage(Bytes::from_static(body));
-        assert_eq!(
-            &out[..],
-            &body[..],
-            "malformed stream_options must pass through verbatim"
-        );
-    }
-
-    /// A body that already opted in stays semantically opted in.
-    #[test]
-    fn keeps_existing_true() {
-        let body = br#"{"stream":true,"stream_options":{"include_usage":true}}"#;
-        let out = inject_openai_stream_include_usage(Bytes::from_static(body));
-        let v: serde_json::Value = crate::json::parse(&out).expect("valid JSON");
-        assert_eq!(
-            v.pointer("/stream_options/include_usage"),
-            Some(&serde_json::json!(true))
-        );
-    }
-}

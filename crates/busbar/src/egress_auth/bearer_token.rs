@@ -195,7 +195,7 @@ mod tests {
 
     fn ctx() -> SigningContext<'static> {
         SigningContext {
-            host: "example.com",
+            host: "example.com".to_string(),
             canonical_uri: "/x".to_string(),
             body: b"{}",
             timestamp_epoch: 0,

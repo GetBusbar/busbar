@@ -15,29 +15,36 @@ use crate::state::App;
 
 use super::contract::{
     AdminAuthView, AdminError, AuthView, BuildInfo, ConfigValidateView, EffectiveConfigView,
-    GroupView, HookHealthView, HookTransportView, HookView, InfoView, KeyUsageView, ModelUsageView,
-    ModelView, Page, PluginView, PoolDetailView, PoolMemberStatusView, PoolMemberView, PoolView,
-    ProviderView, TopologyInfo, UsageBreakdown, UsageView, UsageWindow,
+    HookHealthView, HookTransportView, HookView, InfoView, KeyUsageView, ModelUsageView, ModelView,
+    Page, PluginView, PoolDetailView, PoolMemberStatusView, PoolMemberView, PoolView, ProviderView,
+    TopologyInfo, UsageBreakdown, UsageView, UsageWindow, USAGE_CURRENCY,
 };
 use crate::config::{
     DeployCfg, HookCfg, HookKind, HookStage, PromptAccess, ProviderDef, UserAccess,
 };
 
-/// Derive busbar's spend ESTIMATE (micro-units, abstract cost units) for one PER-MODEL metering
-/// row from the CURRENT rate card: the row's tier-token split priced at that model's rates, plus
-/// the flat per-request fee x requests. Recomputed on every read (reprice-on-read: a rate-card
-/// correction changes historical figures on the next read; tokens are the stored truth). Metering
-/// rows attribute by the CONFIGURED model name, so the rate lookup goes through the
-/// `upstream_model` alias resolution.
-fn derive_spend_micros_row(cost: &crate::cost::CostModel, model: &str, b: &UsageBreakdown) -> i64 {
-    let tier = busbar_api::TierTokens {
-        input: b.tokens_input,
-        output: b.tokens_output,
-        cache_read: b.tokens_cache_read,
-        cache_write: b.tokens_cache_creation,
-    };
-    let resolved = cost.resolve_model_alias(model);
-    cost.derive_spend_micros([(resolved, &tier)].into_iter(), b.requests, true)
+/// Micro-units of the usage currency per cent (1 cent = 10 000 micro-USD). The `spend_micros`
+/// derivation unit — integer math, sub-cent precise, no float drift.
+const MICROS_PER_CENT: i64 = 10_000;
+/// Micro-units per token per (cent-per-1000-tokens): `MICROS_PER_CENT / 1000` — a price of
+/// 1¢ per 1k tokens is exactly 10 micro-USD per token, so per-token spend needs no division.
+const TOKEN_MICROS_PER_1K_CENT: i64 = MICROS_PER_CENT / 1_000;
+
+/// Derive busbar's spend ESTIMATE (micro-USD) for one aggregation row from the operator's
+/// configured global prices: `requests × per-request-fee + billable-tokens × per-token price`.
+/// Billable = input + cache-read + cache-creation + output (the same normalized additive-cache
+/// convention `record_tokens` bills budgets with). i128 intermediates clamp — never wrap.
+fn derive_spend_micros(b: &UsageBreakdown, (per_request_cents, per_1k_cents): (i64, i64)) -> i64 {
+    let billable = b
+        .tokens_input
+        .saturating_add(b.tokens_cache_read)
+        .saturating_add(b.tokens_cache_creation)
+        .saturating_add(b.tokens_output);
+    let request_fee =
+        (b.requests as i128) * (per_request_cents.max(0) as i128) * (MICROS_PER_CENT as i128);
+    let token_fee =
+        (billable as i128) * (per_1k_cents.max(0) as i128) * (TOKEN_MICROS_PER_1K_CENT as i128);
+    i64::try_from(request_fee + token_fee).unwrap_or(i64::MAX)
 }
 
 /// Process start instant, for the `info` uptime read. Stamped ONCE at startup by `mark_start()`.
@@ -56,15 +63,12 @@ pub(crate) fn mark_start() {
 }
 
 /// The auth modules COMPILED INTO this binary (feature-gated at compile time — real `#[cfg]` on each
-/// array element, so this reflects the ACTUAL binary). The single source for both `info`'s build
-/// proof and the `plugins?type=auth` catalog. `keys` (the built-in signed-key verifier) is
-/// engine-handled and always present; `admin-tokens` (the operator admin credential) is the
-/// removable default-on feature.
+/// array element, so this reflects the ACTUAL binary and empties under `--no-default-features`). The
+/// single source for both `info`'s build proof and the `plugins?type=auth` catalog.
 fn auth_modules_compiled_in() -> Vec<&'static str> {
     [
-        crate::config::KEYS_MODULE,
-        #[cfg(feature = "auth-admin-tokens")]
-        crate::config::ADMIN_TOKENS_MODULE,
+        #[cfg(feature = "auth-tokens")]
+        "tokens",
     ]
     .to_vec()
 }
@@ -80,75 +84,41 @@ fn hook_plugins_compiled_in() -> Vec<&'static str> {
     .to_vec()
 }
 
-/// Longest a plugin filename may be — generous headroom over any real tarball name, guarding the
-/// filesystem path we build from admin-supplied input.
-const MAX_PLUGIN_FILENAME_LEN: usize = 256;
-
-/// Validate an admin-supplied plugin TARBALL filename and return it owned. Fail-closed against path
-/// traversal (a filename is the LAST path component only — no `/`, `\`, `..`, or absolute/rooted
-/// path can reach outside the plugins directory) and enforce the `.tar.gz`/`.tgz` extension. This
-/// is the one gate every plugin write/delete funnels through, so the plugins directory is the hard
-/// boundary. The filename is STORAGE ONLY — plugin identity always comes from the signed manifest.
-fn validate_plugin_filename(file: &str) -> Result<String, AdminError> {
-    if file.is_empty() || file.len() > MAX_PLUGIN_FILENAME_LEN {
-        return Err(AdminError::Validation(format!(
-            "plugin filename must be 1..={MAX_PLUGIN_FILENAME_LEN} chars"
-        )));
-    }
-    // Reject anything that isn't a bare filename — the component the OS would treat as a directory
-    // separator, a parent ref, or a rooted path lets an admin-supplied name escape the plugins dir.
-    if file.contains('/') || file.contains('\\') || file.contains("..") {
-        return Err(AdminError::Validation(
-            "plugin filename must be a bare filename (no path separators or `..`)".into(),
-        ));
-    }
-    // Belt-and-braces: the parsed path must have exactly one normal component equal to `file` (so a
-    // platform-specific rooted form, e.g. a Windows drive prefix, can never slip through).
-    let path = std::path::Path::new(file);
-    let mut comps = path.components();
-    match (comps.next(), comps.next()) {
-        (Some(std::path::Component::Normal(c)), None) if c == std::ffi::OsStr::new(file) => {}
-        _ => {
-            return Err(AdminError::Validation(
-                "plugin filename must be a single, normal path component".into(),
-            ));
+/// Best-effort reachability probe for a hook's transport, for the health read. NEVER sends a hook
+/// request — it only checks whether the endpoint accepts a connection. A socket gets a short-timeout
+/// `connect` (unix only); a webhook is not probed here (returns `None` with a note — webhooks lazy-
+/// connect per request, and a blind GET/HEAD could have side effects). Returns `(reachable, detail)`.
+async fn probe_transport(cfg: &HookCfg) -> (Option<bool>, Option<String>) {
+    match (&cfg.socket, &cfg.webhook) {
+        (Some(path), _) => {
+            #[cfg(unix)]
+            {
+                // Cap the probe so an unresponsive socket can never stall the admin read.
+                const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
+                match tokio::time::timeout(PROBE_TIMEOUT, tokio::net::UnixStream::connect(path))
+                    .await
+                {
+                    Ok(Ok(_stream)) => (Some(true), None),
+                    Ok(Err(e)) => (Some(false), Some(format!("connect failed: {}", e.kind()))),
+                    Err(_) => (Some(false), Some("connect timed out".to_string())),
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = path;
+                (
+                    None,
+                    Some("socket transport is unix-only; not probed on this host".to_string()),
+                )
+            }
         }
-    }
-    if !busbar_plugin_loader::tarball::is_plugin_tarball(file) {
-        return Err(AdminError::Validation(
-            "plugin filename must be a `.tar.gz` (or `.tgz`) signed plugin tarball".into(),
-        ));
-    }
-    Ok(file.to_string())
-}
-
-/// Best-effort reachability probe for a hook's backing plugin, for the health read. A hook is now an
-/// in-process `kind: hook` plugin (the socket/webhook out-of-process transports are retired), so
-/// "reachable" means the referenced plugin RESOLVES to a loadable `kind: hook` plugin in the validated
-/// registry. Returns `(reachable, detail)`: `Some(true)` when it resolves, `Some(false)` with the
-/// reason when it does not.
-async fn probe_transport(
-    cfg: &HookCfg,
-    env: &crate::hooks::HookEnv,
-) -> (Option<bool>, Option<String>) {
-    match env.registry.resolve(&cfg.plugin) {
-        Some(p) if p.manifest.kind == "hook" => (Some(true), None),
-        Some(p) => (
-            Some(false),
-            Some(format!(
-                "plugin '{}' resolves to kind '{}', not 'hook'",
-                cfg.plugin, p.manifest.kind
-            )),
+        (None, Some(_url)) => (
+            None,
+            Some("webhook is probed on demand at request time, not here".to_string()),
         ),
-        None => (
+        (None, None) => (
             Some(false),
-            Some(match env.registry.unresolved_reason(&cfg.plugin) {
-                Some(sk) => format!(
-                    "plugin '{}' present but not loaded: {}",
-                    cfg.plugin, sk.reason
-                ),
-                None => format!("plugin '{}' is not installed", cfg.plugin),
-            }),
+            Some("hook defines no transport (socket or webhook)".to_string()),
         ),
     }
 }
@@ -170,9 +140,6 @@ pub(crate) const MAX_SETTINGS_KEYS: usize = 256;
 /// Upper bound on a hook name (a registry key persisted to the state file + every audit row).
 /// Generous headroom over any real hook name; guards the durable-state/audit/reconnect path.
 pub(crate) const MAX_HOOK_NAME_LEN: usize = 256;
-/// Upper bound on a group name — same rationale as the hook cap (a registry key persisted to the
-/// overlay + every audit row). Generous over any real `org/dept/team/user:<sub>` name.
-pub(crate) const MAX_GROUP_NAME_LEN: usize = 256;
 
 /// Fail-closed size check for a hook's `settings` map — see the cap rationale above.
 pub(crate) fn validate_hook_settings_size(
@@ -223,12 +190,10 @@ pub(crate) fn build_with_hook(current: &App, name: &str, cfg: HookCfg) -> Result
     // The `settings` map rides register/PUT too — cap it here so it is bounded on EVERY write path,
     // not just PATCH (found: audit c1r12 — register/PUT were missing the cap PATCH already had).
     validate_hook_settings_size(&cfg.settings)?;
-    // A hook must name exactly one `kind: hook` plugin (the retired socket/webhook transports are
-    // gone). Emptiness is the structural check here; the plugin's existence/kind is validated against
-    // the registry below (register/PUT) and at the plugin pre-flight.
-    if cfg.plugin.trim().is_empty() {
+    // Exactly one transport: socket XOR webhook.
+    if cfg.socket.is_none() == cfg.webhook.is_none() {
         return Err(AdminError::Validation(
-            "a hook must name a `kind: hook` plugin via `plugin:`".into(),
+            "a hook must set exactly one transport: `socket` or `webhook`".into(),
         ));
     }
     // `prompt: rw` is a rewrite grant, meaningless (and unsafe) on a fire-and-forget tap.
@@ -271,41 +236,41 @@ pub(crate) fn build_with_hook(current: &App, name: &str, cfg: HookCfg) -> Result
     next.rewrite_hooks = crate::hooks::resolve_rewrite_hooks(
         &next.hook_registry,
         &next.global_hooks,
-        &next.hook_env,
+        &next.client,
         next.config_version,
     );
     next.tap_hooks = crate::hooks::resolve_tap_hooks(
         &next.hook_registry,
         &next.global_hooks,
-        &next.hook_env,
+        &next.client,
         next.config_version,
         crate::config::HookStage::Request,
     );
     next.tap_hooks_route = crate::hooks::resolve_tap_hooks(
         &next.hook_registry,
         &next.global_hooks,
-        &next.hook_env,
+        &next.client,
         next.config_version,
         crate::config::HookStage::Route,
     );
     next.tap_hooks_attempt = crate::hooks::resolve_tap_hooks(
         &next.hook_registry,
         &next.global_hooks,
-        &next.hook_env,
+        &next.client,
         next.config_version,
         crate::config::HookStage::Attempt,
     );
     next.tap_hooks_completion = crate::hooks::resolve_tap_hooks(
         &next.hook_registry,
         &next.global_hooks,
-        &next.hook_env,
+        &next.client,
         next.config_version,
         crate::config::HookStage::Completion,
     );
     next.global_gates = crate::hooks::resolve_gate_hooks(
         &next.hook_registry,
         &next.global_hooks,
-        &next.hook_env,
+        &next.client,
         next.config_version,
     );
     Ok(next)
@@ -328,122 +293,43 @@ pub(crate) fn build_without_hook(current: &App, name: &str) -> Result<App, Admin
     next.rewrite_hooks = crate::hooks::resolve_rewrite_hooks(
         &next.hook_registry,
         &next.global_hooks,
-        &next.hook_env,
+        &next.client,
         next.config_version,
     );
     next.tap_hooks = crate::hooks::resolve_tap_hooks(
         &next.hook_registry,
         &next.global_hooks,
-        &next.hook_env,
+        &next.client,
         next.config_version,
         crate::config::HookStage::Request,
     );
     next.tap_hooks_route = crate::hooks::resolve_tap_hooks(
         &next.hook_registry,
         &next.global_hooks,
-        &next.hook_env,
+        &next.client,
         next.config_version,
         crate::config::HookStage::Route,
     );
     next.tap_hooks_attempt = crate::hooks::resolve_tap_hooks(
         &next.hook_registry,
         &next.global_hooks,
-        &next.hook_env,
+        &next.client,
         next.config_version,
         crate::config::HookStage::Attempt,
     );
     next.tap_hooks_completion = crate::hooks::resolve_tap_hooks(
         &next.hook_registry,
         &next.global_hooks,
-        &next.hook_env,
+        &next.client,
         next.config_version,
         crate::config::HookStage::Completion,
     );
     next.global_gates = crate::hooks::resolve_gate_hooks(
         &next.hook_registry,
         &next.global_hooks,
-        &next.hook_env,
+        &next.client,
         next.config_version,
     );
-    Ok(next)
-}
-
-/// Build the next `App` snapshot with `name` created-or-replaced in the group registry — the pure
-/// core of `POST`/`PUT /api/v1/admin/groups`. VALIDATE-AT-THE-DOOR: the mutated registry is run
-/// through the SAME `validate_groups` boot uses (parent references exist, the parent chain is
-/// acyclic — any depth, the cycle check is the bound), so a bad group (dangling/cyclic parent) is a `400` that
-/// changes nothing. On success the enforcement projection is rebuilt via `CostModel::with_groups`
-/// (reusing the rate card + fee unchanged) so the new limits are live after the swap; the governance
-/// LEDGER survives (it is Arc-shared, not rebuilt), so past accrual is preserved across the change.
-pub(crate) fn build_with_group(
-    current: &App,
-    name: &str,
-    cfg: crate::config::GroupCfg,
-) -> Result<App, AdminError> {
-    if name.trim().is_empty() {
-        return Err(AdminError::Validation(
-            "group name must not be empty".into(),
-        ));
-    }
-    if name.len() > MAX_GROUP_NAME_LEN {
-        return Err(AdminError::Validation(format!(
-            "group name is {} chars; must be <= {MAX_GROUP_NAME_LEN}",
-            name.len()
-        )));
-    }
-    // Build the candidate registry and validate it WHOLE before mutating the snapshot — a group's
-    // legality (parent exists, chain acyclic) is a property of the tree, not the single entry.
-    let mut groups = current.groups_registry.clone();
-    groups.insert(name.to_string(), cfg);
-    let mut errors = Vec::new();
-    crate::config::groups::validate_groups(
-        &groups,
-        &|p| current.pools.contains_key(p),
-        &mut errors,
-    );
-    if !errors.is_empty() {
-        return Err(AdminError::Validation(format!(
-            "invalid group `{name}`: {}",
-            errors.join("; ")
-        )));
-    }
-    let mut next = current.clone();
-    next.config_version = current.config_version.wrapping_add(1);
-    next.cost = std::sync::Arc::new(next.cost.with_groups(&groups));
-    next.groups_registry = groups;
-    Ok(next)
-}
-
-/// Build the next `App` snapshot with `name` REMOVED from the group registry — the pure core of
-/// `DELETE /api/v1/admin/groups/{name}`. `not_found` if unknown. RE-VALIDATES the reduced tree: if
-/// another group still names the removed one as its `parent`, the delete is a `409 conflict` (remove
-/// or re-parent the children first) rather than silently orphaning them. On success the enforcement
-/// projection is rebuilt (the removed group's buckets disappear); the ledger survives the swap.
-pub(crate) fn build_without_group(current: &App, name: &str) -> Result<App, AdminError> {
-    if !current.groups_registry.contains_key(name) {
-        return Err(AdminError::NotFound(format!("group `{name}`")));
-    }
-    let mut groups = current.groups_registry.clone();
-    groups.remove(name);
-    // A dangling `parent` after the removal is the only new error a delete can introduce; surface it
-    // as a state CONFLICT (something still references this group) so the caller distinguishes it from
-    // a malformed request.
-    let mut errors = Vec::new();
-    crate::config::groups::validate_groups(
-        &groups,
-        &|p| current.pools.contains_key(p),
-        &mut errors,
-    );
-    if !errors.is_empty() {
-        return Err(AdminError::Conflict(format!(
-            "cannot delete group `{name}`: {} (re-parent or remove the referencing group first)",
-            errors.join("; ")
-        )));
-    }
-    let mut next = current.clone();
-    next.config_version = current.config_version.wrapping_add(1);
-    next.cost = std::sync::Arc::new(next.cost.with_groups(&groups));
-    next.groups_registry = groups;
     Ok(next)
 }
 
@@ -460,9 +346,9 @@ pub(crate) fn build_with_registry(
     global_hooks: Vec<String>,
 ) -> Result<App, AdminError> {
     for (name, cfg) in &registry {
-        if cfg.plugin.trim().is_empty() {
+        if cfg.socket.is_none() == cfg.webhook.is_none() {
             return Err(AdminError::Validation(format!(
-                "hook `{name}` must name a `kind: hook` plugin via `plugin:`"
+                "hook `{name}` must set exactly one transport: `socket` or `webhook`"
             )));
         }
         if cfg.kind == HookKind::Tap && cfg.prompt == PromptAccess::Rw {
@@ -496,41 +382,41 @@ pub(crate) fn build_with_registry(
     next.rewrite_hooks = crate::hooks::resolve_rewrite_hooks(
         &next.hook_registry,
         &next.global_hooks,
-        &next.hook_env,
+        &next.client,
         next.config_version,
     );
     next.tap_hooks = crate::hooks::resolve_tap_hooks(
         &next.hook_registry,
         &next.global_hooks,
-        &next.hook_env,
+        &next.client,
         next.config_version,
         crate::config::HookStage::Request,
     );
     next.tap_hooks_route = crate::hooks::resolve_tap_hooks(
         &next.hook_registry,
         &next.global_hooks,
-        &next.hook_env,
+        &next.client,
         next.config_version,
         crate::config::HookStage::Route,
     );
     next.tap_hooks_attempt = crate::hooks::resolve_tap_hooks(
         &next.hook_registry,
         &next.global_hooks,
-        &next.hook_env,
+        &next.client,
         next.config_version,
         crate::config::HookStage::Attempt,
     );
     next.tap_hooks_completion = crate::hooks::resolve_tap_hooks(
         &next.hook_registry,
         &next.global_hooks,
-        &next.hook_env,
+        &next.client,
         next.config_version,
         crate::config::HookStage::Completion,
     );
     next.global_gates = crate::hooks::resolve_gate_hooks(
         &next.hook_registry,
         &next.global_hooks,
-        &next.hook_env,
+        &next.client,
         next.config_version,
     );
     Ok(next)
@@ -551,9 +437,9 @@ impl AdminService {
     /// uptime, and pool/model/provider topology. Read scope. Infallible today, but returns `Result`
     /// for a uniform transport contract (every op is `Result<View, AdminError>`).
     pub(crate) async fn info(&self) -> Result<InfoView, AdminError> {
-        // The compiled-in plugin sets reflect the ACTUAL binary (feature-gated): the `keys` /
-        // `admin-tokens` auth builtins plus the ranking hooks. `weighted` is the one baked in
-        // (non-removable), so it appears as `weighted_floor` below, not in `hook_plugins`.
+        // The compiled-in plugin sets reflect the ACTUAL binary (feature-gated). `default auth =
+        // tokens` + `default hook = weighted` are the two OEM-default plugins; weighted is the one
+        // baked in (non-removable), so it appears as `weighted_floor` below, not in `hook_plugins`.
         let auth_modules = auth_modules_compiled_in();
         let hook_plugins = hook_plugins_compiled_in();
 
@@ -716,75 +602,6 @@ impl AdminService {
             .ok_or_else(|| AdminError::NotFound(format!("hook `{name}`")))
     }
 
-    /// `GET /api/v1/admin/groups` — the `groups:` limit tree read. Read scope. Each entry is the
-    /// DEFINITION (parent, enabled, limits, `child_default`), never a secret. Sorted by name (the
-    /// registry is already a BTreeMap, so iteration is name-ordered).
-    pub(crate) async fn list_groups(&self) -> Result<Page<GroupView>, AdminError> {
-        let groups: Vec<GroupView> = self
-            .app
-            .groups_registry
-            .iter()
-            .map(|(name, cfg)| GroupView::from_cfg(name, cfg))
-            .collect();
-        Ok(Page::single(groups))
-    }
-
-    /// `GET /api/v1/admin/groups/{name}` — one group definition, or `not_found` if the name is unknown.
-    pub(crate) async fn get_group(&self, name: &str) -> Result<GroupView, AdminError> {
-        self.app
-            .groups_registry
-            .get(name)
-            .map(|cfg| GroupView::from_cfg(name, cfg))
-            .ok_or_else(|| AdminError::NotFound(format!("group `{name}`")))
-    }
-
-    /// `GET /api/v1/admin/groups/{name}/usage` — the group's derived current-window usage per
-    /// enforcement bucket vs its caps (§6d, the self-service dashboard read). Read scope.
-    /// `not_found` for an unknown group; governance off = every bucket reads zero (the caps are
-    /// still projected — the definition exists even when nothing enforces).
-    pub(crate) async fn get_group_usage(
-        &self,
-        name: &str,
-    ) -> Result<crate::admin::v1::contract::GroupUsageView, AdminError> {
-        use crate::admin::v1::contract::{GroupBucketUsageView, GroupUsageView};
-        let Some(rt) = self.app.cost.group_named(name) else {
-            return Err(AdminError::NotFound(format!("group `{name}`")));
-        };
-        let now = crate::store::now();
-        let mut buckets = Vec::with_capacity(rt.buckets.len());
-        for b in &rt.buckets {
-            let usage = match &self.app.governance {
-                Some(gov) => gov
-                    .derived_bucket_usage(&self.app.cost, &b.bucket_id, b.window, false, now)
-                    .map_err(|e| {
-                        tracing::error!(group = name, bucket = %b.bucket_id, err = %e,
-                            "group usage read failed");
-                        AdminError::Internal
-                    })?,
-                None => Default::default(),
-            };
-            buckets.push(GroupBucketUsageView {
-                window: b.window,
-                pool: b.pool.clone(),
-                requests: usage.requests,
-                tokens: usage.tokens,
-                spend_cents: usage.spend_cents,
-                requests_cap: b.requests_cap,
-                tokens_cap: b.tokens_cap,
-                budget_cap: b.budget_cap,
-                budget_remaining_cents: b
-                    .budget_cap
-                    .map(|cap| cap.saturating_sub(usage.spend_cents).max(0)),
-            });
-        }
-        Ok(GroupUsageView {
-            group: name.to_string(),
-            enabled: rt.enabled,
-            buckets,
-            as_of: now,
-        })
-    }
-
     /// `GET /api/v1/admin/plugins?type=auth|hooks` — the plugin catalog for one TYPE. Read
     /// scope. Lists COMPILED-IN plugins (feature-gated, from the binary — the same source as `info`'s
     /// build proof) and EXTERNAL plugins (registered over socket/webhook). An unknown/absent `type` is
@@ -793,64 +610,38 @@ impl AdminService {
         let mut plugins: Vec<PluginView> = Vec::new();
         match ptype {
             "auth" => {
-                // Compiled-in auth modules (feature-gated). Active = wired into its chain: `keys`
-                // is engine-handled (a flag, not a boxed module), `admin-tokens` lives on the
-                // ADMIN chain, and anything else is a boxed data-plane chain module.
+                // Compiled-in auth modules (feature-gated). Active = present in the auth chain.
                 let chain = self.app.auth.chain_names();
                 for name in auth_modules_compiled_in() {
-                    let active = if name == crate::config::KEYS_MODULE {
-                        self.app.auth.keys_in_chain
-                    } else if name == crate::config::ADMIN_TOKENS_MODULE {
-                        self.app.admin_chain.iter().any(|m| m == name)
-                    } else {
-                        chain.contains(&name)
-                    };
-                    plugins.push(PluginView::basic(
-                        name.to_string(),
-                        "auth",
-                        "compiled-in",
-                        Some(active),
-                        None,
-                    ));
+                    plugins.push(PluginView {
+                        name: name.to_string(),
+                        r#type: "auth",
+                        loader: "compiled-in",
+                        active: Some(chain.contains(&name)),
+                        target: None,
+                    });
                 }
-                // DYNAMIC auth modules: a `kind: auth` plugin loaded over the signed hybrid ABI and
-                // boxed into the data-plane chain. Its runtime name (`module.name()`, what
-                // `role_bindings.<module>` keys off) appears in `chain_names()` but is NOT
-                // compiled-in — report each such module as a loaded plugin, always `active` (it is
-                // in the chain by construction).
-                let compiled = auth_modules_compiled_in();
-                for name in &chain {
-                    if !compiled.contains(name) {
-                        plugins.push(PluginView::basic(
-                            name.to_string(),
-                            "auth",
-                            "plugin",
-                            Some(true),
-                            None,
-                        ));
-                    }
-                }
-                // External auth modules (runtime-registered over socket/webhook) — none until the
-                // auth-module registration endpoint lands (#56); the catalog shape is ready.
+                // External auth modules (runtime-registered) — none until the auth-module registration
+                // endpoint lands (#56); the catalog shape is ready for them.
             }
             "hooks" => {
                 // The weighted SWRR floor is compiled in unconditionally (the non-removable default
                 // hook); activation is the per-pool default, not summarized here.
-                plugins.push(PluginView::basic(
-                    "weighted".to_string(),
-                    "hooks",
-                    "compiled-in",
-                    None,
-                    None,
-                ));
+                plugins.push(PluginView {
+                    name: "weighted".to_string(),
+                    r#type: "hooks",
+                    loader: "compiled-in",
+                    active: None,
+                    target: None,
+                });
                 for name in hook_plugins_compiled_in() {
-                    plugins.push(PluginView::basic(
-                        name.to_string(),
-                        "hooks",
-                        "compiled-in",
-                        None,
-                        None,
-                    ));
+                    plugins.push(PluginView {
+                        name: name.to_string(),
+                        r#type: "hooks",
+                        loader: "compiled-in",
+                        active: None,
+                        target: None,
+                    });
                 }
                 // External hooks = the configured registry entries (socket/webhook). Configured ⇒
                 // active; the transport target is projected (operator config, not a secret).
@@ -859,336 +650,26 @@ impl AdminService {
                     .hook_registry
                     .iter()
                     .map(|(name, cfg)| {
-                        let target = Some(cfg.plugin.clone());
-                        PluginView::basic(name.clone(), "hooks", "external", Some(true), target)
+                        let target = cfg.socket.clone().or_else(|| cfg.webhook.clone());
+                        PluginView {
+                            name: name.clone(),
+                            r#type: "hooks",
+                            loader: "external",
+                            active: Some(true),
+                            target,
+                        }
                     })
                     .collect();
                 externals.sort_by(|a, b| a.name.cmp(&b.name));
                 plugins.append(&mut externals);
             }
-            // `store` (alias `db`) — DYNAMIC-LIBRARY plugins in the plugins directory. Always includes
-            // the compiled-in `memory` default; then every loadable library present, each vetted (ABI
-            // handshake) and its signed sidecar manifest read + re-evaluated against the running trust
-            // posture. The store the operator configured (`store.module`) is `active`.
-            "store" | "db" => {
-                plugins.append(&mut self.store_plugin_catalog());
-            }
             other => {
                 return Err(AdminError::Validation(format!(
-                    "unknown plugin type `{other}`: expected `auth`, `hooks`, or `store`"
+                    "unknown plugin type `{other}`: expected `auth` or `hooks`"
                 )));
             }
         }
         Ok(Page::single(plugins))
-    }
-
-    /// The DYNAMIC plugin catalog (`GET /api/v1/admin/plugins?type=store`): the compiled-in
-    /// `memory` default plus every signed plugin tarball in `plugins.dir`, each with its manifest
-    /// metadata and a re-evaluated trust verdict. Sorted by filename after the `memory` head.
-    ///
-    /// MANIFEST-ONLY INSPECTION (security): this endpoint NEVER `dlopen`s ANY plugin. Each tarball
-    /// is unpacked in memory, structurally validated, and trust-evaluated against the RUNNING
-    /// policy — pure data checks; no plugin code can run from listing the catalog. Pushing/listing
-    /// a plugin over the admin API therefore cannot bypass the trust model: loading only ever
-    /// happens through the boot pipeline, which re-runs the same three-phase validation.
-    fn store_plugin_catalog(&self) -> Vec<PluginView> {
-        // The compiled-in RAM default is always present. Which store backend is ACTIVE is a
-        // `store.module` config concern (read via `GET /config`), not summarized per-row here,
-        // the same posture the compiled-in hook rows take (`active: None`).
-        let mut out = vec![PluginView::basic(
-            "memory".to_string(),
-            "store",
-            "compiled-in",
-            None,
-            None,
-        )];
-        let Ok(policy) = self.app.plugins_cfg.to_policy() else {
-            return out;
-        };
-        for row in busbar_plugin_loader::inventory_tarballs(&self.app.plugins_dir, &policy) {
-            let trust = if row.status == "ready" {
-                if row.signature == "first-party" || row.signature.starts_with("publisher:") {
-                    Some("trusted")
-                } else {
-                    Some("unverified")
-                }
-            } else if row.manifest.is_some() {
-                Some("rejected")
-            } else {
-                None
-            };
-            let name = row
-                .manifest
-                .as_ref()
-                .map(|m| m.name.clone())
-                .unwrap_or_else(|| row.file.clone());
-            out.push(PluginView {
-                name,
-                r#type: "store",
-                loader: "dynamic-library",
-                active: None,
-                target: Some(row.file.clone()),
-                version: row.manifest.as_ref().map(|m| m.version.clone()),
-                publisher: row.manifest.as_ref().map(|m| m.publisher.clone()),
-                interface_version: row.manifest.as_ref().map(|m| m.abi_version),
-                trust,
-                valid: Some(row.status == "ready"),
-                error: (row.status != "ready").then(|| row.status.clone()),
-            });
-        }
-        out
-    }
-
-    /// `POST /api/v1/admin/plugins` — INSTALL a plugin: the caller uploads a SIGNED plugin tarball
-    /// (`{cdylib + manifest.json}` as one `.tar.gz`); the engine RE-VERIFIES it server-side against
-    /// the running `plugins.*` posture (the client is NEVER trusted — the upload may originate
-    /// remotely) and atomically writes the tarball into `plugins.dir`. Full scope, audited. The
-    /// change takes effect on the next plugin (re)load (restart / config apply), not as a hot swap.
-    ///
-    /// Verification order (fail-closed, MANIFEST-ONLY — the uploaded code is NEVER `dlopen`ed by
-    /// this endpoint, so pushing a plugin over the API cannot execute it and cannot bypass the
-    /// trust model; loading only ever happens through the boot pipeline's same three phases):
-    /// 1. Filename sanity — a bare `.tar.gz` filename (no path traversal). Storage only; identity
-    ///    comes from the signed manifest.
-    /// 2. STRUCTURAL — the tarball unpacks in memory; the manifest parses, is complete and
-    ///    well-formed, the sha256 binds the library bytes, the abi_version is supported. `400`.
-    /// 3. TRUST — signature vs the embedded first-party key / allowlisted publishers, opt-in flags,
-    ///    anti-downgrade floors. An untrusted upload is a `409 conflict` (nothing is written).
-    /// 4. CONFLICT — the manifest's name/alias must not collide with a DIFFERENT already-installed
-    ///    loadable plugin. `409` naming both.
-    /// 5. Atomic publish — write to a temp name in the same directory, then rename into place.
-    pub(crate) fn install_store_plugin(
-        &self,
-        file: &str,
-        tarball: &[u8],
-    ) -> Result<crate::admin::v1::contract::PluginInstallView, AdminError> {
-        use busbar_plugin_sign::{evaluate, validate_structure, Verdict};
-
-        // ── 1. filename sanity: a bare tarball filename ──
-        let file = validate_plugin_filename(file)?;
-
-        let policy = self
-            .app
-            .plugins_cfg
-            .to_policy()
-            .map_err(AdminError::Validation)?;
-
-        // ── 2. STRUCTURAL: in-memory unpack + manifest completeness + integrity + abi ──
-        let unpacked = busbar_plugin_loader::tarball::unpack(tarball)
-            .map_err(|e| AdminError::Validation(format!("invalid plugin tarball: {e}")))?;
-        validate_structure(
-            &unpacked.manifest,
-            &unpacked.lib_bytes,
-            &busbar_plugin_loader::supported_abi,
-        )
-        .map_err(|e| AdminError::Validation(format!("invalid plugin manifest: {e}")))?;
-        let manifest = &unpacked.manifest;
-
-        // ── 3. TRUST re-verify against the RUNNING posture (server-side) ──
-        let (trust, publisher) = match evaluate(&unpacked.lib_bytes, manifest, &policy) {
-            Ok(Verdict::Trusted { publisher, .. }) => ("trusted", Some(publisher)),
-            Ok(Verdict::Allowed { .. }) => ("unverified", Some(manifest.publisher.clone())),
-            // An untrusted upload with no matching opt-in is forbidden - a terminal state conflict
-            // (retrying the same bytes can't fix it; sign it, or set the opt-in). The `evaluate`
-            // reason already names the exact flag to set and is safe to surface.
-            Err(rejected) => {
-                return Err(AdminError::Conflict(format!(
-                    "plugin rejected by the trust policy: {}",
-                    rejected.0
-                )));
-            }
-        };
-
-        // ── 4. CONFLICT vs the already-installed loadable set ──
-        // M7 (fail-open): a corrupt tarball already in the plugins dir makes scan_and_validate Err.
-        // The old `if let Ok(reg)` SILENTLY SKIPPED the conflict check and published anyway. Propagate
-        // it as a Conflict so we never admit a plugin whose conflict status we could not determine.
-        let reg = busbar_plugin_loader::scan_and_validate(&self.app.plugins_dir, &policy).map_err(
-            |errors| {
-                AdminError::Conflict(format!(
-                    "cannot validate the installed plugin set before publishing (fix or remove the \
-                     offending tarball first): {}",
-                    errors.join("; ")
-                ))
-            },
-        )?;
-        for existing in reg.loadable() {
-            if existing.file == file {
-                continue; // overwriting the same tarball file is a legitimate upgrade
-            }
-            let clash = existing.manifest.name == manifest.name
-                || existing.manifest.alias == manifest.alias
-                || existing.manifest.name == manifest.alias
-                || existing.manifest.alias == manifest.name;
-            // H2 (bricks next boot): the old gate exempted a SAME-NAME upload under a DIFFERENT
-            // filename (`&& existing.manifest.name != manifest.name`). But boot's phase-3
-            // conflicts() hard-rejects two loadable plugins with the same name (different files) -
-            // admitting one BRICKS the next restart. Reject it here (409) so we never publish a
-            // state boot will refuse: a same-name upgrade must REUSE the existing filename (which
-            // hits the `existing.file == file` overwrite path above), not add a second file.
-            if clash {
-                return Err(AdminError::Conflict(format!(
-                    "plugin name/alias conflict: uploaded '{}' (alias '{}', file {}) collides with \
-                     installed '{}' (alias '{}', file {}); a same-name upgrade must reuse the \
-                     existing filename, not add a second file (boot would reject two files claiming \
-                     the same plugin name)",
-                    manifest.name,
-                    manifest.alias,
-                    file,
-                    existing.manifest.name,
-                    existing.manifest.alias,
-                    existing.file
-                )));
-            }
-        }
-
-        // ── 5. atomic publish: write a temp name in the SAME directory, rename into place ──
-        let dir = &self.app.plugins_dir;
-        std::fs::create_dir_all(dir)
-            .map_err(|e| AdminError::Validation(format!("cannot create plugins dir: {e}")))?;
-        let stamp = format!("{}-{}", std::process::id(), crate::store::now());
-        let tmp = dir.join(format!(".{file}.{stamp}.tmp"));
-        std::fs::write(&tmp, tarball).map_err(|e| {
-            AdminError::Validation(format!("cannot write plugin to plugins dir: {e}"))
-        })?;
-        let final_path = dir.join(&file);
-        if let Err(e) = std::fs::rename(&tmp, &final_path) {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(AdminError::Validation(format!(
-                "cannot publish plugin into plugins dir: {e}"
-            )));
-        }
-
-        Ok(crate::admin::v1::contract::PluginInstallView {
-            file,
-            name: manifest.name.clone(),
-            interface_version: manifest.abi_version,
-            trust,
-            version: Some(manifest.version.clone()),
-            publisher,
-            note:
-                "installed durably in the plugins directory; the change takes effect on the next \
-                   plugin (re)load (restart or config apply), not as a hot swap",
-        })
-    }
-
-    /// `DELETE /api/v1/admin/plugins/{file}` — REMOVE a plugin tarball from the plugins directory.
-    /// Full scope. `404 not_found` if the file isn't present. A currently-loaded store keeps
-    /// running on its already-loaded handle until the next plugin (re)load — removing the file only
-    /// affects the NEXT load (folder = source of truth).
-    pub(crate) fn remove_store_plugin(
-        &self,
-        file: &str,
-    ) -> Result<crate::admin::v1::contract::PluginRemoveView, AdminError> {
-        let file = validate_plugin_filename(file)?;
-        let lib_path = self.app.plugins_dir.join(&file);
-        if !lib_path.is_file() {
-            return Err(AdminError::NotFound(format!("plugin `{file}`")));
-        }
-        std::fs::remove_file(&lib_path)
-            .map_err(|e| AdminError::Validation(format!("cannot remove plugin: {e}")))?;
-        Ok(crate::admin::v1::contract::PluginRemoveView {
-            file,
-            removed: true,
-        })
-    }
-
-    /// `POST /api/v1/admin/plugins/reload` — re-scan the plugins directory and report the current
-    /// dynamic-library inventory (the SAME projection `GET /plugins?type=store` produces, minus the
-    /// compiled-in `memory` head). Full scope. Reconciles the reported set to the folder (folder =
-    /// source of truth), the exact sibling of `config/reload`. A store change still applies on the
-    /// next store (re)load, not as a hot swap.
-    pub(crate) fn reload_store_plugins(
-        &self,
-    ) -> Result<crate::admin::v1::contract::PluginReloadView, AdminError> {
-        // Reuse the store catalog projection, dropping the compiled-in `memory` head (reload reports
-        // only the on-disk dynamic set it reconciled).
-        let plugins: Vec<PluginView> = self
-            .store_plugin_catalog()
-            .into_iter()
-            .filter(|p| p.loader == "dynamic-library")
-            .collect();
-        Ok(crate::admin::v1::contract::PluginReloadView {
-            plugins,
-            note:
-                "hot-reloaded the plugin layer LIVE: a new plugin registry and new kind:hook \
-                   transports are serving with no restart, and the prior shared libraries unmap once \
-                   in-flight requests drain. A `store` MODULE change still lands on a dedicated store \
-                   swap (the token ledger cannot be re-hydrated under load), not this reload.",
-        })
-    }
-
-    /// The RESOLUTION half of an EXPLICIT plugin ROLLBACK (`POST /api/v1/admin/plugins/rollback`,
-    /// 1.5.0). Validate that `file` is a plugin tarball in the plugins dir, unpack + STRUCTURALLY
-    /// validate its manifest, and TRUST-verify it against a policy whose first-party floor is LOWERED to
-    /// the target's OWN version — so a validly-signed but OLDER artifact (exactly the rollback case)
-    /// clears trust here even though it would be an anti-downgrade reject on the automatic path. This is
-    /// where "automatic vs explicit" is made concrete: the rollback deliberately relaxes the floor to
-    /// the pinned target and only that target; a lower artifact still fails, and a signature/opt-in
-    /// failure is still fatal (a rollback can never launder an untrusted artifact). Returns the target
-    /// manifest identity (name/version/publisher) + the MERGED pin map (prior overlay pins with this
-    /// plugin's name set to the target version) the caller persists and re-derives the policy from.
-    ///
-    /// `prior_pins` is the current persisted `plugin_versions` overlay section (empty if none).
-    pub(crate) fn resolve_plugin_rollback(
-        &self,
-        file: &str,
-        prior_pins: &std::collections::BTreeMap<String, String>,
-    ) -> Result<
-        (
-            busbar_plugin_sign::Manifest,
-            std::collections::BTreeMap<String, String>,
-        ),
-        AdminError,
-    > {
-        use busbar_plugin_sign::{evaluate, validate_structure, Verdict};
-        let file = validate_plugin_filename(file)?;
-        let lib_path = self.app.plugins_dir.join(&file);
-        if !lib_path.is_file() {
-            return Err(AdminError::NotFound(format!("plugin `{file}`")));
-        }
-        let bytes = std::fs::read(&lib_path)
-            .map_err(|e| AdminError::Validation(format!("cannot read plugin `{file}`: {e}")))?;
-        let unpacked = busbar_plugin_loader::tarball::unpack(&bytes)
-            .map_err(|e| AdminError::Validation(format!("invalid plugin tarball `{file}`: {e}")))?;
-        validate_structure(
-            &unpacked.manifest,
-            &unpacked.lib_bytes,
-            &busbar_plugin_loader::supported_abi,
-        )
-        .map_err(|e| AdminError::Validation(format!("invalid plugin manifest `{file}`: {e}")))?;
-        let manifest = unpacked.manifest;
-
-        // Build the trust policy with the first-party floor LOWERED to the target artifact's own
-        // version — the EXPLICIT relaxation. `min_versions` is carried from base config as-is; we
-        // additionally lower THIS plugin's configured floor to the target version so a floored
-        // third-party plugin can also roll back. Anything the target does NOT satisfy (a broken
-        // signature, an un-opted-in third party) still fails: a rollback authenticates the OPERATOR,
-        // never the ARTIFACT.
-        let mut policy = self
-            .app
-            .plugins_cfg
-            .to_policy_with_floor(&manifest.version)
-            .map_err(AdminError::Validation)?;
-        policy
-            .min_versions
-            .insert(manifest.name.clone(), manifest.version.clone());
-        match evaluate(&unpacked.lib_bytes, &manifest, &policy) {
-            Ok(Verdict::Trusted { .. }) | Ok(Verdict::Allowed { .. }) => {}
-            Err(rejected) => {
-                return Err(AdminError::Conflict(format!(
-                    "rollback target `{file}` is not loadable under the trust policy even with the \
-                     floor lowered to its own version {}: {}. A rollback lowers the anti-downgrade \
-                     floor for an explicit operator action; it cannot load an untrusted artifact.",
-                    manifest.version, rejected.0
-                )));
-            }
-        }
-
-        // Merge: this plugin's pin becomes the target version; other plugins' prior pins are preserved.
-        let mut pins = prior_pins.clone();
-        pins.insert(manifest.name.clone(), manifest.version.clone());
-        Ok((manifest, pins))
     }
 
     /// `GET /api/v1/admin/config` — the EFFECTIVE running config, composed from the same redacted reads as
@@ -1279,7 +760,7 @@ impl AdminService {
         let empty = || UsageView {
             window,
             as_of: now,
-            currency: (),
+            currency: USAGE_CURRENCY,
             total: UsageBreakdown::default(),
             by_model: Vec::new(),
             by_key: Vec::new(),
@@ -1292,6 +773,7 @@ impl AdminService {
         type Fetched = (
             Vec<crate::governance::MeteringRow>,
             std::collections::HashMap<String, String>,
+            (i64, i64),
         );
         let joined = tokio::task::spawn_blocking(move || -> Result<Fetched, ()> {
             let rows = gov.metering_for(bucket).map_err(|_| ())?;
@@ -1302,11 +784,10 @@ impl AdminService {
                 .into_iter()
                 .map(|k| (k.id, k.name))
                 .collect();
-            Ok((rows, names))
+            Ok((rows, names, gov.prices()))
         })
         .await;
-        let cost = self.app.cost.clone();
-        let (rows, names) = match joined {
+        let (rows, names, prices) = match joined {
             Ok(Ok(f)) => f,
             // A store failure or a blocking-join failure is an internal error (details logged
             // upstream in the store layer); the caller never sees store internals.
@@ -1319,18 +800,6 @@ impl AdminService {
         let mut by_key: std::collections::BTreeMap<String, UsageBreakdown> =
             std::collections::BTreeMap::new();
         for r in &rows {
-            // Spend derives PER ROW (the model is known here - the per-model rate applies), then
-            // aggregates ADDITIVELY into total/by_model/by_key, so every rollup is exact under a
-            // heterogeneous rate card.
-            let row_view = UsageBreakdown {
-                tokens_input: r.tokens_input,
-                tokens_output: r.tokens_output,
-                tokens_cache_read: r.tokens_cache_read,
-                tokens_cache_creation: r.tokens_cache_creation,
-                requests: r.requests,
-                spend_micros: 0,
-            };
-            let row_spend = derive_spend_micros_row(&cost, &r.model, &row_view);
             for b in [
                 &mut total,
                 by_model
@@ -1345,23 +814,29 @@ impl AdminService {
                     .tokens_cache_creation
                     .saturating_add(r.tokens_cache_creation);
                 b.requests = b.requests.saturating_add(r.requests);
-                b.spend_micros = b.spend_micros.saturating_add(row_spend);
             }
         }
+        total.spend_micros = derive_spend_micros(&total, prices);
         let by_model = by_model
             .into_iter()
-            .map(|((model, provider), usage)| ModelUsageView {
-                model,
-                provider,
-                usage,
+            .map(|((model, provider), mut usage)| {
+                usage.spend_micros = derive_spend_micros(&usage, prices);
+                ModelUsageView {
+                    model,
+                    provider,
+                    usage,
+                }
             })
             .collect();
         let mut by_key: Vec<KeyUsageView> = by_key
             .into_iter()
-            .map(|(id, usage)| KeyUsageView {
-                name: names.get(&id).cloned(),
-                id,
-                usage,
+            .map(|(id, mut usage)| {
+                usage.spend_micros = derive_spend_micros(&usage, prices);
+                KeyUsageView {
+                    name: names.get(&id).cloned(),
+                    id,
+                    usage,
+                }
             })
             .collect();
         // Bound the response (no memory/latency cliff at fleet scale — 3rd-party review R2 #1):
@@ -1397,7 +872,7 @@ impl AdminService {
         Ok(UsageView {
             window,
             as_of: now,
-            currency: (),
+            currency: USAGE_CURRENCY,
             total,
             by_model,
             by_key,
@@ -1432,7 +907,7 @@ impl AdminService {
             .get(name)
             .ok_or_else(|| AdminError::NotFound(format!("hook `{name}`")))?;
         let view = self.hook_view(name, cfg);
-        let (reachable, detail) = probe_transport(cfg, &self.app.hook_env).await;
+        let (reachable, detail) = probe_transport(cfg).await;
         Ok(HookHealthView {
             name: name.to_string(),
             transport: view.transport,
@@ -1454,12 +929,10 @@ impl AdminService {
 /// `global` is true when the hook is named in the wiring list OR declares inline `global: true`.
 pub(crate) fn project_hook_view(name: &str, cfg: &HookCfg, global_hooks: &[String]) -> HookView {
     {
-        // A hook's transport is now the in-process `kind: hook` plugin it references (the retired
-        // socket/webhook transports are gone); report the plugin name as the target.
-        let (transport_kind, target) = if cfg.plugin.trim().is_empty() {
-            ("none", None)
-        } else {
-            ("plugin", Some(cfg.plugin.clone()))
+        let (transport_kind, target) = match (&cfg.socket, &cfg.webhook) {
+            (Some(path), _) => ("socket", Some(path.clone())),
+            (None, Some(url)) => ("webhook", Some(url.clone())),
+            (None, None) => ("none", None),
         };
         HookView {
             name: name.to_string(),
@@ -1504,7 +977,8 @@ mod tests {
     fn hook(kind: HookKind, global: bool) -> HookCfg {
         HookCfg {
             kind,
-            plugin: "test-hook".to_string(),
+            socket: None,
+            webhook: Some("http://127.0.0.1:9971/".to_string()),
             timeout_ms: 5,
             on_error: "weighted".to_string(),
             prompt: PromptAccess::No,
@@ -1523,12 +997,7 @@ mod tests {
     /// Lanes/store are shared (unchanged), proving the store-constraint-free subset.
     #[test]
     fn build_with_hook_registers_and_wires_global_tap() {
-        let Some(env) = crate::test_support::test_hook_env(&["test-hook"], Default::default())
-        else {
-            eprintln!("skip: hook cdylib not built (run under --workspace)");
-            return;
-        };
-        let app = TestApp::new().hook_env(env).build();
+        let app = TestApp::new().build();
         assert_eq!(app.tap_hooks.len(), 0, "fixture starts with no taps");
         let next = build_with_hook(&app, "logger", hook(HookKind::Tap, true))
             .expect("a valid global tap registers");
@@ -1556,12 +1025,7 @@ mod tests {
     /// reported `global: true`.
     #[test]
     fn build_with_hook_demotes_global_false_removes_wiring() {
-        let Some(env) = crate::test_support::test_hook_env(&["test-hook"], Default::default())
-        else {
-            eprintln!("skip: hook cdylib not built (run under --workspace)");
-            return;
-        };
-        let app = TestApp::new().hook_env(env).build();
+        let app = TestApp::new().build();
         // Register a GLOBAL tap, then PUT the same name with global: false.
         let promoted = build_with_hook(&app, "logger", hook(HookKind::Tap, true))
             .expect("global tap registers");
@@ -1656,7 +1120,7 @@ mod tests {
         ));
 
         let mut no_transport = hook(HookKind::Gate, false);
-        no_transport.plugin = String::new();
+        no_transport.webhook = None;
         assert!(matches!(
             build_with_hook(&app, "x", no_transport),
             Err(AdminError::Validation(_))
@@ -1694,854 +1158,5 @@ mod tests {
             build_with_hook(&after_first, "g", hook(HookKind::Gate, false)).is_ok(),
             "re-registering with identical grants is allowed"
         );
-    }
-
-    // ── plugin admin surface (#13, tarball world) ───────────────────────────────────────────────
-
-    use busbar_plugin_sign::{sign, Manifest, SigningKey};
-
-    /// A unique temp plugins directory for one test (isolated so parallel tests never collide).
-    fn tmp_plugins_dir(tag: &str) -> std::path::PathBuf {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let d = std::env::temp_dir().join(format!(
-            "busbar-plugin-admin-{}-{n}-{tag}",
-            std::process::id(),
-        ));
-        std::fs::create_dir_all(&d).unwrap();
-        d
-    }
-
-    /// A well-formed manifest for tests (sha256/signature completed by `sign`).
-    fn test_manifest(name: &str, alias: &str, publisher: &str, version: &str) -> Manifest {
-        Manifest {
-            name: name.into(),
-            alias: alias.into(),
-            kind: "store".into(),
-            version: version.into(),
-            publisher: publisher.into(),
-            abi_version: *busbar_plugin_loader::supported_abi("store")
-                .iter()
-                .max()
-                .expect("store abi"),
-            sha256: String::new(),
-            signature: String::new(),
-            description: String::new(),
-            homepage: String::new(),
-            license: String::new(),
-            needs: Default::default(),
-        }
-    }
-
-    /// Package a signed plugin tarball in memory.
-    fn signed_tarball(key: &SigningKey, m: Manifest, lib: &[u8]) -> Vec<u8> {
-        let m = sign(key, m, lib);
-        busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap()
-    }
-
-    /// Build a service over an App whose plugins dir + `plugins.*` posture are the given ones.
-    fn svc_with(dir: std::path::PathBuf, cfg: crate::config::PluginsCfg) -> AdminService {
-        let app = TestApp::new().plugins_dir(dir).plugins_cfg(cfg).build();
-        AdminService::new(app)
-    }
-
-    /// The STRICT default posture: no publishers, no opt-ins.
-    fn strict_posture() -> crate::config::PluginsCfg {
-        crate::config::PluginsCfg::default()
-    }
-
-    /// A permissive posture (allow_unsigned): an unsigned upload installs "unverified".
-    fn unsigned_ok_posture() -> crate::config::PluginsCfg {
-        let mut cfg = crate::config::PluginsCfg::default();
-        cfg.trust.allow_unsigned = true;
-        cfg
-    }
-
-    /// A posture that allowlists one third-party publisher key.
-    fn publisher_posture(name: &str, key: &SigningKey) -> crate::config::PluginsCfg {
-        let mut cfg = crate::config::PluginsCfg::default();
-        cfg.trust.publishers = vec![crate::config::PluginPublisher {
-            name: name.into(),
-            public_key: hex::encode(key.verifying_key().to_bytes()),
-        }];
-        cfg
-    }
-
-    /// Install rejects a filename that isn't a bare `.tar.gz` name (path traversal / wrong
-    /// extension) BEFORE any bytes touch disk.
-    #[test]
-    fn install_rejects_bad_filenames() {
-        let dir = tmp_plugins_dir("badname");
-        let svc = svc_with(dir.clone(), unsigned_ok_posture());
-        for bad in [
-            "../escape.tar.gz",
-            "sub/dir.tar.gz",
-            "no_extension",
-            "plain.so",
-            "",
-        ] {
-            assert!(
-                matches!(
-                    svc.install_store_plugin(bad, b"bytes"),
-                    Err(AdminError::Validation(_))
-                ),
-                "filename `{bad}` must reject"
-            );
-        }
-        // Nothing was written for any rejected name.
-        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
-    }
-
-    /// Install rejects an upload that is not a valid plugin tarball, and leaves NOTHING behind.
-    #[test]
-    fn install_rejects_invalid_tarball() {
-        let dir = tmp_plugins_dir("nontarball");
-        let svc = svc_with(dir.clone(), unsigned_ok_posture());
-        assert!(
-            matches!(
-                svc.install_store_plugin("x.tar.gz", b"garbage, not a tarball"),
-                Err(AdminError::Validation(_))
-            ),
-            "non-tarball bytes must fail structural validation"
-        );
-        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
-    }
-
-    /// A VALIDLY-SIGNED but structurally malformed manifest (bad `kind`) is a 400 — structural
-    /// validation is independent of trust.
-    #[test]
-    fn install_rejects_signed_but_malformed_manifest() {
-        let dir = tmp_plugins_dir("malformed");
-        let key = SigningKey::from_bytes(&[5u8; 32]);
-        let mut m = test_manifest("acme-store-x", "x", "acme", "1.0.0");
-        m.kind = "widget".into();
-        let tarball = signed_tarball(&key, m, b"lib bytes");
-        let svc = svc_with(dir.clone(), publisher_posture("acme", &key));
-        let err = svc.install_store_plugin("x.tar.gz", &tarball).unwrap_err();
-        assert!(
-            matches!(&err, AdminError::Validation(msg) if msg.contains("kind")),
-            "got {err:?}"
-        );
-        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
-    }
-
-    /// Under the STRICT default posture, an UNSIGNED upload is rejected as a conflict naming the
-    /// opt-in flag, and nothing is written. The endpoint is MANIFEST-ONLY: the (junk) library
-    /// bytes are never executed, so pushing over the API cannot bypass the trust model.
-    #[test]
-    fn install_strict_posture_rejects_unsigned() {
-        let dir = tmp_plugins_dir("strict");
-        let lib = b"\x7fELF junk that would crash if ever dlopened";
-        let mut m = test_manifest("acme-store-x", "x", "acme", "1.0.0");
-        m.sha256 = busbar_plugin_sign::sha256_hex(lib);
-        let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap();
-        let svc = svc_with(dir.clone(), strict_posture());
-        let err = svc.install_store_plugin("x.tar.gz", &tarball).unwrap_err();
-        assert!(
-            matches!(&err, AdminError::Conflict(msg) if msg.contains("allow_third_party")
-                || msg.contains("allow_unsigned")),
-            "the rejection names the opt-in flag: {err:?}"
-        );
-        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
-    }
-
-    /// End-to-end install of an unsigned tarball under `allow_unsigned`: installs "unverified",
-    /// the catalog reports it, reload reports only the dynamic set, and `remove` deletes it.
-    /// (No dlopen anywhere — the lib bytes are junk on purpose.)
-    #[test]
-    fn install_catalog_remove_roundtrip() {
-        let dir = tmp_plugins_dir("roundtrip");
-        let svc = svc_with(dir.clone(), unsigned_ok_posture());
-        let lib = b"junk lib bytes";
-        let mut m = test_manifest("acme-store-junk", "junkstore", "acme", "1.0.0");
-        m.sha256 = busbar_plugin_sign::sha256_hex(lib);
-        let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap();
-
-        let view = svc
-            .install_store_plugin("junk.tar.gz", &tarball)
-            .expect("an unsigned tarball installs under allow_unsigned");
-        assert_eq!(view.trust, "unverified");
-        assert_eq!(view.name, "acme-store-junk");
-        assert!(dir.join("junk.tar.gz").exists(), "tarball published");
-
-        // Catalog: the memory head + our dynamic plugin.
-        let cat = svc.store_plugin_catalog();
-        assert_eq!(cat[0].name, "memory");
-        let dyn_row = cat
-            .iter()
-            .find(|p| p.loader == "dynamic-library")
-            .expect("dynamic plugin in catalog");
-        assert_eq!(dyn_row.valid, Some(true));
-        assert_eq!(dyn_row.name, "acme-store-junk");
-        assert_eq!(dyn_row.target.as_deref(), Some("junk.tar.gz"));
-        assert_eq!(dyn_row.trust, Some("unverified"));
-
-        // Reload reports only the dynamic set (no memory head).
-        let reload = svc.reload_store_plugins().unwrap();
-        assert!(reload.plugins.iter().all(|p| p.loader == "dynamic-library"));
-        assert_eq!(reload.plugins.len(), 1);
-
-        // Remove deletes it; a second remove is a 404.
-        svc.remove_store_plugin("junk.tar.gz").expect("remove");
-        assert!(!dir.join("junk.tar.gz").exists());
-        assert!(matches!(
-            svc.remove_store_plugin("junk.tar.gz"),
-            Err(AdminError::NotFound(_))
-        ));
-    }
-
-    /// ROLLBACK RESOLUTION (1.5.0), the EXPLICIT-downgrade core: a TRUSTED third-party artifact whose
-    /// version is BELOW its configured base floor — which the AUTOMATIC path (`install`) rejects as an
-    /// anti-downgrade — is ACCEPTED by `resolve_plugin_rollback`, because the rollback lowers the floor
-    /// to the target's own version. It returns the target manifest + the merged pin map (prior pins
-    /// preserved, this plugin pinned to the target version).
-    #[test]
-    fn rollback_resolves_a_trusted_below_floor_target_and_merges_pins() {
-        let dir = tmp_plugins_dir("rollback-ok");
-        let acme = SigningKey::from_bytes(&[11u8; 32]);
-        // Base posture: allowlist acme AND floor this plugin at 2.0.0.
-        let mut cfg = publisher_posture("acme", &acme);
-        cfg.min_versions
-            .insert("acme-store-x".to_string(), "2.0.0".to_string());
-        let svc = svc_with(dir.clone(), cfg);
-
-        // The PRIOR artifact at 1.4.0 (the rollback target) sits in the plugins dir.
-        let lib = b"prior artifact bytes";
-        let tarball = signed_tarball(
-            &acme,
-            test_manifest("acme-store-x", "x", "acme", "1.4.0"),
-            lib,
-        );
-        std::fs::write(dir.join("old.tar.gz"), &tarball).unwrap();
-
-        // The automatic install path REJECTS the below-floor artifact (anti-downgrade).
-        let install_err = svc
-            .install_store_plugin("old.tar.gz", &tarball)
-            .unwrap_err();
-        assert!(
-            matches!(install_err, AdminError::Conflict(_)),
-            "automatic install of a below-floor artifact is a conflict, got {install_err:?}"
-        );
-
-        // The EXPLICIT rollback resolves it, lowering the floor to 1.4.0, and merges the pin onto a
-        // pre-existing pin for a DIFFERENT plugin (which must be preserved).
-        let prior =
-            std::collections::BTreeMap::from([("other-plugin".to_string(), "3.0.0".to_string())]);
-        let (manifest, pins) = svc
-            .resolve_plugin_rollback("old.tar.gz", &prior)
-            .expect("rollback resolves the trusted below-floor target");
-        assert_eq!(manifest.name, "acme-store-x");
-        assert_eq!(manifest.version, "1.4.0");
-        assert_eq!(
-            pins.get("acme-store-x").map(String::as_str),
-            Some("1.4.0"),
-            "this plugin is pinned to the target version"
-        );
-        assert_eq!(
-            pins.get("other-plugin").map(String::as_str),
-            Some("3.0.0"),
-            "a prior pin for another plugin is preserved"
-        );
-    }
-
-    /// ROLLBACK is FAIL-CLOSED: an ABSENT target is a 404, and an UNTRUSTED target (unsigned under a
-    /// strict posture) is refused even with the floor lowered — a rollback authenticates the OPERATOR,
-    /// never the ARTIFACT. Nothing is pinned in either case.
-    #[test]
-    fn rollback_is_fail_closed_on_absent_or_untrusted_target() {
-        let dir = tmp_plugins_dir("rollback-closed");
-        let svc = svc_with(dir.clone(), strict_posture());
-        let empty = std::collections::BTreeMap::new();
-
-        // Absent file → NotFound.
-        assert!(matches!(
-            svc.resolve_plugin_rollback("nope.tar.gz", &empty),
-            Err(AdminError::NotFound(_))
-        ));
-
-        // An UNSIGNED artifact present in the dir, under the STRICT posture: trust refuses it even for
-        // a rollback (the floor was lowered, but the signature/opt-in gate still fails).
-        let lib = b"unsigned prior artifact";
-        let mut m = test_manifest("acme-store-x", "x", "acme", "1.4.0");
-        m.sha256 = busbar_plugin_sign::sha256_hex(lib);
-        let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap();
-        std::fs::write(dir.join("unsigned.tar.gz"), &tarball).unwrap();
-        let err = svc
-            .resolve_plugin_rollback("unsigned.tar.gz", &empty)
-            .unwrap_err();
-        assert!(
-            matches!(err, AdminError::Conflict(_)),
-            "an untrusted rollback target is refused (a rollback never launders trust), got {err:?}"
-        );
-    }
-
-    /// SECURITY: under the DEFAULT (strict) posture, an unsigned tarball present in the plugins dir
-    /// is reported present + `rejected` by the catalog WITHOUT ever being `dlopen`ed — the catalog
-    /// path is manifest-only (pure data), so the junk library bytes here can never execute.
-    #[test]
-    fn catalog_does_not_dlopen_an_untrusted_plugin() {
-        let dir = tmp_plugins_dir("untrusted-catalog");
-        let svc = svc_with(dir.clone(), strict_posture());
-        let lib = b"\x7fELF definitely not a loadable library";
-        let mut m = test_manifest("acme-store-evil", "evil", "acme", "1.0.0");
-        m.sha256 = busbar_plugin_sign::sha256_hex(lib);
-        let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap();
-        std::fs::write(dir.join("evil.tar.gz"), &tarball).unwrap();
-
-        let cat = svc.store_plugin_catalog();
-        let row = cat
-            .iter()
-            .find(|p| p.target.as_deref() == Some("evil.tar.gz"))
-            .expect("the untrusted plugin is listed in the catalog");
-        assert_eq!(
-            row.trust,
-            Some("rejected"),
-            "an unsigned plugin under the strict default posture is reported rejected"
-        );
-        assert_eq!(row.valid, Some(false), "and it is not loadable");
-        assert!(
-            row.error.as_deref().is_some_and(|e| e.contains("SKIPPED")),
-            "the exact skip reason is surfaced: {:?}",
-            row.error
-        );
-    }
-
-    /// A SIGNED upload from an allowlisted third-party publisher installs as `trusted`, and the
-    /// catalog reports the signed metadata + trusted verdict.
-    #[test]
-    fn install_signed_is_trusted() {
-        let key = SigningKey::from_bytes(&[7u8; 32]);
-        let lib = b"signed lib bytes";
-        let tarball = signed_tarball(
-            &key,
-            test_manifest("acme-store-sqlite", "acmesqlite", "acme", "2.1.0"),
-            lib,
-        );
-        let dir = tmp_plugins_dir("signed");
-        let svc = svc_with(dir.clone(), publisher_posture("acme", &key));
-
-        let view = svc
-            .install_store_plugin("acme.tar.gz", &tarball)
-            .expect("a signed, allowlisted upload installs under the strict posture");
-        assert_eq!(view.trust, "trusted");
-        assert_eq!(view.publisher.as_deref(), Some("acme"));
-        assert_eq!(view.version.as_deref(), Some("2.1.0"));
-        assert_eq!(view.name, "acme-store-sqlite");
-
-        let cat = svc.store_plugin_catalog();
-        let row = cat
-            .iter()
-            .find(|p| p.loader == "dynamic-library")
-            .expect("dynamic plugin");
-        assert_eq!(row.trust, Some("trusted"));
-        assert_eq!(row.publisher.as_deref(), Some("acme"));
-        assert_eq!(row.version.as_deref(), Some("2.1.0"));
-        assert_eq!(row.name, "acme-store-sqlite");
-    }
-
-    /// ANTI-DOWNGRADE at the ADMIN INSTALL boundary: a `plugins.min_versions` floor rejects a
-    /// VALIDLY-SIGNED but older release of the same plugin (keyed on the manifest NAME) — a
-    /// rollback/replay is a `409`, nothing is written. The release at/above the floor installs.
-    #[test]
-    fn install_downgraded_version_is_rejected_by_floor() {
-        let key = SigningKey::from_bytes(&[7u8; 32]);
-        let lib = b"lib bytes";
-        let mut cfg = publisher_posture("acme", &key);
-        cfg.min_versions
-            .insert("acme-store-sqlite".to_string(), "2.0.0".to_string());
-        let dir = tmp_plugins_dir("downgrade");
-        let svc = svc_with(dir.clone(), cfg);
-
-        // A validly-signed 1.9.0 is below the 2.0.0 floor -> rejected, nothing published.
-        let old = signed_tarball(
-            &key,
-            test_manifest("acme-store-sqlite", "acmesqlite", "acme", "1.9.0"),
-            lib,
-        );
-        let err = svc.install_store_plugin("old.tar.gz", &old).unwrap_err();
-        assert!(
-            matches!(&err, AdminError::Conflict(msg) if msg.contains("anti-downgrade")),
-            "got {err:?}"
-        );
-        assert!(!dir.join("old.tar.gz").exists());
-
-        // The current 2.1.0 clears the floor and installs as trusted.
-        let cur = signed_tarball(
-            &key,
-            test_manifest("acme-store-sqlite", "acmesqlite", "acme", "2.1.0"),
-            lib,
-        );
-        let view = svc
-            .install_store_plugin("cur.tar.gz", &cur)
-            .expect("a signed release at/above the floor installs");
-        assert_eq!(view.trust, "trusted");
-        assert_eq!(view.version.as_deref(), Some("2.1.0"));
-    }
-
-    /// A signed upload whose publisher is NOT allowlisted is untrusted; under the strict default it
-    /// is a conflict (rejected), and nothing is written.
-    #[test]
-    fn install_unknown_publisher_rejected() {
-        let key = SigningKey::from_bytes(&[3u8; 32]);
-        let tarball = signed_tarball(
-            &key,
-            test_manifest("stranger-store-x", "strangerx", "stranger", "1.0.0"),
-            b"lib",
-        );
-        let dir = tmp_plugins_dir("unknownpub");
-        let svc = svc_with(dir.clone(), strict_posture());
-        assert!(matches!(
-            svc.install_store_plugin("x.tar.gz", &tarball),
-            Err(AdminError::Conflict(_))
-        ));
-        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
-    }
-
-    /// CONFLICT at the ADMIN INSTALL boundary: an upload whose alias collides with a DIFFERENT
-    /// already-installed loadable plugin is a `409` naming both ("can't use redis and a
-    /// third-party redis"); overwriting the SAME plugin (same name, same file) is a legal upgrade.
-    #[test]
-    fn install_alias_conflict_is_rejected() {
-        let key = SigningKey::from_bytes(&[9u8; 32]);
-        let dir = tmp_plugins_dir("conflict");
-        let svc = svc_with(dir.clone(), publisher_posture("acme", &key));
-
-        let first = signed_tarball(
-            &key,
-            test_manifest("acme-store-redis", "redis", "acme", "1.0.0"),
-            b"lib a",
-        );
-        svc.install_store_plugin("first.tar.gz", &first)
-            .expect("first install");
-
-        // A DIFFERENT plugin claiming the same alias -> conflict naming both.
-        let clash = signed_tarball(
-            &key,
-            test_manifest("other-store-redis", "redis", "acme", "1.0.0"),
-            b"lib b",
-        );
-        let err = svc
-            .install_store_plugin("clash.tar.gz", &clash)
-            .unwrap_err();
-        assert!(
-            matches!(&err, AdminError::Conflict(msg)
-                if msg.contains("acme-store-redis") && msg.contains("other-store-redis")),
-            "names both plugins: {err:?}"
-        );
-        assert!(!dir.join("clash.tar.gz").exists());
-
-        // Upgrading the SAME plugin in place (same name, same file) is allowed.
-        let upgrade = signed_tarball(
-            &key,
-            test_manifest("acme-store-redis", "redis", "acme", "1.1.0"),
-            b"lib a v2",
-        );
-        svc.install_store_plugin("first.tar.gz", &upgrade)
-            .expect("same-name overwrite is a legal upgrade");
-    }
-
-    // ---- groups read surface (Phase 1, task #100) ----
-
-    use crate::config::groups::{ChildDefault, LimitMetric, LimitWindow};
-    use crate::config::{GroupCfg, LimitCfg};
-
-    fn budget(cents: u64, per: LimitWindow) -> LimitCfg {
-        LimitCfg {
-            metric: LimitMetric::Budget,
-            amount: cents,
-            per: Some(per),
-            pool: None,
-            on_exhaust: None,
-            downgrade_to: None,
-        }
-    }
-
-    /// `list_groups` projects every `groups:` entry (name-sorted by the BTreeMap), faithfully
-    /// carrying parent, enabled, the ordered limits, and the `child_default` budget template.
-    #[tokio::test]
-    async fn list_groups_projects_the_limit_tree() {
-        let team = GroupCfg {
-            limits: vec![budget(20_000, LimitWindow::Month)],
-            child_default: Some(ChildDefault {
-                limits: vec![budget(2_000, LimitWindow::Month)],
-            }),
-            ..Default::default()
-        };
-        let bob = GroupCfg {
-            parent: Some("team".into()),
-            limits: vec![budget(3_000, LimitWindow::Month)],
-            ..Default::default()
-        };
-        let app = TestApp::new()
-            .group("team", team)
-            .group("user:bob", bob)
-            .build();
-        let svc = AdminService::new(app);
-
-        let page = svc.list_groups().await.expect("list ok");
-        // BTreeMap order: "team" < "user:bob".
-        assert_eq!(page.items.len(), 2);
-        let team = &page.items[0];
-        assert_eq!(team.name, "team");
-        assert_eq!(team.parent, None);
-        assert!(team.enabled);
-        assert_eq!(team.limits.len(), 1);
-        assert_eq!(team.limits[0].metric, "budget");
-        assert_eq!(team.limits[0].amount, 20_000);
-        assert_eq!(team.limits[0].per, Some("month"));
-        // The child_default template projects as an explicit limit list.
-        let cd = team.child_default.as_ref().expect("child_default present");
-        assert_eq!(cd.len(), 1);
-        assert_eq!(cd[0].amount, 2_000);
-
-        let bob = &page.items[1];
-        assert_eq!(bob.name, "user:bob");
-        assert_eq!(bob.parent.as_deref(), Some("team"));
-        assert!(bob.child_default.is_none());
-    }
-
-    /// `get_group` returns one entry by name; an unknown name is `not_found`.
-    #[tokio::test]
-    async fn get_group_by_name_and_not_found() {
-        let app = TestApp::new()
-            .group(
-                "acme",
-                GroupCfg {
-                    limits: vec![budget(5_000_000, LimitWindow::Month)],
-                    ..Default::default()
-                },
-            )
-            .build();
-        let svc = AdminService::new(app);
-
-        let g = svc.get_group("acme").await.expect("found");
-        assert_eq!(g.name, "acme");
-        assert_eq!(g.limits[0].amount, 5_000_000);
-
-        let err = svc.get_group("ghost").await.unwrap_err();
-        assert!(
-            matches!(&err, AdminError::NotFound(msg) if msg.contains("ghost")),
-            "unknown group is not_found: {err:?}"
-        );
-    }
-
-    /// A team ceiling with a per-user leaf beneath it — the base tree the mutation tests build on.
-    fn team_app() -> Arc<App> {
-        TestApp::new()
-            .group(
-                "team",
-                GroupCfg {
-                    limits: vec![budget(20_000, LimitWindow::Month)],
-                    ..Default::default()
-                },
-            )
-            .build()
-    }
-
-    /// `build_with_group` creates a valid leaf, bumps the version, and rebuilds the cost model so the
-    /// new group's limits are live in the enforcement projection (the "raise a user's budget" path).
-    #[test]
-    fn build_with_group_creates_leaf_and_rebuilds_cost() {
-        let app = team_app();
-        let bob = GroupCfg {
-            parent: Some("team".into()),
-            limits: vec![budget(3_000, LimitWindow::Month)],
-            ..Default::default()
-        };
-        let next = build_with_group(&app, "user:bob", bob).expect("valid leaf");
-        assert_eq!(next.config_version, app.config_version.wrapping_add(1));
-        assert!(next.groups_registry.contains_key("user:bob"));
-        // The rebuilt cost model sees the new leaf AND its parent chain (parent index resolved).
-        let leaf = next
-            .cost
-            .group_named("user:bob")
-            .expect("leaf in cost model");
-        assert!(leaf.parent.is_some(), "leaf's parent chain resolved");
-        // The parent's own ceiling is still present (cost rebuilt the WHOLE tree, not just the leaf).
-        assert!(next.cost.group_named("team").is_some());
-    }
-
-    /// A group whose `parent` names a nonexistent group is rejected at the door (validate_groups),
-    /// changing nothing — a 400 `invalid_request`.
-    #[test]
-    fn build_with_group_rejects_dangling_parent() {
-        let app = team_app();
-        let orphan = GroupCfg {
-            parent: Some("nonexistent".into()),
-            ..Default::default()
-        };
-        let Err(err) = build_with_group(&app, "orphan", orphan) else {
-            panic!("dangling parent must be rejected");
-        };
-        assert!(
-            matches!(&err, AdminError::Validation(m) if m.contains("orphan")),
-            "dangling parent is a validation error: {err:?}"
-        );
-    }
-
-    #[test]
-    fn build_with_group_rejects_empty_name() {
-        let app = team_app();
-        let Err(err) = build_with_group(&app, "   ", GroupCfg::default()) else {
-            panic!("empty name must be rejected");
-        };
-        assert!(matches!(err, AdminError::Validation(_)));
-    }
-
-    /// Deleting a leaf removes it from the registry and the rebuilt cost model.
-    #[test]
-    fn build_without_group_removes_leaf() {
-        // Build a tree that already contains the leaf.
-        let app = TestApp::new()
-            .group(
-                "team",
-                GroupCfg {
-                    limits: vec![budget(20_000, LimitWindow::Month)],
-                    ..Default::default()
-                },
-            )
-            .group(
-                "user:bob",
-                GroupCfg {
-                    parent: Some("team".into()),
-                    limits: vec![budget(3_000, LimitWindow::Month)],
-                    ..Default::default()
-                },
-            )
-            .build();
-        let next = build_without_group(&app, "user:bob").expect("leaf removable");
-        assert!(!next.groups_registry.contains_key("user:bob"));
-        assert!(next.cost.group_named("user:bob").is_none());
-        assert!(next.cost.group_named("team").is_some());
-    }
-
-    /// Deleting a group that still PARENTS another is a 409 conflict — never silently orphan the child.
-    #[test]
-    fn build_without_group_conflict_when_still_a_parent() {
-        let app = TestApp::new()
-            .group(
-                "team",
-                GroupCfg {
-                    limits: vec![budget(20_000, LimitWindow::Month)],
-                    ..Default::default()
-                },
-            )
-            .group(
-                "user:bob",
-                GroupCfg {
-                    parent: Some("team".into()),
-                    ..Default::default()
-                },
-            )
-            .build();
-        let Err(err) = build_without_group(&app, "team") else {
-            panic!("deleting a still-referenced parent must conflict");
-        };
-        assert!(
-            matches!(&err, AdminError::Conflict(m) if m.contains("team")),
-            "deleting a still-referenced parent is a conflict: {err:?}"
-        );
-    }
-
-    #[test]
-    fn build_without_group_not_found() {
-        let app = team_app();
-        let Err(err) = build_without_group(&app, "ghost") else {
-            panic!("unknown group must be not_found");
-        };
-        assert!(matches!(&err, AdminError::NotFound(m) if m.contains("ghost")));
-    }
-
-    // ---- group usage read (§6d, `GET /groups/{name}/usage`) ----
-
-    use crate::governance::{GovState, MemoryStore, TierTokens, VirtualKey};
-
-    /// The §6d fixture group: a group-wide requests cap (day), a group-wide budget (month), and a
-    /// POOL-SCOPED budget on `frontier` (month) — three distinct `(window, pool?)` enforcement
-    /// buckets from three limits.
-    fn usage_group_cfg() -> GroupCfg {
-        let limit = |metric, amount, per, pool: Option<&str>| LimitCfg {
-            metric,
-            amount,
-            per: Some(per),
-            pool: pool.map(String::from),
-            on_exhaust: None,
-            downgrade_to: None,
-        };
-        GroupCfg {
-            limits: vec![
-                limit(LimitMetric::Requests, 5, LimitWindow::Day, None),
-                limit(LimitMetric::Budget, 1_000, LimitWindow::Month, None),
-                limit(
-                    LimitMetric::Budget,
-                    500,
-                    LimitWindow::Month,
-                    Some("frontier"),
-                ),
-            ],
-            ..Default::default()
-        }
-    }
-
-    /// A cost model carrying `groups` and a rate card pricing model `m` at 10 micro-units per
-    /// token (in and out) — 1 cent per 1_000 tokens, so the derived-spend assertions are round.
-    fn usage_cost(groups: &std::collections::BTreeMap<String, GroupCfg>) -> crate::cost::CostModel {
-        let card = std::collections::BTreeMap::from([(
-            "m".to_string(),
-            crate::config::RateEntryCfg {
-                input_utok: 10.0,
-                output_utok: 10.0,
-                cache_read_utok: 0.0,
-                cache_write_utok: 0.0,
-            },
-        )]);
-        crate::cost::CostModel::resolve_parts(Some(&card), 0, groups)
-    }
-
-    fn usage_key(group: &str) -> VirtualKey {
-        VirtualKey {
-            id: "vk_usage_probe".to_string(),
-            key_hash: "h:vk_usage_probe".to_string(),
-            name: "usage-probe".to_string(),
-            allowed_pools: None,
-            enabled: true,
-            created_at: 0,
-            group: Some(group.to_string()),
-            labels: Default::default(),
-        }
-    }
-
-    fn input_toks(n: u64) -> TierTokens {
-        TierTokens {
-            input: n,
-            output: 0,
-            cache_read: 0,
-            cache_write: 0,
-        }
-    }
-
-    /// §6d: `get_group_usage` returns ONE row per `(window, pool?)` enforcement bucket. Usage is
-    /// driven through the REAL admission/accrual seam (`try_admit` + `record_usage`, the same path
-    /// the proxy charges), so the read proves: the pool-scoped bucket accounts ONLY its pool's
-    /// traffic, the group-wide buckets account everything, caps are projected from the limits, and
-    /// `budget_remaining_cents = cap − derived spend` (ledger × the current rate card).
-    #[tokio::test]
-    async fn get_group_usage_splits_window_pool_buckets_and_derives_remaining() {
-        let groups = std::collections::BTreeMap::from([("acme".to_string(), usage_group_cfg())]);
-        let gov = Arc::new(GovState::new(Arc::new(MemoryStore::new()), None).unwrap());
-        let app = TestApp::new()
-            .group("acme", usage_group_cfg())
-            .cost(usage_cost(&groups))
-            .governance(gov.clone())
-            .build();
-
-        // One request through `frontier` (100k tokens = 100 cents), one through `value` (50k =
-        // 50 cents). The frontier bucket must see only the first; the group-wide buckets both.
-        let k = usage_key("acme");
-        let now = crate::store::now();
-        gov.try_admit(&app.cost, &k, "frontier", now)
-            .expect("frontier request admits");
-        gov.record_usage(&app.cost, &k, "frontier", "m", &input_toks(100_000), now);
-        gov.try_admit(&app.cost, &k, "value", now)
-            .expect("value request admits");
-        gov.record_usage(&app.cost, &k, "value", "m", &input_toks(50_000), now);
-
-        let svc = AdminService::new(app);
-        let view = svc.get_group_usage("acme").await.expect("usage read");
-        assert_eq!(view.group, "acme");
-        assert!(view.enabled);
-        assert!(view.as_of >= now, "as_of is the read instant");
-        assert_eq!(
-            view.buckets.len(),
-            3,
-            "three (window, pool?) buckets: {:?}",
-            view.buckets
-        );
-        let find = |window: &str, pool: Option<&str>| {
-            view.buckets
-                .iter()
-                .find(|b| b.window == window && b.pool.as_deref() == pool)
-                .unwrap_or_else(|| {
-                    panic!("bucket ({window}, {pool:?}) missing: {:?}", view.buckets)
-                })
-        };
-
-        // (day, group-wide) — the requests cap's bucket: both admissions land; no budget cap ⇒
-        // no remaining (never a fabricated 0).
-        let day = find("day", None);
-        assert_eq!(day.requests, 2);
-        assert_eq!(day.tokens, 150_000);
-        assert_eq!(day.requests_cap, Some(5));
-        assert_eq!(day.budget_cap, None);
-        assert_eq!(day.budget_remaining_cents, None);
-
-        // (month, group-wide) — EVERY pool's traffic accounts here.
-        let month = find("month", None);
-        assert_eq!(month.requests, 2);
-        assert_eq!(month.tokens, 150_000);
-        assert_eq!(month.spend_cents, 150, "150k tokens at 1c/1k tokens");
-        assert_eq!(month.budget_cap, Some(1_000));
-        assert_eq!(month.budget_remaining_cents, Some(850));
-
-        // (month, frontier) — ONLY the frontier-dispatched request accounts here.
-        let frontier = find("month", Some("frontier"));
-        assert_eq!(frontier.requests, 1);
-        assert_eq!(frontier.tokens, 100_000);
-        assert_eq!(frontier.spend_cents, 100);
-        assert_eq!(frontier.budget_cap, Some(500));
-        assert_eq!(frontier.budget_remaining_cents, Some(400));
-    }
-
-    /// An unknown group is `not_found` — the usage read resolves against the enforcement
-    /// projection (the cost model), the same truth `try_admit` walks.
-    #[tokio::test]
-    async fn get_group_usage_unknown_group_not_found() {
-        let groups = std::collections::BTreeMap::from([("acme".to_string(), usage_group_cfg())]);
-        let app = TestApp::new()
-            .group("acme", usage_group_cfg())
-            .cost(usage_cost(&groups))
-            .build();
-        let svc = AdminService::new(app);
-        let err = svc.get_group_usage("ghost").await.unwrap_err();
-        assert!(
-            matches!(&err, AdminError::NotFound(m) if m.contains("ghost")),
-            "unknown group is not_found: {err:?}"
-        );
-    }
-
-    /// Governance OFF: the read still serves the full bucket projection — every bucket present
-    /// with ZERO usage, caps projected, remaining = the whole cap. The definition exists even
-    /// when nothing enforces (the doc contract on `get_group_usage`).
-    #[tokio::test]
-    async fn get_group_usage_governance_off_zero_usage_caps_projected() {
-        let groups = std::collections::BTreeMap::from([("acme".to_string(), usage_group_cfg())]);
-        let app = TestApp::new()
-            .group("acme", usage_group_cfg())
-            .cost(usage_cost(&groups))
-            .build(); // no .governance(..)
-        let svc = AdminService::new(app);
-        let view = svc.get_group_usage("acme").await.expect("usage read");
-        assert_eq!(
-            view.buckets.len(),
-            3,
-            "caps still projected: {:?}",
-            view.buckets
-        );
-        for b in &view.buckets {
-            assert_eq!(b.requests, 0, "governance off = zero usage ({b:?})");
-            assert_eq!(b.tokens, 0);
-            assert_eq!(b.spend_cents, 0);
-            assert_eq!(
-                b.budget_remaining_cents, b.budget_cap,
-                "nothing spent ⇒ the whole cap remains ({b:?})"
-            );
-        }
-        // The caps themselves survived the projection.
-        assert!(view.buckets.iter().any(|b| b.requests_cap == Some(5)));
-        assert!(view
-            .buckets
-            .iter()
-            .any(|b| b.budget_cap == Some(500) && b.pool.as_deref() == Some("frontier")));
     }
 }

@@ -10,10 +10,6 @@
 //!   plus the constant-time credential primitives every module compares with.
 //! - **hooks** — the [`RoutingPolicy`] trait (decide/transform/notify + configure/describe) and
 //!   the read-only projections it is invoked with.
-//! - **store** — the [`Store`] trait a `db` plugin implements, plus the durable-store records
-//!   ([`VirtualKey`], [`UsageLedger`], [`AwsCredential`], …) it reads and writes.
-//! - **secret** - the [`SecretModule`] trait a `kind: secret` plugin implements (a config secret
-//!   reference's `settings` map in, the secret bytes out; fail-closed).
 //!
 //! Everything here is a CONTRACT, not machinery: no I/O, no engine state, no transport. A
 //! third-party plugin crate that depends only on `busbar-api` is architecturally identical to a
@@ -21,18 +17,9 @@
 
 mod auth;
 mod hooks;
-mod secret;
-mod store;
 
 pub use auth::{constant_time_eq, sha256_hex, AuthModule, AuthOutcome, Principal};
 pub use hooks::{
-    BudgetBucketState, CallerIdentity, Candidate, HookStatus, PolicyError, PolicyResult,
-    PromptProjection, RewriteReply, RoutingContext, RoutingDecision, RoutingPolicy, RoutingRequest,
-    TransformOutcome,
-};
-pub use secret::{SecretError, SecretModule, SecretResult};
-pub use store::{
-    AuditRecord, AwsCredential, AwsKeyEntry, MeteringDelta, MeteringRow, ModelTokens,
-    ModelTokensDelta, Store, StoreError, StoreResult, TierTokens, TierTokensDelta, UsageDelta,
-    UsageLedger, VirtualKey,
+    CallerIdentity, Candidate, HookStatus, PolicyError, PolicyResult, PromptProjection,
+    RewriteReply, RoutingContext, RoutingDecision, RoutingPolicy, RoutingRequest, TransformOutcome,
 };

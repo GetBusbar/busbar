@@ -551,53 +551,43 @@ async fn body_model(resp: Response) -> String {
         .to_string()
 }
 
-/// An in-process TAP capture: a `RoutingPolicy` whose fire-and-forget `notify` records the delivered
-/// projection bytes. The tap seam is transport-agnostic — the retired webhook was just one delivery
-/// path — so capturing the `notify` projection directly exercises the SAME seam (the proxy builds the
-/// stage projection and spawns `notify`) without an HTTP server or a live plugin.
-struct CaptureTap {
-    last: std::sync::Mutex<Option<Vec<u8>>>,
-}
-
-#[async_trait::async_trait]
-impl crate::hooks::RoutingPolicy for CaptureTap {
-    async fn decide(
-        &self,
-        _req: &crate::hooks::RoutingRequest<'_>,
-        _cands: &[crate::hooks::Candidate<'_>],
-        _ctx: &crate::hooks::RoutingContext<'_>,
-        _budget: std::time::Duration,
-    ) -> crate::hooks::PolicyResult {
-        Ok(crate::hooks::RoutingDecision::Abstain)
-    }
-    fn name(&self) -> &'static str {
-        "capture-tap"
-    }
-    async fn notify(&self, projection: &[u8], _budget: std::time::Duration) {
-        *self.last.lock().unwrap() = Some(projection.to_vec());
-    }
-}
-
-/// Build an in-process TAP capture as the App stage-tap triple.
+/// Build a webhook TAP transport pointed at a mock server, as the App stage-tap triple.
 async fn webhook_tap() -> (
-    Arc<CaptureTap>,
+    crate::test_support::MockServer,
+    Arc<crate::test_support::MockServerState>,
     (
         std::time::Duration,
         bool,
         Arc<dyn crate::hooks::RoutingPolicy>,
     ),
 ) {
-    let cap = Arc::new(CaptureTap {
-        last: std::sync::Mutex::new(None),
-    });
-    let policy: Arc<dyn crate::hooks::RoutingPolicy> = cap.clone();
-    (cap, (std::time::Duration::from_millis(500), false, policy))
+    let state = Arc::new(crate::test_support::MockServerState::new());
+    for _ in 0..4 {
+        state.push(crate::test_support::MockResponse::Ok {
+            status: StatusCode::OK,
+            body: serde_json::json!({}),
+        });
+    }
+    let server = crate::test_support::MockServer::new(state.clone()).await;
+    let url = crate::observability::validate_routing_webhook_url(Some(&format!(
+        "{}/tap",
+        server.base_url()
+    )))
+    .expect("loopback tap url");
+    let policy: Arc<dyn crate::hooks::RoutingPolicy> = Arc::new(
+        crate::hooks::webhook::WebhookPolicy::new(url, reqwest::Client::new()),
+    );
+    (
+        server,
+        state,
+        (std::time::Duration::from_millis(500), false, policy),
+    )
 }
 
-/// Poll the in-process tap capture until `notify` records a projection (taps are detached tasks).
-async fn wait_for_tap_body(cap: &CaptureTap) -> serde_json::Value {
+/// Poll the mock tap server until it records a request body (taps are detached tasks).
+async fn wait_for_tap_body(state: &crate::test_support::MockServerState) -> serde_json::Value {
     for _ in 0..200 {
-        if let Some(body) = cap.last.lock().unwrap().clone() {
+        if let Some(body) = state.get_last_request_body() {
             return serde_json::from_slice(&body).expect("tap payload is JSON");
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -606,12 +596,13 @@ async fn wait_for_tap_body(cap: &CaptureTap) -> serde_json::Value {
 }
 
 /// STAGE TAPS: an UNAUTHENTICATED request fires the synthetic `rejected_by_auth` completion
-/// (through the real auth middleware) - audit taps see auth denials too. Uses the test-only
-/// data-plane module (a non-empty chain with no matching credential denies fail-closed).
+/// (through the real auth middleware) — audit taps see auth denials too. Requires the tokens
+/// module (featureless builds have no data-plane auth to reject with).
+#[cfg(feature = "auth-tokens")]
 #[tokio::test]
 async fn completion_tap_fires_synthetic_rejected_by_auth() {
     crate::metrics::init();
-    let (cap, tap) = webhook_tap().await;
+    let (server, state, tap) = webhook_tap().await;
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
@@ -619,9 +610,11 @@ async fn completion_tap_fires_synthetic_rejected_by_auth() {
             "http://127.0.0.1:1/",
         ))
         .pool("p", &[(0, 1)])
-        .auth(Arc::new(crate::auth::AuthMiddleware::new_builtin(
-            &serde_yaml::from_str::<crate::config::AuthCfg>("chain: [test-groups-module]\n")
-                .unwrap(),
+        .auth(Arc::new(crate::auth::AuthMiddleware::new(
+            &serde_yaml::from_str::<crate::config::AuthCfg>(
+                "chain: [tokens]\nclient_tokens: [good-token]\n",
+            )
+            .unwrap(),
         )))
         .build();
     Arc::get_mut(&mut app)
@@ -640,24 +633,29 @@ async fn completion_tap_fires_synthetic_rejected_by_auth() {
         .await
         .unwrap();
     assert_eq!(resp.status().as_u16(), 401);
-    let payload = wait_for_tap_body(&cap).await;
+    let payload = wait_for_tap_body(&state).await;
     assert_eq!(payload["stage"]["at"], "completion");
     assert_eq!(payload["stage"]["outcome"], "rejected_by_auth");
     assert_eq!(payload["stage"]["status"], 401);
     serve.abort();
+    server.shutdown().await;
 }
 
 /// REGRESSION (audit c1r6): the completion-tap `status` must be the PROTOCOL-NATIVE auth-failure
 /// status the client actually receives — not a hardcoded 401. A Gemini ingress bad-key denial is
 /// HTTP 400 (INVALID_ARGUMENT), so a tap watching it must see 400, matching the served response.
+/// Gated on the tokens module (featureless builds have no data-plane auth to reject with).
+#[cfg(feature = "auth-tokens")]
 #[tokio::test]
 async fn completion_tap_status_is_protocol_native_gemini_400() {
     crate::metrics::init();
-    let (cap, tap) = webhook_tap().await;
+    let (server, state, tap) = webhook_tap().await;
     let mut app = TestApp::new()
-        .auth(Arc::new(crate::auth::AuthMiddleware::new_builtin(
-            &serde_yaml::from_str::<crate::config::AuthCfg>("chain: [test-groups-module]\n")
-                .unwrap(),
+        .auth(Arc::new(crate::auth::AuthMiddleware::new(
+            &serde_yaml::from_str::<crate::config::AuthCfg>(
+                "chain: [tokens]\nclient_tokens: [good-token]\n",
+            )
+            .unwrap(),
         )))
         .build();
     Arc::get_mut(&mut app)
@@ -679,20 +677,21 @@ async fn completion_tap_status_is_protocol_native_gemini_400() {
         .await
         .unwrap();
     assert_eq!(resp.status().as_u16(), 400, "gemini bad-key is native 400");
-    let payload = wait_for_tap_body(&cap).await;
+    let payload = wait_for_tap_body(&state).await;
     assert_eq!(payload["stage"]["outcome"], "rejected_by_auth");
     assert_eq!(
         payload["stage"]["status"], 400,
         "the tap status must match the client-visible native status, not a hardcoded 401"
     );
     serve.abort();
+    server.shutdown().await;
 }
 
 /// STAGE TAPS: a completion tap fires with the SYNTHETIC `rejected_by_gate` outcome when a
 /// decision gate rejects — audit taps see denials, not just served requests.
 #[tokio::test]
 async fn completion_tap_fires_synthetic_rejected_by_gate() {
-    let (cap, tap) = webhook_tap().await;
+    let (server, state, tap) = webhook_tap().await;
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
@@ -708,16 +707,17 @@ async fn completion_tap_fires_synthetic_rejected_by_gate() {
     }
     let resp = fire(app, 1).await;
     assert_eq!(resp.status().as_u16(), 451);
-    let payload = wait_for_tap_body(&cap).await;
+    let payload = wait_for_tap_body(&state).await;
     assert_eq!(payload["stage"]["at"], "completion");
     assert_eq!(payload["stage"]["outcome"], "rejected_by_gate");
     assert_eq!(payload["stage"]["status"], 451);
+    server.shutdown().await;
 }
 
 /// STAGE TAPS: a completion tap reports `ok` + the status for a served request.
 #[tokio::test]
 async fn completion_tap_reports_ok_outcome() {
-    let (cap, tap) = webhook_tap().await;
+    let (server, state, tap) = webhook_tap().await;
     let lane = mock_lane("served").await;
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
@@ -732,17 +732,18 @@ async fn completion_tap_reports_ok_outcome() {
         .tap_hooks_completion = vec![tap];
     let resp = fire(app, 1).await;
     assert_eq!(resp.status().as_u16(), 200);
-    let payload = wait_for_tap_body(&cap).await;
+    let payload = wait_for_tap_body(&state).await;
     assert_eq!(payload["stage"]["at"], "completion");
     assert_eq!(payload["stage"]["outcome"], "ok");
     assert_eq!(payload["stage"]["status"], 200);
+    server.shutdown().await;
     lane.shutdown().await;
 }
 
 /// STAGE TAPS: an attempt tap carries the failover story — attempt number + dispatched target.
 #[tokio::test]
 async fn attempt_tap_carries_attempt_story() {
-    let (cap, tap) = webhook_tap().await;
+    let (server, state, tap) = webhook_tap().await;
     let lane = mock_lane("served").await;
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
@@ -757,7 +758,7 @@ async fn attempt_tap_carries_attempt_story() {
         .tap_hooks_attempt = vec![tap];
     let resp = fire(app, 1).await;
     assert_eq!(resp.status().as_u16(), 200);
-    let payload = wait_for_tap_body(&cap).await;
+    let payload = wait_for_tap_body(&state).await;
     assert_eq!(payload["stage"]["at"], "attempt");
     assert_eq!(payload["stage"]["attempt_number"], 1);
     // Renamed target -> model (wire audit L10: one name for one concept — the same string
@@ -767,13 +768,14 @@ async fn attempt_tap_carries_attempt_story() {
         payload["stage"].get("previous_failure").is_none(),
         "no failure precedes the first attempt"
     );
+    server.shutdown().await;
     lane.shutdown().await;
 }
 
 /// STAGE TAPS: a route tap observes the post-reconcile candidate-set size.
 #[tokio::test]
 async fn route_tap_reports_surviving_candidates() {
-    let (cap, tap) = webhook_tap().await;
+    let (server, state, tap) = webhook_tap().await;
     let lane = mock_lane("served").await;
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
@@ -786,9 +788,10 @@ async fn route_tap_reports_surviving_candidates() {
     Arc::get_mut(&mut app).expect("sole owner").tap_hooks_route = vec![tap];
     let resp = fire(app, 1).await;
     assert_eq!(resp.status().as_u16(), 200);
-    let payload = wait_for_tap_body(&cap).await;
+    let payload = wait_for_tap_body(&state).await;
     assert_eq!(payload["stage"]["at"], "route");
     assert_eq!(payload["stage"]["remaining_candidates"], 1);
+    server.shutdown().await;
     lane.shutdown().await;
 }
 
@@ -861,6 +864,7 @@ async fn same_protocol_passthrough_carries_global_rewrite() {
         v["messages"][0]["content"], "COMPRESSED",
         "the upstream must see the REWRITTEN body on the same-protocol fast path"
     );
+    server.shutdown().await;
 }
 
 /// REGRESSION (Headroom e2e finding): a POOL-scoped `prompt: rw` gate joins the phase-1
@@ -905,6 +909,7 @@ async fn pool_scoped_rw_gate_rewrites_the_body() {
         v["messages"][0]["content"], "POOL-COMPRESSED",
         "a pool-scoped rw gate must rewrite the dispatched body"
     );
+    server.shutdown().await;
 }
 
 /// A test policy whose decide always errors — the on_error-chain tests' failing primary.
@@ -1325,16 +1330,18 @@ async fn max_tokens_saturates_not_wraps() {
 /// the projection.
 #[tokio::test]
 async fn send_user_projects_governance_key_identity() {
-    use crate::governance::{GovState, MemoryStore, NewKeySpec};
-    let store = std::sync::Arc::new(MemoryStore::new());
-    let gov = std::sync::Arc::new(GovState::new(store, None).expect("gov state"));
+    use crate::governance::{GovState, NewKeySpec, SqliteStore};
+    let store = std::sync::Arc::new(SqliteStore::open_in_memory().expect("in-memory store"));
+    let gov = std::sync::Arc::new(GovState::new(store, 0, 0, None).expect("gov state"));
     let (key, secret) = gov
         .create_key(
             NewKeySpec {
                 name: "sales-team".to_string(),
-                allowed_pools: None,
-                group: None,
-                labels: Default::default(),
+                allowed_pools: vec![],
+                max_budget_cents: None,
+                budget_period: "monthly".to_string(),
+                rpm_limit: None,
+                tpm_limit: None,
             },
             1,
         )
@@ -1428,16 +1435,18 @@ async fn send_user_falls_back_to_synthesized_group_key_identity() {
     }];
     // A synthesized principal key exactly as the auth layer builds one for a group/SSO caller:
     // id/name carry the principal, key_hash is a non-secret marker never inserted into by_hash.
-    let synth = std::sync::Arc::new(crate::governance::VirtualKey {
+    let synth = crate::governance::VirtualKey {
         id: "eng-oncall".to_string(),
         key_hash: "principal:eng-oncall".to_string(),
         name: "eng-oncall".to_string(),
-        allowed_pools: None,
+        allowed_pools: vec![],
+        max_budget_cents: None,
+        budget_period: "total".to_string(),
+        rpm_limit: None,
+        tpm_limit: None,
         enabled: true,
         created_at: 0,
-        group: None,
-        labels: Default::default(),
-    });
+    };
     let rc = RequestCtx::new(60);
     let v = body();
     // caller_token is the RAW SSO bearer — NOT a virtual-key secret, so lookup would miss.
@@ -1494,16 +1503,18 @@ async fn forward_with_pool_keyed_threads_group_key_to_pool_policy() {
         .pool("p", &[(0, 1)])
         .pool_runtime("p", rt)
         .build();
-    let synth = std::sync::Arc::new(crate::governance::VirtualKey {
+    let synth = crate::governance::VirtualKey {
         id: "eng-oncall".to_string(),
         key_hash: "principal:eng-oncall".to_string(),
         name: "eng-oncall".to_string(),
-        allowed_pools: None,
+        allowed_pools: vec![],
+        max_budget_cents: None,
+        budget_period: "total".to_string(),
+        rpm_limit: None,
+        tpm_limit: None,
         enabled: true,
         created_at: 0,
-        group: None,
-        labels: Default::default(),
-    });
+    };
     let body = Bytes::from(serde_json::to_vec(&body()).unwrap());
     let cands = vec![WeightedLane {
         reasoning: None,

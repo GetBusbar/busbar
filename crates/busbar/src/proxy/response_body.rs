@@ -5,18 +5,8 @@ use super::*;
 #[derive(Clone)]
 pub(crate) struct UsageSink {
     pub(crate) gov: Arc<crate::governance::GovState>,
-    /// The resolved cost model (chain topology; rates are NOT used at accrual - tokens are the
-    /// ledger, spend derives at read time). Arc bump per request, rebuilt on config apply.
-    pub(crate) cost: Arc<crate::cost::CostModel>,
-    /// The resolved virtual key, shared via `Arc`: `key_id` is read THROUGH it (`key.id`) at
-    /// charge time, so building the sink (once per request) and cloning it (once per failover
-    /// attempt) is a refcount bump, not a per-request `String` clone.
-    pub(crate) key: Arc<crate::governance::VirtualKey>,
-    /// The pool this request was ADMITTED through (the ingress-requested pool) - the accounting
-    /// scope for pool-qualified limits. Stream-end token accrual charges exactly the buckets the
-    /// admission charged, so the two can never disagree on a pool-scoped budget. `Arc<str>`: the
-    /// sink clones per failover attempt.
-    pub(crate) pool: std::sync::Arc<str>,
+    pub(crate) key_id: String,
+    pub(crate) period: String,
     /// Wall-clock epoch (seconds) captured ONCE at header-arrival time for this request. Both the
     /// flat per-request fee (`ingress::budget_check` → `try_charge_request_within_budget`) and the token fee (`record_tokens`,
     /// fired at stream end / on the buffered path) are attributed to the window this epoch implies,
@@ -25,22 +15,13 @@ pub(crate) struct UsageSink {
     /// calls read the clock independently and could land in different 60s rate windows / budget
     /// periods, mis-attributing spend and TPM.
     pub(crate) charged_at: u64,
-    /// The admission's in-flight HOLDS (the `concurrent` limit gauges), released when the LAST
-    /// clone of this sink drops - i.e. when the response stream completes or the request context
-    /// unwinds on any error path. `Arc` because the sink clones per failover attempt; `None` for
-    /// a chain with no concurrent caps or a test sink built off the admission path. Never read:
-    /// the field exists purely so its Drop (on the last clone) releases the gauges.
-    #[allow(dead_code)]
-    pub(crate) admit: Option<Arc<crate::governance::AdmitGrant>>,
 }
 
 /// Body wrapper that drives IR-based usage extraction, billing, and mid-stream error handling for
 /// streaming responses.
 pub(crate) struct FirstByteBody<S, P> {
     inner: S,
-    // Plain bool: the flag is only ever read/written from the stream's own poll context (the
-    // Arc<AtomicBool> capability was never shared with anyone) — no alloc, no atomics.
-    first_byte_sent: bool,
+    first_byte_sent: Arc<AtomicBool>,
     /// True when the upstream body is an incremental stream (SSE or AWS event-stream). Drives the
     /// after-first-byte error-emission behavior (vs. propagating the error for pre-first-byte
     /// failover). Derived from the UPSTREAM Content-Type.
@@ -49,13 +30,7 @@ pub(crate) struct FirstByteBody<S, P> {
     /// is emitted in THIS protocol's framing so a native client SDK can decode it — keying the
     /// framing decision off the upstream CT (which on a cross-protocol reframe describes the egress,
     /// not the client) was the bug.
-    ///
-    /// Held as `&'static str` (the registry interns every protocol name as `&'static`), not an owned
-    /// `Box<str>` — the previous `Box::from(ingress_protocol)` heap-allocated + memcpy'd this short
-    /// static name on EVERY streaming response. Resolved once in the constructor to the canonical
-    /// interned name (falling back to `"openai"` for an unknown ingress, the same default the error
-    /// framing already uses), so a streaming response no longer allocates for it.
-    ingress_protocol: &'static str,
+    ingress_protocol: Box<str>,
     /// The operation this response belongs to. Drives whether the non-stream body is buffered for
     /// usage extraction (`taps_nonstream_usage`) and how usage is read from it (`extract_usage`).
     /// Chat reads the egress reader's IR usage; a flat-fee op taps nothing.
@@ -135,26 +110,18 @@ where
         usage_sink: Option<UsageSink>,
         budget_spent: bool,
     ) -> Self {
-        // Resolve the ingress protocol ONCE: it supplies both the binary-eventstream flag AND the
-        // interned `&'static` name we store (no per-response allocation for the name). An unknown
-        // ingress protocol falls back to `openai` — the exact default `ingress_error` /
-        // `mid_stream_error_bytes` already use for framing, so the fallback is behavior-preserving.
-        let ingress_proto = crate::proto::protocol_for(ingress_protocol);
         Self {
             inner,
-            first_byte_sent: false,
+            first_byte_sent: Arc::new(AtomicBool::new(false)),
             is_sse,
-            // Whether the client expects a binary event-stream body (Bedrock) rather than SSE text.
-            // Dispatches through the `ingress_is_eventstream` vtable method so this constructor carries
-            // no `== "bedrock"` branch — a future protocol with binary framing just overrides it.
-            ingress_eventstream: ingress_proto
-                .as_ref()
+            // Resolve the ingress protocol's writer ONCE to determine whether the client expects a
+            // binary event-stream body (Bedrock) rather than SSE text. Dispatches through the
+            // `ingress_is_eventstream` vtable method so this constructor carries no `== "bedrock"`
+            // branch — a future protocol with a binary framing just overrides the method.
+            ingress_eventstream: crate::proto::protocol_for(ingress_protocol)
                 .map(|p| p.writer().ingress_is_eventstream())
                 .unwrap_or(false),
-            ingress_protocol: ingress_proto
-                .as_ref()
-                .map(|p| p.name_static())
-                .unwrap_or("openai"),
+            ingress_protocol: Box::from(ingress_protocol),
             op,
             permit: Some(permit),
             app: Some(app),
@@ -189,8 +156,8 @@ where
         loop {
             match Pin::new(&mut this.inner).poll_next(cx) {
                 Poll::Ready(Some(Ok(chunk))) => {
-                    if !this.first_byte_sent {
-                        this.first_byte_sent = true;
+                    if !this.first_byte_sent.load(Ordering::Relaxed) {
+                        this.first_byte_sent.store(true, Ordering::Relaxed);
                     }
                     // cross-protocol → translate egress SSE bytes to the ingress format. SAME-protocol
                     // (Change B) → `t.feed` returns the VERBATIM original frame bytes. Billing now reads
@@ -219,15 +186,10 @@ where
                     // and (b) the unknown-protocol fallback (`new_same_proto` returned `None`), which has
                     // no reader to drive the IR and therefore no usage source. The bytes always stream to
                     // the client unchanged; for (a) we retain a bounded copy for IR-based billing below.
-                    // Only buffer when the operation taps usage from the body AND there is a sink to
-                    // bill it to. Chat and the token-billed ops tap; but with governance OFF (or no
-                    // resolved key) `usage_sink` is `None`, so the reassembled copy + stream-end
-                    // parse+IR-decode below would be pure waste — nothing consumes the extracted usage.
-                    // Gating on `usage_sink.is_some()` skips the per-response buffer copy AND the
-                    // full-body JSON parse + IR build entirely on the no-governance hot path (a large
-                    // RPS/RSS win), while a flat-fee op (or a large-binary response) skips it too. The
-                    // bytes still relay verbatim below, unbuffered. (R1.)
-                    if !this.is_sse && this.op.taps_nonstream_usage() && this.usage_sink.is_some() {
+                    // Only buffer when the operation actually taps usage from the body. Chat and the
+                    // token-billed ops do; a flat-fee op (or a large-binary response) skips the copy
+                    // entirely — the bytes still relay verbatim below, unbuffered.
+                    if !this.is_sse && this.op.taps_nonstream_usage() {
                         // SAME-PROTOCOL NON-STREAM `application/json` passthrough (Change A path #4): the
                         // non-stream analog of B's read-for-IR-emit-verbatim. The body relays verbatim,
                         // but a bounded copy is retained so the stream-end arm can run the egress reader
@@ -275,7 +237,7 @@ where
                     // Drop-time token billing (both this SSE arm and the non-SSE arm below), symmetric
                     // with the terminal-error / abort no-bill gates. (audit M3.)
                     this.stream_failed = true;
-                    let had_first = this.first_byte_sent;
+                    let had_first = this.first_byte_sent.load(Ordering::Relaxed);
                     if had_first && this.is_sse {
                         // Mid-stream failure after first byte in SSE mode: record breaker failure then emit SSE error event
                         if let Some(ref app) = this.app {
@@ -332,7 +294,7 @@ where
                         // alone would inject SSE text into a binary eventstream body on a
                         // bedrock-ingress → SSE-egress reframe — an undecodable frame for the SDK.
                         let err_bytes = mid_stream_error_bytes(
-                            this.ingress_protocol,
+                            &this.ingress_protocol,
                             this.ingress_eventstream,
                             MID_STREAM_GENERIC_DETAIL,
                         );
@@ -347,39 +309,33 @@ where
                             error = %e,
                             "pre-first-byte upstream transport error; terminating body stream generically"
                         );
-                        // Transport failure on the streaming path - reached for a PRE-first-byte failure
-                        // (either SSE or non-SSE) and for a post-first-byte NON-SSE mid-body failure
-                        // (the post-first-byte SSE case is handled by the if-branch above). In ALL of
-                        // these the 2xx headers already recorded an optimistic breaker SUCCESS (via
-                        // `record_success_in`), but the response never arrived intact, so that success is
-                        // wrong. Record a COMPENSATING transient so the failure counts against the lane.
-                        //
-                        // P2 #2 FIX: this transient is now recorded UNCONDITIONALLY on the transport
-                        // failure - it is NO LONGER gated on `had_first`. Previously a pre-first-byte
-                        // failure recorded nothing (treated as "refund-only, no body content emitted"),
-                        // which meant a lane that connects, returns headers, then dies before the first
-                        // byte on EVERY attempt kept accruing optimistic successes and NEVER tripped its
-                        // circuit breaker - traffic pinned to a black-hole lane. A pre-first-byte
-                        // transport death IS a lane fault (the connection was accepted then broke with
-                        // zero usable bytes), exactly like the buffered `ReadEnd::TransportError` paths,
-                        // which already record a transient with no first-byte gate. Budget is still
-                        // refunded below (no usable response was delivered); the two are independent.
-                        if let Some(ref app) = this.app {
-                            let what = if had_first {
-                                "mid-body-transport"
-                            } else {
-                                "pre-first-byte-transport"
-                            };
-                            let tripped = app.store.record_transient_in(
-                                &this.pool,
-                                this.lane_idx,
-                                what,
-                                &this.breaker_cfg,
-                                None,
-                            );
-                            // A threshold-based Closed→Open trip here is a breaker trip (#29).
-                            if tripped {
-                                emit_breaker_trip(app, &this.pool, this.lane_idx);
+                        // Mid-BODY transport failure AFTER the first byte on a NON-SSE same-protocol
+                        // passthrough (e.g. OpenAI→OpenAI /chat/completions, content-type
+                        // application/json): the 2xx headers already recorded an optimistic breaker
+                        // SUCCESS (via `record_success_in`), but the body never arrived intact, so that
+                        // success is wrong — exactly the case the SSE if-branch above and BOTH buffered
+                        // `ReadEnd::TransportError` paths compensate. The SSE
+                        // branch couldn't fire here (this path is reached only when `!this.is_sse`), and
+                        // without this the optimistic success is NEVER reversed → repeated mid-body
+                        // failures accumulate as successes and the lane never trips. Record a compensating
+                        // transient. Gate on `had_first`: a PRE-first-byte failure (had_first == false) is
+                        // the original symmetric-with-#21 refund-only case (no streamed body content was
+                        // ever emitted to the client) and must NOT additionally record a transient — that
+                        // would be a sibling over-broad fix. Only a post-first-byte mid-body failure both
+                        // refunds budget AND records the failed transfer.
+                        if had_first {
+                            if let Some(ref app) = this.app {
+                                let tripped = app.store.record_transient_in(
+                                    &this.pool,
+                                    this.lane_idx,
+                                    "mid-body-transport",
+                                    &this.breaker_cfg,
+                                    None,
+                                );
+                                // A threshold-based Closed→Open trip here is a breaker trip (#29).
+                                if tripped {
+                                    emit_breaker_trip(app, &this.pool, this.lane_idx);
+                                }
                             }
                         }
                         // Symmetric with the buffered `ReadEnd::TransportError` path (#21): the 2xx
@@ -444,7 +400,8 @@ where
                         .and_then(|t| t.terminal_error())
                         .is_some();
                     let breaker_failed = stream_terminal_error || translate_aborted;
-                    if this.is_sse && this.first_byte_sent && breaker_failed {
+                    if this.is_sse && this.first_byte_sent.load(Ordering::Relaxed) && breaker_failed
+                    {
                         if let Some(app) = this.app.as_ref() {
                             // Distinguish the two failure lineages in the recorded reason so the
                             // R25 terminal-error path and this R26 translate-abort sibling remain
@@ -525,23 +482,19 @@ where
                     //     was relayed verbatim; this is the read-for-IR side-channel for billing.
                     // The unknown-protocol fallback passthrough has no reader and yields `None` (no usage
                     // source — same as before; an unknown protocol cannot be metered).
-                    // Skip usage extraction ENTIRELY when there is no sink to bill (governance off /
-                    // no key): the terminal-usage clone and the non-stream reader run only to feed
-                    // `record_tokens`, which the `usage_sink.take()` gate below no-ops. (R1.)
-                    let ir_usage: Option<crate::ir::IrUsage> = if this.usage_sink.is_none() {
-                        None
-                    } else if let Some(t) = this.translate.as_ref() {
-                        t.usage().cloned()
-                    } else if !this.is_sse && !this.nonstream_buf.is_empty() {
-                        // Same-protocol non-stream body relayed verbatim; the operation reads
-                        // usage from the reassembled bytes. Chat runs the egress reader and
-                        // reports IR usage (byte-identical to the previous inline read); a
-                        // flat-fee op returns None and bills nothing.
-                        let buf = std::mem::take(&mut this.nonstream_buf);
-                        this.op.extract_usage(this.ingress_protocol, &buf)
-                    } else {
-                        None
-                    };
+                    let ir_usage: Option<crate::ir::IrUsage> =
+                        if let Some(t) = this.translate.as_ref() {
+                            t.usage().cloned()
+                        } else if !this.is_sse && !this.nonstream_buf.is_empty() {
+                            // Same-protocol non-stream body relayed verbatim; the operation reads
+                            // usage from the reassembled bytes. Chat runs the egress reader and
+                            // reports IR usage (byte-identical to the previous inline read); a
+                            // flat-fee op returns None and bills nothing.
+                            let buf = std::mem::take(&mut this.nonstream_buf);
+                            this.op.extract_usage(&this.ingress_protocol, &buf)
+                        } else {
+                            None
+                        };
                     // Charge this request's token usage to the virtual key's budget (once) — but ONLY
                     // for a cleanly-terminated stream. A stream that saw a reader-emitted terminal ERROR
                     // event (`translate.terminal_error()`) OR whose cross-protocol translate aborted
@@ -568,35 +521,34 @@ where
                             .is_some()
                             || translate_aborted;
                         if !billing_failed {
-                            // Ledger the TIER SPLIT (uncached input / output / cache-read /
-                            // cache-write - each prices differently under the rate card) against
-                            // the SERVING lane's resolved upstream model (post-`upstream_model`,
-                            // the rate card's key space). Attributed to the SAME window the flat
-                            // per-request fee was charged in (`sink.charged_at`, the header-arrival
-                            // epoch), not the stream-end clock (#29). Readers normalize
-                            // `input_tokens` to UNCACHED and keep the cache fields ADDITIVE, so the
-                            // four tiers are correct provider-agnostically.
-                            let tier = ir_usage
-                                .as_ref()
-                                .map(crate::proxy::usage::tier_tokens)
-                                .unwrap_or_default();
+                            // billed tokens = the normalized billable total (A2): uncached input +
+                            // cache_read + cache_creation + output. Readers normalize `input_tokens`
+                            // to UNCACHED and keep the cache fields ADDITIVE, so this single sum is
+                            // correct provider-agnostically — OpenAI-family stay at prompt_total+output
+                            // (no double-count), Anthropic/Bedrock now correctly include their
+                            // additive cache reads/writes. `billable_tokens` saturates internally
+                            // (counts are UPSTREAM-CONTROLLED) rather than risking a request-path panic.
+                            let tokens =
+                                ir_usage.as_ref().map(|u| u.billable_tokens()).unwrap_or(0);
+                            // Attribute the token fee to the SAME window the flat per-request fee was
+                            // charged in (`sink.charged_at`, the header-arrival epoch), not the
+                            // stream-end clock — otherwise a stream that completes in a later window
+                            // than its headers arrived would split its two charges across two windows
+                            // (#29).
+                            sink.gov.record_tokens(
+                                &sink.key_id,
+                                &sink.period,
+                                sink.charged_at,
+                                tokens,
+                            );
+                            // Metering (raw per-model consumption series, token SPLIT preserved):
+                            // attribute to the SERVING lane — `lane_idx` is the lane that actually
+                            // answered, post-failover. Same pinned epoch as the budget charges (#29).
                             if let Some(lane) =
                                 this.app.as_ref().and_then(|a| a.lanes.get(this.lane_idx))
                             {
-                                sink.gov.record_usage(
-                                    &sink.cost,
-                                    &sink.key,
-                                    &sink.pool,
-                                    lane.wire_model(),
-                                    &tier,
-                                    sink.charged_at,
-                                );
-                                // Metering (raw per-model consumption series, token SPLIT
-                                // preserved): attribute to the SERVING lane - `lane_idx` is the
-                                // lane that actually answered, post-failover. Same pinned epoch as
-                                // the budget charges (#29).
                                 sink.gov.record_metering(
-                                    &sink.key.id,
+                                    &sink.key_id,
                                     &lane.model,
                                     &lane.provider,
                                     ir_usage.as_ref(),
@@ -646,26 +598,15 @@ impl<S, P> Drop for FirstByteBody<S, P> {
             return;
         }
         let usage = self.translate.as_ref().and_then(|t| t.usage()).cloned();
-        let tier = usage
-            .as_ref()
-            .map(crate::proxy::usage::tier_tokens)
-            .unwrap_or_default();
-        if !tier.is_zero() {
+        let tokens = usage.as_ref().map(|u| u.billable_tokens()).unwrap_or(0);
+        if tokens > 0 {
+            sink.gov
+                .record_tokens(&sink.key_id, &sink.period, sink.charged_at, tokens);
+            // Meter the delivered-then-dropped partial too (same serving-lane attribution as the
+            // natural-end site) — the tokens were really consumed against this model.
             if let Some(lane) = self.app.as_ref().and_then(|a| a.lanes.get(self.lane_idx)) {
-                // Ledger the partial tier split against the serving lane's resolved upstream model
-                // (the tokens were really generated + delivered before the drop).
-                sink.gov.record_usage(
-                    &sink.cost,
-                    &sink.key,
-                    &sink.pool,
-                    lane.wire_model(),
-                    &tier,
-                    sink.charged_at,
-                );
-                // Meter the delivered-then-dropped partial too (same serving-lane attribution as
-                // the natural-end site).
                 sink.gov.record_metering(
-                    &sink.key.id,
+                    &sink.key_id,
                     &lane.model,
                     &lane.provider,
                     usage.as_ref(),

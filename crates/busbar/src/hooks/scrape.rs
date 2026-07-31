@@ -90,9 +90,9 @@ async fn refresh(
     name: String,
     hook: crate::config::HookCfg,
     settings_version: u64,
-    env: super::HookEnv,
+    client: reqwest::Client,
 ) {
-    let metrics = match super::fetch_status(&name, &hook, settings_version, &env).await {
+    let metrics = match super::fetch_status(&name, &hook, settings_version, &client).await {
         Some(status) => status
             .metrics
             .as_ref()
@@ -118,7 +118,7 @@ pub(crate) fn render(app: &Arc<crate::state::App>) -> String {
                 name.clone(),
                 hook.clone(),
                 app.config_version,
-                app.hook_env.clone(),
+                app.client.clone(),
             ));
         }
     }

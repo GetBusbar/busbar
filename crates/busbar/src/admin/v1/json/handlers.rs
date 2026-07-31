@@ -66,40 +66,6 @@ pub(crate) async fn get_hook(
     )
 }
 
-/// `GET /api/v1/admin/groups` — the `groups:` limit-tree read (+ config-plane `ETag` for `If-Match`
-/// chaining, so a client reads then mutates without a second round-trip).
-pub(crate) async fn list_groups(State(handle): State<Arc<AppHandle>>) -> Response {
-    let version = handle.load().config_version;
-    with_config_etag(
-        respond(StatusCode::OK, service(&handle).list_groups().await),
-        version,
-    )
-}
-
-/// `GET /api/v1/admin/groups/{name}` — one group definition (404 if unknown; + config-plane `ETag`).
-pub(crate) async fn get_group(
-    State(handle): State<Arc<AppHandle>>,
-    Path(name): Path<String>,
-) -> Response {
-    let version = handle.load().config_version;
-    with_config_etag(
-        respond(StatusCode::OK, service(&handle).get_group(&name).await),
-        version,
-    )
-}
-
-/// `GET /api/v1/admin/groups/{name}/usage` — the group's derived current-window usage per
-/// enforcement bucket vs its caps (§6d, the self-service dashboard read; 404 if unknown).
-pub(crate) async fn get_group_usage(
-    State(handle): State<Arc<AppHandle>>,
-    Path(name): Path<String>,
-) -> Response {
-    respond(
-        StatusCode::OK,
-        service(&handle).get_group_usage(&name).await,
-    )
-}
-
 /// `GET /api/v1/admin/hooks/{name}/health` — best-effort transport reachability (404 if unregistered).
 pub(crate) async fn hook_health(
     State(handle): State<Arc<AppHandle>>,
@@ -116,317 +82,6 @@ pub(crate) async fn list_plugins(
 ) -> Response {
     let ptype = q.get("type").map(String::as_str).unwrap_or("");
     respond(StatusCode::OK, service(&handle).list_plugins(ptype).await)
-}
-
-/// The `POST /api/v1/admin/plugins` request body: install a SIGNED plugin tarball. The tarball
-/// bytes ride as base64 (`tarball_b64`) — a plugin artifact is opaque binary, so base64 keeps it a
-/// clean JSON field. The engine RE-VERIFIES the contained signed manifest server-side against the
-/// running `plugins.*` trust posture (the client is never trusted). `file` is the bare `.tar.gz`
-/// filename to store it under (storage only — identity comes from the signed manifest inside).
-#[derive(serde::Deserialize)]
-pub(crate) struct InstallPluginReq {
-    file: String,
-    tarball_b64: String,
-}
-
-/// `POST /api/v1/admin/plugins` — INSTALL a signed plugin tarball (Full scope). Decodes the upload,
-/// unpacks + structurally validates it IN MEMORY, RE-VERIFIES trust against the running `plugins.*`
-/// posture, checks name/alias conflicts, and atomically writes the tarball into the plugins
-/// directory. The uploaded code is NEVER executed by this endpoint (manifest-only inspection).
-/// `201 Created` with the install result. The change takes effect on the next plugin (re)load,
-/// not as a hot swap. Every attempt (success AND failure) is audited.
-pub(crate) async fn install_plugin(
-    State(handle): State<Arc<AppHandle>>,
-    axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
-    body: axum::body::Bytes,
-) -> Response {
-    use base64::Engine as _;
-    let actor = principal.actor_id().to_string();
-    let req: InstallPluginReq = match serde_json::from_slice(&body) {
-        Ok(r) => r,
-        Err(e) => {
-            audit::AUDIT.record_by(
-                "plugin.install",
-                "plugin:?",
-                audit::OUTCOME_REJECTED,
-                &actor,
-            );
-            return err_json(&AdminError::Validation(format!(
-                "malformed plugin body: {e}"
-            )));
-        }
-    };
-    let resource = format!("plugin:{}", req.file);
-    let tarball = match base64::engine::general_purpose::STANDARD.decode(req.tarball_b64.as_bytes())
-    {
-        Ok(b) => b,
-        Err(e) => {
-            audit::AUDIT.record_by("plugin.install", &resource, audit::OUTCOME_REJECTED, &actor);
-            return err_json(&AdminError::Validation(format!(
-                "tarball_b64 is not valid base64: {e}"
-            )));
-        }
-    };
-    // The install itself is in-memory verification + filesystem I/O — run it off the async
-    // runtime's worker so a slow disk / large tarball can't stall the reactor.
-    let svc_handle = handle.clone();
-    let file = req.file.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        service(&svc_handle).install_store_plugin(&file, &tarball)
-    })
-    .await;
-    match result {
-        Ok(Ok(view)) => {
-            audit::AUDIT.record_by("plugin.install", &resource, audit::OUTCOME_APPLIED, &actor);
-            ok_json(StatusCode::CREATED, &view)
-        }
-        Ok(Err(e)) => {
-            audit::AUDIT.record_by("plugin.install", &resource, audit::OUTCOME_REJECTED, &actor);
-            err_json(&e)
-        }
-        Err(_) => {
-            audit::AUDIT.record_by("plugin.install", &resource, audit::OUTCOME_REJECTED, &actor);
-            err_json(&AdminError::Internal)
-        }
-    }
-}
-
-/// `DELETE /api/v1/admin/plugins/{file}` — REMOVE a dynamic-library plugin (Full scope): delete the
-/// library + its manifest sidecar from the plugins directory. `404 not_found` if absent. `204 No
-/// Content` on success. A currently-loaded store keeps running until the next store (re)load.
-pub(crate) async fn remove_plugin(
-    State(handle): State<Arc<AppHandle>>,
-    axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
-    Path(file): Path<String>,
-) -> Response {
-    let actor = principal.actor_id().to_string();
-    let resource = format!("plugin:{file}");
-    match service(&handle).remove_store_plugin(&file) {
-        Ok(_) => {
-            audit::AUDIT.record_by("plugin.remove", &resource, audit::OUTCOME_APPLIED, &actor);
-            StatusCode::NO_CONTENT.into_response()
-        }
-        Err(e) => {
-            audit::AUDIT.record_by("plugin.remove", &resource, audit::OUTCOME_REJECTED, &actor);
-            err_json(&e)
-        }
-    }
-}
-
-/// `POST /api/v1/admin/plugins/reload` — HOT-SWAP the plugin layer LIVE (Full scope, audited) — the
-/// sibling of `config/reload`, now a true hot reload rather than a report-only re-scan.
-///
-/// It re-runs the exact fail-closed plugin pipeline boot runs (re-read `config.yaml` + the persisted
-/// overlay → resolve → three-phase `scan_and_validate` → open the hook transports) to build a FRESH
-/// `App` snapshot carrying a NEW `PluginRegistry` and NEW hook-plugin instances, then `handle.swap`s
-/// it. New requests immediately use the new plugin instances; in-flight requests finish on the OLD
-/// snapshot, and when that snapshot drops its instances drop, their `Arc`-held `Library` handles drop,
-/// and the old shared libraries unmap — no process restart. The core never goes down: any pipeline
-/// failure (a bad new artifact — bad signature / abi out of range / open failure / conflict) is
-/// FAIL-CLOSED — the swap is rejected, the OLD snapshot keeps serving, and the error names the fault.
-///
-/// The governance/store instance is REUSED across the swap (its keys/budgets/ledger must survive), so
-/// this hot-reloads the registry + `kind: hook` transports; a `store` MODULE change still lands on a
-/// dedicated store swap (the ledger cannot be silently re-hydrated under load). See the view `note`.
-pub(crate) async fn reload_plugins(
-    State(handle): State<Arc<AppHandle>>,
-    axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
-) -> Response {
-    let actor = principal.actor_id().to_string();
-    // Serialize against config applies/reloads — they all rebuild-and-swap the App snapshot.
-    let _mlock = CONFIG_MUTATION_LOCK.lock().await;
-    let current = handle.load();
-    // EPHEMERAL mode (no disk config, e.g. tests/dev) has no disk truth to rebuild the snapshot from —
-    // fall back to the report-only reconcile (the folder is still the source of truth for the catalog),
-    // so an install→reload flow still works without persistence. The LIVE hot swap needs disk truth.
-    if current.config_path.is_none() || current.providers_path.is_none() {
-        return match service(&handle).reload_store_plugins() {
-            Ok(view) => {
-                audit::AUDIT.record_by(
-                    "plugin.reload",
-                    "plugin:dir",
-                    audit::OUTCOME_APPLIED,
-                    &actor,
-                );
-                ok_json(StatusCode::OK, &view)
-            }
-            Err(e) => {
-                audit::AUDIT.record_by(
-                    "plugin.reload",
-                    "plugin:dir",
-                    audit::OUTCOME_REJECTED,
-                    &actor,
-                );
-                err_json(&e)
-            }
-        };
-    }
-    match rebuild_app_from_disk(&current) {
-        Ok(next) => {
-            let installed = Arc::new(next);
-            handle.swap(installed.clone()); // swap re-spawns health probers; old snapshot drains + drops
-            audit::AUDIT.record_by(
-                "plugin.reload",
-                "plugin:dir",
-                audit::OUTCOME_APPLIED,
-                &actor,
-            );
-            // Project the inventory of the NOW-LIVE snapshot (the reconciled, loaded set).
-            match service(&handle).reload_store_plugins() {
-                Ok(view) => ok_json(StatusCode::OK, &view),
-                // The swap already succeeded; a projection hiccup is an internal error, not a rollback.
-                Err(e) => err_json(&e),
-            }
-        }
-        Err(e) => {
-            audit::AUDIT.record_by(
-                "plugin.reload",
-                "plugin:dir",
-                audit::OUTCOME_REJECTED,
-                &actor,
-            );
-            err_json(&AdminError::Validation(e))
-        }
-    }
-}
-
-/// The `POST /api/v1/admin/plugins/rollback` body: the target library FILENAME to roll DOWN to.
-#[derive(serde::Deserialize)]
-#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
-pub(crate) struct PluginRollbackReq {
-    /// The plugin tarball FILENAME (in the plugins directory) carrying the prior version to pin to.
-    file: String,
-}
-
-/// `POST /api/v1/admin/plugins/rollback` — EXPLICIT, authenticated, audited rollback of a plugin to a
-/// PRIOR version (Full scope, `If-Match`, 1.5.0 rollback-friendly versioning).
-///
-/// Anti-downgrade blocks only AUTOMATIC/silent downgrade (a replayed old artifact being auto-accepted
-/// as "current"); it must NOT block an operator who pushed a bad plugin and needs to roll back. This
-/// endpoint is that escape hatch, and it is deliberately NOT a blanket floor bypass. It (1)
-/// authenticates the OPERATOR (Full scope) and rides `If-Match` for optimistic concurrency; (2)
-/// validates the TARGET artifact (structure + trust) with the anti-downgrade floor lowered to EXACTLY
-/// the target's own version — a lower artifact still fails, and an untrusted artifact still fails (a
-/// rollback authenticates the operator, never the bytes); (3) PERSISTS the version pin to the overlay
-/// (survives restart) and hot-swaps to the prior artifact via the same rebuild-and-swap path as
-/// `plugins/reload`; and (4) audits EVERY attempt (applied or rejected).
-///
-/// An automatic path (boot/reload/apply) never lowers the floor — only this explicit, audited action
-/// does (via the persisted pin) — so a silent replay of an old artifact is still refused.
-pub(crate) async fn rollback_plugin(
-    State(handle): State<Arc<AppHandle>>,
-    axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
-    headers: axum::http::HeaderMap,
-    body: axum::body::Bytes,
-) -> Response {
-    let actor = principal.actor_id().to_string();
-    let expected = match if_match_version(&headers) {
-        Ok(v) => v,
-        Err(resp) => return resp,
-    };
-    let req: PluginRollbackReq = match serde_json::from_slice(&body) {
-        Ok(r) => r,
-        Err(e) => {
-            return err_json(&AdminError::Validation(format!(
-                "malformed rollback body: {e}"
-            )))
-        }
-    };
-    let resource = format!("plugin:{}", req.file);
-    let _mlock = CONFIG_MUTATION_LOCK.lock().await;
-    let current = handle.load();
-    if let Some(e) = stale_if_match(expected, current.config_version) {
-        audit::AUDIT.record_by(
-            "plugin.rollback",
-            &resource,
-            audit::OUTCOME_REJECTED,
-            &actor,
-        );
-        return err_json(&e);
-    }
-    // A rollback must PERSIST its pin — an ephemeral (no-overlay) busbar has nowhere durable to record
-    // the operator's decision, and a restart would silently re-upgrade. Refuse loudly.
-    let Some(overlay_path) = current.overlay_path.clone() else {
-        audit::AUDIT.record_by(
-            "plugin.rollback",
-            &resource,
-            audit::OUTCOME_REJECTED,
-            &actor,
-        );
-        return err_json(&AdminError::Validation(
-            "plugin rollback requires config persistence (BUSBAR_CONFIG_OVERLAY); without it the \
-             pin cannot be recorded and a restart would silently re-upgrade the plugin"
-                .into(),
-        ));
-    };
-    // The current persisted pins (empty if none) — the base we merge this rollback onto.
-    let prior_pins = match crate::config::overlay::read(&overlay_path) {
-        Some(doc) => doc.plugin_versions,
-        None => std::collections::BTreeMap::new(),
-    };
-    // Resolve + validate the target and compute the merged pin map (fail-closed on a bad/absent/
-    // untrusted target — nothing is persisted or swapped).
-    let (manifest, pins) = match service(&handle).resolve_plugin_rollback(&req.file, &prior_pins) {
-        Ok(v) => v,
-        Err(e) => {
-            audit::AUDIT.record_by(
-                "plugin.rollback",
-                &resource,
-                audit::OUTCOME_REJECTED,
-                &actor,
-            );
-            return err_json(&e);
-        }
-    };
-    // Persist the pin FIRST, so the rebuild (which re-reads the overlay) derives the lowered floor and
-    // loads the prior artifact. Durability precedes the swap: if the process died between here and the
-    // swap, a restart would come up already rolled back (the safe direction).
-    crate::config::overlay::persist_plugin_versions(Some(&overlay_path), &pins);
-    match rebuild_app_from_disk(&current) {
-        Ok(next) => {
-            let installed = Arc::new(next);
-            handle.swap(installed.clone());
-            audit::AUDIT.record_by("plugin.rollback", &resource, audit::OUTCOME_APPLIED, &actor);
-            let cur = handle.load();
-            installed.versions.record(
-                installed.config_version,
-                &actor,
-                &format!("plugin.rollback {resource} -> {}", manifest.version),
-                &installed.hook_registry,
-                &installed.global_hooks,
-            );
-            with_config_etag(
-                ok_json(
-                    StatusCode::OK,
-                    &crate::admin::v1::contract::PluginRollbackView {
-                        name: manifest.name,
-                        file: req.file,
-                        version: manifest.version,
-                        publisher: manifest.publisher,
-                        config_version: cur.config_version,
-                        note: "rolled the plugin DOWN to the prior version and hot-swapped to it; the \
-                               version pin is persisted (survives restart) and the anti-downgrade \
-                               floor was lowered ONLY for this explicit, audited action — a silent \
-                               replay of an old artifact is still refused.",
-                    },
-                ),
-                cur.config_version,
-            )
-        }
-        Err(e) => {
-            // The rebuild failed AFTER persisting the pin — the live snapshot is unchanged (old plugin
-            // still serving, fail-closed), but the pin is now on disk. Roll the pin back so a restart
-            // doesn't come up in a state the running engine rejected.
-            crate::config::overlay::persist_plugin_versions(Some(&overlay_path), &prior_pins);
-            audit::AUDIT.record_by(
-                "plugin.rollback",
-                &resource,
-                audit::OUTCOME_REJECTED,
-                &actor,
-            );
-            err_json(&AdminError::Validation(e))
-        }
-    }
 }
 
 /// `GET /api/v1/admin/auth` — the ingress auth chain + upstream-credential mode (no secrets).
@@ -489,41 +144,6 @@ pub(crate) struct RegisterHookReq {
 #[derive(serde::Deserialize)]
 pub(crate) struct PutHookReq {
     config: crate::config::HookCfg,
-}
-
-/// The `POST /api/v1/admin/groups` request body: the group name + its definition (a `GroupCfg`
-/// accepted VERBATIM — paste a `groups:` block from config.yaml). Optimistic concurrency rides the
-/// `If-Match` header, never a body field.
-#[derive(serde::Deserialize)]
-pub(crate) struct RegisterGroupReq {
-    name: String,
-    config: crate::config::GroupCfg,
-}
-
-/// The `PUT /api/v1/admin/groups/{name}` body: the replacement definition (name rides the path;
-/// optimistic concurrency rides `If-Match`).
-#[derive(serde::Deserialize)]
-pub(crate) struct PutGroupReq {
-    config: crate::config::GroupCfg,
-}
-
-/// The `PATCH /api/v1/admin/groups/{name}` body: a PARTIAL update — only the fields present are
-/// changed, the rest preserved from the current definition. The ergonomic "raise Alice's budget"
-/// (send just `limits`) and "freeze a group" (send `enabled: false`) verb. `limits`/`child_default`
-/// REPLACE their whole list when present (a list can't be field-merged). To CLEAR `parent` or
-/// `child_default` (make a group a root / drop its template), use `PUT` with the full definition.
-/// `deny_unknown_fields` so a typo'd field is a 400, never a silent no-op.
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct GroupPatchReq {
-    #[serde(default)]
-    parent: Option<String>,
-    #[serde(default)]
-    enabled: Option<bool>,
-    #[serde(default)]
-    limits: Option<Vec<crate::config::LimitCfg>>,
-    #[serde(default)]
-    child_default: Option<crate::config::groups::ChildDefault>,
 }
 
 /// `POST /api/v1/admin/hooks` — register (or replace) a hook at RUNTIME. Validates the definition, builds
@@ -795,606 +415,6 @@ pub(crate) async fn delete_hook(
             err_json(&e)
         }
     }
-}
-
-/// Resolve — and if needed AUTO-PROVISION — the group a `POST /keys` mint binds to (self-service
-/// D2, §6a). The mint-time group contract, one place, shared by the key handler:
-///
-///   - group EXISTS, no `parent` given → bind as-is (`provisioned: false`).
-///   - group EXISTS, `parent` given → the given parent MUST equal the group's actual parent, else
-///     `409 conflict` (a portal must not silently re-home an existing leaf under a different team).
-///   - group MISSING, `parent` given → CREATE it as a leaf under `parent`, limits stamped from the
-///     nearest-ancestor `child_default` (inherit-only when none), via the SAME `build_with_group`
-///     validate-at-the-door path every group write uses (so validation / cost rebuild / version log
-///     / overlay persistence / base-shadow guard all hold), then bind (`provisioned: true`).
-///   - group MISSING, no `parent` → today's `400` (an unknown group with nowhere to root it).
-///
-/// Runs the create under `CONFIG_MUTATION_LOCK` (serialized with every other group/config mutation)
-/// and re-loads INSIDE the lock, so a concurrent create of the same leaf is a benign no-op (the
-/// second caller sees it exists and binds). Audited + versioned + overlay-persisted exactly like an
-/// explicit `POST /groups`. `parent` is capped at `MAX_GROUP_NAME_LEN` (a registry key / audit row).
-///
-/// Returns `Ok(true)` when a leaf was auto-provisioned for this mint, `Ok(false)` when the group
-/// already existed (bind as-is).
-pub(crate) async fn resolve_mint_group(
-    handle: &Arc<AppHandle>,
-    group: &str,
-    parent: Option<&str>,
-    actor: &str,
-) -> Result<bool, AdminError> {
-    let current = handle.load();
-    // Fast path: the group already exists (existence is the ENFORCEMENT truth — `cost.group_named`,
-    // the exact check every request admission uses — so a mint never binds a group the chain can't
-    // resolve). If a `parent` was named it must match the existing parent (never silently re-home an
-    // existing leaf); the parent value comes from the config registry, which agrees with the cost
-    // model in production (both rebuilt together on every apply).
-    if current.cost.group_named(group).is_some() {
-        if let Some(want) = parent {
-            let actual = current
-                .groups_registry
-                .get(group)
-                .and_then(|g| g.parent.clone());
-            if actual.as_deref() != Some(want) {
-                return Err(AdminError::Conflict(format!(
-                    "group `{group}` already exists with parent {}; the mint named parent `{want}` \
-                     — a mint cannot re-home an existing group (PATCH the group to re-parent it, or \
-                     drop `parent` to bind as-is)",
-                    actual
-                        .map(|p| format!("`{p}`"))
-                        .unwrap_or_else(|| "<root>".into()),
-                )));
-            }
-        }
-        return Ok(false);
-    }
-    // The group does NOT exist. Without a `parent` there is nowhere to root it — today's 400 stands
-    // (mirrors the pre-auto-provision message, but points at the self-service `parent:` field).
-    let Some(parent) = parent else {
-        return Err(AdminError::Validation(format!(
-            "group '{group}' does not exist in the top-level groups block; either configure it \
-             first, or pass `parent: <existing-group>` to auto-provision it as a leaf (e.g. \
-             `parent: team-payments` creates {group} under team-payments and binds the key)"
-        )));
-    };
-    if parent.len() > crate::admin::v1::service::MAX_GROUP_NAME_LEN {
-        return Err(AdminError::Validation(format!(
-            "parent name is {} chars; must be <= {}",
-            parent.len(),
-            crate::admin::v1::service::MAX_GROUP_NAME_LEN
-        )));
-    }
-    // AUTO-PROVISION under the mutation lock (serialized with /groups + /config writes). Re-load
-    // INSIDE the lock so we build against the freshest tree and a concurrent create of the same leaf
-    // is caught (benign: bind to it).
-    let _mlock = CONFIG_MUTATION_LOCK.lock().await;
-    let current = handle.load();
-    if current.cost.group_named(group).is_some() {
-        // A racing mint created it between our read and the lock. Honor the same parent-match rule.
-        let actual = current
-            .groups_registry
-            .get(group)
-            .and_then(|g| g.parent.clone());
-        if actual.as_deref() != Some(parent) {
-            return Err(AdminError::Conflict(format!(
-                "group `{group}` was concurrently created with a different parent than `{parent}`"
-            )));
-        }
-        return Ok(false);
-    }
-    // The named parent must exist — build_with_group's validate-at-the-door would reject a dangling
-    // parent as a 400, but name it precisely here (the mint's parent, not an opaque tree error).
-    // Existence via the enforcement truth (cost), matching the group existence check above.
-    if current.cost.group_named(parent).is_none() {
-        return Err(AdminError::Validation(format!(
-            "cannot auto-provision `{group}`: its `parent: {parent}` does not exist in the \
-             top-level groups block; name an existing team/org group"
-        )));
-    }
-    // A base-config group name is file-owned — the additive overlay cannot durably shadow it, so a
-    // mint must not materialize one at runtime (mirrors POST /groups). Vanishingly unlikely for a
-    // `user:<sub>` leaf, but the guard is uniform across every write path.
-    if current.base_group_names.contains(group) {
-        return Err(AdminError::Conflict(format!(
-            "group `{group}` is defined in the base config file; edit config.yaml (the API cannot \
-             silently shadow operator file config)"
-        )));
-    }
-    let leaf = crate::config::groups::provision_child(&current.groups_registry, parent);
-    let resource = format!("group:{group}");
-    match build_with_group(&current, group, leaf) {
-        Ok(next) => {
-            let installed = Arc::new(next);
-            handle.swap(installed.clone());
-            audit::AUDIT.record_by("group.provision", &resource, audit::OUTCOME_APPLIED, actor);
-            let cur = handle.load();
-            record_group_version(
-                &installed,
-                actor,
-                &format!("group.provision {resource} (auto, parent {parent})"),
-            );
-            crate::config::overlay::persist_groups(
-                cur.overlay_path.as_deref(),
-                &cur.groups_registry,
-                None,
-                Some(group),
-            );
-            Ok(true)
-        }
-        Err(e) => {
-            audit::AUDIT.record_by("group.provision", &resource, audit::OUTCOME_REJECTED, actor);
-            Err(e)
-        }
-    }
-}
-
-/// `POST /api/v1/admin/groups` — create (or replace) a group at RUNTIME. Validate-at-the-door: the
-/// mutated tree is re-validated (parent exists, acyclic, depth) — an invalid tree is a `400` that
-/// changes nothing. `201` when the name is NEW, `200` on replace (upsert). `409` for a base-config
-/// group (edit config.yaml; the API cannot silently shadow file config) or a stale `If-Match`.
-/// Live immediately (limits rebuilt into the cost model, swapped in); persisted to the overlay so it
-/// survives restart. Full scope (the `/groups` mutation fallthrough); the narrow delegated
-/// `group-admin` scope for the self-service tool lands in Phase 2.
-pub(crate) async fn register_group(
-    State(handle): State<Arc<AppHandle>>,
-    axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
-    headers: axum::http::HeaderMap,
-    body: axum::body::Bytes,
-) -> Response {
-    let actor = principal.actor_id().to_string();
-    let expected = match if_match_version(&headers) {
-        Ok(v) => v,
-        Err(resp) => return resp,
-    };
-    let req: RegisterGroupReq = match serde_json::from_slice(&body) {
-        Ok(r) => r,
-        Err(e) => {
-            return err_json(&AdminError::Validation(format!(
-                "malformed group body: {e}"
-            )))
-        }
-    };
-    let _mlock = CONFIG_MUTATION_LOCK.lock().await;
-    let current = handle.load();
-    let resource = format!("group:{}", req.name);
-    // A base-config group is file-owned: the additive overlay cannot durably shadow it, and a narrow
-    // token must not silently redirect a base group's limits. Edit config.yaml. (Mirrors hooks.)
-    if current.base_group_names.contains(&req.name) {
-        audit::AUDIT.record_by("group.create", &resource, audit::OUTCOME_REJECTED, &actor);
-        return err_json(&AdminError::Conflict(format!(
-            "group `{}` is defined in the base config file; edit config.yaml (the API cannot \
-             silently shadow operator file config)",
-            req.name
-        )));
-    }
-    if let Some(e) = stale_if_match(expected, current.config_version) {
-        audit::AUDIT.record_by("group.create", &resource, audit::OUTCOME_REJECTED, &actor);
-        return err_json(&e);
-    }
-    let existed = current.groups_registry.contains_key(&req.name);
-    match build_with_group(&current, &req.name, req.config) {
-        Ok(next) => {
-            let installed = Arc::new(next);
-            handle.swap(installed.clone());
-            audit::AUDIT.record_by("group.create", &resource, audit::OUTCOME_APPLIED, &actor);
-            let cur = handle.load();
-            record_group_version(&installed, &actor, &format!("group.create {resource}"));
-            // Persist the whole groups section; clear any tombstone for this name (re-create un-deletes).
-            crate::config::overlay::persist_groups(
-                cur.overlay_path.as_deref(),
-                &cur.groups_registry,
-                None,
-                Some(&req.name),
-            );
-            with_config_etag(
-                respond(
-                    if existed {
-                        StatusCode::OK
-                    } else {
-                        StatusCode::CREATED
-                    },
-                    service(&handle).get_group(&req.name).await,
-                ),
-                installed.config_version,
-            )
-        }
-        Err(e) => {
-            audit::AUDIT.record_by("group.create", &resource, audit::OUTCOME_REJECTED, &actor);
-            err_json(&e)
-        }
-    }
-}
-
-/// `PUT /api/v1/admin/groups/{name}` — REPLACE an existing group at runtime (live, atomic swap).
-/// `404` for an unknown name (PUT replaces; POST creates). `409` for a base-config group or a stale
-/// `If-Match`, `400` if the replacement breaks the tree. Audited + versioned + overlay-persisted.
-pub(crate) async fn put_group(
-    State(handle): State<Arc<AppHandle>>,
-    axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
-    Path(name): Path<String>,
-    headers: axum::http::HeaderMap,
-    body: axum::body::Bytes,
-) -> Response {
-    let actor = principal.actor_id().to_string();
-    let expected = match if_match_version(&headers) {
-        Ok(v) => v,
-        Err(resp) => return resp,
-    };
-    let req: PutGroupReq = match serde_json::from_slice(&body) {
-        Ok(r) => r,
-        Err(e) => {
-            return err_json(&AdminError::Validation(format!(
-                "malformed group body: {e}"
-            )))
-        }
-    };
-    let _mlock = CONFIG_MUTATION_LOCK.lock().await;
-    let current = handle.load();
-    let resource = format!("group:{name}");
-    if !current.groups_registry.contains_key(&name) {
-        audit::AUDIT.record_by("group.replace", &resource, audit::OUTCOME_REJECTED, &actor);
-        return err_json(&AdminError::NotFound(format!("group `{name}`")));
-    }
-    if current.base_group_names.contains(&name) {
-        audit::AUDIT.record_by("group.replace", &resource, audit::OUTCOME_REJECTED, &actor);
-        return err_json(&AdminError::Conflict(format!(
-            "group `{name}` is defined in the base config file; edit config.yaml (the API cannot \
-             silently shadow operator file config)"
-        )));
-    }
-    if let Some(e) = stale_if_match(expected, current.config_version) {
-        audit::AUDIT.record_by("group.replace", &resource, audit::OUTCOME_REJECTED, &actor);
-        return err_json(&e);
-    }
-    match build_with_group(&current, &name, req.config) {
-        Ok(next) => {
-            let installed = Arc::new(next);
-            handle.swap(installed.clone());
-            audit::AUDIT.record_by("group.replace", &resource, audit::OUTCOME_APPLIED, &actor);
-            let cur = handle.load();
-            record_group_version(&installed, &actor, &format!("group.replace {resource}"));
-            crate::config::overlay::persist_groups(
-                cur.overlay_path.as_deref(),
-                &cur.groups_registry,
-                None,
-                Some(&name),
-            );
-            with_config_etag(
-                respond(StatusCode::OK, service(&handle).get_group(&name).await),
-                installed.config_version,
-            )
-        }
-        Err(e) => {
-            audit::AUDIT.record_by("group.replace", &resource, audit::OUTCOME_REJECTED, &actor);
-            err_json(&e)
-        }
-    }
-}
-
-/// `PATCH /api/v1/admin/groups/{name}` — PARTIAL update: change only the fields present, preserve
-/// the rest (the "raise Alice's budget" / "freeze this team" verb). Merges onto the current
-/// definition then routes through the SAME `build_with_group` validation + cost rebuild as PUT, so
-/// a partial edit that breaks the tree is a `400` that changes nothing. `404`/`409` semantics match
-/// PUT (unknown name / base group / stale `If-Match`). Audited + versioned + overlay-persisted.
-pub(crate) async fn patch_group(
-    State(handle): State<Arc<AppHandle>>,
-    axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
-    Path(name): Path<String>,
-    headers: axum::http::HeaderMap,
-    body: axum::body::Bytes,
-) -> Response {
-    let actor = principal.actor_id().to_string();
-    let expected = match if_match_version(&headers) {
-        Ok(v) => v,
-        Err(resp) => return resp,
-    };
-    let req: GroupPatchReq = match serde_json::from_slice(&body) {
-        Ok(r) => r,
-        Err(e) => {
-            return err_json(&AdminError::Validation(format!(
-                "malformed group patch: {e}"
-            )))
-        }
-    };
-    let _mlock = CONFIG_MUTATION_LOCK.lock().await;
-    let current = handle.load();
-    let resource = format!("group:{name}");
-    let Some(existing) = current.groups_registry.get(&name) else {
-        audit::AUDIT.record_by("group.patch", &resource, audit::OUTCOME_REJECTED, &actor);
-        return err_json(&AdminError::NotFound(format!("group `{name}`")));
-    };
-    if current.base_group_names.contains(&name) {
-        audit::AUDIT.record_by("group.patch", &resource, audit::OUTCOME_REJECTED, &actor);
-        return err_json(&AdminError::Conflict(format!(
-            "group `{name}` is defined in the base config file; edit config.yaml (the API cannot \
-             silently shadow operator file config)"
-        )));
-    }
-    if let Some(e) = stale_if_match(expected, current.config_version) {
-        audit::AUDIT.record_by("group.patch", &resource, audit::OUTCOME_REJECTED, &actor);
-        return err_json(&e);
-    }
-    // Merge the provided fields onto the current definition; absent fields are preserved.
-    let merged = merge_group_patch(
-        existing.clone(),
-        req.parent,
-        req.enabled,
-        req.limits,
-        req.child_default,
-    );
-    match build_with_group(&current, &name, merged) {
-        Ok(next) => {
-            let installed = Arc::new(next);
-            handle.swap(installed.clone());
-            audit::AUDIT.record_by("group.patch", &resource, audit::OUTCOME_APPLIED, &actor);
-            let cur = handle.load();
-            record_group_version(&installed, &actor, &format!("group.patch {resource}"));
-            crate::config::overlay::persist_groups(
-                cur.overlay_path.as_deref(),
-                &cur.groups_registry,
-                None,
-                Some(&name),
-            );
-            with_config_etag(
-                respond(StatusCode::OK, service(&handle).get_group(&name).await),
-                installed.config_version,
-            )
-        }
-        Err(e) => {
-            audit::AUDIT.record_by("group.patch", &resource, audit::OUTCOME_REJECTED, &actor);
-            err_json(&e)
-        }
-    }
-}
-
-/// `DELETE /api/v1/admin/groups/{name}` — remove an API-created group at runtime (live). `404` if
-/// unknown; `409` if base-config-defined (edit config.yaml) or if another group still names it as
-/// `parent` (re-parent/remove the children first — never silently orphan them). `204` on success;
-/// the name is tombstoned so the deletion survives a restart.
-pub(crate) async fn delete_group(
-    State(handle): State<Arc<AppHandle>>,
-    axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
-    Path(name): Path<String>,
-    headers: axum::http::HeaderMap,
-) -> Response {
-    let actor = principal.actor_id().to_string();
-    let expected = match if_match_version(&headers) {
-        Ok(v) => v,
-        Err(resp) => return resp,
-    };
-    let _mlock = CONFIG_MUTATION_LOCK.lock().await;
-    let current = handle.load();
-    let resource = format!("group:{name}");
-    if !current.groups_registry.contains_key(&name) {
-        audit::AUDIT.record_by("group.delete", &resource, audit::OUTCOME_REJECTED, &actor);
-        return err_json(&AdminError::NotFound(format!("group `{name}`")));
-    }
-    if let Some(e) = stale_if_match(expected, current.config_version) {
-        audit::AUDIT.record_by("group.delete", &resource, audit::OUTCOME_REJECTED, &actor);
-        return err_json(&e);
-    }
-    if current.base_group_names.contains(&name) {
-        audit::AUDIT.record_by("group.delete", &resource, audit::OUTCOME_REJECTED, &actor);
-        return err_json(&AdminError::Conflict(format!(
-            "group `{name}` is defined in the base config file; edit config.yaml (the API cannot \
-             silently shadow operator file config)"
-        )));
-    }
-    match build_without_group(&current, &name) {
-        Ok(next) => {
-            let installed = Arc::new(next);
-            handle.swap(installed.clone());
-            audit::AUDIT.record_by("group.delete", &resource, audit::OUTCOME_APPLIED, &actor);
-            let cur = handle.load();
-            record_group_version(&installed, &actor, &format!("group.delete {resource}"));
-            // Tombstone this name so the deletion survives a restart (overlay is additive otherwise).
-            crate::config::overlay::persist_groups(
-                cur.overlay_path.as_deref(),
-                &cur.groups_registry,
-                Some(&name),
-                None,
-            );
-            with_config_etag(
-                StatusCode::NO_CONTENT.into_response(),
-                installed.config_version,
-            )
-        }
-        Err(e) => {
-            audit::AUDIT.record_by("group.delete", &resource, audit::OUTCOME_REJECTED, &actor);
-            err_json(&e)
-        }
-    }
-}
-
-/// `DELETE /api/v1/admin/overlay/{section}` — DISCARD every overlay mutation for one section and revert
-/// it to what base `config.yaml` declares. `section` ∈ {`groups`, `hooks`, `root`}; an unknown name is
-/// a `400` `invalid_request`. This is the audited revert-to-config front door (D3: per-section, NOT
-/// whole-overlay): it clears that section's overlay entries + tombstones, then rebuilds a complete
-/// `App` from base config (disk truth re-read + resolved, the OTHER sections' overlay still merged) and
-/// swaps it in — so a `groups` reset restores base group limits (cost model rebuilt), a `hooks` reset
-/// restores base hooks (registry/gates/rewrites rebuilt), and a `root` reset restores base single-value
-/// config (rate_card/store/security/limits/… — cost model + limits reprojected), each leaving the
-/// sibling sections' runtime mutations untouched. Full scope; `If-Match` optimistic concurrency;
-/// audited + versioned; the cleared
-/// overlay is persisted so the revert survives a restart. A section with NO overlay state is a clean
-/// no-op success (idempotent) — nothing changes, the version does not bump. Requires config files on
-/// disk (the base truth to revert to); an ephemeral busbar has none, so reset is an `invalid_request`
-/// there, exactly like `config/reload`.
-pub(crate) async fn reset_overlay_section(
-    State(handle): State<Arc<AppHandle>>,
-    axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
-    Path(section): Path<String>,
-    headers: axum::http::HeaderMap,
-) -> Response {
-    use crate::config::overlay::OverlaySection;
-    let actor = principal.actor_id().to_string();
-    // Validate the section name BEFORE the If-Match parse so an unknown section is always a plain
-    // 400 (never masked by a header error). Unknown → invalid_request (the taxonomy's 400).
-    let Some(section) = OverlaySection::parse(&section) else {
-        return err_json(&AdminError::Validation(format!(
-            "unknown overlay section `{section}`: expected `groups`, `hooks`, or `root`"
-        )));
-    };
-    let resource = format!("overlay:{}", section.as_str());
-    let expected = match if_match_version(&headers) {
-        Ok(v) => v,
-        Err(resp) => return resp,
-    };
-    let _mlock = CONFIG_MUTATION_LOCK.lock().await;
-    let current = handle.load();
-    if let Some(e) = stale_if_match(expected, current.config_version) {
-        audit::AUDIT.record_by("overlay.reset", &resource, audit::OUTCOME_REJECTED, &actor);
-        return err_json(&e);
-    }
-    // IDEMPOTENT NO-OP: if this section carries no overlay state (no API-applied entries AND no
-    // tombstones), the effective config already equals base for it — a reset changes nothing, so
-    // short-circuit a 200 without bumping the version or re-running the boot pipeline. With
-    // persistence disabled there is no overlay at all, so every section is definitionally empty.
-    let overlay_empty = match current.overlay_path.as_deref() {
-        None => true,
-        Some(p) => crate::config::overlay::read(p)
-            .map(|doc| doc.section_is_empty(section))
-            .unwrap_or(true),
-    };
-    if overlay_empty {
-        audit::AUDIT.record_by("overlay.reset", &resource, audit::OUTCOME_APPLIED, &actor);
-        return with_config_etag(
-            ok_json(
-                StatusCode::OK,
-                &json!({
-                    "reset": section.as_str(),
-                    "config_version": current.config_version,
-                    "changed": false
-                }),
-            ),
-            current.config_version,
-        );
-    }
-    // Re-run the BOOT disk-load pipeline to recover base `config.yaml` truth, then merge the CURRENT
-    // overlay with this section CLEARED — the sibling section's overlay entries/tombstones survive, the
-    // reset section reverts to base. This is the exact `config/reload` mechanism, minus one section.
-    let (Some(config_path), Some(providers_path)) =
-        (current.config_path.clone(), current.providers_path.clone())
-    else {
-        audit::AUDIT.record_by("overlay.reset", &resource, audit::OUTCOME_REJECTED, &actor);
-        return err_json(&AdminError::Validation(
-            "this busbar was started without config files (ephemeral mode); a per-section reset has \
-             no disk truth to revert to"
-                .into(),
-        ));
-    };
-    let outcome = crate::load_config_from_disk(
-        &config_path,
-        &providers_path,
-        false,
-        crate::config::EnvSubst::Strict,
-    )
-    .and_then(|mut loaded| {
-        // CLEAR the target section from the persisted overlay FIRST — that slice reverts to base, the
-        // other slices stay live. The clear happens before both merge halves so a `root` reset drops
-        // its DeployCfg-level overrides pre-resolve, and a `hooks`/`groups` reset drops its registry
-        // entries post-resolve.
-        let cleared_doc = loaded.overlay_doc.take().map(|mut doc| {
-            doc.clear_section(section);
-            doc
-        });
-        // Pre-resolve half: apply the (post-clear) root overrides onto the base DeployCfg, so the
-        // limits projection + admin-mTLS boot-guard re-derive over the merged shape.
-        if let Some(doc) = cleared_doc.as_ref() {
-            crate::config::overlay::apply_root_to_deploy(&mut loaded.deploy, doc);
-        }
-        let mut cfg = crate::config::resolve(&loaded.deploy, &loaded.defs)
-            .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
-        let base_hook_names: std::collections::HashSet<String> =
-            cfg.hooks.keys().cloned().collect();
-        let base_group_names: std::collections::HashSet<String> =
-            cfg.groups.keys().cloned().collect();
-        // Post-resolve half: merge the (post-clear) hooks + groups sections onto the resolved config.
-        if let Some(doc) = cleared_doc {
-            crate::config::overlay::merge_into(&mut cfg, doc);
-        }
-        crate::build_app_from_config(
-            cfg,
-            loaded.deploy.plugins.clone(),
-            // Preserve the LIVE overlay path (not the env-derived one `load_config_from_disk`
-            // returns) — the reset rewrites the same overlay file the running App uses, exactly as
-            // `config/apply` preserves `current.overlay_path`.
-            current.overlay_path.clone(),
-            base_hook_names,
-            base_group_names,
-            (Some(config_path), Some(providers_path)),
-            Some(&current),
-        )
-    });
-    match outcome {
-        Ok(next) => {
-            let installed = Arc::new(next);
-            handle.swap(installed.clone());
-            audit::AUDIT.record_by("overlay.reset", &resource, audit::OUTCOME_APPLIED, &actor);
-            let cur = handle.load();
-            record_group_version(
-                &installed,
-                &actor,
-                &format!("overlay.reset {} (revert to config.yaml)", section.as_str()),
-            );
-            // Persist the section-cleared overlay so the revert survives a restart (the sibling
-            // section is preserved verbatim by the read-modify-write).
-            crate::config::overlay::clear_section(cur.overlay_path.as_deref(), section);
-            with_config_etag(
-                ok_json(
-                    StatusCode::OK,
-                    &json!({
-                        "reset": section.as_str(),
-                        "config_version": cur.config_version,
-                        "changed": true
-                    }),
-                ),
-                cur.config_version,
-            )
-        }
-        Err(e) => {
-            audit::AUDIT.record_by("overlay.reset", &resource, audit::OUTCOME_REJECTED, &actor);
-            err_json(&AdminError::Validation(e))
-        }
-    }
-}
-
-/// Apply a partial group PATCH onto a base definition: a field that is `Some` REPLACES, `None`
-/// PRESERVES. `limits`/`child_default` replace their whole list (a list can't be field-merged). The
-/// pure, testable core of `patch_group`.
-fn merge_group_patch(
-    mut base: crate::config::GroupCfg,
-    parent: Option<String>,
-    enabled: Option<bool>,
-    limits: Option<Vec<crate::config::LimitCfg>>,
-    child_default: Option<crate::config::groups::ChildDefault>,
-) -> crate::config::GroupCfg {
-    if let Some(p) = parent {
-        base.parent = Some(p);
-    }
-    if let Some(en) = enabled {
-        base.enabled = en;
-    }
-    if let Some(l) = limits {
-        base.limits = l;
-    }
-    if let Some(cd) = child_default {
-        base.child_default = Some(cd);
-    }
-    base
-}
-
-/// Record a config-version entry for a GROUP mutation. The `VersionLog` snapshot payload is the
-/// hook surface (its rollback scope today); a group change still bumps `config_version` and lands an
-/// audited, timestamped version row (so `GET /config/versions` shows the event honestly). Extending
-/// the snapshot + `config/rollback` to restore groups is a tracked follow-up (task #100).
-fn record_group_version(installed: &Arc<crate::state::App>, actor: &str, summary: &str) {
-    installed.versions.record(
-        installed.config_version,
-        actor,
-        summary,
-        &installed.hook_registry,
-        &installed.global_hooks,
-    );
 }
 
 /// `GET /api/v1/admin/audit` — the admin audit log (most-recent-first), every mutation with its outcome.
@@ -1835,59 +855,6 @@ pub(crate) async fn flush_credential_cache(
 /// atomically swap it in. A NORMAL admin call under the NORMAL admin auth chain — no second
 /// credential path exists (D3). Invalid disk config = `invalid_request`, nothing changes. The
 /// GitOps primitive: push config, call reload, no restart, no health amnesia.
-/// Rebuild a fresh `App` snapshot from DISK TRUTH (base `config.yaml` + `providers.yaml`) merged with
-/// the persisted OVERLAY, reusing `current`'s process-lifetime state (governance/store, version log,
-/// limiters, health by stable identity). The shared core of `config/reload` AND `plugins/reload`: both
-/// re-run the exact fail-closed boot pipeline (which re-scans the plugins dir into a NEW registry and
-/// re-opens every hook transport), differing only in what they report. Returns the built `App` (the
-/// caller wraps it in `Arc` and swaps) or a human-readable error (any failure changes nothing —
-/// fail-closed, the old snapshot keeps serving). Requires disk config paths (ephemeral mode has no
-/// disk truth to read).
-pub(crate) fn rebuild_app_from_disk(
-    current: &Arc<crate::state::App>,
-) -> Result<crate::state::App, String> {
-    let (Some(config_path), Some(providers_path)) =
-        (current.config_path.clone(), current.providers_path.clone())
-    else {
-        return Err(
-            "this busbar was started without config files (ephemeral mode); reload has no \
-                    disk truth to read"
-                .into(),
-        );
-    };
-    let mut loaded = crate::load_config_from_disk(
-        &config_path,
-        &providers_path,
-        false,
-        crate::config::EnvSubst::Strict,
-    )?;
-    // 1.5.0 full-config coverage: apply the overlay's `root` section (single-value config) AND the
-    // `plugin_versions` rollback pins onto the base `DeployCfg` BEFORE resolve, so the limits
-    // projection + admin-mTLS boot-guard + the plugin trust FLOORS re-derive over the merged shape —
-    // exactly as boot does. The hooks/groups sections merge POST-resolve below.
-    if let Some(doc) = loaded.overlay_doc.as_ref() {
-        crate::config::overlay::apply_root_to_deploy(&mut loaded.deploy, doc);
-    }
-    let mut cfg = crate::config::resolve(&loaded.deploy, &loaded.defs)
-        .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
-    // Base hook + group names = the config-defined registry, pre-overlay (the admin API refuses
-    // to PUT-replace / DELETE one); then merge the persisted overlay onto the resolved registry.
-    let base_hook_names: std::collections::HashSet<String> = cfg.hooks.keys().cloned().collect();
-    let base_group_names: std::collections::HashSet<String> = cfg.groups.keys().cloned().collect();
-    if let Some(doc) = loaded.overlay_doc {
-        crate::config::overlay::merge_into(&mut cfg, doc);
-    }
-    crate::build_app_from_config(
-        cfg,
-        loaded.deploy.plugins.clone(),
-        loaded.overlay_path,
-        base_hook_names,
-        base_group_names,
-        (Some(config_path), Some(providers_path)),
-        Some(current.as_ref()),
-    )
-}
-
 pub(crate) async fn reload_config(
     State(handle): State<Arc<AppHandle>>,
     axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
@@ -1895,7 +862,33 @@ pub(crate) async fn reload_config(
     let actor = principal.actor_id().to_string();
     let _mlock = CONFIG_MUTATION_LOCK.lock().await;
     let current = handle.load();
-    let outcome = rebuild_app_from_disk(&current);
+    let (Some(config_path), Some(providers_path)) =
+        (current.config_path.clone(), current.providers_path.clone())
+    else {
+        return err_json(&AdminError::Validation(
+            "this busbar was started without config files (ephemeral mode); reload has no disk \
+             truth to read"
+                .into(),
+        ));
+    };
+    let outcome = crate::load_config_from_disk(
+        &config_path,
+        &providers_path,
+        false,
+        crate::config::EnvSubst::Strict,
+    )
+    .and_then(|loaded| {
+        let cfg = crate::config::resolve(&loaded.deploy, &loaded.defs)
+            .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
+        crate::build_app_from_config(
+            cfg,
+            loaded.deploy.governance.clone(),
+            loaded.overlay_path,
+            loaded.base_hook_names,
+            (Some(config_path), Some(providers_path)),
+            Some(&current),
+        )
+    });
     match outcome {
         Ok(next) => {
             let installed = Arc::new(next);
@@ -1982,20 +975,16 @@ pub(crate) async fn apply_config(
         );
         return err_json(&e);
     }
+    let base_hook_names: std::collections::HashSet<String> =
+        req.config.hooks.keys().cloned().collect();
     let outcome = crate::config::resolve(&req.config, &req.providers)
         .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))
         .and_then(|cfg| {
-            // Base hook + group names = the applied config's own (synthesized) registry.
-            let base_hook_names: std::collections::HashSet<String> =
-                cfg.hooks.keys().cloned().collect();
-            let base_group_names: std::collections::HashSet<String> =
-                cfg.groups.keys().cloned().collect();
             crate::build_app_from_config(
                 cfg,
-                req.config.plugins.clone(),
+                req.config.governance.clone(),
                 current.overlay_path.clone(),
                 base_hook_names,
-                base_group_names,
                 (current.config_path.clone(), current.providers_path.clone()),
                 Some(&current),
             )
@@ -2035,272 +1024,6 @@ pub(crate) async fn apply_config(
             audit::AUDIT.record_by(
                 "config.apply",
                 "config:body",
-                audit::OUTCOME_REJECTED,
-                &actor,
-            );
-            err_json(&AdminError::Validation(e))
-        }
-    }
-}
-
-/// Merge a partial `RootSettings` request onto the current overlay root state: a field the request
-/// sets (`Some`) REPLACES; a field it omits (`None`) is PRESERVED from the current overlay. The
-/// partial-update semantics of `PUT /config/settings` — "raise the per-request fee" sends only
-/// `per_request_fee`, leaving every other override untouched. To CLEAR the whole root section, use
-/// `DELETE /overlay/root`.
-fn merge_root_settings(
-    mut base: crate::config::overlay::RootSettings,
-    req: crate::config::overlay::RootSettings,
-) -> crate::config::overlay::RootSettings {
-    if req.listen.is_some() {
-        base.listen = req.listen;
-    }
-    if req.tls.is_some() {
-        base.tls = req.tls;
-    }
-    if req.admin_listen.is_some() {
-        base.admin_listen = req.admin_listen;
-    }
-    if req.admin_tls.is_some() {
-        base.admin_tls = req.admin_tls;
-    }
-    if req.admin_insecure.is_some() {
-        base.admin_insecure = req.admin_insecure;
-    }
-    if req.rate_card.is_some() {
-        base.rate_card = req.rate_card;
-    }
-    if req.per_request_fee.is_some() {
-        base.per_request_fee = req.per_request_fee;
-    }
-    if req.store.is_some() {
-        base.store = req.store;
-    }
-    if req.security.is_some() {
-        base.security = req.security;
-    }
-    if req.limits.is_some() {
-        base.limits = req.limits;
-    }
-    if req.observability.is_some() {
-        base.observability = req.observability;
-    }
-    if req.advanced.is_some() {
-        base.advanced = req.advanced;
-    }
-    if req.metrics.is_some() {
-        base.metrics = req.metrics;
-    }
-    if req.health.is_some() {
-        base.health = req.health;
-    }
-    if req.routing.is_some() {
-        base.routing = req.routing;
-    }
-    base
-}
-
-/// The RESTART-TO-APPLY fields a `PUT /config/settings` REQUEST touched: the process-level binds
-/// (`listen`/`admin_listen` socket, `tls`/`admin_tls` bind, `admin_insecure` boot-guard waiver) are
-/// read ONCE in `main()` at process start and bound to sockets that a live `arc-swap` — or even a
-/// hot `POST /config/reload` — cannot rebind; the durable `store` backend is REUSED from the prior
-/// snapshot on every apply/reload (an in-flight governance ledger cannot migrate backends live), so
-/// it too only re-opens on a fresh process. Their new value is DURABLY STORED in the overlay but
-/// takes effect on the next RESTART. Every OTHER field (`rate_card`/`per_request_fee`/`security`/
-/// `limits`/…) applies live on the swap. Keyed on the REQUEST (only fields the operator just changed
-/// are flagged), so a subsequent live-only edit does not re-flag an already-restart-pending bind.
-fn reload_to_apply_fields(req: &crate::config::overlay::RootSettings) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut push = |set: bool, name: &str| {
-        if set {
-            out.push(name.to_string());
-        }
-    };
-    push(req.listen.is_some(), "listen");
-    push(req.tls.is_some(), "tls");
-    push(req.admin_listen.is_some(), "admin_listen");
-    push(req.admin_tls.is_some(), "admin_tls");
-    push(req.admin_insecure.is_some(), "admin_insecure");
-    push(req.store.is_some(), "store");
-    out
-}
-
-/// Read the current overlay `root` section (the operator's API-set single-value overrides), or an
-/// empty `RootSettings` when persistence is disabled / the overlay is absent or carries no root
-/// section. Shared by the GET/PUT `/config/settings` handlers.
-fn current_root_settings(
-    overlay_path: Option<&std::path::Path>,
-) -> crate::config::overlay::RootSettings {
-    overlay_path
-        .and_then(crate::config::overlay::read)
-        .and_then(|doc| doc.root)
-        .unwrap_or_default()
-}
-
-/// `GET /api/v1/admin/config/settings` — read the API-set single-value config overlay (the `root`
-/// section: `listen`/`tls`/`rate_card`/`store`/`security`/`limits`/…). Reports ONLY the operator's
-/// overrides (the fields set via `PUT /config/settings`); base `config.yaml` stands for the rest.
-/// Read scope; carries the config-plane `ETag` so a `PUT` can chain `If-Match` off this read. Never a
-/// secret in the clear beyond what the operator themselves supplied (TLS refs are secret-references,
-/// not raw key bytes).
-pub(crate) async fn get_config_settings(State(handle): State<Arc<AppHandle>>) -> Response {
-    let current = handle.load();
-    let root = current_root_settings(current.overlay_path.as_deref());
-    let settings = serde_json::to_value(&root).unwrap_or_else(|_| json!({}));
-    with_config_etag(
-        ok_json(
-            StatusCode::OK,
-            &json!({
-                "applied": false,
-                "config_version": current.config_version,
-                "settings": settings,
-            }),
-        ),
-        current.config_version,
-    )
-}
-
-/// `PUT /api/v1/admin/config/settings` — SET any single-value config section via the API, durably
-/// (1.5.0 full-config coverage). The body is a PARTIAL `RootSettings`: only the fields present are
-/// changed (merged onto the current overlay root), the rest preserved — so the admin NEVER edits
-/// `config.yaml` and persistence is ALWAYS the busbar-owned overlay. The merged root is applied onto
-/// the base `DeployCfg` (re-read from disk), re-resolved + re-validated (an invalid result is a `400`
-/// that changes NOTHING), built into a new `App`, and swapped in — so `rate_card`/`per_request_fee`/
-/// `security`/`limits`/… go LIVE immediately. The process-level binds
-/// (`listen`/`admin_listen`/`tls`/`admin_tls`/`admin_insecure`) and the durable `store` backend are
-/// stored + flagged RESTART-TO-APPLY (they cannot hot-swap — sockets/TLS are bound once at process
-/// start and the store backend is reused across a hot reload; a RESTART makes them live) — the
-/// response's `reload_to_apply` names exactly which. Full scope; `If-Match` optimistic
-/// concurrency; audited (every attempt) + versioned; overlay-persisted so it survives a restart.
-/// Requires config files on disk (the base to merge onto); an ephemeral busbar has none, so this is a
-/// `400 invalid_request` there, exactly like `config/reload`.
-pub(crate) async fn put_config_settings(
-    State(handle): State<Arc<AppHandle>>,
-    axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
-    headers: axum::http::HeaderMap,
-    body: axum::body::Bytes,
-) -> Response {
-    let actor = principal.actor_id().to_string();
-    let expected = match if_match_version(&headers) {
-        Ok(v) => v,
-        Err(resp) => return resp,
-    };
-    let req: crate::config::overlay::RootSettings = match serde_json::from_slice(&body) {
-        Ok(r) => r,
-        Err(e) => {
-            return err_json(&AdminError::Validation(format!(
-                "malformed config settings body: {e}"
-            )))
-        }
-    };
-    let _mlock = CONFIG_MUTATION_LOCK.lock().await;
-    let current = handle.load();
-    if let Some(e) = stale_if_match(expected, current.config_version) {
-        audit::AUDIT.record_by(
-            "config.settings",
-            "config:settings",
-            audit::OUTCOME_REJECTED,
-            &actor,
-        );
-        return err_json(&e);
-    }
-    let (Some(config_path), Some(providers_path)) =
-        (current.config_path.clone(), current.providers_path.clone())
-    else {
-        audit::AUDIT.record_by(
-            "config.settings",
-            "config:settings",
-            audit::OUTCOME_REJECTED,
-            &actor,
-        );
-        return err_json(&AdminError::Validation(
-            "this busbar was started without config files (ephemeral mode); /config/settings has no \
-             disk base to merge onto"
-                .into(),
-        ));
-    };
-    // Merge the partial request onto the CURRENT overlay root (partial-update semantics).
-    let merged = merge_root_settings(
-        current_root_settings(current.overlay_path.as_deref()),
-        req.clone(),
-    );
-    let merged_for_build = merged.clone();
-    // Re-run the disk-load pipeline (base truth), apply the MERGED root onto the DeployCfg BEFORE
-    // resolve (so the limits projection + admin-mTLS boot-guard re-derive over it), then merge the
-    // CURRENT hooks/groups overlay sections POST-resolve — exactly the reload mechanism, with the
-    // root section coming from the just-merged desired state rather than the on-disk overlay.
-    let outcome = crate::load_config_from_disk(
-        &config_path,
-        &providers_path,
-        false,
-        crate::config::EnvSubst::Strict,
-    )
-    .and_then(|mut loaded| {
-        merged_for_build.apply_to_deploy(&mut loaded.deploy);
-        let mut cfg = crate::config::resolve(&loaded.deploy, &loaded.defs)
-            .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
-        let base_hook_names: std::collections::HashSet<String> =
-            cfg.hooks.keys().cloned().collect();
-        let base_group_names: std::collections::HashSet<String> =
-            cfg.groups.keys().cloned().collect();
-        if let Some(doc) = loaded.overlay_doc {
-            crate::config::overlay::merge_into(&mut cfg, doc);
-        }
-        crate::build_app_from_config(
-            cfg,
-            loaded.deploy.plugins.clone(),
-            current.overlay_path.clone(),
-            base_hook_names,
-            base_group_names,
-            (Some(config_path), Some(providers_path)),
-            Some(&current),
-        )
-    });
-    match outcome {
-        Ok(next) => {
-            let installed = Arc::new(next);
-            handle.swap(installed.clone());
-            audit::AUDIT.record_by(
-                "config.settings",
-                "config:settings",
-                audit::OUTCOME_APPLIED,
-                &actor,
-            );
-            let cur = handle.load();
-            record_group_version(&installed, &actor, "config.settings (root section applied)");
-            // Persist the merged root section (best-effort; the sibling hooks/groups sections are
-            // preserved verbatim by the read-modify-write).
-            crate::config::overlay::persist_root(cur.overlay_path.as_deref(), &merged);
-            let reload_to_apply = reload_to_apply_fields(&req);
-            let note = if reload_to_apply.is_empty() {
-                "applied live".to_string()
-            } else {
-                format!(
-                    "applied live except {} — stored in the overlay, effective on the next RESTART (a \
-                     socket rebind / TLS bind is read once at process start, and the store backend is \
-                     reused across a hot reload; none can hot-swap)",
-                    reload_to_apply.join(", ")
-                )
-            };
-            let settings = serde_json::to_value(&merged).unwrap_or_else(|_| json!({}));
-            with_config_etag(
-                ok_json(
-                    StatusCode::OK,
-                    &json!({
-                        "applied": true,
-                        "config_version": cur.config_version,
-                        "settings": settings,
-                        "reload_to_apply": reload_to_apply,
-                        "note": note,
-                    }),
-                ),
-                cur.config_version,
-            )
-        }
-        Err(e) => {
-            audit::AUDIT.record_by(
-                "config.settings",
-                "config:settings",
                 audit::OUTCOME_REJECTED,
                 &actor,
             );
@@ -2383,11 +1106,10 @@ pub(crate) async fn patch_hook_settings(
     let pre_push_version = current.config_version;
     let settings_version = pre_push_version.wrapping_add(1);
     // PUSH first, COMMIT on ack — a hook that never acked never sees committed state it doesn't
-    // hold (§6.5: no partial config ever goes live). The hook plugin env is captured here; the load()
-    // that feeds the actual swap is re-taken AFTER the await, under the mutation lock.
-    let hook_env = current.hook_env.clone();
-    if let Err(e) = crate::hooks::push_configure(&updated, &name, settings_version, &hook_env).await
-    {
+    // hold (§6.5: no partial config ever goes live). The client is captured here; the load() that
+    // feeds the actual swap is re-taken AFTER the await, under the mutation lock.
+    let client = current.client.clone();
+    if let Err(e) = crate::hooks::push_configure(&updated, &name, settings_version, &client).await {
         audit::AUDIT.record_by("hook.settings", &resource, audit::OUTCOME_REJECTED, &actor);
         return err_json(&AdminError::Validation(format!(
             "hook did not acknowledge the settings push: {e}"
@@ -2449,7 +1171,7 @@ pub(crate) async fn hook_schema(
         return err_json(&AdminError::NotFound(format!("hook `{name}`")));
     };
     let schema =
-        crate::hooks::fetch_schema(&name, hook, current.config_version, &current.hook_env).await;
+        crate::hooks::fetch_schema(&name, hook, current.config_version, &current.client).await;
     ok_json(StatusCode::OK, &json!({ "name": name, "schema": schema }))
 }
 
@@ -2468,8 +1190,7 @@ pub(crate) async fn hook_status(
         return err_json(&AdminError::NotFound(format!("hook `{name}`")));
     };
     let desired_version = current.config_version;
-    let reported =
-        crate::hooks::fetch_status(&name, hook, desired_version, &current.hook_env).await;
+    let reported = crate::hooks::fetch_status(&name, hook, desired_version, &current.client).await;
     let as_of = crate::store::now();
     let body = match reported {
         Some(r) => {
@@ -2560,12 +1281,8 @@ pub(crate) const V1_GET_PATHS: &[(&str, &str)] = &[
     ("/providers", "Distinct providers + lane counts"),
     (PATH_HOOKS, "Hook registry (definitions)"),
     (
-        PATH_GROUPS,
-        "Group registry — the limit tree (parent chain, limits, child_default budget template)",
-    ),
-    (
         "/plugins",
-        "Plugin catalog by type (compiled-in + external + dynamic-library)",
+        "Plugin catalog by type (compiled-in + external)",
     ),
     (
         "/auth",
@@ -2645,74 +1362,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             }),
         );
     }
-    // Runtime group creation: POST on the /groups collection (merged onto its GET entry above).
-    if let Some(obj) = paths
-        .get_mut(&ap(PATH_GROUPS))
-        .and_then(|p| p.as_object_mut())
-    {
-        obj.insert(
-            "post".to_string(),
-            json!({
-                "summary": "Create (or replace) a group at runtime — live immediately (upsert)",
-                "security": [{"adminToken": []}],
-                "responses": {
-                    "201": {"description": "Created — the name is NEW (body is the group definition)"},
-                    "200": {"description": "Replaced — the name existed (body is the group definition)"},
-                    "400": {"description": "Invalid tree — dangling/cyclic parent or depth (`invalid_request`)"},
-                    "409": {"description": "Base-defined group (edit config.yaml) or stale `If-Match` (`version_conflict`)"}
-                }
-            }),
-        );
-    }
-    // Plugin INSTALL: POST on the /plugins collection (merged onto its GET entry above).
-    if let Some(obj) = paths
-        .get_mut(&ap("/plugins"))
-        .and_then(|p| p.as_object_mut())
-    {
-        obj.insert(
-            "post".to_string(),
-            json!({
-                "summary": "Install a dynamic-library store plugin: upload the library (base64) + optional signed manifest; the engine RE-VERIFIES against the running trust posture, validates the store ABI, and writes it atomically into the plugins directory. Takes effect on the next store (re)load",
-                "security": [{"adminToken": []}],
-                "responses": {
-                    "201": {"description": "Installed — `{file, name, interface_version, trust, version?, publisher?, note}`"},
-                    "400": {"description": "Malformed body, bad base64, or the library is not a loadable busbar store plugin (`invalid_request`)"},
-                    "409": {"description": "The upload is untrusted and not opted-in (`conflict`) - sign it with an allowlisted publisher, add the publisher to plugins.trust.publishers, or set plugins.trust.allow_unsigned / allow_third_party"}
-                }
-            }),
-        );
-    }
-    // Plugin RELOAD + REMOVE (templated).
-    paths.insert(
-        ap("/plugins/reload"),
-        json!({
-            "post": {
-                "summary": "Re-scan the plugins directory and report the reconciled dynamic-library inventory (the sibling of config/reload). A store change takes effect on the next store (re)load",
-                "security": [{"adminToken": []}],
-                "responses": {
-                    "200": {"description": "`{plugins, note}` — the current dynamic-library inventory"}
-                }
-            }
-        }),
-    );
-    paths.insert(
-        ap("/plugins/{file}"),
-        json!({
-            "delete": {
-                "summary": "Remove a dynamic-library plugin (library + manifest sidecar) from the plugins directory. A loaded store keeps running until the next store (re)load",
-                "security": [{"adminToken": []}],
-                "parameters": [{
-                    "name": "file", "in": "path", "required": true,
-                    "schema": {"type": "string"}
-                }],
-                "responses": {
-                    "204": {"description": "Removed"},
-                    "400": {"description": "Invalid plugin filename (`invalid_request`)"},
-                    "404": {"description": "No such plugin file (`not_found`)"}
-                }
-            }
-        }),
-    );
     // Templated + non-GET routes.
     paths.insert(
         ap("/hooks/{name}"),
@@ -2761,64 +1410,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         }),
     );
     paths.insert(
-        ap("/groups/{name}"),
-        json!({
-            "get": {
-                "summary": "One group definition (parent, enabled, limits, child_default)",
-                "security": [{"adminToken": []}],
-                "parameters": [{
-                    "name": "name", "in": "path", "required": true,
-                    "schema": {"type": "string"}
-                }],
-                "responses": {
-                    "200": {"description": "OK"},
-                    "404": {"description": "Unknown group (error code `not_found`)"}
-                }
-            },
-            "put": {
-                "summary": "Replace an overlay group definition — live immediately (limits rebuilt)",
-                "security": [{"adminToken": []}],
-                "parameters": [{
-                    "name": "name", "in": "path", "required": true,
-                    "schema": {"type": "string"}
-                }],
-                "responses": {
-                    "200": {"description": "The replaced group"},
-                    "400": {"description": "Invalid tree — dangling/cyclic parent or depth (error code `invalid_request`)"},
-                    "404": {"description": "Unknown group (error code `not_found`)"},
-                    "409": {"description": "Base-defined group (edit config.yaml), or stale `If-Match` (`version_conflict`)"}
-                }
-            },
-            "patch": {
-                "summary": "Partial update — change only the fields present (e.g. raise a budget, freeze a group)",
-                "security": [{"adminToken": []}],
-                "parameters": [{
-                    "name": "name", "in": "path", "required": true,
-                    "schema": {"type": "string"}
-                }],
-                "responses": {
-                    "200": {"description": "The updated group"},
-                    "400": {"description": "Invalid tree after the merge, or unknown patch field (error code `invalid_request`)"},
-                    "404": {"description": "Unknown group (error code `not_found`)"},
-                    "409": {"description": "Base-defined group, or stale `If-Match` (`version_conflict`)"}
-                }
-            },
-            "delete": {
-                "summary": "Remove an overlay group at runtime — live immediately",
-                "security": [{"adminToken": []}],
-                "parameters": [{
-                    "name": "name", "in": "path", "required": true,
-                    "schema": {"type": "string"}
-                }],
-                "responses": {
-                    "204": {"description": "Removed"},
-                    "404": {"description": "Unknown group (error code `not_found`)"},
-                    "409": {"description": "Base-defined group, or another group still names it as parent (error code `conflict`)"}
-                }
-            }
-        }),
-    );
-    paths.insert(
         ap("/pools/{name}"),
         json!({
             "get": {
@@ -2831,23 +1422,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 "responses": {
                     "200": {"description": "OK"},
                     "404": {"description": "Unknown pool (error code `not_found`)"}
-                }
-            }
-        }),
-    );
-    paths.insert(
-        ap("/groups/{name}/usage"),
-        json!({
-            "get": {
-                "summary": "The group's derived current-window usage per (window, pool) enforcement bucket vs its caps — the self-service dashboard read (spend derives from the token ledger x the CURRENT rate card at read time)",
-                "security": [{"adminToken": []}],
-                "parameters": [{
-                    "name": "name", "in": "path", "required": true,
-                    "schema": {"type": "string"}
-                }],
-                "responses": {
-                    "200": {"description": "OK"},
-                    "404": {"description": "Unknown group (error code `not_found`)"}
                 }
             }
         }),
@@ -2986,28 +1560,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             }
         }),
     );
-    paths.insert(
-        ap("/config/settings"),
-        json!({
-            "get": {
-                "summary": "Read the API-set single-value config overlay (root section: listen/tls/rate_card/store/security/limits/…) — only the operator's overrides; base config.yaml stands for the rest",
-                "security": [{"adminToken": []}],
-                "responses": {
-                    "200": {"description": "`{applied:false, config_version, settings}` (settings = the current root overrides)"},
-                    "401": {"description": "Missing/invalid admin credential"}
-                }
-            },
-            "put": {
-                "summary": "SET any single-value config section durably (1.5.0 full-config coverage): partial RootSettings merged onto the overlay, re-resolved + validated, swapped in. rate_card/per_request_fee/security/limits/… go live; listen/tls/admin_listen/admin_tls/admin_insecure/store are stored + flagged restart-to-apply (bound once at start / store reused across a hot reload). NEVER writes config.yaml",
-                "security": [{"adminToken": []}],
-                "responses": {
-                    "200": {"description": "`{applied:true, config_version, settings, reload_to_apply, note}`"},
-                    "400": {"description": "Invalid config after the merge, unknown field, or ephemeral busbar with no disk base (error code `invalid_request`); nothing changed"},
-                    "409": {"description": "Stale `If-Match` (error code `version_conflict` — re-read and retry)"}
-                }
-            }
-        }),
-    );
     if let Some(auth_path) = paths.get_mut(&ap(PATH_ADMIN_AUTH)) {
         auth_path["put"] = json!({
             "summary": "Replace the admin_auth chain at runtime — dry-run guarded (the calling credentials must hold full scope under the NEW chain, else 409). Live until the next reload/restart",
@@ -3048,21 +1600,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         }),
     );
     paths.insert(
-        ap("/overlay/{section}"),
-        json!({
-            "delete": {
-                "summary": "DISCARD a section's overlay mutations and revert it to base config.yaml (section ∈ groups|hooks). Per-section reset — the OTHER section's overlay survives. A NEW config version; an already-empty section is an idempotent no-op (changed:false)",
-                "security": [{"adminToken": []}],
-                "parameters": [{"name": "section", "in": "path", "required": true, "schema": {"type": "string", "enum": ["groups", "hooks"]}}],
-                "responses": {
-                    "200": {"description": "`{reset, config_version, changed}` — changed:false when the section had no overlay state"},
-                    "400": {"description": "Unknown section, or ephemeral busbar with no config files to revert to (error code `invalid_request`)"},
-                    "409": {"description": "Stale `If-Match` (error code `version_conflict` — re-read and retry)"}
-                }
-            }
-        }),
-    );
-    paths.insert(
         ap(PATH_CONFIG_VALIDATE),
         json!({
             "post": {
@@ -3083,7 +1620,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         ap("/keys"),
         json!({
             "get": {
-                "summary": "List virtual keys (metadata only; never secrets). Filters: ?enabled=, ?prefix=, ?group= (keys bound to a group — a `user:<sub>` leaf's keys are one person's). Paginate: ?limit=, ?cursor= (opaque)",
+                "summary": "List virtual keys (metadata only; never secrets). Filters: ?enabled=, ?prefix=. Paginate: ?limit=, ?cursor= (opaque)",
                 "security": [{"adminToken": []}],
                 "responses": {
                     "200": {"description": "`{items, next_cursor}` — the cursor page envelope (next_cursor null at end)"},
@@ -3268,11 +1805,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         ),
         (
             "/plugins",
-            &[(
-                "type",
-                "Plugin type: `auth` | `hooks` | `store` (required)",
-                true,
-            )],
+            &[("type", "Plugin type: `auth` | `hooks` (required)", true)],
         ),
         (
             "/usage",
@@ -3326,9 +1859,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         ("/hooks/{name}/settings", "patch"),
         (PATH_ADMIN_AUTH, "put"),
         ("/config/apply", "post"),
-        ("/config/settings", "put"),
         ("/config/rollback", "post"),
-        ("/overlay/{section}", "delete"),
         ("/keys/{id}", "patch"),
         ("/keys/{id}", "delete"),
     ];
@@ -3409,9 +1940,8 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     }
 
     use crate::admin::v1::contract::{
-        AdminAuthView, AuthView, ConfigValidateView, EffectiveConfigView, GroupView,
-        HookHealthView, HookView, InfoView, ModelView, Page, PluginInstallView, PluginReloadView,
-        PluginView, PoolDetailView, PoolView, ProviderView, UsageView,
+        AdminAuthView, AuthView, ConfigValidateView, EffectiveConfigView, HookHealthView, HookView,
+        InfoView, ModelView, Page, PluginView, PoolDetailView, PoolView, ProviderView, UsageView,
     };
 
     // Info & topology.
@@ -3430,19 +1960,6 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     typed!("/hooks/{name}/health", "get", "200", HookHealthView);
     typed!("/hooks/{name}/schema", "get", "200", sview::HookSchemaView);
     typed!("/hooks/{name}/status", "get", "200", sview::HookStatusView);
-    // Groups (the limit tree).
-    typed!(PATH_GROUPS, "get", "200", Page<GroupView>);
-    typed!(PATH_GROUPS, "post", "201", GroupView);
-    typed!(PATH_GROUPS, "post", "200", GroupView);
-    typed!("/groups/{name}", "get", "200", GroupView);
-    typed!("/groups/{name}", "put", "200", GroupView);
-    typed!("/groups/{name}", "patch", "200", GroupView);
-    typed!(
-        "/groups/{name}/usage",
-        "get",
-        "200",
-        crate::admin::v1::contract::GroupUsageView
-    );
     // Auth & credentials.
     typed!("/auth", "get", "200", AuthView);
     typed!(PATH_ADMIN_AUTH, "get", "200", AdminAuthView);
@@ -3450,28 +1967,12 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     typed!("/auth/cache/flush", "post", "200", sview::CacheFlushView);
     // Plugins, usage, config.
     typed!("/plugins", "get", "200", Page<PluginView>);
-    typed!("/plugins", "post", "201", PluginInstallView);
-    typed!("/plugins/reload", "post", "200", PluginReloadView);
-    typed!(
-        "/plugins/rollback",
-        "post",
-        "200",
-        crate::admin::v1::contract::PluginRollbackView
-    );
     typed!("/usage", "get", "200", UsageView);
     typed!("/config", "get", "200", EffectiveConfigView);
     typed!(PATH_CONFIG_VALIDATE, "post", "200", ConfigValidateView);
     typed!("/config/apply", "post", "200", sview::ConfigApplyView);
-    typed!("/config/settings", "get", "200", sview::ConfigSettingsView);
-    typed!("/config/settings", "put", "200", sview::ConfigSettingsView);
     typed!("/config/reload", "post", "200", sview::ConfigReloadView);
     typed!("/config/rollback", "post", "200", sview::ConfigRollbackView);
-    typed!(
-        "/overlay/{section}",
-        "delete",
-        "200",
-        sview::OverlayResetView
-    );
     typed!("/config/diff", "get", "200", sview::ConfigDiffView);
     typed!(
         "/config/versions",
@@ -3635,71 +2136,4 @@ pub(crate) async fn validate_config(
             .validate_config(req.config, req.providers)
             .await,
     )
-}
-
-#[cfg(test)]
-mod patch_tests {
-    use super::merge_group_patch;
-    use crate::config::groups::{ChildDefault, LimitMetric, LimitWindow};
-    use crate::config::{GroupCfg, LimitCfg};
-
-    fn budget(cents: u64) -> LimitCfg {
-        LimitCfg {
-            metric: LimitMetric::Budget,
-            amount: cents,
-            per: Some(LimitWindow::Month),
-            pool: None,
-            on_exhaust: None,
-            downgrade_to: None,
-        }
-    }
-
-    /// The raise-a-budget path: patching only `limits` replaces them and PRESERVES parent + enabled.
-    #[test]
-    fn patch_limits_preserves_other_fields() {
-        let base = GroupCfg {
-            parent: Some("team".into()),
-            enabled: true,
-            limits: vec![budget(3_000)],
-            child_default: None,
-        };
-        let out = merge_group_patch(base, None, None, Some(vec![budget(5_000)]), None);
-        assert_eq!(out.parent.as_deref(), Some("team"));
-        assert!(out.enabled);
-        assert_eq!(out.limits.len(), 1);
-        assert_eq!(out.limits[0].amount, 5_000);
-        assert!(out.child_default.is_none());
-    }
-
-    /// Freezing a group: patching only `enabled` flips it, leaving limits + parent intact.
-    #[test]
-    fn patch_enabled_only_freezes_without_touching_limits() {
-        let base = GroupCfg {
-            parent: Some("team".into()),
-            enabled: true,
-            limits: vec![budget(3_000)],
-            child_default: Some(ChildDefault {
-                limits: vec![budget(500)],
-            }),
-        };
-        let out = merge_group_patch(base, None, Some(false), None, None);
-        assert!(!out.enabled);
-        assert_eq!(out.limits[0].amount, 3_000);
-        assert_eq!(out.parent.as_deref(), Some("team"));
-        let cd = out.child_default.expect("child_default preserved");
-        assert_eq!(cd.limits[0].amount, 500);
-    }
-
-    /// An empty patch (all None) is an identity: nothing changes.
-    #[test]
-    fn empty_patch_is_identity() {
-        let base = GroupCfg {
-            parent: Some("p".into()),
-            enabled: false,
-            limits: vec![budget(1)],
-            child_default: None,
-        };
-        let out = merge_group_patch(base.clone(), None, None, None, None);
-        assert_eq!(out, base);
-    }
 }

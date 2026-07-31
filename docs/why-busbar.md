@@ -22,13 +22,11 @@ Busbar presents a single endpoint to your application. You configure which provi
 
 ### Cost control requires a control plane
 
-Direct API usage gives you a bill at the end of the month. It does not give you enforced budget caps, rate limits applied in real time, or auditability of which workload consumed what. Without a control plane, cost control means trusting every developer and every deployment to self-police.
+Direct API usage gives you a bill at the end of the month. It does not give you per-team or per-application budget caps, rate limits enforced in real time, or auditability of which workload consumed what. Without a control plane, cost control means trusting every developer and every deployment to self-police.
 
-Busbar's governance layer issues virtual keys: signed, expiring bearer tokens scoped to a set of pools and bound to at most one enforcement **group**. A group carries generic limits: request, token, and budget caps per window (minute, hour, day, month, or total) plus an instantaneous concurrency cap, all priced from an operator-declared rate card and a flat per-request fee. Groups nest under a parent, and admission walks the whole chain so a request passes only when every limit of the key's group AND every ancestor group is under cap, with the rejection naming the exact bucket that blocked. A key for a staging environment can be capped at a daily budget and restricted to a cheaper model pool; an internal tool can be rate-limited independently of the production path. That is how per-team or per-project limits are enforced, not just observed. Keys expire (default 90 days) and revoke via a fleet-wide denylist; usage is tracked per key and queryable via the admin API.
+Busbar's governance layer issues virtual keys, scoped bearer tokens with configurable per-request and per-1k-token pricing, daily/monthly/total budget caps, RPM and TPM limits, and pool-level access controls. A virtual key for a staging environment can be capped at a daily budget and restricted to a cheaper model pool. An internal tool can be rate-limited independently of the production path. Usage is tracked per key and queryable via the admin API.
 
-Costs are computed from tokens, not stored as dollars. The store accumulates immutable per-model token counts; every spend figure is derived at read time as `tokens x rate_card + requests x per_request_fee`. Correcting a mispriced model is a config edit and a reload, and every historical and current window re-prices on the next read, with no re-billing and no migration. The rate numbers are abstract cost units, so busbar attaches no currency and does pure integer math; symbols and FX are your dashboard's concern.
-
-One operational caveat worth stating plainly. RPM limits are enforced precisely (the counter is incremented synchronously on admission). Budget caps are hard and atomic: at admission busbar derives every bucket's spend fresh from its token ledger and admits only if the key and every ancestor budget group are under cap, charging the whole chain or nothing in one critical section. A 429 `insufficient_quota` names which bucket blocked. Because admission is in-memory and never touches the durable store, the cap holds even when the store is unreachable. That in-memory speed carries one honest limit: the hard cap is enforced **per node**. With N busbar nodes splitting traffic behind a shared store, each node enforces from its own counters and reconciles durably through additive flushes, so between flushes the fleet can admit up to roughly N times a configured cap. The cap is not a synchronous cluster-wide gate. TPM limits remain best-effort under concurrency, since token usage is only known after the response.
+One operational caveat worth stating plainly. RPM limits are enforced precisely (the counter is incremented synchronously on admission). Budget caps are too: the over-budget check and the spend charge are a single atomic SQLite UPSERT (`charge_within_budget`), so concurrent in-flight requests cannot overshoot the cap. TPM limits remain best-effort under concurrency, since token usage is only known after the response. On a governance store error Busbar fails open by default (`budget_on_store_error: allow`) to preserve availability; set `deny` for a hard guarantee that rejects on any store error.
 
 ### Your data path is also your security perimeter
 
@@ -60,7 +58,7 @@ Busbar ships as a single static binary. Deployment is:
 2. Set the environment variables your config references (one per provider key).
 3. Run the binary.
 
-There is no Python environment to manage, no Node runtime, and no database to provision: governance defaults to an in-memory store (ephemeral RAM, zero setup), and durability is an opt-in you point at a `sqlite`, `postgres`, or `redis` store plugin. No sidecar is required. Health, metrics, and management traffic all pass through the same process on the same port.
+There is no Python environment to manage, no Node runtime, no database to provision (governance uses an embedded SQLite file if you enable it), and no sidecar required. Health, metrics, and management traffic all pass through the same process on the same port.
 
 **Observability is built in.** Prometheus metrics are exposed at `/metrics` with bounded cardinality: metric labels use configured pool names and fixed enumerations, never raw model strings from client requests. OTLP trace export and a request-log webhook are both optional and configurable. The `/healthz` endpoint is side-effect-free (it never steals a recovery probe) and safe for high-frequency load balancer probing. Note that `/metrics` and `/stats` are not auth-exempt, they go through the same auth check as request traffic, since telemetry is itself a fingerprinting surface.
 
@@ -68,7 +66,7 @@ There is no Python environment to manage, no Node runtime, and no database to pr
 
 **The request body cap is 32 MiB** (`DefaultBodyLimit`), enforced before handler code runs, with protocol-native 413 responses (not bare text).
 
-One auth note for Bedrock: Busbar signs outbound Bedrock requests with AWS SigV4 AND verifies inbound SigV4 (when governance is enabled). Under governance, a Bedrock-SDK client authenticates with a minted `aws_access_key_id` + `aws_secret_access_key` pair: Busbar verifies the signature and enforces budgets / rate limits exactly like a bearer-token client. Without governance, Bedrock ingress requires `auth.chain: []`, with `upstream_credentials: passthrough` to forward the credentials upstream, or plain `chain: []` to ignore them.
+One auth note for Bedrock: Busbar signs outbound Bedrock requests with AWS SigV4 AND verifies inbound SigV4 (when governance is enabled). Under governance, a Bedrock-SDK client authenticates with a minted `aws_access_key_id` + `aws_secret_access_key` pair: Busbar verifies the signature and enforces budgets / rate limits exactly like a bearer-token client. Without governance, Bedrock ingress requires `auth.chain: []` — with `upstream_credentials: passthrough` to forward the credentials upstream, or plain `chain: []` to ignore them.
 
 ---
 
@@ -78,7 +76,7 @@ One auth note for Bedrock: Busbar signs outbound Bedrock requests with AWS SigV4
 
 - You run your own infrastructure and want to own the full request path to AI providers.
 - You use more than one provider and want failover, load distribution, or the ability to swap providers without code changes.
-- You need per-key, per-team, or per-project cost control enforced at the control plane through nestable budget groups, before the request runs.
+- You need per-team or per-application cost control enforced at the control plane, before the request runs.
 - Your existing applications use different provider SDKs (OpenAI, Anthropic, Gemini, Bedrock, Cohere) and you want to standardize the routing layer without rewriting call sites.
 - You have data residency, compliance, or internal security requirements that exclude third-party traffic routing.
 
@@ -93,6 +91,6 @@ One auth note for Bedrock: Busbar signs outbound Bedrock requests with AWS SigV4
 
 ## Current status
 
-Busbar is licensed **Apache-2.0**. The wire protocol translation, the data-plane HTTP surface, and the circuit breaker model are stable under Semantic Versioning; the config format is an operator artifact with a tooled migration path between releases, and the admin API carries its own contract version. The test suite covers over 2,300 test cases across the protocol translators, breaker FSM, auth middleware, governance enforcement, and config validation.
+Busbar is licensed **Apache-2.0**. The wire protocol translation, circuit breaker model, governance layer, and admin API are stable under Semantic Versioning. The test suite covers over 1,600 test cases across the protocol translators, breaker FSM, auth middleware, governance enforcement, and config validation.
 
 Apache-2.0 is permissive: use it commercially, modify it privately, redistribute it, with an explicit patent grant and no copyleft obligations.

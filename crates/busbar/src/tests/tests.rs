@@ -85,21 +85,21 @@ fn pool(members: Vec<PoolMember>) -> PoolCfg {
         failover: None,
         on_exhausted: None,
         affinity: None,
-        module_hooks: Vec::new(),
         policy: crate::config::PoolPolicy::default(),
         gates: Vec::new(),
         base_named: false,
     }
 }
 
-fn member(model: &str, context_max: Option<usize>) -> PoolMember {
+fn member(target: &str, context_max: Option<usize>) -> PoolMember {
     PoolMember {
         reasoning: None,
-        model: model.to_string(),
+        target: target.to_string(),
         weight: 1,
         attempt_timeout_ms: None,
         context_max,
         tier: None,
+        cost_per_mtok: None,
         tags: Vec::new(),
     }
 }
@@ -171,64 +171,6 @@ fn test_open_relay_banner_distinguishes_absent_vs_explicit_none() {
 fn test_open_relay_banner_silent_when_auth_engaged() {
     // A non-empty chain emits nothing — the banner is exclusively for the open-relay state.
     assert!(open_relay_banner(false, true).is_none());
-}
-
-/// INERT-KEYS BOOT GUARD (bypass-edge): a DURABLE store carrying keys with NO admin token is the
-/// one state where a prior run's keys become silently unenforced (governance goes inert). The
-/// banner fires EXACTLY there and nowhere else.
-#[test]
-fn test_inert_durable_keys_banner_fires_only_for_durable_keyed_no_token() {
-    // The dangerous edge: durable store, keys present, no admin token → LOUD banner.
-    let b = inert_durable_keys_banner(true, 3, false).expect("durable+keys+no-token must banner");
-    assert!(
-        b.contains("INERT") && b.contains("3 key") && b.contains("admin_token"),
-        "banner must name the count and the fix; got: {b}"
-    );
-
-    // An admin token IS set → keys are enforced, no banner.
-    assert!(
-        inert_durable_keys_banner(true, 3, true).is_none(),
-        "an admin token makes governance active — no inert-keys banner"
-    );
-
-    // Durable store but EMPTY (fresh durable deploy, no keys yet) → nothing to bypass, no banner.
-    assert!(
-        inert_durable_keys_banner(true, 0, false).is_none(),
-        "an empty durable store has no keys to leave unenforced"
-    );
-
-    // A RAM (non-durable) store never persists keys across the admin-token removal that creates
-    // this edge — even if it somehow reported keys, the banner is scoped to durable stores.
-    assert!(
-        inert_durable_keys_banner(false, 5, false).is_none(),
-        "the inert-keys banner is scoped to durable stores"
-    );
-}
-
-/// A MEMORY store can never REACH the inert-with-keys state in practice: keys are only minted
-/// through the admin API, which is gated by the admin token — so a keyed engine implies an admin
-/// token, and a RAM store starts empty every boot. This pins that invariant end-to-end: a fresh
-/// `MemoryStore` reports zero keys, and its `admin_token_hash()` gate matches the token it was
-/// constructed with. (The durable-store analogue is exercised by the router-level bypass test.)
-#[test]
-fn test_memory_store_cannot_reach_inert_with_keys() {
-    use crate::governance::{GovState, MemoryStore};
-    use std::sync::Arc;
-
-    // No admin token → engine inert AND the store is empty (RAM starts fresh each boot). There is
-    // no keyed-but-inert state to warn about: key_count is 0, so the banner is None regardless.
-    let store = Arc::new(MemoryStore::new());
-    let gov = GovState::new(store, None).unwrap();
-    assert!(gov.admin_token_hash().is_none(), "no admin token → inert");
-    let key_count = gov.all_keys().map(|k| k.len()).unwrap_or(0);
-    assert_eq!(key_count, 0, "a fresh RAM store holds no keys");
-    // store_is_durable = false for memory → banner is None even if key_count were nonzero.
-    assert!(inert_durable_keys_banner(false, key_count, false).is_none());
-
-    // With an admin token the same engine is active — the state a real minted-keys deploy is in.
-    let store2 = Arc::new(MemoryStore::new());
-    let gov2 = GovState::new(store2, Some("admintok".to_string())).unwrap();
-    assert!(gov2.admin_token_hash().is_some(), "admin token → active");
 }
 
 /// The fallback handlers infer the ingress protocol from the
@@ -388,13 +330,13 @@ async fn test_fallback_openai_404_is_json_no_amzn_headers() {
 #[cfg(feature = "auth-admin-tokens")]
 #[tokio::test]
 async fn split_admin_listener_no_double_exposure() {
-    use crate::governance::{GovState, MemoryStore};
+    use crate::governance::{GovState, SqliteStore};
     use crate::test_support::{LaneSpec, TestApp};
     use std::sync::Arc;
     crate::metrics::init();
 
-    let store = Arc::new(MemoryStore::new());
-    let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
     // One configured lane so `/healthz` reports ready (200) rather than "no usable lanes" (503) —
     // the probe URL is never actually dialed here; the test only exercises routing/auth.
     let app = TestApp::new()
@@ -659,232 +601,4 @@ async fn test_axum_marker_413_is_reshaped_even_as_plain_text() {
     let v: serde_json::Value =
         serde_json::from_slice(&bytes).expect("reshaped 413 body must be valid JSON");
     assert!(v.get("error").is_some());
-}
-
-/// Helpers for the plugin pre-flight regression tests: a fresh temp plugins dir and an in-memory
-/// signed/unsigned tarball builder.
-pub(crate) fn tmp_plugin_dir(tag: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-boot-plugins-{}-{tag}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-pub(crate) fn plugin_manifest(
-    name: &str,
-    alias: &str,
-    publisher: &str,
-) -> busbar_plugin_sign::Manifest {
-    busbar_plugin_sign::Manifest {
-        name: name.into(),
-        alias: alias.into(),
-        kind: "store".into(),
-        version: "1.5.0".into(),
-        publisher: publisher.into(),
-        abi_version: *busbar_plugin_loader::supported_abi("store")
-            .iter()
-            .max()
-            .expect("store abi"),
-        sha256: String::new(),
-        signature: String::new(),
-        description: String::new(),
-        homepage: String::new(),
-        license: String::new(),
-        needs: Default::default(),
-    }
-}
-
-/// An UNSIGNED (but structurally valid) tarball: sha256 set, signature empty.
-pub(crate) fn unsigned_tarball(mut m: busbar_plugin_sign::Manifest, lib: &[u8]) -> Vec<u8> {
-    m.sha256 = busbar_plugin_sign::sha256_hex(lib);
-    busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap()
-}
-
-fn plugins_cfg(dir: &std::path::Path, enabled: bool) -> crate::config::PluginsCfg {
-    crate::config::PluginsCfg {
-        enabled,
-        dir: dir.to_string_lossy().into_owned(),
-        ..Default::default()
-    }
-}
-
-fn gov_with_store(store: &str) -> crate::config::StoreCfg {
-    crate::config::StoreCfg {
-        module: store.to_string(),
-        ..Default::default()
-    }
-}
-
-/// FAIL-CLOSED (hard requirement 1): `governance.store: <plugin>` with `plugins.enabled: false`
-/// (or the block absent) is a BOOT ERROR that NAMES the flag — the drop-is-inert failsafe.
-#[test]
-fn store_plugin_with_plugins_disabled_is_boot_error_naming_the_flag() {
-    let dir = tmp_plugin_dir("disabled-store");
-    let err = crate::plugins_preflight(
-        Some(&gov_with_store("redis")),
-        None,
-        &Default::default(),
-        &plugins_cfg(&dir, false),
-    )
-    .unwrap_err();
-    assert!(err.contains("plugins.enabled"), "names the flag: {err}");
-    assert!(err.contains("redis"), "names the store: {err}");
-    // The ABSENT-block default behaves identically.
-    let err = crate::plugins_preflight(
-        Some(&gov_with_store("redis")),
-        None,
-        &Default::default(),
-        &crate::config::PluginsCfg::default(),
-    )
-    .unwrap_err();
-    assert!(err.contains("plugins.enabled"), "absent block: {err}");
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// DROP-IS-INERT: plugins present in the directory but `plugins.enabled: false` (store: memory) —
-/// boot succeeds with an EMPTY registry; nothing in the dir is even considered.
-#[test]
-fn disabled_plugins_are_inert_even_when_present() {
-    let dir = tmp_plugin_dir("inert");
-    let tarball = unsigned_tarball(plugin_manifest("acme-store-x", "x", "acme"), b"lib");
-    std::fs::write(dir.join("x.tar.gz"), tarball).unwrap();
-    // Even an INVALID tarball must not matter while disabled.
-    std::fs::write(dir.join("junk.tar.gz"), b"not a tarball").unwrap();
-    let reg = crate::plugins_preflight(None, None, &Default::default(), &plugins_cfg(&dir, false))
-        .expect("inert");
-    assert!(reg.loadable().is_empty() && reg.skipped().is_empty());
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// SECURITY: if the CONFIGURED governance store resolves to a plugin that is UNTRUSTED and NOT
-/// opted-in, boot must FAIL with a clear error that NAMES the plugin and carries the exact trust
-/// reason - never silently skip the store the operator asked for. With `allow_unsigned` set, the
-/// same tarball passes preflight and resolves by alias AND canonical name.
-#[test]
-fn configured_store_with_untrusted_plugin_fails_boot_with_naming_error() {
-    let dir = tmp_plugin_dir("untrusted-store");
-    let tarball = unsigned_tarball(
-        plugin_manifest("busbar-store-sqlite", "sqlite", "busbar"),
-        b"unsigned lib bytes",
-    );
-    std::fs::write(dir.join("sqlite.tar.gz"), tarball).unwrap();
-
-    // STRICT default trust: the referenced store plugin is skipped -> preflight fails, naming it.
-    let err = crate::plugins_preflight(
-        Some(&gov_with_store("sqlite")),
-        None,
-        &Default::default(),
-        &plugins_cfg(&dir, true),
-    )
-    .unwrap_err();
-    assert!(
-        err.contains("busbar-store-sqlite") || err.contains("'sqlite'"),
-        "names the plugin: {err}"
-    );
-    assert!(
-        err.contains("allow_unsigned"),
-        "carries the exact opt-in flag to set: {err}"
-    );
-
-    // Opt in to unsigned: preflight passes and the store resolves by alias AND canonical name.
-    let mut cfg = plugins_cfg(&dir, true);
-    cfg.trust.allow_unsigned = true;
-    let reg = crate::plugins_preflight(
-        Some(&gov_with_store("sqlite")),
-        None,
-        &Default::default(),
-        &cfg,
-    )
-    .expect("allow_unsigned permits the unsigned store plugin at boot");
-    assert!(reg.resolve("sqlite").is_some(), "alias resolves");
-    assert!(
-        reg.resolve("busbar-store-sqlite").is_some(),
-        "canonical name resolves"
-    );
-    let reg2 = crate::plugins_preflight(
-        Some(&gov_with_store("busbar-store-sqlite")),
-        None,
-        &Default::default(),
-        &cfg,
-    )
-    .expect("the canonical name is equally valid as governance.store");
-    assert!(reg2.resolve("busbar-store-sqlite").is_some());
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// An UNKNOWN `governance.store` name (no plugin matches by alias or name) is a clear boot error
-/// listing what IS available.
-#[test]
-fn unknown_store_name_is_a_clear_boot_error() {
-    let dir = tmp_plugin_dir("unknown-store");
-    let mut cfg = plugins_cfg(&dir, true);
-    cfg.trust.allow_unsigned = true;
-    let tarball = unsigned_tarball(plugin_manifest("acme-store-x", "x", "acme"), b"lib");
-    std::fs::write(dir.join("x.tar.gz"), tarball).unwrap();
-    let err = crate::plugins_preflight(
-        Some(&gov_with_store("dynamo")),
-        None,
-        &Default::default(),
-        &cfg,
-    )
-    .unwrap_err();
-    assert!(err.contains("'dynamo'"), "names the missing store: {err}");
-    assert!(
-        err.contains("acme-store-x"),
-        "lists what is available: {err}"
-    );
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// FAIL-CLOSED (hard requirement 1): ANY invalid tarball/manifest in an ENABLED plugins dir aborts
-/// preflight (and therefore boot) with the file + reason named — never a partial boot, even when
-/// the invalid plugin is not the configured store.
-#[test]
-fn invalid_manifest_in_enabled_dir_fails_boot() {
-    let dir = tmp_plugin_dir("invalid-any");
-    std::fs::write(dir.join("junk.tar.gz"), b"not a tarball at all").unwrap();
-    let err = crate::plugins_preflight(None, None, &Default::default(), &plugins_cfg(&dir, true))
-        .unwrap_err();
-    assert!(err.contains("junk.tar.gz"), "names the file: {err}");
-    assert!(err.contains("plugin validation failed"), "got {err}");
-
-    // A structurally-broken manifest (bad sha256 binding) equally aborts.
-    std::fs::remove_file(dir.join("junk.tar.gz")).unwrap();
-    let mut m = plugin_manifest("acme-store-x", "x", "acme");
-    m.sha256 = busbar_plugin_sign::sha256_hex(b"OTHER bytes");
-    let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", b"real bytes").unwrap();
-    std::fs::write(dir.join("sha.tar.gz"), tarball).unwrap();
-    let err = crate::plugins_preflight(None, None, &Default::default(), &plugins_cfg(&dir, true))
-        .unwrap_err();
-    assert!(err.contains("integrity"), "names the sha mismatch: {err}");
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// CONFLICT (hard requirement 3): two loadable plugins claiming the same alias abort boot naming
-/// BOTH — "you can't use redis and a third-party redis".
-#[test]
-fn alias_conflict_fails_boot_naming_both() {
-    let dir = tmp_plugin_dir("conflict");
-    let mut cfg = plugins_cfg(&dir, true);
-    cfg.trust.allow_unsigned = true;
-    let a = unsigned_tarball(
-        plugin_manifest("busbar-store-redis", "redis", "busbar"),
-        b"a",
-    );
-    let b = unsigned_tarball(plugin_manifest("acme-store-redis", "redis", "acme"), b"b");
-    std::fs::write(dir.join("a.tar.gz"), a).unwrap();
-    std::fs::write(dir.join("b.tar.gz"), b).unwrap();
-    let err = crate::plugins_preflight(None, None, &Default::default(), &cfg).unwrap_err();
-    assert!(
-        err.contains("busbar-store-redis") && err.contains("acme-store-redis"),
-        "names both plugins: {err}"
-    );
-    assert!(err.contains("alias conflict"), "got {err}");
-    let _ = std::fs::remove_dir_all(&dir);
 }

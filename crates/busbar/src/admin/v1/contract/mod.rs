@@ -39,11 +39,6 @@ pub(crate) const ADMIN_PREFIX: &str = "/api/v1/admin";
 pub(crate) const PATH_ADMIN_AUTH: &str = "/admin-auth";
 pub(crate) const PATH_CONFIG_VALIDATE: &str = "/config/validate";
 pub(crate) const PATH_HOOKS: &str = "/hooks";
-pub(crate) const PATH_GROUPS: &str = "/groups";
-/// The keys collection path — `POST` here MINTS a key (the delegated `mint` scope; auto-provision
-/// rides the same request). Exact-matched in `required_scope` so only the collection POST earns
-/// `mint`; per-key lifecycle verbs (`/keys/{id}` PATCH/DELETE, rotate, revoke) stay `full`.
-pub(crate) const PATH_KEYS: &str = "/keys";
 
 /// Shared pagination limit policy (§0.4, one cursor grammar → one limit policy) for the admin
 /// lists: `?limit=` hard cap and default page size, used by the keys list (admin.rs) and the
@@ -55,29 +50,14 @@ pub(crate) const LIST_LIMIT_DEFAULT: usize = 200;
 /// shared `LIST_LIMIT_MAX`.
 pub(crate) const VERSIONS_LIMIT_DEFAULT: usize = 100;
 
-/// The built-in authorization scopes. They form a DIAMOND lattice, NOT a strict chain:
-/// `ReadOnly` at the bottom, `Full` at the top, and `HooksRegister` + `Mint` as two INCOMPARABLE
-/// siblings in the middle (design-admin-api-v1 §1; self-service governance D2). Authorization is
-/// checked on the PRINCIPAL per endpoint and is NEVER derived from the request body, so a crafted
-/// request cannot escalate.
+/// The three built-in authorization scopes, totally ordered `ReadOnly ⊂ HooksRegister ⊂ Full`
+/// (design-admin-api-v1 §1). Authorization is checked on the PRINCIPAL per endpoint and is NEVER
+/// derived from the request body, so a crafted request cannot escalate. `Ord` derives from
+/// declaration order (low → high), so `principal_scope >= required` is the check.
 ///
-/// SIBLING, NOT A LADDER RUNG (self-service D2): `HooksRegister` and `Mint` are delegated,
-/// least-privilege scopes for two DIFFERENT automations — a hook-registration bot vs. the
-/// self-service portal that mints keys. Neither must confer the other: a mint credential cannot
-/// register a hook, and a hooks-register credential cannot mint a key. So `allows` is NOT
-/// `self >= needed` — it encodes the lattice explicitly (see `allows`).
-///
-/// `Ord` STILL derives from declaration order (low → high), but is used ONLY as an ordinal
-/// PRIVILEGE LEVEL for the `max_admin_scope:` ceiling arithmetic (`min(scope, cap)`) and the
-/// role-binding `max()` — NEVER as the authorization check. The ordinal places `Mint` above
-/// `HooksRegister` purely so that ceiling math stays TOTAL (a lattice `min`/`max` over incomparable
-/// elements is undefined); it does NOT mean mint subsumes hooks-register. The `allows` lattice is
-/// the sole truth for what a scope may DO. Practical consequence: a `max_admin_scope: hooks-register`
-/// ceiling capping a `mint`-granting role yields `hooks-register` (the ordinal floor), i.e. the cap
-/// still strictly narrows; and a `max_admin_scope: mint` ceiling never widens a `hooks-register`
-/// role into hook authority (min keeps it at hooks-register). Both directions are safe.
-///
-/// The full variant set is the FROZEN authorization contract.
+/// The full variant set is the FROZEN authorization contract; the per-endpoint scope checks that
+/// compare these land with the config/hooks/auth endpoints (upcoming slices), so the set is
+/// deliberately ahead of its first consumer.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Scope {
@@ -85,14 +65,8 @@ pub(crate) enum Scope {
     ReadOnly,
     /// read-only + register/update/delete/PATCH-settings of `tap|gate|route` HOOK definitions ONLY.
     /// Deliberately narrow (for automation that only registers hooks): cannot mint keys, change
-    /// auth, or wire chains. SIBLING of `Mint` — carries NO key-mint authority.
+    /// auth, or wire chains.
     HooksRegister,
-    /// read-only + MINT keys (`POST /keys`, INCLUDING the auto-provision-on-mint leaf-group
-    /// creation). The delegated scope for the customer's self-service portal (self-service §6a): it
-    /// can mint a key into a group and auto-provision the `user:<sub>` leaf, but CANNOT register
-    /// hooks, change auth, or mutate arbitrary config. SIBLING of `HooksRegister` — carries NO hook
-    /// authority.
-    Mint,
     /// Everything: keys, config apply/rollback, auth chains, group_map, cache.
     Full,
 }
@@ -103,63 +77,43 @@ impl Scope {
         match self {
             Scope::ReadOnly => "read-only",
             Scope::HooksRegister => "hooks-register",
-            Scope::Mint => "mint",
             Scope::Full => "full",
         }
     }
 
-    /// Parse a config-side scope token (`group_map.<g>.admin_scope`, `max_admin_scope:`). `None` =
-    /// unknown token — config_validate rejects it at boot; runtime callers treat it as no grant
-    /// (fail closed).
+    /// Parse a config-side scope token (`group_map.<g>.admin_scope`). `None` = unknown token —
+    /// config_validate rejects it at boot; runtime callers treat it as no grant (fail closed).
     pub(crate) fn parse(token: &str) -> Option<Self> {
         match token {
             "read-only" => Some(Scope::ReadOnly),
             "hooks-register" => Some(Scope::HooksRegister),
-            "mint" => Some(Scope::Mint),
             "full" => Some(Scope::Full),
             _ => None,
         }
     }
 
-    /// Whether a principal holding `self` may call an endpoint requiring `needed`. NOT a `>=`
-    /// ladder: the scopes are a DIAMOND lattice (`ReadOnly` ⊂ {`HooksRegister`, `Mint`} ⊂ `Full`)
-    /// where `HooksRegister` and `Mint` are INCOMPARABLE siblings — so this is enumerated explicitly
-    /// rather than derived from `Ord`, precisely so a mint credential can never satisfy a
-    /// hook-register requirement and vice versa (self-service D2). `Full` satisfies everything;
-    /// `ReadOnly` is satisfied by anything (every grant can read); a sibling requirement is
-    /// satisfied only by itself or `Full`.
+    /// Whether a principal holding `self` may call an endpoint requiring `needed`. The scopes are
+    /// a strict ladder (`read-only ⊂ hooks-register ⊂ full`), encoded in the derive(Ord) variant
+    /// order above.
     pub(crate) fn allows(self, needed: Scope) -> bool {
-        match needed {
-            // Every grant can read.
-            Scope::ReadOnly => true,
-            // Only the god-mode grant satisfies a full requirement.
-            Scope::Full => self == Scope::Full,
-            // The two middle rungs are SIBLINGS: satisfied only by the exact scope or `Full`.
-            // (This is the whole point of enumerating instead of `self >= needed`: under `>=`,
-            // `Mint >= HooksRegister` would be true by ordinal and a mint token could register
-            // hooks.)
-            Scope::HooksRegister => self == Scope::HooksRegister || self == Scope::Full,
-            Scope::Mint => self == Scope::Mint || self == Scope::Full,
-        }
+        self >= needed
     }
 }
 
 /// The AUTHORIZATION MATRIX (design-admin-api-v1 §1, §6.3): the scope an admin endpoint requires,
-/// derived from METHOD + PATH — never from the body (a crafted request cannot escalate). NOT a
-/// ladder (the scope lattice is a diamond — see `Scope`): every read is `read-only`; the
-/// hook-DEFINITION lifecycle (`/api/v1/admin/hooks*` mutations) needs `hooks-register`; MINTING a
-/// key (`POST /keys`, which carries the auto-provision-on-mint leaf creation) needs `mint`; every
-/// other mutation — config apply/rollback, auth chains, group_map, cache, group CRUD — needs
-/// `full`. Because `HooksRegister`/`Mint` are SIBLINGS in `allows`, a `mint` requirement is
-/// satisfied by exactly `mint` or `full` — never by `hooks-register`, and vice versa. Unknown
-/// methods fail closed to `full`. Body-derived refinements (§6.3: a `hooks-register` principal must
-/// not register a hook wired into a security-critical path) are enforced at the service layer.
+/// derived from METHOD + PATH — never from the body (a crafted request cannot escalate). The
+/// ladder: every read is `read-only`; the hook-DEFINITION lifecycle (`/api/v1/admin/hooks*` mutations)
+/// is `hooks-register` (deliberately narrow — automation can register itself but cannot mint keys
+/// or change auth); every other mutation — keys, config apply/rollback, auth chains, group_map,
+/// cache — is `full`. Unknown methods fail closed to `full`. Body-derived refinements (§6.3: a
+/// `hooks-register` principal must not register a hook wired into a security-critical path) are
+/// enforced at the service layer, where the body is parsed.
 pub(crate) fn required_scope(method: &axum::http::Method, path: &str) -> Scope {
     use axum::http::Method;
     if method == Method::GET || method == Method::HEAD {
         return Scope::ReadOnly;
     }
-    // Only the enumerated mutation verbs earn a narrower delegated scope; anything else (OPTIONS,
+    // Only the enumerated mutation verbs earn the narrower hooks scope; anything else (OPTIONS,
     // TRACE, extension methods) fails closed to `full`.
     let is_mutation = method == Method::POST
         || method == Method::PUT
@@ -176,15 +130,6 @@ pub(crate) fn required_scope(method: &axum::http::Method, path: &str) -> Scope {
     }
     if is_mutation && (rel == PATH_HOOKS || rel.starts_with("/hooks/")) {
         return Scope::HooksRegister;
-    }
-    // MINTING a key is the delegated self-service verb (self-service §6a): `POST /keys` (only) —
-    // the auto-provision-on-mint leaf creation rides the same request, so the whole mint path is
-    // `mint`, not `full`. Everything else under `/keys*` (list/get are reads above; PATCH/DELETE/
-    // rotate/revoke are lifecycle mutations) stays `full` — a self-service portal mints, it does
-    // not revoke or rotate. Boundary-safe: `PATH_KEYS` exact match only (a sibling like `/keysx`
-    // falls through to `full`).
-    if method == Method::POST && rel == PATH_KEYS {
-        return Scope::Mint;
     }
     Scope::Full
 }
@@ -448,135 +393,6 @@ pub(crate) struct HookView {
     pub(crate) global: bool,
 }
 
-/// A group definition in the registry read (`GET /api/v1/admin/groups`,
-/// `GET /api/v1/admin/groups/{name}`) — the limit-tree read surface. Projects the `groups:` config
-/// entry faithfully (parent chain, enabled freeze flag, the ordered limits, the `child_default`
-/// budget template for auto-provisioned children), never a secret. This is the READ shape; the
-/// WRITE verbs accept a `GroupCfg` verbatim (paste a config.yaml group block). Additive-only.
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
-pub(crate) struct GroupView {
-    pub(crate) name: String,
-    /// The parent group whose limits this one is ANDed under (the enforcement chain). `None` = a
-    /// root group. Skipped from the body when absent.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) parent: Option<String>,
-    /// `false` FREEZES the group (every request charging through it is rejected; history kept).
-    pub(crate) enabled: bool,
-    /// The group's own limits, enforced together (AND). Order preserved from config.
-    pub(crate) limits: Vec<LimitView>,
-    /// The limit template stamped onto children auto-provisioned under this group (e.g. a
-    /// `user:<sub>` leaf on first self-mint). Skipped from the body when the group sets none.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) child_default: Option<Vec<LimitView>>,
-}
-
-/// One limit inside a `GroupView`: an explicit `{ metric, amount, per, pool }` projection of a
-/// config `LimitCfg`. The config file's compact `{ budget: 3000, per: month }` form is
-/// deserialize-only sugar; the read API projects it explicitly so a consumer never has to know
-/// the metric is the map key. `per` is `None` only for `concurrent` (an instantaneous gauge, no
-/// window); `pool` is present only on a pool-scoped limit.
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
-pub(crate) struct LimitView {
-    /// One of `requests` | `tokens` | `budget` | `concurrent`.
-    pub(crate) metric: &'static str,
-    /// The cap amount (requests/tokens/cents, or the in-flight gauge for `concurrent`).
-    pub(crate) amount: u64,
-    /// The accounting window: `minute` | `hour` | `day` | `month` | `total`. Absent for `concurrent`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) per: Option<&'static str>,
-    /// The pool scope: present when the limit carries `pool: <name>` (it accounts and enforces
-    /// only that pool's traffic, per `(group, pool)`); absent for a group-wide limit.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) pool: Option<String>,
-    /// The budget-exhaustion behavior: `block` or `downgrade`. Absent = block (the default).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) on_exhaust: Option<&'static str>,
-    /// Where `on_exhaust: downgrade` sends exhausted traffic. Present iff downgrading.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) downgrade_to: Option<String>,
-}
-
-impl LimitView {
-    /// Project a config `LimitCfg` into its explicit read shape.
-    pub(crate) fn from_cfg(l: &crate::config::LimitCfg) -> Self {
-        LimitView {
-            metric: l.metric.as_str(),
-            amount: l.amount,
-            per: l.per.map(|w| w.as_str()),
-            pool: l.pool.clone(),
-            on_exhaust: l.on_exhaust.map(|e| match e {
-                crate::config::groups::OnExhaust::Block => "block",
-                crate::config::groups::OnExhaust::Downgrade => "downgrade",
-            }),
-            downgrade_to: l.downgrade_to.clone(),
-        }
-    }
-}
-
-impl GroupView {
-    /// Project a named `groups:` config entry into its read shape.
-    pub(crate) fn from_cfg(name: &str, cfg: &crate::config::GroupCfg) -> Self {
-        GroupView {
-            name: name.to_string(),
-            parent: cfg.parent.clone(),
-            enabled: cfg.enabled,
-            limits: cfg.limits.iter().map(LimitView::from_cfg).collect(),
-            child_default: cfg
-                .child_default
-                .as_ref()
-                .map(|cd| cd.limits.iter().map(LimitView::from_cfg).collect()),
-        }
-    }
-}
-
-/// `GET /groups/{name}/usage` — one group's DERIVED current-window usage, one row per
-/// enforcement bucket (each `(window, pool?)` its limits materialise), against that bucket's
-/// caps. The §6d dashboard read: spend/tokens/requests per tier vs the budgets, straight off the
-/// ledger x the CURRENT rate card (reprice-on-read, nothing stored). The customer's self-service
-/// tool consumes this per group (`user:<sub>` leaf = one person's view) and re-scopes it.
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
-pub(crate) struct GroupUsageView {
-    /// The group name (echoed from the path).
-    pub(crate) group: String,
-    /// `false` = the group is FROZEN (`enabled: false`): every request through it rejects.
-    pub(crate) enabled: bool,
-    /// One row per enforcement bucket, in the group's resolved bucket order. Empty for a group
-    /// with only a `concurrent` limit (or none) — there is no windowed ledger to read.
-    pub(crate) buckets: Vec<GroupBucketUsageView>,
-    /// Epoch seconds the read was taken at (the windows below are current AS OF this instant).
-    pub(crate) as_of: u64,
-}
-
-/// One `(window, pool?)` enforcement bucket's usage vs caps inside a [`GroupUsageView`].
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
-pub(crate) struct GroupBucketUsageView {
-    /// The accounting window: `minute` | `hour` | `day` | `month` | `total`.
-    pub(crate) window: &'static str,
-    /// The pool scope for a pool-qualified bucket; absent for a group-wide bucket.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) pool: Option<String>,
-    /// Requests admitted this window (the requests-limit truth: failures are not refunded).
-    pub(crate) requests: u64,
-    /// Total tokens ledgered this window (all tiers).
-    pub(crate) tokens: u64,
-    /// Spend derived at read time (tokens x current rate card), abstract cents.
-    pub(crate) spend_cents: i64,
-    /// The bucket's caps, when configured (absent = uncapped on that metric).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) requests_cap: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) tokens_cap: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) budget_cap: Option<i64>,
-    /// Cents left under `budget_cap` (floored at 0); absent when no budget cap is set.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) budget_remaining_cents: Option<i64>,
-}
-
 /// The transport half of a `HookView`: which wire the hook speaks and its target (socket path or
 /// webhook URL — operator config, not a secret). Exactly one of `socket`/`webhook` is set.
 #[derive(Debug, Clone, Serialize)]
@@ -605,152 +421,23 @@ pub(crate) struct HookHealthView {
 }
 
 /// One plugin in the plugin catalog (`GET /api/v1/admin/plugins?type=`). A plugin is either
-/// COMPILED-IN (baked into the binary, feature-gated — provably removable via `--no-default-features`),
-/// EXTERNAL (registered at runtime over socket/webhook), or a DYNAMIC-LIBRARY plugin (a loadable
-/// `.so`/`.dll`/`.dylib` in the plugins directory, loaded over the store C ABI). `active` is
-/// `Some(true/false)` where activation is tracked (auth modules: in the chain?; external hooks:
-/// configured = true; dynamic store: the configured `store.module`) and `None` where it is a
-/// per-pool concern not summarized here (compiled-in ranking policies). Additive-only.
+/// COMPILED-IN (baked into the binary, feature-gated — provably removable via `--no-default-features`)
+/// or EXTERNAL (registered at runtime over socket/webhook). `active` is `Some(true/false)` where
+/// activation is tracked (auth modules: in the chain?; external hooks: configured = true) and `None`
+/// where it is a per-pool concern not summarized here (compiled-in ranking policies). Additive-only.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub(crate) struct PluginView {
     pub(crate) name: String,
-    /// `"auth"`, `"hooks"`, or `"store"` — the plugin TYPE (each a distinct engine contract).
+    /// `"auth"` or `"hooks"` — the plugin TYPE (each a distinct engine contract).
     pub(crate) r#type: &'static str,
-    /// `"compiled-in"`, `"external"`, or `"dynamic-library"`.
+    /// `"compiled-in"` or `"external"`.
     pub(crate) loader: &'static str,
     /// Whether the plugin is currently active, where tracked; `None` when activation is not summarized
     /// at this level.
     pub(crate) active: Option<bool>,
-    /// For an external plugin, its transport target (socket path / webhook URL); for a dynamic-library
-    /// plugin, its library FILENAME in the plugins directory (the handle `DELETE` takes). `None` for
-    /// compiled-in.
+    /// For an external plugin, its transport target (socket path / webhook URL). `None` for compiled-in.
     pub(crate) target: Option<String>,
-    /// The plugin's semantic version, from its signed sidecar manifest (dynamic-library plugins only).
-    /// `None` for compiled-in/external, or a dynamic plugin with no/invalid manifest.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) version: Option<String>,
-    /// The manifest's declared publisher (dynamic-library plugins with a manifest).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) publisher: Option<String>,
-    /// The store C-ABI (`interface_version`) the manifest declares (dynamic-library plugins with a
-    /// manifest). Operator-facing name for the "ABI" the engine speaks.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) interface_version: Option<u32>,
-    /// The server-side trust verdict for a dynamic-library plugin, re-evaluated against the running
-    /// `plugins.trust` posture: `"trusted"` (signed by an allowlisted publisher), `"unverified"`
-    /// (loaded but not verified — the posture permits it), or `"rejected"` (the `halt` posture would
-    /// refuse it). `None` for compiled-in/external.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) trust: Option<&'static str>,
-    /// For a dynamic-library plugin: whether the library validated as a busbar store plugin the engine
-    /// can load (ABI handshake). `None` for compiled-in/external.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) valid: Option<bool>,
-    /// Why a dynamic-library plugin did not validate (`valid: false`) — a short, secret-free reason.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) error: Option<String>,
-}
-
-impl PluginView {
-    /// A COMPILED-IN or EXTERNAL plugin row (no manifest metadata) — the historical shape. The
-    /// dynamic-library fields (`version`/`publisher`/`interface_version`/`trust`/`valid`/`error`) are
-    /// `None` and skip serialization, so the wire is byte-identical to before this addition.
-    pub(crate) fn basic(
-        name: String,
-        r#type: &'static str,
-        loader: &'static str,
-        active: Option<bool>,
-        target: Option<String>,
-    ) -> Self {
-        Self {
-            name,
-            r#type,
-            loader,
-            active,
-            target,
-            version: None,
-            publisher: None,
-            interface_version: None,
-            trust: None,
-            valid: None,
-            error: None,
-        }
-    }
-}
-
-/// The result of installing a dynamic-library store plugin (`POST /api/v1/admin/plugins`). The
-/// engine RE-VERIFIED the uploaded bytes against the running trust posture (the client is never
-/// trusted), validated the ABI handshake, and atomically wrote the library (+ its manifest sidecar)
-/// into the plugins directory. `active` takes effect on the next store (re)load — a store change
-/// applies on restart / `store.module` apply, not as a hot swap (design: store install is
-/// boot-time/config-apply). Additive-only; never a secret.
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
-pub(crate) struct PluginInstallView {
-    /// The library FILENAME written into the plugins directory (the handle `DELETE` takes).
-    pub(crate) file: String,
-    /// The plugin name from its manifest (or the filename when unsigned).
-    pub(crate) name: String,
-    /// The store C-ABI (`interface_version`) the engine validated the library against.
-    pub(crate) interface_version: u32,
-    /// The server-side trust verdict from the RE-VERIFY: `"trusted"` | `"unverified"`. (A `"rejected"`
-    /// verdict is an error, never a success body.)
-    pub(crate) trust: &'static str,
-    /// The manifest version, when the upload carried a signed manifest.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) version: Option<String>,
-    /// The manifest publisher, when signed.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) publisher: Option<String>,
-    /// A human note: this install is durable in the folder but takes effect on the next store (re)load.
-    pub(crate) note: &'static str,
-}
-
-/// The result of removing a dynamic-library plugin (`DELETE /api/v1/admin/plugins/{file}`) — the
-/// library and its manifest sidecar are deleted from the plugins directory. `204 No Content` is the
-/// wire response; this view backs the OpenAPI schema for tooling that models a body.
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
-pub(crate) struct PluginRemoveView {
-    pub(crate) file: String,
-    pub(crate) removed: bool,
-}
-
-/// The result of re-scanning the plugins directory (`POST /api/v1/admin/plugins/reload`): the
-/// current dynamic-library inventory, each with its ABI-validity. Reconciles the reported set to the
-/// folder (the folder is the source of truth), exactly as `config/reload` reconciles config to disk.
-/// A store change still applies on the next store (re)load, not as a hot swap.
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
-pub(crate) struct PluginReloadView {
-    /// The dynamic-library plugins now present in the directory, sorted by filename.
-    pub(crate) plugins: Vec<PluginView>,
-    /// A human note on when a store change actually takes effect.
-    pub(crate) note: &'static str,
-}
-
-/// The result of an EXPLICIT plugin ROLLBACK (`POST /api/v1/admin/plugins/rollback`, 1.5.0
-/// rollback-friendly versioning): the operator deliberately pinned a plugin DOWN to a prior version and
-/// the engine hot-swapped to that artifact. The pin is persisted (survives restart) and the trust
-/// floor was lowered to EXACTLY the pinned version for THIS plugin — a lower artifact still cannot
-/// load, and an automatic/silent replay of an old artifact is still refused (only this explicit,
-/// audited action lowered the floor). Additive-only; never a secret.
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
-pub(crate) struct PluginRollbackView {
-    /// The plugin's canonical manifest name that was pinned.
-    pub(crate) name: String,
-    /// The library FILENAME the rollback selected in the plugins directory.
-    pub(crate) file: String,
-    /// The version the plugin was pinned DOWN to (now serving), from the target artifact's manifest.
-    pub(crate) version: String,
-    /// The manifest publisher of the pinned artifact (`busbar` = first-party).
-    pub(crate) publisher: String,
-    /// The now-live config version after the hot swap (the ETag the response also carries).
-    pub(crate) config_version: u64,
-    /// A human note on the rollback's semantics + durability.
-    pub(crate) note: &'static str,
 }
 
 /// The ingress auth chain read (`GET /api/v1/admin/auth`): the ordered module names that authenticate
@@ -844,6 +531,10 @@ pub(crate) struct EffectiveConfigView {
     pub(crate) global_hooks: Vec<String>,
 }
 
+/// The currency the operator-configured prices (`price_per_request_cents`,
+/// `price_per_1k_tokens_cents`) — and therefore every derived `spend_micros` — are denominated in.
+pub(crate) const USAGE_CURRENCY: &str = "USD";
+
 /// Fleet METERING read (`GET /api/v1/admin/usage`) — the FinOps surface. Design principle:
 /// busbar exposes the RAW INPUTS of cost, not just its own number. Every row carries the full token
 /// SPLIT (input / output / cache-read / cache-creation — each prices differently), so a consumer
@@ -864,17 +555,6 @@ pub(crate) struct EffectiveConfigView {
 /// LEDGER RULE (one loud contract sentence): `spend_micros` is a MUTABLE ESTIMATE — derived at
 /// read time from the operator's CURRENT prices, so a price change re-prices history. Never store
 /// it as a ledger charge; bill from the raw token split.
-/// The denomination reported alongside every `spend_micros` in the admin usage response. A SINGLE
-/// source of truth so a future removal (returning to the currency-agnostic stance) is one line.
-/// Emitted ONLY on `GET /api/v1/admin/usage` (the `currency` field of `UsageView`), never on the
-/// per-key views (those stay currency-agnostic raw-split ledgers).
-pub(crate) const USAGE_CURRENCY: &str = "USD";
-
-/// Serialize helper: `UsageView::currency` is a fixed contract constant, not a stored field.
-fn serialize_usage_currency<S: serde::Serializer>(_: &(), s: S) -> Result<S::Ok, S::Error> {
-    s.serialize_str(USAGE_CURRENCY)
-}
-
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub(crate) struct UsageView {
@@ -882,11 +562,8 @@ pub(crate) struct UsageView {
     pub(crate) window: UsageWindow,
     /// Freshness marker: the epoch this read was computed at (counters accumulate live).
     pub(crate) as_of: u64,
-    /// The denomination of every `spend_micros` in this response (`USAGE_CURRENCY`, currently
-    /// `"USD"`). A single-const source of truth so removal is one line. Emitted only here.
-    #[serde(serialize_with = "serialize_usage_currency")]
-    #[cfg_attr(feature = "openapi-schema", schemars(with = "String"))]
-    pub(crate) currency: (),
+    /// The denomination of every `spend_micros` in this response (`USAGE_CURRENCY`).
+    pub(crate) currency: &'static str,
     pub(crate) total: UsageBreakdown,
     /// Per-(model, provider) aggregation — cost attribution by model (the FinOps unit).
     pub(crate) by_model: Vec<ModelUsageView>,
@@ -922,12 +599,9 @@ pub(crate) struct UsageBreakdown {
     pub(crate) tokens_cache_read: u64,
     pub(crate) tokens_cache_creation: u64,
     pub(crate) requests: u64,
-    /// Busbar's derived cost estimate in MICRO-units of the ABSTRACT cost unit (1e-6 unit -
-    /// integer math, sub-cent precise, no float drift), recomputed at read time from the raw token
-    /// split x the operator's CURRENT per-model rate card. Busbar attaches no currency - the rate
-    /// card's numbers are whatever unit the operator priced in; display/denomination is entirely
-    /// the consumer's concern. A consumer with its own per-model catalog recomputes from the raw
-    /// token split instead.
+    /// Busbar's derived cost estimate in MICRO-units of `currency` (1e-6 USD — integer math,
+    /// sub-cent precise, no float drift), from the operator's configured global prices. A consumer
+    /// with its own per-model catalog recomputes from the raw token split instead.
     pub(crate) spend_micros: i64,
 }
 

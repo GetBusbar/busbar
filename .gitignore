@@ -26,6 +26,9 @@ Thumbs.db
 *.log
 /scratch/
 
+# Claude Code session/worktree state (never commit)
+/.claude/
+
 # Stray debug/scratch artifacts (never commit)
 /rust_out
 /scratch_syms.txt
@@ -33,4 +36,3 @@ Thumbs.db
 # Python bytecode (bench harness)
 __pycache__/
 *.pyc
-*.key

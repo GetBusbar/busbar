@@ -128,27 +128,14 @@ pub(crate) const BILLING_TRUNCATED_TOTAL: &str = "busbar_billing_truncated_total
 /// Label: `key` = virtual-key id (operator-bounded). Only emitted when governance is enabled.
 const KEY_SPEND_CENTS: &str = "busbar_key_spend_cents";
 
+/// Max budget minus current spend for keys that carry a `max_budget_cents` cap. Scrape-time gauge.
+/// Enables Prometheus burn-rate alerting against a bounded, operator-controlled label set.
+/// Label: `key` = virtual-key id. Only emitted for keys with a budget cap.
+const KEY_BUDGET_REMAINING_CENTS: &str = "busbar_key_budget_remaining_cents";
+
 /// Accumulated tokens consumed by each virtual key in the current budget window. Scrape-time gauge.
 /// Label: `key` = virtual-key id. Only emitted when governance is enabled.
 const KEY_TOKENS_TOTAL: &str = "busbar_key_tokens_total";
-
-/// Per-(bucket, model, tier) token counters for the bucket's CURRENT budget window. Scrape-time
-/// gauge, derived from the token ledger. `bucket` is a virtual-key id or `group:<name>` (both
-/// operator-bounded); `model` is bounded by the configured fleet (an ad-hoc passthrough model is
-/// only possible with pricing off); `tier` is one of the four fixed pricing tiers. Key-bucket
-/// series additionally echo the key's mint-time labels, so external dashboards can
-/// `sum by (team)` without busbar knowing what "team" means.
-const BUCKET_TOKENS: &str = "busbar_bucket_tokens";
-
-/// DERIVED spend (cents, abstract minor units) per BUDGET-GROUP bucket for its current window,
-/// recomputed from the token ledger x the CURRENT rate card at scrape time (reprice-on-read).
-/// Label: `bucket` = `group:<name>`. Key-bucket spend stays on `busbar_key_spend_cents`.
-const BUCKET_SPEND_CENTS: &str = "busbar_bucket_spend_cents";
-
-/// Cap minus derived spend per BUDGET-GROUP bucket. Label: `bucket` = `group:<name>`. The
-/// external-alerting linchpin: Alertmanager fires at 80% burn without busbar shipping any
-/// alerting of its own.
-const BUCKET_BUDGET_REMAINING_CENTS: &str = "busbar_bucket_budget_remaining_cents";
 
 /// Per-(pool, lane-model) circuit-breaker health gauge.
 /// Values: 0 = healthy (Closed), 1 = half-open (cooling but probe admitted), 2 = tripped (Open /
@@ -235,18 +222,9 @@ fn describe() {
         "Per-virtual-key accumulated spend in cents for the current budget window (scrape-time)"
     );
     describe_gauge!(
-        BUCKET_TOKENS,
-        "Per-(bucket, model, tier) tokens in the bucket's current budget window (key and budget-group buckets; derived from the token ledger at scrape time)"
-    );
-    describe_gauge!(
-        BUCKET_SPEND_CENTS,
+        KEY_BUDGET_REMAINING_CENTS,
         Unit::Count,
-        "Derived spend (abstract minor units) per budget-group bucket for its current window, recomputed from the token ledger x the current rate card at scrape time"
-    );
-    describe_gauge!(
-        BUCKET_BUDGET_REMAINING_CENTS,
-        Unit::Count,
-        "Budget-group cap minus derived spend for the current window"
+        "Per-virtual-key budget remaining in cents (max_budget_cents - spend); only for capped keys (scrape-time)"
     );
     describe_gauge!(
         KEY_TOKENS_TOTAL,
@@ -260,139 +238,12 @@ fn describe() {
     );
 }
 
-// ─── PER-REQUEST HANDLE CACHE ─────────────────────────────────────────────────────────────────────
-//
-// `finish_inner` emits exactly two metrics on EVERY served request: the `REQUESTS_TOTAL` counter and
-// the `REQUEST_DURATION_SECONDS` histogram. Emitting them through the `counter!`/`histogram!` macros
-// re-runs, per request: two owned-`String` label allocations (`ingress_protocol` + `pool`), a `Key`
-// build, and a recorder registry hash+lookup — for a label set drawn from a FINITE, operator-bounded
-// space (`|protocols| × (|pools| + 1) × |outcomes|`). `metrics::Counter`/`Histogram` are cheap-to-
-// clone `Arc`-backed handles straight to the metric's storage that SURVIVE recorder swaps, so caching
-// one per label set turns the steady-state hot path into a lock-free map read + an atomic increment —
-// no per-request allocation and no registry lookup.
-//
-// The cache is a `RwLock<HashMap<Box<str>, Handle>>` keyed on a COMPACT single key built by joining
-// the (bounded) label values with a `\x1f` unit separator — a byte that cannot appear in a protocol
-// or pool name, so the join is unambiguous. Building that key is a single small allocation, but the
-// steady-state path performs the lookup under a shared read lock and never touches the metrics
-// registry (which would allocate the two `Label` Strings AND a `Key` AND hash+probe its own map);
-// net, one small alloc replaces two label allocs + a `Key` build + a registry probe.
-//
-// Correctness vs. the recorder-install ordering the module contract calls out (a handle minted before
-// `init()` installs the recorder binds to the no-op recorder FOREVER): the cache is populated ONLY
-// once the recorder is installed (`HANDLE == Some(Some(_))`). Before that — `init()` not yet run, or
-// install failed — these helpers fall through to the plain macro (itself a no-op against the default
-// recorder), caching nothing. So a pre-`init()` emission is never cached, and every cached handle is
-// bound to the real Prometheus recorder. In production `init()` runs at startup before any request
-// reaches `finish_inner`, so the steady state is always the cached fast path.
-use std::collections::HashMap;
-use std::sync::RwLock;
-
-/// Unit separator joining label values into the compact cache key — a control byte that cannot occur
-/// in an ingress-protocol or pool name, so `"a\x1fb"` can never collide with `"a"` + `"\x1fb"`.
-const CACHE_KEY_SEP: char = '\u{1f}';
-
-static REQUESTS_HANDLES: OnceLock<RwLock<HashMap<Box<str>, metrics::Counter>>> = OnceLock::new();
-static DURATION_HANDLES: OnceLock<RwLock<HashMap<Box<str>, metrics::Histogram>>> = OnceLock::new();
-
-/// True once the global Prometheus recorder is INSTALLED (not merely that `init()` was attempted).
-/// Gating handle caching on this guarantees a cached handle can never be bound to the no-op recorder
-/// that stands in before install.
-#[inline]
-pub(crate) fn recorder_installed() -> bool {
-    matches!(HANDLE.get(), Some(Some(_)))
-}
-
-/// Increment `REQUESTS_TOTAL` for `(ingress_protocol, pool, outcome)` via a CACHED counter handle —
-/// no registry lookup and no per-request `Label`/`Key` construction on the steady-state path. Falls
-/// back to the plain macro until the recorder is installed (see the cache-module note above).
-/// Byte-for-byte the same series and value the macro produced.
-pub(crate) fn incr_requests_total(ingress_protocol: &str, pool: &str, outcome: &'static str) {
-    if !recorder_installed() {
-        // Pre-install: don't cache (would bind to the no-op recorder). The macro is itself a no-op.
-        metrics::counter!(
-            REQUESTS_TOTAL,
-            "ingress_protocol" => ingress_protocol.to_string(),
-            "pool" => pool.to_string(),
-            "outcome" => outcome
-        )
-        .increment(1);
-        return;
-    }
-    let cache = REQUESTS_HANDLES.get_or_init(|| RwLock::new(HashMap::new()));
-    let key = format!("{ingress_protocol}{CACHE_KEY_SEP}{pool}{CACHE_KEY_SEP}{outcome}");
-    // Fast path: shared-read hit (the common case — a bounded, quickly-saturated key set).
-    if let Some(h) = cache
-        .read()
-        .unwrap_or_else(|p| p.into_inner())
-        .get(key.as_str())
-    {
-        h.increment(1);
-        return;
-    }
-    // Cold path (first time this label set is seen): register the handle once, then cache it.
-    let handle = metrics::counter!(
-        REQUESTS_TOTAL,
-        "ingress_protocol" => ingress_protocol.to_string(),
-        "pool" => pool.to_string(),
-        "outcome" => outcome
-    );
-    handle.increment(1);
-    cache
-        .write()
-        .unwrap_or_else(|p| p.into_inner())
-        .entry(key.into_boxed_str())
-        .or_insert(handle);
-}
-
-/// Record a `REQUEST_DURATION_SECONDS` observation for `(ingress_protocol, pool)` via a CACHED
-/// histogram handle. Same caching contract as [`incr_requests_total`].
-pub(crate) fn record_request_duration(ingress_protocol: &str, pool: &str, seconds: f64) {
-    if !recorder_installed() {
-        metrics::histogram!(
-            REQUEST_DURATION_SECONDS,
-            "ingress_protocol" => ingress_protocol.to_string(),
-            "pool" => pool.to_string()
-        )
-        .record(seconds);
-        return;
-    }
-    let cache = DURATION_HANDLES.get_or_init(|| RwLock::new(HashMap::new()));
-    let key = format!("{ingress_protocol}{CACHE_KEY_SEP}{pool}");
-    if let Some(h) = cache
-        .read()
-        .unwrap_or_else(|p| p.into_inner())
-        .get(key.as_str())
-    {
-        h.record(seconds);
-        return;
-    }
-    let handle = metrics::histogram!(
-        REQUEST_DURATION_SECONDS,
-        "ingress_protocol" => ingress_protocol.to_string(),
-        "pool" => pool.to_string()
-    );
-    handle.record(seconds);
-    cache
-        .write()
-        .unwrap_or_else(|p| p.into_inner())
-        .entry(key.into_boxed_str())
-        .or_insert(handle);
-}
-
 /// Render the current Prometheus exposition text. Empty until `init()` has run.
-///
-/// Flushes the TELEMETRY BANK (per-thread hot-path cells; see `telemetry.rs`) into the recorder
-/// first, so every scrape — and every test that reads the exposition — observes up-to-date totals
-/// for the banked hot-path counters/histograms alongside the macro-emitted ones.
 pub(crate) fn render() -> String {
     // Outer `None` = `init()` not yet run; inner `None` = recorder install failed. Both render an
     // empty exposition rather than panicking.
     match HANDLE.get() {
-        Some(Some(h)) => {
-            crate::telemetry::flush_to_recorder();
-            h.render()
-        }
+        Some(Some(h)) => h.render(),
         _ => String::new(),
     }
 }
@@ -438,7 +289,7 @@ fn refresh_scrape_gauges(app: &App) {
         }
         for key in keys.iter().take(key_gauge_limit) {
             // `usage_for` queries the SQLite store for the key's current-window counters.
-            let usage = match gov.usage_for(&app.cost, &key.id, now) {
+            let usage = match gov.usage_for(&key.id, now) {
                 Ok(Some(u)) => u,
                 Ok(None) => continue, // key vanished between list and get — skip
                 Err(e) => {
@@ -446,104 +297,14 @@ fn refresh_scrape_gauges(app: &App) {
                     continue;
                 }
             };
-            // key label = the operator-visible virtual-key id (`vk_<hex>`), never the bearer
-            // secret. The key's MINT-TIME labels (e.g. team=growth) are echoed onto every series
-            // so external Grafana can `sum by (team)` and Alertmanager can fire per team WITHOUT
-            // busbar knowing what "team" means. Label KEYS are operator-chosen at mint (bounded by
-            // the admin surface), never request bytes.
-            let base_labels = |extra: &[(&'static str, String)]| -> Vec<metrics::Label> {
-                let mut labels: Vec<metrics::Label> =
-                    vec![metrics::Label::new("key", key.id.clone())];
-                for (k, v) in &key.labels {
-                    labels.push(metrics::Label::new(k.clone(), v.clone()));
-                }
-                for (k, v) in extra {
-                    labels.push(metrics::Label::new(*k, v.clone()));
-                }
-                labels
-            };
-            metrics::gauge!(KEY_SPEND_CENTS, base_labels(&[])).set(usage.spend_cents as f64);
-            metrics::gauge!(KEY_TOKENS_TOTAL, base_labels(&[])).set(usage.tokens as f64);
-            // 1.5.0: keys are PURE AUTH (no inline budget cap), so there is no per-key
-            // budget-remaining gauge; remaining/limit headroom lives on the GROUP buckets below.
-            // Per-(bucket, model, tier) token gauges from the key bucket's ledger (the raw
-            // material any external per-model cost dashboard multiplies by its own catalog). The
-            // key's attribution bucket accrues in the all-time window.
-            for (model, tokens) in
-                gov.bucket_model_tokens(&key.id, crate::governance::WINDOW_TOTAL, now)
-            {
-                for (tier, v) in [
-                    ("input", tokens.input),
-                    ("output", tokens.output),
-                    ("cache_read", tokens.cache_read),
-                    ("cache_write", tokens.cache_write),
-                ] {
-                    let mut labels: Vec<metrics::Label> =
-                        vec![metrics::Label::new("bucket", key.id.clone())];
-                    for (k, val) in &key.labels {
-                        labels.push(metrics::Label::new(k.clone(), val.clone()));
-                    }
-                    labels.push(metrics::Label::new("model", model.clone()));
-                    labels.push(metrics::Label::new("tier", tier));
-                    metrics::gauge!(BUCKET_TOKENS, labels).set(v as f64);
-                }
-            }
-        }
-
-        // ── GROUP buckets: derived spend + remaining + per-(model, tier) tokens, one series per
-        // (group, window) enforcement bucket. Bounded by |groups| x |windows-in-use| (operator-
-        // owned names + the fixed window vocabulary). Spend derives fresh from the ledger x the
-        // CURRENT rate card (reprice-on-read), fee included (each bucket counts its own requests).
-        // The `group` and `window` labels are the 1.5.0 limit dimensions; `bucket` stays the raw
-        // ledger id for join-ability with the store.
-        for group in app.cost.groups() {
-            for bucket in &group.buckets {
-                let derived = match gov.derived_bucket_usage(
-                    &app.cost,
-                    &bucket.bucket_id,
-                    bucket.window,
-                    true,
-                    now,
-                ) {
-                    Ok(u) => u,
-                    Err(e) => {
-                        tracing::warn!(bucket = %bucket.bucket_id, error = %e, "metrics scrape: group ledger read failed; skipping");
-                        continue;
-                    }
-                };
-                let dims = |extra: &[(&'static str, String)]| -> Vec<metrics::Label> {
-                    let mut labels = vec![
-                        metrics::Label::new("bucket", bucket.bucket_id.clone()),
-                        metrics::Label::new("group", group.name.clone()),
-                        metrics::Label::new("window", bucket.window),
-                    ];
-                    for (k, v) in extra {
-                        labels.push(metrics::Label::new(*k, v.clone()));
-                    }
-                    labels
-                };
-                metrics::gauge!(BUCKET_SPEND_CENTS, dims(&[])).set(derived.spend_cents as f64);
-                // Budget-remaining: only for a bucket that carries a `budget` cap.
-                if let Some(cap) = bucket.budget_cap {
-                    let remaining = cap.saturating_sub(derived.spend_cents).max(0);
-                    metrics::gauge!(BUCKET_BUDGET_REMAINING_CENTS, dims(&[])).set(remaining as f64);
-                }
-                for (model, tokens) in
-                    gov.bucket_model_tokens(&bucket.bucket_id, bucket.window, now)
-                {
-                    for (tier, v) in [
-                        ("input", tokens.input),
-                        ("output", tokens.output),
-                        ("cache_read", tokens.cache_read),
-                        ("cache_write", tokens.cache_write),
-                    ] {
-                        metrics::gauge!(
-                            BUCKET_TOKENS,
-                            dims(&[("model", model.clone()), ("tier", tier.to_string())])
-                        )
-                        .set(v as f64);
-                    }
-                }
+            // key label = the operator-visible virtual-key id (`vk_<hex>`), never the bearer secret.
+            metrics::gauge!(KEY_SPEND_CENTS, "key" => key.id.clone()).set(usage.spend_cents as f64);
+            metrics::gauge!(KEY_TOKENS_TOTAL, "key" => key.id.clone()).set(usage.tokens as f64);
+            // Budget-remaining: only for keys that carry a `max_budget_cents` cap.
+            if let Some(max) = key.max_budget_cents {
+                let remaining = max.saturating_sub(usage.spend_cents).max(0);
+                metrics::gauge!(KEY_BUDGET_REMAINING_CENTS, "key" => key.id.clone())
+                    .set(remaining as f64);
             }
         }
     }
@@ -643,7 +404,7 @@ pub(crate) async fn handler(crate::state::CurrentApp(app): crate::state::Current
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::governance::{GovState, MemoryStore, Store, VirtualKey};
+    use crate::governance::{GovState, SqliteStore, Store, VirtualKey};
     use crate::test_support::{LaneSpec, TestApp};
     use std::sync::Arc;
 
@@ -686,9 +447,9 @@ mod tests {
 
     /// Helper: build a minimal `GovState` backed by an in-memory SQLite store.
     fn gov_with_key(key: VirtualKey) -> Arc<GovState> {
-        let store = Arc::new(MemoryStore::new());
+        let store = Arc::new(SqliteStore::open_in_memory().unwrap());
         store.put_key(&key).unwrap();
-        Arc::new(GovState::new(store, None).unwrap())
+        Arc::new(GovState::new(store, 0, 0, None).unwrap())
     }
 
     fn sample_vkey(id: &str) -> VirtualKey {
@@ -696,11 +457,13 @@ mod tests {
             id: id.to_string(),
             key_hash: format!("hash-{id}"),
             name: format!("key-{id}"),
-            allowed_pools: None,
+            allowed_pools: vec![],
+            max_budget_cents: Some(5000),
+            budget_period: "total".to_string(),
+            rpm_limit: None,
+            tpm_limit: None,
             enabled: true,
             created_at: 1_700_000_000,
-            group: None,
-            labels: Default::default(),
         }
     }
 
@@ -713,28 +476,12 @@ mod tests {
         let key = sample_vkey("vk_spend_test01");
         let gov = gov_with_key(key.clone());
 
-        // Seed a durable ledger directly: 200 requests (derived spend = 200 cents at the
-        // TestApp default `CostModel::flat(1)`) plus 5000 tokens so the tokens gauge is nonzero.
+        // Record some spend: charge 200 cents worth of usage.
+        gov.record_request(&key, 1_700_000_000, 0);
+        // Use a price of 0 (set in `gov_with_key`), so spend stays 0 unless we seed it directly.
+        // Seed spend via the store directly for a deterministic test.
         let usage_store = gov.store();
-        usage_store
-            .put_usage(
-                &key.id,
-                0,
-                &busbar_api::UsageLedger {
-                    requests: 200,
-                    billable_requests: 200,
-                    models: vec![busbar_api::ModelTokens {
-                        model: "m".to_string(),
-                        tokens: crate::governance::TierTokens {
-                            input: 5000,
-                            output: 0,
-                            cache_read: 0,
-                            cache_write: 0,
-                        },
-                    }],
-                },
-            )
-            .unwrap();
+        usage_store.add_usage(&key.id, 0, 200, 5000, false).unwrap();
 
         // Build a minimal App with governance.
         let app = TestApp::new()
@@ -760,46 +507,25 @@ mod tests {
             "spend gauge must be present; got:\n{out}"
         );
         assert!(
+            out.contains(KEY_BUDGET_REMAINING_CENTS),
+            "budget-remaining gauge must be present; got:\n{out}"
+        );
+        assert!(
             out.contains(KEY_TOKENS_TOTAL),
             "tokens gauge must be present; got:\n{out}"
         );
-        // 1.5.0: keys are pure auth (no cap), so no per-key budget-remaining gauge exists; the
-        // remaining/limit dimension lives on the GROUP buckets (asserted below).
-        assert!(
-            !out.contains("busbar_key_budget_remaining_cents"),
-            "the removed per-key remaining gauge must not resurface; got:\n{out}"
-        );
     }
 
-    /// A group bucket WITHOUT a `budget` cap must NOT emit `BUCKET_BUDGET_REMAINING_CENTS` - the
-    /// gauge is meaningless without a ceiling and would just be 0. (The per-key remaining gauge is
-    /// gone entirely: keys are pure auth.)
+    /// `refresh_scrape_gauges` must NOT emit `KEY_BUDGET_REMAINING_CENTS` for a key with no
+    /// `max_budget_cents` cap — the gauge is meaningless without a ceiling and would just be 0.
     #[test]
-    fn test_scrape_gauges_uncapped_group_bucket_no_remaining() {
+    fn test_scrape_gauges_uncapped_key_no_remaining() {
         init();
 
         let mut key = sample_vkey("vk_uncapped_test01");
-        key.group = Some("uncapped-grp".to_string());
+        key.max_budget_cents = None; // no cap
         let gov = gov_with_key(key);
 
-        // The group carries only a requests limit: its minute bucket exists but has NO budget cap.
-        let groups: std::collections::BTreeMap<String, crate::config::GroupCfg> =
-            std::collections::BTreeMap::from([(
-                "uncapped-grp".to_string(),
-                crate::config::GroupCfg {
-                    parent: None,
-                    enabled: true,
-                    limits: vec![crate::config::groups::LimitCfg {
-                        metric: crate::config::groups::LimitMetric::Requests,
-                        amount: 100,
-                        per: Some(crate::config::groups::LimitWindow::Minute),
-                        pool: None,
-                        on_exhaust: None,
-                        downgrade_to: None,
-                    }],
-                    ..Default::default()
-                },
-            )]);
         let app = TestApp::new()
             .lane(LaneSpec::new(
                 "m",
@@ -808,139 +534,24 @@ mod tests {
             ))
             .pool("pool-b", &[(0, 1)])
             .governance(gov)
-            .cost(crate::cost::CostModel::resolve_parts(None, 0, &groups))
             .build();
 
         refresh_scrape_gauges(&app);
 
         let out = render();
-        // The remaining gauge for the budget-less bucket must NOT appear.
-        // NOTE: other tests in this process may have emitted it for different buckets; we can only
-        // check that this bucket id does not appear on a budget-remaining line.
+        // The remaining gauge for the uncapped key must NOT appear.
+        // NOTE: other tests in this process may have emitted it for different keys; we can only
+        // check that the uncapped key id does not appear on a budget-remaining line.
         let remaining_lines: Vec<&str> = out
             .lines()
-            .filter(|l| l.contains(BUCKET_BUDGET_REMAINING_CENTS))
+            .filter(|l| l.contains(KEY_BUDGET_REMAINING_CENTS))
             .collect();
         for line in &remaining_lines {
             assert!(
-                !line.contains("uncapped-grp"),
-                "a budget-less group bucket must not appear in budget_remaining_cents lines; got:\n{line}"
+                !line.contains("vk_uncapped_test01"),
+                "uncapped key must not appear in budget_remaining_cents lines; got:\n{line}"
             );
         }
-        // Its spend series DOES appear, keyed by the new (bucket, group, window) dimensions.
-        assert!(
-            out.lines().any(|l| l.contains(BUCKET_SPEND_CENTS)
-                && l.contains("group:uncapped-grp@minute")
-                && l.contains("window=\"minute\"")),
-            "the group bucket's spend gauge carries the group/window dimensions; got:\n{out}"
-        );
-    }
-
-    /// The 1.5.0 cost-model exposure: `busbar_bucket_tokens{bucket, model, tier}` series for key
-    /// AND budget-group buckets, derived `busbar_bucket_spend_cents` / `_budget_remaining_cents`
-    /// for group buckets, and the key's MINT-TIME labels echoed onto its series (so external
-    /// dashboards can `sum by (team)` without busbar knowing what a team is).
-    #[test]
-    #[allow(clippy::field_reassign_with_default)]
-    fn test_scrape_gauges_bucket_model_tier_and_key_labels() {
-        init();
-
-        let mut key = sample_vkey("vk_bucket_test1");
-        key.group = Some("growth".to_string());
-        key.labels = std::collections::BTreeMap::from([("team".to_string(), "growth".to_string())]);
-        let gov = gov_with_key(key.clone());
-
-        // A cost model with the growth group; flat fee 1 (TestApp default shape).
-        let groups = std::collections::BTreeMap::from([(
-            "growth".to_string(),
-            crate::config::GroupCfg {
-                parent: None,
-                enabled: true,
-                limits: vec![crate::config::groups::LimitCfg {
-                    metric: crate::config::groups::LimitMetric::Budget,
-                    amount: 1_000,
-                    per: Some(crate::config::groups::LimitWindow::Total),
-                    pool: None,
-                    on_exhaust: None,
-                    downgrade_to: None,
-                }],
-                ..Default::default()
-            },
-        )]);
-        let cost = crate::cost::CostModel::resolve_parts(None, 1, &groups);
-
-        // Accrue per-model tier tokens through the REAL accrual path (fans out to key + group).
-        gov.record_usage(
-            &cost,
-            &key,
-            "",
-            "gpt-5",
-            &busbar_api::TierTokens {
-                input: 100,
-                output: 40,
-                cache_read: 7,
-                cache_write: 3,
-            },
-            1_700_000_000,
-        );
-
-        let app = TestApp::new()
-            .lane(LaneSpec::new(
-                "m",
-                crate::proto::Protocol::openai(),
-                "http://m",
-            ))
-            .pool("pool-b", &[(0, 1)])
-            .governance(gov)
-            .cost(crate::cost::CostModel::resolve_parts(None, 1, &groups))
-            .build();
-        refresh_scrape_gauges(&app);
-        let out = render();
-
-        // Key-bucket per-(model, tier) series with the mint label echoed.
-        let key_line = out
-            .lines()
-            .find(|l| {
-                l.starts_with("busbar_bucket_tokens")
-                    && l.contains("bucket=\"vk_bucket_test1\"")
-                    && l.contains("model=\"gpt-5\"")
-                    && l.contains("tier=\"input\"")
-            })
-            .unwrap_or_else(|| panic!("key-bucket input-tier series missing: {out}"));
-        assert!(
-            key_line.contains("team=\"growth\""),
-            "mint labels echo onto metric series: {key_line}"
-        );
-        assert!(
-            key_line.trim_end().ends_with("100"),
-            "input tier value: {key_line}"
-        );
-
-        // Group-bucket series exist too (the chain accrual fanned out), keyed by the 1.5.0
-        // per-(group, window) bucket id and carrying the group/window dimensions.
-        assert!(
-            out.lines().any(|l| l.starts_with("busbar_bucket_tokens")
-                && l.contains("bucket=\"group:growth@total\"")
-                && l.contains("group=\"growth\"")
-                && l.contains("window=\"total\"")
-                && l.contains("tier=\"output\"")),
-            "group-bucket token series missing: {out}"
-        );
-        // Derived group spend (0 without a rate card and no admitted request) + remaining
-        // (= full cap).
-        assert!(
-            out.lines()
-                .any(|l| l.starts_with("busbar_bucket_spend_cents")
-                    && l.contains("bucket=\"group:growth@total\"")),
-            "group spend gauge missing"
-        );
-        assert!(
-            out.lines()
-                .any(|l| l.starts_with("busbar_bucket_budget_remaining_cents")
-                    && l.contains("bucket=\"group:growth@total\"")
-                    && l.trim_end().ends_with("1000")),
-            "group remaining gauge = full cap when token spend derives to 0: {out}"
-        );
     }
 
     /// `refresh_scrape_gauges` with no governance must not panic and must emit `LANE_STATE` gauges.
@@ -1025,7 +636,7 @@ mod tests {
         // The default key-gauge limit is 2000 (no limits installed in this test ⇒ the historical
         // default). We use the same value here to keep the test self-consistent.
         const LIMIT: usize = crate::config::DEFAULT_KEY_GAUGE_LIMIT;
-        let store = Arc::new(MemoryStore::new());
+        let store = Arc::new(SqliteStore::open_in_memory().unwrap());
 
         // Insert LIMIT + 1 keys so the truncation branch fires.
         for i in 0..=(LIMIT) {
@@ -1034,37 +645,21 @@ mod tests {
                 id: id.clone(),
                 key_hash: format!("hash-limit-{i}"),
                 name: format!("key-limit-{i}"),
-                allowed_pools: None,
+                allowed_pools: vec![],
+                max_budget_cents: None, // no budget cap → only spend + tokens gauges
+                budget_period: "total".to_string(),
+                rpm_limit: None,
+                tpm_limit: None,
                 enabled: true,
                 created_at: 1_700_000_000,
-                group: None,
-                labels: Default::default(),
             };
             store.put_key(&key).unwrap();
             // Seed minimal usage so the key has a row in usage_counters and the spend gauge is
             // actually emitted (keys with zero usage_for results are skipped).
-            store
-                .put_usage(
-                    &id,
-                    0,
-                    &busbar_api::UsageLedger {
-                        requests: 1,
-                        billable_requests: 1,
-                        models: vec![busbar_api::ModelTokens {
-                            model: "m".to_string(),
-                            tokens: crate::governance::TierTokens {
-                                input: 10,
-                                output: 0,
-                                cache_read: 0,
-                                cache_write: 0,
-                            },
-                        }],
-                    },
-                )
-                .unwrap();
+            store.add_usage(&id, 0, 1, 10, false).unwrap();
         }
 
-        let gov = Arc::new(GovState::new(store, None).unwrap());
+        let gov = Arc::new(GovState::new(store, 0, 0, None).unwrap());
         let app = TestApp::new()
             .lane(LaneSpec::new(
                 "m",

@@ -21,18 +21,18 @@ use serde::Serialize;
 use super::{AdminError, HookView};
 
 /// Virtual-key metadata — the `key_meta()` shape returned by `GET /keys/{id}`, `PATCH /keys/{id}`,
-/// and as each item of `GET /keys`. Never the secret or its hash. 1.5.0: keys are PURE AUTH, no
-/// inline limits; `allowed_pools` is `null` = all pools, `[]` = no pools (C6); `group` names the
-/// bound `groups:` entry (`null` = unlimited).
+/// and as each item of `GET /keys`. Never the secret or its hash.
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct KeyView {
     pub(crate) id: String,
     pub(crate) name: String,
-    pub(crate) allowed_pools: Option<Vec<String>>,
-    pub(crate) group: Option<String>,
+    pub(crate) allowed_pools: Vec<String>,
+    pub(crate) max_budget_cents: Option<i64>,
+    pub(crate) budget_period: String,
+    pub(crate) rpm_limit: Option<u32>,
+    pub(crate) tpm_limit: Option<u32>,
     pub(crate) enabled: bool,
     pub(crate) created_at: u64,
-    pub(crate) labels: std::collections::BTreeMap<String, String>,
 }
 
 /// `POST /keys` (mint) — the key metadata plus the ONCE-shown secret, and (when an AWS SigV4
@@ -42,11 +42,13 @@ pub(crate) struct KeyView {
 pub(crate) struct CreatedKeyView {
     pub(crate) id: String,
     pub(crate) name: String,
-    pub(crate) allowed_pools: Option<Vec<String>>,
-    pub(crate) group: Option<String>,
+    pub(crate) allowed_pools: Vec<String>,
+    pub(crate) max_budget_cents: Option<i64>,
+    pub(crate) budget_period: String,
+    pub(crate) rpm_limit: Option<u32>,
+    pub(crate) tpm_limit: Option<u32>,
     pub(crate) enabled: bool,
     pub(crate) created_at: u64,
-    pub(crate) labels: std::collections::BTreeMap<String, String>,
     /// The bearer secret — shown EXACTLY once, never returned by any read.
     pub(crate) secret: String,
     /// AWS AccessKeyId (present only when `issue_aws_credential` was set). Not secret.
@@ -62,28 +64,26 @@ pub(crate) struct CreatedKeyView {
 pub(crate) struct RotatedKeyView {
     pub(crate) id: String,
     pub(crate) name: String,
-    pub(crate) allowed_pools: Option<Vec<String>>,
-    pub(crate) group: Option<String>,
+    pub(crate) allowed_pools: Vec<String>,
+    pub(crate) max_budget_cents: Option<i64>,
+    pub(crate) budget_period: String,
+    pub(crate) rpm_limit: Option<u32>,
+    pub(crate) tpm_limit: Option<u32>,
     pub(crate) enabled: bool,
     pub(crate) created_at: u64,
-    pub(crate) labels: std::collections::BTreeMap<String, String>,
     /// The fresh bearer secret — shown EXACTLY once.
     pub(crate) secret: String,
 }
 
-/// `GET /keys/{id}/usage`: the key's all-time attribution counters (a 1.5.0 key bucket accrues in
-/// the `total` window; limits live on the bound group's own windows) plus the fraction of the
-/// tightest `requests`/`tokens` limit across the group chain remaining (`null` = no such limit).
+/// `GET /keys/{id}/usage` — the current budget-window counters for one key, plus the fraction of the
+/// tightest RPM/TPM cap remaining (`null` = uncapped). `budget_period`/`window_start` are `null`
+/// when the key record could not be read.
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct KeyMeteringView {
     pub(crate) id: String,
-    /// Always `"total"` (the key attribution window).
-    pub(crate) budget_period: String,
-    /// Always `0` (the all-time window start).
-    pub(crate) window_start: u64,
+    pub(crate) budget_period: Option<String>,
+    pub(crate) window_start: Option<u64>,
     pub(crate) as_of: u64,
-    /// The bound `groups:` entry (`null` = unlimited key).
-    pub(crate) group: Option<String>,
     pub(crate) spend_cents: i64,
     pub(crate) tokens: u64,
     pub(crate) requests: u64,
@@ -121,48 +121,10 @@ pub(crate) struct ConfigRollbackView {
     pub(crate) config_version: u64,
 }
 
-/// `DELETE /overlay/{section}` — per-section overlay reset result: the section reverted, the
-/// resulting config version, and whether anything changed (`false` = the section had no overlay state,
-/// an idempotent no-op).
-#[derive(Serialize, JsonSchema)]
-pub(crate) struct OverlayResetView {
-    /// The section that was reset (`groups` | `hooks`).
-    pub(crate) reset: String,
-    pub(crate) config_version: u64,
-    /// `true` when the reset discarded overlay mutations; `false` for an already-empty section.
-    pub(crate) changed: bool,
-}
-
 /// `POST /auth/cache/flush` — number of cached credential-decision entries dropped.
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct CacheFlushView {
     pub(crate) flushed: usize,
-}
-
-/// `GET`/`PUT /config/settings` (1.5.0 full-config coverage) — the API-settable single-value config
-/// overlay (`root` section) and, on a PUT, the apply metadata. `settings` is the CURRENT effective
-/// root override (the merge of prior overlay + this request), overlay-persisted so it survives a
-/// restart. `reload_to_apply` names the fields whose new value is DURABLY STORED but not yet LIVE:
-/// the process-level binds (`listen`/`admin_listen` socket, `tls`/`admin_tls` bind, `admin_insecure`)
-/// are read once at process start, and the durable `store` backend is reused across a hot reload —
-/// none can hot-swap, so they take effect on the next RESTART. Everything else
-/// (`rate_card`/`per_request_fee`/`security`/`limits`/`observability`/`advanced`/`metrics`/`health`/
-/// `routing`) is LIVE on the swap.
-#[derive(Serialize, JsonSchema)]
-pub(crate) struct ConfigSettingsView {
-    /// `true` on a PUT that stored + swapped; `false` on a GET (a pure read).
-    pub(crate) applied: bool,
-    pub(crate) config_version: u64,
-    /// The current effective root-section overlay (only the fields the operator has set; base
-    /// `config.yaml` stands for the rest). An arbitrary JSON object (the `RootSettings` projection).
-    pub(crate) settings: serde_json::Value,
-    /// Fields that were stored but are RELOAD-TO-APPLY (a `POST /config/reload` or restart makes them
-    /// live). Empty when the PUT touched only live-swappable fields (or on a GET).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) reload_to_apply: Vec<String>,
-    /// A human note describing the live-vs-reload split (absent on a GET).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) note: Option<String>,
 }
 
 /// `PUT /admin-auth` — the resource post-state (`{configured, modules}`, the same shape

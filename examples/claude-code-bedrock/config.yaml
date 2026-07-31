@@ -2,21 +2,18 @@
 # The agent speaks Anthropic; Busbar translates to Bedrock Converse and back.
 listen: "127.0.0.1:8080"
 
-# Signed-key auth: mint a key via the admin API (POST /api/v1/admin/keys) and give it to the
-# agent as its bearer token. An empty chain would be an open relay (dev only).
 auth:
-  chain:
-    - keys
+  chain: [tokens]
   upstream_credentials: own
-  admin_auth:
-    - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }
+  client_tokens:
+    - "${BUSBAR_CLIENT_TOKEN}"
 
 observability:
   emit_server_timing: true
 
 providers:
   bedrock:
-    api_key: { env: AWS_BEDROCK_CREDS }
+    api_key_env: AWS_BEDROCK_CREDS
 
 models:
   amazon-nova:
@@ -28,5 +25,5 @@ models:
 pools:
   claude-code:
     members:
-      - model: amazon-nova
+      - target: amazon-nova
         weight: 1

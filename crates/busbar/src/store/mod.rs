@@ -135,20 +135,11 @@ pub(crate) enum BreakerState {
     HalfOpen,
 }
 
-/// RAII concurrency permit, held for the request's lifetime and released on drop.
-///
-/// A lane with `max_concurrent` SET holds a real slot on its semaphore (`Bounded`) — the cap is
-/// enforced exactly, at any configured value. A lane with `max_concurrent` OMITTED is unbounded:
-/// there is nothing to enforce, so nothing is counted — `Unbounded` touches no shared state at
-/// all. (The old realization acquired a permit from a `MAX_PERMITS` semaphore even for unbounded
-/// lanes: two shared-atomic writes per request on a cache line every worker fights over, paying
-/// full contention for a limit that could never bind.)
-#[must_use]
-pub(crate) enum Permit {
-    // The permit is never READ — it exists to be HELD (its Drop returns the slot).
-    Bounded(#[allow(dead_code)] tokio::sync::OwnedSemaphorePermit),
-    Unbounded,
-}
+/// RAII concurrency permit: an owned semaphore permit, held solely to keep the lane's concurrency
+/// slot reserved for this request's lifetime. The slot is returned to the semaphore when the permit
+/// is dropped. `OwnedSemaphorePermit` is already `Send + 'static` and itself `#[must_use]`, so it is
+/// moved into the `FirstByteBody` stream directly with no wrapper.
+pub(crate) type Permit = tokio::sync::OwnedSemaphorePermit;
 
 /// Snapshot of lane stats for /stats endpoint.
 #[derive(Debug, Clone)]
@@ -299,15 +290,6 @@ pub(crate) trait StateStore: Send + Sync + 'static {
     /// re-win the probe. No-op when the cell is no longer HalfOpen (a concurrent success/failure
     /// already transitioned it) or when the probe flag was already clear.
     fn release_probe_in(&self, pool: &str, lane: usize);
-    /// Read a (pool, lane) cell's current single-flight probe epoch (owner token). A probe winner
-    /// captures this immediately after `acquire_for_dispatch_in` succeeds and later passes it to
-    /// `release_probe_owned_in` so a STALLED, late release cannot revert a newer probe (P2 #4).
-    fn probe_epoch_in(&self, pool: &str, lane: usize) -> u64;
-    /// OWNER-CHECKED variant of `release_probe_in`: reverts the undispatched probe ONLY when the cell's
-    /// probe epoch still equals `owned_epoch`. Used by the `ProbeGuard` drop path (the one release site
-    /// that can outlive its acquisition across an await, so the one that can be stale). A strict no-op
-    /// when the epoch has moved on - the probe we won was already consumed or superseded.
-    fn release_probe_owned_in(&self, pool: &str, lane: usize, owned_epoch: u64);
     // The bare lane-default breaker mutators below are exercised by the unit tests; in release,
     // ALL dispatch (including the degraded `forward_once` fallback/least-bad path) now routes through
     // the `_in(pool, …)` variants against the ROUTING POOL cell — recording on the default `""` cell

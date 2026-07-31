@@ -28,11 +28,13 @@ pub(crate) async fn stats(
 ) -> Response {
     let t = now();
 
-    // Decide which pools are visible to this caller. No key => no restriction (the visible set is
-    // every pool). A key whose `allowed_pools` was omitted at mint (None) admits every pool via
-    // `pool_allowed`, so an unrestricted key also sees everything; an explicit list (even empty)
-    // restricts (C6).
-    let restricted = gov.key.as_ref().is_some_and(|k| k.allowed_pools.is_some());
+    // Decide which pools are visible to this caller. `None` => no key restriction (the visible set
+    // is every pool). `Some(key)` with empty `allowed_pools` is handled by `pool_allowed`, which
+    // admits every pool — so an unrestricted key also sees everything.
+    let restricted = gov
+        .key
+        .as_ref()
+        .is_some_and(|k| !k.allowed_pools.is_empty());
 
     let visible_pool = |name: &str| -> bool {
         match gov.key.as_ref() {
@@ -146,7 +148,10 @@ fn list_models_dialect(
     headers: &axum::http::HeaderMap,
     gemini_path: bool,
 ) -> Response {
-    let restricted = gov.key.as_ref().is_some_and(|k| k.allowed_pools.is_some());
+    let restricted = gov
+        .key
+        .as_ref()
+        .is_some_and(|k| !k.allowed_pools.is_empty());
 
     let visible_pool = |name: &str| -> bool {
         match gov.key.as_ref() {
@@ -250,20 +255,20 @@ mod tests {
     use crate::governance::VirtualKey;
     use crate::test_support::{LaneSpec, TestApp};
 
-    /// A virtual key restricted to `allowed_pools`. C6 mapping for the test helper: an EMPTY
-    /// slice models the OMITTED grant (all pools, None); a non-empty slice is the explicit list.
-    fn vkey(allowed_pools: &[&str]) -> std::sync::Arc<VirtualKey> {
-        std::sync::Arc::new(VirtualKey {
+    /// A virtual key restricted to `allowed_pools` (empty = all pools).
+    fn vkey(allowed_pools: &[&str]) -> VirtualKey {
+        VirtualKey {
             id: "k-test".to_string(),
             key_hash: "deadbeef".to_string(),
             name: "test".to_string(),
-            allowed_pools: (!allowed_pools.is_empty())
-                .then(|| allowed_pools.iter().map(|s| s.to_string()).collect()),
+            allowed_pools: allowed_pools.iter().map(|s| s.to_string()).collect(),
+            max_budget_cents: None,
+            budget_period: "total".to_string(),
+            rpm_limit: None,
+            tpm_limit: None,
             enabled: true,
             created_at: 1_700_000_000,
-            group: None,
-            labels: Default::default(),
-        })
+        }
     }
 
     /// Two pools, three lanes: `pool-a` -> lanes {0,1}, `pool-b` -> lane {2}. Lane 2's model is
@@ -332,7 +337,7 @@ mod tests {
         );
     }
 
-    /// An OMITTED `allowed_pools` grant (operator/admin default; None) preserves the behavior: the FULL
+    /// An empty `allowed_pools` (operator/admin default) preserves today's behavior: the FULL
     /// topology — every pool and every lane — is reported.
     #[tokio::test]
     async fn test_stats_empty_allowed_pools_sees_full_topology() {
@@ -413,7 +418,7 @@ mod tests {
         );
     }
 
-    /// An omitted-`allowed_pools` key (operator default; None) sees the full list, like /stats.
+    /// An empty `allowed_pools` key (operator default) sees the full list, like /stats.
     #[tokio::test]
     async fn test_v1_models_empty_allowed_pools_sees_all() {
         let app = topology_app();

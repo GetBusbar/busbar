@@ -106,11 +106,9 @@ pub(crate) fn validate_with_unset(
         // A `max_concurrent: 0` lane builds a `Semaphore::new(0)` at startup (main.rs), which never
         // grants a permit — every request to the lane is permanently capacity-exhausted with no
         // boot-time diagnostic. Reject it loudly here rather than silently black-holing the lane.
-        // OMITTED (None) is the valid default: unbounded (no concurrency cap), the opt-in-limiter
-        // posture that mirrors max_requests's -1. Only an explicit `Some(0)` is pathological.
-        if model_cfg.max_concurrent == Some(0) {
+        if model_cfg.max_concurrent == 0 {
             errors.push(format!(
-                "model '{}' has max_concurrent: 0; must be >= 1, or omit it (default = unbounded)",
+                "model '{}' has max_concurrent: 0; must be >= 1",
                 model_name
             ));
         }
@@ -472,15 +470,14 @@ pub(crate) fn validate_with_unset(
             // colon-split lives only in `build()`, which `--validate` never reaches, so a malformed
             // credential otherwise passes validate and fails at boot/apply. Check it here when the env var
             // resolves (an unset var can't be validated — caught at boot). (found: 1.4.0 audit, egress-auth.)
-            let cred = crate::config::secret::resolve_builtin_string(&provider_cfg.api_key)
-                .unwrap_or_default();
+            let cred = std::env::var(&provider_cfg.api_key_env).unwrap_or_default();
             if !cred.trim().is_empty() {
                 if let Err(e) =
                     crate::egress_auth::oauth_client_credentials::validate_credential(&cred)
                 {
                     errors.push(format!(
-                        "provider '{provider_name}' oauth-client-credentials credential (from {}) is invalid: {e}",
-                        provider_cfg.api_key.describe()
+                        "provider '{provider_name}' oauth-client-credentials credential (from ${}) is invalid: {e}",
+                        provider_cfg.api_key_env
                     ));
                 }
             }
@@ -494,8 +491,7 @@ pub(crate) fn validate_with_unset(
             provider_cfg.auth,
             Some(crate::config::ProviderAuth::JwtBearer)
         ) {
-            let cred = crate::config::secret::resolve_builtin_string(&provider_cfg.api_key)
-                .unwrap_or_default();
+            let cred = std::env::var(&provider_cfg.api_key_env).unwrap_or_default();
             if !cred.trim().is_empty() {
                 // Pass the SAME operator metadata posture the boot path threads into jwt_bearer::build,
                 // so the token_uri SSRF check is identical at validate and apply time (1.4.0 audit).
@@ -506,8 +502,8 @@ pub(crate) fn validate_with_unset(
                 };
                 if let Err(e) = crate::egress_auth::jwt_bearer::validate_credential(&cred, &ssrf) {
                     errors.push(format!(
-                        "provider '{provider_name}' jwt-bearer credential (from {}) is invalid: {e}",
-                        provider_cfg.api_key.describe()
+                        "provider '{provider_name}' jwt-bearer credential (from ${}) is invalid: {e}",
+                        provider_cfg.api_key_env
                     ));
                 }
             }
@@ -542,8 +538,21 @@ pub(crate) fn validate_with_unset(
             if member.weight == 0 {
                 errors.push(format!(
                     "pool '{}' member '{}' weight must be >= 1 (got 0)",
-                    pool_name, member.model
+                    pool_name, member.target
                 ));
+            }
+            // `cost_per_mtok` drives the native `cheapest` policy's ascending sort. A NaN value makes
+            // that sort's comparator non-total (NaN compares unordered, so the ordering is undefined
+            // and a member can be silently mis-ranked), and a NEGATIVE cost is nonsensical and would
+            // sort ahead of every legitimate member. Reject both at boot rather than ship a broken
+            // ranking. (An UNSET cost is fine — it's inert and only the `cheapest` policy reads it.)
+            if let Some(cost) = member.cost_per_mtok {
+                if !cost.is_finite() || cost < 0.0 {
+                    errors.push(format!(
+                        "pool '{}' member '{}' cost_per_mtok must be a finite, non-negative number (got {}); it drives the 'cheapest' policy's sort, which a NaN or negative value corrupts",
+                        pool_name, member.target, cost
+                    ));
+                }
             }
             // Member-level `attempt_timeout_ms: 0` — same instant-fail foot-gun as the model-level
             // check above, but the member override is consulted FIRST by the engine, so a zero here
@@ -551,10 +560,10 @@ pub(crate) fn validate_with_unset(
             if member.attempt_timeout_ms == Some(0) {
                 errors.push(format!(
                     "pool '{}' member '{}' has attempt_timeout_ms: 0; a zero cap fails every attempt instantly — use a positive millisecond value, or omit it to inherit the model's setting",
-                    pool_name, member.model
+                    pool_name, member.target
                 ));
             }
-            // Resolve the member model. `model_protocols` only holds models whose provider
+            // Resolve the member target. `model_protocols` only holds models whose provider
             // resolved (the model loop above skips a model whose provider is unknown), so a bare
             // `!model_protocols.contains_key` lumps two distinct failures under one misleading
             // "unknown model" message: a target that names NO configured model, and a target that
@@ -563,21 +572,21 @@ pub(crate) fn validate_with_unset(
             // so the operator sees the accurate diagnostic — "unknown model" only when the model is
             // genuinely absent, and an unresolvable-provider message that points at the real fault
             // otherwise.
-            if let Some(&protocol) = model_protocols.get(member.model.as_str()) {
+            if let Some(&protocol) = model_protocols.get(member.target.as_str()) {
                 // Collect protocol for heterogeneity check (only for fully-resolved members).
                 member_protocols.insert(protocol);
-            } else if model_names.contains(member.model.as_str()) {
+            } else if model_names.contains(member.target.as_str()) {
                 // The model exists but its provider did not resolve (the model loop already pushed
                 // the `references unknown provider` error for it). Emit a member-level message that
                 // names the real cause rather than claiming the model is undefined.
                 errors.push(format!(
                     "pool '{}' member '{}' references model '{}', which is defined but whose provider is unresolvable; fix that model's provider reference (the model's 'references unknown provider' error is reported separately)",
-                    pool_name, member.model, member.model
+                    pool_name, member.target, member.target
                 ));
             } else {
                 errors.push(format!(
                     "pool '{}' references unknown model '{}'",
-                    pool_name, member.model
+                    pool_name, member.target
                 ));
             }
         }
@@ -692,7 +701,7 @@ pub(crate) fn validate_with_unset(
             // member of THIS pool, the same way Rule 7 catches a dangling fallback-pool reference.
             if let Some(exclusions) = &failover.exclusions {
                 let member_targets: HashSet<&str> =
-                    pool_cfg.members.iter().map(|m| m.model.as_str()).collect();
+                    pool_cfg.members.iter().map(|m| m.target.as_str()).collect();
                 for excluded in exclusions {
                     if !member_targets.contains(excluded.as_str()) {
                         errors.push(format!(
@@ -708,38 +717,33 @@ pub(crate) fn validate_with_unset(
         // configured pool parses fine but silently misses at runtime (proxy engine's
         // `fallback_pools.get(name)` returns None) and cascades to a generic 503 — the configured
         // degraded-routing policy never engages, with no boot diagnostic. Mirror the member-target
-        // resolution check and fail loud.
-        //
-        // M4 (validate/boot drift): a MALFORMED action string (`OnExhausted::parse` -> Err) dies in
-        // main.rs at boot but was previously SILENTLY IGNORED here (`if let Ok(..)`), so `--validate`
-        // passed a config boot would reject - the cardinal validate/boot-drift sin. Match main.rs:
-        // surface the parse error into `errors` so `--validate` catches it too.
-        if let Some(crate::config::OnExhaustedCfg::FallbackPool(target)) = &pool_cfg.on_exhausted {
+        // resolution check and fail loud. (A malformed action string already `die`s in main.rs at
+        // parse time; here we only catch the well-formed-but-dangling case.)
+        if let Some(on_exhausted) = &pool_cfg.on_exhausted {
+            if let Ok(crate::config::OnExhausted::FallbackPool(target)) =
+                crate::config::OnExhausted::parse(&on_exhausted.action)
             {
-                {
-                    if !cfg.pools.contains_key(target) {
-                        errors.push(format!(
-                            "pool '{}' on_exhausted references unknown fallback pool '{}'",
-                            pool_name, target
-                        ));
-                    } else if target == pool_name {
-                        // Self-referential fallback (pool A -> fallback A): the runtime loop guard
-                        // (proxy engine `RequestCtx::visited_pools`) silently terminates the chain on
-                        // the re-entry, so the configured degraded-routing policy never actually
-                        // engages: A exhausts, "falls back" to itself, is recognised as
-                        // already-visited, and 503s. A fallback pointing at its own owner is never
-                        // meaningful; reject it at boot rather than ship a self-cancelling policy with
-                        // no diagnostic. (This is the length-1 case the general cycle walk below would
-                        // also catch, called out explicitly for a precise diagnostic.)
-                        errors.push(format!(
-                            "pool '{}' on_exhausted references itself as its fallback pool ('{}'); a self-referential fallback never engages (the runtime loop guard terminates it on re-entry) so it 503s exactly as having no fallback would. Point it at a different pool or remove on_exhausted",
-                            pool_name, target
-                        ));
-                    }
+                if !cfg.pools.contains_key(&target) {
+                    errors.push(format!(
+                        "pool '{}' on_exhausted references unknown fallback pool '{}'",
+                        pool_name, target
+                    ));
+                } else if target == *pool_name {
+                    // Self-referential fallback (pool A -> fallback A): the runtime loop guard
+                    // (proxy engine `RequestCtx::visited_pools`) silently terminates the chain on the
+                    // re-entry, so the configured degraded-routing policy never actually engages — A
+                    // exhausts, "falls back" to itself, is recognised as already-visited, and 503s.
+                    // A fallback pointing at its own owner is never meaningful; reject it at boot
+                    // rather than ship a self-cancelling policy with no diagnostic. (This is the
+                    // length-1 case the general cycle walk below would also catch, called out
+                    // explicitly for a precise diagnostic.)
+                    errors.push(format!(
+                        "pool '{}' on_exhausted references itself as its fallback pool ('{}'); a self-referential fallback never engages — the runtime loop guard terminates it on re-entry — so it 503s exactly as having no fallback would. Point it at a different pool or remove on_exhausted",
+                        pool_name, target
+                    ));
                 }
             }
         }
-        // Any other well-formed action (reject / least_bad) needs no dangling-target check.
 
         // Rule 8: `affinity.mode` is now an `AffinityMode` enum (`session` is the only variant), so an
         // unrecognized spelling is rejected at deserialize time — no hand-check needed there.
@@ -831,18 +835,39 @@ pub(crate) fn validate_with_unset(
     }
 
     // Rule (hooks/registry): every entry in the top-level `hooks:` registry is validated once, here.
-    // A hook is now a `kind: hook` dlopen PLUGIN (the out-of-process socket/webhook transports are
-    // retired), so it must name EXACTLY ONE non-empty `plugin:` reference. The plugin's actual
-    // existence + `kind: hook` + trust is resolved against the validated registry at the plugin
-    // pre-flight (`plugins_preflight`, the shared boot path) — the same fail-closed check store/auth
-    // refs get. Here we enforce the structural requirement (a non-empty reference) and the grant/mode
-    // rules below. Rejected at startup, never a silent degrade.
+    // A hook declares EXACTLY ONE transport (`socket` XOR `webhook`); a webhook URL must pass the
+    // routing SSRF guard (OTLP loopback carve-out: loopback/localhost sidecars allowed, link-local/
+    // IMDS/RFC1918/CGNAT/cloud-metadata blocked; plaintext http:// only on loopback); a socket path
+    // must be non-empty + ABSOLUTE (a relative path silently depends on busbar's CWD) and the platform
+    // must support Unix domain sockets. Rejected at startup, never a silent degrade.
     for (hook_name, hook) in &cfg.hooks {
-        if hook.plugin.trim().is_empty() {
-            errors.push(format!(
-                "hook '{hook_name}' names no plugin: set `plugin:` to a `kind: hook` plugin's \
-                 signed-manifest name or alias"
-            ));
+        match (hook.socket.as_deref(), hook.webhook.as_deref()) {
+            (None, None) | (Some(""), None) | (None, Some("")) => errors.push(format!(
+                "hook '{hook_name}' declares no transport: set exactly one of `socket` (a Unix \
+                 domain socket path) or `webhook` (an https URL)"
+            )),
+            (Some(_), Some(_)) => errors.push(format!(
+                "hook '{hook_name}' declares BOTH `socket` and `webhook`: a hook has exactly one \
+                 transport"
+            )),
+            (Some(path), None) => {
+                if !cfg!(unix) {
+                    errors.push(format!(
+                        "hook '{hook_name}' uses a `socket` transport, unavailable on this platform \
+                         (Unix domain sockets); use a `webhook` hook here"
+                    ));
+                } else if !path.starts_with('/') {
+                    errors.push(format!(
+                        "hook '{hook_name}' `socket` must be an absolute path (got '{path}'); a \
+                         relative path depends on busbar's working directory"
+                    ));
+                }
+            }
+            (None, Some(url)) => {
+                if let Err(msg) = crate::observability::validate_routing_webhook_url(Some(url)) {
+                    errors.push(format!("hook '{hook_name}' `webhook` is invalid: {msg}"));
+                }
+            }
         }
         // `prompt: rw` grants the REWRITE arm, which only a GATE can return — a tap is fire-and-forget
         // and never replies, so `rw` on a tap is a config error (it would silently never rewrite).
@@ -997,83 +1022,35 @@ pub(crate) fn validate_with_unset(
         }
     }
 
-    // Rule (role_bindings): bindings are NESTED BY MODULE (S4). Every module key must appear in
-    // an auth chain (a binding under a module that never authenticates is dead config - almost
-    // certainly a typo'd module name silently granting nothing); every `admin_scope` must be a
-    // known scope token; every `group` must exist in the top-level `groups:` tree; a role name
-    // must not shadow the reserved operator principal id.
-    if let Some(auth) = cfg.auth.as_ref() {
-        let chain_modules: std::collections::HashSet<&str> = auth
-            .chain
-            .iter()
-            .chain(auth.admin_auth.iter())
-            .map(|e| e.module.as_str())
-            .collect();
-        for (module, roles) in &auth.role_bindings {
-            if !chain_modules.contains(module.as_str()) {
+    // Rule (group_map/admin-scope): every `group_map.<group>.admin_scope` must be a known scope
+    // token. A typo'd scope must fail at boot, never silently grant nothing at runtime.
+    for (group, entry) in &cfg.group_map {
+        if let Some(scope) = entry.admin_scope.as_deref() {
+            if crate::admin::v1::contract::Scope::parse(scope).is_none() {
                 errors.push(format!(
-                    "role_bindings names module '{module}', which appears in neither auth.chain \
-                     nor auth.admin_auth; a binding under an inactive module grants nothing. \
-                     Add the module to the chain, e.g.:\n\n    auth:\n      chain:\n        - \
-                     {module}: {{ settings: {{}} }}\n"
+                    "group_map '{group}' has unknown admin_scope '{scope}': expected read-only, \
+                     hooks-register, or full"
                 ));
             }
-            for (role, binding) in roles {
-                if reserved_admin_name(role) {
-                    errors.push(format!(
-                        "role_bindings.{module} binds role '{role}', which shadows the reserved \
-                         operator principal id; choose another role name"
-                    ));
-                }
-                if let Some(scope) = binding.admin_scope.as_deref() {
-                    if crate::admin::v1::contract::Scope::parse(scope).is_none() {
-                        errors.push(format!(
-                            "role_bindings.{module}.{role} has unknown admin_scope '{scope}': \
-                             expected read-only, hooks-register, mint, or full"
-                        ));
-                    }
-                }
-                if let Some(group) = binding.group.as_deref() {
-                    if !cfg.groups.contains_key(group) {
-                        errors.push(format!(
-                            "role_bindings.{module}.{role} names group '{group}', which does not \
-                             exist.\nPaste this under groups and set its limits:\n\n    \
-                             {group}:\n      limits:\n        - {{ requests: 0, per: minute }}\n"
-                        ));
-                    }
-                }
-            }
         }
+    }
 
-        // Rule (chain entries/max-scope): every entry's `max_admin_scope` must be a known scope
-        // token (typos fail at boot), and `full` - lifting the default read-only ceiling on an
-        // external chain - is a LOUD boot warning: it is the explicit opt-in §2.4 requires.
-        for entry in auth.chain.iter().chain(auth.admin_auth.iter()) {
-            if let Some(scope) = entry.max_admin_scope.as_deref() {
+    // Rule (auth.modules/max-scope): every `auth.modules.<name>.max_admin_scope` must be a known
+    // scope token (typos fail at boot), and `full` — lifting the default read-only ceiling on an
+    // external chain — is a LOUD boot warning: it is the explicit opt-in §2.4 requires.
+    if let Some(auth) = cfg.auth.as_ref() {
+        for (module, mc) in &auth.modules {
+            if let Some(scope) = mc.max_admin_scope.as_deref() {
                 match crate::admin::v1::contract::Scope::parse(scope) {
                     None => errors.push(format!(
-                        "auth chain entry '{}' has unknown max_admin_scope '{scope}': expected \
-                         read-only, hooks-register, mint, or full",
-                        entry.module
+                        "auth.modules '{module}' has unknown max_admin_scope '{scope}': expected                          read-only, hooks-register, or full"
                     )),
                     Some(crate::admin::v1::contract::Scope::Full) => tracing::warn!(
-                        module = %entry.module,
-                        "auth chain entry grants max_admin_scope: full - principals identified by \
-                         this module can hold FULL admin authority (the default ceiling is \
-                         read-only); make sure this chain is trusted end to end"
+                        module,
+                        "auth.modules grants max_admin_scope: full — principals identified by                          this module can hold FULL admin authority (the default ceiling is                          read-only); make sure this chain is trusted end to end"
                     ),
                     Some(_) => {}
                 }
-            }
-            // `token:` is the admin-tokens operator credential; on any other module it is inert
-            // and almost certainly a misplaced secret. Fail loud.
-            if entry.token.is_some() && entry.module != crate::config::ADMIN_TOKENS_MODULE {
-                errors.push(format!(
-                    "auth chain entry '{}' sets `token:`, which belongs to the built-in \
-                     `admin-tokens` module only; move it, e.g.:\n\n    admin_auth:\n      - \
-                     admin-tokens: {{ token: {{ env: BUSBAR_ADMIN_TOKEN }} }}\n",
-                    entry.module
-                ));
             }
         }
     }
@@ -1104,56 +1081,76 @@ pub(crate) fn validate_with_unset(
         }
     }
 
-    // Rule 5: Validate auth-block semantics. `auth.chain` is an ordered list of MODULE ENTRIES +
-    // `upstream_credentials` a snake_case enum. `AuthCfg` is `deny_unknown_fields`, so the removed
-    // 1.4.x keys (`client_tokens:`, `modules:`) fail AT PARSE with serde's "unknown field" - a
-    // loud clean-break boot error, no validate-time check needed.
+    // Rule 5: Validate auth-block semantics. `auth.chain` is a list of module names + `upstream_
+    // credentials` a snake_case enum, both validated below. `AuthCfg` is `deny_unknown_fields`, so a
+    // stale `mode:`/`token:` key fails AT PARSE with serde's "unknown field" — a loud clean-break
+    // boot error, no validate-time check needed (and no silent credential drop).
     if let Some(auth) = &cfg.auth {
-        // Every module named in the data-plane chain must resolve. The built-in is `keys` (the
-        // signed-key verifier; the removed 1.4.x `static-tokens`/`tokens` module is GONE). An
-        // unknown OR uncompiled name is a hard boot error - never a silently-dropped module
-        // (which would silently open the relay). FAIL-CLOSED.
-        for entry in &auth.chain {
-            let name = entry.module.as_str();
-            let available =
-                name == crate::config::KEYS_MODULE || (cfg!(test) && name == "test-groups-module");
+        // Every module name in the chain must resolve to a COMPILED-IN auth module (only `tokens`
+        // today, and only when the `auth-tokens` feature is on). An unknown OR uncompiled name is a
+        // hard boot error — never a silently-dropped module (which would silently open the relay).
+        for name in &auth.chain {
+            let available = name == "tokens" && cfg!(feature = "auth-tokens");
             if !available {
-                if name == "tokens" || name == "static-tokens" {
-                    errors.push(format!(
-                        "auth.chain names '{name}': the static-token allowlist module was REMOVED \
-                         in 1.5.0. Data-plane auth is `keys` (busbar-signed keys, minted via \
-                         POST /api/v1/admin/keys) and IdP auth plugins - write:\n\n    auth:\n      \
-                         chain:\n        - keys\n"
-                    ));
+                if name == "tokens" {
+                    // `--no-default-features` (compliance build): tokens auth is absent.
+                    errors.push(
+                        "auth.chain names 'tokens' but this binary was built WITHOUT the \
+                         `auth-tokens` feature — the token auth module is absent from the binary. \
+                         Rebuild with default features, or configure a different auth module."
+                            .to_string(),
+                    );
                 } else {
                     errors.push(format!(
-                        "auth.chain names unknown module '{name}': the built-in data-plane module \
-                         is 'keys'; an external IdP module must be a loadable `kind: auth` plugin"
+                        "auth.chain names unknown module '{name}': the only built-in auth module is \
+                         'tokens' (external modules are added at compile time)"
                     ));
                 }
             }
         }
+        let chain_has_tokens = auth.chain.iter().any(|n| n == "tokens");
+
+        // `tokens` in the chain with no client_tokens rejects 100% of requests with no startup signal
+        // — the locked-out mirror of the loudly-warned open-relay (empty chain) case.
+        if chain_has_tokens && effective_client_tokens_empty(auth) {
+            errors.push(
+                "auth.chain includes 'tokens' but no client_tokens are configured; the tokens module requires at least one client token (otherwise every request is rejected)".to_string(),
+            );
+        }
+
+        // An empty chain is an open relay: it admits every request unconditionally, so a configured
+        // `client_tokens` allowlist has ZERO enforcement effect. Not a hard error (an empty chain may
+        // be a deliberate dev open-relay), but it MUST be loud. No-op when no tokens are listed.
+        if auth.chain.is_empty() && !effective_client_tokens_empty(auth) {
+            tracing::warn!(
+                "auth.chain is empty (open relay) but client_tokens are configured: an empty chain \
+                 admits every request regardless of token, so the allowlist has no enforcement \
+                 effect. Add 'tokens' to auth.chain to enforce it."
+            );
+        }
+
         // `upstream_credentials: passthrough` with a NON-EMPTY configured api_key on a provider is a
-        // configuration foot-gun: under passthrough the configured key is NEVER forwarded - the
-        // caller's own credential (or an empty one) goes upstream. WARN (not hard-reject): a legit
-        // Bedrock-ingress passthrough provider signs per-request via SigV4 and needs no static key.
+        // credential-leak risk: proxy engine selects the upstream key as `caller_token.unwrap_or("")`,
+        // so an UNAUTHENTICATED caller forwards an EMPTY credential (the provider 401/403s the
+        // caller), NOT busbar's configured lane key — but a non-empty configured key means busbar's
+        // OWN secret gets substituted upstream on the caller's behalf. WARN (not hard-reject): a
+        // legit Bedrock-ingress passthrough provider signs per-request via SigV4 and resolves EMPTY
+        // here, and a deliberate static-key fallback provider is valid too.
         if auth.upstream_credentials == crate::auth::UpstreamCreds::Passthrough {
             for (provider_name, provider_cfg) in &cfg.providers {
-                let resolved_key =
-                    crate::config::secret::resolve_builtin_string(&provider_cfg.api_key)
-                        .unwrap_or_default();
+                let resolved_key = std::env::var(&provider_cfg.api_key_env).unwrap_or_default();
                 if !resolved_key.trim().is_empty() {
                     tracing::warn!(
                         provider = %provider_name,
-                        api_key = %provider_cfg.api_key.describe(),
+                        api_key_env = %provider_cfg.api_key_env,
                         "upstream_credentials: passthrough with a NON-EMPTY configured api_key for \
-                         this provider: under passthrough the upstream key is \
-                         caller_token.unwrap_or(\"\"), so the configured api_key is NEVER forwarded \
-                         (a caller presents their own token, or an unauthenticated caller forwards an \
-                         empty credential the provider rejects). The configured key is inert dead \
-                         config. If you intended static-key gating, use upstream_credentials: own \
-                         (plus an auth chain); otherwise clear the referenced secret (Bedrock-ingress \
-                         passthrough signs per-request via SigV4 and needs no static key)."
+                         this provider is a credential-leak risk: an UNAUTHENTICATED caller has \
+                         busbar's OWN configured lane key substituted upstream \
+                         (caller_token.unwrap_or(lane.api_key)), forwarding your secret on the \
+                         caller's behalf. Passthrough should forward the CALLER credential, never a \
+                         configured one. Unset the environment variable named by api_key_env \
+                         (Bedrock-ingress passthrough signs per-request via SigV4 and needs no static \
+                         key), or use upstream_credentials: own to gate callers with an auth chain."
                     );
                 }
             }
@@ -1175,25 +1172,21 @@ pub(crate) fn validate_with_unset(
         for pool_cfg in cfg.pools.values() {
             for m in &pool_cfg.members {
                 if let Some(c) = m.context_max {
-                    match seen.get(m.model.as_str()) {
+                    match seen.get(m.target.as_str()) {
                         Some(existing) if *existing != c => {
                             errors.push(format!(
                                 "model '{}' has conflicting context_max across pools ({} vs {}); a model maps to one lane and must declare a single context_max",
-                                m.model, existing, c
+                                m.target, existing, c
                             ));
                         }
                         _ => {
-                            seen.insert(m.model.as_str(), c);
+                            seen.insert(m.target.as_str(), c);
                         }
                     }
                 }
             }
         }
     }
-
-    // The cost/groups/store/secret surface (S3/S5/S6/C2) - the redistributed pieces of the
-    // dissolved 1.4.x governance block, now first-class on the resolved config.
-    validate_cost_model(cfg, &mut errors);
 
     if errors.is_empty() {
         Ok(())
@@ -1219,13 +1212,6 @@ fn validate_limits(limits: &crate::config::LimitsResolved, errors: &mut Vec<Stri
     if limits.tls_handshake_timeout_secs < 1 {
         errors.push(
             "limits.tls_handshake_timeout_secs must be >= 1 (0 would abort every TLS handshake)"
-                .to_string(),
-        );
-    }
-    if limits.request_body_read_timeout_secs < 1 {
-        errors.push(
-            "limits.request_body_read_timeout_secs must be >= 1 (0 would abort every request whose \
-             body is not instantly buffered)"
                 .to_string(),
         );
     }
@@ -1276,7 +1262,7 @@ fn validate_limits(limits: &crate::config::LimitsResolved, errors: &mut Vec<Stri
     }
     // The error-body buffer cap must be >= 1 byte (0 would buffer nothing, losing every upstream
     // error body). The pool-idle, gauge-limit, and probe defaults are all safe at any value (0
-    // pool-idle = no keep-alive; 0 gauge limit = emit none). `advanced.rate_sweep_interval == 0` is
+    // pool-idle = no keep-alive; 0 gauge limit = emit none). `governance.rate_sweep_interval == 0` is
     // rejected separately in `validate_governance` — a 0 there would disable the rate-map eviction
     // sweep, so it is a hard error rather than a silently-accepted default.
     if limits.upstream_error_body_max_bytes < 1 {
@@ -1293,8 +1279,14 @@ fn validate_limits(limits: &crate::config::LimitsResolved, errors: &mut Vec<Stri
                 .to_string(),
         );
     }
-    // SQLite busy_timeout must be >= 0 (the SQLite backend rejects negative). 0 means "fail immediately on lock"
+    // SQLite busy_timeout must be >= 0 (rusqlite rejects negative). 0 means "fail immediately on lock"
     // — degraded but not broken, so only reject a negative value.
+    if limits.sqlite_busy_timeout_ms < 0 {
+        errors.push(format!(
+            "governance.sqlite_busy_timeout_ms ({}) must be >= 0",
+            limits.sqlite_busy_timeout_ms
+        ));
+    }
     // Probe fallbacks: the prober floors them at 1 at use, but a 0 here signals operator confusion;
     // reject so the config is honest about what runs.
     if limits.default_probe_interval_secs < 1 {
@@ -1310,17 +1302,6 @@ fn validate_limits(limits: &crate::config::LimitsResolved, errors: &mut Vec<Stri
                 .to_string(),
         );
     }
-    // A 0 sweep interval would disable the rate-map's idle-entry eviction sweep entirely - it
-    // rides on the non-obvious `u32::is_multiple_of(0) == false`, so the sweep never fires and
-    // entries for silent keys stay resident until restart. Reject it fail-loud.
-    if limits.rate_sweep_interval == 0 {
-        errors.push(
-            "advanced.rate_sweep_interval is 0; must be >= 1. A value of 0 disables the rate-map \
-             idle-entry sweep, leaking entries for silent keys until restart. The default is 256 \
-             (sweep every 256 admissions); use a larger value to make sweeps rarer."
-                .to_string(),
-        );
-    }
     // NOTE: `max_inbound_concurrent` is intentionally UNCONSTRAINED — any usize including 0 (the
     // unlimited default) is valid.
 }
@@ -1329,184 +1310,92 @@ fn validate_limits(limits: &crate::config::LimitsResolved, errors: &mut Vec<Stri
 /// cannot ride along in `validate(&RootCfg)`). Called from `config::resolve`, whose `Err(Vec<String>)`
 /// is surfaced as a fail-loud boot error — the same channel `validate` uses.
 ///
-/// A blank/whitespace-only `admin_token` leaves `GovState::admin_token_hash()` returning `None`, so
-/// the `/admin` auth branch's `authorized` is permanently `false`: the admin API is SILENTLY locked
-/// (every admin call 401s) with no startup diagnostic. An operator who set an (expanded-to-blank)
-/// token to manage virtual keys discovers this only at runtime. Mirror the `token` mode with no
-/// `client_tokens` fail-loud pattern and reject it at boot. An unset `admin_token` carries no
-/// requirement (governance is always available but inert, the admin surface off).
+/// When `governance.enabled` is true but `admin_token` is unset, `GovState::admin_token_hash()` returns
+/// `None`, so the `/admin` auth branch's `authorized` is permanently `false`: the admin API is
+/// SILENTLY locked (every admin call 401s) with no startup diagnostic. An operator who enabled
+/// governance to manage virtual keys discovers this only at runtime. Mirror the `token` mode with no
+/// `client_tokens` fail-loud pattern and reject it at boot. A disabled governance block carries no
+/// requirement (the admin surface is inert anyway).
 ///
-/// Validate the COST + GROUPS + STORE + SECRETS surface of the resolved config (S3/S5/S6/C2):
-/// rate_card completeness/wellformedness, the `groups:` limit tree (parents exist, chain acyclic —
-/// any depth, the cycle check is the bound; limit values sane), `per_request_fee` sanity, the store
-/// module reference, and every
-/// secret reference's MODULE resolvability. Paste-ready stubs throughout. Pure - shared verbatim
-/// by boot and `--validate` so the two cannot drift.
-fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
-    if let Some(card) = &cfg.rate_card {
-        // Well-formed rates: every tier finite and >= 0 (names the exact config path).
-        for (model, r) in card {
-            for (tier, v) in [
-                ("input_utok", r.input_utok),
-                ("output_utok", r.output_utok),
-                ("cache_read_utok", r.cache_read_utok),
-                ("cache_write_utok", r.cache_write_utok),
-            ] {
-                if !v.is_finite() || v < 0.0 {
-                    errors.push(format!(
-                        "rate_card['{model}'].{tier} must be a finite, non-negative \
-                         number of micro-units per token (got {v})"
-                    ));
-                }
-            }
-        }
-        // COMPLETENESS (all-or-nothing): rate_card present => EVERY configured model (by CONFIG
-        // name - two providers serving one upstream are two `models:` entries with two card
-        // entries) has an entry, or boot/--validate FAIL with a COPY-PASTEABLE zeroed stub of
-        // exactly the missing models.
-        let mut model_names: Vec<&String> = cfg.models.keys().collect();
-        model_names.sort();
-        let missing: Vec<&str> = model_names
-            .iter()
-            .filter(|name| !card.contains_key(name.as_str()))
-            .map(|name| name.as_str())
-            .collect();
-        if !missing.is_empty() {
-            let width = missing.iter().map(|m| m.len()).max().unwrap_or(0) + 1;
-            let stub: String = missing
-                .iter()
-                .map(|m| {
-                    format!(
-                        "    {:width$} {{ input_utok: 0, output_utok: 0, cache_read_utok: 0, cache_write_utok: 0 }}\n",
-                        format!("{m}:"),
-                        width = width
-                    )
-                })
-                .collect();
-            errors.push(format!(
-                "rate_card is present but {} configured model{} no rate entry (rate_card is \
-                 AUTHORITATIVE and COMPLETE: you either price nothing or price everything).\n\
-                 Paste these under rate_card and fill in your rates (micro-units per token):\n\n{stub}",
-                missing.len(),
-                if missing.len() == 1 { " has" } else { "s have" },
-            ));
-        }
-        // Card entries for models that do not exist are dead config - almost always a typo of a
-        // real model name. Fail loud (the completeness stub above covers the other direction).
-        for model in card.keys() {
-            if !cfg.models.contains_key(model) {
-                errors.push(format!(
-                    "rate_card names model '{model}', which is not defined under models: \
-                     (a rate entry is keyed by the CONFIG model name); remove it or fix the name"
-                ));
-            }
-        }
-    }
-
-    if cfg.per_request_fee < 0 {
-        errors.push(format!(
-            "per_request_fee must be >= 0 (got {}); a negative fee would credit every request",
-            cfg.per_request_fee
-        ));
-    }
-
-    // groups (S3): parents exist, chain acyclic — any depth, the cycle check is the bound (shared
-    // with the parse-time module), plus
-    // value-level checks the tree walk does not cover.
-    crate::config::groups::validate_groups(&cfg.groups, &|p| cfg.pools.contains_key(p), errors);
-    for (name, g) in &cfg.groups {
-        for limit in &g.limits {
-            if limit.amount == 0 {
-                errors.push(format!(
-                    "groups.{name} has a `{}` limit of 0, which rejects every request through the \
-                     group from the first admission; set a positive amount, or set `enabled: \
-                     false` to freeze the group explicitly",
-                    limit.metric.as_str()
-                ));
-            }
-        }
-    }
-
-    // store (S6): the module name must be non-empty; a non-memory module additionally requires the
-    // plugin subsystem (checked with the registry in `plugins_preflight`, the shared boot path).
-    if let Some(store) = &cfg.store {
-        if store.module.trim().is_empty() {
-            errors.push(
-                "store.module must be non-empty; use `memory` (the compiled-in RAM store) or a \
-                 store plugin name/alias (sqlite | postgres | redis | <third-party>)"
-                    .to_string(),
-            );
-        }
-    }
-
-    // SECRET REFERENCES (C2): every secret's MODULE must be resolvable BY NAME. In P1/P2 the
-    // built-ins are `env` and `file`; a `kind: secret` plugin passes once loadable. The VALUE is
-    // deliberately not resolved here (CI validates config structure without secrets present);
-    // resolution failures are boot-time fail-closed errors.
-    let mut check_secret = |what: String, r: &crate::config::SecretRef| {
-        let known = matches!(
-            r.module.as_str(),
-            crate::config::secret::SECRET_MODULE_ENV | crate::config::secret::SECRET_MODULE_FILE
-        );
-        if !known {
-            errors.push(format!(
-                "{what} references secret module '{}', which is not a built-in (`env` | `file`) \
-                 and no loadable `kind: secret` plugin provides it. Use e.g.:\n\n    {what}: \
-                 {{ env: MY_SECRET_VAR }}\n",
-                r.module
-            ));
-        } else if r.module == crate::config::secret::SECRET_MODULE_ENV && r.env_var().is_none() {
-            errors.push(format!(
-                "{what}: secret module 'env' requires settings.key (the environment variable name)"
-            ));
-        } else if r.module == crate::config::secret::SECRET_MODULE_FILE && r.file_path().is_none() {
-            errors.push(format!(
-                "{what}: secret module 'file' requires settings.path (the file to read)"
-            ));
-        }
-    };
-    for (name, p) in &cfg.providers {
-        check_secret(format!("providers.{name}.api_key"), &p.api_key);
-    }
-    if let Some(tls) = &cfg.tls {
-        check_secret("tls.cert".to_string(), &tls.cert);
-        check_secret("tls.key".to_string(), &tls.key);
-        if let Some(ca) = &tls.client_ca {
-            check_secret("tls.client_ca".to_string(), ca);
-        }
-    }
-    if let Some(tls) = &cfg.admin_tls {
-        check_secret("admin_tls.cert".to_string(), &tls.cert);
-        check_secret("admin_tls.key".to_string(), &tls.key);
-        if let Some(ca) = &tls.client_ca {
-            check_secret("admin_tls.client_ca".to_string(), ca);
-        }
-    }
-    if let Some(auth) = &cfg.auth {
-        if let Some(sk) = &auth.signing_key {
-            check_secret("auth.signing_key".to_string(), sk);
-        }
-        if let Some(tok) = auth.admin_token_ref() {
-            check_secret("auth.admin_auth admin-tokens token".to_string(), tok);
-        }
-    }
-
-    // ADMIN-TOKENS availability: a configured admin token with the module compiled OUT would
-    // silently disable the admin API (the chain all-Passes) - a silent lockout must be a loud
-    // boot error instead.
+/// `auth` is the deployment's auth block (read separately, like governance, so neither lands on
+/// `RootCfg`). `governance.enabled` combined with `upstream_credentials: passthrough` is a self-contradictory
+/// deployment: governance requires every request to resolve to an enabled virtual key, which
+/// supersedes passthrough's "accept any caller credential and forward it upstream" intent — so a
+/// server an operator believes is in passthrough silently rejects every caller lacking a virtual
+/// key (a behaviour inversion that could cause a production outage). The auth runtime emits a
+/// one-time warning, but only `resolve`/this validator can see BOTH blocks at boot, so reject the
+/// combination here with a clear diagnostic rather than letting it pass to a runtime warning.
+pub(crate) fn validate_governance(
+    governance: &crate::config::GovernanceCfg,
+    auth: Option<&crate::config::AuthCfg>,
+) -> Result<(), Vec<String>> {
+    let mut errors = Vec::new();
+    // A configured admin token with the `admin-tokens` module compiled OUT would silently disable
+    // the admin API (the chain all-Passes) — a silent lockout must be a loud boot error instead.
     #[cfg(not(feature = "auth-admin-tokens"))]
-    if cfg
-        .auth
-        .as_ref()
-        .and_then(|a| a.admin_token_ref())
-        .is_some()
+    if governance
+        .admin_token
+        .as_deref()
+        .is_some_and(|t| !t.trim().is_empty())
     {
         errors.push(
-            "an admin-tokens token is configured but this binary was built WITHOUT the \
+            "governance.admin_token is configured but this binary was built WITHOUT the \
              `auth-admin-tokens` feature — the admin API would be silently disabled. Rebuild with \
              default features or wire an external admin auth module."
                 .to_string(),
         );
+    }
+    if governance.enabled
+        && governance
+            .admin_token
+            .as_deref()
+            // A WHITESPACE-ONLY admin_token (e.g. " " or "\t") passes a bare `is_empty()` guard but is
+            // functionally unusable: it is a degenerate secret an operator cannot reasonably present,
+            // and `${BUSBAR_ADMIN_TOKEN}` expanding to an all-blanks value would silently lock the
+            // /admin API exactly as an unset token does. Reject blank-only here too (trim then test)
+            // so the boot diagnostic fires for the whitespace case, not just the truly-empty one.
+            .is_none_or(|t| t.trim().is_empty())
+    {
+        errors.push(
+            "governance.enabled is true but no governance.admin_token is configured; the /api/v1/admin management API is unreachable (every admin call returns 401). Set governance.admin_token (e.g. admin_token: ${BUSBAR_ADMIN_TOKEN})".to_string(),
+        );
+    }
+    // WARN (not a hard error): with `price_per_request_cents == 0`, a request that consumes no
+    // tokens (or a key priced solely on a flat fee) accrues a ZERO charge, so the per-request
+    // budget admission gate never closes — a key with `max_budget_cents` set is admitted without
+    // bound on request COUNT (only token-priced spend counts). Request-count admission control
+    // therefore requires a non-zero flat fee when a budget is in play. This is a deliberate
+    // configuration (a deployment may price purely by tokens), so we warn rather than reject.
+    if governance.enabled && governance.price_per_request_cents == 0 {
+        tracing::warn!(
+            "governance.price_per_request_cents is 0: a zero flat fee means a request can accrue a \
+             zero charge, so per-request COUNT-based budget admission never closes — a virtual key \
+             with max_budget_cents set is not bounded on request count (only token-priced spend is \
+             counted). If you rely on a budget to cap request volume, set a non-zero \
+             price_per_request_cents."
+        );
+    }
+    if governance.enabled
+        && auth.is_some_and(|a| a.upstream_credentials == crate::auth::UpstreamCreds::Passthrough)
+    {
+        errors.push(
+            "governance.enabled is true together with upstream_credentials: passthrough; governance supersedes passthrough (every request must resolve to an enabled virtual key), so passthrough's accept-and-forward-caller-credential semantics are NOT honoured and every caller without a virtual key is silently rejected. This combination is unsupported; use upstream_credentials: own (with an auth chain, or omit the auth block) alongside governance.".to_string(),
+        );
+    }
+    // A 0 sweep interval would disable the rate-map's idle-entry eviction sweep entirely — it rides on
+    // the non-obvious `u32::is_multiple_of(0) == false`, so the sweep never fires and entries for silent
+    // keys stay resident until restart. Rate limiting itself stays correct (`check_rate`'s per-key
+    // stale-reset is independent of the sweep), but the surprising "0 == disabled" semantics are a
+    // footgun. Reject it fail-loud, consistent with every other "must be >= 1" cadence in this validator.
+    if governance.rate_sweep_interval == 0 {
+        errors.push(
+            "governance.rate_sweep_interval is 0; must be >= 1. A value of 0 disables the rate-map idle-entry sweep, leaking entries for silent keys until restart. The default is 256 (sweep every 256 admissions); use a larger value to make sweeps rarer.".to_string(),
+        );
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
     }
 }
 
@@ -1531,10 +1420,18 @@ fn reserved_admin_name(name: &str) -> bool {
 /// rejected elsewhere at parse time). The returned name is owned because it lives inside the parsed
 /// `OnExhausted` value, which does not outlive this call. Used by the Rule 7b fallback-cycle walk.
 fn resolve_fallback_target(cfg: &RootCfg, pool_name: &str) -> Option<String> {
-    match cfg.pools.get(pool_name)?.on_exhausted.as_ref()? {
-        crate::config::OnExhaustedCfg::FallbackPool(target) => Some(target.clone()),
-        _ => None,
+    let on_exhausted = cfg.pools.get(pool_name)?.on_exhausted.as_ref()?;
+    match crate::config::OnExhausted::parse(&on_exhausted.action) {
+        Ok(crate::config::OnExhausted::FallbackPool(target)) => Some(target),
+        Ok(_) | Err(_) => None,
     }
+}
+
+/// True when an `AuthCfg` resolves to an empty client-token allowlist. As of 1.0.0 the legacy
+/// `token:` field was removed (setting it is now a hard parse error via `deny_unknown_fields`), so
+/// the effective set is empty iff `client_tokens` is empty.
+fn effective_client_tokens_empty(auth: &crate::config::AuthCfg) -> bool {
+    auth.client_tokens.is_empty()
 }
 
 /// Return `Some(host)` if the given `https://` URL points at an SSRF-sensitive target (loopback,

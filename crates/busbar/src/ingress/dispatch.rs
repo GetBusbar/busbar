@@ -89,16 +89,11 @@ pub(crate) async fn operation_ingress(
         .get(axum::http::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    // VALIDATE ONCE, before model extraction, so a malformed JSON body gets the parse 400 (below),
-    // never a misleading missing-model 400. `LazyBody::parse` preserves the exact malformed-body
-    // reject set of the old eager `parse::<Value>` (same depth guard, same parser, full-body scan)
-    // but builds NO DOM — only the top-level head projection the passthrough path reads. The full
-    // `Value` tree is materialized downstream ONLY on the paths that need it (cross-protocol
-    // translation, hooks, taps, gates, failover hops 2+).
-    let parsed_v: Option<crate::proxy::LazyBody> = if ct.starts_with("application/json")
-        || ct.is_empty()
+    // Parse ONCE, before model extraction, so a malformed JSON body gets the parse 400 (below),
+    // never a misleading missing-model 400.
+    let parsed_v: Option<serde_json::Value> = if ct.starts_with("application/json") || ct.is_empty()
     {
-        match crate::proxy::LazyBody::parse(&body) {
+        match crate::json::parse(&body) {
             Ok(v) => Some(v),
             Err(_) => {
                 tracing::debug!(detail = %crate::json::parse_err_log(body.len()), "request body JSON parse failed");
@@ -126,14 +121,9 @@ pub(crate) async fn operation_ingress(
     } else if ct.starts_with("multipart/") {
         multipart_model(&body)
     } else {
-        // `model` is a captured head key: this point read never materializes the DOM and returns
-        // exactly what the full `Value` returned (missing / non-string / non-object body -> None).
-        parsed_v.as_ref().and_then(|v| {
-            v.probe()
-                .get("model")
-                .and_then(|m| m.as_str())
-                .map(str::to_string)
-        })
+        parsed_v
+            .as_ref()
+            .and_then(|v| v.get("model").and_then(|m| m.as_str()).map(str::to_string))
     };
     let model = match model {
         Some(m) if !m.is_empty() => m,
@@ -186,7 +176,7 @@ pub(crate) async fn operation_resolved(
     model: &str,
     headers: &HeaderMap,
     body: Bytes,
-    parsed_v: Option<crate::proxy::LazyBody>,
+    parsed_v: Option<serde_json::Value>,
     caller_token: Option<&str>,
     started: Instant,
     charged_at: u64,
@@ -196,14 +186,10 @@ pub(crate) async fn operation_resolved(
         .get(axum::http::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    let (admit, downgraded) = match governance_guard(app, gov, proto, model, started, charged_at) {
-        Err(resp) => return *resp,
-        Ok(admitted) => admitted,
+    let charged = match governance_guard(app, gov, proto, model, started, charged_at).await {
+        Err(resp) => return resp,
+        Ok(charged) => charged,
     };
-    let charged = admit.is_some();
-    // A budget downgrade (§6c) re-pooled the admission: dispatch through the pool the charge
-    // actually landed on, not the one the client asked for.
-    let model = downgraded.as_deref().unwrap_or(model);
 
     let (cands, pool_name): (Vec<WeightedLane>, &str) = if let Some(c) = app.pools.get(model) {
         (c.clone(), model)
@@ -245,17 +231,16 @@ pub(crate) async fn operation_resolved(
         .get(affinity_header_for(app, model))
         .and_then(|h| h.to_str().ok())
         .map(str::to_string);
+    let req_ct_owned = ct.to_string();
     let resp = crate::proxy::forward_with_pool_parsed(
         app.clone(),
         cands,
         body,
         v,
-        // `ct` borrows `headers` (a caller-held reference that outlives this call) — no per-request
-        // `to_string` copy is needed to thread the Content-Type through.
-        if ct.is_empty() {
+        if req_ct_owned.is_empty() {
             crate::proxy::APPLICATION_JSON
         } else {
-            ct
+            &req_ct_owned
         },
         caller_token,
         // The key the auth layer resolved/synthesized for this caller — lets the routing-signal
@@ -269,7 +254,7 @@ pub(crate) async fn operation_resolved(
             operation,
             op_handler,
         },
-        usage_sink(app, gov, pool_name, charged_at, admit),
+        usage_sink(app, gov, charged_at),
     )
     .await;
     finish_admitted(app, gov, proto, model, started, charged_at, resp, charged)
@@ -337,15 +322,11 @@ pub(crate) async fn protocol_dispatch(
     }
     match proto {
         // Path-model protocols keep their full arms (streaming variants, native action errors).
-        // Their ingress futures are Box::pin'd: in a match every arm's future is inlined into the
-        // dispatch coroutine's union, so the gemini/bedrock arms (~5.7 KB each) inflate the future
-        // EVERY request carries even when the traffic is another dialect. Boxing moves that weight
-        // behind one allocation paid only by requests that actually take the arm.
         PROTO_GEMINI => {
             // axum's {*rest} wildcard percent-decoded the tail before the collapse; match it.
             let rest =
                 crate::observability::percent_decode(path.split("/models/").nth(1).unwrap_or(""));
-            Box::pin(gemini_ingress(
+            gemini_ingress(
                 crate::state::CurrentApp(app),
                 Path(rest),
                 OriginalUri(uri),
@@ -353,7 +334,7 @@ pub(crate) async fn protocol_dispatch(
                 axum::extract::Extension(caller),
                 headers,
                 body,
-            ))
+            )
             .await
         }
         PROTO_BEDROCK => {
@@ -363,27 +344,27 @@ pub(crate) async fn protocol_dispatch(
                 .map(|m| crate::observability::percent_decode(&m))
                 .unwrap_or_default();
             if path.ends_with("/converse") {
-                Box::pin(bedrock_converse(
+                bedrock_converse(
                     crate::state::CurrentApp(app),
                     Path(model),
                     axum::extract::Extension(gov),
                     axum::extract::Extension(caller),
                     headers,
                     body,
-                ))
+                )
                 .await
             } else if path.ends_with("/converse-stream") {
-                Box::pin(bedrock_converse_stream(
+                bedrock_converse_stream(
                     crate::state::CurrentApp(app),
                     Path(model),
                     axum::extract::Extension(gov),
                     axum::extract::Extension(caller),
                     headers,
                     body,
-                ))
+                )
                 .await
             } else if path.ends_with("/invoke") {
-                Box::pin(bedrock_invoke(
+                bedrock_invoke(
                     crate::state::CurrentApp(app),
                     Path(model),
                     OriginalUri(uri),
@@ -391,7 +372,7 @@ pub(crate) async fn protocol_dispatch(
                     axum::extract::Extension(caller),
                     headers,
                     body,
-                ))
+                )
                 .await
             } else {
                 crate::fallback_error_response(

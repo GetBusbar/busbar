@@ -127,18 +127,12 @@ pub(crate) struct ProbeGuard<'a> {
     pub(crate) pool: &'a str,
     pub(crate) lane: usize,
     pub(crate) armed: bool,
-    /// The probe-epoch (owner token) captured when this guard won the probe. Because a guard can be
-    /// dropped LATE - after parking on the permit-wait await while the cell moved on - the drop uses
-    /// the OWNER-CHECKED `release_probe_owned_in` so a stale release cannot revert a NEWER probe (P2
-    /// #4). It is a strict no-op unless the cell's epoch still matches this captured value.
-    pub(crate) probe_epoch: u64,
 }
 
 impl Drop for ProbeGuard<'_> {
     fn drop(&mut self) {
         if self.armed {
-            self.store
-                .release_probe_owned_in(self.pool, self.lane, self.probe_epoch);
+            self.store.release_probe_in(self.pool, self.lane);
         }
     }
 }
@@ -147,16 +141,12 @@ impl Drop for ProbeGuard<'_> {
 /// the healthy subset, returning the chosen lane index and its acquired concurrency permit.
 /// `cands` is a `&[WeightedLane]` slice where each lane carries its configured weight.
 /// `request_ctx` provides accumulated exclusions to avoid retrying failed lanes.
-/// `affinity_key_hash` enables sticky routing as a preference (not a hard constraint). It is the
-/// PRE-COMPUTED [`stable_hash`] of the session key (header value or the body-derived `system` string),
-/// hashed once at the ingress boundary from BORROWED bytes — so the sticky preference costs no
-/// per-request `String` allocation here (the hash is the only thing this function ever needed from the
-/// key). `None` = no sticky preference (pure SWRR).
+/// `affinity_key` enables sticky routing as a preference (not a hard constraint).
 pub(crate) async fn pick_among(
     app: &Arc<App>,
     cands: &[WeightedLane],
     request_ctx: &mut RequestCtx,
-    affinity_key_hash: Option<u64>,
+    affinity_key: Option<&str>,
     pool_name: &str,
     // The routing policy's ranked preference for this request, resolved ONCE before the failover loop
     // (see the ROUTING-POLICY SEAM in `forward_with_pool`). `None` is the ZERO-COST default: pure
@@ -167,11 +157,11 @@ pub(crate) async fn pick_among(
     let t = now();
 
     // Session affinity preference - try sticky lane first if usable (in this pool's breaker view).
-    // The hash was taken with `stable_hash` (NOT DefaultHasher, whose seed is randomized per process)
-    // at the ingress boundary, so a session pins to the same lane across restarts.
-    if let Some(h) = affinity_key_hash {
+    // Uses a stable hash (NOT DefaultHasher, whose seed is randomized per process) so a session
+    // pins to the same lane across restarts.
+    if let Some(k) = affinity_key {
         if !cands.is_empty() {
-            let pos = (h as usize) % cands.len();
+            let pos = (stable_hash(k) as usize) % cands.len();
             let sticky = cands[pos].idx;
 
             // DRAIN (`weight: 0`): an operator weights a member to 0 to bleed it off before
@@ -329,10 +319,6 @@ pub(crate) async fn pick_among(
             pool: pool_name,
             lane: picked_lane_idx,
             armed: true,
-            // Capture the owner token NOW - synchronously right after winning, before any await, so the
-            // read sees exactly the probe we won (the cell is HalfOpen, single-flight; no peer can win a
-            // new one in between). A late guard-drop then only reverts THIS probe, never a successor.
-            probe_epoch: app.store.probe_epoch_in(pool_name, picked_lane_idx),
         };
 
         // Try to acquire the concurrency permit immediately.
@@ -361,11 +347,10 @@ pub(crate) async fn pick_among(
         .await
         {
             // Got a permit before the deadline — a genuine dispatch; disarm the guard (the request
-            // itself will record the success/failure that releases the probe). Only BOUNDED lanes
-            // ever park here: an unbounded lane's `try_acquire` above always succeeds.
+            // itself will record the success/failure that releases the probe).
             Ok(Ok(permit)) => {
                 probe_guard.armed = false;
-                return Some((picked_lane_idx, crate::store::Permit::Bounded(permit)));
+                return Some((picked_lane_idx, permit));
             }
             // Semaphore closed (shutdown) — no request dispatched; `probe_guard` drops and releases.
             Ok(Err(_)) => return None,

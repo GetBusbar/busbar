@@ -207,7 +207,12 @@ pub(crate) async fn forward_once(
     // cell against its own thresholds, not a one-size default. Wrapped in an `Arc` so the streaming
     // `FirstByteBody` guard can record mid-stream failures with the SAME thresholds the synchronous
     // path used (mirrors `forward_with_pool`).
-    let forward_once_cfg: std::sync::Arc<crate::store::BreakerCfg> = resolve_breaker_cfg(app, pool);
+    let forward_once_cfg: std::sync::Arc<crate::store::BreakerCfg> = std::sync::Arc::new(
+        app.pool_runtime
+            .get(pool)
+            .and_then(|r| r.breaker.clone())
+            .unwrap_or_default(),
+    );
 
     // Cross-protocol request shaping through the SINGLE shared seam (read→clear-extra→write, shim-key
     // strip, model rewrite, serialize) — the SAME function the hot `forward_with_pool` path uses, so
@@ -275,7 +280,7 @@ pub(crate) async fn forward_once(
     // degraded path no longer re-splits and allocates a second String for the canonical URI.
     let (wire_path, canonical_uri) = sign_and_wire_path_parts(&url_path);
     let signing_ctx = crate::proto::SigningContext {
-        host: &app.lanes[i].signing_host,
+        host: host_from_base(base),
         canonical_uri,
         body: &payload,
         timestamp_epoch: now(),
@@ -299,7 +304,6 @@ pub(crate) async fn forward_once(
     };
     let mut req = app
         .client
-        .get()
         .post(format!("{base}{wire_path}"))
         .headers(convert_headers(auth))
         .header(CONTENT_TYPE, egress_ct)
@@ -349,10 +353,21 @@ pub(crate) async fn forward_once(
                         emit_breaker_trip(app, pool, i);
                     }
                     app.store.release_probe_in(pool, i);
-                    crate::telemetry::upstream_failure(app, pool, i, DISPOSITION_ATTEMPT_TIMEOUT);
+                    metrics::counter!(
+                        crate::metrics::UPSTREAM_FAILURES_TOTAL,
+                        "pool" => pool.to_string(),
+                        "lane" => app.lanes[i].model.clone(),
+                        "disposition" => DISPOSITION_ATTEMPT_TIMEOUT
+                    )
+                    .increment(1);
                     // Parity with the organic path: a degraded-path attempt-timeout is a failover
                     // (the caller tries the next candidate), so count it under FAILOVERS_TOTAL too.
-                    crate::telemetry::failover(app, pool, DISPOSITION_ATTEMPT_TIMEOUT);
+                    metrics::counter!(
+                        crate::metrics::FAILOVERS_TOTAL,
+                        "pool" => pool.to_string(),
+                        "reason" => DISPOSITION_ATTEMPT_TIMEOUT
+                    )
+                    .increment(1);
                     return Err(());
                 }
             }
@@ -601,7 +616,11 @@ pub(crate) async fn forward_once(
                         );
                     }
                     if let Some(Ok(mut ir)) = decoded {
-                        record_resp_usage(&ir, &usage_sink, app.lanes.get(i));
+                        record_resp_usage(
+                            &ir,
+                            &usage_sink,
+                            Some((&app.lanes[i].model, &app.lanes[i].provider)),
+                        );
                         ir.prepare_for_ingress(ingress_protocol, now());
                         if let Some(wire) = crate::handlers::request_handler(ingress_protocol)
                             .and_then(|rh| rh.operation_handler(op.operation))
@@ -636,7 +655,11 @@ pub(crate) async fn forward_once(
                             // (every exit below is a delivered response). No FirstByteBody on this
                             // buffered path, so bill from the IR usage just decoded (Change A,
                             // mirrors the main path).
-                            record_resp_usage(&ir, &usage_sink, app.lanes.get(i));
+                            record_resp_usage(
+                                &ir,
+                                &usage_sink,
+                                Some((&app.lanes[i].model, &app.lanes[i].provider)),
+                            );
                             // OPERATION-BLIND ingress preparation (identity strip, `created`
                             // boundary signal, tool-id remap) — the SAME seam transform the main
                             // path applies; relocated verbatim into `IrResp::prepare_for_ingress`.

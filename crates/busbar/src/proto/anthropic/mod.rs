@@ -179,21 +179,16 @@ fn synth_id_with_prefix(prefix: &str) -> String {
 /// exact distribution it had when it lived in `proto::mod`.
 pub(crate) fn synth_anthropic_request_id() -> Option<String> {
     const ALPHABET: &[u8; 62] = crate::proto::BASE62_ALPHABET;
-    // 24 base62 chars (≈143 bits) of CSPRNG entropy, built from two independent 9-byte (72-bit) draws,
-    // each emitting 12 base62 digits (62^12 > 2^71, so 9 bytes fit in 12 digits) — collision-free in
-    // practice and matching the native `req_01` + 24 = 30-char shape. ONE `getrandom::fill` of 18
-    // bytes serves both halves: this runs on the streaming-response hot path (every 2xx that
-    // synthesizes an id), and `getrandom` is a syscall (or vDSO) per call, so drawing both halves in
-    // a single fill halves the per-response entropy cost with an IDENTICAL output distribution (the
-    // two 9-byte windows are still independent CSPRNG bytes, just from one draw).
+    // 24 base62 chars (≈143 bits) of CSPRNG entropy. A u128 holds at most 12 base62 digits worth of
+    // headroom safely (62^12 < 2^128), so build the 24-char token from two independent 9-byte (72-bit)
+    // draws, each emitting 12 base62 digits — collision-free in practice and matching the native
+    // `req_01` + 24 = 30-char shape.
     let mut token = [0u8; 24];
-    let mut rand = [0u8; 18];
-    getrandom::fill(&mut rand).ok()?;
     for half in 0..2 {
-        // 72 bits → 12 base62 digits.
-        let mut n = rand[half * 9..half * 9 + 9]
-            .iter()
-            .fold(0u128, |acc, &b| (acc << 8) | b as u128);
+        let mut buf = [0u8; 9];
+        getrandom::fill(&mut buf).ok()?;
+        // 72 bits → 12 base62 digits (62^12 > 2^71, so 9 bytes fit in 12 digits).
+        let mut n = buf.iter().fold(0u128, |acc, &b| (acc << 8) | b as u128);
         for slot in token[half * 12..half * 12 + 12].iter_mut().rev() {
             *slot = ALPHABET[(n % 62) as usize];
             n /= 62;
@@ -541,7 +536,6 @@ fn read_tool(tool_val: &serde_json::Value) -> Result<crate::ir::IrTool, IrError>
         description,
         input_schema,
         cache_control,
-        hosted: None,
     })
 }
 
@@ -967,18 +961,10 @@ fn write_message(msg: &crate::ir::IrMessage) -> serde_json::Value {
     };
     // REQUEST-side filter (write_message feeds write_request only; write_response/_event call
     // write_block directly, so response reasoning still surfaces). Anthropic's Messages API rejects
-    // an assistant PLAINTEXT `thinking` block that lacks a `signature` with a 400 — a signature is
-    // mandatory on the request path for a `thinking` block. A cross-protocol IR may carry such a
-    // block whose signature is None (e.g. reasoning translated from a provider that emits no
-    // signature), so drop those rather than forward an egress that the upstream will 400.
-    //
-    // A REDACTED thinking block (`redacted: true`) is a DIFFERENT wire shape: it re-emits as a
-    // native `redacted_thinking` block carrying opaque `data` bytes and NO `signature` — Anthropic
-    // accepts it without one (the signature requirement is specific to plaintext `thinking`). So the
-    // `redacted: false` guard below is load-bearing: WITHOUT it, every redacted block (which always
-    // has `signature: None`) is silently dropped here before `write_block` can re-emit it, losing
-    // the encrypted reasoning that lets a multi-turn extended-thinking conversation replay. Only
-    // drop UNSIGNED PLAINTEXT thinking. Other block types pass through.
+    // an assistant `thinking` block that lacks a `signature` with a 400 — a signature is mandatory
+    // on the request path. A cross-protocol IR may carry a Thinking block whose signature is None
+    // (e.g. reasoning translated from a provider that emits no signature), so drop those blocks here
+    // rather than forward an egress that the upstream will 400. Other block types pass through.
     let mut dropped_unsigned_thinking = 0usize;
     let mut dropped_file_id_image = 0usize;
     let blocks: Vec<&crate::ir::IrBlock> = msg
@@ -986,9 +972,7 @@ fn write_message(msg: &crate::ir::IrMessage) -> serde_json::Value {
         .iter()
         .filter(|block| {
             if let crate::ir::IrBlock::Thinking {
-                signature: None,
-                redacted: false,
-                ..
+                signature: None, ..
             } = block
             {
                 dropped_unsigned_thinking += 1;

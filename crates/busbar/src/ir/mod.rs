@@ -620,21 +620,6 @@ pub(crate) struct IrTool {
     /// breakpoint was being dropped on every hop. First-class so it survives the seam. Only the
     /// Anthropic reader populates it / writer emits it; other protocols leave it `None`.
     pub(crate) cache_control: Option<CacheControl>,
-    /// HOSTED (built-in) tool passthrough spec (Finding 5). The OpenAI Responses API `tools` array
-    /// mixes CUSTOM function tools with provider-HOSTED tools discriminated purely by a top-level
-    /// `type` (`web_search`, `file_search`, `code_interpreter`, `computer_use_preview`, `mcp`, ...).
-    /// A hosted tool carries NO `name`/`parameters`, so parsing it as a function tool yields an empty
-    /// `{"type":"function","name":""}` that a Responses backend 400s on. When set, this holds the RAW
-    /// hosted-tool JSON object verbatim; the Responses writer re-emits it unchanged (a same-protocol
-    /// passthrough) and skips the function-tool projection. `None` for an ordinary function tool
-    /// (`name`/`input_schema` carry it). Only the Responses reader populates it and only the Responses
-    /// writer honors it. Every OTHER egress writer is `hosted`-BLIND: it projects an `IrTool` as a
-    /// function tool keyed on `name`, so a hosted tool (whose `name` is empty) would be emitted as a
-    /// MALFORMED empty-name `{"type":"function","name":""}` the backend rejects with a 400 - NOT
-    /// silently ignored. To prevent that, `IrReq::prepare_for_egress` DROPS every hosted tool on the
-    /// cross-protocol seam (drop-with-warn), so a hosted tool only ever reaches the Responses writer
-    /// (same-protocol Responses->Responses, where the body is forwarded verbatim anyway).
-    pub(crate) hosted: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -660,9 +645,6 @@ impl IrUsage {
     /// the Anthropic/Bedrock family (whose cache reads/writes are separate from input). All adds are
     /// `saturating_add`: the operands are UPSTREAM-CONTROLLED counts, so an unchecked `+` could
     /// panic in debug / wrap in release.
-    // Production billing now ledgers the TIER SPLIT (`proxy::usage::tier_tokens`); this total
-    // survives as the normalization contract's test surface (stream translate/fanout tests).
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn billable_tokens(&self) -> u64 {
         self.input_tokens
             .saturating_add(self.cache_read_input_tokens.unwrap_or(0))

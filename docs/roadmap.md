@@ -77,61 +77,17 @@ the next **auth adapters** on a seam that already exists.
   benches it for the others. Concurrency and `max_requests` budget stay shared
   (one upstream); a successful health probe recovers the lane in every pool.
 
-## Shipped in 1.5
-
-- **The cost model: tokens are the ledger, dollars are derived.** Enforcement accumulates a
-  per-(bucket, window, model, tier) token ledger; every spend figure is computed at read time from
-  that ledger and the top-level `rate_card` (per-model, per-tier micro-unit rates in an abstract
-  cost unit). Nothing dollar-shaped is stored, so correcting a rate is a config edit and reload,
-  not a re-billing. The old flat per-1k-token price is gone; `rate_card` is the only token-pricing
-  mechanism, with `per_request_fee` as a separate flat per-call fee.
-- **The `groups:` limit tree.** Nestable enforcement buckets — the ONE place limits live (keys are
-  pure auth and carry none). A key binds one with the mint field `group`; admission walks the whole
-  parent chain (any depth — the arbitrary 8-level ceiling is gone; the cycle check bounds the walk),
-  ANDs every limit, and the 429 names the exhausted bucket. Mint-time key `labels` ride onto the
-  Prometheus series so external dashboards break spend down by any operator dimension. A group may
-  carry a `child_default` limit template: the first auto-provisioned child under a group inherits
-  those limits (nearest-ancestor wins), so a org/team/user hierarchy stamps per-user budgets
-  automatically.
-- **Pool-qualified limits and `on_exhaust: downgrade`.** A windowed limit may carry `pool: <name>`
-  to account per `(group, pool)` instead of group-wide: one team's expensive-tier budget is
-  independent from their cheap-tier budget. A pool-scoped `budget` limit may also declare
-  `on_exhaust: downgrade, downgrade_to: <pool>` — when it runs dry, the request is re-admitted
-  through the cheaper pool instead of refused (the caller's expensive calls get cheaper, not
-  blocked).
-- **Runtime-mutable groups on the Admin API.** `GET/POST/PUT/PATCH/DELETE /api/v1/admin/groups`
-  and `GET /groups/{name}/usage` (per-(window, pool) usage vs. caps, repriced at read time) and
-  `GET /keys?group=<name>` (the keys bound to a group). A write is validate-at-the-door, then live
-  on the next request; the ledger survives the swap. `PATCH` is the ergonomic "raise Alice's
-  budget" and "freeze a team" verb.
-- **Self-service mint: auto-provision + the `mint` scope.** `POST /keys` accepts an optional
-  `parent`: when `group` names a leaf that does not yet exist, it is auto-provisioned under
-  `parent` (limits from `child_default`). A new delegated `mint` admin scope — sibling of
-  `hooks-register`, NOT a ladder rung above it — lets a self-service portal mint keys without
-  god-mode `full`. `limits.max_keys_per_principal` caps keys per group (per-user anti-sprawl).
-- **Per-section overlay reset.** `DELETE /api/v1/admin/overlay/{section}` (section `groups` |
-  `hooks`) discards all overlay mutations for that section and reverts it to base `config.yaml`
-  truth, leaving the other section's runtime mutations untouched.
-- **Enforcement is always on.** There is no `governance:` block or enabled switch. Enforcement is
-  always present and simply inert until keys are minted, so a default deploy behaves as "off" did
-  with the same RAM. Durability is a choice via the top-level `store:` block (`memory` default;
-  durable backends load as signed plugins).
-- **Dynamic plugins.** Store, auth, and hook backends can load from a signed `.tar.gz` at boot over
-  a versioned C ABI, gated by the `plugins.*` block (off by default, ed25519 signature verification
-  against the embedded release key, explicit opt-ins for unsigned or third-party). The default
-  binary is leaner for it: the SQLite store now ships as a droppable plugin rather than compiled in.
-
 ## Post-1.0 roadmap
 
 ### Auth adapters for enterprise backends
 These reuse existing protocols (no new wire format) gated behind an auth shim: the
 same pattern Bedrock established with SigV4 and Azure OpenAI (shipped in 0.14):
 
-- **Google Vertex AI**: **shipped in 1.4**, both **Gemini-on-Vertex** (`gemini`
+- **Google Vertex AI**: **shipped in 1.4** — both **Gemini-on-Vertex** (`gemini`
   protocol) and **Claude-on-Vertex** (`anthropic` protocol), at a project/location-
   scoped URL (`path_base`) authed with the new `auth: jwt-bearer` OAuth adapter (a
   short-lived bearer minted from a service-account key via the RFC 7523 JWT-bearer
-  grant, and auto-refreshed). Each is a `providers.yaml` entry, no new protocol.
+  grant, and auto-refreshed). Each is a `providers.yaml` entry — no new protocol.
   Claude-on-Vertex additionally moves the model into the URL (`:rawPredict`) and
   adds the `anthropic_version` body field, both handled automatically.
 - **Databricks Foundation Model APIs**: `openai` protocol with bearer auth, but
@@ -149,8 +105,4 @@ that dies inside that window can still be rerouted invisibly. Costs up to *T* ms
 added TTFT, so it will be opt-in per pool and default to off (today's behavior).
 Not yet built; no config surface exists for it.
 
-The SemVer-stable contract is the RUNTIME: the data-plane HTTP surface and the six wire protocols do
-not break without a major-version bump. The config format is an operator deployment artifact outside
-that freeze: it may change between releases, always with a migration path (`busbar --migrate-config`)
-and a loud fail-closed boot on an outdated config. The admin API carries its own contract version
-(`/api/v1/admin`).
+APIs and config are stable at 1.0.0 under Semantic Versioning, no breaking change without a major-version bump.

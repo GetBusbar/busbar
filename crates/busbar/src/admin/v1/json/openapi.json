@@ -343,43 +343,6 @@
         ],
         "type": "object"
       },
-      "ConfigSettingsView": {
-        "description": "`GET`/`PUT /config/settings` (1.5.0 full-config coverage) — the API-settable single-value config\noverlay (`root` section) and, on a PUT, the apply metadata. `settings` is the CURRENT effective\nroot override (the merge of prior overlay + this request), overlay-persisted so it survives a\nrestart. `reload_to_apply` names the fields whose new value is DURABLY STORED but not yet LIVE:\nthe process-level binds (`listen`/`admin_listen` socket, `tls`/`admin_tls` bind, `admin_insecure`)\nare read once at process start, and the durable `store` backend is reused across a hot reload —\nnone can hot-swap, so they take effect on the next RESTART. Everything else\n(`rate_card`/`per_request_fee`/`security`/`limits`/`observability`/`advanced`/`metrics`/`health`/\n`routing`) is LIVE on the swap.",
-        "properties": {
-          "applied": {
-            "description": "`true` on a PUT that stored + swapped; `false` on a GET (a pure read).",
-            "type": "boolean"
-          },
-          "config_version": {
-            "format": "uint64",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "note": {
-            "description": "A human note describing the live-vs-reload split (absent on a GET).",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "reload_to_apply": {
-            "description": "Fields that were stored but are RELOAD-TO-APPLY (a `POST /config/reload` or restart makes them\nlive). Empty when the PUT touched only live-swappable fields (or on a GET).",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "settings": {
-            "description": "The current effective root-section overlay (only the fields the operator has set; base\n`config.yaml` stands for the rest). An arbitrary JSON object (the `RootSettings` projection)."
-          }
-        },
-        "required": [
-          "applied",
-          "config_version",
-          "settings"
-        ],
-        "type": "object"
-      },
       "ConfigValidateView": {
         "description": "The result of `POST /api/v1/admin/config/validate` — a DRY-RUN: does a proposed config resolve +\nvalidate, WITHOUT applying anything. `ok` is the verdict; `errors` lists every structural/resolution\nfailure at once (empty when `ok`). A well-formed request always returns 200 with this view (a valid\nrequest that describes an INVALID config is `ok: false`, not an HTTP error); only a MALFORMED request\nbody is an `invalid_request`. Env-var interpolation is out of scope — this checks structure and\ncross-reference resolution, not runtime secret presence.",
         "properties": {
@@ -502,10 +465,7 @@
             "items": {
               "type": "string"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
           },
           "aws_access_key_id": {
             "description": "AWS AccessKeyId (present only when `issue_aws_credential` was set). Not secret.",
@@ -521,6 +481,9 @@
               "null"
             ]
           },
+          "budget_period": {
+            "type": "string"
+          },
           "created_at": {
             "format": "uint64",
             "minimum": 0,
@@ -529,37 +492,50 @@
           "enabled": {
             "type": "boolean"
           },
-          "group": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
           "id": {
             "type": "string"
           },
-          "labels": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "type": "object"
+          "max_budget_cents": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "name": {
             "type": "string"
           },
+          "rpm_limit": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "secret": {
             "description": "The bearer secret — shown EXACTLY once, never returned by any read.",
             "type": "string"
+          },
+          "tpm_limit": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
           }
         },
         "required": [
           "id",
           "name",
           "allowed_pools",
-          "group",
+          "max_budget_cents",
+          "budget_period",
+          "rpm_limit",
+          "tpm_limit",
           "enabled",
           "created_at",
-          "labels",
           "secret"
         ],
         "type": "object"
@@ -650,153 +626,6 @@
         },
         "required": [
           "error"
-        ],
-        "type": "object"
-      },
-      "GroupBucketUsageView": {
-        "description": "One `(window, pool?)` enforcement bucket's usage vs caps inside a [`GroupUsageView`].",
-        "properties": {
-          "budget_cap": {
-            "format": "int64",
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "budget_remaining_cents": {
-            "description": "Cents left under `budget_cap` (floored at 0); absent when no budget cap is set.",
-            "format": "int64",
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "pool": {
-            "description": "The pool scope for a pool-qualified bucket; absent for a group-wide bucket.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "requests": {
-            "description": "Requests admitted this window (the requests-limit truth: failures are not refunded).",
-            "format": "uint64",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "requests_cap": {
-            "description": "The bucket's caps, when configured (absent = uncapped on that metric).",
-            "format": "uint64",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "spend_cents": {
-            "description": "Spend derived at read time (tokens x current rate card), abstract cents.",
-            "format": "int64",
-            "type": "integer"
-          },
-          "tokens": {
-            "description": "Total tokens ledgered this window (all tiers).",
-            "format": "uint64",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "tokens_cap": {
-            "format": "uint64",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "window": {
-            "description": "The accounting window: `minute` | `hour` | `day` | `month` | `total`.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "window",
-          "requests",
-          "tokens",
-          "spend_cents"
-        ],
-        "type": "object"
-      },
-      "GroupUsageView": {
-        "description": "`GET /groups/{name}/usage` — one group's DERIVED current-window usage, one row per\nenforcement bucket (each `(window, pool?)` its limits materialise), against that bucket's\ncaps. The §6d dashboard read: spend/tokens/requests per tier vs the budgets, straight off the\nledger x the CURRENT rate card (reprice-on-read, nothing stored). The customer's self-service\ntool consumes this per group (`user:<sub>` leaf = one person's view) and re-scopes it.",
-        "properties": {
-          "as_of": {
-            "description": "Epoch seconds the read was taken at (the windows below are current AS OF this instant).",
-            "format": "uint64",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "buckets": {
-            "description": "One row per enforcement bucket, in the group's resolved bucket order. Empty for a group\nwith only a `concurrent` limit (or none) — there is no windowed ledger to read.",
-            "items": {
-              "$ref": "#/components/schemas/GroupBucketUsageView"
-            },
-            "type": "array"
-          },
-          "enabled": {
-            "description": "`false` = the group is FROZEN (`enabled: false`): every request through it rejects.",
-            "type": "boolean"
-          },
-          "group": {
-            "description": "The group name (echoed from the path).",
-            "type": "string"
-          }
-        },
-        "required": [
-          "group",
-          "enabled",
-          "buckets",
-          "as_of"
-        ],
-        "type": "object"
-      },
-      "GroupView": {
-        "description": "A group definition in the registry read (`GET /api/v1/admin/groups`,\n`GET /api/v1/admin/groups/{name}`) — the limit-tree read surface. Projects the `groups:` config\nentry faithfully (parent chain, enabled freeze flag, the ordered limits, the `child_default`\nbudget template for auto-provisioned children), never a secret. This is the READ shape; the\nWRITE verbs accept a `GroupCfg` verbatim (paste a config.yaml group block). Additive-only.",
-        "properties": {
-          "child_default": {
-            "description": "The limit template stamped onto children auto-provisioned under this group (e.g. a\n`user:<sub>` leaf on first self-mint). Skipped from the body when the group sets none.",
-            "items": {
-              "$ref": "#/components/schemas/LimitView"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          },
-          "enabled": {
-            "description": "`false` FREEZES the group (every request charging through it is rejected; history kept).",
-            "type": "boolean"
-          },
-          "limits": {
-            "description": "The group's own limits, enforced together (AND). Order preserved from config.",
-            "items": {
-              "$ref": "#/components/schemas/LimitView"
-            },
-            "type": "array"
-          },
-          "name": {
-            "type": "string"
-          },
-          "parent": {
-            "description": "The parent group whose limits this one is ANDed under (the enforcement chain). `None` = a\nroot group. Skipped from the body when absent.",
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "name",
-          "enabled",
-          "limits"
         ],
         "type": "object"
       },
@@ -1095,7 +924,7 @@
         "type": "object"
       },
       "KeyMeteringView": {
-        "description": "`GET /keys/{id}/usage`: the key's all-time attribution counters (a 1.5.0 key bucket accrues in\nthe `total` window; limits live on the bound group's own windows) plus the fraction of the\ntightest `requests`/`tokens` limit across the group chain remaining (`null` = no such limit).",
+        "description": "`GET /keys/{id}/usage` — the current budget-window counters for one key, plus the fraction of the\ntightest RPM/TPM cap remaining (`null` = uncapped). `budget_period`/`window_start` are `null`\nwhen the key record could not be read.",
         "properties": {
           "as_of": {
             "format": "uint64",
@@ -1103,11 +932,6 @@
             "type": "integer"
           },
           "budget_period": {
-            "description": "Always `\"total\"` (the key attribution window).",
-            "type": "string"
-          },
-          "group": {
-            "description": "The bound `groups:` entry (`null` = unlimited key).",
             "type": [
               "string",
               "null"
@@ -1138,10 +962,12 @@
             "type": "integer"
           },
           "window_start": {
-            "description": "Always `0` (the all-time window start).",
             "format": "uint64",
             "minimum": 0,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           }
         },
         "required": [
@@ -1149,7 +975,6 @@
           "budget_period",
           "window_start",
           "as_of",
-          "group",
           "spend_cents",
           "tokens",
           "requests",
@@ -1198,7 +1023,7 @@
             "type": "integer"
           },
           "spend_micros": {
-            "description": "Busbar's derived cost estimate in MICRO-units of the ABSTRACT cost unit (1e-6 unit -\ninteger math, sub-cent precise, no float drift), recomputed at read time from the raw token\nsplit x the operator's CURRENT per-model rate card. Busbar attaches no currency - the rate\ncard's numbers are whatever unit the operator priced in; display/denomination is entirely\nthe consumer's concern. A consumer with its own per-model catalog recomputes from the raw\ntoken split instead.",
+            "description": "Busbar's derived cost estimate in MICRO-units of `currency` (1e-6 USD — integer math,\nsub-cent precise, no float drift), from the operator's configured global prices. A consumer\nwith its own per-model catalog recomputes from the raw token split instead.",
             "format": "int64",
             "type": "integer"
           },
@@ -1237,16 +1062,16 @@
         "type": "object"
       },
       "KeyView": {
-        "description": "Virtual-key metadata — the `key_meta()` shape returned by `GET /keys/{id}`, `PATCH /keys/{id}`,\nand as each item of `GET /keys`. Never the secret or its hash. 1.5.0: keys are PURE AUTH, no\ninline limits; `allowed_pools` is `null` = all pools, `[]` = no pools (C6); `group` names the\nbound `groups:` entry (`null` = unlimited).",
+        "description": "Virtual-key metadata — the `key_meta()` shape returned by `GET /keys/{id}`, `PATCH /keys/{id}`,\nand as each item of `GET /keys`. Never the secret or its hash.",
         "properties": {
           "allowed_pools": {
             "items": {
               "type": "string"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
+          },
+          "budget_period": {
+            "type": "string"
           },
           "created_at": {
             "format": "uint64",
@@ -1256,81 +1081,46 @@
           "enabled": {
             "type": "boolean"
           },
-          "group": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
           "id": {
             "type": "string"
           },
-          "labels": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "type": "object"
+          "max_budget_cents": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "name": {
             "type": "string"
+          },
+          "rpm_limit": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "tpm_limit": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
           }
         },
         "required": [
           "id",
           "name",
           "allowed_pools",
-          "group",
+          "max_budget_cents",
+          "budget_period",
+          "rpm_limit",
+          "tpm_limit",
           "enabled",
-          "created_at",
-          "labels"
-        ],
-        "type": "object"
-      },
-      "LimitView": {
-        "description": "One limit inside a `GroupView`: an explicit `{ metric, amount, per, pool }` projection of a\nconfig `LimitCfg`. The config file's compact `{ budget: 3000, per: month }` form is\ndeserialize-only sugar; the read API projects it explicitly so a consumer never has to know\nthe metric is the map key. `per` is `None` only for `concurrent` (an instantaneous gauge, no\nwindow); `pool` is present only on a pool-scoped limit.",
-        "properties": {
-          "amount": {
-            "description": "The cap amount (requests/tokens/cents, or the in-flight gauge for `concurrent`).",
-            "format": "uint64",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "downgrade_to": {
-            "description": "Where `on_exhaust: downgrade` sends exhausted traffic. Present iff downgrading.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "metric": {
-            "description": "One of `requests` | `tokens` | `budget` | `concurrent`.",
-            "type": "string"
-          },
-          "on_exhaust": {
-            "description": "The budget-exhaustion behavior: `block` or `downgrade`. Absent = block (the default).",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "per": {
-            "description": "The accounting window: `minute` | `hour` | `day` | `month` | `total`. Absent for `concurrent`.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "pool": {
-            "description": "The pool scope: present when the limit carries `pool: <name>` (it accounts and enforces\nonly that pool's traffic, per `(group, pool)`); absent for a group-wide limit.",
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "metric",
-          "amount"
+          "created_at"
         ],
         "type": "object"
       },
@@ -1349,7 +1139,7 @@
             "type": "integer"
           },
           "spend_micros": {
-            "description": "Busbar's derived cost estimate in MICRO-units of the ABSTRACT cost unit (1e-6 unit -\ninteger math, sub-cent precise, no float drift), recomputed at read time from the raw token\nsplit x the operator's CURRENT per-model rate card. Busbar attaches no currency - the rate\ncard's numbers are whatever unit the operator priced in; display/denomination is entirely\nthe consumer's concern. A consumer with its own per-model catalog recomputes from the raw\ntoken split instead.",
+            "description": "Busbar's derived cost estimate in MICRO-units of `currency` (1e-6 USD — integer math,\nsub-cent precise, no float drift), from the operator's configured global prices. A consumer\nwith its own per-model catalog recomputes from the raw token split instead.",
             "format": "int64",
             "type": "integer"
           },
@@ -1400,52 +1190,6 @@
         "required": [
           "model",
           "provider"
-        ],
-        "type": "object"
-      },
-      "OverlayResetView": {
-        "description": "`DELETE /overlay/{section}` — per-section overlay reset result: the section reverted, the\nresulting config version, and whether anything changed (`false` = the section had no overlay state,\nan idempotent no-op).",
-        "properties": {
-          "changed": {
-            "description": "`true` when the reset discarded overlay mutations; `false` for an already-empty section.",
-            "type": "boolean"
-          },
-          "config_version": {
-            "format": "uint64",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "reset": {
-            "description": "The section that was reset (`groups` | `hooks`).",
-            "type": "string"
-          }
-        },
-        "required": [
-          "reset",
-          "config_version",
-          "changed"
-        ],
-        "type": "object"
-      },
-      "Page_GroupView": {
-        "description": "A cursor-paginated list envelope. `items` is this page; `next_cursor` is `Some` when more remain\n(design-admin-api-v1 §0.4). Generic over the item view so every list endpoint shares one shape.",
-        "properties": {
-          "items": {
-            "items": {
-              "$ref": "#/components/schemas/GroupView"
-            },
-            "type": "array"
-          },
-          "next_cursor": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "items",
-          "next_cursor"
         ],
         "type": "object"
       },
@@ -1559,118 +1303,8 @@
         ],
         "type": "object"
       },
-      "PluginInstallView": {
-        "description": "The result of installing a dynamic-library store plugin (`POST /api/v1/admin/plugins`). The\nengine RE-VERIFIED the uploaded bytes against the running trust posture (the client is never\ntrusted), validated the ABI handshake, and atomically wrote the library (+ its manifest sidecar)\ninto the plugins directory. `active` takes effect on the next store (re)load — a store change\napplies on restart / `store.module` apply, not as a hot swap (design: store install is\nboot-time/config-apply). Additive-only; never a secret.",
-        "properties": {
-          "file": {
-            "description": "The library FILENAME written into the plugins directory (the handle `DELETE` takes).",
-            "type": "string"
-          },
-          "interface_version": {
-            "description": "The store C-ABI (`interface_version`) the engine validated the library against.",
-            "format": "uint32",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "name": {
-            "description": "The plugin name from its manifest (or the filename when unsigned).",
-            "type": "string"
-          },
-          "note": {
-            "description": "A human note: this install is durable in the folder but takes effect on the next store (re)load.",
-            "type": "string"
-          },
-          "publisher": {
-            "description": "The manifest publisher, when signed.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "trust": {
-            "description": "The server-side trust verdict from the RE-VERIFY: `\"trusted\"` | `\"unverified\"`. (A `\"rejected\"`\nverdict is an error, never a success body.)",
-            "type": "string"
-          },
-          "version": {
-            "description": "The manifest version, when the upload carried a signed manifest.",
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "file",
-          "name",
-          "interface_version",
-          "trust",
-          "note"
-        ],
-        "type": "object"
-      },
-      "PluginReloadView": {
-        "description": "The result of re-scanning the plugins directory (`POST /api/v1/admin/plugins/reload`): the\ncurrent dynamic-library inventory, each with its ABI-validity. Reconciles the reported set to the\nfolder (the folder is the source of truth), exactly as `config/reload` reconciles config to disk.\nA store change still applies on the next store (re)load, not as a hot swap.",
-        "properties": {
-          "note": {
-            "description": "A human note on when a store change actually takes effect.",
-            "type": "string"
-          },
-          "plugins": {
-            "description": "The dynamic-library plugins now present in the directory, sorted by filename.",
-            "items": {
-              "$ref": "#/components/schemas/PluginView"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "plugins",
-          "note"
-        ],
-        "type": "object"
-      },
-      "PluginRollbackView": {
-        "description": "The result of an EXPLICIT plugin ROLLBACK (`POST /api/v1/admin/plugins/rollback`, 1.5.0\nrollback-friendly versioning): the operator deliberately pinned a plugin DOWN to a prior version and\nthe engine hot-swapped to that artifact. The pin is persisted (survives restart) and the trust\nfloor was lowered to EXACTLY the pinned version for THIS plugin — a lower artifact still cannot\nload, and an automatic/silent replay of an old artifact is still refused (only this explicit,\naudited action lowered the floor). Additive-only; never a secret.",
-        "properties": {
-          "config_version": {
-            "description": "The now-live config version after the hot swap (the ETag the response also carries).",
-            "format": "uint64",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "file": {
-            "description": "The library FILENAME the rollback selected in the plugins directory.",
-            "type": "string"
-          },
-          "name": {
-            "description": "The plugin's canonical manifest name that was pinned.",
-            "type": "string"
-          },
-          "note": {
-            "description": "A human note on the rollback's semantics + durability.",
-            "type": "string"
-          },
-          "publisher": {
-            "description": "The manifest publisher of the pinned artifact (`busbar` = first-party).",
-            "type": "string"
-          },
-          "version": {
-            "description": "The version the plugin was pinned DOWN to (now serving), from the target artifact's manifest.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "name",
-          "file",
-          "version",
-          "publisher",
-          "config_version",
-          "note"
-        ],
-        "type": "object"
-      },
       "PluginView": {
-        "description": "One plugin in the plugin catalog (`GET /api/v1/admin/plugins?type=`). A plugin is either\nCOMPILED-IN (baked into the binary, feature-gated — provably removable via `--no-default-features`),\nEXTERNAL (registered at runtime over socket/webhook), or a DYNAMIC-LIBRARY plugin (a loadable\n`.so`/`.dll`/`.dylib` in the plugins directory, loaded over the store C ABI). `active` is\n`Some(true/false)` where activation is tracked (auth modules: in the chain?; external hooks:\nconfigured = true; dynamic store: the configured `store.module`) and `None` where it is a\nper-pool concern not summarized here (compiled-in ranking policies). Additive-only.",
+        "description": "One plugin in the plugin catalog (`GET /api/v1/admin/plugins?type=`). A plugin is either\nCOMPILED-IN (baked into the binary, feature-gated — provably removable via `--no-default-features`)\nor EXTERNAL (registered at runtime over socket/webhook). `active` is `Some(true/false)` where\nactivation is tracked (auth modules: in the chain?; external hooks: configured = true) and `None`\nwhere it is a per-pool concern not summarized here (compiled-in ranking policies). Additive-only.",
         "properties": {
           "active": {
             "description": "Whether the plugin is currently active, where tracked; `None` when activation is not summarized\nat this level.",
@@ -1679,67 +1313,23 @@
               "null"
             ]
           },
-          "error": {
-            "description": "Why a dynamic-library plugin did not validate (`valid: false`) — a short, secret-free reason.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "interface_version": {
-            "description": "The store C-ABI (`interface_version`) the manifest declares (dynamic-library plugins with a\nmanifest). Operator-facing name for the \"ABI\" the engine speaks.",
-            "format": "uint32",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
           "loader": {
-            "description": "`\"compiled-in\"`, `\"external\"`, or `\"dynamic-library\"`.",
+            "description": "`\"compiled-in\"` or `\"external\"`.",
             "type": "string"
           },
           "name": {
             "type": "string"
           },
-          "publisher": {
-            "description": "The manifest's declared publisher (dynamic-library plugins with a manifest).",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
           "target": {
-            "description": "For an external plugin, its transport target (socket path / webhook URL); for a dynamic-library\nplugin, its library FILENAME in the plugins directory (the handle `DELETE` takes). `None` for\ncompiled-in.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "trust": {
-            "description": "The server-side trust verdict for a dynamic-library plugin, re-evaluated against the running\n`plugins.trust` posture: `\"trusted\"` (signed by an allowlisted publisher), `\"unverified\"`\n(loaded but not verified — the posture permits it), or `\"rejected\"` (the `halt` posture would\nrefuse it). `None` for compiled-in/external.",
+            "description": "For an external plugin, its transport target (socket path / webhook URL). `None` for compiled-in.",
             "type": [
               "string",
               "null"
             ]
           },
           "type": {
-            "description": "`\"auth\"`, `\"hooks\"`, or `\"store\"` — the plugin TYPE (each a distinct engine contract).",
+            "description": "`\"auth\"` or `\"hooks\"` — the plugin TYPE (each a distinct engine contract).",
             "type": "string"
-          },
-          "valid": {
-            "description": "For a dynamic-library plugin: whether the library validated as a busbar store plugin the engine\ncan load (ABI handshake). `None` for compiled-in/external.",
-            "type": [
-              "boolean",
-              "null"
-            ]
-          },
-          "version": {
-            "description": "The plugin's semantic version, from its signed sidecar manifest (dynamic-library plugins only).\n`None` for compiled-in/external, or a dynamic plugin with no/invalid manifest.",
-            "type": [
-              "string",
-              "null"
-            ]
           }
         },
         "required": [
@@ -1919,10 +1509,10 @@
             "items": {
               "type": "string"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "type": "array"
+          },
+          "budget_period": {
+            "type": "string"
           },
           "created_at": {
             "format": "uint64",
@@ -1932,37 +1522,50 @@
           "enabled": {
             "type": "boolean"
           },
-          "group": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
           "id": {
             "type": "string"
           },
-          "labels": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "type": "object"
+          "max_budget_cents": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "name": {
             "type": "string"
           },
+          "rpm_limit": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "secret": {
             "description": "The fresh bearer secret — shown EXACTLY once.",
             "type": "string"
+          },
+          "tpm_limit": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
           }
         },
         "required": [
           "id",
           "name",
           "allowed_pools",
-          "group",
+          "max_budget_cents",
+          "budget_period",
+          "rpm_limit",
+          "tpm_limit",
           "enabled",
           "created_at",
-          "labels",
           "secret"
         ],
         "type": "object"
@@ -2002,7 +1605,7 @@
             "type": "integer"
           },
           "spend_micros": {
-            "description": "Busbar's derived cost estimate in MICRO-units of the ABSTRACT cost unit (1e-6 unit -\ninteger math, sub-cent precise, no float drift), recomputed at read time from the raw token\nsplit x the operator's CURRENT per-model rate card. Busbar attaches no currency - the rate\ncard's numbers are whatever unit the operator priced in; display/denomination is entirely\nthe consumer's concern. A consumer with its own per-model catalog recomputes from the raw\ntoken split instead.",
+            "description": "Busbar's derived cost estimate in MICRO-units of `currency` (1e-6 USD — integer math,\nsub-cent precise, no float drift), from the operator's configured global prices. A consumer\nwith its own per-model catalog recomputes from the raw token split instead.",
             "format": "int64",
             "type": "integer"
           },
@@ -2039,6 +1642,7 @@
         "type": "object"
       },
       "UsageView": {
+        "description": "Fleet METERING read (`GET /api/v1/admin/usage`) — the FinOps surface. Design principle:\nbusbar exposes the RAW INPUTS of cost, not just its own number. Every row carries the full token\nSPLIT (input / output / cache-read / cache-creation — each prices differently), so a consumer\nwith its own (special/negotiated) price catalog reconstructs cost independently; `spend_micros`\nis busbar's DERIVED estimate from the operator's configured global prices, computed at read time\n(raw counts are what's stored — a price change re-prices history consistently).\n\nTime base — THE PINNED SHAPE RULING (external review R3 #1): a usage response is ALWAYS exactly\nONE fixed UTC-day metering bucket (`window`). `?window=<bucket-start-epoch>` selects a PAST\nbucket (default: the current one); a multi-window series is the CLIENT fetching N buckets — or\na future additive `?from=&to=` returning an ARRAY OF THIS SAME PER-BUCKET SHAPE, never a\ndifferently-shaped merged view. Billing periods aggregate client-side from day buckets (raw\ncounts are stored, so the math is exact). Deliberately decoupled from per-key budget windows so\nper-model aggregation across keys is well-defined; budget ENFORCEMENT state lives on\n`GET /keys/{id}/usage`, not here. Empty aggregations when governance is disabled. No secrets —\nkey ids/names only, never a token.\n\nLEDGER RULE (one loud contract sentence): `spend_micros` is a MUTABLE ESTIMATE — derived at\nread time from the operator's CURRENT prices, so a price change re-prices history. Never store\nit as a ledger charge; bill from the raw token split.",
         "properties": {
           "as_of": {
             "description": "Freshness marker: the epoch this read was computed at (counters accumulate live).",
@@ -2065,7 +1669,7 @@
             "type": "array"
           },
           "currency": {
-            "description": "The denomination of every `spend_micros` in this response (`USAGE_CURRENCY`, currently\n`\"USD\"`). A single-const source of truth so removal is one line. Emitted only here.",
+            "description": "The denomination of every `spend_micros` in this response (`USAGE_CURRENCY`).",
             "type": "string"
           },
           "others": {
@@ -2135,7 +1739,7 @@
   "info": {
     "description": "The frozen, additive-only /api/v1/admin surface. Errors use the stable envelope {\"error\":{\"code\",\"message\"}}; tooling branches on `code`.",
     "title": "Busbar Admin API",
-    "version": "1.5.0"
+    "version": "1.4.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -2846,137 +2450,6 @@
         "x-busbar-required-scope": "full"
       }
     },
-    "/api/v1/admin/config/settings": {
-      "get": {
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ConfigSettingsView"
-                }
-              }
-            },
-            "description": "`{applied:false, config_version, settings}` (settings = the current root overrides)"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Missing/invalid admin credential"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)"
-          }
-        },
-        "security": [
-          {
-            "adminToken": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "summary": "Read the API-set single-value config overlay (root section: listen/tls/rate_card/store/security/limits/…) — only the operator's overrides; base config.yaml stands for the rest",
-        "x-busbar-required-scope": "read-only"
-      },
-      "put": {
-        "parameters": [
-          {
-            "description": "Optimistic concurrency: the resource's ETag from a prior read (or the ETag returned by the previous mutation). Stale = 409 `version_conflict` (re-read and retry), nothing changes; absent or `*` = unconditional.",
-            "in": "header",
-            "name": "If-Match",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ConfigSettingsView"
-                }
-              }
-            },
-            "description": "`{applied:true, config_version, settings, reload_to_apply, note}`"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Invalid config after the merge, unknown field, or ephemeral busbar with no disk base (error code `invalid_request`); nothing changed"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Missing/invalid admin credential (error code `unauthorized`)"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Authenticated but under-scoped: requires `full` (error code `forbidden`)"
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Stale `If-Match` (error code `version_conflict` — re-read and retry)"
-          },
-          "429": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
-          }
-        },
-        "security": [
-          {
-            "adminToken": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "summary": "SET any single-value config section durably (1.5.0 full-config coverage): partial RootSettings merged onto the overlay, re-resolved + validated, swapped in. rate_card/per_request_fee/security/limits/… go live; listen/tls/admin_listen/admin_tls/admin_insecure/store are stored + flagged restart-to-apply (bound once at start / store reused across a hot reload). NEVER writes config.yaml",
-        "x-busbar-required-scope": "full"
-      }
-    },
     "/api/v1/admin/config/validate": {
       "post": {
         "responses": {
@@ -3172,533 +2645,6 @@
           }
         ],
         "summary": "One retained config version, with its hook-surface snapshot",
-        "x-busbar-required-scope": "read-only"
-      }
-    },
-    "/api/v1/admin/groups": {
-      "get": {
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Page_GroupView"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Missing/invalid admin credential"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)"
-          }
-        },
-        "security": [
-          {
-            "adminToken": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "summary": "Group registry — the limit tree (parent chain, limits, child_default budget template)",
-        "x-busbar-required-scope": "read-only"
-      },
-      "post": {
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/GroupView"
-                }
-              }
-            },
-            "description": "Replaced — the name existed (body is the group definition)"
-          },
-          "201": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/GroupView"
-                }
-              }
-            },
-            "description": "Created — the name is NEW (body is the group definition)"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Invalid tree — dangling/cyclic parent or depth (`invalid_request`)"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Missing/invalid admin credential (error code `unauthorized`)"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Authenticated but under-scoped: requires `full` (error code `forbidden`)"
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Base-defined group (edit config.yaml) or stale `If-Match` (`version_conflict`)"
-          },
-          "429": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
-          }
-        },
-        "security": [
-          {
-            "adminToken": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "summary": "Create (or replace) a group at runtime — live immediately (upsert)",
-        "x-busbar-required-scope": "full"
-      }
-    },
-    "/api/v1/admin/groups/{name}": {
-      "delete": {
-        "parameters": [
-          {
-            "in": "path",
-            "name": "name",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "204": {
-            "description": "Removed"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Missing/invalid admin credential (error code `unauthorized`)"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Authenticated but under-scoped: requires `full` (error code `forbidden`)"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Unknown group (error code `not_found`)"
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Base-defined group, or another group still names it as parent (error code `conflict`)"
-          },
-          "429": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
-          }
-        },
-        "security": [
-          {
-            "adminToken": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "summary": "Remove an overlay group at runtime — live immediately",
-        "x-busbar-required-scope": "full"
-      },
-      "get": {
-        "parameters": [
-          {
-            "in": "path",
-            "name": "name",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/GroupView"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Missing/invalid admin credential (error code `unauthorized`)"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Unknown group (error code `not_found`)"
-          }
-        },
-        "security": [
-          {
-            "adminToken": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "summary": "One group definition (parent, enabled, limits, child_default)",
-        "x-busbar-required-scope": "read-only"
-      },
-      "patch": {
-        "parameters": [
-          {
-            "in": "path",
-            "name": "name",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/GroupView"
-                }
-              }
-            },
-            "description": "The updated group"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Invalid tree after the merge, or unknown patch field (error code `invalid_request`)"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Missing/invalid admin credential (error code `unauthorized`)"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Authenticated but under-scoped: requires `full` (error code `forbidden`)"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Unknown group (error code `not_found`)"
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Base-defined group, or stale `If-Match` (`version_conflict`)"
-          },
-          "429": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
-          }
-        },
-        "security": [
-          {
-            "adminToken": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "summary": "Partial update — change only the fields present (e.g. raise a budget, freeze a group)",
-        "x-busbar-required-scope": "full"
-      },
-      "put": {
-        "parameters": [
-          {
-            "in": "path",
-            "name": "name",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/GroupView"
-                }
-              }
-            },
-            "description": "The replaced group"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Invalid tree — dangling/cyclic parent or depth (error code `invalid_request`)"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Missing/invalid admin credential (error code `unauthorized`)"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Authenticated but under-scoped: requires `full` (error code `forbidden`)"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Unknown group (error code `not_found`)"
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Base-defined group (edit config.yaml), or stale `If-Match` (`version_conflict`)"
-          },
-          "429": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
-          }
-        },
-        "security": [
-          {
-            "adminToken": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "summary": "Replace an overlay group definition — live immediately (limits rebuilt)",
-        "x-busbar-required-scope": "full"
-      }
-    },
-    "/api/v1/admin/groups/{name}/usage": {
-      "get": {
-        "parameters": [
-          {
-            "in": "path",
-            "name": "name",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/GroupUsageView"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Missing/invalid admin credential (error code `unauthorized`)"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Unknown group (error code `not_found`)"
-          }
-        },
-        "security": [
-          {
-            "adminToken": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "summary": "The group's derived current-window usage per (window, pool) enforcement bucket vs its caps — the self-service dashboard read (spend derives from the token ledger x the CURRENT rate card at read time)",
         "x-busbar-required-scope": "read-only"
       }
     },
@@ -4537,7 +3483,7 @@
             "bearerAuth": []
           }
         ],
-        "summary": "List virtual keys (metadata only; never secrets). Filters: ?enabled=, ?prefix=, ?group= (keys bound to a group — a `user:<sub>` leaf's keys are one person's). Paginate: ?limit=, ?cursor= (opaque)",
+        "summary": "List virtual keys (metadata only; never secrets). Filters: ?enabled=, ?prefix=. Paginate: ?limit=, ?cursor= (opaque)",
         "x-busbar-required-scope": "read-only"
       },
       "post": {
@@ -4580,7 +3526,7 @@
                 }
               }
             },
-            "description": "Authenticated but under-scoped: requires `mint` (error code `forbidden`)"
+            "description": "Authenticated but under-scoped: requires `full` (error code `forbidden`)"
           },
           "409": {
             "content": {
@@ -4612,7 +3558,7 @@
           }
         ],
         "summary": "Mint a virtual key. The secret is returned EXACTLY once. Honors an `Idempotency-Key` header (per-principal ~10min replay)",
-        "x-busbar-required-scope": "mint"
+        "x-busbar-required-scope": "full"
       }
     },
     "/api/v1/admin/keys/{id}": {
@@ -5125,110 +4071,11 @@
         "x-busbar-required-scope": "read-only"
       }
     },
-    "/api/v1/admin/overlay/{section}": {
-      "delete": {
-        "parameters": [
-          {
-            "in": "path",
-            "name": "section",
-            "required": true,
-            "schema": {
-              "enum": [
-                "groups",
-                "hooks"
-              ],
-              "type": "string"
-            }
-          },
-          {
-            "description": "Optimistic concurrency: the resource's ETag from a prior read (or the ETag returned by the previous mutation). Stale = 409 `version_conflict` (re-read and retry), nothing changes; absent or `*` = unconditional.",
-            "in": "header",
-            "name": "If-Match",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/OverlayResetView"
-                }
-              }
-            },
-            "description": "`{reset, config_version, changed}` — changed:false when the section had no overlay state"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Unknown section, or ephemeral busbar with no config files to revert to (error code `invalid_request`)"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Missing/invalid admin credential (error code `unauthorized`)"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Authenticated but under-scoped: requires `full` (error code `forbidden`)"
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Stale `If-Match` (error code `version_conflict` — re-read and retry)"
-          },
-          "429": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
-          }
-        },
-        "security": [
-          {
-            "adminToken": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "summary": "DISCARD a section's overlay mutations and revert it to base config.yaml (section ∈ groups|hooks). Per-section reset — the OTHER section's overlay survives. A NEW config version; an already-empty section is an idempotent no-op (changed:false)",
-        "x-busbar-required-scope": "full"
-      }
-    },
     "/api/v1/admin/plugins": {
       "get": {
         "parameters": [
           {
-            "description": "Plugin type: `auth` | `hooks` | `store` (required)",
+            "description": "Plugin type: `auth` | `hooks` (required)",
             "in": "query",
             "name": "type",
             "required": true,
@@ -5277,217 +4124,8 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Plugin catalog by type (compiled-in + external + dynamic-library)",
+        "summary": "Plugin catalog by type (compiled-in + external)",
         "x-busbar-required-scope": "read-only"
-      },
-      "post": {
-        "responses": {
-          "201": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PluginInstallView"
-                }
-              }
-            },
-            "description": "Installed — `{file, name, interface_version, trust, version?, publisher?, note}`"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Malformed body, bad base64, or the library is not a loadable busbar store plugin (`invalid_request`)"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Missing/invalid admin credential (error code `unauthorized`)"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Authenticated but under-scoped: requires `full` (error code `forbidden`)"
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "The upload is untrusted and not opted-in (`conflict`) - sign it with an allowlisted publisher, add the publisher to plugins.trust.publishers, or set plugins.trust.allow_unsigned / allow_third_party"
-          },
-          "429": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
-          }
-        },
-        "security": [
-          {
-            "adminToken": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "summary": "Install a dynamic-library store plugin: upload the library (base64) + optional signed manifest; the engine RE-VERIFIES against the running trust posture, validates the store ABI, and writes it atomically into the plugins directory. Takes effect on the next store (re)load",
-        "x-busbar-required-scope": "full"
-      }
-    },
-    "/api/v1/admin/plugins/reload": {
-      "post": {
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PluginReloadView"
-                }
-              }
-            },
-            "description": "`{plugins, note}` — the current dynamic-library inventory"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Missing/invalid admin credential (error code `unauthorized`)"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Authenticated but under-scoped: requires `full` (error code `forbidden`)"
-          },
-          "429": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
-          }
-        },
-        "security": [
-          {
-            "adminToken": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "summary": "Re-scan the plugins directory and report the reconciled dynamic-library inventory (the sibling of config/reload). A store change takes effect on the next store (re)load",
-        "x-busbar-required-scope": "full"
-      }
-    },
-    "/api/v1/admin/plugins/{file}": {
-      "delete": {
-        "parameters": [
-          {
-            "in": "path",
-            "name": "file",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "204": {
-            "description": "Removed"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Invalid plugin filename (`invalid_request`)"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Missing/invalid admin credential (error code `unauthorized`)"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Authenticated but under-scoped: requires `full` (error code `forbidden`)"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "No such plugin file (`not_found`)"
-          },
-          "429": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
-          }
-        },
-        "security": [
-          {
-            "adminToken": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "summary": "Remove a dynamic-library plugin (library + manifest sidecar) from the plugins directory. A loaded store keeps running until the next store (re)load",
-        "x-busbar-required-scope": "full"
       }
     },
     "/api/v1/admin/pools": {
