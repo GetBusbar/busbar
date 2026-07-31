@@ -480,7 +480,7 @@ store:
 | `memory` (default) | compiled in, no plugin | none |
 | `sqlite` / `busbar-store-sqlite` | `busbar-store-sqlite-<ver>-<target>.tar.gz` | `db_path` (file path), `busy_timeout_ms` (default 5000) |
 | `postgres` / `busbar-store-postgres` | `busbar-store-postgres-<ver>-<target>.tar.gz` | `url` (`postgres://` libpq URL); cluster-shared |
-| `redis` / `busbar-store-redis` | `busbar-store-redis-<ver>-<target>.tar.gz` | `url` (`redis://`, `rediss://` for TLS); cluster-shared |
+| `redis` / `busbar-store-valkey` | `busbar-store-valkey-<ver>-<target>.tar.gz` | `url` (`redis://`, `rediss://` for TLS); cluster-shared |
 
 `settings` is the store module's OWN opaque configuration, passed through verbatim; a third-party
 store plugin documents its own keys. A non-`memory` store requires `plugins.enabled: true` and the
@@ -503,7 +503,7 @@ exactly one day, so deleting rows for buckets older than N days is safe and cann
 billing, or any other enforcement path — it is a plain `DELETE` against your store's own schema, on
 your own retention horizon; Busbar does not choose one for you.
 
-**Backend caveats:** the Redis store supports TLS (`rediss://`), transparent reconnect, and atomic
+**Backend caveats:** the Valkey store (Redis-protocol compatible) supports TLS (`rediss://`), transparent reconnect, and atomic
 multi-key cascades (MULTI/EXEC), and scrubs the URL password from error strings; it writes WITHOUT
 TTLs (usage/metering/audit grow unboundedly by design: apply your own retention, per the metering
 note above). The Postgres store currently connects `NoTls` and without automatic reconnect: run it

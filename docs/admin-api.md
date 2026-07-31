@@ -325,10 +325,10 @@ anything absolute or cross-origin rather than fetch it.**
 ```bash
 # Install a signed store plugin tarball (takes effect on the next plugin (re)load)
 curl -s -X POST -H "x-admin-token: $TOK" -H 'content-type: application/json' \
-  -d "{\"file\": \"busbar-store-redis-1.5.0.tar.gz\",
-       \"tarball_b64\": \"$(base64 < busbar-store-redis-1.5.0-x86_64-linux.tar.gz | tr -d '\n')\"}" \
+  -d "{\"file\": \"busbar-store-valkey-1.5.0.tar.gz\",
+       \"tarball_b64\": \"$(base64 < busbar-store-valkey-1.5.0-x86_64-linux.tar.gz | tr -d '\n')\"}" \
   http://localhost:8081/api/v1/admin/plugins
-# -> 201 {"file":"busbar-store-redis-1.5.0.tar.gz","name":"busbar-store-redis",
+# -> 201 {"file":"busbar-store-valkey-1.5.0.tar.gz","name":"busbar-store-valkey",
 #         "interface_version":1,"trust":"trusted","version":"1.5.0","publisher":"busbar",
 #         "note":"installed durably in the plugins directory; ..."}
 
@@ -342,7 +342,7 @@ curl -s -H "x-admin-token: $TOK" 'http://localhost:8081/api/v1/admin/plugins?typ
 
 # Remove it
 curl -s -X DELETE -H "x-admin-token: $TOK" \
-  http://localhost:8081/api/v1/admin/plugins/busbar-store-redis-1.5.0.tar.gz
+  http://localhost:8081/api/v1/admin/plugins/busbar-store-valkey-1.5.0.tar.gz
 ```
 
 ## Example
