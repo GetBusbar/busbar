@@ -32,7 +32,7 @@ pub(crate) async fn stats(
     // every pool). A key whose `allowed_pools` was omitted at mint (None) admits every pool via
     // `pool_allowed`, so an unrestricted key also sees everything; an explicit list (even empty)
     // restricts (C6).
-    let restricted = gov.key.as_ref().is_some_and(|k| k.allowed_pools.is_some());
+    let restricted = gov.key.as_ref().is_some_and(|k| k.allowed_scopes.is_some());
 
     let visible_pool = |name: &str| -> bool {
         match gov.key.as_ref() {
@@ -146,7 +146,7 @@ fn list_models_dialect(
     headers: &axum::http::HeaderMap,
     gemini_path: bool,
 ) -> Response {
-    let restricted = gov.key.as_ref().is_some_and(|k| k.allowed_pools.is_some());
+    let restricted = gov.key.as_ref().is_some_and(|k| k.allowed_scopes.is_some());
 
     let visible_pool = |name: &str| -> bool {
         match gov.key.as_ref() {
@@ -247,7 +247,7 @@ pub(crate) async fn healthz(crate::state::CurrentApp(app): crate::state::Current
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::governance::VirtualKey;
+    use crate::governance::{ScopeRef, VirtualKey};
     use crate::test_support::{LaneSpec, TestApp};
 
     /// A virtual key restricted to `allowed_pools`. C6 mapping for the test helper: an EMPTY
@@ -257,8 +257,8 @@ mod tests {
             id: "k-test".to_string(),
             generation_hash: "deadbeef".to_string(),
             name: "test".to_string(),
-            allowed_pools: (!allowed_pools.is_empty())
-                .then(|| allowed_pools.iter().map(|s| s.to_string()).collect()),
+            allowed_scopes: (!allowed_pools.is_empty())
+                .then(|| allowed_pools.iter().map(|s| ScopeRef::pool(*s)).collect()),
             enabled: true,
             created_at: 1_700_000_000,
             group: None,

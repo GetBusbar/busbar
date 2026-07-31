@@ -856,7 +856,7 @@ mod tests {
             id: id.into(),
             generation_hash: "hash".into(),
             name: "n".into(),
-            allowed_pools: None,
+            allowed_scopes: None,
             enabled: true,
             created_at: 1,
             group: None,

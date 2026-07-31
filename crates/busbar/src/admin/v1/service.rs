@@ -1073,7 +1073,7 @@ impl AdminService {
             };
             buckets.push(GroupBucketUsageView {
                 window: b.window,
-                pool: b.pool.clone(),
+                pool: b.scope.as_ref().map(|s| s.value.clone()),
                 requests: usage.requests,
                 tokens: usage.tokens,
                 spend_cents: usage.spend_cents,
@@ -3071,7 +3071,7 @@ mod tests {
             metric: LimitMetric::Budget,
             amount: cents,
             per: Some(per),
-            pool: None,
+            scope: None,
             on_exhaust: None,
             downgrade_to: None,
         }
@@ -3341,7 +3341,7 @@ mod tests {
                 id: "vk_bound".to_string(),
                 generation_hash: "h:vk_bound".to_string(),
                 name: "bound".to_string(),
-                allowed_pools: None,
+                allowed_scopes: None,
                 enabled: true,
                 created_at: 0,
                 group: Some("team".to_string()),
@@ -3388,7 +3388,7 @@ mod tests {
             metric,
             amount,
             per: Some(per),
-            pool: pool.map(String::from),
+            scope: pool.map(busbar_api::ScopeRef::pool),
             on_exhaust: None,
             downgrade_to: None,
         };
@@ -3427,7 +3427,7 @@ mod tests {
             id: "vk_usage_probe".to_string(),
             generation_hash: "h:vk_usage_probe".to_string(),
             name: "usage-probe".to_string(),
-            allowed_pools: None,
+            allowed_scopes: None,
             enabled: true,
             created_at: 0,
             group: Some(group.to_string()),

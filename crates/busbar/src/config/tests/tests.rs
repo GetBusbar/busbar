@@ -1988,7 +1988,7 @@ fn test_group_limit_pool_qualifier() {
 
     let l: LimitCfg = serde_yaml::from_str("{ budget: 5000, per: month, pool: frontier }")
         .expect("pool-qualified budget parses");
-    assert_eq!(l.pool.as_deref(), Some("frontier"));
+    assert_eq!(l.scope.as_ref().map(|s| s.value.as_str()), Some("frontier"));
 
     // Round-trip: serialize -> reparse must be identical (the overlay persistence contract),
     // both with and without the qualifier.
@@ -2020,7 +2020,10 @@ fn test_group_limit_on_exhaust_qualifier() {
     )
     .expect("a full downgrade limit parses");
     assert_eq!(l.on_exhaust, Some(OnExhaust::Downgrade));
-    assert_eq!(l.downgrade_to.as_deref(), Some("value"));
+    assert_eq!(
+        l.downgrade_to.as_ref().map(|s| s.value.as_str()),
+        Some("value")
+    );
     let yaml = serde_yaml::to_string(&l).expect("serializes");
     let back: LimitCfg = serde_yaml::from_str(&yaml).expect("reparses");
     assert_eq!(back, l, "overlay round-trip must be exact: {yaml}");

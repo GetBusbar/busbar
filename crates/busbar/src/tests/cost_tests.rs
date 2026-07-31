@@ -40,7 +40,7 @@ fn limit(metric: LimitMetric, amount: u64, per: Option<LimitWindow>) -> LimitCfg
         metric,
         amount,
         per,
-        pool: None,
+        scope: None,
         on_exhaust: None,
         downgrade_to: None,
     }
@@ -60,7 +60,7 @@ pub(crate) fn key(group: Option<&str>) -> VirtualKey {
         id: "vk_1".into(),
         generation_hash: "h".into(),
         name: "k".into(),
-        allowed_pools: None,
+        allowed_scopes: None,
         enabled: true,
         created_at: 0,
         group: group.map(String::from),

@@ -1025,7 +1025,7 @@ mod tests {
             id: "vk_pipeline".into(),
             generation_hash: "h".into(),
             name: "pipeline".into(),
-            allowed_pools: Some(vec!["p".into()]),
+            allowed_scopes: Some(vec![busbar_api::ScopeRef::pool("p")]),
             enabled: true,
             created_at: 1,
             group: Some("growth".into()),
@@ -1037,7 +1037,10 @@ mod tests {
         store.put_key(&key).expect("put over the ABI");
         let got = store.get_key("vk_pipeline").unwrap().unwrap();
         assert_eq!(got.group.as_deref(), Some("growth"));
-        assert_eq!(got.allowed_pools, Some(vec!["p".to_string()]));
+        assert_eq!(
+            got.allowed_scopes,
+            Some(vec![busbar_api::ScopeRef::pool("p")])
+        );
         drop(store);
         let _ = std::fs::remove_dir_all(&dir);
     }

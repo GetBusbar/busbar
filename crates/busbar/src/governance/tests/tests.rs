@@ -38,7 +38,13 @@ fn synthesize_principal_key_union_semantics() {
     p.roles = vec!["a".to_string(), "b".to_string()];
     let k = synthesize_principal_key(&p, Some(&table)).expect("bound roles synthesize");
     assert_eq!(k.id, "test:u", "keyed by the principal id");
-    let mut pools = k.allowed_pools.clone().expect("an explicit union list");
+    let mut pools: Vec<String> = k
+        .allowed_scopes
+        .clone()
+        .expect("an explicit union list")
+        .into_iter()
+        .map(|s| s.value)
+        .collect();
     pools.sort();
     assert_eq!(
         pools,
@@ -58,7 +64,7 @@ fn synthesize_principal_key_union_semantics() {
     p.roles = vec!["a".to_string(), "all-pools".to_string()];
     let k = synthesize_principal_key(&p, Some(&table)).expect("granting");
     assert!(
-        k.allowed_pools.is_none(),
+        k.allowed_scopes.is_none(),
         "omitted allowed_pools grants every pool (None encoding)"
     );
 
@@ -140,7 +146,7 @@ fn sample_key(id: &str, hash: &str) -> VirtualKey {
         id: id.to_string(),
         generation_hash: hash.to_string(),
         name: "test-key".to_string(),
-        allowed_pools: Some(vec!["prod".to_string(), "cheap".to_string()]),
+        allowed_scopes: Some(vec![ScopeRef::pool("prod"), ScopeRef::pool("cheap")]),
         enabled: true,
         created_at: 1_700_000_000,
         group: None,
@@ -190,7 +196,7 @@ fn budget_group_cfg(cap: i64, period: &str, parent: Option<&str>) -> crate::conf
             metric: LimitMetric::Budget,
             amount: u64::try_from(cap).unwrap_or(0),
             per: Some(per),
-            pool: None,
+            scope: None,
             on_exhaust: None,
             downgrade_to: None,
         }],
@@ -780,7 +786,7 @@ fn test_generated_aws_credentials_are_distinct() {
 fn test_govstate_lookup_pool_allowed_refresh() {
     let store = Arc::new(MemoryStore::new());
     let mut k = sample_key("k1", "binding:k1:gen1");
-    k.allowed_pools = Some(vec!["prod".to_string()]);
+    k.allowed_scopes = Some(vec![ScopeRef::pool("prod")]);
     store.put_key(&k).unwrap();
 
     let gov = GovState::new(store, None).unwrap();
@@ -794,7 +800,7 @@ fn test_govstate_lookup_pool_allowed_refresh() {
 
     // A key added after construction isn't visible until refresh().
     let mut k2 = sample_key("k2", "binding:k2:gen1");
-    k2.allowed_pools = None; // omitted grant = all pools (C6)
+    k2.allowed_scopes = None; // omitted grant = all pools (C6)
     gov.store().put_key(&k2).unwrap();
     assert!(gov.lookup_by_sub("k2").is_none(), "not cached pre-refresh");
     gov.refresh().unwrap();
@@ -802,7 +808,7 @@ fn test_govstate_lookup_pool_allowed_refresh() {
     assert!(pool_allowed(&r2, "anything"), "None allowed_pools = all");
     // And the C6 empty-set arm: an explicit [] admits NO pool.
     let mut k3 = sample_key("k3", "h3");
-    k3.allowed_pools = Some(vec![]);
+    k3.allowed_scopes = Some(vec![]);
     assert!(
         !pool_allowed(&k3, "prod"),
         "explicit [] = NO pools, never all"
@@ -1221,7 +1227,7 @@ fn test_rate_headroom_reports_fraction_remaining() {
                     metric: LimitMetric::Requests,
                     amount: 0,
                     per: Some(LimitWindow::Minute),
-                    pool: None,
+                    scope: None,
                     on_exhaust: None,
                     downgrade_to: None,
                 }],
@@ -1250,7 +1256,7 @@ fn test_rate_headroom_reports_fraction_remaining() {
                         metric: LimitMetric::Requests,
                         amount: 4,
                         per: Some(LimitWindow::Minute),
-                        pool: None,
+                        scope: None,
                         on_exhaust: None,
                         downgrade_to: None,
                     },
@@ -1258,7 +1264,7 @@ fn test_rate_headroom_reports_fraction_remaining() {
                         metric: LimitMetric::Tokens,
                         amount: 100_000,
                         per: Some(LimitWindow::Minute),
-                        pool: None,
+                        scope: None,
                         on_exhaust: None,
                         downgrade_to: None,
                     },
@@ -2183,7 +2189,7 @@ fn test_budget_state_projects_the_whole_chain() {
 /// store (with its durable denylist), so the whole stateless-verify + denylist contract is proven.
 mod signed_token {
     use crate::governance::signing::{TokenSigner, DEFAULT_KID};
-    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+    use crate::governance::{GovState, MemoryStore, NewKeySpec, ScopeRef};
     use std::sync::Arc;
 
     fn gov() -> Arc<GovState> {
@@ -2218,7 +2224,7 @@ mod signed_token {
         assert!(token.starts_with("bbk_"), "token carries the prefix");
         assert!(binding.id.starts_with("vk_"));
         assert_eq!(binding.group.as_deref(), Some("growth"));
-        assert_eq!(binding.allowed_pools, Some(vec!["fast".to_string()]));
+        assert_eq!(binding.allowed_scopes, Some(vec![ScopeRef::pool("fast")]));
 
         let resolved = g.verify_token(&token, 1_500).expect("verify");
         assert_eq!(resolved.id, binding.id);
@@ -2235,7 +2241,7 @@ mod signed_token {
         let resolved = g.verify_token(&token, 1_500).expect("verify");
         assert_eq!(resolved.group, None);
         // Omitted allowed_pools carries as None = all pools (C6 intent intact in the binding).
-        assert!(resolved.allowed_pools.is_none());
+        assert!(resolved.allowed_scopes.is_none());
     }
 
     /// An EXPIRED token is rejected by verify (stateless).

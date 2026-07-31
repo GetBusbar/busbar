@@ -356,7 +356,7 @@ pub type CloseFn = unsafe extern "C-unwind" fn(handle: *mut c_void);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use busbar_api::{AuditRecord, VirtualKey};
+    use busbar_api::{AuditRecord, ScopeRef, VirtualKey};
 
     /// The five status codes are pairwise DISTINCT integers. The loader's discrimination (esp. the
     /// revocation-denylist fallback) keys on these being different: an undecodable-variant signal
@@ -399,7 +399,7 @@ mod tests {
             id: "vk_1".into(),
             generation_hash: "deadbeef".into(),
             name: "test".into(),
-            allowed_pools: Some(vec!["p1".into()]),
+            allowed_scopes: Some(vec![ScopeRef::pool("p1")]),
             enabled: true,
             created_at: 42,
             group: Some("growth".into()),
