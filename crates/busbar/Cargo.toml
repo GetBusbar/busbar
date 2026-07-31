@@ -36,6 +36,11 @@ busbar-plugin-loader = { path = "../plugin-loader" }
 # Plugin signature VERIFICATION + trust posture (pure crypto/policy, no unsafe): verifies a plugin's
 # signed manifest against the configured trust policy at boot-load and admin-install.
 busbar-plugin-sign = { path = "../plugin-sign" }
+# The SecretRef reference type ({module, settings} + env/file sugar) — extracted out of this
+# crate's own config::secret module so busbar-plugin-pack (and future schema-generation tooling)
+# can derive the x-busbar-secret oneOf shape from the SAME type this engine deserializes, rather
+# than a hand-written parallel copy that can drift (plugin-settings-schema-SPEC.md checklist #1).
+busbar-secret-ref = { path = "../secret-ref" }
 # The built-in plugins, each its own workspace crate under auth/<name>/ or hooks/<name>/ — optional
 # so the matching feature (below) compiles each IN or OUT of the binary.
 busbar-auth-admin-tokens = { path = "../auth-admin-tokens", optional = true }

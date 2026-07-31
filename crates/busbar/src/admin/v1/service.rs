@@ -812,6 +812,95 @@ pub(crate) fn build_with_registry(
     Ok(next)
 }
 
+/// Byte-size cap on a manifest's embedded `settings_schema` document, checked in
+/// [`schema_json_within_bounds`] BEFORE the text is parsed. Well under `unpack`'s own 1 MiB
+/// `MAX_MANIFEST_BYTES` (the whole `manifest.json`, of which the schema is one string field) — a
+/// real settings schema is a few KiB.
+const MAX_INSPECT_SCHEMA_JSON_BYTES: usize = 256 * 1024;
+
+/// Nesting-depth cap for the same document. Generous for any real config schema (which is rarely
+/// more than 4-5 levels deep even with `$defs`/`allOf`), tight enough to make a stack-depth attack
+/// via a tiny, highly-repetitive document (`[[[[...]]]]`) structurally impossible regardless of how
+/// small its byte count is — a byte-size cap ALONE does not bound nesting depth.
+const MAX_INSPECT_SCHEMA_JSON_DEPTH: u32 = 64;
+
+/// `POST /plugins/inspect`'s depth/size guard (question #7's round-2 hardening correction) for an
+/// attacker-controlled JSON document, run BEFORE the text is ever handed to `serde_json::from_str`.
+/// A pathological schema document is a DISTINCT attack from a pathological tarball: even a small
+/// byte count can encode unbounded nesting, which the tarball-level caps do not catch. Scans the
+/// raw text tracking `{`/`[` nesting depth, correctly skipping the contents of JSON string literals
+/// (including escaped quotes) so a string VALUE containing brackets never inflates the count — and
+/// never allocates a parsed value itself, so a document that fails this check costs O(length) to
+/// reject, not the cost of the recursive-descent parse it is meant to prevent.
+fn schema_json_within_bounds(text: &str) -> Result<(), String> {
+    if text.len() > MAX_INSPECT_SCHEMA_JSON_BYTES {
+        return Err(format!(
+            "manifest settings_schema is {} bytes, exceeding the {}-byte cap",
+            text.len(),
+            MAX_INSPECT_SCHEMA_JSON_BYTES
+        ));
+    }
+    let mut depth: u32 = 0;
+    let mut in_string = false;
+    let mut escape = false;
+    for b in text.bytes() {
+        if in_string {
+            if escape {
+                escape = false;
+            } else if b == b'\\' {
+                escape = true;
+            } else if b == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match b {
+            b'"' => in_string = true,
+            b'{' | b'[' => {
+                depth += 1;
+                if depth > MAX_INSPECT_SCHEMA_JSON_DEPTH {
+                    return Err(format!(
+                        "manifest settings_schema nests deeper than the {MAX_INSPECT_SCHEMA_JSON_DEPTH}-level cap"
+                    ));
+                }
+            }
+            b'}' | b']' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// `schema_url`/`schema_error` for one `GET /plugins` list row (questions #10/#11): `schema_url` is
+/// non-null whenever the manifest declared a `settings_schema` field AT ALL — even if it fails to
+/// parse, in which case `schema_error` explains why and `schema_url` still points at `GET
+/// /plugins/{name}/schema`, which surfaces the SAME `schema_error` when followed (question #3's
+/// round-4 correction, carried onto the list row per question #11's round-8 correction: a
+/// present-but-corrupt schema is a worse, distinct condition from "no schema declared", never
+/// folded into the same `schema_url: null` a genuinely schema-less plugin gets). Always the
+/// ADMIN-PREFIXED relative path — never an absolute URL, never a catalog URL for an unverified
+/// remote-catalog artifact (this function is only ever called for a LOCAL manifest already read off
+/// disk, so that distinction does not arise here).
+fn manifest_schema_url_and_error(
+    name: &str,
+    settings_schema: Option<&str>,
+) -> (Option<String>, Option<String>) {
+    let Some(s) = settings_schema else {
+        return (None, None);
+    };
+    let url = Some(format!(
+        "{}/plugins/{name}/schema",
+        crate::admin::v1::contract::ADMIN_PREFIX
+    ));
+    match serde_json::from_str::<serde_json::Value>(s) {
+        Ok(_) => (url, None),
+        Err(e) => (
+            url,
+            Some(format!("manifest settings_schema is not valid JSON: {e}")),
+        ),
+    }
+}
+
 /// The admin application core. Cheap to construct and clone-free to share (`Arc<App>` inside); a
 /// transport builds ONE and hands `Arc<AdminService>` to its routes.
 pub(crate) struct AdminService {
@@ -1093,10 +1182,15 @@ impl AdminService {
         })
     }
 
-    /// `GET /api/v1/admin/plugins?type=auth|hooks` — the plugin catalog for one TYPE. Read
-    /// scope. Lists COMPILED-IN plugins (feature-gated, from the binary — the same source as `info`'s
-    /// build proof) and EXTERNAL plugins (registered over socket/webhook). An unknown/absent `type` is
-    /// an `invalid_request` (the two types are distinct engine contracts; a caller must pick one).
+    /// `GET /api/v1/admin/plugins?type=auth|hooks|store|secret` — the plugin catalog for one TYPE.
+    /// Read scope. Lists COMPILED-IN plugins (feature-gated, from the binary — the same source as
+    /// `info`'s build proof), EXTERNAL plugins (registered over socket/webhook), and DYNAMIC-LIBRARY
+    /// plugins from `plugins.dir` (`store`/`secret`, and `auth` rows installed on disk — checklist
+    /// item 5, question #9's round-4 correction: every kind this spec covers now has a real,
+    /// manifest-backed row to carry `trust`/`schema_url`/`schema_error` on). An unknown/absent `type`
+    /// is an `invalid_request` (there is no unified cross-kind list; a caller must pick one — see
+    /// question #9's round-4 correction: busbar-ui makes up to FOUR separate `GET /plugins?type=X`
+    /// calls to build a full picture).
     pub(crate) async fn list_plugins(&self, ptype: &str) -> Result<Page<PluginView>, AdminError> {
         let mut plugins: Vec<PluginView> = Vec::new();
         match ptype {
@@ -1140,6 +1234,23 @@ impl AdminService {
                 }
                 // External auth modules (runtime-registered over socket/webhook) — none until the
                 // auth-module registration endpoint lands (#56); the catalog shape is ready.
+
+                // DYNAMIC-LIBRARY `kind: auth` plugins installed in `plugins.dir` (question #9's
+                // round-4 correction: give `auth` rows the same manifest-backed view `store` rows
+                // already get — version/publisher/interface_version/trust/schema_url/schema_error —
+                // rather than leaving every dynamic auth plugin as a bare name+active `basic` row).
+                // This is the SAME directory scan `type=store`/`type=secret` already run (cached,
+                // kind-agnostic), filtered down to `kind: auth` rows here. NOTE: an entry here is
+                // "installed on disk", not necessarily "currently wired into the live chain" — the
+                // `active: true` "plugin" rows above (from `chain_names()`) are the currently-active
+                // signal; correlating the two by manifest name is a real follow-on, not solved here.
+                let mut dynamic_auth: Vec<PluginView> = self
+                    .store_plugin_catalog_async()
+                    .await?
+                    .into_iter()
+                    .filter(|p| p.r#type == "auth")
+                    .collect();
+                plugins.append(&mut dynamic_auth);
             }
             "hooks" => {
                 // The weighted SWRR floor is compiled in unconditionally (the non-removable default
@@ -1178,12 +1289,38 @@ impl AdminService {
             // the compiled-in `memory` default; then every loadable library present, each vetted (ABI
             // handshake) and its signed sidecar manifest read + re-evaluated against the running trust
             // posture. The store the operator configured (`store.module`) is `active`.
+            //
+            // The underlying scan reads every kind in the shared `plugins.dir` in one pass (cached,
+            // kind-agnostic); each row is tagged with its OWN manifest kind (`scan_store_plugin_rows`),
+            // so filtering to `r#type == "store"` here is what makes `type=store` show only store
+            // plugins — a `secret`/`auth` kind tarball dropped in the same directory no longer leaks
+            // into this listing (it did before `type=secret`/richer `type=auth` rows existed, since
+            // nothing filtered the scan's mixed-kind output by the requested type).
             "store" | "db" => {
-                plugins.append(&mut self.store_plugin_catalog_async().await?);
+                plugins.extend(
+                    self.store_plugin_catalog_async()
+                        .await?
+                        .into_iter()
+                        .filter(|p| p.r#type == "store"),
+                );
+            }
+            // DYNAMIC-LIBRARY `kind: secret` plugins (checklist item 5: `GET /plugins?type=secret`
+            // support — previously the ONLY accepted `type` values were `auth`, `hooks`, `store`,
+            // despite secret plugins being in scope throughout this design, question #9's round-4
+            // correction). Same directory scan as `store`/`auth`, filtered to `kind: secret`. No
+            // compiled-in default (unlike `store`'s `memory`) — there is no built-in secret module
+            // that needs a catalog row; `env`/`file` are handled inline by the engine, not as plugins.
+            "secret" => {
+                plugins.extend(
+                    self.store_plugin_catalog_async()
+                        .await?
+                        .into_iter()
+                        .filter(|p| p.r#type == "secret"),
+                );
             }
             other => {
                 return Err(AdminError::Validation(format!(
-                    "unknown plugin type `{other}`: expected `auth`, `hooks`, or `store`"
+                    "unknown plugin type `{other}`: expected `auth`, `hooks`, `secret`, or `store`"
                 )));
             }
         }
@@ -1359,9 +1496,30 @@ impl AdminService {
                 .as_ref()
                 .map(|m| m.name.clone())
                 .unwrap_or_else(|| row.file.clone());
+            // `r#type` reflects the manifest's OWN `kind` (checklist item 5: `GET
+            // /plugins?type=secret` support, plus real rows for `auth`) — not hardcoded "store".
+            // `kind: hook` and a manifest-less (invalid/corrupt) row both fall back to "store",
+            // preserving the exact pre-existing behavior for every case this change doesn't newly
+            // cover (a broken upload of unknown kind still surfaces somewhere an operator will see
+            // it, and `type=hooks` has its own, unrelated listing mechanism below — not this scan).
+            let r#type = match row.manifest.as_ref().map(|m| m.kind.as_str()) {
+                Some("secret") => "secret",
+                Some("auth") => "auth",
+                _ => "store",
+            };
+            // `schema_url`/`schema_error` (questions #10/#11): non-null whenever the manifest
+            // declared a `settings_schema` at all, even unparseable (`schema_error` then explains
+            // why) — never folded into the same `null` a schema-less plugin gets. Always the
+            // admin-prefixed RELATIVE path to `GET /plugins/{name}/schema`, resolved by this
+            // plugin's real manifest `name` (what that endpoint resolves against), never the
+            // installed tarball's filename.
+            let (schema_url, schema_error) = match row.manifest.as_ref() {
+                Some(m) => manifest_schema_url_and_error(&name, m.settings_schema.as_deref()),
+                None => (None, None),
+            };
             rows.push(PluginView {
                 name,
-                r#type: "store",
+                r#type,
                 loader: "dynamic-library",
                 active: None,
                 target: Some(row.file.clone()),
@@ -1371,6 +1529,8 @@ impl AdminService {
                 trust,
                 valid: Some(row.status == "ready"),
                 error: (row.status != "ready").then(|| row.status.clone()),
+                schema_url,
+                schema_error,
             });
         }
         rows
@@ -1576,6 +1736,103 @@ impl AdminService {
                 "installed durably in the plugins directory; the change takes effect on the next \
                    plugin (re)load (restart or config apply), not as a hot swap",
         })
+    }
+
+    /// `POST /api/v1/admin/plugins/inspect` — a STATELESS, `read-only`-scope PREVIEW of a
+    /// candidate plugin tarball (plugin-settings-schema-SPEC.md checklist item 4, consumer question
+    /// #7): verify its signature, parse its manifest, and return the SAME response shape `GET
+    /// /plugins/{name}/schema` already carries (`schema`/`schema_error`/`trust`/`source`, plus
+    /// `kind`/`restart_required_default` — see [`Self::install_store_plugin`]'s sibling handler for
+    /// the shape those two carry), PLUS `name`/`version` so a caller can identify the candidate
+    /// before ever committing to `POST /plugins`. Touches NOTHING: no write to `plugins.dir`, no
+    /// conflict check against the installed set — an inspect has no interaction with what is
+    /// currently loaded (unlike [`Self::install_store_plugin`], steps 4/5 of that pipeline do not
+    /// exist here at all). An untrusted/unverified/rejected candidate is reported, not refused — the
+    /// whole point is letting an operator see what a not-yet-trusted plugin WOULD need without ever
+    /// executing it (gap #2, "untrusted-render hardening").
+    ///
+    /// HARDENING (question #7's round-2/4 corrections — this body is an attacker-controlled,
+    /// base64-encoded, COMPRESSED ARCHIVE, reachable by the WEAKEST admin credential in the system,
+    /// and the archive must be decompressed and its manifest parsed BEFORE the signature can even be
+    /// checked, so the trust check happens strictly after the dangerous part):
+    ///   1. a hard cap on the DECODED tarball size, `busbar_plugin_loader::tarball::MAX_TARBALL_FILE_BYTES`
+    ///      — the same ceiling `POST /plugins` (install) and the on-disk catalog scan both already
+    ///      enforce, checked here BEFORE `unpack` ever runs;
+    ///   2. `busbar_plugin_loader::tarball::unpack` itself streams each archive member through a
+    ///      cap enforced DURING decompression (`read_entry_bounded`'s `.take(cap + 1)`) — a
+    ///      decompression bomb fails fast, never after allocating the bomb — and rejects any
+    ///      non-regular-file or path-traversal entry name outright, and errors immediately on a
+    ///      second manifest/library member (an entry-count flood cannot accumulate past two real
+    ///      entries before the archive is refused);
+    ///   3. the embedded `settings_schema` string — the ONE place an attacker-controlled JSON
+    ///      document can nest arbitrarily deep on a tiny byte count (every OTHER `Manifest` field is
+    ///      a flat scalar, so `unpack`'s own `MAX_MANIFEST_BYTES` size cap is sufficient for the
+    ///      manifest itself) — is depth- AND size-bounded via [`schema_json_within_bounds`] BEFORE
+    ///      it is ever handed to `serde_json::from_str`, a distinct attack from a pathological
+    ///      tarball;
+    ///   4. its own dedicated rate bucket (`admin::rate::MutationClass::PluginInspect`), not the
+    ///      shared 60/min CRUD bucket and not the unmetered-read bucket — wired in `auth::mod.rs`/
+    ///      `admin::rate::classify_mutation` via `contract::PATH_PLUGINS_INSPECT`, exactly like
+    ///      `/config/validate`'s existing carve-out.
+    pub(crate) fn inspect_plugin(&self, tarball: &[u8]) -> Result<serde_json::Value, AdminError> {
+        use busbar_plugin_sign::{evaluate, validate_structure, Verdict};
+
+        if tarball.len() as u64 > busbar_plugin_loader::tarball::MAX_TARBALL_FILE_BYTES {
+            return Err(AdminError::Validation(format!(
+                "decoded tarball is {} bytes, exceeding the {}-byte cap",
+                tarball.len(),
+                busbar_plugin_loader::tarball::MAX_TARBALL_FILE_BYTES
+            )));
+        }
+
+        let policy = self
+            .app
+            .plugins_cfg
+            .to_policy()
+            .map_err(AdminError::Validation)?;
+
+        let unpacked = busbar_plugin_loader::tarball::unpack(tarball)
+            .map_err(|e| AdminError::Validation(format!("invalid plugin tarball: {e}")))?;
+        validate_structure(
+            &unpacked.manifest,
+            &unpacked.lib_bytes,
+            &busbar_plugin_loader::supported_abi,
+        )
+        .map_err(|e| AdminError::Validation(format!("invalid plugin manifest: {e}")))?;
+        let manifest = &unpacked.manifest;
+
+        // Trust is REPORTED, never a refusal to answer — an untrusted/rejected candidate is exactly
+        // the case an operator most wants to preview before deciding whether to trust it at all.
+        let trust = match evaluate(&unpacked.lib_bytes, manifest, &policy) {
+            Ok(Verdict::Trusted { .. }) => "trusted",
+            Ok(Verdict::Allowed { .. }) => "unverified",
+            Err(_rejected) => "rejected",
+        };
+
+        let (schema, schema_error) = match manifest.settings_schema.as_deref() {
+            None => (None, None),
+            Some(s) => match schema_json_within_bounds(s) {
+                Err(reason) => (None, Some(reason)),
+                Ok(()) => match serde_json::from_str::<serde_json::Value>(s) {
+                    Ok(v) => (Some(v), None),
+                    Err(e) => (
+                        None,
+                        Some(format!("manifest settings_schema is not valid JSON: {e}")),
+                    ),
+                },
+            },
+        };
+
+        Ok(serde_json::json!({
+            "name": manifest.name,
+            "version": manifest.version,
+            "kind": manifest.kind,
+            "schema": schema,
+            "schema_error": schema_error,
+            "trust": trust,
+            "source": "manifest",
+            "restart_required_default": busbar_plugin_sign::kind_restart_default(&manifest.kind),
+        }))
     }
 
     /// `DELETE /api/v1/admin/plugins/{file}` — REMOVE a plugin tarball from the plugins directory.
@@ -2309,6 +2566,123 @@ mod tests {
             public_key: hex::encode(key.verifying_key().to_bytes()),
         }];
         cfg
+    }
+
+    // ── POST /plugins/inspect (checklist item 4, question #7) ──────────────────────────────────
+
+    /// A trusted, unsigned-under-`allow_unsigned` candidate previews cleanly: the SAME response
+    /// shape `GET /plugins/{name}/schema` carries, PLUS `name`/`version`/`kind` — and NOTHING is
+    /// written to disk (an inspect is stateless: no install, no conflict check).
+    #[test]
+    fn inspect_previews_a_trusted_candidate_without_installing() {
+        let dir = tmp_plugins_dir("inspect-ok");
+        let mut m = test_manifest("acme-store-preview", "preview", "acme", "1.0.0");
+        m.kind = "secret".into();
+        m.abi_version = *busbar_plugin_loader::supported_abi("secret")
+            .iter()
+            .max()
+            .expect("secret abi");
+        m.settings_schema = Some(
+            serde_json::json!({
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {"key": {"type": "string", "x-busbar-secret": true}},
+            })
+            .to_string(),
+        );
+        m.sha256 = busbar_plugin_sign::sha256_hex(b"lib bytes");
+        let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", b"lib bytes").unwrap();
+        let svc = svc_with(dir.clone(), unsigned_ok_posture());
+
+        let v = svc.inspect_plugin(&tarball).expect("inspect succeeds");
+        assert_eq!(v["name"], "acme-store-preview");
+        assert_eq!(v["version"], "1.0.0");
+        assert_eq!(v["kind"], "secret");
+        assert_eq!(v["trust"], "unverified");
+        assert_eq!(v["source"], "manifest");
+        assert_eq!(v["schema_error"], serde_json::Value::Null);
+        assert!(
+            v["schema"].is_object(),
+            "schema round-trips as real JSON: {v}"
+        );
+        // `secret` kind defaults to restart-required (question #14).
+        assert_eq!(v["restart_required_default"], true);
+
+        // NOTHING was written — inspect never installs, never touches `plugins.dir`.
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            0,
+            "inspect must not write anything to disk"
+        );
+    }
+
+    /// An UNTRUSTED (unsigned, strict posture) candidate is REPORTED as `trust: "rejected"`, not
+    /// refused with an error — the whole point of inspect is previewing what a not-yet-trusted
+    /// plugin would need without ever installing or executing it (gap #2).
+    #[test]
+    fn inspect_reports_rejected_trust_rather_than_erroring() {
+        let dir = tmp_plugins_dir("inspect-rejected");
+        let mut m = test_manifest("acme-store-untrusted", "untrusted", "acme", "1.0.0");
+        m.sha256 = busbar_plugin_sign::sha256_hex(b"lib bytes");
+        let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", b"lib bytes").unwrap();
+        // STRICT posture: no publishers allowlisted, no allow_unsigned opt-in.
+        let svc = svc_with(dir, strict_posture());
+
+        let v = svc
+            .inspect_plugin(&tarball)
+            .expect("inspect still succeeds");
+        assert_eq!(v["trust"], "rejected");
+        assert_eq!(v["name"], "acme-store-untrusted");
+    }
+
+    /// Structurally invalid bytes (not a tarball at all) are a `Validation` error, same as install's
+    /// structural gate — inspect shares the exact same in-memory unpack path.
+    #[test]
+    fn inspect_rejects_invalid_tarball() {
+        let dir = tmp_plugins_dir("inspect-garbage");
+        let svc = svc_with(dir, unsigned_ok_posture());
+        assert!(matches!(
+            svc.inspect_plugin(b"not a tarball at all"),
+            Err(AdminError::Validation(_))
+        ));
+    }
+
+    /// A decoded tarball over `MAX_TARBALL_FILE_BYTES` is refused BEFORE `unpack` ever runs
+    /// (question #7's round-2 hardening correction: a hard cap on the raw upload, checked before
+    /// touching the decoder).
+    #[test]
+    fn inspect_rejects_oversized_tarball_before_unpacking() {
+        let dir = tmp_plugins_dir("inspect-oversized");
+        let svc = svc_with(dir, unsigned_ok_posture());
+        let huge = vec![0u8; (busbar_plugin_loader::tarball::MAX_TARBALL_FILE_BYTES + 1) as usize];
+        let err = svc.inspect_plugin(&huge).unwrap_err();
+        assert!(
+            matches!(&err, AdminError::Validation(msg) if msg.contains("byte cap")),
+            "got {err:?}"
+        );
+    }
+
+    /// A manifest whose `settings_schema` nests far deeper than the depth cap is refused as a
+    /// `schema_error` on the response (never a hard error, and never a parser stack-overflow risk —
+    /// the depth guard runs BEFORE `serde_json::from_str` ever sees the text). Question #7's round-2
+    /// correction: a pathological SCHEMA document is a distinct attack from a pathological tarball.
+    #[test]
+    fn inspect_bounds_pathological_schema_nesting_depth() {
+        let dir = tmp_plugins_dir("inspect-depth-bomb");
+        let mut m = test_manifest("acme-store-depthbomb", "depthbomb", "acme", "1.0.0");
+        // A tiny document that nests far past the depth cap: `[[[[...]]]]`.
+        let bomb = format!("{}{}", "[".repeat(500), "]".repeat(500));
+        m.settings_schema = Some(bomb);
+        m.sha256 = busbar_plugin_sign::sha256_hex(b"lib bytes");
+        let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", b"lib bytes").unwrap();
+        let svc = svc_with(dir, unsigned_ok_posture());
+
+        let v = svc
+            .inspect_plugin(&tarball)
+            .expect("inspect itself still succeeds");
+        assert_eq!(v["schema"], serde_json::Value::Null);
+        let err = v["schema_error"].as_str().expect("schema_error is set");
+        assert!(err.contains("nests deeper"), "got {err:?}");
     }
 
     /// Install rejects a filename that isn't a bare `.tar.gz` name (path traversal / wrong

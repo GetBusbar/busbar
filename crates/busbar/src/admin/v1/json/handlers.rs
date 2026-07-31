@@ -217,6 +217,51 @@ pub(crate) async fn install_plugin(
     }
 }
 
+/// `POST /api/v1/admin/plugins/inspect` request body. SAME shape as [`InstallPluginReq`] (question
+/// #7 — "same request body shape as `POST /plugins`") — `file` is accepted for shape parity with
+/// the install flow a UI composes around the same upload, but is otherwise UNUSED here: inspect
+/// never writes anything to disk, so there is no filename to bind an install would need.
+#[derive(serde::Deserialize)]
+#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
+pub(crate) struct InspectPluginReq {
+    #[allow(dead_code)]
+    file: String,
+    tarball_b64: String,
+}
+
+/// `POST /api/v1/admin/plugins/inspect` — a STATELESS, `read-only`-scope PREVIEW of a candidate
+/// plugin tarball (plugin-settings-schema-SPEC.md checklist item 4, question #7): verifies the
+/// tarball's signature, parses its manifest, and returns the SAME response shape `GET
+/// /plugins/{name}/schema` carries. NEVER installs (no write to `plugins.dir`), NEVER
+/// conflict-checks against the installed set. See [`AdminService::inspect_plugin`] for the
+/// hardening this endpoint ships with — reachable by the weakest admin credential in the system, on
+/// an attacker-controlled compressed archive, so it is treated as a parser attack surface, not
+/// "just another stateless read".
+pub(crate) async fn inspect_plugin(
+    State(handle): State<Arc<AppHandle>>,
+    body: axum::body::Bytes,
+) -> Response {
+    use base64::Engine as _;
+    let req: InspectPluginReq = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            return err_json(&AdminError::Validation(format!(
+                "malformed plugin body: {e}"
+            )));
+        }
+    };
+    let tarball = match base64::engine::general_purpose::STANDARD.decode(req.tarball_b64.as_bytes())
+    {
+        Ok(b) => b,
+        Err(e) => {
+            return err_json(&AdminError::Validation(format!(
+                "tarball_b64 is not valid base64: {e}"
+            )));
+        }
+    };
+    respond(StatusCode::OK, service(&handle).inspect_plugin(&tarball))
+}
+
 /// `DELETE /api/v1/admin/plugins/{file}` — REMOVE a dynamic-library plugin (Full scope): delete the
 /// library + its manifest sidecar from the plugins directory. `404 not_found` if absent. `204 No
 /// Content` on success. A currently-loaded store keeps running until the next store (re)load.
@@ -3145,10 +3190,18 @@ pub(crate) async fn plugin_schema(
         let trust = loadable
             .map(|p| verdict_trust(&p.verdict))
             .unwrap_or("unverified");
+        // `kind`/`restart_required_default` (plugin-settings-schema-SPEC.md question #14): the
+        // kind-derived restart-scoping default, so busbar-ui does not have to hardcode the
+        // kind->default table itself. `None` when the plugin cannot even be resolved to a
+        // manifest — same posture `trust: "unverified"` already takes for the identical case.
+        let kind = loadable.map(|p| p.manifest.kind.clone());
+        let restart_required_default = kind
+            .as_deref()
+            .map(busbar_plugin_sign::kind_restart_default);
         if described.is_some() {
             return ok_json(
                 StatusCode::OK,
-                &json!({ "name": name, "schema": described, "schema_error": null, "trust": trust, "source": "describe" }),
+                &json!({ "name": name, "schema": described, "schema_error": null, "trust": trust, "source": "describe", "kind": kind, "restart_required_default": restart_required_default }),
             );
         }
         // describe answered null (or the hook never answered at all) — fall back to the manifest
@@ -3157,7 +3210,7 @@ pub(crate) async fn plugin_schema(
         let (schema, schema_error) = loadable.map(manifest_schema).unwrap_or((None, None));
         return ok_json(
             StatusCode::OK,
-            &json!({ "name": name, "schema": schema, "schema_error": schema_error, "trust": trust, "source": "manifest" }),
+            &json!({ "name": name, "schema": schema, "schema_error": schema_error, "trust": trust, "source": "manifest", "kind": kind, "restart_required_default": restart_required_default }),
         );
     }
     let Some(loadable) = current.hook_env.registry.resolve(&name) else {
@@ -3173,6 +3226,8 @@ pub(crate) async fn plugin_schema(
             "schema_error": schema_error,
             "trust": trust,
             "source": "manifest",
+            "kind": loadable.manifest.kind,
+            "restart_required_default": busbar_plugin_sign::kind_restart_default(&loadable.manifest.kind),
         }),
     )
 }

@@ -76,6 +76,54 @@ fn plugins_cfg_allow_unsigned(dir: &Path) -> PluginsCfg {
     cfg
 }
 
+/// A `kind: auth` manifest carrying a `settings_schema` that marks `field` as `x-busbar-secret:
+/// true` at the schema's ROOT `properties` (plugin-settings-schema-SPEC.md's contract test,
+/// checklist item 7 / consumer question #1). `resolve_settings()` itself never reads this schema —
+/// resolution fires on VALUE SHAPE alone, not on what the manifest declares — but the whole point of
+/// `x-busbar-secret` being "mechanically true, not a convention" is that the two agree: what the
+/// schema marks as a secret IS what the engine actually resolves before the plugin sees it. This
+/// helper exists so the contract test below mints a config against a manifest that genuinely
+/// declares the field secret, not merely a bare settings map with no schema at all.
+fn auth_manifest_with_root_secret_schema(
+    name: &str,
+    alias: &str,
+    publisher: &str,
+    field: &str,
+) -> busbar_plugin_sign::Manifest {
+    let mut m = auth_manifest(name, alias, publisher);
+    let schema = serde_json::json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+            field: {"type": "string", "x-busbar-secret": true},
+            "id": {"type": "string"},
+            "roles": {"type": "array", "items": {"type": "string"}},
+        },
+    });
+    m.settings_schema = Some(schema.to_string());
+    m
+}
+
+/// Write an UNSIGNED static-auth tarball whose manifest declares `token` as a ROOT-LEVEL
+/// `x-busbar-secret` field (see [`auth_manifest_with_root_secret_schema`]).
+fn write_static_auth_with_root_secret_schema(
+    dir: &Path,
+    file: &str,
+    name: &str,
+    alias: &str,
+) -> bool {
+    let Some(path) = static_auth_cdylib() else {
+        return false;
+    };
+    let lib = std::fs::read(&path).expect("read static-auth cdylib");
+    let tarball = unsigned_tarball(
+        auth_manifest_with_root_secret_schema(name, alias, "acme", "token"),
+        &lib,
+    );
+    std::fs::write(dir.join(file), tarball).unwrap();
+    true
+}
+
 /// An `auth.chain` naming exactly the given plugin module (with an optional `settings` map).
 fn chain_with(module: &str, settings: serde_json::Map<String, serde_json::Value>) -> AuthCfg {
     let mut entry = AuthChainEntry::bare(module);
@@ -157,6 +205,88 @@ fn auth_plugin_license_key_secret_ref_is_resolved_and_delivered() {
         "config keeps the ref, never the resolved secret: {serialized}"
     );
 
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// THE CONTRACT TEST for consumer question #1's guarantee, via the PLUGIN-SETTINGS path
+/// specifically (plugin-settings-schema-SPEC.md checklist item 7): a manifest that declares an
+/// ARBITRARY root-level field (`token` — not the well-known `licenseKey` convention the OTHER
+/// contract test above already covers) as `x-busbar-secret: true`, set to `{ env: VAR }`, boots for
+/// REAL through the full engine pipeline (`plugins_preflight` → `AuthMiddleware::new`, the exact
+/// path boot itself takes — no shortcut through `resolve_settings()` directly), and the plugin's
+/// `open()` receives a PLAIN STRING it can authenticate a caller against — never the raw `{env:
+/// VAR}` reference object (which would fail `StaticConfig`'s `token: String` deserialization, so
+/// this test would fail closed rather than silently pass on a lucky coincidence).
+///
+/// This pins the guarantee generically (any field shape resolve_settings recognizes, not merely the
+/// license-key convention some future refactor might special-case) — a future change that broke
+/// resolution for a non-license field would go red here even if it happened to leave the
+/// license-key path intact.
+#[test]
+fn auth_plugin_root_level_secret_marked_setting_resolves_and_authenticates() {
+    let dir = tmp_plugin_dir("auth-plugin-root-secret-contract");
+    if !write_static_auth_with_root_secret_schema(
+        &dir,
+        "static.tar.gz",
+        "acme-auth-static",
+        "sec-auth",
+    ) {
+        eprintln!("skip: static-auth plugin cdylib not built (run under --workspace)");
+        return;
+    }
+    let plugins = plugins_cfg_allow_unsigned(&dir);
+
+    let var = format!("BUSBAR_PLUGIN_ROOT_SECRET_CONTRACT_{}", std::process::id());
+    let raw_token = "the-actual-plaintext-token-value";
+    std::env::set_var(&var, raw_token);
+
+    let mut settings = serde_json::json!({ "id": "alice", "roles": ["platform"] })
+        .as_object()
+        .unwrap()
+        .clone();
+    settings.insert("token".to_string(), serde_json::json!({ "env": var }));
+    let cfg = chain_with("sec-auth", settings);
+
+    let registry = crate::plugins_preflight(None, Some(&cfg), &Default::default(), &plugins)
+        .expect(
+            "preflight resolves the kind:auth plugin, whose manifest declares `token` as a \
+                 root-level x-busbar-secret field",
+        );
+    let mw = AuthMiddleware::new(
+        &cfg,
+        &registry,
+        &crate::config::secret::SecretResolver::builtins_only(),
+    )
+    .expect(
+        "the {env: VAR} reference resolves BEFORE open() — the plugin's StaticConfig.token: String \
+         field would fail to deserialize an unresolved reference object, so a load success here is \
+         itself proof open() received a plain string",
+    );
+
+    // The PLAIN, resolved value (never the reference) is what open() actually stored as the
+    // credential — authenticating with the RAW env value succeeds; the literal reference text
+    // never authenticates anything (it was never delivered to the plugin at all).
+    match mw.run_chain(Some(raw_token)) {
+        ChainVerdict::Identified { principal, .. } => assert_eq!(principal.id, "alice"),
+        other => panic!(
+            "the resolved plaintext token must authenticate — open() did not receive the plain \
+             string: {other:?}"
+        ),
+    }
+    assert_eq!(
+        mw.run_chain(Some("{\"env\":\"irrelevant\"}")),
+        ChainVerdict::Denied,
+        "the raw reference text itself was never delivered to the plugin as a credential"
+    );
+
+    // The overlay/config still holds the REFERENCE, never the resolved secret.
+    let serialized = serde_json::to_string(&cfg.chain[0].settings).expect("serialize settings");
+    assert!(
+        serialized.contains(&var) && !serialized.contains(raw_token),
+        "config keeps the ref, never the resolved secret: {serialized}"
+    );
+
+    std::env::remove_var(&var);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

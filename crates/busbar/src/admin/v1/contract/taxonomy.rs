@@ -426,6 +426,10 @@ pub(crate) fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr]
         (Delete, "/plugins/{file}") => {
             de![Validation / InvalidFilename, NotFound / UnknownResource,]
         }
+        // Stateless preview of a candidate tarball (checklist item 4, question #7) — every failure
+        // mode is a malformed/oversized/untrusted-shaped INPUT, never a state conflict (it writes
+        // nothing and conflict-checks nothing), so `Validation` is its only declarable kind.
+        (Post, "/plugins/inspect") => de![Validation / MalformedBody],
         // ── Config plane ──────────────────────────────────────────────────────────────────────
         (Put, "/admin-auth") => de![
             Validation / UnknownModule,

@@ -235,6 +235,7 @@ dependencies = [
  "busbar-hooks-ranking",
  "busbar-plugin-loader",
  "busbar-plugin-sign",
+ "busbar-secret-ref",
  "busbar-store-memory",
  "bytes",
  "crc32fast",
@@ -358,6 +359,7 @@ version = "1.5.0"
 dependencies = [
  "busbar-plugin-loader",
  "busbar-plugin-sign",
+ "busbar-secret-ref",
  "getrandom 0.3.4",
  "hex",
  "jsonschema",
@@ -397,6 +399,16 @@ dependencies = [
  "busbar-plugin-sdk",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "busbar-secret-ref"
+version = "1.5.0"
+dependencies = [
+ "jsonschema",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
 ]
 
 [[package]]

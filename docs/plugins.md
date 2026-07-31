@@ -338,6 +338,100 @@ As with every plugin kind, a configured `kind: hook` module that cannot load fai
 
 Both are auto-trusted by the embedded release key; no `trust.publishers` entry is needed.
 
+## Settings schema (`settings_schema`)
+
+A plugin's manifest may carry `settings_schema`: a JSON Schema (draft 2020-12) document describing
+the shape of its `settings:` block, embedded and signed alongside everything else. It powers `GET
+/plugins/{name}/schema` — a UI can render an install/config form for a plugin **without ever
+loading it**, because the schema comes from the signed manifest, not a runtime `describe` call
+(store/secret/auth plugins have no such call; see "Where this needs to be more than the raw idea" in
+the plugin-settings-schema design for the full rationale). A `kind: hook` plugin's live `describe`
+narrows this baseline when the plugin is loaded and answers; the manifest schema is what every kind
+gets, including one that has never run.
+
+Pass `--settings-schema-file <path.json>` to `busbar-plugin-pack pack`. The file is validated —
+never generated — at pack time:
+
+- `$schema` must be EXACTLY `"https://json-schema.org/draft/2020-12/schema"`. An older/missing draft
+  is a hard pack-time error (busbar-ui's form renderer understands 2020-12 only).
+- The document must otherwise be a syntactically valid JSON Schema.
+- `--schema-derived` asserts (self-attested, not verified by this tool) that the file was generated
+  by a build-time macro from the same Rust config struct `open()` parses, rather than hand-written —
+  copied verbatim into the manifest's `schema_derived` field. Consumers must not treat
+  `schema_derived: true` alone as a verified guarantee: it is load-bearing only paired with a
+  `trusted` verdict AND `publisher == "busbar"` (a self-declared `publisher` string is never, on its
+  own, proof of anything — see `crates/plugin-loader/src/registry.rs`'s existing refusal to derive a
+  trust label from it).
+
+### `x-busbar-secret` — marking a field as a secret
+
+`x-busbar-secret: true` on a property means the field's value is a **reference**, never a plain
+value: busbar-ui composes one of
+
+```json
+{"env": "VAR_NAME"}
+{"file": "/path/to/secret"}
+{"module": "vault", "settings": {"...": "..."}}
+```
+
+(the exact shapes `SecretRef` — now in the standalone `busbar-secret-ref` crate — accepts), and
+busbar core resolves the reference to a plain value BEFORE the plugin's `open()` ever sees it. A
+bare string in a marked field is a config-authoring error, not a valid value.
+
+Pack-time rules (hard errors, not warnings):
+
+- A marked field must be `type: string`, optionally with `contentEncoding: "base64"` for a binary
+  secret (a private key, certificate, or keytab represented as base64/PEM text — the referenced
+  source, env var or file, must ALREADY be clean UTF-8 base64/PEM text; the engine does not decode
+  binary on the way through, it fails resolution on non-UTF-8 source bytes).
+- A marked field must be a DIRECT member of the schema's root `properties` — never nested, and never
+  inside `items`/`prefixItems`/`oneOf`/`anyOf` (busbar's `resolve_settings()` only ever resolves
+  top-level fields; a nested marker would silently never resolve). `$ref`/`$defs`/`allOf` are
+  resolved before this check, so a struct-derived nested field can't evade it by hiding behind a
+  `$ref`. A legitimately nested secret-bearing struct field (e.g. `tls: { key: String }`) must be
+  flattened to a root property instead (`tls_key`, not `tls.key`). A variable-length list of secrets
+  (`upstreams: [{api_key}, ...]`) has no supported shape in v1 — collapse it into one root secret
+  reference whose resolved value is a blob the plugin parses itself, or (for a small/fixed count)
+  model it as named root fields (`upstream_primary_api_key`, `upstream_backup_api_key`).
+- An UNMARKED field whose name matches
+  `password|secret|token|credential|passphrase|private_key|apikey|api_key` (case-insensitive, at any
+  depth) is also a hard error — mark it or rename it. This is the mitigation against a third-party
+  author silently shipping a plaintext-credential text box with no marker at all.
+
+### `x-busbar-ref` — referencing an engine object
+
+`x-busbar-ref: "pool" | "group" | "model" | "provider"` on a field tells busbar-ui to render a
+picker populated from the matching admin listing endpoint, instead of a free-text box — closing the
+"typo'd reference only discovered at apply time" failure mode. This is a UI rendering hint ONLY:
+there is deliberately no server-side (or pack-time) enforcement of the value, because
+pool/group/model/provider names are runtime data scoped to a single busbar instance — no manifest
+schema, and no single fleet member's `describe`, could ever enumerate the valid set for an entire
+fleet at template-authoring time. A fleet template using `x-busbar-ref` is validated per-member, at
+apply time, against that member's own admin API listing.
+
+### `x-busbar-restart-required` — restart scoping
+
+Whether a settings change needs a process restart to take effect is a property of the ENGINE's
+binding lifecycle for that plugin `kind`, not something a plugin author has visibility into:
+`store`/`secret` plugins bind once at process start (every field is restart-scoped by construction);
+`hook`/`auth` plugin registries rebuild hot. The default is therefore DERIVED from `kind`, not
+plugin-declared:
+
+| kind     | default            |
+|----------|--------------------|
+| `store`  | restart-required   |
+| `secret` | restart-required   |
+| `hook`   | hot-appliable      |
+| `auth`   | hot-appliable      |
+
+A per-field `x-busbar-restart-required` overrides the kind default, but only in ONE direction
+without qualification: `true` (more restart-cautious than the kind default) is always honored — the
+safe direction to be wrong in is an unnecessary restart. `false` against a kind default of `true`
+(claiming a `store`/`secret` field is hot-appliable) is honored ONLY when the manifest's trust
+verdict is `trusted` AND `publisher == "busbar"` — the same trust+publisher gate `schema_derived`
+uses, for the same reason: a third-party claim in the direction that could cause a silently-dropped
+setting is not trusted; a claim in the fail-safe direction is.
+
 ## Signing and packaging
 
 Generate a keypair once (the private half is your signing secret; the public half is what
