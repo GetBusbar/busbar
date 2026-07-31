@@ -3122,23 +3122,73 @@ pub(crate) async fn plugin_schema(
     Path(name): Path<String>,
 ) -> Response {
     let current = handle.load();
-    // Hooks keep the live describe-proxy behavior unchanged — delegate rather than duplicate it.
-    if current.hook_registry.contains_key(&name) {
-        return hook_schema(State(handle), Path(name)).await;
+    // Hooks keep the live describe-proxy behavior unchanged (source: "describe") — but the
+    // response still needs `trust`, so this is no longer a pure delegate to `hook_schema` (which
+    // has its own narrower response shape for `GET /hooks/{name}/schema`).
+    if let Some(hook) = current.hook_registry.get(&name) {
+        let schema =
+            crate::hooks::fetch_schema(&name, hook, current.config_version, &current.hook_env)
+                .await;
+        // Best-effort: a hook's config-registry name doesn't have to match a dlopen'd plugin's
+        // manifest name/alias (some hooks are built-in, not backed by an installed tarball at
+        // all) — when it does resolve, report the real verdict; when it doesn't, "unverified" is
+        // the conservative label (never assert trust the manifest catalog can't back up).
+        let trust = current
+            .hook_env
+            .registry
+            .resolve(&name)
+            .map(|p| verdict_trust(&p.verdict))
+            .unwrap_or("unverified");
+        return ok_json(
+            StatusCode::OK,
+            &json!({ "name": name, "schema": schema, "trust": trust, "source": "describe" }),
+        );
     }
     let Some(loadable) = current.hook_env.registry.resolve(&name) else {
         return err_json(&AdminError::not_found(format!("plugin `{name}`")));
     };
+    let trust = verdict_trust(&loadable.verdict);
     // `settings_schema` is a raw JSON-Schema-document STRING in the manifest (kept as text rather
     // than a nested Value so `canonical_manifest_bytes`'s sorted-key re-serialization can never
     // reorder keys inside it and silently change what was signed) — parse it back to a Value here
-    // so the HTTP response carries real JSON, not a JSON string containing JSON.
-    let schema: Option<serde_json::Value> = loadable
-        .manifest
-        .settings_schema
-        .as_deref()
-        .and_then(|s| serde_json::from_str(s).ok());
-    ok_json(StatusCode::OK, &json!({ "name": name, "schema": schema }))
+    // so the HTTP response carries real JSON, not a JSON string containing JSON. A manifest that
+    // SET the field but whose value fails to parse is a real authoring/packaging bug, distinct
+    // from a manifest that never set it at all — `schema: null` alone would collapse the two, so
+    // a parse failure instead reports `schema_error` and leaves `schema` null.
+    let (schema, schema_error): (Option<serde_json::Value>, Option<String>) =
+        match loadable.manifest.settings_schema.as_deref() {
+            None => (None, None),
+            Some(s) => match serde_json::from_str::<serde_json::Value>(s) {
+                Ok(v) => (Some(v), None),
+                Err(e) => (
+                    None,
+                    Some(format!("manifest settings_schema is not valid JSON: {e}")),
+                ),
+            },
+        };
+    ok_json(
+        StatusCode::OK,
+        &json!({
+            "name": name,
+            "schema": schema,
+            "schema_error": schema_error,
+            "trust": trust,
+            "source": "manifest",
+        }),
+    )
+}
+
+/// The catalog's own trust vocabulary (`"trusted" | "unverified" | "rejected"` — see
+/// `docs/admin-api.md`'s plugin catalog and `service.rs`'s `evaluate()` mapping), applied to a
+/// [`busbar_plugin_sign::Verdict`]. A `LoadablePlugin` (what `PluginRegistry::resolve` returns)
+/// is never `"rejected"` — a rejected artifact is a `SkippedPlugin`, not a load candidate — but
+/// the mapping stays total (not a partial match on `Trusted`/`Allowed` alone) so a future verdict
+/// variant is a compile error here, not a silently-missing label.
+fn verdict_trust(v: &busbar_plugin_sign::Verdict) -> &'static str {
+    match v {
+        busbar_plugin_sign::Verdict::Trusted { .. } => "trusted",
+        busbar_plugin_sign::Verdict::Allowed { .. } => "unverified",
+    }
 }
 
 /// `GET /api/v1/admin/hooks/{name}/schema` — proxy the hook's self-described settings JSON Schema
@@ -3422,14 +3472,14 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         ap("/plugins/{file}/schema"),
         json!({
             "get": {
-                "summary": "The plugin's self-described settings JSON Schema, read from the SIGNED manifest's `settings_schema` field — works for every plugin kind (store/secret/auth/hook), not just hooks. `hook` plugins keep the live describe-proxy behavior unchanged",
+                "summary": "The plugin's self-described settings JSON Schema, read from the SIGNED manifest's `settings_schema` field — works for every plugin kind (store/secret/auth/hook), not just hooks. `hook` plugins keep the live describe-proxy behavior unchanged (source: describe)",
                 "security": [{"adminToken": []}],
                 "parameters": [{
                     "name": "file", "in": "path", "required": true,
                     "schema": {"type": "string"}
                 }],
                 "responses": {
-                    "200": {"description": "`{name, schema}` (`schema` null when the manifest carries none)"},
+                    "200": {"description": "`{name, schema, schema_error, trust, source}` — `schema` null (with `schema_error` null) when the manifest carries none; a manifest that SET `settings_schema` but failed to parse instead reports `schema_error` (never collapsed into the same null as \"no schema\"). `trust` is `trusted|unverified|rejected` (the catalog vocabulary). `source` is `describe` (a loaded hook answered live) or `manifest`"},
                 }
             }
         }),
@@ -4263,7 +4313,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         "/plugins/{file}/schema",
         "get",
         "200",
-        sview::HookSchemaView
+        sview::PluginSchemaView
     );
     typed!(
         "/plugins/rollback",

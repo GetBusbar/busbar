@@ -628,6 +628,7 @@ mod tests {
             license: String::new(),
             needs: Default::default(),
             settings_schema: None,
+            schema_derived: false,
         }
     }
 

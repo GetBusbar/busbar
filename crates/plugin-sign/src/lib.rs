@@ -139,6 +139,19 @@ pub struct Manifest {
     /// string - see `busbarAI-private/design/plugin-settings-schema-SPEC.md`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settings_schema: Option<String>,
+    /// SELF-ATTESTED, not verified by `busbar-plugin-pack` (which only embeds a schema FILE it is
+    /// handed — it never sees the plugin's Rust source, so it has no way to confirm derivation
+    /// actually happened). Set by `--schema-derived`, an assertion the CALLER (the plugin's own
+    /// `build.rs`/CI, using the `busbar-plugin-sdk` `schema_for!` macro) makes. SIGNED, so a false
+    /// claim is attributable after the fact — but signing makes a lie ATTRIBUTABLE, not TRUE.
+    /// Consumers (busbar-ui, `default`/`required` trust) must NOT treat this flag alone as a
+    /// verified guarantee: it is load-bearing only when paired with `trust == "trusted"` AND
+    /// `publisher == "busbar"` (busbar's own CI is the only pipeline where derivation is
+    /// structurally enforced, a compile error rather than an assertion) — see
+    /// `busbarAI-private/design/plugin-settings-schema-SPEC.md` question #4's round-3/5
+    /// corrections. `false` by default (serde-default so every existing manifest still parses).
+    #[serde(default)]
+    pub schema_derived: bool,
 }
 
 /// The advisory declared-intent block a `kind: hook` plugin's manifest may carry (`needs:`). Each
@@ -724,6 +737,7 @@ mod tests {
             license: "Apache-2.0".to_string(),
             needs: HookNeeds::default(),
             settings_schema: None,
+            schema_derived: false,
         }
     }
 

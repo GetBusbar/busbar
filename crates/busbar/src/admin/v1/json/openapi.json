@@ -1808,6 +1808,40 @@
         ],
         "type": "object"
       },
+      "PluginSchemaView": {
+        "description": "`GET /plugins/{name}/schema` — the generalized, all-kinds sibling of [`HookSchemaView`]\n(plugin-settings-schema-SPEC.md). Carries `trust`/`source`/`schema_error` on top of\n`{name, schema}` so busbar-ui never has to infer trust state or the describe/manifest\nprecedence rule from context — the server always picks exactly one source and reports which.",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "schema": {
+            "description": "The plugin's settings JSON Schema verbatim, or `null` — either because the manifest never\nset `settings_schema`, or (distinctly, see `schema_error`) because it did but the value\nfailed to parse."
+          },
+          "schema_error": {
+            "description": "Set only when the manifest's `settings_schema` was present but failed to parse as JSON —\n`null` for a manifest that genuinely never set the field. Never collapsed into a bare\n`schema: null` (question #3, round-4 correction): a present-but-corrupt schema is a real\nauthoring/packaging bug, not \"this plugin simply has none.\"",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "description": "`\"describe\"` when a currently-loaded `kind: hook` answered its live `describe` wire\nmessage (the existing describe-proxy behavior, unchanged); `\"manifest\"` otherwise. Lets\nbusbar-ui explain \"why does this form look different from what I expected\" without\nimplementing the describe/manifest precedence rule itself (question #3, round-4\ncorrection).",
+            "type": "string"
+          },
+          "trust": {
+            "description": "`\"trusted\" | \"unverified\" | \"rejected\"` — the same vocabulary the plugin catalog already\nuses (never `\"verified\"`; question #8, round-4 correction).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "schema",
+          "schema_error",
+          "trust",
+          "source"
+        ],
+        "type": "object"
+      },
       "PluginView": {
         "description": "One plugin in the plugin catalog (`GET /api/v1/admin/plugins?type=`). A plugin is either\nCOMPILED-IN (baked into the binary, feature-gated — provably removable via `--no-default-features`)\nor a signed DYNAMIC-LIBRARY plugin (a loadable `.so`/`.dll`/`.dylib`, dlopen'd over the signed\nplugin ABI — this covers `auth`, `hooks`, and `store` plugin kinds alike as of 1.5.0; the\nretired 1.4.x socket/webhook \"external\" transport is gone). `active` is `Some(true/false)`\nwhere activation is tracked (auth modules: in the chain?; hook plugins: configured = true;\ndynamic store: the configured `store.module`) and `None` where it is a per-pool concern not\nsummarized here (compiled-in ranking policies). Additive-only.",
         "properties": {
@@ -6881,11 +6915,11 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HookSchemaView"
+                  "$ref": "#/components/schemas/PluginSchemaView"
                 }
               }
             },
-            "description": "`{name, schema}` (`schema` null when the manifest carries none)"
+            "description": "`{name, schema, schema_error, trust, source}` — `schema` null (with `schema_error` null) when the manifest carries none; a manifest that SET `settings_schema` but failed to parse instead reports `schema_error` (never collapsed into the same null as \"no schema\"). `trust` is `trusted|unverified|rejected` (the catalog vocabulary). `source` is `describe` (a loaded hook answered live) or `manifest`"
           },
           "401": {
             "content": {
@@ -6936,7 +6970,7 @@
             "bearerAuth": []
           }
         ],
-        "summary": "The plugin's self-described settings JSON Schema, read from the SIGNED manifest's `settings_schema` field — works for every plugin kind (store/secret/auth/hook), not just hooks. `hook` plugins keep the live describe-proxy behavior unchanged",
+        "summary": "The plugin's self-described settings JSON Schema, read from the SIGNED manifest's `settings_schema` field — works for every plugin kind (store/secret/auth/hook), not just hooks. `hook` plugins keep the live describe-proxy behavior unchanged (source: describe)",
         "x-busbar-required-scope": "read-only"
       }
     },

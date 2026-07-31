@@ -5866,6 +5866,7 @@ fn admin_test_tarball_versioned(name: &str, alias: &str, version: &str) -> Vec<u
         license: String::new(),
         needs: Default::default(),
         settings_schema: None,
+        schema_derived: false,
     };
     busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap()
 }
@@ -6033,6 +6034,7 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
         license: String::new(),
         needs: Default::default(),
         settings_schema: Some(schema.to_string()),
+        schema_derived: false,
     };
     let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", &lib).unwrap();
     let file = "acme-store-withschema.tar.gz";
@@ -6073,6 +6075,11 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
     assert_eq!(got_status.as_u16(), 200, "schema get body: {got}");
     assert_eq!(got["name"], "acme-store-withschema");
     assert_eq!(got["schema"], schema);
+    assert_eq!(got["schema_error"], serde_json::Value::Null);
+    assert_eq!(got["source"], "manifest");
+    // Unsigned tarball under an `allow_unsigned` posture (no publisher allowlist) → "unverified",
+    // the real catalog vocabulary (never "verified" — plugin-settings-schema-SPEC.md question #8).
+    assert_eq!(got["trust"], "unverified");
 
     handle.abort();
 
@@ -6113,17 +6120,76 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
         .unwrap();
     assert_eq!(got1_again["schema"], schema);
 
+    let _ = std::fs::remove_dir_all(&dir);
+    handle2.abort();
+
+    // A manifest that SET settings_schema but to unparseable text reports `schema_error`,
+    // distinct from a manifest that never set the field at all (round-4 correction — both used to
+    // collapse to `schema: null` via `.ok()`, silently hiding a real authoring bug).
+    let bad_lib = b"junk library bytes for acme-store-badschema (never dlopened)".to_vec();
+    let bad_m = busbar_plugin_sign::Manifest {
+        name: "acme-store-badschema".into(),
+        alias: "badschema".into(),
+        kind: "store".into(),
+        version: "1.0.0".into(),
+        publisher: "acme".into(),
+        abi_version: *busbar_plugin_loader::supported_abi("store")
+            .iter()
+            .max()
+            .expect("store abi"),
+        sha256: busbar_plugin_sign::sha256_hex(&bad_lib),
+        signature: String::new(),
+        description: String::new(),
+        homepage: String::new(),
+        license: String::new(),
+        needs: Default::default(),
+        settings_schema: Some("{ not valid json".into()),
+        schema_derived: false,
+    };
+    let bad_tarball = busbar_plugin_loader::tarball::package(&bad_m, "lib.so", &bad_lib).unwrap();
+    let bad_dir = std::env::temp_dir().join(format!(
+        "busbar-admin-plugins-badschema-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&bad_dir);
+    std::fs::create_dir_all(&bad_dir).unwrap();
+    std::fs::write(bad_dir.join("acme-store-badschema.tar.gz"), &bad_tarball).unwrap();
+    let bad_registry = busbar_plugin_loader::scan_and_validate(&bad_dir, &policy).unwrap();
+    let bad_hook_env = crate::hooks::HookEnv::new(
+        std::sync::Arc::new(bad_registry),
+        std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
+    );
+    let (bad_addr, bad_handle) =
+        serve_with_plugins_dir_and_hook_env(bad_dir.clone(), bad_hook_env).await;
+    let got_bad: serde_json::Value = client
+        .get(format!(
+            "http://{bad_addr}/api/v1/admin/plugins/acme-store-badschema/schema"
+        ))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(got_bad["schema"], serde_json::Value::Null);
+    assert!(
+        got_bad["schema_error"].as_str().is_some(),
+        "corrupt settings_schema reports schema_error, not a bare null: {got_bad}"
+    );
     // An unknown plugin name is 404, distinguishing "no schema" from "no such plugin".
     let missing = client
-        .get(format!("http://{addr2}/api/v1/admin/plugins/nope/schema"))
+        .get(format!(
+            "http://{bad_addr}/api/v1/admin/plugins/nope/schema"
+        ))
         .header("x-admin-token", "admintok")
         .send()
         .await
         .unwrap();
     assert_eq!(missing.status().as_u16(), 404);
 
-    let _ = std::fs::remove_dir_all(&dir);
-    handle2.abort();
+    let _ = std::fs::remove_dir_all(&bad_dir);
+    bad_handle.abort();
 }
 
 /// H2 (bricks next boot): installing a SAME-NAME plugin under a DIFFERENT filename (e.g. a version
