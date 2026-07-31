@@ -251,11 +251,22 @@ jobs:
           trap 'kill $BUSBAR_PID 2>/dev/null || true' EXIT
           for _ in $(seq 1 20); do curl -sf -o /dev/null "http://127.0.0.1:8081/api/v1/admin/plugins?type=store" -H "Authorization: Bearer $BUSBAR_ADMIN_TOKEN" && break; sleep 0.5; done
 
-          TARBALL_B64=$(base64 < /tmp/signoff.tar.gz | tr -d '\n')
+          # The packed tarball's base64 text can run into the tens of MB for a plugin that bundles
+          # a compiled dependency (e.g. rusqlite's bundled sqlite) — passing that as a literal `-d`
+          # ARGUMENT (as this used to) blows past the OS ARG_MAX for a single argv element and curl
+          # fails with "Argument list too long" before it even makes a request. Writing the JSON
+          # body to a file and using `-d @file` reads it as a request body instead, which has no
+          # such limit.
+          python3 -c "
+          import base64, json, sys
+          with open('/tmp/signoff.tar.gz', 'rb') as f:
+              b64 = base64.b64encode(f.read()).decode('ascii')
+          json.dump({'file': '${{ inputs.plugin_crate }}-0.0.0-ci.tar.gz', 'tarball_b64': b64}, open('/tmp/install-body.json', 'w'))
+          "
           echo "install..."
           INSTALL_STATUS=$(curl -s -o /tmp/install.json -w "%{http_code}" -X POST \
             -H "Authorization: Bearer $BUSBAR_ADMIN_TOKEN" -H "Content-Type: application/json" \
-            -d "{\"file\": \"${{ inputs.plugin_crate }}-0.0.0-ci.tar.gz\", \"tarball_b64\": \"$TARBALL_B64\"}" \
+            -d @/tmp/install-body.json \
             "$ADMIN/plugins")
           cat /tmp/install.json
           [ "$INSTALL_STATUS" = "201" ] || { echo "expected 201 from POST /plugins, got $INSTALL_STATUS" >&2; exit 1; }
