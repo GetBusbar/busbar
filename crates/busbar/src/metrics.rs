@@ -911,7 +911,7 @@ mod tests {
     fn sample_vkey(id: &str) -> VirtualKey {
         VirtualKey {
             id: id.to_string(),
-            key_hash: format!("hash-{id}"),
+            generation_hash: format!("hash-{id}"),
             name: format!("key-{id}"),
             allowed_pools: None,
             enabled: true,
@@ -1249,7 +1249,7 @@ mod tests {
             let id = format!("vk_limit_{i:04x}");
             let key = VirtualKey {
                 id: id.clone(),
-                key_hash: format!("hash-limit-{i}"),
+                generation_hash: format!("hash-limit-{i}"),
                 name: format!("key-limit-{i}"),
                 allowed_pools: None,
                 enabled: true,

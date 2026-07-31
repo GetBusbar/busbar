@@ -1199,7 +1199,7 @@ mod tests {
             .expect("load from verified bytes");
         let key = VirtualKey {
             id: "vk_b".into(),
-            key_hash: "h".into(),
+            generation_hash: "h".into(),
             name: "b".into(),
             allowed_pools: Some(vec!["p".into()]),
             enabled: true,
@@ -1340,7 +1340,7 @@ mod tests {
         }
         let key = busbar_api::VirtualKey {
             id: "vk_old".into(),
-            key_hash: "h".into(),
+            generation_hash: "h".into(),
             name: "old".into(),
             allowed_pools: Some(vec!["p".into()]),
             enabled: true,
@@ -1393,7 +1393,7 @@ mod tests {
         // The NEW instance keeps serving with no restart — its library was untouched by the old drop.
         new.put_key(&busbar_api::VirtualKey {
             id: "vk_new".into(),
-            key_hash: "h".into(),
+            generation_hash: "h".into(),
             name: "new".into(),
             allowed_pools: Some(vec!["p".into()]),
             enabled: true,

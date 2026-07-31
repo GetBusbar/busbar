@@ -8,16 +8,17 @@ impl GovState {
 
     /// Construct a `GovState` with an optional TOKEN SIGNER (1.5.0 signed-token keys). `Some` at
     /// boot (a signing key resolved from `auth.signing_key` or generated on first boot); `None` in
-    /// tests that exercise the SigV4/legacy-hash paths only. Hydrates the revocation denylist set
-    /// from the store so a restart resumes with every revoked subject still denied.
+    /// tests that exercise the SigV4 path only (1.5.0 has exactly one credential shape for bearer
+    /// auth — a signed token — so a signer is required for any real bearer verification). Hydrates
+    /// the revocation denylist set from the store so a restart resumes with every revoked subject
+    /// still denied.
     pub(crate) fn new_with_signer(
         store: Arc<dyn Store>,
         admin_token: Option<String>,
         signer: Option<crate::governance::signing::TokenSigner>,
     ) -> StoreResult<Self> {
-        let by_hash = Self::load(store.as_ref())?;
-        let by_access_key_id = Self::load_by_access_key_id(store.as_ref(), &by_hash)?;
-        let by_id = Self::index_by_id(&by_hash);
+        let by_id = Self::load(store.as_ref())?;
+        let by_access_key_id = Self::load_by_access_key_id(store.as_ref(), &by_id)?;
         // Hydrate the denylist. A store with no denylist support returns empty (nothing revoked);
         // a durable one returns every persisted revoked subject.
         let denylist: std::collections::HashSet<String> =
@@ -33,9 +34,8 @@ impl GovState {
         Ok(Self {
             store,
             caches: RwLock::new(GovCaches {
-                by_hash,
-                by_access_key_id,
                 by_id,
+                by_access_key_id,
             }),
             concurrent: RwLock::new(HashMap::new()),
             admin_token_hash: RwLock::new(
@@ -106,7 +106,7 @@ impl GovState {
             // usage history, audit attribution) stays stable.
             Some(key)
                 if key.enabled
-                    && generation_matches(&key.key_hash, claims.generation.as_deref()) =>
+                    && generation_matches(&key.generation_hash, claims.generation.as_deref()) =>
             {
                 Some(key)
             }
@@ -125,20 +125,10 @@ impl GovState {
     }
 
     /// Resolve a policy binding by its subject id (the key id / token `sub`). O(1) index read — the
-    /// `by_id` secondary index (M6), rebuilt in lockstep with `by_hash` by `refresh`, so every signed-
-    /// token verify is a single hash lookup rather than a linear scan of `by_hash.values()`.
+    /// `by_id` index (keyed by id, since 1.5.0 has exactly one credential shape for bearer keys and
+    /// there is no longer a separate hashed-secret index to derive it from).
     pub(crate) fn lookup_by_sub(&self, sub: &str) -> Option<Arc<VirtualKey>> {
         self.caches_read().by_id.get(sub).cloned()
-    }
-
-    /// Build the `by_id` (subject id → key) index from a `by_hash` snapshot, sharing the same `Arc`
-    /// rows. Called wherever `by_hash` is (re)built so the two indices are always derived from the
-    /// SAME snapshot and can never drift (M6).
-    fn index_by_id(by_hash: &HashMap<String, Arc<VirtualKey>>) -> HashMap<String, Arc<VirtualKey>> {
-        by_hash
-            .values()
-            .map(|k| (k.id.clone(), k.clone()))
-            .collect()
     }
 
     /// REVOKE a signed-token key by subject id: persist to the store denylist AND update the
@@ -192,10 +182,10 @@ impl GovState {
         let binding = VirtualKey {
             id: id.clone(),
             // Not a credential: signed tokens are stateless. Kept non-empty + unique-per-key so a
-            // durable store's UNIQUE(key_hash) constraint is satisfied; never used to authenticate.
+            // durable store's UNIQUE(generation_hash) constraint is satisfied; never used to authenticate.
             // The trailing GENERATION is the rotation epoch (`rotate_key`), carried durably so a
             // pre-rotation token is rejected by every node reading the same store.
-            key_hash: binding_marker(&id, &generation),
+            generation_hash: binding_marker(&id, &generation),
             name: spec.name,
             // C6 intent carried intact from the mint body: None = all pools; Some([]) = none.
             allowed_pools: spec.allowed_pools,
@@ -233,7 +223,7 @@ impl GovState {
         let secret_access_key = generate_aws_secret_access_key().store()?;
         let binding = VirtualKey {
             id: id.clone(),
-            key_hash: binding_marker(&id, &generation),
+            generation_hash: binding_marker(&id, &generation),
             name: spec.name,
             allowed_pools: spec.allowed_pools,
             enabled: true,
@@ -592,20 +582,20 @@ impl GovState {
         // admin handler returns a 500 via its existing error_response path instead of panicking.
         let secret = generate_secret().store()?;
         let hash = crate::sigv4::sha256_hex(secret.as_bytes());
-        // `id` is a 64-bit prefix of the 256-bit secret hash, while `key_hash` is the full hash with
+        // `id` is a 64-bit prefix of the 256-bit secret hash, while `generation_hash` is the full hash with
         // a UNIQUE constraint. Two distinct secrets sharing the same 64-bit prefix would produce the
-        // same `id` but different `key_hash`; since `put_key` UPSERTs on the PRIMARY KEY `id`, the
-        // second mint would silently OVERWRITE the first key's row (replacing its `key_hash`),
+        // same `id` but different `generation_hash`; since `put_key` UPSERTs on the PRIMARY KEY `id`, the
+        // second mint would silently OVERWRITE the first key's row (replacing its `generation_hash`),
         // invalidating the previously-issued secret with no error. Birthday-bound at ~2^32 keys, but
         // the failure is silent, so guard it explicitly: if the derived id already exists for a
-        // DIFFERENT key_hash, refuse rather than clobber an unrelated key. (A genuine retry that
-        // somehow reproduces the same secret — and thus the same key_hash — is idempotent and allowed
+        // DIFFERENT generation_hash, refuse rather than clobber an unrelated key. (A genuine retry that
+        // somehow reproduces the same secret — and thus the same generation_hash — is idempotent and allowed
         // through, since it overwrites the row with identical data.)
         let id = format!("{VK_ID_PREFIX}{}", &hash[..VK_ID_HASH_PREFIX_LEN]);
         self.ensure_id_free_for_hash(&id, &hash)?;
         let key = VirtualKey {
             id,
-            key_hash: hash,
+            generation_hash: hash,
             name: spec.name,
             allowed_pools: spec.allowed_pools,
             enabled: true,
@@ -650,7 +640,7 @@ impl GovState {
         let secret_access_key = generate_aws_secret_access_key().store()?;
         let key = VirtualKey {
             id: id.clone(),
-            key_hash: hash,
+            generation_hash: hash,
             name: spec.name,
             allowed_pools: spec.allowed_pools,
             enabled: true,
@@ -674,14 +664,14 @@ impl GovState {
     }
 
     /// Guard against the silent UPSERT-overwrite described in `create_key`: the PRIMARY KEY `id` is
-    /// only a 64-bit prefix of the full `key_hash`, so two distinct secrets can collide on `id`
-    /// while differing on `key_hash`. If `id` already exists under a DIFFERENT `key_hash`, refuse
+    /// only a 64-bit prefix of the full `generation_hash`, so two distinct secrets can collide on `id`
+    /// while differing on `generation_hash`. If `id` already exists under a DIFFERENT `generation_hash`, refuse
     /// (rather than let `put_key` overwrite an unrelated key's row). An `id` that is free, or that
-    /// already holds the SAME `key_hash` (an idempotent re-mint of the identical secret), is allowed.
+    /// already holds the SAME `generation_hash` (an idempotent re-mint of the identical secret), is allowed.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn ensure_id_free_for_hash(&self, id: &str, hash: &str) -> StoreResult<()> {
         if let Some(existing) = self.store.get_key(id)? {
-            if existing.key_hash != hash {
+            if existing.generation_hash != hash {
                 return Err(StoreError(format!(
                     "virtual-key id collision: derived id '{id}' already belongs to a different key; \
                      retry to mint with fresh entropy (this is a ~2^-64 birthday event)"
@@ -691,7 +681,7 @@ impl GovState {
         Ok(())
     }
 
-    /// All virtual keys (metadata; callers must strip `key_hash` before returning).
+    /// All virtual keys (metadata; callers must strip `generation_hash` before returning).
     pub(crate) fn all_keys(&self) -> StoreResult<Vec<VirtualKey>> {
         self.store.list_keys()
     }
@@ -717,19 +707,19 @@ impl GovState {
     ///
     /// The rotation is credential-shaped, i.e. it rotates whatever credential the key actually has:
     ///
-    /// * a 1.5.0 SIGNED-TOKEN binding (`key_hash` is a `binding:` marker) gets a fresh binding
+    /// * a 1.5.0 SIGNED-TOKEN binding (`generation_hash` is a `binding:` marker) gets a fresh binding
     ///   GENERATION stamped into the durable row plus a newly-minted token carrying it. Every
     ///   token minted before the rotation names the OLD generation and is rejected by
     ///   `verify_token` on every node reading the store. (rotation used to
     ///   leave the outstanding signed token fully valid — it minted a bearer secret the token path
     ///   never consults — so "rotate" revoked nothing at all.)
-    /// * a LEGACY hashed-secret key gets a fresh bearer secret whose hash replaces `key_hash`, so
+    /// * a LEGACY hashed-secret key gets a fresh bearer secret whose hash replaces `generation_hash`, so
     ///   the old secret stops resolving on the next cache refresh. That is the only credential
     ///   such a key has.
     ///
     /// A signed-token binding is NEVER downgraded into a hashed-secret key by rotation (the old
     /// behaviour did exactly that: it ARMED the weaker legacy path on a key that had deliberately
-    /// been minted without one, adding a second, non-expiring credential). `key_hash` stays a
+    /// been minted without one, adding a second, non-expiring credential). `generation_hash` stays a
     /// `binding:` marker, which can never equal a SHA-256 digest, so the legacy `lookup` path
     /// remains structurally unreachable for it.
     ///
@@ -739,32 +729,25 @@ impl GovState {
         let Some(mut key) = self.store.get_key(id)? else {
             return Ok(None);
         };
-        if is_binding_marker(&key.key_hash) {
-            let Some(material) = self.signing_material() else {
-                return Err(StoreError(
-                    "cannot rotate a signed-token key: no signing key is configured (rotation \
-                     re-mints the token; it must never fall back to arming a legacy bearer secret)"
-                        .to_string(),
-                ));
-            };
-            let generation = generate_binding_generation().store()?;
-            key.key_hash = binding_marker(&key.id, &generation);
-            self.store.put_key(&key)?;
-            self.refresh()?;
-            let token = material.signer.mint(&key.id, exp, Some(&generation));
-            return Ok(Some(RotatedCredential::Token { key, token, exp }));
-        }
-        let secret = generate_secret().store()?;
-        key.key_hash = crate::sigv4::sha256_hex(secret.as_bytes());
+        let Some(material) = self.signing_material() else {
+            return Err(StoreError(
+                "cannot rotate a signed-token key: no signing key is configured (rotation \
+                 re-mints the token)"
+                    .to_string(),
+            ));
+        };
+        let generation = generate_binding_generation().store()?;
+        key.generation_hash = binding_marker(&key.id, &generation);
         self.store.put_key(&key)?;
         self.refresh()?;
-        Ok(Some(RotatedCredential::Secret { key, secret }))
+        let token = material.signer.mint(&key.id, exp, Some(&generation));
+        Ok(Some(RotatedCredential { key, token, exp }))
     }
 
     /// Apply a partial update to an existing key. Keys are PURE AUTH (S1), so the mutable surface
     /// is auth-shaped only: `enabled` (freeze/unfreeze the binding) and `group` (rebind the limit
     /// chain; three-state: absent = unchanged, `null` = unbind to unlimited, a value = rebind -
-    /// the caller validates the named group exists). `key_hash`/`name`/`allowed_pools`/
+    /// the caller validates the named group exists). `generation_hash`/`name`/`allowed_pools`/
     /// `created_at` are preserved (the credential is never re-minted). Returns `Ok(None)` when the
     /// key does not exist (so the caller can 404), `Ok(Some(updated_metadata))` otherwise.
     pub(crate) fn update_key(
@@ -783,7 +766,7 @@ impl GovState {
         if let Some(g) = group {
             key.group = g;
         }
-        // `put_key` UPSERTs on the PRIMARY KEY `id` with identical `key_hash`, so this is an in-place
+        // `put_key` UPSERTs on the PRIMARY KEY `id` with identical `generation_hash`, so this is an in-place
         // update of the existing row (no secret rotation). Refresh the in-memory cache so the change
         // takes effect on the next request.
         self.store.put_key(&key)?;
@@ -1449,51 +1432,42 @@ impl GovState {
         flushed
     }
 
+    /// Load every key, indexed by id (the token `sub` / subject id) — the sole in-memory key index
+    /// since 1.5.0 has exactly one bearer-credential shape (a signed token resolved by subject id;
+    /// there is no longer a hashed-secret index to key by).
     pub(crate) fn load(store: &dyn Store) -> StoreResult<HashMap<String, Arc<VirtualKey>>> {
-        // Wrap each key in `Arc` at load time so the per-request `lookup` on the hot path is a
-        // refcount bump, not a deep clone; the values are immutable until the next `refresh` swap.
+        // Wrap each key in `Arc` at load time so the per-request `lookup_by_sub` on the hot path is
+        // a refcount bump, not a deep clone; the values are immutable until the next `refresh` swap.
         Ok(store
             .list_keys()?
             .into_iter()
-            .map(|k| (k.key_hash.clone(), Arc::new(k)))
+            .map(|k| (k.id.clone(), Arc::new(k)))
             .collect())
     }
 
     /// Build the AccessKeyId → resolved-credential index from the durable `aws_credentials` table,
-    /// joined against the already-loaded `by_hash` snapshot (which holds the live `VirtualKey` rows).
-    /// A credential whose owning key is missing from `by_hash` (e.g. the key row was deleted but a
-    /// credential row lingered) is SKIPPED — it can never authenticate, since there is no key to attach
-    /// a `GovCtx` for. `access_key_id` is the PRIMARY KEY of `aws_credentials`, so entries are unique.
+    /// joined against the already-loaded `by_id` snapshot (which holds the live `VirtualKey` rows,
+    /// keyed by id). A credential whose owning key is missing from `by_id` (e.g. the key row was
+    /// deleted but a credential row lingered) is SKIPPED — it can never authenticate, since there is
+    /// no key to attach a `GovCtx` for. `access_key_id` is the PRIMARY KEY of `aws_credentials`, so
+    /// entries are unique.
     pub(crate) fn load_by_access_key_id(
         store: &dyn Store,
-        by_hash: &HashMap<String, Arc<VirtualKey>>,
+        by_id: &HashMap<String, Arc<VirtualKey>>,
     ) -> StoreResult<HashMap<String, AwsKeyEntry>> {
-        // Index the live keys by id for the join (by_hash is keyed by key_hash, not id).
-        let by_id: HashMap<&str, &VirtualKey> = by_hash
-            .values()
-            .map(|k| (k.id.as_str(), k.as_ref()))
-            .collect();
         let mut map = HashMap::new();
         for cred in store.list_aws_credentials()? {
             if let Some(key) = by_id.get(cred.key_id.as_str()) {
                 map.insert(
                     cred.access_key_id.clone(),
                     AwsKeyEntry {
-                        key: (*key).clone(),
+                        key: (**key).clone(),
                         secret_access_key: cred.secret_access_key,
                     },
                 );
             }
         }
         Ok(map)
-    }
-
-    /// Resolve a presented secret to its virtual key (cache lookup; secret hashed, never compared raw).
-    /// Returns a SHARED `Arc<VirtualKey>` — the clone is a refcount bump, not a deep copy of the key's
-    /// `String` fields (the per-request bearer resolution on the chat hot path).
-    pub(crate) fn lookup(&self, secret: &str) -> Option<Arc<VirtualKey>> {
-        let hash = crate::sigv4::sha256_hex(secret.as_bytes());
-        self.caches_read().by_hash.get(&hash).cloned()
     }
 
     /// Resolve an inbound SigV4 AccessKeyId (parsed in plaintext from the `Credential=` field of the
@@ -1527,13 +1501,10 @@ impl GovState {
         let fresh_akid = Self::load_by_access_key_id(self.store.as_ref(), &fresh)?;
         // Both indices live under the single `caches` lock, so the swap below is ONE atomic critical
         // section — a concurrent reader holding `caches_read` sees either the entire old pair or the
-        // entire new pair, never a new `by_hash` against a stale `by_access_key_id` (or vice versa).
-        // There is no longer a transient cross-index inconsistency window.
-        let fresh_by_id = Self::index_by_id(&fresh);
+        // entire new pair, never a new `by_id` against a stale `by_access_key_id` (or vice versa).
         let mut c = self.caches_write();
-        c.by_hash = fresh;
+        c.by_id = fresh;
         c.by_access_key_id = fresh_akid;
-        c.by_id = fresh_by_id;
         Ok(())
     }
 }

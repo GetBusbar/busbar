@@ -837,7 +837,7 @@ mod tests {
     fn key(id: &str) -> VirtualKey {
         VirtualKey {
             id: id.into(),
-            key_hash: "hash".into(),
+            generation_hash: "hash".into(),
             name: "n".into(),
             allowed_pools: None,
             enabled: true,

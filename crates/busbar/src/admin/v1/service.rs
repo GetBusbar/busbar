@@ -3336,7 +3336,7 @@ mod tests {
         store
             .put_key(&crate::governance::VirtualKey {
                 id: "vk_bound".to_string(),
-                key_hash: "h:vk_bound".to_string(),
+                generation_hash: "h:vk_bound".to_string(),
                 name: "bound".to_string(),
                 allowed_pools: None,
                 enabled: true,
@@ -3419,7 +3419,7 @@ mod tests {
     fn usage_key(group: &str) -> VirtualKey {
         VirtualKey {
             id: "vk_usage_probe".to_string(),
-            key_hash: "h:vk_usage_probe".to_string(),
+            generation_hash: "h:vk_usage_probe".to_string(),
             name: "usage-probe".to_string(),
             allowed_pools: None,
             enabled: true,

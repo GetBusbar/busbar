@@ -236,7 +236,7 @@ mod tests {
     fn key(id: &str) -> VirtualKey {
         VirtualKey {
             id: id.to_string(),
-            key_hash: format!("h_{id}"),
+            generation_hash: format!("h_{id}"),
             name: "t".to_string(),
             allowed_pools: None,
             enabled: true,
