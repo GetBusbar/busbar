@@ -32,6 +32,18 @@ pub(crate) struct KeyView {
     pub(crate) enabled: bool,
     pub(crate) created_at: u64,
     pub(crate) labels: std::collections::BTreeMap<String, String>,
+    /// E-007: `enabled` alone cannot distinguish a reversible pause from either of the two permanent
+    /// dispositions — `PATCH {enabled:false}`, `POST /keys/{id}/revoke`, and `DELETE /keys/{id}` all
+    /// used to leave `enabled: false` with nothing else to tell them apart. One of exactly four
+    /// values, additive and derived (never independently settable):
+    /// - `"active"` — enabled, not revoked, not deleted.
+    /// - `"disabled"` — `PATCH {enabled:false}`. Reversible: `PATCH {enabled:true}` restores it.
+    /// - `"revoked"` — `POST /keys/{id}/revoke`. Permanent: denylisted, but the binding row (and
+    ///   `GET /keys/{id}`) stays live for audit/usage attribution.
+    /// - `"tombstoned"` — `DELETE /keys/{id}`. Permanent: denylisted AND hard-deleted; the row is
+    ///   kept only so id-attributed billing/audit history keeps resolving. Omitted from a plain
+    ///   `GET /keys` by default; visible there with `?include=tombstoned`.
+    pub(crate) state: String,
 }
 
 /// `POST /keys` (mint) — the key metadata plus the ONCE-shown signed token, and (when an AWS SigV4
@@ -46,6 +58,9 @@ pub(crate) struct CreatedKeyView {
     pub(crate) enabled: bool,
     pub(crate) created_at: u64,
     pub(crate) labels: std::collections::BTreeMap<String, String>,
+    /// E-007: same field as `KeyView.state` — a fresh mint is always `"active"` (enabled, not
+    /// revoked, not deleted).
+    pub(crate) state: String,
     /// The busbar-SIGNED token — the key credential (1.5.0, S1), shown EXACTLY once and never
     /// returned by any read. (This is the field a client must capture to authenticate.)
     pub(crate) token: String,
@@ -74,6 +89,11 @@ pub(crate) struct RotatedKeyView {
     pub(crate) enabled: bool,
     pub(crate) created_at: u64,
     pub(crate) labels: std::collections::BTreeMap<String, String>,
+    /// E-007: same field as `KeyView.state` — rotate does not change `enabled`/revoked/tombstoned
+    /// status, so this reflects whatever the key's disposition already was (rotating a `disabled` or
+    /// `revoked` key is legal and leaves it exactly that; only a `tombstoned` key refuses to rotate,
+    /// which surfaces as 404 instead of this response).
+    pub(crate) state: String,
     /// The fresh busbar-SIGNED token — shown EXACTLY once (signed-token keys).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) token: Option<String>,
