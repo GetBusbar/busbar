@@ -279,9 +279,21 @@ jobs:
           # transports only). Set the module durably (persist:true, needs the overlay above), then
           # restart. busbar's restart deliberately does not self-respawn (supervisor_detected), so
           # this step plays supervisor and relaunches it itself.
+          # Empty `settings: {}` only works for a plugin with a usable default for every required
+          # field (sqlite's default file path, redis's default localhost) -- postgres and mysql
+          # have no sensible default connection target and correctly REFUSE to open() without one,
+          # which means the restarted busbar process below never comes back up and every later
+          # curl in this step fails with "Failed to connect" (exit 7). Inject real settings for the
+          # backends that actually need them, matching the service containers' own credentials
+          # above -- confirmed failing for real in CI for both postgres and mysql before this fix.
+          case "${{ inputs.service }}" in
+            postgres) STORE_SETTINGS='{"url": "postgres://busbar:busbar@127.0.0.1:5432/busbar_test"}' ;;
+            mysql)    STORE_SETTINGS='{"url": "mysql://busbar:busbar@127.0.0.1:3306/busbar_test"}' ;;
+            *)        STORE_SETTINGS='{}' ;;
+          esac
           echo "set store module..."
           curl -sf -X PUT -H "Authorization: Bearer $BUSBAR_ADMIN_TOKEN" -H "Content-Type: application/json" \
-            -d "{\"store\": {\"module\": \"${{ inputs.plugin_crate }}\", \"settings\": {}}, \"persist\": true}" \
+            -d "{\"store\": {\"module\": \"${{ inputs.plugin_crate }}\", \"settings\": $STORE_SETTINGS}, \"persist\": true}" \
             "$ADMIN/config/settings"
           curl -s -X POST -H "Authorization: Bearer $BUSBAR_ADMIN_TOKEN" "$ADMIN/restart" || true
           sleep 2
@@ -330,6 +342,14 @@ jobs:
             base_url: https://api.anthropic.com
             api_key: { env: FAKE_UPSTREAM_KEY }
           EOF
+          # Same reasoning as the INSTALL-AND-SERVE step above: postgres/mysql have no usable
+          # default connection target and refuse to open() with empty settings, so a boot-time
+          # config naming one of them with `settings: {}` never comes up at all.
+          case "${{ inputs.service }}" in
+            postgres) STORE_SETTINGS_FLOW='{ url: "postgres://busbar:busbar@127.0.0.1:5432/busbar_test" }' ;;
+            mysql)    STORE_SETTINGS_FLOW='{ url: "mysql://busbar:busbar@127.0.0.1:3306/busbar_test" }' ;;
+            *)        STORE_SETTINGS_FLOW='{}' ;;
+          esac
           cat > "$WORKDIR/config.yaml" <<EOF
           auth:
             chain: [keys]
@@ -342,7 +362,7 @@ jobs:
               allow_unsigned: true
           store:
             module: ${{ inputs.plugin_crate }}
-            settings: {}
+            settings: $STORE_SETTINGS_FLOW
           providers:
             anthropic:
               api_key: { env: FAKE_UPSTREAM_KEY }
