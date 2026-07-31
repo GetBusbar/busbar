@@ -160,6 +160,7 @@ fn real_multi_mb_library_round_trips_byte_for_byte() {
         needs: Default::default(),
         settings_schema: None,
         schema_derived: false,
+        host: None,
     };
     let manifest = sign(&key, manifest, &lib_bytes);
 

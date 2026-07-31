@@ -1031,6 +1031,7 @@ pub(crate) fn test_hook_env_with_schema(
             needs: needs.clone(),
             settings_schema: settings_schema.map(str::to_string),
             schema_derived: false,
+            host: None,
         };
         m.sha256 = busbar_plugin_sign::sha256_hex(&lib);
         let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", &lib).unwrap();

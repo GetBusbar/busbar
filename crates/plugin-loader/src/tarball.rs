@@ -214,6 +214,7 @@ mod tests {
             needs: Default::default(),
             settings_schema: None,
             schema_derived: false,
+            host: None,
         }
     }
 
