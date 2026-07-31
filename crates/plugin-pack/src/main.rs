@@ -50,6 +50,7 @@ USAGE:
                             --version <semver> --publisher <publisher> --out <file.tar.gz>
                             [--description <text>] [--homepage <url>] [--license <spdx>]
                             [--needs-prompt <no|ro|rw>] [--needs-user <no|ro>]
+                            [--settings-schema-file <path.json>]
                             [--allow-unsigned]
     busbar-plugin-pack keygen
 
@@ -61,6 +62,11 @@ USAGE:
              content it asks to receive); SIGNED into the manifest. The operator's config grant still
              enforces — a plugin gets prompt/user content only when BOTH the manifest declares the
              need AND the operator grants it. A prompt:rw rewrite gate packs with --needs-prompt rw.
+             --settings-schema-file embeds the plugin's `settings` shape as a JSON Schema 2020-12
+             document (generate it from the plugin's own config struct, e.g. via schemars — this
+             tool only validates and embeds, never generates). Rejected at pack time if the file
+             isn't valid JSON Schema. Powers GET /plugins/{name}/schema without ever loading the
+             plugin — see busbarAI-private/design/plugin-settings-schema-SPEC.md.
     keygen   generates a fresh ed25519 keypair and prints both halves as hex. Keep the private half
              secret (it becomes $BUSBAR_SIGN_KEY); publish/allowlist/embed the public half."
 }
@@ -121,6 +127,25 @@ fn parse_flags(args: &[String]) -> Result<(HashMap<String, String>, bool), Strin
     Ok((map, allow_unsigned))
 }
 
+/// Read `--settings-schema-file`'s contents and reject them at PACK time if they're not a
+/// syntactically valid JSON Schema document — a broken schema must never ship and only be
+/// discovered later when busbar-ui tries to render a form from it. `jsonschema::validator_for`
+/// itself compiles/validates the schema document's own shape (draft auto-detected from `$schema`,
+/// defaulting to the crate's current draft when absent); a schema that fails to compile as a
+/// validator is exactly the "syntactically invalid" case this gate exists to catch. The file's
+/// exact bytes (not a re-serialized/reformatted copy) are what get embedded and signed — so an
+/// operator or busbar-ui reading the manifest back sees byte-for-byte what the plugin author wrote.
+fn read_and_validate_settings_schema(path: &str) -> Result<String, String> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("cannot read --settings-schema-file '{path}': {e}"))?;
+    let value: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| format!("--settings-schema-file '{path}' is not valid JSON: {e}"))?;
+    jsonschema::validator_for(&value).map_err(|e| {
+        format!("--settings-schema-file '{path}' is not a valid JSON Schema document: {e}")
+    })?;
+    Ok(text)
+}
+
 fn pack(args: &[String]) -> ExitCode {
     let (flags, allow_unsigned) = match parse_flags(args) {
         Ok(f) => f,
@@ -179,6 +204,19 @@ fn pack(args: &[String]) -> ExitCode {
                     .transpose()?
                     .unwrap_or_default(),
             },
+            // OPTIONAL: the plugin's `settings` shape as a JSON Schema 2020-12 document, read
+            // verbatim from a file (the plugin author generates this from their own config
+            // struct — e.g. a `schemars::schema_for!` derive — so schema/parser drift becomes a
+            // compile error in the plugin's own crate, not a runtime mismatch discovered by an
+            // operator; this tool only embeds and validates, it does not generate). Rejected at
+            // PACK time if the file isn't syntactically valid JSON Schema, never left to fail at
+            // UI-render time on some operator's machine. SIGNED (covered by the manifest
+            // signature) alongside everything else — see busbarAI-private/design/
+            // plugin-settings-schema-SPEC.md.
+            settings_schema: flags
+                .get("settings-schema-file")
+                .map(|path| read_and_validate_settings_schema(path))
+                .transpose()?,
         };
         let lib_bytes =
             std::fs::read(&lib_path).map_err(|e| format!("cannot read --lib '{lib_path}': {e}"))?;
@@ -277,6 +315,7 @@ mod tests {
             homepage: String::new(),
             license: String::new(),
             needs: Default::default(),
+            settings_schema: None,
         };
         let signed = sign(&key, m, lib);
         busbar_plugin_sign::validate_structure(&signed, lib, &busbar_plugin_loader::supported_abi)
@@ -331,6 +370,7 @@ mod tests {
                 prompt: NeedLevel::Rw,
                 user: NeedLevel::No,
             },
+            settings_schema: None,
         };
         let signed = sign(&key, m, lib);
         assert_eq!(signed.needs.prompt, NeedLevel::Rw);

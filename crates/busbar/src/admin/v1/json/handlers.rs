@@ -3105,6 +3105,42 @@ pub(crate) async fn patch_hook_settings(
     }
 }
 
+/// `GET /api/v1/admin/plugins/{name}/schema` — the KIND-NEUTRAL settings-schema surface (name or
+/// alias). For a `kind: hook` plugin, delegates to the exact same live `describe`-proxy
+/// [`hook_schema`] already does (a loaded hook's own narrowing of its baseline). For `store` /
+/// `secret` / `auth`, there is no runtime `describe` — those kinds are `dlopen`ed in-process with
+/// no out-of-band preamble a hook's socket transport gets, so asking a live instance would need an
+/// already-open, already-configured handle (the chicken-and-egg problem this endpoint exists to
+/// avoid). Instead this reads `settings_schema` straight off the plugin's SIGNED, already-verified
+/// manifest via `hook_env.registry` — no `dlopen`, no instance, works even for a plugin that has
+/// never been loaded. `{"schema": null}` when the resolved manifest carries no schema (an older
+/// plugin packed before this field existed) or the plugin/hook can't be resolved at all is instead
+/// a `404` (distinct from "resolved but schema-less"). See
+/// `busbarAI-private/design/plugin-settings-schema-SPEC.md`.
+pub(crate) async fn plugin_schema(
+    State(handle): State<Arc<AppHandle>>,
+    Path(name): Path<String>,
+) -> Response {
+    let current = handle.load();
+    // Hooks keep the live describe-proxy behavior unchanged — delegate rather than duplicate it.
+    if current.hook_registry.contains_key(&name) {
+        return hook_schema(State(handle), Path(name)).await;
+    }
+    let Some(loadable) = current.hook_env.registry.resolve(&name) else {
+        return err_json(&AdminError::not_found(format!("plugin `{name}`")));
+    };
+    // `settings_schema` is a raw JSON-Schema-document STRING in the manifest (kept as text rather
+    // than a nested Value so `canonical_manifest_bytes`'s sorted-key re-serialization can never
+    // reorder keys inside it and silently change what was signed) — parse it back to a Value here
+    // so the HTTP response carries real JSON, not a JSON string containing JSON.
+    let schema: Option<serde_json::Value> = loadable
+        .manifest
+        .settings_schema
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok());
+    ok_json(StatusCode::OK, &json!({ "name": name, "schema": schema }))
+}
+
 /// `GET /api/v1/admin/hooks/{name}/schema` — proxy the hook's self-described settings JSON Schema
 /// (the `describe` wire message). `{"schema": null}` when the hook/transport doesn't answer.
 pub(crate) async fn hook_schema(
@@ -3378,6 +3414,22 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                 }],
                 "responses": {
                     "204": {"description": "Removed"},
+                }
+            }
+        }),
+    );
+    paths.insert(
+        ap("/plugins/{file}/schema"),
+        json!({
+            "get": {
+                "summary": "The plugin's self-described settings JSON Schema, read from the SIGNED manifest's `settings_schema` field — works for every plugin kind (store/secret/auth/hook), not just hooks. `hook` plugins keep the live describe-proxy behavior unchanged",
+                "security": [{"adminToken": []}],
+                "parameters": [{
+                    "name": "file", "in": "path", "required": true,
+                    "schema": {"type": "string"}
+                }],
+                "responses": {
+                    "200": {"description": "`{name, schema}` (`schema` null when the manifest carries none)"},
                 }
             }
         }),
@@ -4207,6 +4259,12 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     typed!("/plugins", "get", "200", Page<PluginView>);
     typed!("/plugins", "post", "201", PluginInstallView);
     typed!("/plugins/reload", "post", "200", PluginReloadView);
+    typed!(
+        "/plugins/{file}/schema",
+        "get",
+        "200",
+        sview::HookSchemaView
+    );
     typed!(
         "/plugins/rollback",
         "post",

@@ -310,6 +310,7 @@ bypass the trust model:
 | `DELETE /plugins/{file}` | Remove a tarball from `plugins.dir` (`204`; `404` if absent). A currently-loaded store keeps running on its loaded handle; removal affects the NEXT load (folder = source of truth) |
 | `POST /plugins/reload` | **Live hot swap** (no restart): re-runs the fail-closed plugin pipeline from disk+overlay, rebuilds the registry and `kind: hook` transports, and old libraries drain then unmap. Fail-closed: a bad artifact leaves old plugins serving. Full scope, audited |
 | `POST /plugins/rollback` | Explicit, audited, If-Match-guarded rollback. Body: `{"file": "<tarball-filename>"}`. Pins a prior version and lowers the anti-downgrade floor **only for this operator action** — automatic silent downgrade stays refused. Persists the version pin to the overlay. Full scope, audited |
+| `GET /plugins/{name}/schema` | The plugin's **self-described settings schema**, read from the SIGNED manifest's `settings_schema` field (a JSON Schema 2020-12 document; see `plugin-settings-schema-SPEC.md`) — works for every plugin `kind` (`store`/`secret`/`auth`/`hook`), not just hooks. `{"name", "schema": null}` when the manifest carries none (most plugins today). `hook` plugins keep the live `describe`-proxy behavior (querying the running transport) unchanged — this endpoint delegates to it rather than duplicating it. `404` if no such plugin is loaded. Resolved by name OR alias, manifest-only (no `dlopen`) |
 
 ```bash
 # Install a signed store plugin tarball (takes effect on the next plugin (re)load)

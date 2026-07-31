@@ -700,6 +700,7 @@ pub(crate) fn plugin_manifest(
         homepage: String::new(),
         license: String::new(),
         needs: Default::default(),
+        settings_schema: None,
     }
 }
 

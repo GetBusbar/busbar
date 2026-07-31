@@ -18,3 +18,9 @@ hex = "0.4"
 # Keypair generation (`keygen`) draws its ed25519 seed from the OS RNG. The engine-facing
 # plugin-sign crate stays RNG-free on purpose; the RNG lives here, in the tooling.
 getrandom = "0.3"
+serde_json = "1"
+# Pack-time gate for --settings-schema-file: reject a syntactically-invalid JSON Schema 2020-12
+# document at PACK time, not at UI-render time on some operator's machine. Tooling-only (this
+# crate never ships in the engine binary), so a full validator dependency here costs nothing at
+# runtime.
+jsonschema = "0.30"

@@ -5809,6 +5809,36 @@ async fn serve_with_plugins_dir(
     (addr, handle)
 }
 
+/// As `serve_with_plugins_dir`, but with a caller-supplied `hook_env` — for tests that need the
+/// live `hook_env.registry` (e.g. `GET /plugins/{name}/schema`) populated from the dir's actual
+/// contents, since the plain `TestApp` builder defaults it to an empty registry regardless of
+/// `plugins_dir` (that field only feeds the filesystem-scanning install/list/remove/reload paths).
+async fn serve_with_plugins_dir_and_hook_env(
+    dir: std::path::PathBuf,
+    hook_env: crate::hooks::HookEnv,
+) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let mut plugins_cfg = crate::config::PluginsCfg::default();
+    plugins_cfg.trust.allow_unsigned = true;
+    let app = TestApp::new()
+        .governance(gov)
+        .plugins_dir(dir)
+        .plugins_cfg(plugins_cfg)
+        .hook_env(hook_env)
+        .build();
+    let (router, _handle) = crate::build_router_with_limits(
+        app,
+        256 * 1024 * 1024,
+        0,
+        crate::config::DEFAULT_EMIT_SERVER_TIMING,
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    (addr, handle)
+}
+
 /// Build an UNSIGNED (structurally valid) plugin tarball in memory for the HTTP lifecycle tests.
 fn admin_test_tarball(name: &str, alias: &str) -> Vec<u8> {
     admin_test_tarball_versioned(name, alias, "1.0.0")
@@ -5835,6 +5865,7 @@ fn admin_test_tarball_versioned(name: &str, alias: &str, version: &str) -> Vec<u
         homepage: String::new(),
         license: String::new(),
         needs: Default::default(),
+        settings_schema: None,
     };
     busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap()
 }
@@ -5966,6 +5997,133 @@ async fn test_admin_v1_plugin_install_list_reload_remove() {
 
     let _ = std::fs::remove_dir_all(&dir);
     handle.abort();
+}
+
+/// The manifest-embedded `settings_schema` (plugin-settings-schema-SPEC.md) round-trips over the
+/// wire: install a tarball whose SIGNED manifest carries a JSON Schema document, then `GET
+/// /plugins/{file}/schema` returns it as real parsed JSON (not a JSON string containing JSON). A
+/// plugin installed WITHOUT a `settings_schema` reports `"schema": null` rather than 404/erroring —
+/// absence is a valid, common state (most plugins today have none), not a fault.
+#[tokio::test]
+async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
+    crate::metrics::init();
+    let schema = serde_json::json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+            "url": {"type": "string", "x-busbar-secret": true},
+        },
+        "required": ["url"],
+    });
+    let lib = b"junk library bytes for acme-store-withschema (never dlopened)".to_vec();
+    let m = busbar_plugin_sign::Manifest {
+        name: "acme-store-withschema".into(),
+        alias: "withschema".into(),
+        kind: "store".into(),
+        version: "1.0.0".into(),
+        publisher: "acme".into(),
+        abi_version: *busbar_plugin_loader::supported_abi("store")
+            .iter()
+            .max()
+            .expect("store abi"),
+        sha256: busbar_plugin_sign::sha256_hex(&lib),
+        signature: String::new(),
+        description: String::new(),
+        homepage: String::new(),
+        license: String::new(),
+        needs: Default::default(),
+        settings_schema: Some(schema.to_string()),
+    };
+    let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", &lib).unwrap();
+    let file = "acme-store-withschema.tar.gz";
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-admin-plugins-schema-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // Drop the tarball into the plugins dir BEFORE boot (the same "file-drop-then-boot" mechanism a
+    // real operator uses) and scan it into a REAL `PluginRegistry` (the same
+    // `scan_and_validate` production boot uses) so `hook_env.registry` — what `GET .../schema`
+    // reads — is populated exactly as it would be at a real boot.
+    std::fs::write(dir.join(file), &tarball).unwrap();
+    let policy = busbar_plugin_sign::TrustPolicy {
+        allow_unsigned: true,
+        ..Default::default()
+    };
+    let registry = busbar_plugin_loader::scan_and_validate(&dir, &policy).unwrap();
+    let hook_env = crate::hooks::HookEnv::new(
+        std::sync::Arc::new(registry),
+        std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
+    );
+    let (addr, handle) = serve_with_plugins_dir_and_hook_env(dir.clone(), hook_env).await;
+    let client = reqwest::Client::new();
+
+    // GET .../schema returns the schema as real JSON, resolved by NAME (not filename).
+    let got_resp = client
+        .get(format!(
+            "http://{addr}/api/v1/admin/plugins/acme-store-withschema/schema"
+        ))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap();
+    let got_status = got_resp.status();
+    let got: serde_json::Value = got_resp.json().await.unwrap();
+    assert_eq!(got_status.as_u16(), 200, "schema get body: {got}");
+    assert_eq!(got["name"], "acme-store-withschema");
+    assert_eq!(got["schema"], schema);
+
+    handle.abort();
+
+    // A schemaless plugin (the H1 fixture) reports `"schema": null`, not an error — dropped in and
+    // rebooted the same way, since (as above) ephemeral test apps only pick up the plugins dir at
+    // initial load.
+    let no_schema_tarball = admin_test_tarball("acme-store-junk", "junkstore");
+    std::fs::write(dir.join("acme-store-junk.tar.gz"), &no_schema_tarball).unwrap();
+    let registry2 = busbar_plugin_loader::scan_and_validate(&dir, &policy).unwrap();
+    let hook_env2 = crate::hooks::HookEnv::new(
+        std::sync::Arc::new(registry2),
+        std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
+    );
+    let (addr2, handle2) = serve_with_plugins_dir_and_hook_env(dir.clone(), hook_env2).await;
+    let got2: serde_json::Value = client
+        .get(format!(
+            "http://{addr2}/api/v1/admin/plugins/acme-store-junk/schema"
+        ))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(got2["schema"], serde_json::Value::Null);
+    // The schema-carrying plugin from the first boot is still resolvable (both files on disk now).
+    let got1_again: serde_json::Value = client
+        .get(format!(
+            "http://{addr2}/api/v1/admin/plugins/acme-store-withschema/schema"
+        ))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(got1_again["schema"], schema);
+
+    // An unknown plugin name is 404, distinguishing "no schema" from "no such plugin".
+    let missing = client
+        .get(format!("http://{addr2}/api/v1/admin/plugins/nope/schema"))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(missing.status().as_u16(), 404);
+
+    let _ = std::fs::remove_dir_all(&dir);
+    handle2.abort();
 }
 
 /// H2 (bricks next boot): installing a SAME-NAME plugin under a DIFFERENT filename (e.g. a version
