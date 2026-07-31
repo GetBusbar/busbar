@@ -436,6 +436,7 @@ fn pack(args: &[String]) -> ExitCode {
             // embeds a schema file it's handed and never sees the plugin's Rust source (gap #1,
             // round-4 correction). `false` unless `--schema-derived` is passed.
             schema_derived,
+            host: None,
         };
         let lib_bytes =
             std::fs::read(&lib_path).map_err(|e| format!("cannot read --lib '{lib_path}': {e}"))?;
@@ -536,6 +537,7 @@ mod tests {
             needs: Default::default(),
             settings_schema: None,
             schema_derived: false,
+            host: None,
         };
         let signed = sign(&key, m, lib);
         busbar_plugin_sign::validate_structure(&signed, lib, &busbar_plugin_loader::supported_abi)
@@ -592,6 +594,7 @@ mod tests {
             },
             settings_schema: None,
             schema_derived: false,
+            host: None,
         };
         let signed = sign(&key, m, lib);
         assert_eq!(signed.needs.prompt, NeedLevel::Rw);

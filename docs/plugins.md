@@ -50,6 +50,18 @@ One plugin is one `.tar.gz` per (plugin, target) containing exactly two members:
 }
 ```
 
+`host` (optional, absent above) declares which product this manifest was packaged for: `busbar`
+(the engine — the implicit default when the field is absent, so every manifest packed before this
+field existed keeps loading unchanged) or a sibling product's own identity, e.g. `busbar-ui`.
+`busbar` and a sibling product like `busbar-ui` deliberately reuse this exact manifest/signing/ABI
+machinery, and their plugin `kind` strings overlap by name (`store`, `auth`, `secret`) even though
+the payload contracts are incompatible — a busbar-ui `store` plugin persists tenants/deployments,
+an engine `store` plugin persists keys/denylists. `host` is signed (covered by the manifest
+signature, so it cannot be spoofed) and checked structurally at load time: the loader refuses to
+load any manifest whose `host` is present and does not match this binary's own identity (`busbar`),
+even if the manifest is validly signed — a foreign-host plugin never gets far enough to be
+laundered through a loose trust posture.
+
 The signature covers every field except `signature` itself (deterministic sorted-key JSON), and
 `sha256` pins the manifest to the exact library bytes, so neither the manifest nor the library can
 be altered or swapped independently. Identity comes from the signed manifest, never the filename:

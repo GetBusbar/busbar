@@ -63,6 +63,15 @@ pub const FIRST_PARTY_PUBLISHER: &str = "busbar";
 /// the cdylib exports and which engine subsystem consumes it; discovery/trust/validation are shared.
 pub const KNOWN_KINDS: &[&str] = &["store", "auth", "hook", "secret"];
 
+/// This binary's own host identity — the value [`Manifest::host`] must match (or omit) to load.
+/// `busbar` names the OSS engine. A sibling product (e.g. `busbar-ui`) that reuses this exact
+/// manifest/signing/ABI machinery stamps its own plugins `host: busbar-ui`; those manifests are
+/// STRUCTURALLY VALID (same six-symbol C ABI, same signed-manifest shape, same `kind` vocabulary)
+/// but semantically foreign — a `busbar-ui` `store` plugin persists tenants/deployments, not the
+/// keys/denylists an engine `store` plugin implements. Same `kind` string, incompatible contracts,
+/// so `host` is what disambiguates them structurally rather than trusting `kind` alone.
+pub const HOST_IDENTITY: &str = "busbar";
+
 /// The busbar release ed25519 PUBLIC key embedded at BUILD time via the `BUSBAR_RELEASE_PUBKEY`
 /// environment variable (64 hex chars). `None` in a build where it was not provided (local dev
 /// builds): first-party verification is then impossible and a `publisher: busbar` plugin is treated
@@ -152,6 +161,17 @@ pub struct Manifest {
     /// corrections. `false` by default (serde-default so every existing manifest still parses).
     #[serde(default)]
     pub schema_derived: bool,
+    /// Which product this manifest was packaged for: `busbar` (the OSS engine, and the IMPLICIT
+    /// default when absent) or a sibling product's own identity (e.g. `busbar-ui`). SIGNED (covered
+    /// by the signature, so it cannot be spoofed after packing) and checked STRUCTURALLY at load
+    /// time (phase 1, [`validate_structure`]) against [`HOST_IDENTITY`] — not merely parsed and
+    /// ignored. `None` means `busbar`, so every manifest packed before this field existed (none of
+    /// them carry it) keeps parsing and loading exactly as before: this is additive, not a breaking
+    /// change. A manifest that EXPLICITLY declares a `host` other than this binary's own is a hard
+    /// structural reject, because the same `kind` string (`store`/`auth`/`secret`) can carry
+    /// entirely incompatible payload contracts across host products — see [`HOST_IDENTITY`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
 }
 
 /// The advisory declared-intent block a `kind: hook` plugin's manifest may carry (`needs:`). Each
@@ -549,6 +569,22 @@ pub fn validate_structure(
     if m.publisher.trim().is_empty() {
         return Err("manifest publisher is empty".to_string());
     }
+    // HOST identity gate: an ABSENT `host` means `busbar` (backward compatible with every manifest
+    // packed before this field existed). An EXPLICIT `host` that is not this binary's own identity
+    // is a hard structural reject — not a silent ignore — because a sibling product (busbar-ui)
+    // reuses the identical six-symbol ABI and signed-manifest shape, so a foreign-host manifest
+    // would otherwise pass the ABI handshake and go on to answer `kind`-matched calls (e.g.
+    // `store`) with an incompatible payload contract. This check runs in phase 1 (structural),
+    // independent of trust/signature, so even a validly-signed foreign-host manifest is refused.
+    if let Some(host) = m.host.as_deref() {
+        if host != HOST_IDENTITY {
+            return Err(format!(
+                "manifest host '{host}' does not match this binary's host '{HOST_IDENTITY}' - \
+                 refusing to load a plugin packaged for a different product (same plugin kind \
+                 strings can carry incompatible payload contracts across hosts)"
+            ));
+        }
+    }
     if m.sha256.len() != 64 || !m.sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(format!(
             "manifest sha256 '{}' is not a 64-char hex digest",
@@ -803,6 +839,7 @@ mod tests {
             needs: HookNeeds::default(),
             settings_schema: None,
             schema_derived: false,
+            host: None,
         }
     }
 
@@ -1480,5 +1517,93 @@ mod tests {
             Some(false),
             &allowed_unsigned()
         ));
+    }
+
+    // ── E-008: manifest `host` disambiguates sibling products that share this exact plugin ABI ──
+
+    /// BACKWARD COMPAT: a manifest with no `host` field at all (every manifest packed before this
+    /// field existed — real packed tarballs, not just an in-memory struct) still parses AND still
+    /// passes structural validation. Deserializes from raw JSON (not `Manifest { .. }` literal
+    /// syntax) so this actually proves the wire format, not just that the Rust default exists.
+    #[test]
+    fn manifest_with_no_host_field_parses_and_loads() {
+        let key = test_key(1);
+        let artifact = b"pre-existing manifest bytes";
+        let json = r#"{
+            "name": "busbar-store-redis",
+            "alias": "redis",
+            "kind": "store",
+            "version": "1.5.0",
+            "publisher": "acme",
+            "abi_version": 1,
+            "sha256": "",
+            "signature": "",
+            "description": "",
+            "homepage": "",
+            "license": ""
+        }"#;
+        let m: Manifest = serde_json::from_str(json).expect("manifest with no host field parses");
+        assert_eq!(m.host, None, "absent host deserializes to None");
+        let m = sign(&key, m, artifact);
+        validate_structure(&m, artifact, &abi)
+            .expect("a manifest with no host field must still pass structural validation");
+    }
+
+    /// A manifest that EXPLICITLY declares `host: busbar` (this binary's own identity) loads
+    /// exactly like an absent `host` — the field is additive, not merely tolerated when omitted.
+    #[test]
+    fn manifest_with_host_busbar_loads() {
+        let key = test_key(1);
+        let artifact = b"same-host bytes";
+        let mut m = manifest("busbar-store-redis", "redis", "acme");
+        m.host = Some(HOST_IDENTITY.to_string());
+        let m = sign(&key, m, artifact);
+        validate_structure(&m, artifact, &abi)
+            .expect("host: busbar matches this binary's own identity and must load");
+    }
+
+    /// THE ACTUAL SAFETY PROPERTY: a manifest declaring a DIFFERENT host (e.g. `busbar-ui`, the
+    /// sibling product that reuses this identical six-symbol ABI and signed-manifest shape) is
+    /// REJECTED at structural validation — not silently ignored. This is what stops a busbar-ui
+    /// `store` plugin (tenants/deployments) from `dlopen`ing into the engine and answering `store`
+    /// calls with the wrong payload contract (keys/denylists) after passing the ABI handshake.
+    /// Runs even on a VALIDLY SIGNED manifest, proving this is a structural (phase 1) gate that
+    /// trust cannot override.
+    #[test]
+    fn manifest_with_foreign_host_is_rejected() {
+        let key = test_key(1);
+        let artifact = b"foreign-host bytes";
+        let mut m = manifest("busbar-ui-store-tenants", "tenants", "acme");
+        m.host = Some("busbar-ui".to_string());
+        let m = sign(&key, m, artifact);
+        let err = validate_structure(&m, artifact, &abi).unwrap_err();
+        assert!(
+            err.contains("busbar-ui") && err.contains("host"),
+            "rejection must name both the offending host and the field, got: {err}"
+        );
+
+        // Not just structural: even a manifest that WOULD verify as trusted first-party never
+        // reaches `evaluate` in the real pipeline, because `registry.rs::examine` runs
+        // `validate_structure` (phase 1) before `evaluate` (phase 2, trust) — a foreign host never
+        // gets a chance to be laundered through a loose trust posture.
+        let pol = policy(Some(&key), &[], true, true);
+        assert!(
+            validate_structure(&m, artifact, &abi).is_err(),
+            "the host gate is structural and does not consult TrustPolicy at all"
+        );
+        let _ = pol; // constructed only to make the "trust cannot help" point explicit above
+    }
+
+    /// A `host` value that is neither absent, `busbar`, nor a recognizable other product string
+    /// (garbage / typo) is rejected the same way as a deliberately foreign host — there is no
+    /// third "unknown, so allow" outcome.
+    #[test]
+    fn manifest_with_garbage_host_is_rejected() {
+        let key = test_key(1);
+        let artifact = b"garbage-host bytes";
+        let mut m = manifest("acme-p", "p", "acme");
+        m.host = Some("Busbar".to_string()); // case mismatch is still not an exact match
+        let m = sign(&key, m, artifact);
+        assert!(validate_structure(&m, artifact, &abi).is_err());
     }
 }
