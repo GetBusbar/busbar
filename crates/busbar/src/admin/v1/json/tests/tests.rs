@@ -220,6 +220,47 @@ fn openapi_operations_carry_stable_operation_ids() {
     );
 }
 
+/// E-004 (busbar-ui/docs/ENGINE-BUGS.md): the document must never contain a boolean `items`
+/// sub-schema (`"items": true`/`"items": false`) — `kin-openapi` (the parser under `oapi-codegen`,
+/// which every published SDK generates through) cannot represent a JSON-Schema-2020-12 boolean
+/// sub-schema at all and aborts the parse. `HookStatusView.metrics` was the one offender
+/// (`serde_json::Value`'s blanket schemars impl renders as boolean `true`, which is fine as a bare
+/// schema but fatal nested under `items`); it now overrides to `{}` via `schema_with`. This test is
+/// a structural sweep, not a one-field regression check, so any FUTURE `Vec<serde_json::Value>` (or
+/// equivalent) added anywhere in the doc is caught the same way. `additionalProperties: true/false`
+/// is a different, non-fatal position and is deliberately not checked here.
+#[cfg(feature = "openapi-schema")]
+#[test]
+fn openapi_never_emits_a_boolean_items_subschema() {
+    fn walk(v: &serde_json::Value, path: &str, offenders: &mut Vec<String>) {
+        match v {
+            serde_json::Value::Object(map) => {
+                if let Some(items) = map.get("items") {
+                    if items.is_boolean() {
+                        offenders.push(format!("{path}/items = {items}"));
+                    }
+                }
+                for (k, vv) in map {
+                    walk(vv, &format!("{path}/{k}"), offenders);
+                }
+            }
+            serde_json::Value::Array(arr) => {
+                for (i, vv) in arr.iter().enumerate() {
+                    walk(vv, &format!("{path}[{i}]"), offenders);
+                }
+            }
+            _ => {}
+        }
+    }
+    let doc = openapi_doc();
+    let mut offenders = Vec::new();
+    walk(&doc, "", &mut offenders);
+    assert!(
+        offenders.is_empty(),
+        "boolean `items` sub-schema(s) found — fatal to kin-openapi/oapi-codegen: {offenders:?}"
+    );
+}
+
 /// CONTRACT LOCK: the openapi Error-schema `code` enum must EXACTLY match the frozen `AdminError`
 /// codes — no drift between the discovery doc and the taxonomy tooling actually receives. Every
 /// variant's `code()` must appear in the enum, and the enum must list nothing else.

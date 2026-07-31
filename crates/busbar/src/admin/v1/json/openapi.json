@@ -1007,8 +1007,8 @@
             ]
           },
           "metrics": {
-            "description": "Validated + bounded self-reported metrics; each entry carries `{name, type, value}` and, when\nthe hook sent them, optional `labels`/`quantiles`/`estimated`/`ci_low`/`ci_high`/`help`/\n`label`/`unit`/`viz`/`max` members.",
-            "items": true,
+            "description": "Validated + bounded self-reported metrics; each entry carries `{name, type, value}` and, when\nthe hook sent them, optional `labels`/`quantiles`/`estimated`/`ci_low`/`ci_high`/`help`/\n`label`/`unit`/`viz`/`max` members.\n\nE-004 (busbar-ui/docs/ENGINE-BUGS.md): schemars' blanket `JsonSchema` impl for\n`serde_json::Value` renders as the JSON-Schema-2020-12 boolean `true` (`schemars-1.2.1`'s\n`json_schema_impls/serdejson.rs`), which is legal 2020-12 but — nested here as this array's\n`items` — is a boolean SUB-schema, and `kin-openapi` (the parser under `oapi-codegen`, which\nevery published SDK generates through) cannot represent one at all: the parse aborts, taking\nout Python/TS/Go SDK regeneration simultaneously. `#[schemars(schema_with)]` overrides just\nthis field's schema to `{\"type\": \"array\", \"items\": {}}` — `{}` is the equivalent \"accepts\nanything\" schema every generator DOES understand, and is what busbar-ui's own\n`openapi-prep.py` already rewrites `items: true` into client-side. This is the only\n`items: true` in the document; every other `additionalProperties: true` schemars emits\nelsewhere is a boolean in a position `kin-openapi` handles fine and is deliberately untouched.",
+            "items": {},
             "type": "array"
           },
           "name": {

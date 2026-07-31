@@ -299,6 +299,19 @@ pub(crate) struct HookStatusView {
     /// Validated + bounded self-reported metrics; each entry carries `{name, type, value}` and, when
     /// the hook sent them, optional `labels`/`quantiles`/`estimated`/`ci_low`/`ci_high`/`help`/
     /// `label`/`unit`/`viz`/`max` members.
+    ///
+    /// E-004 (busbar-ui/docs/ENGINE-BUGS.md): schemars' blanket `JsonSchema` impl for
+    /// `serde_json::Value` renders as the JSON-Schema-2020-12 boolean `true` (`schemars-1.2.1`'s
+    /// `json_schema_impls/serdejson.rs`), which is legal 2020-12 but — nested here as this array's
+    /// `items` — is a boolean SUB-schema, and `kin-openapi` (the parser under `oapi-codegen`, which
+    /// every published SDK generates through) cannot represent one at all: the parse aborts, taking
+    /// out Python/TS/Go SDK regeneration simultaneously. `#[schemars(schema_with)]` overrides just
+    /// this field's schema to `{"type": "array", "items": {}}` — `{}` is the equivalent "accepts
+    /// anything" schema every generator DOES understand, and is what busbar-ui's own
+    /// `openapi-prep.py` already rewrites `items: true` into client-side. This is the only
+    /// `items: true` in the document; every other `additionalProperties: true` schemars emits
+    /// elsewhere is a boolean in a position `kin-openapi` handles fine and is deliberately untouched.
+    #[schemars(schema_with = "hook_status_metrics_schema")]
     pub(crate) metrics: Vec<serde_json::Value>,
     pub(crate) as_of: u64,
     /// Always `"live"` (the read is a live transport query).
@@ -306,6 +319,16 @@ pub(crate) struct HookStatusView {
     /// A short human note present only on the fail-open (no-answer) branch.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) note: Option<String>,
+}
+
+/// The `HookStatusView.metrics` array's item schema (E-004): `{}`, not schemars' default boolean
+/// `true` for `serde_json::Value` — the "accepts anything" schema every generator understands, in a
+/// position (`items`) where the boolean form is fatal to `kin-openapi`/`oapi-codegen`.
+fn hook_status_metrics_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": "array",
+        "items": {}
+    })
 }
 
 /// `GET /config/versions/{v}` — one retained config version WITH its full hook-surface snapshot
