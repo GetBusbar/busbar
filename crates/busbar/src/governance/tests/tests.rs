@@ -138,7 +138,7 @@ use super::*;
 fn sample_key(id: &str, hash: &str) -> VirtualKey {
     VirtualKey {
         id: id.to_string(),
-        key_hash: hash.to_string(),
+        generation_hash: hash.to_string(),
         name: "test-key".to_string(),
         allowed_pools: Some(vec!["prod".to_string(), "cheap".to_string()]),
         enabled: true,
@@ -496,18 +496,18 @@ fn test_record_metering_from_ir_usage_and_flat() {
 
 #[test]
 fn test_virtualkey_debug_redacts_key_hash() {
-    // LOW #17 (SECURITY): VirtualKey's Debug must NOT print `key_hash` (the stored authenticator
+    // LOW #17 (SECURITY): VirtualKey's Debug must NOT print `generation_hash` (the stored authenticator
     // for the key's secret). A derived Debug leaked it in plaintext; the manual impl prints
     // presence only. The hash value is deliberately distinctive so a substring check catches it.
     let mut k = sample_key("vk_dbg", "SECRET-key-hash-value-zzz");
     let dbg = format!("{k:?}");
     assert!(
         !dbg.contains("SECRET-key-hash-value-zzz"),
-        "VirtualKey Debug leaked key_hash: {dbg}"
+        "VirtualKey Debug leaked generation_hash: {dbg}"
     );
     assert!(
         dbg.contains("<redacted; present>"),
-        "VirtualKey Debug should mark key_hash present-but-redacted: {dbg}"
+        "VirtualKey Debug should mark generation_hash present-but-redacted: {dbg}"
     );
     // Non-secret fields are still shown so the struct stays diagnosable.
     assert!(dbg.contains("vk_dbg"), "id must still appear: {dbg}");
@@ -520,15 +520,15 @@ fn test_virtualkey_debug_redacts_key_hash() {
     let ctx_dbg = format!("{ctx:?}");
     assert!(
         !ctx_dbg.contains("SECRET-key-hash-value-zzz"),
-        "GovCtx Debug leaked the embedded key_hash: {ctx_dbg}"
+        "GovCtx Debug leaked the embedded generation_hash: {ctx_dbg}"
     );
 
     // An empty hash is marked absent (defensive; the request path never builds such a key).
-    k.key_hash = String::new();
+    k.generation_hash = String::new();
     let dbg_empty = format!("{k:?}");
     assert!(
         dbg_empty.contains("<absent>"),
-        "empty key_hash should read as absent: {dbg_empty}"
+        "empty generation_hash should read as absent: {dbg_empty}"
     );
 }
 
@@ -560,8 +560,6 @@ fn test_create_key_with_aws_issues_and_resolves_credential() {
     assert!(gov
         .lookup_by_access_key_id("AKIAdoesnotexist0000")
         .is_none());
-    // The bearer secret still resolves the key via the hash index too.
-    assert_eq!(gov.lookup(&_bearer).unwrap().id, key.id);
 }
 
 /// Contract guard for the OS-CSPRNG-backed credential generators (`getrandom`). Pins the exact
@@ -664,29 +662,34 @@ fn test_delete_key_removes_aws_credential() {
 #[test]
 fn test_refresh_updates_both_indices_atomically() {
     // LOW-1 invariant: a key minted WITH an AWS credential is resolvable through BOTH auth
-    // indices (the hashed-bearer `by_hash` index AND the AccessKeyId `by_access_key_id` index),
-    // and a `delete_key` (which calls `refresh`) clears it from BOTH in the same swap. This pins
-    // the single-lock atomic refresh against a future split-lock regression where one index could
-    // be updated without the other.
+    // indices (the subject-id `by_id` index AND the AccessKeyId `by_access_key_id` index), and a
+    // `delete_key` (which calls `refresh`) clears it from BOTH in the same swap. This pins the
+    // single-lock atomic refresh against a future split-lock regression where one index could be
+    // updated without the other.
     let store = Arc::new(MemoryStore::new());
-    let gov = GovState::new(store, None).unwrap();
-    let (key, bearer, akid, _secret) = gov
-        .create_key_with_aws(
+    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+        &[7u8; 32],
+        crate::governance::signing::DEFAULT_KID,
+    );
+    let gov = GovState::new_with_signer(store, None, Some(signer)).unwrap();
+    let (key, _token, akid, _secret) = gov
+        .mint_signed_with_aws(
             NewKeySpec {
                 name: "dual-index-key".to_string(),
                 allowed_pools: None,
                 group: None,
                 labels: std::collections::BTreeMap::new(),
             },
+            2_000_000_000,
             1_700_000_000,
         )
         .unwrap();
 
     // Present in BOTH indices before deletion.
     assert_eq!(
-        gov.lookup(&bearer).map(|k| k.id.clone()),
+        gov.lookup_by_sub(&key.id).map(|k| k.id.clone()),
         Some(key.id.clone()),
-        "bearer must resolve via by_hash before delete"
+        "subject id must resolve via by_id before delete"
     );
     assert_eq!(
         gov.lookup_by_access_key_id(&akid).map(|e| e.key.id),
@@ -699,8 +702,8 @@ fn test_refresh_updates_both_indices_atomically() {
 
     // Absent from BOTH indices after deletion — neither lags the other.
     assert!(
-        gov.lookup(&bearer).is_none(),
-        "bearer must be gone from by_hash after delete"
+        gov.lookup_by_sub(&key.id).is_none(),
+        "subject id must be gone from by_id after delete"
     );
     assert!(
         gov.lookup_by_access_key_id(&akid).is_none(),
@@ -761,28 +764,26 @@ fn test_generated_aws_credentials_are_distinct() {
 #[test]
 fn test_govstate_lookup_pool_allowed_refresh() {
     let store = Arc::new(MemoryStore::new());
-    let secret = "sk-vk-abc";
-    let mut k = sample_key("k1", &crate::sigv4::sha256_hex(secret.as_bytes()));
+    let mut k = sample_key("k1", "binding:k1:gen1");
     k.allowed_pools = Some(vec!["prod".to_string()]);
     store.put_key(&k).unwrap();
 
     let gov = GovState::new(store, None).unwrap();
-    // hashed-secret lookup hits the cache.
-    assert_eq!(gov.lookup(secret).unwrap().id, "k1");
-    assert!(gov.lookup("wrong-secret").is_none());
+    // subject-id lookup hits the cache.
+    assert_eq!(gov.lookup_by_sub("k1").unwrap().id, "k1");
+    assert!(gov.lookup_by_sub("no-such-id").is_none());
 
-    let resolved = gov.lookup(secret).unwrap();
+    let resolved = gov.lookup_by_sub("k1").unwrap();
     assert!(pool_allowed(&resolved, "prod"));
     assert!(!pool_allowed(&resolved, "other"));
 
     // A key added after construction isn't visible until refresh().
-    let secret2 = "sk-vk-def";
-    let mut k2 = sample_key("k2", &crate::sigv4::sha256_hex(secret2.as_bytes()));
+    let mut k2 = sample_key("k2", "binding:k2:gen1");
     k2.allowed_pools = None; // omitted grant = all pools (C6)
     gov.store().put_key(&k2).unwrap();
-    assert!(gov.lookup(secret2).is_none(), "not cached pre-refresh");
+    assert!(gov.lookup_by_sub("k2").is_none(), "not cached pre-refresh");
     gov.refresh().unwrap();
-    let r2 = gov.lookup(secret2).unwrap();
+    let r2 = gov.lookup_by_sub("k2").unwrap();
     assert!(pool_allowed(&r2, "anything"), "None allowed_pools = all");
     // And the C6 empty-set arm: an explicit [] admits NO pool.
     let mut k3 = sample_key("k3", "h3");
@@ -1513,10 +1514,10 @@ fn test_create_key_minted_id_is_free_so_mint_succeeds() {
         group: None,
         labels: std::collections::BTreeMap::new(),
     };
-    let (key, secret) = gov.create_key(spec, 1_700_000_000).unwrap();
+    let (key, _secret) = gov.create_key(spec, 1_700_000_000).unwrap();
     assert!(key.id.starts_with("vk_")); // golden wire-contract literal (kept bare on purpose)
-                                        // The minted key resolves by its own secret.
-    assert_eq!(gov.lookup(&secret).unwrap().id, key.id);
+                                        // The minted key resolves by its own subject id.
+    assert_eq!(gov.lookup_by_sub(&key.id).unwrap().id, key.id);
 }
 
 #[test]
@@ -1527,7 +1528,7 @@ fn test_update_key_toggles_enabled_and_rebinds_group_in_place() {
     // present `null` (inner None) UNBINDS the group back to unlimited.
     let store = Arc::new(MemoryStore::new());
     let gov = GovState::new(store.clone(), None).unwrap();
-    let (key, secret) = gov
+    let (key, _secret) = gov
         .create_key(
             NewKeySpec {
                 name: "k".to_string(),
@@ -1539,7 +1540,7 @@ fn test_update_key_toggles_enabled_and_rebinds_group_in_place() {
         )
         .unwrap();
     assert!(key.enabled, "new key starts enabled");
-    let hash = key.key_hash.clone();
+    let hash = key.generation_hash.clone();
 
     // Disable it; leave the binding untouched (outer None = field absent).
     let updated = gov
@@ -1552,9 +1553,9 @@ fn test_update_key_toggles_enabled_and_rebinds_group_in_place() {
         Some("growth"),
         "untouched binding preserved"
     );
-    assert_eq!(updated.key_hash, hash, "secret hash is not rotated");
+    assert_eq!(updated.generation_hash, hash, "secret hash is not rotated");
     // The disabled state is enforced on the next lookup (the cache was refreshed).
-    let looked = gov.lookup(&secret).unwrap();
+    let looked = gov.lookup_by_sub(&key.id).unwrap();
     assert!(!looked.enabled, "lookup reflects the disabled key");
 
     // Re-enable and REBIND in one call (Some(Some(name)) = rebind).
@@ -1583,9 +1584,9 @@ fn test_update_key_toggles_enabled_and_rebinds_group_in_place() {
 
 #[test]
 fn test_ensure_id_free_for_hash_guards_silent_overwrite() {
-    // The PRIMARY KEY `id` is a 64-bit prefix of the full key_hash, so a collision can put a new
+    // The PRIMARY KEY `id` is a 64-bit prefix of the full generation_hash, so a collision can put a new
     // secret's id atop an unrelated key. The guard must REFUSE when the id already holds a
-    // DIFFERENT key_hash (rather than let put_key UPSERT-overwrite and invalidate the incumbent),
+    // DIFFERENT generation_hash (rather than let put_key UPSERT-overwrite and invalidate the incumbent),
     // while allowing a free id or an idempotent same-hash re-mint.
     let store = Arc::new(MemoryStore::new());
     let gov = GovState::new(store.clone(), None).unwrap();
@@ -1614,7 +1615,10 @@ fn test_ensure_id_free_for_hash_guards_silent_overwrite() {
 
     // The incumbent row is untouched (never overwritten).
     let still = store.get_key("vk_freshid").unwrap().unwrap();
-    assert_eq!(still.key_hash, "HASH_A", "incumbent must not be clobbered");
+    assert_eq!(
+        still.generation_hash, "HASH_A",
+        "incumbent must not be clobbered"
+    );
 }
 
 #[test]
@@ -1659,11 +1663,10 @@ fn test_poisoned_budget_lock_recovers_not_panics() {
 
 #[test]
 fn test_poisoned_by_hash_lock_recovers_not_panics() {
-    // The auth-path key cache lock has the same hazard: a poisoned `by_hash` must not make every
-    // subsequent `lookup` panic. Poison it, then confirm lookup still resolves a cached key.
+    // The auth-path key cache lock has the same hazard: a poisoned `by_id` must not make every
+    // subsequent `lookup_by_sub` panic. Poison it, then confirm lookup still resolves a cached key.
     let store = Arc::new(MemoryStore::new());
-    let secret = "sk-vk-abc";
-    let k = sample_key("k1", &crate::sigv4::sha256_hex(secret.as_bytes()));
+    let k = sample_key("k1", "binding:k1:gen1");
     store.put_key(&k).unwrap();
     let gov = Arc::new(GovState::new(store, None).unwrap());
 
@@ -1675,10 +1678,10 @@ fn test_poisoned_by_hash_lock_recovers_not_panics() {
     assert!(gov.caches.is_poisoned(), "cache lock must be poisoned");
 
     // lookup still works (no panic) and refresh still succeeds on the recovered guard.
-    assert_eq!(gov.lookup(secret).unwrap().id, "k1");
+    assert_eq!(gov.lookup_by_sub("k1").unwrap().id, "k1");
     gov.refresh()
         .expect("refresh recovers the poisoned cache lock");
-    assert_eq!(gov.lookup(secret).unwrap().id, "k1");
+    assert_eq!(gov.lookup_by_sub("k1").unwrap().id, "k1");
 }
 
 /// A `Store` decorator that (1) RECORDS every `add_usage` requests-delta in call-COMPLETION order
@@ -2445,14 +2448,11 @@ mod signed_token {
 
     // ── ROTATION ACTUALLY ROTATES ─────────────────────────────────────────
     //
-    // `POST /keys/{id}/rotate` used to mint a legacy BEARER SECRET and stamp its hash over the
-    // binding marker. Two defects in one line:
-    // * the outstanding SIGNED TOKEN kept verifying (the token path resolves by `sub` and never
-    // looked at `key_hash`), so the operation revoked precisely nothing;
-    // * it ARMED the legacy hashed-secret path on a key deliberately minted without one — a
-    // second, weaker, non-expiring credential (a downgrade).
-    // Rotation now stamps a fresh binding GENERATION (durable, so every node agrees) and re-mints
-    // the token against it.
+    // Rotation stamps a fresh binding GENERATION (durable, so every node agrees) and re-mints the
+    // token against it. 1.5.0 has exactly one bearer-credential shape (a signed token), so rotation
+    // has exactly one outcome — the legacy hashed-secret rotation arm this section used to also
+    // cover was removed along with the legacy verify path itself (see `docs/migration-1.5.md`:
+    // "1.4.x keys no longer authenticate").
 
     /// The PRE-ROTATION token is rejected immediately after rotate; the re-minted one is accepted;
     /// the id (and with it the ledger bucket / usage history) is unchanged.
@@ -2468,9 +2468,7 @@ mod signed_token {
             .rotate_key(&binding.id, 9_000)
             .expect("rotate")
             .expect("known id");
-        let crate::governance::RotatedCredential::Token { key, token, .. } = rotated else {
-            panic!("a signed-token binding must rotate its TOKEN, never a bearer secret");
-        };
+        let crate::governance::RotatedCredential { key, token, .. } = rotated;
 
         assert_eq!(
             key.id, binding.id,
@@ -2488,59 +2486,6 @@ mod signed_token {
         assert!(
             g.verify_token(&token, 1_500).is_some(),
             "the re-minted token authenticates"
-        );
-    }
-
-    /// Rotation does NOT re-arm the legacy hashed-secret path: the binding row keeps a `binding:`
-    /// marker (which can never equal a SHA-256 digest), so no bearer secret exists to look up.
-    #[test]
-    fn rotate_does_not_arm_the_legacy_hashed_secret_path() {
-        let g = gov();
-        let (binding, _token) = g
-            .mint_signed(spec("bob", None, None), 9_000, 1_000)
-            .expect("mint");
-        g.rotate_key(&binding.id, 9_000)
-            .expect("rotate")
-            .expect("known id");
-
-        let row = g
-            .all_keys()
-            .unwrap()
-            .into_iter()
-            .find(|k| k.id == binding.id)
-            .expect("binding still exists");
-        assert!(
-            crate::governance::is_binding_marker(&row.key_hash),
-            "the rotated row must stay a signed-token BINDING, not become a hashed-secret key: {}",
-            row.key_hash
-        );
-        assert!(
-            crate::governance::binding_generation(&row.key_hash).is_some(),
-            "the rotated binding carries a generation"
-        );
-    }
-
-    /// A LEGACY hashed-secret key still rotates its bearer secret (that is the only credential it
-    /// has): the fresh secret resolves, the old one stops.
-    #[test]
-    fn legacy_hashed_secret_key_still_rotates_its_secret() {
-        let g = gov();
-        let (key, old_secret) = g
-            .create_key(spec("legacy", None, None), 1_000)
-            .expect("mint");
-        assert!(g.lookup(&old_secret).is_some());
-
-        let rotated = g
-            .rotate_key(&key.id, 9_000)
-            .expect("rotate")
-            .expect("known id");
-        let crate::governance::RotatedCredential::Secret { secret, .. } = rotated else {
-            panic!("a hashed-secret key rotates its SECRET");
-        };
-        assert!(g.lookup(&secret).is_some(), "the fresh secret resolves");
-        assert!(
-            g.lookup(&old_secret).is_none(),
-            "the pre-rotation secret stops resolving"
         );
     }
 }

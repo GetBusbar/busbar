@@ -1233,32 +1233,16 @@ pub(crate) async fn auth_middleware(
         }
 
         // Reject a missing / empty token BEFORE the governance lookup, mirroring the
-        // `validate_token` guard that the static-token path applies. Without this, an
-        // unauthenticated request would call `gov.lookup(sha256(""))` — admitting the caller if any
-        // virtual key in the store ever hashed an empty secret (reachable via direct DB writes or a
-        // future seeding path that bypasses `generate_secret`). Making the empty-token reject
-        // explicit removes that latent hash-collision dependency rather than relying on the absence
-        // of a `sha256("")` entry in the key store.
+        // `validate_token` guard that the static-token path applies.
         let Some(client_token) = client_token.as_deref().filter(|t| !t.is_empty()) else {
             return Err(unauthorized_with_completion_taps(&app, &path));
         };
         // 1.5.0 SIGNED-TOKEN KEYS (S1): a busbar-minted key is a signed token verified statelessly
-        // (signature + expiry + revocation-denylist), then policy is resolved by `sub`. Verify it
-        // FIRST (it carries the `bbk_` prefix, so `verify_token` cheaply rejects a non-token and
-        // this falls through to the legacy hash lookup for any credential that is not a busbar
-        // token). A tampered/expired/revoked token, or one for a deleted key, is `None` = 401.
-        let resolved_key = gov
-            .verify_token(client_token, crate::store::now())
-            // LEGACY hashed-secret path: `lookup` is a `by_hash` hit for pre-1.5.0 keys hydrated
-            // by `GovState::load`. Unlike `verify_token` (which consults the denylist internally)
-            // this path admits on the raw binding, so a `revoke`d hashed-secret key would keep
-            // authenticating. Gate it on `!is_revoked` here, mirroring the SigV4 admit path — a
-            // revoked subject's Bearer secret is treated as no match (opaque 401). `revoke`
-            // deliberately preserves `enabled` for history, so the enabled check is not enough.
-            .or_else(|| {
-                gov.lookup(client_token)
-                    .filter(|key| !gov.is_revoked(&key.id))
-            });
+        // (signature + expiry + revocation-denylist), then policy is resolved by `sub`. This is the
+        // ONLY bearer-credential shape in 1.5.0 — the legacy hashed-secret verify path was retired
+        // (`docs/migration-1.5.md`: "1.4.x keys no longer authenticate"). A tampered/expired/revoked
+        // token, or one for a deleted key, is `None` = 401.
+        let resolved_key = gov.verify_token(client_token, crate::store::now());
         match resolved_key {
             Some(key) if key.enabled => {
                 // The governance principal: id = the virtual-key id (stable), name = its label.

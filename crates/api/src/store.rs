@@ -18,7 +18,7 @@ pub struct VirtualKey {
     /// SHA-256 hex of the presented secret (the secret itself is never stored). For a 1.5.0
     /// signed-token key this is a non-authenticating `binding:<id>` marker (the token is the
     /// credential).
-    pub key_hash: String,
+    pub generation_hash: String,
     pub name: String,
     /// Pools this key may target. `None` = ALL pools (the grant was omitted at mint);
     /// `Some(list)` = exactly those pools; `Some([])` = NO pools (C6: an empty list is the empty
@@ -49,7 +49,7 @@ impl VirtualKey {
     }
 }
 
-// MANUAL Debug that REDACTS `key_hash`. A derived `Debug` would print the SHA-256 of the key's
+// MANUAL Debug that REDACTS `generation_hash`. A derived `Debug` would print the SHA-256 of the key's
 // secret in PLAINTEXT — a latent credential leak any time a `VirtualKey` (or `GovCtx`, which embeds
 // one and whose derived Debug delegates here transitively) is debug-logged. The hash is the stored
 // authenticator (a presented secret is matched by hashing it and looking up this value), so it is
@@ -61,8 +61,8 @@ impl std::fmt::Debug for VirtualKey {
         f.debug_struct("VirtualKey")
             .field("id", &self.id)
             .field(
-                "key_hash",
-                &if self.key_hash.is_empty() {
+                "generation_hash",
+                &if self.generation_hash.is_empty() {
                     "<absent>"
                 } else {
                     "<redacted; present>"
@@ -551,7 +551,7 @@ mod tests {
     fn sample_key() -> VirtualKey {
         VirtualKey {
             id: "vk_1".to_string(),
-            key_hash: "deadbeefdeadbeef".to_string(),
+            generation_hash: "deadbeefdeadbeef".to_string(),
             name: "test".to_string(),
             allowed_pools: Some(vec!["p".to_string()]),
             enabled: true,
@@ -580,7 +580,7 @@ mod tests {
 
     /// The redacting `Debug` - the guard for the structured-logging surface, since
     /// `tracing` records fields via `Debug`/`Display`, never serde - must NEVER emit the secret-
-    /// equivalent `key_hash` / `secret_access_key`. This is the leak the finding is about: any place a
+    /// equivalent `generation_hash` / `secret_access_key`. This is the leak the finding is about: any place a
     /// record reaches a log must show presence only.
     #[test]
     fn debug_redacts_secret_equivalents() {
@@ -588,7 +588,7 @@ mod tests {
         let key_dbg = format!("{key:?}");
         assert!(
             !key_dbg.contains("deadbeefdeadbeef"),
-            "VirtualKey Debug leaked key_hash: {key_dbg}"
+            "VirtualKey Debug leaked generation_hash: {key_dbg}"
         );
         assert!(key_dbg.contains("<redacted; present>"));
 
@@ -629,7 +629,7 @@ mod tests {
         let json = serde_json::to_string(&key).unwrap();
         assert!(
             json.contains("deadbeefdeadbeef"),
-            "persistence must keep key_hash"
+            "persistence must keep generation_hash"
         );
         let back: VirtualKey = serde_json::from_str(&json).unwrap();
         assert_eq!(key, back);
@@ -653,7 +653,8 @@ mod tests {
     /// Guards the redis-style JSON persistence for the 1.5.0 pure-auth key shape.
     #[test]
     fn virtual_key_minimal_json_defaults_optionals() {
-        let minimal = r#"{"id":"vk_1","key_hash":"h","name":"n","enabled":true,"created_at":1}"#;
+        let minimal =
+            r#"{"id":"vk_1","generation_hash":"h","name":"n","enabled":true,"created_at":1}"#;
         let k: VirtualKey = serde_json::from_str(minimal).unwrap();
         assert_eq!(k.allowed_pools, None, "absent grant = all pools");
         assert_eq!(k.group, None);

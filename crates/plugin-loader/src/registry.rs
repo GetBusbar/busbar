@@ -1021,7 +1021,7 @@ mod tests {
             .expect("open the real store through the full pipeline");
         let key = busbar_api::VirtualKey {
             id: "vk_pipeline".into(),
-            key_hash: "h".into(),
+            generation_hash: "h".into(),
             name: "pipeline".into(),
             allowed_pools: Some(vec!["p".into()]),
             enabled: true,

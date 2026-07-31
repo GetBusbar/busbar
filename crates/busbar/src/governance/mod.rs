@@ -40,24 +40,24 @@ const VK_ID_PREFIX: &str = "vk_";
 const VK_ID_HASH_PREFIX_LEN: usize = 16;
 /// The `"sk-bb-"` prefix for bearer secrets returned by `generate_secret`.
 const SK_SECRET_PREFIX: &str = "sk-bb-";
-/// The `key_hash` MARKER prefix of a 1.5.0 signed-token binding row. A signed-token key has NO
-/// hashed bearer secret: the token is the credential, and the `key_hash` column holds
-/// `binding:<id>:<generation>` purely to satisfy the store's `UNIQUE(key_hash)` constraint and to
-/// carry the rotation generation durably. Because the marker can never equal a SHA-256 hex digest,
-/// a binding row is structurally unreachable from the legacy hashed-secret lookup path.
+/// The `generation_hash` prefix of a 1.5.0 signed-token binding row. A signed-token key has NO
+/// hashed bearer secret: the token is the credential, and the `generation_hash` column holds
+/// `binding:<id>:<generation>` — not a hash at all, a fingerprint compared post-resolution against
+/// a token's `generation` claim (`generation_matches`) so a rotation can be detected. Every live key
+/// is a signed-token binding (1.5.0 retired the legacy hashed-secret credential shape entirely — see
+/// `docs/migration-1.5.md`), so this is the only `generation_hash` shape that exists.
 pub(crate) const BINDING_MARKER_PREFIX: &str = "binding:";
 
-/// The `key_hash` marker for a signed-token binding at a given rotation generation.
+/// The `generation_hash` marker for a signed-token binding at a given rotation generation.
 pub(crate) fn binding_marker(id: &str, generation: &str) -> String {
     format!("{BINDING_MARKER_PREFIX}{id}:{generation}")
 }
 
-/// The rotation GENERATION carried by a binding row's `key_hash` marker, if any. `None` for a
-/// legacy hashed-secret key (a real digest) AND for a pre-generation binding marker
-/// (`binding:<id>`, minted before rotation carried a generation) — in both cases only a token
-/// likewise carrying no generation may verify.
-pub(crate) fn binding_generation(key_hash: &str) -> Option<&str> {
-    key_hash
+/// The rotation GENERATION carried by a binding row's `generation_hash` marker, if any. `None` for a
+/// pre-generation binding marker (`binding:<id>`, minted before rotation carried a generation) —
+/// only a token likewise carrying no generation may verify against it.
+pub(crate) fn binding_generation(generation_hash: &str) -> Option<&str> {
+    generation_hash
         .strip_prefix(BINDING_MARKER_PREFIX)?
         .split_once(':')
         .map(|(_id, generation)| generation)
@@ -67,13 +67,8 @@ pub(crate) fn binding_generation(key_hash: &str) -> Option<&str> {
 /// the rotation gate on the signed-token verify path. Exact equality including the `None` case:
 /// a pre-generation token (`None`) verifies only against a pre-generation binding (`None`), so a
 /// rotation can never be defeated by simply omitting the claim.
-pub(crate) fn generation_matches(key_hash: &str, presented: Option<&str>) -> bool {
-    binding_generation(key_hash) == presented
-}
-
-/// Whether `key_hash` is a signed-token BINDING marker rather than a hashed bearer secret.
-pub(crate) fn is_binding_marker(key_hash: &str) -> bool {
-    key_hash.starts_with(BINDING_MARKER_PREFIX)
+pub(crate) fn generation_matches(generation_hash: &str, presented: Option<&str>) -> bool {
+    binding_generation(generation_hash) == presented
 }
 
 /// A fresh unguessable binding GENERATION (128 bits of OS CSPRNG, hex). Fails closed on no entropy,
@@ -415,27 +410,24 @@ impl<V> Sharded<V> {
 }
 
 /// The two auth-path key caches, held together under `GovState::caches`'s single `RwLock` so
-/// `refresh` can swap both in one critical section. `by_hash` is the hashed-secret → key index; it
-/// backs `lookup`. `by_access_key_id` is the AWS AccessKeyId → resolved-credential index for inbound
-/// SigV4 resolution on the Bedrock-ingress hot path: the AccessKeyId arrives in plaintext in the
-/// SigV4 `Authorization` header's `Credential=` field, so it is keyed on the plaintext AccessKeyId
-/// (NOT hashed like `by_hash`) — a lookup handle, not a secret. Each entry bundles the owning
-/// `VirtualKey` with its secret access key, so the verify path resolves both in one lookup. Only keys
-/// minted WITH an AWS credential appear in `by_access_key_id`. Both are rebuilt by `refresh` from the
-/// SAME store snapshot, so a disabled/deleted/re-minted key is reflected in both — now also visible
-/// to readers atomically (the one lock guarantees no reader sees a half-applied swap).
+/// `refresh` can swap both in one critical section. `by_id` is the subject-id → key index; it backs
+/// `lookup_by_sub` (the signed-token verify hot path — 1.5.0 has exactly one bearer-credential
+/// shape, so this is the only key index needed). `by_access_key_id` is the AWS AccessKeyId →
+/// resolved-credential index for inbound SigV4 resolution on the Bedrock-ingress hot path: the
+/// AccessKeyId arrives in plaintext in the SigV4 `Authorization` header's `Credential=` field, so it
+/// is keyed on the plaintext AccessKeyId — a lookup handle, not a secret. Each entry bundles the
+/// owning `VirtualKey` with its secret access key, so the verify path resolves both in one lookup.
+/// Only keys minted WITH an AWS credential appear in `by_access_key_id`. Both are rebuilt by
+/// `refresh` from the SAME store snapshot, so a disabled/deleted/re-minted key is reflected in both
+/// — visible to readers atomically (the one lock guarantees no reader sees a half-applied swap).
 struct GovCaches {
-    /// Hashed-secret → key. Values are `Arc<VirtualKey>` so the per-request bearer `lookup` (on the
-    /// chat hot path) resolves to a REFCOUNT BUMP rather than a deep clone of a multi-`String`
-    /// `VirtualKey` under the read lock — the resolved key is immutable for the life of the request
-    /// and threaded read-only through governance/routing, so sharing it via `Arc` is exact.
-    by_hash: HashMap<String, Arc<VirtualKey>>,
-    by_access_key_id: HashMap<String, AwsKeyEntry>,
-    /// Subject id (the key id / token `sub`) → key. The O(1) index behind `lookup_by_sub` (the
-    /// signed-token verify hot path, M6) — replacing an O(n) linear scan of `by_hash.values()` under
-    /// the read lock. Shares the same `Arc<VirtualKey>` rows as `by_hash`, rebuilt from the SAME
-    /// snapshot by `refresh`, so it can never drift from the other indices.
+    /// Subject id (the key id / token `sub`) → key. Values are `Arc<VirtualKey>` so the per-request
+    /// signed-token resolution (on the chat hot path) is a REFCOUNT BUMP rather than a deep clone of
+    /// a multi-`String` `VirtualKey` under the read lock — the resolved key is immutable for the
+    /// life of the request and threaded read-only through governance/routing, so sharing it via
+    /// `Arc` is exact.
     by_id: HashMap<String, Arc<VirtualKey>>,
+    by_access_key_id: HashMap<String, AwsKeyEntry>,
 }
 
 /// Per-instance governance runtime: the durable `Store` plus an in-memory key cache (hashed-secret
@@ -532,28 +524,15 @@ impl SigningMaterial {
     }
 }
 
-/// What `POST /keys/{id}/rotate` re-issued — the credential shape the key actually carries. The
-/// once-shown material differs per arm, and the handler renders each accordingly.
-pub(crate) enum RotatedCredential {
-    /// A 1.5.0 signed-token binding: a freshly-minted token at a NEW binding generation. Every
-    /// token issued before the rotation is now rejected by `verify_token`.
-    Token {
-        key: VirtualKey,
-        token: String,
-        exp: u64,
-    },
-    /// A legacy hashed-secret key: a fresh bearer secret (its only credential). The old secret stops
-    /// resolving immediately.
-    Secret { key: VirtualKey, secret: String },
-}
-
-impl RotatedCredential {
-    /// The rotated key's metadata (shared by both arms).
-    pub(crate) fn key(&self) -> &VirtualKey {
-        match self {
-            RotatedCredential::Token { key, .. } | RotatedCredential::Secret { key, .. } => key,
-        }
-    }
+/// What `POST /keys/{id}/rotate` re-issued: a 1.5.0 signed-token binding at a freshly-minted
+/// generation. Every token issued before the rotation is now rejected by `verify_token`. (1.5.0 has
+/// exactly one bearer-credential shape — a signed token — so rotation has exactly one outcome; the
+/// legacy hashed-secret rotation arm this type used to carry was removed with the legacy verify
+/// path itself.)
+pub(crate) struct RotatedCredential {
+    pub(crate) key: VirtualKey,
+    pub(crate) token: String,
+    pub(crate) exp: u64,
 }
 
 /// Parameters for minting a new virtual key (from the management API) - PURE AUTH (S1): identity,
@@ -650,7 +629,7 @@ pub(crate) fn synthesize_principal_key(
         id: principal.id.clone(),
         // NOT a credential hash — a marker. The synthetic key never authenticates anything (the
         // auth module already did); it exists purely to carry grants through enforcement.
-        key_hash: format!("principal:{}", principal.id),
+        generation_hash: format!("principal:{}", principal.id),
         name: principal
             .name
             .clone()

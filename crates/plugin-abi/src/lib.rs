@@ -352,7 +352,7 @@ mod tests {
     fn sample_key() -> VirtualKey {
         VirtualKey {
             id: "vk_1".into(),
-            key_hash: "deadbeef".into(),
+            generation_hash: "deadbeef".into(),
             name: "test".into(),
             allowed_pools: Some(vec!["p1".into()]),
             enabled: true,
