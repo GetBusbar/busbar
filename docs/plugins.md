@@ -36,7 +36,7 @@ One plugin is one `.tar.gz` per (plugin, target) containing exactly two members:
 
 ```json
 {
-  "name": "busbar-store-redis",
+  "name": "busbar-store-valkey",
   "alias": "redis",
   "kind": "store",
   "version": "1.5.0",
@@ -55,7 +55,7 @@ The signature covers every field except `signature` itself (deterministic sorted
 be altered or swapped independently. Identity comes from the signed manifest, never the filename:
 you can name the tarball anything.
 
-`name` is the canonical identity (`[a-z0-9-]+`, e.g. `busbar-store-redis`); `alias` is the short
+`name` is the canonical identity (`[a-z0-9-]+`, e.g. `busbar-store-valkey`); `alias` is the short
 config name (`redis`). `store.module:` accepts either. `kind` is `store`, `secret`, `auth`, or `hook`.
 `version` is strict semver. `abi_version` declares which per-kind payload-schema generation the
 cdylib was built against — it is set **per kind** (`store`, `secret`, `auth`, and `hook` are all
@@ -467,10 +467,10 @@ receive more than it declared.
 Every first-party plugin is built and signed with the same `BUSBAR_SIGN_KEY` / publisher `busbar`
 signing identity, but the *release* it ships from depends on the plugin:
 
-- **Store plugins** (`busbar-store-sqlite`, `busbar-store-postgres`, `busbar-store-redis`), the
+- **Store plugins** (`busbar-store-sqlite`, `busbar-store-postgres`, `busbar-store-valkey`), the
   **auth plugin** (`busbar-auth-oidc`), and the **secret plugin** (`busbar-hashicorp-vault`) each
   live in their own standalone repo (`GetBusbar/store-sqlite`, `GetBusbar/store-postgres`,
-  `GetBusbar/store-redis`, `GetBusbar/auth-oidc`, `GetBusbar/hashicorp-vault`) with its own CI and
+  `GetBusbar/store-valkey`, `GetBusbar/auth-oidc`, `GetBusbar/hashicorp-vault`) with its own CI and
   its own release workflow. Download the tarball for the backend you need from *that plugin's own*
   GitHub Release, not from busbar's.
 - **Hook plugins** (`busbar-headroom`, `busbar-webrequest`) also live in their own repos
@@ -556,10 +556,10 @@ load fail-closed. See [ADR-0010](adr/0010-plugin-licensing.md) for the full mode
 $ busbar --list-plugins
 plugins dir: plugins (plugins.enabled: true)
 FILE                               NAME                     ALIAS        KIND   VERSION   SIGNATURE                STATUS
-busbar-store-redis-1.5.0.tar.gz    busbar-store-redis       redis        store  1.5.0     first-party              LOADS (store.module: redis)
+busbar-store-valkey-1.5.0.tar.gz   busbar-store-valkey      redis        store  1.5.0     first-party              LOADS (store.module: redis)
 busbar-store-sqlite-1.5.0.tar.gz   busbar-store-sqlite      sqlite       store  1.5.0     first-party              ready
 acme-store-dynamo-1.0.0.tar.gz     acme-store-dynamo        dynamo       store  1.0.0     unknown-publisher        SKIPPED: publisher 'acme' is not in the allowlist; ...
-old-redis.tar.gz                   busbar-store-redis       redis        store  1.2.0     trusted (below floor)    REJECTED: ... (anti-downgrade)
+old-redis.tar.gz                   busbar-store-valkey      redis        store  1.2.0     trusted (below floor)    REJECTED: ... (anti-downgrade)
 broken.tar.gz                      -                        -            -      -         INVALID                  INVALID: manifest.json does not parse: ...
 ```
 
