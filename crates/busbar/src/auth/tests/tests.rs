@@ -1525,7 +1525,7 @@ async fn test_admin_prefix_is_boundary_safe() {
 /// dropped the `if key.enabled` guard would otherwise pass CI — an authz bypass).
 #[tokio::test]
 async fn test_disabled_virtual_key_is_rejected_401() {
-    use crate::governance::{GovState, MemoryStore, Store, VirtualKey};
+    use crate::governance::{GovState, MemoryStore};
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
     use serde_json::json;
     use std::sync::Arc;
@@ -1545,26 +1545,34 @@ async fn test_disabled_virtual_key_is_rejected_401() {
         });
     let server = MockServer::new(state).await;
 
-    let disabled_secret = "sk-vk-disabled";
-    let enabled_secret = "sk-vk-enabled";
     let store = Arc::new(MemoryStore::new());
-    let mk = |id: &str, secret: &str, enabled: bool| VirtualKey {
-        id: id.to_string(),
-        key_hash: crate::sigv4::sha256_hex(secret.as_bytes()),
-        name: id.to_string(),
-        allowed_pools: Some(vec!["pa".to_string()]),
-        enabled,
-        created_at: 0,
-        group: None,
-        labels: Default::default(),
-    };
-    store.put_key(&mk("kdis", disabled_secret, false)).unwrap();
-    store.put_key(&mk("kena", enabled_secret, true)).unwrap();
+    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+        &[7u8; 32],
+        crate::governance::signing::DEFAULT_KID,
+    );
     // An admin token makes the governance engine ACTIVE (the vkey-resolution branch enforces). In a
     // real deploy keys can only be minted through the admin API, which requires this token — so a
     // store holding minted keys implies an admin token is set. Without it the engine is INERT and
     // the static auth chain applies (see `test_governance_inert_without_admin_token_*`).
-    let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
+    let gov = Arc::new(
+        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
+    );
+    let mk_spec = |name: &str| crate::governance::NewKeySpec {
+        name: name.to_string(),
+        allowed_pools: Some(vec!["pa".to_string()]),
+        group: None,
+        labels: Default::default(),
+    };
+    let (dis_key, disabled_secret) = gov
+        .mint_signed(mk_spec("kdis"), 2_000_000_000, 1_000_000_000)
+        .unwrap();
+    let (_ena_key, enabled_secret) = gov
+        .mint_signed(mk_spec("kena"), 2_000_000_000, 1_000_000_000)
+        .unwrap();
+    // Freeze the first key via the PATCH-shaped update (mint always starts `enabled: true`).
+    gov.update_key(&dis_key.id, Some(false), None).unwrap();
+    let disabled_secret = disabled_secret.as_str();
+    let enabled_secret = enabled_secret.as_str();
 
     let app = TestApp::new()
         .lane(
@@ -1644,7 +1652,7 @@ async fn test_disabled_virtual_key_is_rejected_401() {
 /// silently re-open the relay.
 #[tokio::test]
 async fn test_none_mode_with_governance_still_requires_virtual_key() {
-    use crate::governance::{GovState, MemoryStore, Store, VirtualKey};
+    use crate::governance::{GovState, MemoryStore};
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
     use serde_json::json;
     use std::sync::Arc;
@@ -1662,25 +1670,31 @@ async fn test_none_mode_with_governance_still_requires_virtual_key() {
         });
     let server = MockServer::new(state).await;
 
-    let secret = "sk-vk-ok";
     let store = Arc::new(MemoryStore::new());
-    store
-        .put_key(&VirtualKey {
-            id: "k".to_string(),
-            key_hash: crate::sigv4::sha256_hex(secret.as_bytes()),
-            name: "k".to_string(),
-            allowed_pools: Some(vec!["pa".to_string()]),
-            enabled: true,
-            created_at: 0,
-            group: None,
-            labels: Default::default(),
-        })
-        .unwrap();
+    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+        &[7u8; 32],
+        crate::governance::signing::DEFAULT_KID,
+    );
     // An admin token makes the governance engine ACTIVE (the vkey-resolution branch enforces). In a
     // real deploy keys can only be minted through the admin API, which requires this token — so a
     // store holding minted keys implies an admin token is set. Without it the engine is INERT and
     // the static auth chain applies (see `test_governance_inert_without_admin_token_*`).
-    let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
+    let gov = Arc::new(
+        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
+    );
+    let (_key, secret) = gov
+        .mint_signed(
+            crate::governance::NewKeySpec {
+                name: "k".to_string(),
+                allowed_pools: Some(vec!["pa".to_string()]),
+                group: None,
+                labels: Default::default(),
+            },
+            2_000_000_000,
+            1_000_000_000,
+        )
+        .unwrap();
+    let secret = secret.as_str();
 
     let app = TestApp::new()
         .lane(
@@ -1749,7 +1763,7 @@ async fn test_none_mode_with_governance_still_requires_virtual_key() {
 ///   - a valid enabled virtual key → admitted past auth (governance is what is honoured)
 #[tokio::test]
 async fn test_passthrough_mode_with_governance_still_requires_virtual_key() {
-    use crate::governance::{GovState, MemoryStore, Store, VirtualKey};
+    use crate::governance::{GovState, MemoryStore};
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
     use serde_json::json;
     use std::sync::Arc;
@@ -1767,25 +1781,31 @@ async fn test_passthrough_mode_with_governance_still_requires_virtual_key() {
         });
     let server = MockServer::new(state).await;
 
-    let secret = "sk-vk-pt-ok";
     let store = Arc::new(MemoryStore::new());
-    store
-        .put_key(&VirtualKey {
-            id: "k".to_string(),
-            key_hash: crate::sigv4::sha256_hex(secret.as_bytes()),
-            name: "k".to_string(),
-            allowed_pools: Some(vec!["pa".to_string()]),
-            enabled: true,
-            created_at: 0,
-            group: None,
-            labels: Default::default(),
-        })
-        .unwrap();
+    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+        &[7u8; 32],
+        crate::governance::signing::DEFAULT_KID,
+    );
     // An admin token makes the governance engine ACTIVE (the vkey-resolution branch enforces). In a
     // real deploy keys can only be minted through the admin API, which requires this token — so a
     // store holding minted keys implies an admin token is set. Without it the engine is INERT and
     // the static auth chain applies (see `test_governance_inert_without_admin_token_*`).
-    let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
+    let gov = Arc::new(
+        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
+    );
+    let (_key, secret) = gov
+        .mint_signed(
+            crate::governance::NewKeySpec {
+                name: "k".to_string(),
+                allowed_pools: Some(vec!["pa".to_string()]),
+                group: None,
+                labels: Default::default(),
+            },
+            2_000_000_000,
+            1_000_000_000,
+        )
+        .unwrap();
+    let secret = secret.as_str();
 
     let app = TestApp::new()
         .lane(
@@ -2179,7 +2199,7 @@ async fn test_admin_token_not_acceptable_via_vendor_carriers() {
 /// regression that stopped threading those carriers into `gov.lookup` would otherwise pass CI.
 #[tokio::test]
 async fn test_governance_accepts_vendor_carriers_and_native_401() {
-    use crate::governance::{GovState, MemoryStore, Store, VirtualKey};
+    use crate::governance::{GovState, MemoryStore};
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
     use serde_json::json;
     use std::sync::Arc;
@@ -2204,25 +2224,31 @@ async fn test_governance_accepts_vendor_carriers_and_native_401() {
     }
     let server = MockServer::new(state).await;
 
-    let secret = "sk-vk-carrier";
     let store = Arc::new(MemoryStore::new());
-    store
-        .put_key(&VirtualKey {
-            id: "kc".to_string(),
-            key_hash: crate::sigv4::sha256_hex(secret.as_bytes()),
-            name: "kc".to_string(),
-            allowed_pools: Some(vec!["pa".to_string()]),
-            enabled: true,
-            created_at: 0,
-            group: None,
-            labels: Default::default(),
-        })
-        .unwrap();
+    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+        &[7u8; 32],
+        crate::governance::signing::DEFAULT_KID,
+    );
     // An admin token makes the governance engine ACTIVE (the vkey-resolution branch enforces). In a
     // real deploy keys can only be minted through the admin API, which requires this token — so a
     // store holding minted keys implies an admin token is set. Without it the engine is INERT and
     // the static auth chain applies (see `test_governance_inert_without_admin_token_*`).
-    let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
+    let gov = Arc::new(
+        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
+    );
+    let (_key, token) = gov
+        .mint_signed(
+            crate::governance::NewKeySpec {
+                name: "kc".to_string(),
+                allowed_pools: Some(vec!["pa".to_string()]),
+                group: None,
+                labels: Default::default(),
+            },
+            2_000_000_000,
+            1_000_000_000,
+        )
+        .unwrap();
+    let secret = token.as_str();
 
     let app = TestApp::new()
         .lane(
@@ -2305,7 +2331,7 @@ async fn test_governance_accepts_vendor_carriers_and_native_401() {
 
 /// Regression for the empty-token governance bypass (finding auth.rs): the governance branch
 /// must reject a request that presents NO credential BEFORE calling `gov.lookup`, rather than
-/// looking up `sha256("")`. We deliberately seed a virtual key whose `key_hash == sha256("")` —
+/// looking up `sha256("")`. We deliberately seed a virtual key whose `generation_hash == sha256("")` —
 /// the exact pathological state (reachable via direct DB writes / a future seeding path that
 /// bypasses `generate_secret`) the finding warns about — and confirm an unauthenticated request
 /// is STILL rejected 401 instead of resolving to that key. Before the fix, the no-token request
@@ -2328,7 +2354,7 @@ async fn test_governance_rejects_empty_token_even_if_empty_secret_key_exists() {
     store
         .put_key(&VirtualKey {
             id: "empty".to_string(),
-            key_hash: crate::sigv4::sha256_hex(b""),
+            generation_hash: crate::sigv4::sha256_hex(b""),
             name: "empty".to_string(),
             allowed_pools: Some(vec!["pa".to_string()]),
             enabled: true,
@@ -2395,18 +2421,16 @@ async fn test_governance_rejects_empty_token_even_if_empty_secret_key_exists() {
     server.shutdown().await;
 }
 
-/// A pre-1.5.0 hashed-
-/// secret key — one resolved on the data plane via `gov.lookup(secret)` (a `by_hash` hit, hydrated
-/// by `GovState::load` on a 1.4.x→1.5.0 in-place upgrade) — must STOP authenticating after
-/// `revoke`, exactly like the signed-token and SigV4 paths. `revoke` denylists the subject but
-/// DELIBERATELY leaves `enabled = true` (it preserves the binding for history), so the enabled
-/// check alone is not enough. Before the fix the token middleware's `.or_else(|| gov.lookup(tok))`
-/// legacy branch admitted on `key.enabled` WITHOUT consulting `is_revoked`, so the Bearer secret of
-/// a "revoked" key kept authenticating indefinitely. The fix filters the lookup hit on
-/// `!gov.is_revoked(&key.id)`.
+/// A signed-token key must STOP authenticating after `revoke`, even though `revoke` denylists the
+/// subject but DELIBERATELY leaves `enabled = true` (it preserves the binding for history) — so
+/// the `enabled` check alone is not enough, `verify_token` must also consult the denylist.
+/// (Formerly also covered the now-removed legacy hashed-secret `gov.lookup(secret)` fallback,
+/// which had the same regression via a separate code path; that path no longer exists — see 1.5.0
+/// migration notes, "1.4.x keys no longer authenticate" — so this test now exercises only the
+/// signed-token path.)
 #[tokio::test]
-async fn test_governance_revoked_legacy_hashed_secret_key_rejected() {
-    use crate::governance::{GovState, MemoryStore, Store, VirtualKey};
+async fn test_governance_revoked_signed_token_key_rejected() {
+    use crate::governance::{GovState, MemoryStore};
     use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
     use serde_json::json;
     use std::sync::Arc;
@@ -2416,23 +2440,27 @@ async fn test_governance_revoked_legacy_hashed_secret_key_rejected() {
     let state = Arc::new(MockServerState::new());
     let server = MockServer::new(state).await;
 
-    // A legacy hashed-secret key: the credential is the raw secret; the store row holds its sha256.
-    // This is the shape `GovState::load` hydrates into `by_hash` for a pre-1.5.0 upgraded store.
-    let secret = "legacy-bearer-secret-abc123";
     let store = Arc::new(MemoryStore::new());
-    store
-        .put_key(&VirtualKey {
-            id: "legacy".to_string(),
-            key_hash: crate::sigv4::sha256_hex(secret.as_bytes()),
-            name: "legacy".to_string(),
-            allowed_pools: Some(vec!["pa".to_string()]),
-            enabled: true,
-            created_at: 0,
-            group: None,
-            labels: Default::default(),
-        })
+    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+        &[7u8; 32],
+        crate::governance::signing::DEFAULT_KID,
+    );
+    let gov = Arc::new(
+        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
+    );
+    let (key, token) = gov
+        .mint_signed(
+            crate::governance::NewKeySpec {
+                name: "revocable".to_string(),
+                allowed_pools: Some(vec!["pa".to_string()]),
+                group: None,
+                labels: Default::default(),
+            },
+            2_000_000_000,
+            1_000_000_000,
+        )
         .unwrap();
-    let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
+    let secret = token.as_str();
 
     let app = TestApp::new()
         .lane(
@@ -2457,10 +2485,10 @@ async fn test_governance_revoked_legacy_hashed_secret_key_rejected() {
         json!({"model": "pa", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 16})
             .to_string();
 
-    // Baseline: the legacy Bearer secret authenticates via `gov.lookup` (200, proxied upstream).
+    // Baseline: the freshly-minted signed token authenticates (200, proxied upstream).
     let ok = client
         .post(&url)
-        .header("x-api-key", secret)
+        .bearer_auth(secret)
         .body(body.clone())
         .send()
         .await
@@ -2468,18 +2496,18 @@ async fn test_governance_revoked_legacy_hashed_secret_key_rejected() {
     assert_eq!(
         ok.status().as_u16(),
         200,
-        "a live legacy hashed-secret Bearer key must authenticate (got {})",
+        "a live signed-token key must authenticate (got {})",
         ok.status()
     );
 
     // Revoke the subject (denylists it WITHOUT flipping `enabled`, exactly as `revoke_key` does).
-    gov.revoke("legacy", "audit regression").unwrap();
-    assert!(gov.is_revoked("legacy"), "revoke must denylist the subject");
+    gov.revoke(&key.id, "audit regression").unwrap();
+    assert!(gov.is_revoked(&key.id), "revoke must denylist the subject");
 
-    // The same Bearer secret must now be REJECTED 401 — a revoked key's legacy secret is dead.
+    // The same token must now be REJECTED 401 — a revoked key's signed token is dead.
     let denied = client
         .post(&url)
-        .header("x-api-key", secret)
+        .bearer_auth(secret)
         .body(body)
         .send()
         .await
@@ -2487,7 +2515,7 @@ async fn test_governance_revoked_legacy_hashed_secret_key_rejected() {
     assert_eq!(
         denied.status().as_u16(),
         401,
-        "a REVOKED legacy hashed-secret key's Bearer secret must be rejected (got {})",
+        "a REVOKED signed-token key's Bearer token must be rejected (got {})",
         denied.status()
     );
 
@@ -3109,7 +3137,7 @@ async fn test_governance_inert_without_admin_token_open_relay_admits() {
 /// admitted and an unknown token is rejected — the enforcement path is unchanged once active.
 #[tokio::test]
 async fn test_governance_active_with_admin_token_enforces_minted_key() {
-    use crate::governance::{GovState, MemoryStore, Store, VirtualKey};
+    use crate::governance::{GovState, MemoryStore};
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
     use serde_json::json;
     use std::sync::Arc;
@@ -3131,26 +3159,32 @@ async fn test_governance_active_with_admin_token_enforces_minted_key() {
     });
     let server = MockServer::new(state).await;
 
-    let secret = "sk-vk-active";
     let store = Arc::new(MemoryStore::new());
-    store
-        .put_key(&VirtualKey {
-            id: "k".to_string(),
-            key_hash: crate::sigv4::sha256_hex(secret.as_bytes()),
-            name: "k".to_string(),
-            allowed_pools: Some(vec!["pa".to_string()]),
-            enabled: true,
-            created_at: 0,
-            group: None,
-            labels: Default::default(),
-        })
-        .unwrap();
+    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+        &[7u8; 32],
+        crate::governance::signing::DEFAULT_KID,
+    );
     // Admin token set → governance is ACTIVE (this is the real minted-keys deploy).
-    let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
+    let gov = Arc::new(
+        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
+    );
     assert!(
         gov.admin_token_hash().is_some(),
         "precondition: engine active"
     );
+    let (_key, token) = gov
+        .mint_signed(
+            crate::governance::NewKeySpec {
+                name: "k".to_string(),
+                allowed_pools: Some(vec!["pa".to_string()]),
+                group: None,
+                labels: Default::default(),
+            },
+            2_000_000_000,
+            1_000_000_000,
+        )
+        .unwrap();
+    let secret = token.as_str();
 
     let app = TestApp::new()
         .lane(
@@ -3311,7 +3345,7 @@ async fn test_inert_governance_persisted_key_is_not_enforced_static_chain_wins()
     store
         .put_key(&VirtualKey {
             id: "kold".to_string(),
-            key_hash: crate::sigv4::sha256_hex(persisted_secret.as_bytes()),
+            generation_hash: crate::sigv4::sha256_hex(persisted_secret.as_bytes()),
             name: "kold".to_string(),
             allowed_pools: Some(vec!["restricted".to_string()]),
             enabled: true,
@@ -3404,7 +3438,7 @@ async fn test_inert_governance_persisted_key_is_not_enforced_static_chain_wins()
 /// active engine rejects it (403 pool-ACL), whereas the inert twin above let the static chain decide.
 #[tokio::test]
 async fn test_active_governance_persisted_key_is_enforced() {
-    use crate::governance::{GovState, MemoryStore, Store, VirtualKey};
+    use crate::governance::{GovState, MemoryStore};
     use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
     use serde_json::json;
     use std::sync::Arc;
@@ -3415,26 +3449,32 @@ async fn test_active_governance_persisted_key_is_enforced() {
     let state = Arc::new(MockServerState::new());
     let server = MockServer::new(state).await;
 
-    let persisted_secret = "sk-vk-persisted-enforced";
     let store = Arc::new(MemoryStore::new());
-    store
-        .put_key(&VirtualKey {
-            id: "kold".to_string(),
-            key_hash: crate::sigv4::sha256_hex(persisted_secret.as_bytes()),
-            name: "kold".to_string(),
-            allowed_pools: Some(vec!["restricted".to_string()]), // NOT "pa"
-            enabled: true,
-            created_at: 0,
-            group: None,
-            labels: Default::default(),
-        })
-        .unwrap();
+    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+        &[7u8; 32],
+        crate::governance::signing::DEFAULT_KID,
+    );
     // Admin token SET → ACTIVE: the key resolves and its pool-ACL is enforced.
-    let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
+    let gov = Arc::new(
+        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
+    );
     assert!(
         gov.admin_token_hash().is_some(),
         "precondition: engine active"
     );
+    let (_key, persisted_secret) = gov
+        .mint_signed(
+            crate::governance::NewKeySpec {
+                name: "kold".to_string(),
+                allowed_pools: Some(vec!["restricted".to_string()]), // NOT "pa"
+                group: None,
+                labels: Default::default(),
+            },
+            2_000_000_000,
+            1_000_000_000,
+        )
+        .unwrap();
+    let persisted_secret = persisted_secret.as_str();
 
     let app = TestApp::new()
         .lane(
