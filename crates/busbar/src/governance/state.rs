@@ -18,7 +18,7 @@ impl GovState {
         signer: Option<crate::governance::signing::TokenSigner>,
     ) -> StoreResult<Self> {
         let by_id = Self::load(store.as_ref())?;
-        let by_access_key_id = Self::load_by_access_key_id(store.as_ref(), &by_id)?;
+        let by_credential = Self::load_by_credential(store.as_ref(), &by_id, crate::store::now())?;
         // Hydrate the denylist. A store with no denylist support returns empty (nothing revoked);
         // a durable one returns every persisted revoked subject.
         let denylist: std::collections::HashSet<String> =
@@ -35,7 +35,7 @@ impl GovState {
             store,
             caches: RwLock::new(GovCaches {
                 by_id,
-                by_access_key_id,
+                by_credential,
             }),
             concurrent: RwLock::new(HashMap::new()),
             admin_token_hash: RwLock::new(
@@ -136,8 +136,58 @@ impl GovState {
     /// is propagated (a revoke that did not durably persist must FAIL LOUD, never report success -
     /// a "revoked" token still valid after a restart is a security hole).
     pub(crate) fn revoke(&self, sub: &str, reason: &str) -> StoreResult<()> {
+        // THE FAN-OUT FIX (1.5.0 generic-credentials redesign): revoking a key used to be
+        // denylist-only, which blocks the SIGNED-TOKEN plane (verify_token consults the denylist)
+        // but does NOTHING to a row-looked-up credential like SigV4 — a revoked key's AWS
+        // credential stayed fully live. Revocation is a PRINCIPAL-level event and must kill every
+        // plane a key can authenticate through, atomically:
+        //   1. revoke every live credential row (SigV4 today, whatever kind tomorrow) — independent
+        //      of the denylist, since a row-looked-up credential is never checked against it;
+        //   2. denylist the subject — kills outstanding signed tokens (the ONE state read on that
+        //      otherwise-stateless path);
+        //   3. bump `generation_hash` — belt-and-braces for the signed-token plane: even a token
+        //      minted in the gap before the denylist write propagates to another node still fails
+        //      `generation_matches`;
+        //   4. `enabled = false` — the administrative kill switch every plane's admit check reads
+        //      after resolution, regardless of which credential resolved it.
+        // Order (credentials, then denylist, then generation+enabled) means a failure partway
+        // leaves the STRONGER protection already in place: a half-finished revoke has already
+        // killed the SigV4 credential (or was never live to begin with) before the cheaper,
+        // faster-to-propagate denylist write is attempted.
+        let mut revoked_creds = Vec::new();
+        for cred in self.store.list_credentials(sub)? {
+            if cred.revoked_at.is_none() {
+                self.store.revoke_credential(&cred.id, reason)?;
+                revoked_creds.push((cred.kind, cred.public_id));
+            }
+        }
         self.store.add_denylist(sub, reason)?;
-        self.denylist.insert(sub);
+        let mut new_key = None;
+        if let Some(mut key) = self.store.get_key(sub)? {
+            if key.deleted_at.is_none() {
+                let generation = generate_binding_generation().store()?;
+                key.generation_hash = binding_marker(&key.id, &generation);
+                key.enabled = false;
+                self.store.put_key(&key)?;
+                new_key = Some(Arc::new(key));
+            }
+        }
+        // TARGETED cache update, not a full `refresh()`: a revoke is a single-key mutation, and
+        // `refresh()`'s `list_keys()` + `list_credentials_since(0)` are full-table scans — the same
+        // discipline `POST /revoke` is held to on the admin-handler side (one `get_key`, never a
+        // table scan). Everything the caches need to reflect is already known from the writes
+        // above: the (possibly) updated key row, and exactly which `(kind, public_id)` pairs were
+        // just revoked.
+        {
+            let mut c = self.caches_write();
+            self.denylist.insert(sub);
+            if let Some(key) = new_key {
+                c.by_id.insert(sub.to_string(), key);
+            }
+            for (kind, public_id) in &revoked_creds {
+                c.by_credential.remove(&(kind.clone(), public_id.clone()));
+            }
+        }
         Ok(())
     }
 
@@ -181,9 +231,10 @@ impl GovState {
         let generation = generate_binding_generation().store()?;
         let binding = VirtualKey {
             id: id.clone(),
-            // Not a credential: signed tokens are stateless. Kept non-empty + unique-per-key so a
-            // durable store's UNIQUE(generation_hash) constraint is satisfied; never used to authenticate.
-            // The trailing GENERATION is the rotation epoch (`rotate_key`), carried durably so a
+            // Not a credential: signed tokens are stateless, so this is never looked up BY — it is
+            // a rotation fingerprint, read only after the key is already resolved by `sub`, compared
+            // against the token's `generation` claim to detect a stale (pre-rotation) token. The
+            // trailing GENERATION is the rotation epoch (`rotate_key`), carried durably so a
             // pre-rotation token is rejected by every node reading the same store.
             generation_hash: binding_marker(&id, &generation),
             name: spec.name,
@@ -193,6 +244,9 @@ impl GovState {
             created_at: now,
             group: spec.group,
             labels: spec.labels,
+            expires_at: None,
+            deleted_at: None,
+            revision: 0,
         };
         self.store.put_key(&binding)?;
         self.refresh()?;
@@ -221,6 +275,10 @@ impl GovState {
         let generation = generate_binding_generation().store()?;
         let access_key_id = generate_aws_access_key_id().store()?;
         let secret_access_key = generate_aws_secret_access_key().store()?;
+        let mut cred_raw = [0u8; 16];
+        getrandom::fill(&mut cred_raw)
+            .map_err(|e| StoreError(format!("CSPRNG unavailable: {e}")))?;
+        let cred_id = format!("cred_{}", hex::encode(cred_raw));
         let binding = VirtualKey {
             id: id.clone(),
             generation_hash: binding_marker(&id, &generation),
@@ -230,15 +288,31 @@ impl GovState {
             created_at: now,
             group: spec.group,
             labels: spec.labels,
+            expires_at: None,
+            deleted_at: None,
+            revision: 0,
         };
-        self.store.put_key_with_aws_credential(
-            &binding,
-            &AwsCredential {
-                access_key_id: access_key_id.clone(),
+        // SigV4: kind belongs to `credentials` because it IS row-looked-up (by AccessKeyId), unlike
+        // the signed token above (see CredentialMeta's doc). `secret_form: Recoverable` — HMAC
+        // verification needs the plaintext back, so it cannot be a one-way digest.
+        let secret = CredentialSecret {
+            meta: CredentialMeta {
+                id: cred_id,
                 key_id: id.clone(),
-                secret_access_key: secret_access_key.clone(),
+                kind: "sigv4".to_string(),
+                slot: 0,
+                public_id: access_key_id.clone(),
+                secret_form: SecretForm::Recoverable,
+                created_at: now,
+                updated_at: now,
+                expires_at: None,
+                revoked_at: None,
+                revoke_reason: None,
+                revision: 0,
             },
-        )?;
+            secret: format!("v1:plain:{secret_access_key}"),
+        };
+        self.store.put_key_with_credential(&binding, &secret)?;
         self.refresh()?;
         let token = material.signer.mint(&id, exp, Some(&generation));
         Ok((binding, token, access_key_id, secret_access_key))
@@ -366,7 +440,7 @@ impl GovState {
         entry.tokens_cache_read = entry
             .tokens_cache_read
             .saturating_add(usage.and_then(|u| u.cache_read_input_tokens).unwrap_or(0));
-        entry.tokens_cache_creation = entry.tokens_cache_creation.saturating_add(
+        entry.tokens_cache_write = entry.tokens_cache_write.saturating_add(
             usage
                 .and_then(|u| u.cache_creation_input_tokens)
                 .unwrap_or(0),
@@ -396,7 +470,7 @@ impl GovState {
                 && counts.tokens_input == 0
                 && counts.tokens_output == 0
                 && counts.tokens_cache_read == 0
-                && counts.tokens_cache_creation == 0
+                && counts.tokens_cache_write == 0
             {
                 continue;
             }
@@ -408,8 +482,11 @@ impl GovState {
                 tokens_input: counts.tokens_input,
                 tokens_output: counts.tokens_output,
                 tokens_cache_read: counts.tokens_cache_read,
-                tokens_cache_creation: counts.tokens_cache_creation,
+                tokens_cache_write: counts.tokens_cache_write,
                 requests: counts.requests,
+                billable_requests: counts.requests,
+                key_group_at_use: String::new(),
+                pricing_version: String::new(),
             };
             match self.store.add_metering(&delta) {
                 Ok(()) => flushed += 1,
@@ -428,9 +505,9 @@ impl GovState {
                     entry.tokens_cache_read = entry
                         .tokens_cache_read
                         .saturating_add(counts.tokens_cache_read);
-                    entry.tokens_cache_creation = entry
-                        .tokens_cache_creation
-                        .saturating_add(counts.tokens_cache_creation);
+                    entry.tokens_cache_write = entry
+                        .tokens_cache_write
+                        .saturating_add(counts.tokens_cache_write);
                 }
             }
         }
@@ -602,6 +679,9 @@ impl GovState {
             created_at: now,
             group: spec.group,
             labels: spec.labels,
+            expires_at: None,
+            deleted_at: None,
+            revision: 0,
         };
         self.store.put_key(&key)?;
         self.refresh()?;
@@ -638,6 +718,10 @@ impl GovState {
         self.ensure_id_free_for_hash(&id, &hash)?;
         let access_key_id = generate_aws_access_key_id().store()?;
         let secret_access_key = generate_aws_secret_access_key().store()?;
+        let mut cred_raw = [0u8; 16];
+        getrandom::fill(&mut cred_raw)
+            .map_err(|e| StoreError(format!("CSPRNG unavailable: {e}")))?;
+        let cred_id = format!("cred_{}", hex::encode(cred_raw));
         let key = VirtualKey {
             id: id.clone(),
             generation_hash: hash,
@@ -647,16 +731,31 @@ impl GovState {
             created_at: now,
             group: spec.group,
             labels: spec.labels,
+            expires_at: None,
+            deleted_at: None,
+            revision: 0,
         };
-        // ATOMIC: persist the bearer key row and its paired AWS credential in ONE transaction (see
-        // `put_key_with_aws_credential`). The previous two-call autocommit sequence could orphan an
+        // ATOMIC: persist the bearer key row and its paired credential in ONE transaction (see
+        // `put_key_with_credential`). The previous two-call autocommit sequence could orphan an
         // inert key row if the credential write failed after the key write committed.
-        self.store.put_key_with_aws_credential(
+        self.store.put_key_with_credential(
             &key,
-            &AwsCredential {
-                access_key_id: access_key_id.clone(),
-                key_id: id,
-                secret_access_key: secret_access_key.clone(),
+            &CredentialSecret {
+                meta: CredentialMeta {
+                    id: cred_id,
+                    key_id: id,
+                    kind: "sigv4".to_string(),
+                    slot: 0,
+                    public_id: access_key_id.clone(),
+                    secret_form: SecretForm::Recoverable,
+                    created_at: now,
+                    updated_at: now,
+                    expires_at: None,
+                    revoked_at: None,
+                    revoke_reason: None,
+                    revision: 0,
+                },
+                secret: format!("v1:plain:{secret_access_key}"),
             },
         )?;
         self.refresh()?;
@@ -729,6 +828,12 @@ impl GovState {
         let Some(mut key) = self.store.get_key(id)? else {
             return Ok(None);
         };
+        // TOMBSTONE (1.5.0): same reasoning as `update_key` — a tombstoned row must never look
+        // rotatable. Without this a concurrent DELETE-then-ROTATE race would mint a fresh, live
+        // credential for a key that was just revoked, resurrecting it in every way that matters.
+        if key.deleted_at.is_some() {
+            return Ok(None);
+        }
         let Some(material) = self.signing_material() else {
             return Err(StoreError(
                 "cannot rotate a signed-token key: no signing key is configured (rotation \
@@ -759,6 +864,13 @@ impl GovState {
         let Some(mut key) = self.store.get_key(id)? else {
             return Ok(None);
         };
+        // TOMBSTONE (1.5.0): `get_key` returns a deleted key's row forever (so billing/admin
+        // attribution can still see it) — but a PATCH on a tombstoned key must 404, not silently
+        // succeed, and must never be the thing that makes a deleted key look live again. Treat a
+        // tombstoned row as not-found, the same outcome as an unknown id.
+        if key.deleted_at.is_some() {
+            return Ok(None);
+        }
         if let Some(e) = enabled {
             key.enabled = e;
         }
@@ -1432,54 +1544,69 @@ impl GovState {
         flushed
     }
 
-    /// Load every key, indexed by id (the token `sub` / subject id) — the sole in-memory key index
-    /// since 1.5.0 has exactly one bearer-credential shape (a signed token resolved by subject id;
-    /// there is no longer a hashed-secret index to key by).
+    /// Load every LIVE key, indexed by id (the token `sub` / subject id) — the sole in-memory key
+    /// index since 1.5.0 has exactly one bearer-credential shape (a signed token resolved by
+    /// subject id; there is no longer a hashed-secret index to key by).
+    ///
+    /// `store.list_keys()` is deliberately unfiltered (tombstones included, so admin listing and
+    /// billing attribution can see them) — this index is NOT that: it backs `lookup_by_sub`, the
+    /// auth hot path, so a tombstoned key must be structurally absent from it. Filtering here,
+    /// once, at load/refresh time, is what makes a deleted key's outstanding tokens stop
+    /// authenticating: `verify_token` never sees the row at all, rather than seeing it and having
+    /// to remember to check `deleted_at` on every lookup.
     pub(crate) fn load(store: &dyn Store) -> StoreResult<HashMap<String, Arc<VirtualKey>>> {
         // Wrap each key in `Arc` at load time so the per-request `lookup_by_sub` on the hot path is
         // a refcount bump, not a deep clone; the values are immutable until the next `refresh` swap.
         Ok(store
             .list_keys()?
             .into_iter()
+            .filter(|k| k.deleted_at.is_none())
             .map(|k| (k.id.clone(), Arc::new(k)))
             .collect())
     }
 
-    /// Build the AccessKeyId → resolved-credential index from the durable `aws_credentials` table,
-    /// joined against the already-loaded `by_id` snapshot (which holds the live `VirtualKey` rows,
-    /// keyed by id). A credential whose owning key is missing from `by_id` (e.g. the key row was
-    /// deleted but a credential row lingered) is SKIPPED — it can never authenticate, since there is
-    /// no key to attach a `GovCtx` for. `access_key_id` is the PRIMARY KEY of `aws_credentials`, so
-    /// entries are unique.
-    pub(crate) fn load_by_access_key_id(
+    /// Build the `(kind, public_id)` → resolved-credential index from the durable, GENERALIZED
+    /// `credentials` store surface (`list_credentials_since(0)` — a full load), joined against the
+    /// already-loaded `by_id` snapshot (which holds the live `VirtualKey` rows, keyed by id). A
+    /// credential whose owning key is missing from `by_id`, or that is not currently live
+    /// (`CredentialMeta::is_live`, checking `revoked_at`/`expires_at`), is SKIPPED — it can never
+    /// authenticate, so it has no business occupying a cache slot. `(kind, public_id)` is
+    /// `UNIQUE` at the store layer, so entries are unique.
+    pub(crate) fn load_by_credential(
         store: &dyn Store,
         by_id: &HashMap<String, Arc<VirtualKey>>,
-    ) -> StoreResult<HashMap<String, AwsKeyEntry>> {
+        now: u64,
+    ) -> StoreResult<super::CredentialIndex> {
         let mut map = HashMap::new();
-        for cred in store.list_aws_credentials()? {
-            if let Some(key) = by_id.get(cred.key_id.as_str()) {
+        for cred in store.list_credentials_since(0)? {
+            if !cred.meta.is_live(now) {
+                continue;
+            }
+            if let Some(key) = by_id.get(cred.meta.key_id.as_str()) {
                 map.insert(
-                    cred.access_key_id.clone(),
-                    AwsKeyEntry {
-                        key: (**key).clone(),
-                        secret_access_key: cred.secret_access_key,
-                    },
+                    (cred.meta.kind.clone(), cred.meta.public_id.clone()),
+                    (key.clone(), cred),
                 );
             }
         }
         Ok(map)
     }
 
-    /// Resolve an inbound SigV4 AccessKeyId (parsed in plaintext from the `Credential=` field of the
-    /// `Authorization` header) to the owning virtual key plus its secret access key. Used ONLY by the
-    /// Bedrock-ingress SigV4 verify path. Returns `None` for an unknown AccessKeyId — the verify path
-    /// is written so an unknown AccessKeyId and a bad signature reject indistinguishably (no
-    /// enumeration oracle): on the `None` branch the caller still runs a constant-time signature
-    /// comparison against a dummy secret before rejecting.
-    pub(crate) fn lookup_by_access_key_id(&self, access_key_id: &str) -> Option<AwsKeyEntry> {
+    /// Resolve a wire-supplied `(kind, public_id)` pair (SigV4: `kind = "sigv4"`, `public_id` = the
+    /// AccessKeyId parsed in plaintext from the `Credential=` field of the `Authorization` header)
+    /// to the owning virtual key plus the resolved credential secret. Used ONLY by the
+    /// Bedrock-ingress SigV4 verify path (today's sole row-looked-up kind). Returns `None` for an
+    /// unknown pair — the verify path is written so an unknown identifier and a bad signature reject
+    /// indistinguishably (no enumeration oracle): on the `None` branch the caller still runs a
+    /// constant-time signature comparison against a dummy secret before rejecting.
+    pub(crate) fn lookup_credential(
+        &self,
+        kind: &str,
+        public_id: &str,
+    ) -> Option<(Arc<VirtualKey>, CredentialSecret)> {
         self.caches_read()
-            .by_access_key_id
-            .get(access_key_id)
+            .by_credential
+            .get(&(kind.to_string(), public_id.to_string()))
             .cloned()
     }
 
@@ -1489,22 +1616,24 @@ impl GovState {
         self.store.clone()
     }
 
-    /// Reload BOTH caches (the hashed-secret index and the AWS AccessKeyId index) from the store
-    /// after a management-API mutation. Rebuild `by_access_key_id` from the SAME fresh snapshot so the
-    /// two indices can never drift (a key disabled/deleted/re-minted is reflected in both).
+    /// Reload BOTH caches (the subject-id index and the row-looked-up credential index) from the
+    /// store after a management-API mutation. Rebuild `by_credential` from the SAME fresh `by_id`
+    /// snapshot so the two indices can never drift (a key disabled/deleted/re-minted, or a
+    /// credential revoked/rotated, is reflected in both).
     pub(crate) fn refresh(&self) -> StoreResult<()> {
         // Serialize the whole load→swap so a slow refresh can't clobber a newer one's cache with
         // strictly-older store state (lost-update guard; see `refresh_lock`). A later refresh's
         // `load` cannot begin until an earlier refresh has swapped, so its snapshot is never older.
         let _refresh_guard = self.refresh_lock.lock().unwrap_or_else(|e| e.into_inner());
         let fresh = Self::load(self.store.as_ref())?;
-        let fresh_akid = Self::load_by_access_key_id(self.store.as_ref(), &fresh)?;
+        let fresh_cred =
+            Self::load_by_credential(self.store.as_ref(), &fresh, crate::store::now())?;
         // Both indices live under the single `caches` lock, so the swap below is ONE atomic critical
         // section — a concurrent reader holding `caches_read` sees either the entire old pair or the
-        // entire new pair, never a new `by_id` against a stale `by_access_key_id` (or vice versa).
+        // entire new pair, never a new `by_id` against a stale `by_credential` (or vice versa).
         let mut c = self.caches_write();
         c.by_id = fresh;
-        c.by_access_key_id = fresh_akid;
+        c.by_credential = fresh_cred;
         Ok(())
     }
 }

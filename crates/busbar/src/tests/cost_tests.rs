@@ -65,6 +65,9 @@ pub(crate) fn key(group: Option<&str>) -> VirtualKey {
         created_at: 0,
         group: group.map(String::from),
         labels: BTreeMap::new(),
+        expires_at: None,
+        deleted_at: None,
+        revision: 1,
     }
 }
 

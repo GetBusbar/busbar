@@ -1498,6 +1498,9 @@ async fn send_user_falls_back_to_synthesized_group_key_identity() {
         created_at: 0,
         group: None,
         labels: Default::default(),
+        expires_at: None,
+        deleted_at: None,
+        revision: 1,
     });
     let rc = RequestCtx::new(60);
     let v = body();
@@ -1595,6 +1598,9 @@ async fn send_user_prefers_resolved_key_over_disabled_legacy_lookup() {
         created_at: 0,
         group: None,
         labels: Default::default(),
+        expires_at: None,
+        deleted_at: None,
+        revision: 1,
     });
     let rc = RequestCtx::new(60);
     let v = body();
@@ -1661,6 +1667,9 @@ async fn forward_with_pool_keyed_threads_group_key_to_pool_policy() {
         created_at: 0,
         group: None,
         labels: Default::default(),
+        expires_at: None,
+        deleted_at: None,
+        revision: 1,
     });
     let body = Bytes::from(serde_json::to_vec(&body()).unwrap());
     let cands = vec![WeightedLane {

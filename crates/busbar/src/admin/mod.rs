@@ -1303,6 +1303,11 @@ pub(crate) async fn list_keys(
         Ok(Ok(keys)) => {
             let mut filtered: Vec<_> = keys
                 .iter()
+                // TOMBSTONE (1.5.0): `gov.all_keys()` -> `Store::list_keys` is deliberately
+                // unfiltered (billing/audit attribution needs tombstoned rows to keep resolving by
+                // id) — the admin LISTING is the caller responsible for filtering live-only, same
+                // as every other "does this key exist" surface on this handler set.
+                .filter(|k| k.deleted_at.is_none())
                 .filter(|k| enabled.is_none_or(|e| k.enabled == e))
                 .filter(|k| prefix.as_deref().is_none_or(|p| k.id.starts_with(p)))
                 .filter(|k| {
@@ -1652,6 +1657,14 @@ pub(crate) async fn key_usage(
         let usage = gov2.usage_for(&cost, &id2, now)?;
         // O(1) row lookup instead of a full-table `all_keys()` scan filtered by id.
         let key = gov2.store().get_key(&id2)?;
+        // TOMBSTONE (1.5.0): `get_key` (and `usage_for`, which may still find a residual/derived
+        // bucket) can both still answer for a deleted key — attribution rows survive on purpose.
+        // The admin-facing "does this key exist" surface must not, though: a tombstoned key reads
+        // as absent here, same as an unknown id, so DELETE stays a real removal from every reader's
+        // point of view.
+        if key.as_ref().is_some_and(|k| k.deleted_at.is_some()) {
+            return Ok::<_, crate::governance::StoreError>(None);
+        }
         Ok::<_, crate::governance::StoreError>(usage.map(|u| (u, key)))
     })
     .await;
@@ -1761,6 +1774,11 @@ pub(crate) async fn delete_key(
         let key = gov.store().get_key(&id_for_task)?;
         match key {
             None => Ok(DeleteOutcome::NotFound),
+            // TOMBSTONE (1.5.0): `get_key` returns a deleted key's row forever (billing/admin
+            // attribution needs it to), so a second DELETE — or N concurrent ones — must not treat
+            // an already-tombstoned row as "found, proceed": that is exactly what made every
+            // concurrent delete report 204 and made a second delete report 204 instead of 404.
+            Some(k) if k.deleted_at.is_some() => Ok(DeleteOutcome::NotFound),
             Some(k) => {
                 if let Some(expected) = &if_match {
                     if key_etag(&k) != *expected {

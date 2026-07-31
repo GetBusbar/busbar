@@ -24,10 +24,10 @@ impl busbar_api::Store for RefusesKeyWrites {
     fn put_key(&self, _key: &busbar_api::VirtualKey) -> busbar_api::StoreResult<()> {
         Err(busbar_api::StoreError("key write unavailable".into()))
     }
-    fn put_key_with_aws_credential(
+    fn put_key_with_credential(
         &self,
         _key: &busbar_api::VirtualKey,
-        _cred: &busbar_api::AwsCredential,
+        _secret: &busbar_api::CredentialSecret,
     ) -> busbar_api::StoreResult<()> {
         Err(busbar_api::StoreError("key write unavailable".into()))
     }

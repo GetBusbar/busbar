@@ -1474,36 +1474,57 @@ fn verify_bedrock_sigv4(
         amzdate: &amzdate,
     };
 
-    // Resolve the AccessKeyId to (key, secret). On an UNKNOWN AccessKeyId, verify against a fixed dummy
-    // secret so the work — and the timing/response — is indistinguishable from a wrong-signature
-    // rejection (no AccessKeyId-enumeration oracle). The dummy is a constant, never a real secret.
+    // Resolve (kind="sigv4", AccessKeyId) to (key, credential). On an UNKNOWN AccessKeyId, verify
+    // against a fixed dummy secret so the work — and the timing/response — is indistinguishable
+    // from a wrong-signature rejection (no AccessKeyId-enumeration oracle). The dummy is a
+    // constant, never a real secret.
     let now = crate::store::now();
-    let (secret, resolved): (String, Option<crate::governance::VirtualKey>) =
-        match gov.lookup_by_access_key_id(&parsed.access_key_id) {
-            Some(entry) => (entry.secret_access_key, Some(entry.key)),
+    let (secret, resolved): (String, Option<(crate::governance::VirtualKey, bool)>) =
+        match gov.lookup_credential("sigv4", &parsed.access_key_id) {
+            Some((key, cred)) => {
+                let live = cred.meta.is_live(now);
+                // `plaintext()` strips the "v1:plain:" envelope — HMAC verification needs the exact
+                // raw bytes the client signed with, never the versioned-envelope string itself. An
+                // unrecognized scheme (e.g. a future at-rest-encrypted form reached through the wrong
+                // path) falls back to the dummy secret, same treatment as an unknown AccessKeyId — it
+                // must never surface as a distinguishable rejection reason.
+                let secret = cred
+                    .plaintext()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| DUMMY_SECRET.to_string());
+                (secret, Some(((*key).clone(), live)))
+            }
             None => (DUMMY_SECRET.to_string(), None),
         };
 
     let verify = verify_inbound_sigv4(&parsed, &inbound, &secret, now);
 
-    // Decide admission. The signature must verify; the resolved key must exist AND be enabled. All
-    // three conditions are evaluated, and only the combined success admits — a failure in any one
-    // rejects with the same opaque `Err(())`. An unknown AccessKeyId has `resolved == None`, so even a
-    // (cryptographically impossible) signature match against the dummy secret cannot admit.
+    // Decide admission. The signature must verify; the resolved key must exist AND be enabled; the
+    // resolved CREDENTIAL itself must be live (not revoked, not expired — independent of the key,
+    // per CredentialMeta::is_live: this is what lets a leaked SigV4 secret be killed via
+    // revoke_credential without touching the key's bearer token or re-minting anything); AND the
+    // subject not on the KEY-level revocation denylist. All conditions are evaluated, and only the
+    // combined success admits — a failure in any one rejects with the same opaque `Err(())`. An
+    // unknown AccessKeyId has `resolved == None`, so even a (cryptographically impossible)
+    // signature match against the dummy secret cannot admit.
+    //
+    // The denylist clause mirrors the signed-token path (`verify_token`), which consults
+    // `denylist.contains(&claims.sub)` before resolving. A dual-credential key (signed token +
+    // SigV4) is bound to ONE subject id; `revoke` denylists that id but deliberately preserves
+    // `enabled` for history — so WITHOUT this check the SigV4 credential of a revoked key would keep
+    // authenticating even though its signed token is rejected. Gating here closes that bypass.
     match (verify, resolved) {
-        // Admission requires: signature verified, a resolved+enabled binding, AND the subject not on
-        // the revocation denylist. The last clause mirrors the signed-token path (`verify_token`), which
-        // consults `denylist.contains(&claims.sub)` before resolving. A dual-credential key (signed token
-        // + SigV4) is bound to ONE subject id; `revoke` denylists that id but deliberately preserves
-        // `enabled` for history — so WITHOUT this check the SigV4 credential of a revoked key would keep
-        // authenticating even though its signed token is rejected. Gating here closes that bypass.
-        (Ok(()), Some(key)) if key.enabled && !gov.is_revoked(&key.id) => Ok(key),
-        (Ok(()), Some(key)) if key.enabled => {
+        (Ok(()), Some((key, true))) if key.enabled && !gov.is_revoked(&key.id) => Ok(key),
+        (Ok(()), Some((key, true))) if key.enabled => {
             tracing::debug!(id = %key.id, "inbound SigV4 rejected: subject is revoked");
             Err(())
         }
-        (Ok(()), Some(_key)) => {
+        (Ok(()), Some((_key, true))) => {
             tracing::debug!("inbound SigV4 rejected: virtual key disabled");
+            Err(())
+        }
+        (Ok(()), Some((key, false))) => {
+            tracing::debug!(id = %key.id, "inbound SigV4 rejected: this credential is revoked or expired");
             Err(())
         }
         (Ok(()), None) => {

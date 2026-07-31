@@ -74,6 +74,11 @@ pub fn dispatch(store: &dyn Store, req: StoreRequest) -> Result<StoreResponse, S
             store.delete_key(&id)?;
             R::Unit
         }
+        Q::ScrubKey(id) => {
+            store.scrub_key(&id)?;
+            R::Unit
+        }
+        Q::ListKeysSince(since) => R::Keys(store.list_keys_since(since)?),
         Q::GetUsage {
             bucket_id,
             window_start,
@@ -99,15 +104,27 @@ pub fn dispatch(store: &dyn Store, req: StoreRequest) -> Result<StoreResponse, S
             R::Unit
         }
         Q::ListMetering(b) => R::Metering(store.list_metering(b)?),
-        Q::PutAwsCredential(c) => {
-            store.put_aws_credential(&c)?;
+        Q::PurgeWindowsBefore(before) => R::Purged(store.purge_windows_before(before)?),
+        Q::PurgeMeteringBefore(bucket) => R::Purged(store.purge_metering_before(&bucket)?),
+        Q::PutCredential(secret) => {
+            store.put_credential(&secret)?;
             R::Unit
         }
-        Q::PutKeyWithAwsCredential { key, cred } => {
-            store.put_key_with_aws_credential(&key, &cred)?;
+        Q::PutKeyWithCredential { key, secret } => {
+            store.put_key_with_credential(&key, &secret)?;
             R::Unit
         }
-        Q::ListAwsCredentials => R::AwsCreds(store.list_aws_credentials()?),
+        Q::ListCredentials(key_id) => R::Credentials(store.list_credentials(&key_id)?),
+        Q::LookupCredentialSecret { kind, public_id } => {
+            R::CredentialSecret(store.lookup_credential_secret(&kind, &public_id)?)
+        }
+        Q::RevokeCredential { id, reason } => {
+            store.revoke_credential(&id, &reason)?;
+            R::Unit
+        }
+        Q::ListCredentialsSince(since) => {
+            R::CredentialSecrets(store.list_credentials_since(since)?)
+        }
         Q::AppendAudit(e) => {
             store.append_audit(&e)?;
             R::Unit
@@ -844,6 +861,9 @@ mod tests {
             created_at: 1,
             group: None,
             labels: std::collections::BTreeMap::new(),
+            expires_at: None,
+            deleted_at: None,
+            revision: 1,
         }
     }
 
