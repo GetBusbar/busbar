@@ -38,7 +38,7 @@ on:
         required: true
         type: string
       service:
-        description: "none | postgres | redis | vault — which real backend service container to boot"
+        description: "none | postgres | redis | vault | mysql — which real backend service container to boot"
         required: false
         type: string
         default: "none"
@@ -80,6 +80,21 @@ jobs:
         # manual "wait for redis" step is needed or correct here.
         options: >-
           ${{ inputs.service == 'redis' && '--health-cmd "redis-cli ping" --health-interval 5s --health-timeout 5s --health-retries 10' || '' }}
+      # Real MySQL 8 server (BUSBAR_TEST_MYSQL_URL, set on the Test steps below). `sql_mode` is a
+      # dynamic variable (no restart needed) so strict mode is set via `SET GLOBAL` in a step below
+      # once the container's healthy, rather than a boot flag — GitHub's `services:` block has no
+      # supported way to pass mysqld command-line args, only `docker run` options.
+      mysql:
+        image: ${{ inputs.service == 'mysql' && 'mysql:8' || '' }}
+        env:
+          MYSQL_ROOT_PASSWORD: busbar
+          MYSQL_USER: busbar
+          MYSQL_PASSWORD: busbar
+          MYSQL_DATABASE: busbar_test
+        ports:
+          - 3306:3306
+        options: >-
+          ${{ inputs.service == 'mysql' && '--health-cmd "mysqladmin ping -h localhost -ubusbar -pbusbar" --health-interval 10s --health-timeout 5s --health-retries 10' || '' }}
       # Real Vault dev-mode server for a plugin's live-Vault tests (BUSBAR_TEST_VAULT_ADDR /
       # BUSBAR_TEST_VAULT_TOKEN, set on the Test steps below) — same hard-fail-under-CI-if-unset
       # discipline the plugin's own tests apply, mirroring busbarAI's own ci.yml vault service block.
@@ -121,6 +136,10 @@ jobs:
         working-directory: plugin
         run: cargo clippy --all-targets -- -D warnings
 
+      - name: mysql — set strict sql_mode (dynamic variable, no restart needed)
+        if: inputs.service == 'mysql'
+        run: mysql -h 127.0.0.1 -ubusbar -pbusbar -e "SET GLOBAL sql_mode='STRICT_ALL_TABLES,NO_ENGINE_SUBSTITUTION';"
+
       - name: cargo test
         working-directory: plugin
         env:
@@ -130,6 +149,7 @@ jobs:
           REDIS_URL: ${{ inputs.service == 'redis' && 'redis://localhost:6379/0' || '' }}
           BUSBAR_TEST_VAULT_ADDR: ${{ inputs.service == 'vault' && 'http://127.0.0.1:8200' || '' }}
           BUSBAR_TEST_VAULT_TOKEN: ${{ inputs.service == 'vault' && 'root' || '' }}
+          BUSBAR_TEST_MYSQL_URL: ${{ inputs.service == 'mysql' && 'mysql://busbar:busbar@127.0.0.1:3306/busbar_test' || '' }}
         run: cargo test
 
       - name: cargo test (sibling busbarAI checkout — this backend's own monorepo integration test)
@@ -140,6 +160,7 @@ jobs:
           REDIS_URL: ${{ inputs.service == 'redis' && 'redis://localhost:6379/0' || '' }}
           BUSBAR_TEST_VAULT_ADDR: ${{ inputs.service == 'vault' && 'http://127.0.0.1:8200' || '' }}
           BUSBAR_TEST_VAULT_TOKEN: ${{ inputs.service == 'vault' && 'root' || '' }}
+          BUSBAR_TEST_MYSQL_URL: ${{ inputs.service == 'mysql' && 'mysql://busbar:busbar@127.0.0.1:3306/busbar_test' || '' }}
         run: ${{ inputs.extra_sibling_test_command }}
 
       - name: Build busbar-plugin-pack (from the sibling checkout)
@@ -165,3 +186,175 @@ jobs:
             --allow-unsigned
           echo "packed OK:"
           ls -l /tmp/signoff.tar.gz
+
+      # ── Everything below proves the plugin works the way a real operator actually gets it into a
+      #    running busbar — not by calling `busbar_plugin_loader::load_store()` (or the auth/hook/
+      #    secret equivalents) as a Rust function, which no end user ever does. There are exactly TWO
+      #    real mechanisms, and both are exercised here, against a REAL busbar binary:
+      #      1. FILE-DROP: place the signed tarball in `plugins.dir` before boot; busbar discovers
+      #         and loads it as part of normal startup. This is also how a real durable-persistence
+      #         proof should be structured for a plugin with a real backend (dlopen via a real boot,
+      #         not a direct `load_store()` call) — see the comment on the STORE mint/fetch step below.
+      #      2. RUNTIME INSTALL: `POST /plugins` while busbar is already running, then the documented
+      #         restart-to-apply path (`store` module changes are never a hot swap — confirmed by
+      #         reading `docs/admin-api.md` and validating locally: `PUT /config/settings` returns
+      #         `reload_to_apply: ["store"]` and the change only takes effect after a real process
+      #         restart, which busbar's own `POST /restart` deliberately does NOT self-perform — it
+      #         drains and exits, expecting a supervisor to respawn it, so CI plays that role here).
+      - name: Build busbar (from the sibling checkout)
+        working-directory: busbarAI
+        run: cargo build --release --bin busbar
+
+      - name: INSTALL-AND-SERVE — boot a real busbar, install THIS plugin over the real admin API, confirm it activates
+        if: inputs.plugin_kind == 'store'
+        run: |
+          set -euo pipefail
+          WORKDIR=$(mktemp -d)
+          mkdir -p "$WORKDIR/plugins"
+          export BUSBAR_ADMIN_TOKEN="ci-admin-$(date +%s)"
+          export FAKE_UPSTREAM_KEY="sk-ci-fake"
+
+          cat > "$WORKDIR/providers.yaml" <<EOF
+          anthropic:
+            protocol: anthropic
+            base_url: https://api.anthropic.com
+            api_key: { env: FAKE_UPSTREAM_KEY }
+          EOF
+          cat > "$WORKDIR/config.yaml" <<EOF
+          auth:
+            chain: [keys]
+            admin_auth:
+              - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }
+          plugins:
+            enabled: true
+            dir: $WORKDIR/plugins
+            trust:
+              allow_unsigned: true
+          providers:
+            anthropic:
+              api_key: { env: FAKE_UPSTREAM_KEY }
+          models:
+            m:
+              provider: anthropic
+              max_concurrent: 1
+          EOF
+
+          BUSBAR_BIN=busbarAI/target/release/busbar
+          export BUSBAR_CONFIG_OVERLAY="$WORKDIR/overlay.json"
+          ADMIN=http://127.0.0.1:8081/api/v1/admin
+
+          # Boot WITHOUT the plugin present — this run's whole point is proving the RUNTIME install
+          # path, so the plugin must not already be loadable at first boot.
+          BUSBAR_PROVIDERS="$WORKDIR/providers.yaml" BUSBAR_CONFIG="$WORKDIR/config.yaml" \
+            "$PWD/$BUSBAR_BIN" > "$WORKDIR/busbar.log" 2>&1 &
+          BUSBAR_PID=$!
+          trap 'kill $BUSBAR_PID 2>/dev/null || true' EXIT
+          for _ in $(seq 1 20); do curl -sf -o /dev/null "http://127.0.0.1:8081/api/v1/admin/plugins?type=store" -H "Authorization: Bearer $BUSBAR_ADMIN_TOKEN" && break; sleep 0.5; done
+
+          TARBALL_B64=$(base64 < /tmp/signoff.tar.gz | tr -d '\n')
+          echo "install..."
+          INSTALL_STATUS=$(curl -s -o /tmp/install.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $BUSBAR_ADMIN_TOKEN" -H "Content-Type: application/json" \
+            -d "{\"file\": \"${{ inputs.plugin_crate }}-0.0.0-ci.tar.gz\", \"tarball_b64\": \"$TARBALL_B64\"}" \
+            "$ADMIN/plugins")
+          cat /tmp/install.json
+          [ "$INSTALL_STATUS" = "201" ] || { echo "expected 201 from POST /plugins, got $INSTALL_STATUS" >&2; exit 1; }
+
+          # `store` config changes are documented + confirmed restart-to-apply, never a hot swap
+          # (`POST /plugins/reload` alone is NOT enough — it refreshes the plugin registry/hook
+          # transports only). Set the module durably (persist:true, needs the overlay above), then
+          # restart. busbar's restart deliberately does not self-respawn (supervisor_detected), so
+          # this step plays supervisor and relaunches it itself.
+          echo "set store module..."
+          curl -sf -X PUT -H "Authorization: Bearer $BUSBAR_ADMIN_TOKEN" -H "Content-Type: application/json" \
+            -d "{\"store\": {\"module\": \"${{ inputs.plugin_crate }}\", \"settings\": {}}, \"persist\": true}" \
+            "$ADMIN/config/settings"
+          curl -s -X POST -H "Authorization: Bearer $BUSBAR_ADMIN_TOKEN" "$ADMIN/restart" || true
+          sleep 2
+          kill $BUSBAR_PID 2>/dev/null || true
+          wait $BUSBAR_PID 2>/dev/null || true
+
+          BUSBAR_PROVIDERS="$WORKDIR/providers.yaml" BUSBAR_CONFIG="$WORKDIR/config.yaml" \
+            "$PWD/$BUSBAR_BIN" > "$WORKDIR/busbar2.log" 2>&1 &
+          BUSBAR_PID=$!
+          for _ in $(seq 1 20); do curl -sf -o /dev/null "$ADMIN/plugins?type=store" -H "Authorization: Bearer $BUSBAR_ADMIN_TOKEN" && break; sleep 0.5; done
+
+          if grep -q "does not match any plugin" "$WORKDIR/busbar2.log"; then
+            echo "the installed plugin was NOT accepted as the active store module on restart" >&2
+            cat "$WORKDIR/busbar2.log" >&2
+            exit 1
+          fi
+
+          echo "confirm active + mint/fetch round-trip through the freshly-installed plugin..."
+          curl -sf -H "Authorization: Bearer $BUSBAR_ADMIN_TOKEN" "$ADMIN/plugins?type=store" | tee /tmp/list.json
+          grep -q "${{ inputs.plugin_crate }}" /tmp/list.json
+
+          # Mint-and-fetch WITHIN this one process proves install -> activate -> use works
+          # end-to-end. It does NOT prove cross-restart durability against a real backend — that is
+          # backend-specific (needs a real database, not this generic step) and is each plugin's own
+          # job via the FILE-DROP mechanism below, structured like this repo's own persistence tests
+          # but loaded through a real boot instead of a direct `load_store()` call.
+          KEY_ID=$(curl -sf -X POST -H "Authorization: Bearer $BUSBAR_ADMIN_TOKEN" -H "Content-Type: application/json" \
+            -d '{"name":"ci-install-verify"}' "$ADMIN/keys" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+          [ -n "$KEY_ID" ] || { echo "mint returned no id" >&2; exit 1; }
+          curl -sf -H "Authorization: Bearer $BUSBAR_ADMIN_TOKEN" "$ADMIN/keys/$KEY_ID" | grep -q "$KEY_ID"
+          echo "OK: ${{ inputs.plugin_crate }} installed via the real admin API and served a real mint/fetch round-trip"
+
+      - name: FILE-DROP — boot a real busbar with THIS plugin already in plugins.dir, confirm boot-time discovery
+        if: inputs.plugin_kind == 'store'
+        run: |
+          set -euo pipefail
+          WORKDIR=$(mktemp -d)
+          mkdir -p "$WORKDIR/plugins"
+          cp /tmp/signoff.tar.gz "$WORKDIR/plugins/${{ inputs.plugin_crate }}.tar.gz"
+          export BUSBAR_ADMIN_TOKEN="ci-admin-$(date +%s)"
+          export FAKE_UPSTREAM_KEY="sk-ci-fake"
+
+          cat > "$WORKDIR/providers.yaml" <<EOF
+          anthropic:
+            protocol: anthropic
+            base_url: https://api.anthropic.com
+            api_key: { env: FAKE_UPSTREAM_KEY }
+          EOF
+          cat > "$WORKDIR/config.yaml" <<EOF
+          auth:
+            chain: [keys]
+            admin_auth:
+              - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }
+          plugins:
+            enabled: true
+            dir: $WORKDIR/plugins
+            trust:
+              allow_unsigned: true
+          store:
+            module: ${{ inputs.plugin_crate }}
+            settings: {}
+          providers:
+            anthropic:
+              api_key: { env: FAKE_UPSTREAM_KEY }
+          models:
+            m:
+              provider: anthropic
+              max_concurrent: 1
+          EOF
+
+          BUSBAR_BIN=busbarAI/target/release/busbar
+          ADMIN=http://127.0.0.1:8081/api/v1/admin
+
+          BUSBAR_PROVIDERS="$WORKDIR/providers.yaml" BUSBAR_CONFIG="$WORKDIR/config.yaml" \
+            "$PWD/$BUSBAR_BIN" > "$WORKDIR/busbar.log" 2>&1 &
+          BUSBAR_PID=$!
+          trap 'kill $BUSBAR_PID 2>/dev/null || true' EXIT
+          for _ in $(seq 1 20); do curl -sf -o /dev/null "$ADMIN/plugins?type=store" -H "Authorization: Bearer $BUSBAR_ADMIN_TOKEN" && break; sleep 0.5; done
+
+          if grep -q "does not match any plugin" "$WORKDIR/busbar.log"; then
+            echo "boot-time file-drop discovery did not pick up the plugin" >&2
+            cat "$WORKDIR/busbar.log" >&2
+            exit 1
+          fi
+
+          KEY_ID=$(curl -sf -X POST -H "Authorization: Bearer $BUSBAR_ADMIN_TOKEN" -H "Content-Type: application/json" \
+            -d '{"name":"ci-filedrop-verify"}' "$ADMIN/keys" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+          [ -n "$KEY_ID" ] || { echo "mint returned no id" >&2; exit 1; }
+          curl -sf -H "Authorization: Bearer $BUSBAR_ADMIN_TOKEN" "$ADMIN/keys/$KEY_ID" | grep -q "$KEY_ID"
+          echo "OK: ${{ inputs.plugin_crate }} discovered via file-drop at boot and served a real mint/fetch round-trip"
