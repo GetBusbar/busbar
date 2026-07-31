@@ -73,25 +73,6 @@ impl IrReq {
                     );
                 }
                 crate::proto::decode_request_tool_ids(prep.ingress_protocol, &mut ir.messages);
-                // n>1 clamp on the cross-protocol seam. `n` asks the backend for N candidate
-                // completions, but the neutral `IrResponse` models exactly ONE candidate (`role` +
-                // one `content` vec) — there is no place to carry choices 1..N. Forwarding `n>1` to a
-                // cross-protocol backend made it generate (and BILL for) N candidates while the
-                // translation kept only choice 0 and silently discarded the rest: wasted spend plus a
-                // response that does not match the request. IR cannot round-trip multiple choices, so
-                // the honest behavior is to clamp `n` to 1 before the egress writer emits it, so the
-                // backend generates exactly the one candidate the translated response can carry. A
-                // SAME-protocol passthrough never reaches here (the body is forwarded verbatim), so
-                // `n>1` still works end-to-end where the response is not funneled through the IR.
-                if ir.n.is_some_and(|n| n > 1) {
-                    tracing::warn!(
-                        ingress = %prep.ingress_protocol,
-                        "clamping n>1 to 1 on the cross-protocol seam: the neutral response IR carries \
-                         a single candidate, so extra choices would be generated, billed, and then \
-                         dropped; the backend is asked for exactly one candidate"
-                    );
-                    ir.n = Some(1);
-                }
                 // The reasoning gate. A lane that did not claim the capability never receives a
                 // thinking param (a non-reasoning model would 400 on it); the request still
                 // proceeds, thinking at the backend's default level.
@@ -145,27 +126,6 @@ impl IrReq {
                              this backend accepts cache markers (e.g. Claude on Bedrock)"
                         );
                     }
-                }
-                // HOSTED-TOOL cross-protocol drop (R3-B). A Responses hosted tool
-                // (`{"type":"web_search"}` → `IrTool{ name:"", hosted:Some(..) }`) has NO function-tool
-                // analog: ONLY the Responses writer honors `hosted`; every other egress writer projects
-                // an `IrTool` as a function tool keyed on `name`, so a hosted tool becomes a malformed
-                // empty-name `{"type":"function","name":""}` the backend 400s on. `prepare_for_egress`
-                // runs ONLY on the cross-protocol seam (a same-protocol Responses->Responses passthrough
-                // never reaches here - its body is forwarded verbatim, so hosted tools pass through
-                // intact), so DROPPING every hosted tool here is exactly the "keep same-proto, drop
-                // cross-proto" contract. Retain the count for the warn before draining.
-                let hosted_dropped = ir.tools.iter().filter(|t| t.hosted.is_some()).count();
-                if hosted_dropped > 0 {
-                    ir.tools.retain(|t| t.hosted.is_none());
-                    tracing::warn!(
-                        ingress = %prep.ingress_protocol,
-                        dropped = hosted_dropped,
-                        "dropping cross-protocol hosted (built-in) tool(s): a Responses hosted tool \
-                         has no function-tool equivalent for a non-Responses backend; forwarding it \
-                         would emit a malformed empty-name function tool the upstream rejects (400). \
-                         Route hosted-tool requests to a Responses lane to use them"
-                    );
                 }
                 ir.extra.clear();
             }

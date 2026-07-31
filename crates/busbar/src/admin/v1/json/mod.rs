@@ -19,11 +19,8 @@ use axum::{extract::Path, extract::Query, Router};
 use serde::Serialize;
 use serde_json::json;
 
-use super::contract::{AdminError, PATH_ADMIN_AUTH, PATH_CONFIG_VALIDATE, PATH_GROUPS, PATH_HOOKS};
-use super::service::{
-    build_with_group, build_with_hook, build_with_registry, build_without_group,
-    build_without_hook, AdminService,
-};
+use super::contract::{AdminError, PATH_ADMIN_AUTH, PATH_CONFIG_VALIDATE, PATH_HOOKS};
+use super::service::{build_with_hook, build_with_registry, build_without_hook, AdminService};
 use crate::admin::audit;
 use crate::admin::transport::AdminTransport;
 use crate::state::AppHandle;
@@ -68,27 +65,7 @@ impl AdminTransport for JsonV1 {
             .route("/hooks/{name}/settings", patch(patch_hook_settings))
             .route("/hooks/{name}/schema", get(hook_schema))
             .route("/hooks/{name}/status", get(hook_status))
-            // Groups — the `groups:` limit-tree CRUD (Phase 1, task #100): runtime-mutable groups
-            // → per-user budgets. Reads are read-only scope; mutations are full scope.
-            .route(PATH_GROUPS, get(list_groups).post(register_group))
-            .route(
-                "/groups/{name}",
-                get(get_group)
-                    .put(put_group)
-                    .patch(patch_group)
-                    .delete(delete_group),
-            )
-            .route("/groups/{name}/usage", get(get_group_usage))
-            // Per-section overlay RESET (D3): DISCARD a section's overlay mutations and revert it to
-            // base config.yaml. Full scope (the mutation fallthrough). section ∈ {groups, hooks}.
-            .route(
-                "/overlay/{section}",
-                axum::routing::delete(reset_overlay_section),
-            )
-            .route("/plugins", get(list_plugins).post(install_plugin))
-            .route("/plugins/reload", post(reload_plugins))
-            .route("/plugins/rollback", post(rollback_plugin))
-            .route("/plugins/{file}", axum::routing::delete(remove_plugin))
+            .route("/plugins", get(list_plugins))
             .route("/auth", get(get_auth))
             .route(PATH_ADMIN_AUTH, get(get_admin_auth).put(put_auth))
             .route("/usage", get(get_usage))
@@ -102,10 +79,6 @@ impl AdminTransport for JsonV1 {
             .route("/config/reload", post(reload_config))
             .route("/auth/cache/flush", post(flush_credential_cache))
             .route("/config/apply", post(apply_config))
-            .route(
-                "/config/settings",
-                get(get_config_settings).put(put_config_settings),
-            )
             .route("/openapi.json", get(openapi))
             // Virtual-key management — the keys resource of the SAME v1 admin surface. Handlers
             // live in `crate::admin` while they migrate into the layered service; mounting them
@@ -122,13 +95,6 @@ impl AdminTransport for JsonV1 {
             )
             .route("/keys/{id}/usage", get(crate::admin::key_usage))
             .route("/keys/{id}/rotate", post(crate::admin::rotate_key))
-            // 1.5.0 signed-token keys: revoke a key (denylist, keep the binding) and rotate the
-            // busbar key-signing key (revoke-all).
-            .route("/keys/{id}/revoke", post(crate::admin::revoke_key))
-            .route(
-                "/signing-key/rotate",
-                post(crate::admin::rotate_signing_key),
-            )
             // EVERY response on this surface speaks the frozen envelope — including an unmatched
             // path (404 `not_found`) and a matched path with the wrong method (405
             // `method_not_allowed`). Without these, axum's nest semantics leak an empty-body 405

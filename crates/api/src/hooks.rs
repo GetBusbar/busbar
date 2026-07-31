@@ -137,33 +137,6 @@ pub struct Candidate<'a> {
     pub rate_headroom: Option<f64>,
 }
 
-/// One bucket of the request's BUDGET-CHAIN state, exposed read-only into the pre-forward routing
-/// seam so a policy can be budget-aware (e.g. downshift to a cheaper model/tier as a bucket nears
-/// its cap). Busbar builds only this READ surface - routing POLICY lives in the hook, never in
-/// core. All figures are ABSTRACT cost units in MICRO-units (1e-6), derived at the moment of the
-/// projection from the token ledger x the operator's current rate card (never stored, no currency).
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct BudgetBucketState {
-    /// The bucket id: the key's own id (innermost bucket) or `group:<name>@<window>[#<pool>]`
-    /// for an ancestor group's budget-window bucket.
-    pub bucket_id: String,
-    /// The budget-group name for a group bucket; `None` for the key's own bucket.
-    pub budget_group: Option<String>,
-    /// The bucket's pool scope: `Some(pool)` for a pool-qualified limit's bucket (it accounts
-    /// only that pool's traffic); `None` for a group-wide bucket. Additive - absent on the wire
-    /// from older busbars reads as `None`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pool: Option<String>,
-    /// The bucket's spend so far this window, derived at the CURRENT rate card.
-    pub spend_micros_at_current_rate: i64,
-    /// Micro-units remaining under the bucket's cap (`None` = uncapped bucket).
-    pub remaining_micros: Option<i64>,
-    /// Epoch start of the bucket's current budget window.
-    pub window_start: u64,
-    /// This bucket's own window kind: `minute` | `hour` | `day` | `month` | `total` (C8 nouns).
-    pub budget_period: String,
-}
-
 /// Read-only context a policy may consult beyond the request + candidates themselves.
 #[derive(Debug, Clone)]
 pub struct RoutingContext<'a> {
@@ -171,11 +144,6 @@ pub struct RoutingContext<'a> {
     /// Per-KEY governance budget remaining for this request, when known/plumbed. `None` when
     /// governance is disabled or per-key budget is not visible at the seam (v1 default).
     pub budget_remaining: Option<i64>,
-    /// The request's BUDGET-CHAIN state: the caller key's bucket plus every ancestor budget group,
-    /// innermost first (see [`BudgetBucketState`]). Empty when governance is disabled or no key
-    /// resolved. The budget-aware-routing read seam: a policy may downshift on it; busbar itself
-    /// never routes on budget.
-    pub budget: &'a [BudgetBucketState],
 }
 
 /// A boxed, thread-safe policy error. Kept dependency-free (no `anyhow`/`thiserror`) so the routing

@@ -21,7 +21,7 @@ use std::sync::RwLock;
 use crate::config::{
     LimitsResolved, DEFAULT_KEY_GAUGE_LIMIT, DEFAULT_POLICY_TIMEOUT_MS,
     DEFAULT_PROBE_INTERVAL_SECS, DEFAULT_PROBE_TIMEOUT_SECS, DEFAULT_RATE_SWEEP_INTERVAL,
-    DEFAULT_REQUEST_BODY_MAX_BYTES, DEFAULT_USAGE_FLUSH_INTERVAL_MS,
+    DEFAULT_REQUEST_BODY_MAX_BYTES, DEFAULT_SQLITE_BUSY_TIMEOUT_MS,
     DEFAULT_WEBHOOK_DELIVERY_TIMEOUT_SECS,
 };
 
@@ -61,14 +61,6 @@ pub(crate) fn tls_handshake_timeout_secs() -> u64 {
         .unwrap_or(crate::config::DEFAULT_TLS_HANDSHAKE_TIMEOUT_SECS)
 }
 
-/// Inbound request-BODY inter-frame read bound (seconds), read per served connection in `tls`. Bounds
-/// a slow-loris that dribbles the request body after headers are complete.
-pub(crate) fn request_body_read_timeout_secs() -> u64 {
-    get()
-        .map(|l| l.request_body_read_timeout_secs)
-        .unwrap_or(crate::config::DEFAULT_REQUEST_BODY_READ_TIMEOUT_SECS)
-}
-
 /// Cap on a buffered upstream ERROR / verbatim-relay body (bytes).
 pub(crate) fn upstream_error_body_max_bytes() -> usize {
     get()
@@ -98,20 +90,18 @@ pub(crate) fn key_gauge_limit() -> usize {
         .unwrap_or(DEFAULT_KEY_GAUGE_LIMIT)
 }
 
+/// SQLite `busy_timeout` (ms) for the governance store.
+pub(crate) fn sqlite_busy_timeout_ms() -> i64 {
+    get()
+        .map(|l| l.sqlite_busy_timeout_ms)
+        .unwrap_or(DEFAULT_SQLITE_BUSY_TIMEOUT_MS)
+}
+
 /// Rate-limiter stale-entry sweep amortization interval.
 pub(crate) fn rate_sweep_interval() -> u32 {
     get()
         .map(|l| l.rate_sweep_interval)
         .unwrap_or(DEFAULT_RATE_SWEEP_INTERVAL)
-}
-
-/// Write-behind flush cadence (ms) for the in-memory governance usage/budget counters. On an
-/// UNGRACEFUL crash (kill -9 / power loss) at most this many ms of accrued spend/requests can be
-/// lost; a graceful shutdown flushes fully (the flusher's shutdown arm). Default 100.
-pub(crate) fn usage_flush_interval_ms() -> u64 {
-    get()
-        .map(|l| l.usage_flush_interval_ms)
-        .unwrap_or(DEFAULT_USAGE_FLUSH_INTERVAL_MS)
 }
 
 /// Process-wide active-probe interval fallback (seconds). Per-lane `health.interval_secs` overrides.
@@ -149,6 +139,7 @@ mod tests {
     fn uninstalled_accessors_return_historical_defaults() {
         assert_eq!(translate_body_max_bytes(), DEFAULT_REQUEST_BODY_MAX_BYTES);
         assert_eq!(key_gauge_limit(), DEFAULT_KEY_GAUGE_LIMIT);
+        assert_eq!(sqlite_busy_timeout_ms(), DEFAULT_SQLITE_BUSY_TIMEOUT_MS);
         assert_eq!(rate_sweep_interval(), DEFAULT_RATE_SWEEP_INTERVAL);
         assert_eq!(default_probe_interval_secs(), DEFAULT_PROBE_INTERVAL_SECS);
         assert_eq!(default_probe_timeout_secs(), DEFAULT_PROBE_TIMEOUT_SECS);

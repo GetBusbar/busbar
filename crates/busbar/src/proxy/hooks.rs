@@ -541,7 +541,7 @@ pub(crate) async fn decide_policy_order(
     ingress_protocol: &str,
     wants_stream: bool,
     caller_token: Option<&str>,
-    resolved_gov_key: Option<&std::sync::Arc<crate::governance::VirtualKey>>,
+    resolved_gov_key: Option<&crate::governance::VirtualKey>,
 ) -> PolicyOutcome {
     use crate::hooks::{
         Candidate, ResolvedPolicy, RoutingContext, RoutingDecision, RoutingRequest,
@@ -595,7 +595,7 @@ pub(crate) async fn decide_policy_order(
     }
     .or_else(|| resolved_gov_key.cloned());
     let rate_headroom: Option<f64> = match (gov, gov_key.as_ref()) {
-        (Some(g), Some(key)) => g.rate_headroom(&app.cost, key, Some(pool_name), now()),
+        (Some(g), Some(key)) => g.rate_headroom(key, now()),
         _ => None,
     };
 
@@ -674,22 +674,14 @@ pub(crate) async fn decide_policy_order(
         })
         .collect();
 
-    // The HOOK SEAM's budget projection (cost-model spec §9): for the caller key and each ancestor
-    // budget group, {bucket_id, spend_micros_at_current_rate, remaining_micros, window} - derived
-    // fresh from the token ledger x the CURRENT rate card at this moment. Built ONLY here (a
-    // routing-policy pool; the zero-cost default path never runs this fn), so its allocation stays
-    // off the default hot path. Busbar exposes the READ surface only; downshifting to a cheaper
-    // model on it is the hook's policy, never core's.
-    let budget_chain: Vec<busbar_api::BudgetBucketState> = match (gov, gov_key.as_ref()) {
-        (Some(g), Some(key)) => g.budget_state(&app.cost, key, now()),
-        _ => Vec::new(),
-    };
     let ctx = RoutingContext {
         pool: pool_name,
-        // Lane-health-shaped budget signal (legacy v1 field): still not fed - the per-request
-        // budget signal now rides the structured `budget` chain below.
+        // The per-key governance BUDGET is intentionally NOT fed to the routing seam: budget is an
+        // admission concern (enforced upstream of routing), not a lane-selection signal, so exposing
+        // it here would let a policy reshape traffic on a quantity that does not describe lane health.
+        // The per-key RATE signal IS surfaced — as each lane's `rate_headroom` above (the RPM/TPM
+        // fraction remaining), which is a legitimate "is this key near its limit" routing input.
         budget_remaining: None,
-        budget: &budget_chain,
     };
 
     // Run the decision under a HARD wall-clock timeout (the policy is also asked to respect `budget`).
@@ -974,12 +966,11 @@ pub(crate) fn fire_stage_taps(
         },
         candidates: Vec::new(),
         context: crate::hooks::wire::HookContext {
-            budget: &[],
             budget_remaining: None,
         },
         stage: Some(stage),
     };
-    let Ok(bytes) = crate::json::to_vec(&hook_req) else {
+    let Ok(bytes) = serde_json::to_vec(&hook_req) else {
         return;
     };
     let bytes = std::sync::Arc::new(bytes);

@@ -75,11 +75,11 @@ jobs:
         # typed one; it equals the committed `openapi.json` the runtime serves (drift-locked by the
         # `openapi_json_matches_committed_file` test in ci.yml).
         env:
-          BUSBAR_EMIT_OPENAPI: ${{ github.workspace }}/busbar-openapi-${{ github.ref_name }}.json
+          BUSBAR_EMIT_OPENAPI: busbar-openapi-${{ github.ref_name }}.json
         run: cargo test -p busbar --bin busbar --features openapi-schema emit_openapi_artifact -- --nocapture
       - name: Validate it is a well-formed OpenAPI 3.1 document
         run: |
-          doc="${GITHUB_WORKSPACE}/busbar-openapi-${GITHUB_REF_NAME}.json"
+          doc="busbar-openapi-${GITHUB_REF_NAME}.json"
           test -s "$doc" || { echo "OpenAPI doc is empty"; exit 1; }
           jq -e '.openapi | startswith("3.1")' "$doc" > /dev/null \
             || { echo "not an OpenAPI 3.1 document"; exit 1; }
@@ -87,7 +87,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload "${GITHUB_REF_NAME}" "${GITHUB_WORKSPACE}/busbar-openapi-${GITHUB_REF_NAME}.json" \
+          gh release upload "${GITHUB_REF_NAME}" "busbar-openapi-${GITHUB_REF_NAME}.json" \
             --repo "${GITHUB_REPOSITORY}" --clobber
 
   upload-assets:
@@ -97,101 +97,24 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # `pgo: true` routes a HOST-NATIVE target through scripts/pgo-build.sh (PGO is MANDATORY for
-        # release: the same fail-closed build docker.yml ships). PGO needs the instrumented binary
-        # to run ON THE RUNNER to train, so only the targets whose arch matches the runner's are
-        # PGO'd: x86_64-linux on the x86_64 ubuntu runner, and aarch64-darwin on the arm64 macos
-        # runner. The cross targets (aarch64-linux built on an x86_64 host, x86_64-darwin on an arm64
-        # host) and windows cannot self-train, so they keep the plain --release build.
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
-            pgo: true
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
           - target: x86_64-apple-darwin
             os: macos-latest
           - target: aarch64-apple-darwin
             os: macos-latest
-            pgo: true
           - target: x86_64-pc-windows-msvc
             os: windows-latest
     steps:
       - uses: actions/checkout@v7
 
-      # ── PGO path (host-native targets): the release binaries users download ARE PGO-optimized ──
-      # scripts/pgo-build.sh runs the three-phase PGO build (instrumented -> on-host training ->
-      # optimized) exactly as docker.yml does, FAIL-CLOSED: if any PGO phase fails the script exits
-      # non-zero and the job FAILS (it never falls back to a plain build). This closes the
-      # "PGO mandatory for release" drift where the GitHub-Release binaries were plain --release.
-      - name: Build busbar (PGO, required/fail-closed)
-        if: ${{ matrix.pgo }}
-        env:
-          BUSBAR_RELEASE_PUBKEY: ${{ vars.BUSBAR_RELEASE_PUBKEY }}
-          PGO_TARGET: ${{ matrix.target }}
-        run: |
-          set -euo pipefail
-          scripts/pgo-build.sh
-          file "target/pgo/${{ matrix.target }}/release/busbar"
-
-      # POSITIVE PGO GATE: pgo-build.sh writes this marker ONLY after a non-empty merged profile fed
-      # a successful -Cprofile-use build. Asserting it here (not just the script exit code) means a
-      # release cannot ship a non-PGO host binary and still pass. (Mirrors docker.yml's gate.)
-      - name: Verify PGO was applied (marker gate)
-        if: ${{ matrix.pgo }}
-        run: |
-          set -euo pipefail
-          marker="target/pgo/${{ matrix.target }}/release/busbar.pgo-verified"
-          if [ ! -s "$marker" ]; then
-            echo "::error::PGO proof marker missing or empty at $marker - refusing to ship a non-PGO binary" >&2
-            exit 1
-          fi
-          echo "--- PGO proof marker ---"
-          cat "$marker"
-          grep -q '^pgo-verified=1$' "$marker" || { echo "::error::marker not marked verified" >&2; exit 1; }
-          bytes="$(grep '^profile_bytes=' "$marker" | cut -d= -f2)"
-          raw="$(grep '^profraw_count=' "$marker" | cut -d= -f2)"
-          if [ -z "$bytes" ] || [ "$bytes" -le 0 ] 2>/dev/null; then
-            echo "::error::merged profile was empty (profile_bytes=$bytes) - build was not PGO-optimized" >&2
-            exit 1
-          fi
-          if [ -z "$raw" ] || [ "$raw" -le 0 ] 2>/dev/null; then
-            echo "::error::no .profraw files fed the profile (profraw_count=$raw) - build was not PGO-optimized" >&2
-            exit 1
-          fi
-          echo "PGO verified: ${bytes} bytes of merged profile from ${raw} .profraw file(s)."
-
-      # Archive the PGO binary into the SAME `busbar-<target>.tar.gz` name the plain path produces and
-      # upload it to the Release, so the attestation glob below covers it identically.
-      - name: Package and upload busbar (PGO)
-        if: ${{ matrix.pgo }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          bin="target/pgo/${{ matrix.target }}/release/busbar"
-          archive="busbar-${{ matrix.target }}.tar.gz"
-          tar -czf "$archive" -C "$(dirname "$bin")" busbar
-          gh release upload "${GITHUB_REF_NAME}" "$archive" \
-            --repo "${GITHUB_REPOSITORY}" --clobber
-
-      # ── Plain path (cross / windows targets that cannot self-train for PGO) ──
       # Builds --release for the target (installing the toolchain + cross-linker as
       # needed), tarballs the `busbar` binary, and uploads it to the Release for this tag.
-      #
-      # BUSBAR_RELEASE_PUBKEY (repository VARIABLE, not a secret — it is the PUBLIC half) is
-      # embedded into the binary at build time (plugin-sign's option_env!): busbar-signed
-      # plugins then verify as first-party with zero configuration. The matching PRIVATE half
-      # is the BUSBAR_SIGN_KEY secret used by the store-plugins job below.
-      # TODO(release-keys): the release orchestrator generates the real keypair separately
-      # (`busbar-plugin-pack keygen`) and provisions BOTH: the variable (public) + the secret
-      # (private). Until provisioned, release binaries embed no key and first-party plugin
-      # verification is unavailable (plugins still load via the third-party/unsigned paths).
       - name: Build and upload busbar
-        if: ${{ !matrix.pgo }}
         uses: taiki-e/upload-rust-binary-action@v1
-        env:
-          BUSBAR_RELEASE_PUBKEY: ${{ vars.BUSBAR_RELEASE_PUBKEY }}
         with:
           bin: busbar
           target: ${{ matrix.target }}
@@ -208,204 +131,3 @@ jobs:
         uses: actions/attest-build-provenance@v4
         with:
           subject-path: "busbar-${{ matrix.target }}.*"
-
-  # ── Store-plugin tarballs — one signed .tar.gz per (plugin, target) ──────────────────────────────
-  # Each first-party store backend (sqlite / postgres / redis) ships as a signed plugin tarball
-  # {cdylib + manifest.json} that busbar's plugin subsystem verifies and loads (plugins.enabled +
-  # governance.store). The manifest is signed with the busbar release PRIVATE key (BUSBAR_SIGN_KEY
-  # secret); the matching PUBLIC key is embedded into the busbar binary above (BUSBAR_RELEASE_PUBKEY
-  # repository variable), so these tarballs verify as FIRST-PARTY with zero operator configuration.
-  #
-  # TODO(release-keys): the release orchestrator generates the keypair separately
-  # (`busbar-plugin-pack keygen`) and provisions the BUSBAR_SIGN_KEY secret + the
-  # BUSBAR_RELEASE_PUBKEY variable. Until the secret exists, this job packages UNSIGNED tarballs
-  # (loadable only under plugins.trust.allow_unsigned) so a release is never blocked on key setup —
-  # the gh step prints which mode it ran in.
-  store-plugins:
-    needs: create-release
-    name: store-plugins (${{ matrix.target }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-            libext: so
-            libprefix: lib
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-24.04-arm
-            libext: so
-            libprefix: lib
-          - target: x86_64-apple-darwin
-            os: macos-latest
-            libext: dylib
-            libprefix: lib
-          - target: aarch64-apple-darwin
-            os: macos-latest
-            libext: dylib
-            libprefix: lib
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            libext: dll
-            libprefix: ""
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
-      - name: Build the store plugin cdylibs + the packer
-        run: |
-          cargo build --release --target ${{ matrix.target }} \
-            -p busbar-store-sqlite-plugin -p busbar-store-postgres-plugin -p busbar-store-redis-plugin \
-            -p busbar-plugin-pack
-        shell: bash
-      - name: Package + sign the plugin tarballs
-        env:
-          BUSBAR_SIGN_KEY: ${{ secrets.BUSBAR_SIGN_KEY }}
-        run: |
-          set -euo pipefail
-          ver="${GITHUB_REF_NAME#v}"
-          target="${{ matrix.target }}"
-          outdir="plugin-dist"; mkdir -p "$outdir"
-          pack="target/${target}/release/busbar-plugin-pack"
-          [ -x "$pack" ] || pack="target/${target}/release/busbar-plugin-pack.exe"
-          unsigned_flag=""
-          if [ -z "${BUSBAR_SIGN_KEY:-}" ]; then
-            echo "::warning::BUSBAR_SIGN_KEY secret is not provisioned — packaging UNSIGNED plugin tarballs (loadable only under plugins.trust.allow_unsigned). See the TODO(release-keys) seam."
-            unsigned_flag="--allow-unsigned"
-          fi
-          for store in sqlite postgres redis; do
-            lib="target/${target}/release/${{ matrix.libprefix }}busbar_store_${store}_plugin.${{ matrix.libext }}"
-            "$pack" pack \
-              --lib "$lib" \
-              --name "busbar-store-${store}" --alias "${store}" --kind store \
-              --version "$ver" --publisher busbar \
-              --description "busbar ${store} governance store plugin" \
-              --license Apache-2.0 \
-              --out "${outdir}/busbar-store-${store}-${ver}-${target}.tar.gz" \
-              $unsigned_flag
-          done
-          ls -l "$outdir"
-        shell: bash
-      - name: Attach plugin tarballs to Release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "${GITHUB_REF_NAME}" plugin-dist/*.tar.gz --repo "${GITHUB_REPOSITORY}" --clobber
-        shell: bash
-      # Build-provenance attestation for every plugin tarball, same as the binary archives: a
-      # swapped artifact on the Release page fails `gh attestation verify`.
-      - name: Attest plugin build provenance
-        uses: actions/attest-build-provenance@v4
-        with:
-          subject-path: "plugin-dist/*.tar.gz"
-
-  # ── Hook-plugin tarballs — one signed .tar.gz per (plugin, target) ───────────────────────────────
-  # The first-party kind:hook plugins (webrequest, headroom) ship as signed plugin tarballs
-  # {cdylib + manifest.json} exactly like the store plugins above: same busbar release PRIVATE key
-  # (BUSBAR_SIGN_KEY secret) signs the manifest, and the matching PUBLIC key embedded in the busbar
-  # binary (BUSBAR_RELEASE_PUBKEY repository variable) makes them verify as FIRST-PARTY with zero
-  # operator configuration.
-  #
-  # Two hook plugins, distinct declared intent:
-  #   - webrequest: a transparent HTTP forwarder. It relays whatever the CORE projected; a deployment
-  #     that fronts a prompt:rw gate would re-declare that need, but the shipped first-party artifact
-  #     asks for NOTHING by default (no --needs-*), the least-privilege posture. The operator still
-  #     grants explicitly, and the forwarder cannot cause content to be sent.
-  #   - headroom: a prompt-compression REWRITE gate. It MUST read + rewrite the prompt, so it packs
-  #     with --needs-prompt rw (SIGNED into the manifest, surfaced to the admin at register/load).
-  #     The operator's config grant of prompt:rw remains the enforcement (belt-and-suspenders).
-  #
-  # TODO(release-keys): same seam as store-plugins — until the BUSBAR_SIGN_KEY secret is provisioned
-  # this job packages UNSIGNED tarballs (loadable only under plugins.trust.allow_unsigned), so a
-  # release is never blocked on key setup. The gh step prints which mode it ran in.
-  hook-plugins:
-    needs: create-release
-    name: hook-plugins (${{ matrix.target }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-            libext: so
-            libprefix: lib
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-24.04-arm
-            libext: so
-            libprefix: lib
-          - target: x86_64-apple-darwin
-            os: macos-latest
-            libext: dylib
-            libprefix: lib
-          - target: aarch64-apple-darwin
-            os: macos-latest
-            libext: dylib
-            libprefix: lib
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            libext: dll
-            libprefix: ""
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
-      - name: Build the hook plugin cdylibs + the packer
-        run: |
-          cargo build --release --target ${{ matrix.target }} \
-            -p busbar-webrequest-hook-plugin -p busbar-headroom-hook-plugin \
-            -p busbar-plugin-pack
-        shell: bash
-      - name: Package + sign the hook plugin tarballs
-        env:
-          BUSBAR_SIGN_KEY: ${{ secrets.BUSBAR_SIGN_KEY }}
-        run: |
-          set -euo pipefail
-          ver="${GITHUB_REF_NAME#v}"
-          target="${{ matrix.target }}"
-          outdir="plugin-dist"; mkdir -p "$outdir"
-          pack="target/${target}/release/busbar-plugin-pack"
-          [ -x "$pack" ] || pack="target/${target}/release/busbar-plugin-pack.exe"
-          unsigned_flag=""
-          if [ -z "${BUSBAR_SIGN_KEY:-}" ]; then
-            echo "::warning::BUSBAR_SIGN_KEY secret is not provisioned — packaging UNSIGNED hook plugin tarballs (loadable only under plugins.trust.allow_unsigned). See the TODO(release-keys) seam."
-            unsigned_flag="--allow-unsigned"
-          fi
-          libpfx='${{ matrix.libprefix }}'; libext='${{ matrix.libext }}'
-
-          # webrequest: transparent forwarder, declares NO needs (least privilege).
-          "$pack" pack \
-            --lib "target/${target}/release/${libpfx}busbar_webrequest_hook_plugin.${libext}" \
-            --name "busbar-webrequest" --alias "webrequest" --kind hook \
-            --version "$ver" --publisher busbar \
-            --description "busbar webrequest hook plugin: signed dlopen'd HTTP forwarder for hook ops" \
-            --license Apache-2.0 \
-            --out "${outdir}/busbar-webrequest-${ver}-${target}.tar.gz" \
-            $unsigned_flag
-
-          # headroom: prompt-compression rewrite gate, declares needs.prompt=rw (SIGNED).
-          "$pack" pack \
-            --lib "target/${target}/release/${libpfx}busbar_headroom_hook_plugin.${libext}" \
-            --name "busbar-headroom" --alias "headroom" --kind hook \
-            --version "$ver" --publisher busbar \
-            --needs-prompt rw \
-            --description "busbar headroom hook plugin: deterministic rule-based prompt-compression rewrite gate" \
-            --license Apache-2.0 \
-            --out "${outdir}/busbar-headroom-${ver}-${target}.tar.gz" \
-            $unsigned_flag
-
-          ls -l "$outdir"
-        shell: bash
-      - name: Attach hook plugin tarballs to Release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "${GITHUB_REF_NAME}" plugin-dist/*.tar.gz --repo "${GITHUB_REPOSITORY}" --clobber
-        shell: bash
-      - name: Attest hook plugin build provenance
-        uses: actions/attest-build-provenance@v4
-        with:
-          subject-path: "plugin-dist/*.tar.gz"

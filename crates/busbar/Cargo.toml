@@ -1,6 +1,6 @@
 [package]
 name = "busbar"
-version = "1.5.0"
+version = "1.4.1"
 publish = false            # internal workspace crate; never goes to crates.io
 edition = "2021"
 # Effective MSRV: governance.rs uses `u32::is_multiple_of` (stabilized in Rust 1.87), and clippy's
@@ -24,17 +24,9 @@ path = "src/main.rs"
 # The plugin CONTRACTS (auth-module trait, routing-policy trait, projections) — the one crate both
 # the engine and every plugin build against. See api/.
 busbar-api = { path = "../api" }
-busbar-store-memory = { path = "../store-memory" }
-# The durable SQLite store is NO LONGER compiled in — it is a dynamic-library plugin loaded at boot
-# from the plugins directory (see busbar-plugin-loader). Dropping the bundled rusqlite `bundled`
-# amalgamation (~4.7 MB of C) is what makes the default binary lean; `store: memory` needs nothing,
-# `store: sqlite` loads the dropped-in plugin.
-busbar-plugin-loader = { path = "../plugin-loader" }
-# Plugin signature VERIFICATION + trust posture (pure crypto/policy, no unsafe): verifies a plugin's
-# signed manifest against the configured trust policy at boot-load and admin-install.
-busbar-plugin-sign = { path = "../plugin-sign" }
 # The built-in plugins, each its own workspace crate under auth/<name>/ or hooks/<name>/ — optional
 # so the matching feature (below) compiles each IN or OUT of the binary.
+busbar-auth-tokens = { path = "../auth-tokens", optional = true }
 busbar-auth-admin-tokens = { path = "../auth-admin-tokens", optional = true }
 busbar-hooks-ranking = { path = "../hooks-ranking", optional = true }
 axum = "0.8"
@@ -50,7 +42,7 @@ tower = { version = "0.5", features = ["limit"] }
 # none referenced in src/ — so it is dropped to shrink the request-path binary's compile + attack
 # surface.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "http2"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # CI-ONLY, feature-gated (`openapi-schema`). Derives JSON Schema from the admin-API response VIEW
@@ -78,11 +70,6 @@ sonic-rs = "0.5"
 serde_yaml = { package = "serde_yaml_ng", version = "0.10" }
 futures = "0.3"
 bytes = "1"
-# The `http_body::Body` trait, so the TLS/plain serve loops can wrap the inbound request body in a
-# per-frame read timeout (`tls::TimeoutBody`) - the slow-loris body defense the header-read timeout
-# does not cover. Already in the graph transitively (hyper/http-body-util); named directly here so we
-# can `impl Body`.
-http-body = "1"
 http-body-util = "0.1"
 metrics = "0.24.6"
 # busbar uses this purely as an in-process recorder: `PrometheusBuilder::new().install_recorder()`
@@ -127,11 +114,8 @@ tracing-opentelemetry = "0.33.0"
 sha2 = "0.11.0"
 hmac = "0.13.0"
 hex = "0.4.3"
+rusqlite = { version = "0.40.0", features = ["bundled"] }
 getrandom = "0.3"
-# ed25519 for the busbar-signed virtual-key TOKENS (P3): the same primitive the plugin-signing
-# path uses, already in the graph. Mint signs a compact `{sub, exp, kid}` token; verify checks the
-# signature statelessly. `rand_core` is pulled for keypair generation on first boot.
-ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
 # CRC32 for the AWS `application/vnd.amazon.eventstream` encoder (Bedrock ingress streaming): AWS
 # SDK clients validate both the prelude and message CRC32 on every frame, so the encoder needs a
 # correct, fast CRC32. `crc32fast` is small, dependency-light, and the de-facto standard.
@@ -186,10 +170,13 @@ tikv-jemalloc-ctl = "0.6"
 tikv-jemallocator = { version = "0.6", features = ["disable_initial_exec_tls"] }
 
 [features]
-# 1.5.0 (S8): the static-token allowlist module is REMOVED entirely - data-plane auth is the
-# built-in `keys` signed-token verifier plus IdP auth modules. Nothing static-token-shaped is
-# compiled into any build.
-default = ["auth-admin-tokens", "hooks-ranking"]
+# The built-in `tokens` auth plugin is a DEFAULT-ON, REMOVABLE feature — compliance by compilation.
+# A `--no-default-features` build contains NO client-token auth code at all (the module, its
+# constant-time fold, and the allowlist are absent from the binary, provable by attestation +
+# symbols). `auth.chain: [tokens]` then BOOT-ERRORS instead of silently opening. A regulated
+# deployment ships tokens OUT and wires its own auth module (SAML/AD/OIDC) in the private repo.
+default = ["auth-tokens", "auth-admin-tokens", "hooks-ranking"]
+auth-tokens = ["dep:busbar-auth-tokens"]
 # The built-in `admin-tokens` ADMIN auth plugin (the single operator admin token) — same
 # default-on, removable, compliance-by-compilation stance. Removed, `admin_auth: [admin-tokens]`
 # (the default) boot-errors and an external admin module must be wired.
@@ -205,10 +192,6 @@ hooks-ranking = ["dep:busbar-hooks-ranking"]
 openapi-schema = ["dep:schemars"]
 
 [dev-dependencies]
-# The durable-audit (#17) tests exercise the REAL SQLite store's append_audit/list_audit over a
-# simulated restart — a dev-only dependency (the store itself ships as a droppable plugin, not linked
-# into the release binary).
-busbar-store-sqlite = { path = "../store-sqlite" }
 # In-crate #[cfg(test)] harness needs reqwest's json feature + axum http1 server.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
 axum = { version = "0.8", features = ["http1"] }

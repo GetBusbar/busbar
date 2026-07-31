@@ -150,7 +150,7 @@ mod tests {
                 (
                     n.to_string(),
                     serde_yaml::from_str::<crate::config::HookCfg>(&format!(
-                        "kind: tap\nplugin: test-hook-{n}\n"
+                        "kind: tap\nsocket: /run/busbar/{n}.sock\n"
                     ))
                     .expect("hook parses"),
                 )

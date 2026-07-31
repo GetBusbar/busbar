@@ -171,15 +171,6 @@ impl StreamTranslate {
         })
     }
 
-    /// Record whether the ORIGINAL client request opted into streaming usage
-    /// (`stream_options.include_usage == true`), forwarding it to the ingress framing (Findings 2+3).
-    /// Only the OpenAI-ingress framing acts on it (its `include_usage` un-fold/strip); every other
-    /// ingress framing ignores it. Called by the engine after it captures the client's intent from the
-    /// request body and before the first frame is fed.
-    pub(crate) fn set_client_include_usage(&mut self, include: bool) {
-        self.framing.set_client_include_usage(include);
-    }
-
     /// Translate one egress event `(event_type, payload)` into ingress wire bytes, advancing the
     /// decode state. Shared by the SSE and event-stream feed paths.
     fn translate_event(&mut self, event_type: &str, data: &serde_json::Value, out: &mut Vec<u8>) {
@@ -526,7 +517,7 @@ impl StreamTranslate {
             // agnostic emitter names no wire event-type of its own.
             self.framing
                 .inject_streaming_metrics(&out_et, &mut out_data, self.started_at);
-            let payload = crate::json::to_vec(&out_data).unwrap_or_default();
+            let payload = serde_json::to_vec(&out_data).unwrap_or_default();
             // Bedrock-INGRESS usage (Change A): the usage carried by this frame was already accumulated
             // into `last_usage` by `translate_event`/`extract_usage_only` from the structured IR event,
             // BEFORE this writer ran — so billing reads `usage()` and no longer needs the pre-encode
@@ -654,11 +645,6 @@ impl StreamTranslate {
         // skip (avoid rescanning the already-searched prefix of a frame split across many feeds) apply
         // only ABOVE that floor, so `feed()` stays linear without looping.
         let mut consumed = 0usize;
-        // SAME-PROTOCOL verbatim re-emit cursor (R3-A-b): the start of the not-yet-flushed verbatim
-        // region. The common case flushes `[0..consumed]` in one shot at the end (a single bulk copy);
-        // it only splits when a frame must be SUPPRESSED (the OpenAI opted-out trailing usage chunk),
-        // in which case the run BEFORE the suppressed frame is flushed and the frame's bytes skipped.
-        let mut emit_from = 0usize;
         loop {
             let search_from = self
                 .scanned
@@ -668,8 +654,7 @@ impl StreamTranslate {
             match find_frame_terminator(&self.buf[search_from..]) {
                 Some((rel, term_len)) => {
                     let end = search_from + rel + term_len;
-                    let frame_start = consumed;
-                    let frame = &self.buf[frame_start..end];
+                    let frame = &self.buf[consumed..end];
                     consumed = end;
                     self.scanned = end;
 
@@ -695,38 +680,6 @@ impl StreamTranslate {
                         // `[DONE]`, and the exact `event:`/`data:` line shape and terminator) reaches
                         // the client byte-for-byte unchanged, and the writer/reframe work is skipped.
                         self.extract_usage_only(&event_type, &data);
-                        // R3-A-b: on the verbatim path `on_egress_chunk` never runs, so an opted-out
-                        // OpenAI client would still receive the unsolicited trailing usage chunk busbar
-                        // forced upstream. The framing decides per-frame whether to DROP it - flush the
-                        // verbatim run up to this frame's start, then skip the frame (its usage was
-                        // already A-tapped above for billing). Inert for every non-suppressing frame.
-                        if self.framing.suppress_same_proto_frame(&data) {
-                            if frame_start > emit_from {
-                                out.extend_from_slice(&self.buf[emit_from..frame_start]);
-                            }
-                            emit_from = end;
-                        } else if self.framing.strip_same_proto_usage(&data) {
-                            // Indistinguishability fix: busbar forces `include_usage` UPSTREAM to bill,
-                            // so an OpenAI upstream stamps `"usage":null` on EVERY intermediate content
-                            // chunk. A native opted-out OpenAI stream omits `usage` on those chunks, so
-                            // re-emitting the frame verbatim is a wire-shape tell. Strip the top-level
-                            // `usage` member from THIS frame's bytes before re-emitting it - flushing the
-                            // verbatim run up to it, emitting the rewritten frame, and resuming the run
-                            // AFTER it. Billing already A-tapped this frame's usage above. The strip is a
-                            // targeted byte-level edit of the frame bytes on the common path; if that edit
-                            // cannot be done safely for a given frame shape, fall back to
-                            // parse-modify-reserialize for THAT frame only (`rewrite_frame_strip_usage`
-                            // returns the original bytes when even the fallback declines, so nothing is
-                            // ever corrupted).
-                            if frame_start > emit_from {
-                                out.extend_from_slice(&self.buf[emit_from..frame_start]);
-                            }
-                            out.extend_from_slice(&rewrite_frame_strip_usage(
-                                &self.buf[frame_start..end],
-                                &data_str,
-                            ));
-                            emit_from = end;
-                        }
                     } else {
                         self.translate_event(&event_type, &data, &mut out);
                     }
@@ -738,14 +691,12 @@ impl StreamTranslate {
                 }
             }
         }
-        // SAME-PROTOCOL verbatim re-emit: append the remaining un-flushed verbatim region (every
-        // complete frame the loop consumed and did NOT suppress, including the keepalive/`[DONE]`/
-        // non-`data:` frames the cross-proto path drops), BEFORE the consumed prefix is reclaimed below
-        // - so the client sees the upstream SSE stream byte-for-byte, with the IR pipeline acting purely
-        // as the usage side-channel above. In the common (no-suppression) case `emit_from == 0`, so this
-        // is the single bulk copy of `[0..consumed]` the prior code did.
-        if self.same_proto && consumed > emit_from {
-            out.extend_from_slice(&self.buf[emit_from..consumed]);
+        // SAME-PROTOCOL verbatim re-emit: append exactly the bytes the loop consumed (every complete
+        // frame, including the keepalive/`[DONE]`/non-`data:` frames the cross-proto path drops),
+        // BEFORE the consumed prefix is reclaimed below — so the client sees the upstream SSE stream
+        // byte-for-byte, with the IR pipeline acting purely as the usage side-channel above.
+        if self.same_proto && consumed > 0 {
+            out.extend_from_slice(&self.buf[..consumed]);
         }
         // Reclaim the consumed prefix in a single shift (linear), then rebase the cursors.
         if consumed > 0 {
@@ -909,139 +860,6 @@ impl StreamTranslate {
             out.extend_from_slice(SSE_DONE_FRAME);
         }
         out
-    }
-}
-
-/// Rewrite a same-protocol OpenAI SSE frame's bytes with its top-level `usage` member removed,
-/// preserving every other byte (the `data:` prefix, the exact terminator, and the rest of the JSON).
-/// `frame` is the ORIGINAL complete frame bytes (including the `data:` line and terminator);
-/// `data_str` is the JSON payload `parse_sse_frame` already extracted from it.
-///
-/// Fast path: byte-level strip. `strip_top_level_usage_member` removes the `usage` member from the
-/// JSON string without a DOM round-trip, and because for an OpenAI bare-`data:` chunk the JSON is a
-/// single line that appears verbatim as a substring of the frame, the stripped JSON is spliced back
-/// in place of the original JSON substring, leaving the frame's framing bytes untouched.
-///
-/// Fallback (rare shapes only): if the byte-level strip declines (`None`), or the JSON is not a clean
-/// single-substring of the frame (e.g. a multi-`data:`-line frame), the frame is reframed as a bare
-/// `data:` frame. This is correctness-over-speed for the uncommon shape and only ever runs for THAT
-/// frame. Crucially the fallback must NOT itself introduce a wire-shape tell: it PRESERVES the JSON
-/// key ORDER and the ORIGINAL line TERMINATOR (CRLF vs LF) exactly, differing from a direct stream
-/// only by the removed `usage` key. It first retries the order-preserving byte strip on the extracted
-/// payload (which keeps key order); only if that also declines does it parse-reserialize via a DOM,
-/// and even then it uses a preserve-order map so keys are not reordered. If the JSON will not parse at
-/// all, the ORIGINAL frame bytes are returned unchanged (never a corrupt splice) - the strip is
-/// best-effort but the stream is never damaged.
-fn rewrite_frame_strip_usage(frame: &[u8], data_str: &str) -> Vec<u8> {
-    // Fast path: byte-level strip spliced back into the frame in place of the JSON substring.
-    if let Some(stripped) = crate::proto::strip_top_level_usage_member(data_str) {
-        // Locate the exact JSON substring within the frame. For an OpenAI bare `data: {json}\n\n`
-        // frame the JSON is present verbatim and unique, so a single-substring find is exact.
-        if let Ok(frame_str) = std::str::from_utf8(frame) {
-            if let Some(pos) = frame_str.find(data_str) {
-                // Confirm the JSON appears exactly once so the splice is unambiguous. (A second
-                // occurrence would mean the payload text also lives elsewhere in the frame - refuse
-                // the byte splice and fall through to reserialize.)
-                if frame_str[pos + data_str.len()..].find(data_str).is_none() {
-                    let mut out =
-                        Vec::with_capacity(frame.len() - (data_str.len() - stripped.len()));
-                    out.extend_from_slice(&frame[..pos]);
-                    out.extend_from_slice(stripped.as_bytes());
-                    out.extend_from_slice(&frame[pos + data_str.len()..]);
-                    return out;
-                }
-            }
-        }
-    }
-    // Fallback. Determine the ORIGINAL terminator so the reframed frame matches the wire shape a direct
-    // stream would send (CRLF must stay CRLF; a native OpenAI stream never silently downgrades CRLF to
-    // LF, and doing so here would be the very indistinguishability tell the strip exists to remove).
-    let terminator: &str = if frame.ends_with(b"\r\n\r\n") {
-        "\r\n\r\n"
-    } else if frame.ends_with(b"\n\n") {
-        "\n\n"
-    } else if frame.ends_with(b"\r\n") {
-        "\r\n"
-    } else if frame.ends_with(b"\n") {
-        "\n"
-    } else {
-        "\n\n"
-    };
-
-    // Use the order-preserving byte strip on the extracted payload: it keeps the original key order and
-    // only removes the `usage` member. This handles the "JSON not a clean single substring of the
-    // frame" case (multi-`data:`-line frames) without reordering keys, reframed with the original
-    // terminator so no wire-shape tell is introduced.
-    if let Some(stripped) = crate::proto::strip_top_level_usage_member(data_str) {
-        return format!("data: {stripped}{terminator}").into_bytes();
-    }
-
-    // Last resort: the byte scanner could not classify this payload (a non-object, or a shape it does
-    // not fully understand). A DOM reserialize is deliberately NOT used here: `serde_json` is built
-    // WITHOUT the `preserve_order` feature, so `serde_json::Value` / `Map` is a sorted `BTreeMap` and a
-    // round-trip would REORDER keys - reintroducing exactly the indistinguishability tell this strip
-    // exists to remove. Since the payload also carries no reliably strippable top-level `usage` (the
-    // scanner declined), re-emit the ORIGINAL frame bytes verbatim. The strip is documented best-effort;
-    // never a reordered or corrupt frame.
-    frame.to_vec()
-}
-
-#[cfg(test)]
-mod rewrite_frame_strip_usage_tests {
-    use super::rewrite_frame_strip_usage;
-
-    /// FIX 2 (byte-stripper fallback indistinguishability): when the fast byte-splice path declines and
-    /// the fallback is taken (here forced by a `data_str` that is NOT a verbatim substring of the raw
-    /// frame, mirroring a multi-`data:`-line frame), the reframed frame must NOT introduce a wire-shape
-    /// tell: JSON key ORDER is preserved and the ORIGINAL CRLF terminator is preserved. Only the
-    /// top-level `usage` key is removed.
-    #[test]
-    fn fallback_preserves_key_order_and_crlf() {
-        // A CRLF-terminated frame. Keys are in a DELIBERATELY non-sorted order (id, object, choices,
-        // usage) so that any BTreeMap/Value round-trip (which would sort to choices, id, object, usage)
-        // is detectable. `usage` sits in the MIDDLE, so a correct strip must keep the surrounding order.
-        let payload = r#"{"id":"chatcmpl-x","object":"chat.completion.chunk","choices":[{"delta":{"content":"hi"}}],"usage":null}"#;
-        // Force the fallback deterministically: hand a frame whose bytes do NOT contain `payload`
-        // verbatim (mirroring a multi-`data:`-line frame whose extracted join differs from the raw
-        // bytes), with a CRLF terminator. The fast splice's verbatim-find fails, so the fallback runs.
-        let raw_frame = b"data: <multiline-join-not-verbatim>\r\n\r\n";
-        let out = rewrite_frame_strip_usage(raw_frame, payload);
-        let out_str = std::str::from_utf8(&out).unwrap();
-
-        // CRLF terminator preserved.
-        assert!(
-            out_str.ends_with("\r\n\r\n"),
-            "CRLF terminator must be preserved, got {out_str:?}"
-        );
-        // The `usage` key is gone.
-        assert!(
-            !out_str.contains("usage"),
-            "usage must be stripped: {out_str:?}"
-        );
-        // Remaining keys keep their ORIGINAL order: id before object before choices. A sorted
-        // reserialize would put `choices` first.
-        let id_at = out_str.find("\"id\"").expect("id present");
-        let object_at = out_str.find("\"object\"").expect("object present");
-        let choices_at = out_str.find("\"choices\"").expect("choices present");
-        assert!(
-            id_at < object_at && object_at < choices_at,
-            "original key order (id, object, choices) must be preserved, got {out_str:?}"
-        );
-    }
-
-    /// The fallback keeps an LF-only terminator as LF (it must not upgrade LF to CRLF either).
-    #[test]
-    fn fallback_preserves_lf_terminator() {
-        let payload = r#"{"id":"x","object":"chat.completion.chunk","usage":null,"choices":[]}"#;
-        let raw_frame = b"data: <not-verbatim>\n\n";
-        let out = rewrite_frame_strip_usage(raw_frame, payload);
-        let out_str = std::str::from_utf8(&out).unwrap();
-        assert!(
-            out_str.ends_with("\n\n"),
-            "LF terminator preserved: {out_str:?}"
-        );
-        assert!(!out_str.contains("\r"), "no CR introduced: {out_str:?}");
-        assert!(!out_str.contains("usage"), "usage stripped: {out_str:?}");
     }
 }
 

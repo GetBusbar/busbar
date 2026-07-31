@@ -603,7 +603,6 @@ impl LaneSpec {
             credential: crate::egress_auth::resolve(self.protocol.name(), auth),
             model: self.model.clone(),
             provider: self.provider.clone(),
-            signing_host: crate::proxy::host_from_base(&self.base_url),
             base_url: self.base_url.clone(),
             api_key: self.api_key.clone(),
             protocol: self.protocol.clone(),
@@ -650,7 +649,6 @@ pub(crate) struct TestApp {
     pools: std::collections::HashMap<String, Vec<crate::state::WeightedLane>>,
     auth: Option<std::sync::Arc<crate::auth::AuthMiddleware>>,
     governance: Option<std::sync::Arc<crate::governance::GovState>>,
-    cost: Option<std::sync::Arc<crate::cost::CostModel>>,
     failover_cfg: Option<crate::config::FailoverCfg>,
     pool_runtime: std::collections::HashMap<String, crate::state::PoolRuntime>,
     fallback_pools: std::collections::HashMap<String, Vec<crate::state::WeightedLane>>,
@@ -658,12 +656,7 @@ pub(crate) struct TestApp {
     hook_registry: std::collections::HashMap<String, crate::config::HookCfg>,
     global_hooks: Vec<String>,
     base_hook_names: std::collections::HashSet<String>,
-    groups_registry: std::collections::BTreeMap<String, crate::config::GroupCfg>,
-    base_group_names: std::collections::HashSet<String>,
     overlay_path: Option<std::path::PathBuf>,
-    plugins_dir: Option<std::path::PathBuf>,
-    plugins_cfg: Option<crate::config::PluginsCfg>,
-    hook_env: Option<crate::hooks::HookEnv>,
 }
 
 #[allow(dead_code)]
@@ -674,7 +667,6 @@ impl TestApp {
             pools: std::collections::HashMap::new(),
             auth: None,
             governance: None,
-            cost: None,
             failover_cfg: None,
             pool_runtime: std::collections::HashMap::new(),
             fallback_pools: std::collections::HashMap::new(),
@@ -682,33 +674,8 @@ impl TestApp {
             hook_registry: std::collections::HashMap::new(),
             global_hooks: Vec::new(),
             base_hook_names: std::collections::HashSet::new(),
-            groups_registry: std::collections::BTreeMap::new(),
-            base_group_names: std::collections::HashSet::new(),
             overlay_path: None,
-            plugins_dir: None,
-            plugins_cfg: None,
-            hook_env: None,
         }
-    }
-
-    /// Install a hook plugin-resolution env (for hook-transport resolution tests). Defaults to an
-    /// empty registry (a hook's `plugin:` ref resolves to `None`, i.e. gate-absent).
-    pub(crate) fn hook_env(mut self, env: crate::hooks::HookEnv) -> Self {
-        self.hook_env = Some(env);
-        self
-    }
-
-    /// Point the plugin surface at a specific directory (for the Admin API plugin catalog / install /
-    /// remove / reload tests). Defaults to `plugins` when unset.
-    pub(crate) fn plugins_dir(mut self, path: std::path::PathBuf) -> Self {
-        self.plugins_dir = Some(path);
-        self
-    }
-    /// Set the whole `plugins.*` posture (for install re-verification tests). Defaults to the
-    /// strict disabled default.
-    pub(crate) fn plugins_cfg(mut self, cfg: crate::config::PluginsCfg) -> Self {
-        self.plugins_cfg = Some(cfg);
-        self
     }
 
     /// Enable config-overlay persistence at `path` (for testing runtime-change durability).
@@ -726,29 +693,6 @@ impl TestApp {
     pub(crate) fn base_hook(mut self, name: &str, cfg: crate::config::HookCfg) -> Self {
         self.hook_registry.insert(name.into(), cfg);
         self.base_hook_names.insert(name.into());
-        self
-    }
-    /// Register a `groups:` entry into the App's group registry (the Admin-API groups read/mutation
-    /// surface). Marks it a BASE (config-file) group, so the base-shadow 409 guard sees it.
-    pub(crate) fn group(mut self, name: &str, cfg: crate::config::GroupCfg) -> Self {
-        self.groups_registry.insert(name.into(), cfg);
-        self.base_group_names.insert(name.into());
-        self
-    }
-    /// Seed the WHOLE groups tree at once as RUNTIME (non-base) groups: populates the App's group
-    /// registry AND builds the cost model from the same tree, so `cost.group_named` (enforcement +
-    /// mint existence) and `groups_registry` (the Admin-API write surface / auto-provision) AGREE —
-    /// the exact production invariant (both rebuilt together on every apply). NOT marked base, so
-    /// the mint auto-provision path can create a `user:<sub>` leaf under one of these without the
-    /// base-shadow 409 misfiring. Overwrites any `.cost(...)` set earlier.
-    pub(crate) fn groups_tree(
-        mut self,
-        groups: std::collections::BTreeMap<String, crate::config::GroupCfg>,
-    ) -> Self {
-        self.cost = Some(std::sync::Arc::new(crate::cost::CostModel::resolve_parts(
-            None, 0, &groups,
-        )));
-        self.groups_registry = groups;
         self
     }
     /// Add a name to the `global_hooks:` list (globally-wired hooks).
@@ -776,23 +720,13 @@ impl TestApp {
             upstream_credentials: uc,
             ..crate::config::AuthCfg::default_none()
         };
-        self.auth = Some(std::sync::Arc::new(
-            crate::auth::AuthMiddleware::new_builtin(&cfg),
-        ));
+        self.auth = Some(std::sync::Arc::new(crate::auth::AuthMiddleware::new(&cfg)));
         self
     }
     pub(crate) fn auth(mut self, a: std::sync::Arc<crate::auth::AuthMiddleware>) -> Self {
         self.auth = Some(a);
         self
     }
-    /// Install a resolved cost model (rate card / budget groups / flat fee) for tests exercising
-    /// the derived-spend enforcement. Default: `CostModel::flat(1)` - no rate card, no groups,
-    /// the production default 1-cent flat fee.
-    pub(crate) fn cost(mut self, c: crate::cost::CostModel) -> Self {
-        self.cost = Some(std::sync::Arc::new(c));
-        self
-    }
-
     pub(crate) fn governance(mut self, g: std::sync::Arc<crate::governance::GovState>) -> Self {
         self.governance = Some(g);
         self
@@ -823,24 +757,16 @@ impl TestApp {
             lane_data.push(spec.to_lane_data());
         }
         let auth = self.auth.unwrap_or_else(|| {
-            std::sync::Arc::new(crate::auth::AuthMiddleware::new_builtin(
+            std::sync::Arc::new(crate::auth::AuthMiddleware::new(
                 &crate::config::AuthCfg::default_none(),
             ))
         });
-        let tslots = std::sync::Arc::new(crate::telemetry::AppSlots::build(
-            &lanes,
-            &self.pools,
-            &by_model,
-        ));
         let app = std::sync::Arc::new(crate::state::App {
-            tslots,
             lanes,
             store: std::sync::Arc::new(crate::store::InMemoryStore::new(lane_data)),
             by_model,
             pools: self.pools,
-            client: crate::state::UpstreamClients::build(1, || {
-                reqwest::Client::builder().build().unwrap()
-            }),
+            client: reqwest::Client::builder().build().unwrap(),
             auth,
             rewrite_hooks: Vec::new(),
             tap_hooks: Vec::new(),
@@ -848,16 +774,8 @@ impl TestApp {
             tap_hooks_attempt: Vec::new(),
             tap_hooks_completion: Vec::new(),
             global_gates: Vec::new(),
-            hook_env: self.hook_env.unwrap_or_else(|| {
-                crate::hooks::HookEnv::new(
-                    std::sync::Arc::new(busbar_plugin_loader::PluginRegistry::empty()),
-                    std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
-                )
-            }),
             hook_registry: self.hook_registry,
             global_hooks: self.global_hooks,
-            groups_registry: self.groups_registry,
-            base_group_names: self.base_group_names,
             versions: std::sync::Arc::new(crate::admin::versions::VersionLog::new()),
             mutation_limiter: std::sync::Arc::new(crate::admin::rate::MutationLimiter::new()),
             idempotency_cache: std::sync::Arc::new(std::sync::Mutex::new(
@@ -866,28 +784,17 @@ impl TestApp {
             base_hook_names: self.base_hook_names,
             admin_chain: vec!["admin-tokens".to_string()],
             credential_cache: std::sync::Arc::new(crate::auth_cache::CredentialCache::new()),
-            auth_scope_caps: std::collections::HashMap::new(),
-            role_bindings: crate::config::RoleBindings::new(),
+            auth_modules: std::collections::HashMap::new(),
+            group_map: std::collections::HashMap::new(),
             config_path: None,
             providers_path: None,
             overlay_path: self.overlay_path,
             config_version: 0,
-            max_keys_per_principal: 0,
             failover_cfg: self.failover_cfg,
             pool_runtime: self.pool_runtime,
             fallback_pools: self.fallback_pools,
             on_exhausted_cfgs: self.on_exhausted_cfgs,
             governance: self.governance,
-            secret_resolver: std::sync::Arc::new(
-                crate::config::secret::SecretResolver::builtins_only(),
-            ),
-            cost: self
-                .cost
-                .unwrap_or_else(|| std::sync::Arc::new(crate::cost::CostModel::flat(1))),
-            plugins_dir: self
-                .plugins_dir
-                .unwrap_or_else(|| std::path::PathBuf::from("plugins")),
-            plugins_cfg: self.plugins_cfg.unwrap_or_default(),
             default_max_tokens: crate::config::DEFAULT_DEFAULT_MAX_TOKENS,
             reasoning_effort_budgets: [1024, 4096, 8192, 16384],
         });
@@ -896,76 +803,6 @@ impl TestApp {
             .record(0, "system", "boot", &app.hook_registry, &app.global_hooks);
         app
     }
-}
-
-/// Build a [`crate::hooks::HookEnv`] whose registry loads the hermetic `busbar-hook-test-plugin`
-/// cdylib under the given alias(es) (all pointing at the SAME cdylib) with the given declared manifest
-/// `needs`. `None` when the cdylib is not built (the caller skips). Uses the unsigned +
-/// `allow_unsigned` path (tests can't sign with the embedded first-party key) — still the full
-/// scan/trust/load pipeline. Shared by the admin + resolution tests that need a hook to actually load.
-pub(crate) fn test_hook_env(
-    aliases: &[&str],
-    needs: busbar_plugin_sign::HookNeeds,
-) -> Option<crate::hooks::HookEnv> {
-    let cdylib = {
-        let exe = std::env::current_exe().ok()?;
-        let profile_dir = exe.parent()?.parent()?;
-        let name = busbar_plugin_loader::plugin_library_filename("busbar_hook_test_plugin");
-        let candidate = profile_dir.join(&name);
-        if !candidate.exists() {
-            if std::env::var_os("CI").is_some() {
-                panic!(
-                    "the hook-test plugin cdylib is not built under CI; refusing to silently skip \
-                     the hook-plugin admin/resolution coverage"
-                );
-            }
-            return None;
-        }
-        candidate
-    };
-    let lib = std::fs::read(&cdylib).expect("read hook cdylib");
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-test-hook-env-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    for (i, alias) in aliases.iter().enumerate() {
-        let mut m = busbar_plugin_sign::Manifest {
-            name: format!("busbar-hook-test-plugin-{i}"),
-            alias: alias.to_string(),
-            kind: "hook".into(),
-            version: "1.5.0".into(),
-            publisher: "acme".into(),
-            abi_version: *busbar_plugin_loader::supported_abi("hook")
-                .iter()
-                .max()
-                .unwrap(),
-            sha256: String::new(),
-            signature: String::new(),
-            description: String::new(),
-            homepage: String::new(),
-            license: String::new(),
-            needs: needs.clone(),
-        };
-        m.sha256 = busbar_plugin_sign::sha256_hex(&lib);
-        let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", &lib).unwrap();
-        std::fs::write(dir.join(format!("hook{i}.tar.gz")), tarball).unwrap();
-    }
-    let policy = busbar_plugin_sign::TrustPolicy {
-        binary_version: "1.5.0".into(),
-        allow_unsigned: true,
-        ..Default::default()
-    };
-    let registry = busbar_plugin_loader::scan_and_validate(&dir, &policy).expect("scan");
-    let _ = std::fs::remove_dir_all(&dir);
-    Some(crate::hooks::HookEnv::new(
-        std::sync::Arc::new(registry),
-        std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
-    ))
 }
 
 /// THE METRICS RECORDER HARNESS: sum every exposition sample of `name` whose label set contains

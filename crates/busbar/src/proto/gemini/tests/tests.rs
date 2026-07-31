@@ -4738,8 +4738,6 @@ fn test_write_request_strips_rejected_schema_keywords() {
             "required": ["loc"]
         }),
         cache_control: None,
-
-        hosted: None,
     });
     let wire = {
         let __w = GeminiWriter;

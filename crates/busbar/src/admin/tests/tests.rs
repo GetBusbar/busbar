@@ -1,4 +1,4 @@
-use crate::governance::{GovState, MemoryStore, NewKeySpec};
+use crate::governance::{GovState, NewKeySpec, SqliteStore};
 use crate::test_support::TestApp;
 use std::sync::Arc;
 
@@ -54,28 +54,6 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for WarnCapture {
     }
 }
 
-/// Build a `GovState` that CAN mint 1.5.0 signed-token keys: it carries a deterministic
-/// `TokenSigner` (fixed key bytes + the default kid) so `POST /keys` issues a `bbk_` token instead
-/// of a 409 "signed-token minting is unavailable". Every admin test that mints (directly or over
-/// HTTP) builds its gov through this so the signer is always present; a read-only test could stay on
-/// `GovState::new`, but giving them all a signer keeps the fixtures uniform and future-proof.
-fn gov_with_signer(
-    store: Arc<dyn crate::governance::Store>,
-    admin_token: Option<String>,
-) -> Arc<GovState> {
-    Arc::new(
-        GovState::new_with_signer(
-            store,
-            admin_token,
-            Some(crate::governance::signing::TokenSigner::from_secret_bytes(
-                &[9u8; 32],
-                crate::governance::signing::DEFAULT_KID,
-            )),
-        )
-        .unwrap(),
-    )
-}
-
 /// Build a router whose App has governance enabled with a known admin token, returning the
 /// listen address + the live server handle.
 async fn serve_with_gov(gov: Arc<GovState>) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
@@ -95,8 +73,8 @@ async fn serve_with_gov(gov: Arc<GovState>) -> (std::net::SocketAddr, tokio::tas
 #[tokio::test]
 async fn test_admin_v1_info_reports_version_features_and_topology() {
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
     let (addr, handle) = serve_with_gov(gov).await;
     let client = reqwest::Client::new();
 
@@ -125,20 +103,16 @@ async fn test_admin_v1_info_reports_version_features_and_topology() {
         Some(env!("CARGO_PKG_VERSION")),
         "info must report the build version"
     );
-    // The `weighted_floor` is ALWAYS true (non-removable). `keys` is engine-handled and always
-    // present; `admin-tokens`/`ranking` are present iff their feature is compiled in - so the
-    // compliance-by-compilation proof holds under `--no-default-features` too.
+    // The `weighted_floor` is ALWAYS true (non-removable). `tokens`/`ranking` are present iff their
+    // feature is compiled in — so the compliance-by-compilation proof holds under
+    // `--no-default-features` too (the lists are empty there).
     assert_eq!(body["build"]["weighted_floor"], serde_json::json!(true));
     let auth_modules = body["build"]["auth_modules"].as_array().unwrap();
-    assert!(
-        auth_modules.iter().any(|m| m == "keys"),
-        "auth_modules must contain the built-in `keys` verifier: {auth_modules:?}"
-    );
     assert_eq!(
-        auth_modules.iter().any(|m| m == "admin-tokens"),
-        cfg!(feature = "auth-admin-tokens"),
-        "auth_modules must contain `admin-tokens` iff its feature is compiled in: {auth_modules:?}"
-    );
+            auth_modules.iter().any(|m| m == "tokens"),
+            cfg!(feature = "auth-tokens"),
+            "auth_modules must contain `tokens` iff the auth-tokens feature is compiled in: {auth_modules:?}"
+        );
     let hook_plugins = body["build"]["hook_plugins"].as_array().unwrap();
     assert_eq!(
             hook_plugins.iter().any(|m| m == "ranking"),
@@ -162,8 +136,8 @@ async fn test_admin_v1_info_reports_version_features_and_topology() {
 async fn test_admin_v1_topology_reads_pools_models_providers() {
     use crate::test_support::LaneSpec;
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
 
     let app = TestApp::new()
         .governance(gov)
@@ -244,8 +218,8 @@ async fn test_admin_v1_topology_reads_pools_models_providers() {
 #[tokio::test]
 async fn test_api_root_unmatched_paths_speak_the_admin_envelope() {
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
     let app = TestApp::new().governance(gov).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -352,8 +326,8 @@ async fn test_keys_surface_governance_disabled_semantics() {
 async fn test_admin_v1_pool_detail_live_status() {
     use crate::test_support::LaneSpec;
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
     let app = TestApp::new()
         .governance(gov)
         .lane(
@@ -440,8 +414,8 @@ async fn test_admin_v1_pool_detail_live_status() {
 #[tokio::test]
 async fn test_admin_v1_admin_auth_read() {
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
     let app = TestApp::new().governance(gov).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -475,15 +449,17 @@ async fn test_admin_v1_admin_auth_read() {
 async fn test_admin_v1_get_single_key() {
     use crate::governance::NewKeySpec;
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
     let (minted, minted_secret) = gov
         .create_key(
             NewKeySpec {
                 name: "svc".to_string(),
-                allowed_pools: None,
-                group: None,
-                labels: Default::default(),
+                allowed_pools: vec![],
+                max_budget_cents: None,
+                budget_period: "total".to_string(),
+                rpm_limit: None,
+                tpm_limit: None,
             },
             crate::store::now(),
         )
@@ -527,40 +503,25 @@ async fn test_admin_v1_get_single_key() {
 
 /// `GET /api/v1/admin/usage` is the METERING read: the current UTC-day bucket aggregated per
 /// (model, provider) and per key, each row carrying the raw token SPLIT plus busbar's DERIVED
-/// `spend_micros` (from the configured CostModel rate card + flat fee), under a `window`/`as_of`
+/// `spend_micros` (from the configured global prices), under a `window`/`as_of`/`currency`
 /// header. Never leaks the secret (id/name only).
 #[tokio::test]
 async fn test_admin_v1_usage_meters_by_model_and_key() {
     use crate::governance::NewKeySpec;
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    // Prices: 1 cent/request + a rate card of 500 micro-units/token on every tier (the same
-    // blended 50 cents/1k tokens the pre-rate-card assertions were derived from). Spend is now
-    // DERIVED at read time from ledger x rate card, so the CostModel is the derivation input.
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let rate = crate::config::RateEntryCfg {
-        input_utok: 500.0,
-        output_utok: 500.0,
-        cache_read_utok: 500.0,
-        cache_write_utok: 500.0,
-    };
-    let rate_card: std::collections::BTreeMap<String, crate::config::RateEntryCfg> =
-        [("gpt-x".to_string(), rate), ("claude-z".to_string(), rate)]
-            .into_iter()
-            .collect();
-    let cost = crate::cost::CostModel::resolve_parts(
-        Some(&rate_card),
-        1,
-        &std::collections::BTreeMap::new(),
-    );
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    // Prices: 1¢/request + 50¢/1k tokens — the derivation inputs the assertions replay.
+    let gov = Arc::new(GovState::new(store, 1, 50, Some("admintok".to_string())).unwrap());
     let now = crate::store::now();
     let (minted, minted_secret) = gov
         .create_key(
             NewKeySpec {
                 name: "team-a".to_string(),
-                allowed_pools: None,
-                group: None,
-                labels: Default::default(),
+                allowed_pools: vec![],
+                max_budget_cents: None,
+                budget_period: "total".to_string(),
+                rpm_limit: None,
+                tpm_limit: None,
             },
             now,
         )
@@ -586,7 +547,7 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
         .join()
         .unwrap();
     }
-    let app = TestApp::new().governance(gov).cost(cost).build();
+    let app = TestApp::new().governance(gov).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -602,13 +563,8 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
         .json()
         .await
         .unwrap();
-    // Window/freshness header (the audit's #2/#3 findings). F1: the usage response carries a
-    // `currency` field sourced from the single USAGE_CURRENCY const (emitted only on this endpoint).
-    assert_eq!(
-        body.get("currency").and_then(|c| c.as_str()),
-        Some("USD"),
-        "usage response carries currency:USD (F1)"
-    );
+    // Window/freshness/currency header (the audit's #2/#3 findings).
+    assert_eq!(body["currency"], "USD");
     assert!(body["as_of"].as_u64().unwrap() >= now);
     let (start, end) = (
         body["window"]["start"].as_u64().unwrap(),
@@ -617,8 +573,8 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
     assert_eq!(end - start, 86_400, "one UTC-day metering bucket");
     assert!((start..end).contains(&now));
 
-    // Totals: raw split + derived spend. 3 requests; billable = 2x(700+200+100) = 2000 tokens.
-    // spend = 3 req x 10_000 micro + 2000 tokens x 500 utok = 30_000 + 1_000_000 = 1_030_000 micro-units.
+    // Totals: raw split + derived spend. 3 requests; billable = 2×(700+200+100) = 2000 tokens.
+    // spend = 3 req × 1¢ + 2000 tokens × 50¢/1k = 3¢ + 100¢ = 103¢ = 1_030_000 micro-USD.
     assert_eq!(body["total"]["requests"], 3);
     assert_eq!(body["total"]["tokens_input"], 1400);
     assert_eq!(body["total"]["tokens_output"], 400);
@@ -633,17 +589,14 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
     assert_eq!(x["provider"], "openai");
     assert_eq!(x["requests"], 2);
     assert_eq!(x["tokens_input"], 1400);
-    // 2 req x 10_000 micro + 2000 tokens x 500 utok = 1_020_000 micro-units
+    // 2 req × 1¢ + 2000 × 50¢/1k = 102¢
     assert_eq!(x["spend_micros"], 1_020_000);
     let z = by_model.iter().find(|m| m["model"] == "claude-z").unwrap();
     assert_eq!(
         z["requests"], 1,
         "a flat (zero-token) response still counts"
     );
-    assert_eq!(
-        z["spend_micros"], 10_000,
-        "1 req x 1 cent = 10_000 micro-units"
-    );
+    assert_eq!(z["spend_micros"], 10_000, "1 req × 1¢ = 10_000 micro-USD");
 
     // Per-key attribution names the key; the secret never appears anywhere in the body.
     let by_key = body["by_key"].as_array().unwrap();
@@ -667,22 +620,51 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
 /// (the registry shows the new settings); a NACKing hook commits nothing; GET schema proxies
 /// the hook's describe reply.
 #[cfg(unix)]
-/// D2 control plane over the DLOPEN hook seam: registering a hook loads its `kind: hook` plugin; a
-/// settings PATCH pushes `configure` and COMMITS on the plugin's exact-version ack (the test-hook
-/// plugin acks by default); `GET .../schema` proxies the plugin's `describe` self-description
-/// envelope, extracting the `schema` member (single nest). The retired socket/webhook mock is gone —
-/// the plugin IS the transport now. (A NACK/wrong-version ack rejecting the commit is covered at the
-/// DlopenPolicy configure unit level.)
 #[tokio::test]
 async fn test_admin_v1_hook_settings_patch_commit_on_ack_and_schema() {
     crate::metrics::init();
-    let Some(env) = crate::test_support::test_hook_env(&["test-hook"], Default::default()) else {
-        eprintln!("skip: hook cdylib not built (run under --workspace)");
-        return;
-    };
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = TestApp::new().governance(gov).hook_env(env).build();
+    // A fake hook binary: acks configure (echoing the pushed version), answers describe.
+    let dir = std::env::temp_dir().join(format!("busbar-d2-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let sock = dir.join("hook.sock");
+    let _ = std::fs::remove_file(&sock);
+    let listener = tokio::net::UnixListener::bind(&sock).unwrap();
+    let ack_mode = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let hook_ack = ack_mode.clone();
+    let hook_task = tokio::spawn(async move {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                return;
+            };
+            let ack = hook_ack.clone();
+            tokio::spawn(async move {
+                let (r, mut w) = stream.into_split();
+                let mut lines = BufReader::new(r).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let v: serde_json::Value = serde_json::from_str(&line).unwrap_or_default();
+                    let reply = if let Some(c) = v.get("configure") {
+                        if ack.load(std::sync::atomic::Ordering::Relaxed) {
+                            serde_json::json!({"ack": {"settings_version": c["settings_version"]}})
+                        } else {
+                            serde_json::json!({"error": "refused"})
+                        }
+                    } else if v.get("describe").is_some() {
+                        serde_json::json!({"schema": {"type": "object", "properties": {"ratio": {"type": "number"}}}})
+                    } else {
+                        serde_json::json!({})
+                    };
+                    if w.write_all(format!("{reply}\n").as_bytes()).await.is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
+    let app = TestApp::new().governance(gov).build();
     let router = crate::build_router(app);
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = l.local_addr().unwrap();
@@ -693,12 +675,12 @@ async fn test_admin_v1_hook_settings_patch_commit_on_ack_and_schema() {
             .header("content-type", "application/json")
     };
 
-    // Register the hook (overlay), then PATCH its settings — the plugin acks: commits.
+    // Register the hook (overlay), then PATCH its settings — ack mode on: commits.
     let created = admin(client.post(format!("http://{addr}/api/v1/admin/hooks")))
         .body(
             serde_json::json!({
                 "name": "cfg-hook",
-                "config": {"kind": "gate", "plugin": "test-hook"}
+                "config": {"kind": "gate", "socket": sock.to_str().unwrap()}
             })
             .to_string(),
         )
@@ -727,8 +709,32 @@ async fn test_admin_v1_hook_settings_patch_commit_on_ack_and_schema() {
         "committed settings visible: {got}"
     );
 
-    // Schema proxy: the plugin's `describe` reply is the {schema, dashboard?} envelope; the engine
-    // EXTRACTS the schema member, so the endpoint serves a SINGLE nest.
+    // NACK mode: the push is refused — nothing commits.
+    ack_mode.store(false, std::sync::atomic::Ordering::Relaxed);
+    let refused = admin(client.patch(format!(
+        "http://{addr}/api/v1/admin/hooks/cfg-hook/settings"
+    )))
+    .body(serde_json::json!({"settings": {"ratio": 0.9}}).to_string())
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(refused.status().as_u16(), 400, "nack = not committed");
+    let still: serde_json::Value =
+        admin(client.get(format!("http://{addr}/api/v1/admin/hooks/cfg-hook")))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+    assert_eq!(
+        still["settings"]["ratio"], 0.4,
+        "old settings intact: {still}"
+    );
+
+    // Schema proxy (ack mode back on — the committed settings ride the configure preamble on
+    // the fresh describe connection, and a nacking hook refuses connections by design).
+    ack_mode.store(true, std::sync::atomic::Ordering::Relaxed);
     let schema: serde_json::Value =
         admin(client.get(format!("http://{addr}/api/v1/admin/hooks/cfg-hook/schema")))
             .send()
@@ -737,12 +743,16 @@ async fn test_admin_v1_hook_settings_patch_commit_on_ack_and_schema() {
             .json()
             .await
             .unwrap();
+    // The describe reply is the {schema, dashboard?} envelope; the engine EXTRACTS the schema
+    // member, so the endpoint serves a SINGLE nest (the old double-wrap was audit W-H3).
     assert_eq!(
-        schema["schema"]["properties"]["order"]["type"], "array",
+        schema["schema"]["properties"]["ratio"]["type"], "number",
         "describe schema extracted, single nest: {schema}"
     );
 
     serve.abort();
+    hook_task.abort();
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// `POST /api/v1/admin/config/apply`: a body-carried full config swaps in atomically — the new
@@ -751,8 +761,8 @@ async fn test_admin_v1_hook_settings_patch_commit_on_ack_and_schema() {
 #[tokio::test]
 async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
     let mut app = TestApp::new()
         .lane(crate::test_support::LaneSpec::new(
             "m0",
@@ -782,12 +792,12 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
         },
         "config": {
             "listen": "127.0.0.1:0",
-            "providers": {"test-provider": {"api_key": {"env": "BUSBAR_TEST_APPLY_NO_KEY"}}},
+            "providers": {"test-provider": {"api_key_env": "BUSBAR_TEST_APPLY_NO_KEY"}},
             "models": {
                 "m0": {"provider": "test-provider", "max_concurrent": 4},
                 "m-applied": {"provider": "test-provider", "max_concurrent": 4}
             },
-            "pools": {"apply-pool": {"members": [{"model": "m0"}, {"model": "m-applied"}]}}
+            "pools": {"apply-pool": {"members": [{"target": "m0"}, {"target": "m-applied"}]}}
         }
     });
     let resp = admin(client.post(format!("http://{addr}/api/v1/admin/config/apply")))
@@ -867,7 +877,7 @@ async fn test_admin_v1_config_reload_swaps_disk_truth_and_carries_health() {
         "listen: 127.0.0.1:0
 providers:
   test-provider:
-    api_key: { env: BUSBAR_TEST_RELOAD_NO_SUCH_KEY }
+    api_key_env: BUSBAR_TEST_RELOAD_NO_SUCH_KEY
 models:
   m0:
     provider: test-provider
@@ -878,14 +888,14 @@ models:
 pools:
   reload-pool:
     members:
-      - model: m0
-      - model: m-new
+      - target: m0
+      - target: m-new
 ",
     )
     .unwrap();
 
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
     let mut app = TestApp::new()
         .lane(crate::test_support::LaneSpec::new(
             "m0",
@@ -1006,8 +1016,8 @@ providers: {}
 #[tokio::test]
 async fn test_admin_v1_mutation_rate_limit_config_class() {
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
     let app = TestApp::new().governance(gov).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1055,56 +1065,56 @@ async fn test_admin_v1_mutation_rate_limit_config_class() {
 #[tokio::test]
 async fn test_admin_v1_scope_ladder_e2e_with_group_mapped_principals() {
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
     let mut app = TestApp::new().governance(gov).build();
     {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
         inner.admin_chain = vec!["test-scope-module".to_string(), "admin-tokens".to_string()];
-        let mut table = std::collections::BTreeMap::new();
-        table.insert(
+        inner.group_map.insert(
             "viewers".to_string(),
-            crate::config::RoleBindingCfg {
+            crate::config::GroupMapEntry {
                 admin_scope: Some("read-only".to_string()),
                 ..Default::default()
             },
         );
-        table.insert(
+        inner.group_map.insert(
             "registrars".to_string(),
-            crate::config::RoleBindingCfg {
+            crate::config::GroupMapEntry {
                 admin_scope: Some("hooks-register".to_string()),
                 ..Default::default()
             },
         );
-        // For the CAP proofs below: a role BOUND full - the module ceiling must cut it down.
-        table.insert(
+        // For the CAP proofs below: a group MAPPED full — the module ceiling must cut it
+        // down — and a group mapped full that the allowlist doesn't authorize at all.
+        inner.group_map.insert(
             "admins-capped".to_string(),
-            crate::config::RoleBindingCfg {
+            crate::config::GroupMapEntry {
                 admin_scope: Some("full".to_string()),
                 ..Default::default()
             },
         );
-        inner
-            .role_bindings
-            .insert("test-scope-module".to_string(), table);
-        // S4 trust boundary: `sneaky` is bound full ONLY under a DIFFERENT module - a role
-        // asserted by test-scope-module never rides another module's binding table.
-        let mut other = std::collections::BTreeMap::new();
-        other.insert(
+        inner.group_map.insert(
             "sneaky".to_string(),
-            crate::config::RoleBindingCfg {
+            crate::config::GroupMapEntry {
                 admin_scope: Some("full".to_string()),
                 ..Default::default()
             },
         );
-        inner
-            .role_bindings
-            .insert("other-module".to_string(), other);
-        // §2.4 trust-boundary CEILING on the external module: nothing through it can exceed
-        // hooks-register regardless of what role_bindings grant.
-        inner.auth_scope_caps.insert(
+        // §2.4 trust-boundary caps on the external module: it may only assert these groups
+        // (`sneaky` is deliberately NOT pre-authorized), and nothing through it can exceed
+        // hooks-register regardless of group_map.
+        inner.auth_modules.insert(
             "test-scope-module".to_string(),
-            "hooks-register".to_string(),
+            crate::config::AuthModuleCfg {
+                allowed_groups: Some(vec![
+                    "viewers".to_string(),
+                    "registrars".to_string(),
+                    "admins-capped".to_string(),
+                    "strangers".to_string(),
+                ]),
+                max_admin_scope: Some("hooks-register".to_string()),
+            },
         );
     }
     let router = crate::build_router(app);
@@ -1118,7 +1128,7 @@ async fn test_admin_v1_scope_ladder_e2e_with_group_mapped_principals() {
     };
     let hook_body = serde_json::json!({
         "name": "scoped-hook",
-        "config": {"kind": "tap", "plugin": "test-hook"}
+        "config": {"kind": "tap", "webhook": "http://127.0.0.1:9969/"}
     })
     .to_string();
     let key_body = serde_json::json!({"name": "k"}).to_string();
@@ -1187,7 +1197,7 @@ async fn test_admin_v1_scope_ladder_e2e_with_group_mapped_principals() {
     // hooks-register — it registers hooks but still cannot mint keys.
     let capped_hook = serde_json::json!({
         "name": "capped-hook",
-        "config": {"kind": "tap", "plugin": "test-hook"}
+        "config": {"kind": "tap", "webhook": "http://127.0.0.1:9969/"}
     })
     .to_string();
     let r = with(
@@ -1217,8 +1227,8 @@ async fn test_admin_v1_scope_ladder_e2e_with_group_mapped_principals() {
         "group_map said full, the module ceiling says hooks-register — the ceiling wins"
     );
 
-    // S4 NESTED-BY-MODULE: `sneaky` is bound full under `other-module` only - asserted through
-    // test-scope-module it earns nothing (a role never rides another module's binding table).
+    // allowed_groups INTERSECTION: `sneaky` is mapped full in group_map but the module is not
+    // authorized to assert it — the group is dropped BEFORE mapping, leaving zero grants.
     let r = with(
         "grp:sneaky",
         client.get(format!("http://{addr}/api/v1/admin/info")),
@@ -1229,7 +1239,7 @@ async fn test_admin_v1_scope_ladder_e2e_with_group_mapped_principals() {
     assert_eq!(
         r.status().as_u16(),
         403,
-        "a role bound under another module grants nothing through this one"
+        "a group outside allowed_groups never reaches group_map"
     );
 
     // The operator token is still full (admin-tokens is exempt from module ceilings).
@@ -1253,28 +1263,28 @@ async fn test_admin_v1_scope_ladder_e2e_with_group_mapped_principals() {
 #[tokio::test]
 async fn test_admin_v1_hooks_register_cannot_escalate_via_grants_or_global() {
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
     let mut app = TestApp::new().governance(gov).build();
     {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
         inner.admin_chain = vec!["test-scope-module".to_string(), "admin-tokens".to_string()];
-        let mut table = std::collections::BTreeMap::new();
-        table.insert(
+        inner.group_map.insert(
             "registrars".to_string(),
-            crate::config::RoleBindingCfg {
+            crate::config::GroupMapEntry {
                 admin_scope: Some("hooks-register".to_string()),
                 ..Default::default()
             },
         );
-        inner
-            .role_bindings
-            .insert("test-scope-module".to_string(), table);
         // The module ceiling defaults to read-only; lift it so registrars actually resolves to
         // hooks-register (admin-tokens stays full — it is ceiling-exempt).
-        inner
-            .auth_scope_caps
-            .insert("test-scope-module".to_string(), "full".to_string());
+        inner.auth_modules.insert(
+            "test-scope-module".to_string(),
+            crate::config::AuthModuleCfg {
+                allowed_groups: None,
+                max_admin_scope: Some("full".to_string()),
+            },
+        );
     }
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1290,7 +1300,7 @@ async fn test_admin_v1_hooks_register_cannot_escalate_via_grants_or_global() {
             .send()
     };
     let base = |extra: serde_json::Value| {
-        let mut c = serde_json::json!({"kind": "gate", "plugin": "test-hook"});
+        let mut c = serde_json::json!({"kind": "gate", "webhook": "http://127.0.0.1:9969/"});
         for (k, v) in extra.as_object().unwrap() {
             c[k] = v.clone();
         }
@@ -1402,27 +1412,27 @@ async fn test_admin_v1_hooks_register_cannot_escalate_via_grants_or_global() {
 #[tokio::test]
 async fn test_admin_v1_idempotency_key_is_principal_scoped() {
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
     let mut app = TestApp::new().governance(gov).build();
     {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
         inner.admin_chain = vec!["test-scope-module".to_string(), "admin-tokens".to_string()];
-        // A role bound FULL so the second principal can also mint keys.
-        let mut table = std::collections::BTreeMap::new();
-        table.insert(
+        // A group mapped FULL so the second principal can also mint keys.
+        inner.group_map.insert(
             "admins".to_string(),
-            crate::config::RoleBindingCfg {
+            crate::config::GroupMapEntry {
                 admin_scope: Some("full".to_string()),
                 ..Default::default()
             },
         );
-        inner
-            .role_bindings
-            .insert("test-scope-module".to_string(), table);
-        inner
-            .auth_scope_caps
-            .insert("test-scope-module".to_string(), "full".to_string());
+        inner.auth_modules.insert(
+            "test-scope-module".to_string(),
+            crate::config::AuthModuleCfg {
+                allowed_groups: None,
+                max_admin_scope: Some("full".to_string()),
+            },
+        );
     }
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1450,8 +1460,8 @@ async fn test_admin_v1_idempotency_key_is_principal_scoped() {
         "a second principal's identical Idempotency-Key must mint a NEW key, not replay A's"
     );
     assert_ne!(
-        a["token"], b["token"],
-        "B must never receive A's once-shown token via a cross-principal replay"
+        a["secret"], b["secret"],
+        "B must never receive A's once-shown secret via a cross-principal replay"
     );
     // And A replaying its OWN key still returns A's response (per-principal idempotency intact).
     let a2: serde_json::Value = mint("admintok").await.unwrap().json().await.unwrap();
@@ -1467,23 +1477,19 @@ async fn test_admin_v1_idempotency_key_is_principal_scoped() {
 #[tokio::test]
 async fn test_admin_v1_credential_cache_and_flush_endpoint() {
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
     let mut app = TestApp::new().governance(gov).build();
     {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
         inner.admin_chain = vec!["test-scope-module".to_string(), "admin-tokens".to_string()];
-        let mut table = std::collections::BTreeMap::new();
-        table.insert(
+        inner.group_map.insert(
             "viewers".to_string(),
-            crate::config::RoleBindingCfg {
+            crate::config::GroupMapEntry {
                 admin_scope: Some("read-only".to_string()),
                 ..Default::default()
             },
         );
-        inner
-            .role_bindings
-            .insert("test-scope-module".to_string(), table);
     }
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1568,28 +1574,28 @@ async fn test_admin_v1_credential_cache_and_flush_endpoint() {
 #[tokio::test]
 async fn test_admin_v1_put_auth_dry_run_guard() {
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
     let mut app = TestApp::new().governance(gov).build();
     {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
-        // Chain starts as BOTH modules (so both credentials work); a role binding + an explicit
+        // Chain starts as BOTH modules (so both credentials work); group_map + an explicit
         // full ceiling make `grp:admins` a full principal through the external stand-in.
         inner.admin_chain = vec!["test-scope-module".to_string(), "admin-tokens".to_string()];
-        let mut table = std::collections::BTreeMap::new();
-        table.insert(
+        inner.group_map.insert(
             "admins".to_string(),
-            crate::config::RoleBindingCfg {
+            crate::config::GroupMapEntry {
                 admin_scope: Some("full".to_string()),
                 ..Default::default()
             },
         );
-        inner
-            .role_bindings
-            .insert("test-scope-module".to_string(), table);
-        inner
-            .auth_scope_caps
-            .insert("test-scope-module".to_string(), "full".to_string());
+        inner.auth_modules.insert(
+            "test-scope-module".to_string(),
+            crate::config::AuthModuleCfg {
+                allowed_groups: None,
+                max_admin_scope: Some("full".to_string()),
+            },
+        );
     }
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1717,8 +1723,8 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
 #[tokio::test]
 async fn test_admin_v1_key_idempotent_mint_and_if_match() {
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
     let app = TestApp::new().governance(gov).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1741,7 +1747,7 @@ async fn test_admin_v1_key_idempotent_mint_and_if_match() {
     let b: serde_json::Value = mint("abc").await.unwrap().json().await.unwrap();
     assert_eq!(a["id"], b["id"], "replay returns the same key");
     assert_eq!(
-        a["token"], b["token"],
+        a["secret"], b["secret"],
         "replay returns the FIRST response verbatim"
     );
     let listed: serde_json::Value = admin(client.get(format!(
@@ -1776,14 +1782,14 @@ async fn test_admin_v1_key_idempotent_mint_and_if_match() {
         .to_string();
     let stale = admin(client.patch(format!("http://{addr}/api/v1/admin/keys/{id}")))
         .header("if-match", "\"deadbeefdeadbeef\"")
-        .body(serde_json::json!({"enabled": false}).to_string())
+        .body(serde_json::json!({"rpm_limit": 5}).to_string())
         .send()
         .await
         .unwrap();
     assert_eq!(stale.status().as_u16(), 409, "stale If-Match conflicts");
     let fresh = admin(client.patch(format!("http://{addr}/api/v1/admin/keys/{id}")))
         .header("if-match", format!("\"{etag}\""))
-        .body(serde_json::json!({"enabled": false}).to_string())
+        .body(serde_json::json!({"rpm_limit": 5}).to_string())
         .send()
         .await
         .unwrap();
@@ -1798,8 +1804,8 @@ async fn test_admin_v1_key_idempotent_mint_and_if_match() {
 #[tokio::test]
 async fn test_admin_v1_idempotency_reservation_frees_on_failure() {
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
     let app = TestApp::new().governance(gov).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1839,8 +1845,8 @@ async fn test_admin_v1_idempotency_reservation_frees_on_failure() {
 #[tokio::test]
 async fn test_admin_v1_key_rotate_and_pagination() {
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
     let app = TestApp::new().governance(gov.clone()).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1852,8 +1858,7 @@ async fn test_admin_v1_key_rotate_and_pagination() {
             .header("content-type", "application/json")
     };
 
-    // Mint three signed-token keys. The mint returns a `bbk_` token (not a bearer secret); we keep
-    // only the id - pagination is over the id-sorted set, and rotation below mints its own secret.
+    // Mint three keys.
     let mut ids = Vec::new();
     for n in ["ka", "kb", "kc"] {
         let created: serde_json::Value =
@@ -1865,13 +1870,10 @@ async fn test_admin_v1_key_rotate_and_pagination() {
                 .json()
                 .await
                 .unwrap();
-        assert!(
-            created["token"]
-                .as_str()
-                .is_some_and(|t| t.starts_with("bbk_")),
-            "mint returns a signed token: {created}"
-        );
-        ids.push(created["id"].as_str().unwrap().to_string());
+        ids.push((
+            created["id"].as_str().unwrap().to_string(),
+            created["secret"].as_str().unwrap().to_string(),
+        ));
     }
 
     // Pagination (cursor envelope): page 1 with ?limit=2 yields 2 items + a next_cursor; feeding
@@ -1928,11 +1930,8 @@ async fn test_admin_v1_key_rotate_and_pagination() {
         "invalid_request"
     );
 
-    // Rotate the first key: the legacy rotate path mints a FRESH BEARER secret in place (distinct
-    // from the signed-token mint above), keeping the id stable. The new secret resolves via the
-    // hash lookup. (The signed-token binding carried no bearer secret to compare against - rotate is
-    // the legacy-secret escape hatch, still returning `secret`, not a token.)
-    let id = ids[0].clone();
+    // Rotate the first key: same id, new secret; old secret dead, new secret resolves.
+    let (id, old_secret) = ids[0].clone();
     let rotated: serde_json::Value =
         admin(client.post(format!("http://{addr}/api/v1/admin/keys/{id}/rotate")))
             .send()
@@ -1943,7 +1942,12 @@ async fn test_admin_v1_key_rotate_and_pagination() {
             .unwrap();
     assert_eq!(rotated["id"], id.as_str(), "id is stable across rotation");
     let new_secret = rotated["secret"].as_str().unwrap().to_string();
+    assert_ne!(new_secret, old_secret);
     assert!(gov.lookup(&new_secret).is_some(), "new secret resolves");
+    assert!(
+        gov.lookup(&old_secret).is_none(),
+        "old secret stops resolving immediately"
+    );
 
     // Unknown id → 404.
     let missing = admin(client.post(format!("http://{addr}/api/v1/admin/keys/vk_nope/rotate")))
@@ -1960,8 +1964,8 @@ async fn test_admin_v1_key_rotate_and_pagination() {
 #[tokio::test]
 async fn test_admin_v1_put_hook_replaces_live_with_guards() {
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
     let app = TestApp::new().governance(gov).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1975,7 +1979,10 @@ async fn test_admin_v1_put_hook_replaces_live_with_guards() {
 
     // PUT on an unknown name is 404 (PUT replaces; POST creates).
     let missing = admin(client.put(format!("http://{addr}/api/v1/admin/hooks/nope")))
-        .body(serde_json::json!({"config": {"kind": "tap", "plugin": "test-hook"}}).to_string())
+        .body(
+            serde_json::json!({"config": {"kind": "tap", "webhook": "http://127.0.0.1:1/"}})
+                .to_string(),
+        )
         .send()
         .await
         .unwrap();
@@ -1986,7 +1993,7 @@ async fn test_admin_v1_put_hook_replaces_live_with_guards() {
         .body(
             serde_json::json!({
                 "name": "rep",
-                "config": {"kind": "tap", "plugin": "test-hook"}
+                "config": {"kind": "tap", "webhook": "http://127.0.0.1:9971/"}
             })
             .to_string(),
         )
@@ -1995,7 +2002,10 @@ async fn test_admin_v1_put_hook_replaces_live_with_guards() {
         .unwrap();
     assert_eq!(created.status().as_u16(), 201);
     let replaced = admin(client.put(format!("http://{addr}/api/v1/admin/hooks/rep")))
-        .body(serde_json::json!({"config": {"kind": "tap", "plugin": "test-hook-v2"}}).to_string())
+        .body(
+            serde_json::json!({"config": {"kind": "tap", "webhook": "http://127.0.0.1:9972/"}})
+                .to_string(),
+        )
         .send()
         .await
         .unwrap();
@@ -2008,19 +2018,16 @@ async fn test_admin_v1_put_hook_replaces_live_with_guards() {
         .await
         .unwrap();
     assert!(
-        got["transport"].to_string().contains("test-hook-v2"),
+        got["transport"].to_string().contains("9972"),
         "the replacement is live: {got}"
     );
 
     // Grant change via PUT is a 409 (immutability holds on the replace path too).
     let escalate = admin(client.put(format!("http://{addr}/api/v1/admin/hooks/rep")))
-        .body(
-            serde_json::json!({"config": {"kind": "gate", "plugin": "test-hook", "prompt": "rw"}})
-                .to_string(),
-        )
-        .send()
-        .await
-        .unwrap();
+            .body(serde_json::json!({"config": {"kind": "gate", "webhook": "http://127.0.0.1:9972/", "prompt": "rw"}}).to_string())
+            .send()
+            .await
+            .unwrap();
     assert_eq!(escalate.status().as_u16(), 409, "grants are immutable");
 
     // Stale If-Match is a 409 conflict (H3: concurrency rides the header).
@@ -2028,7 +2035,7 @@ async fn test_admin_v1_put_hook_replaces_live_with_guards() {
         .header("if-match", "\"0\"")
         .body(
             serde_json::json!({
-                "config": {"kind": "tap", "plugin": "test-hook"},
+                "config": {"kind": "tap", "webhook": "http://127.0.0.1:9973/"},
             })
             .to_string(),
         )
@@ -2052,7 +2059,7 @@ async fn test_admin_v1_put_hook_replaces_live_with_guards() {
         .header("if-match", etag)
         .body(
             serde_json::json!({
-                "config": {"kind": "tap", "plugin": "test-hook"},
+                "config": {"kind": "tap", "webhook": "http://127.0.0.1:9973/"},
             })
             .to_string(),
         )
@@ -2074,8 +2081,8 @@ async fn test_admin_v1_put_hook_replaces_live_with_guards() {
 #[tokio::test]
 async fn test_admin_v1_config_versions_rollback_and_diff() {
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
     let app = TestApp::new().governance(gov).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2087,7 +2094,7 @@ async fn test_admin_v1_config_versions_rollback_and_diff() {
     // v1: register a hook. v2: delete it. (Boot floor is v0.)
     let body = serde_json::json!({
         "name": "rbk",
-        "config": {"kind": "tap", "plugin": "test-hook"}
+        "config": {"kind": "tap", "webhook": "http://127.0.0.1:9979/"}
     });
     let created = admin(client.post(format!("http://{addr}/api/v1/admin/hooks")))
         .header("content-type", "application/json")
@@ -2176,8 +2183,8 @@ async fn test_admin_v1_config_versions_rollback_and_diff() {
 #[tokio::test]
 async fn test_admin_v1_register_hook_takes_effect_live() {
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
     let app = TestApp::new().governance(gov).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2202,7 +2209,7 @@ async fn test_admin_v1_register_hook_takes_effect_live() {
         "name": "compress",
         "config": {
             "kind": "gate",
-            "plugin": "test-hook",
+            "webhook": "http://127.0.0.1:9977/",
             "prompt": "rw",
             "global": true
         }
@@ -2274,7 +2281,7 @@ async fn test_admin_v1_register_hook_takes_effect_live() {
             .body(
                 serde_json::json!({
                     "name": reserved,
-                    "config": {"kind": "gate", "plugin": "test-hook"}
+                    "config": {"kind": "gate", "webhook": "http://127.0.0.1:9977/"}
                 })
                 .to_string(),
             )
@@ -2300,7 +2307,7 @@ async fn test_admin_v1_register_hook_takes_effect_live() {
         .body(
             serde_json::json!({
                 "name": "bad",
-                "config": {"kind": "tap", "plugin": "test-hook", "prompt": "rw"}
+                "config": {"kind": "tap", "webhook": "http://127.0.0.1:9977/", "prompt": "rw"}
             })
             .to_string(),
         )
@@ -2322,7 +2329,7 @@ async fn test_admin_v1_register_hook_takes_effect_live() {
         .body(
             serde_json::json!({
                 "name": "compress",
-                "config": {"kind": "gate", "plugin": "test-hook", "prompt": "ro"}
+                "config": {"kind": "gate", "webhook": "http://127.0.0.1:9977/", "prompt": "ro"}
             })
             .to_string(),
         )
@@ -2348,8 +2355,8 @@ async fn test_admin_v1_register_hook_takes_effect_live() {
 #[tokio::test]
 async fn test_admin_v1_audit_records_mutations() {
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
     let app = TestApp::new().governance(gov).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2366,7 +2373,7 @@ async fn test_admin_v1_audit_records_mutations() {
         .body(
             serde_json::json!({
                 "name": name,
-                "config": {"kind": "tap", "plugin": "test-hook", "global": true}
+                "config": {"kind": "tap", "webhook": "http://127.0.0.1:9979/", "global": true}
             })
             .to_string(),
         )
@@ -2434,8 +2441,8 @@ async fn test_admin_v1_audit_records_mutations() {
 #[tokio::test]
 async fn test_admin_v1_hook_mutation_404_is_audited() {
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
     let app = TestApp::new().governance(gov).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2451,7 +2458,10 @@ async fn test_admin_v1_hook_mutation_404_is_audited() {
         .put(format!("http://{addr}/api/v1/admin/hooks/{put_name}"))
         .header("x-admin-token", "admintok")
         .header("content-type", "application/json")
-        .body(serde_json::json!({"config": {"kind": "tap", "plugin": "test-hook"}}).to_string())
+        .body(
+            serde_json::json!({"config": {"kind": "tap", "webhook": "http://127.0.0.1:9978/"}})
+                .to_string(),
+        )
         .send()
         .await
         .unwrap();
@@ -2508,15 +2518,17 @@ async fn test_admin_v1_hook_mutation_404_is_audited() {
 async fn test_admin_v1_list_keys_filters() {
     use crate::governance::NewKeySpec;
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
     let (minted, _secret) = gov
         .create_key(
             NewKeySpec {
                 name: "filter-probe".to_string(),
-                allowed_pools: None,
-                group: None,
-                labels: Default::default(),
+                allowed_pools: vec![],
+                max_budget_cents: None,
+                budget_period: "total".to_string(),
+                rpm_limit: None,
+                tpm_limit: None,
             },
             crate::store::now(),
         )
@@ -2564,105 +2576,14 @@ async fn test_admin_v1_list_keys_filters() {
     handle.abort();
 }
 
-/// `GET /api/v1/admin/keys?group=<name>` (§6d): exact bound-group filter — returns the keys BOUND
-/// to that group and nothing else (not another group's, not a groupless key). A name no group
-/// registry carries is a valid EMPTY 200, never a 400/404 — deliberately no existence check, so a
-/// key whose group another node's config dropped stays findable (that dangling state is exactly
-/// what an operator hunts). Composes with `?enabled=`.
-#[tokio::test]
-async fn test_admin_v1_list_keys_group_filter() {
-    use crate::governance::NewKeySpec;
-    crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let mint = |name: &str, group: Option<&str>| {
-        gov.create_key(
-            NewKeySpec {
-                name: name.to_string(),
-                allowed_pools: None,
-                group: group.map(String::from),
-                labels: Default::default(),
-            },
-            crate::store::now(),
-        )
-        .unwrap()
-        .0
-    };
-    // No registry existence check applies at the store seam either: these groups exist nowhere.
-    let alpha = mint("alpha-key", Some("alpha"));
-    let _beta = mint("beta-key", Some("beta"));
-    let _loose = mint("groupless-key", None);
-    let (addr, handle) = serve_with_gov(gov).await;
-    let client = reqwest::Client::new();
-    let get = |query: String| {
-        let url = format!("http://{addr}/api/v1/admin/keys{query}");
-        let client = client.clone();
-        async move {
-            client
-                .get(url)
-                .header("x-admin-token", "admintok")
-                .send()
-                .await
-                .unwrap()
-                .json::<serde_json::Value>()
-                .await
-                .unwrap()
-        }
-    };
-
-    // ?group=alpha → exactly the alpha-bound key.
-    let by_group = get("?group=alpha".into()).await;
-    let items = by_group["items"].as_array().unwrap();
-    assert_eq!(items.len(), 1, "only the alpha-bound key: {by_group}");
-    assert_eq!(items[0]["id"], alpha.id);
-    assert_eq!(items[0]["group"], "alpha");
-
-    // A group NO key is bound to (and no registry carries) → 200 with an empty page.
-    let ghost = client
-        .get(format!("http://{addr}/api/v1/admin/keys?group=ghost"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        ghost.status().as_u16(),
-        200,
-        "a nonexistent group filter is a valid empty read, not an error"
-    );
-    let ghost: serde_json::Value = ghost.json().await.unwrap();
-    assert_eq!(ghost["items"].as_array().unwrap().len(), 0);
-
-    // Composes with ?enabled=: disable the alpha key, then split it out by state.
-    let patched = client
-        .patch(format!("http://{addr}/api/v1/admin/keys/{}", alpha.id))
-        .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"enabled": false}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(patched.status().as_u16(), 200, "disable the alpha key");
-    let on = get("?group=alpha&enabled=true".into()).await;
-    assert_eq!(
-        on["items"].as_array().unwrap().len(),
-        0,
-        "the (disabled) alpha key drops out of enabled=true: {on}"
-    );
-    let off = get("?group=alpha&enabled=false".into()).await;
-    let off_items = off["items"].as_array().unwrap();
-    assert_eq!(off_items.len(), 1, "and shows under enabled=false: {off}");
-    assert_eq!(off_items[0]["id"], alpha.id);
-
-    handle.abort();
-}
-
 /// GOLDEN PATH: the whole config plane working together in one flow — register → live + version
 /// bump + audit + persist → delete → gone + version bump + audit. A coherent-flow regression anchor
 /// for the marquee feature (catches integration breaks the per-feature tests miss).
 #[tokio::test]
 async fn test_admin_v1_config_plane_golden_path() {
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("t".to_string()));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("t".to_string())).unwrap());
     let overlay = std::env::temp_dir().join(format!(
         "busbar-golden-{}-{}.json",
         std::process::id(),
@@ -2713,7 +2634,7 @@ async fn test_admin_v1_config_plane_golden_path() {
         .header("content-type", "application/json")
         .body(
             serde_json::json!({"name": name, "config":
-                    {"kind": "gate", "plugin": "test-hook", "global": true}})
+                    {"kind": "gate", "webhook": "http://127.0.0.1:9982/", "global": true}})
             .to_string(),
         )
         .send()
@@ -2775,8 +2696,8 @@ async fn test_admin_v1_config_plane_golden_path() {
 #[tokio::test]
 async fn test_admin_v1_hook_register_persists_to_overlay() {
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
     let overlay = std::env::temp_dir().join(format!(
         "busbar-persist-test-{}-{}.json",
         std::process::id(),
@@ -2801,7 +2722,7 @@ async fn test_admin_v1_hook_register_persists_to_overlay() {
         .body(
             serde_json::json!({
                 "name": "persisted_gate",
-                "config": {"kind": "gate", "plugin": "test-hook", "global": true}
+                "config": {"kind": "gate", "webhook": "http://127.0.0.1:9981/", "global": true}
             })
             .to_string(),
         )
@@ -2815,11 +2736,9 @@ async fn test_admin_v1_hook_register_persists_to_overlay() {
     assert!(doc.hooks.contains_key("persisted_gate"));
     assert!(doc.global_hooks.iter().any(|g| g == "persisted_gate"));
 
-    // "Restart": merge the overlay onto a fresh RESOLVED base config → the hook is restored.
-    let fresh_deploy: crate::config::DeployCfg =
+    // "Restart": merge the overlay onto a fresh base config → the hook is restored.
+    let mut fresh: crate::config::DeployCfg =
         serde_json::from_value(serde_json::json!({"providers": {}, "models": {}})).unwrap();
-    let mut fresh = crate::config::resolve(&fresh_deploy, &std::collections::HashMap::new())
-        .expect("minimal config resolves");
     crate::config::overlay::merge_into(&mut fresh, doc);
     assert!(
         fresh.hooks.contains_key("persisted_gate"),
@@ -2835,8 +2754,8 @@ async fn test_admin_v1_hook_register_persists_to_overlay() {
 #[tokio::test]
 async fn test_admin_v1_audit_records_key_mutations() {
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
     let app = TestApp::new().governance(gov).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2886,10 +2805,10 @@ async fn test_admin_v1_audit_records_key_mutations() {
 #[tokio::test]
 async fn test_admin_v1_base_hook_is_read_only_via_api() {
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
     let base: crate::config::HookCfg = serde_json::from_value(serde_json::json!({
-        "kind": "gate", "plugin": "test-hook", "prompt": "no", "global": true
+        "kind": "gate", "webhook": "http://127.0.0.1:9990/", "prompt": "no", "global": true
     }))
     .unwrap();
     let app = TestApp::new()
@@ -2904,19 +2823,19 @@ async fn test_admin_v1_base_hook_is_read_only_via_api() {
 
     // POST a same-shape definition over the base hook's name → 409 (no silent transport redirect).
     let shadow = client
-        .post(format!("http://{addr}/api/v1/admin/hooks"))
-        .header("x-admin-token", "admintok")
-        .header("content-type", "application/json")
-        .body(
-            serde_json::json!({
-                "name": "pii-guard",
-                "config": {"kind": "gate", "plugin": "test-hook", "prompt": "no", "global": true}
-            })
-            .to_string(),
-        )
-        .send()
-        .await
-        .unwrap();
+            .post(format!("http://{addr}/api/v1/admin/hooks"))
+            .header("x-admin-token", "admintok")
+            .header("content-type", "application/json")
+            .body(
+                serde_json::json!({
+                    "name": "pii-guard",
+                    "config": {"kind": "gate", "webhook": "http://127.0.0.1:6666/", "prompt": "no", "global": true}
+                })
+                .to_string(),
+            )
+            .send()
+            .await
+            .unwrap();
     assert_eq!(
         shadow.status().as_u16(),
         409,
@@ -2947,7 +2866,7 @@ async fn test_admin_v1_base_hook_is_read_only_via_api() {
         .await
         .unwrap();
     assert!(
-        got["transport"].to_string().contains("test-hook"),
+        got["transport"].to_string().contains("9990"),
         "base hook untouched: {got}"
     );
 }
@@ -2957,8 +2876,8 @@ async fn test_admin_v1_base_hook_is_read_only_via_api() {
 #[tokio::test]
 async fn test_admin_v1_delete_hook_takes_effect_live() {
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
     let app = TestApp::new().governance(gov).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2975,7 +2894,7 @@ async fn test_admin_v1_delete_hook_takes_effect_live() {
         .body(
             serde_json::json!({
                 "name": "logger",
-                "config": {"kind": "tap", "plugin": "test-hook", "global": true}
+                "config": {"kind": "tap", "webhook": "http://127.0.0.1:9978/", "global": true}
             })
             .to_string(),
         )
@@ -3023,12 +2942,13 @@ async fn test_admin_v1_delete_hook_takes_effect_live() {
 #[tokio::test]
 async fn test_admin_v1_hooks_read_surface() {
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
 
     let gate = crate::config::HookCfg {
         kind: crate::config::HookKind::Gate,
-        plugin: "test-hook".to_string(),
+        socket: None,
+        webhook: Some("http://127.0.0.1:9990/".to_string()),
         timeout_ms: 25,
         on_error: "reject".to_string(),
         prompt: crate::config::PromptAccess::Rw,
@@ -3070,8 +2990,8 @@ async fn test_admin_v1_hooks_read_surface() {
     assert_eq!(h["user"], "ro");
     assert_eq!(h["priority"], 7);
     assert_eq!(h["on_error"], "reject");
-    assert_eq!(h["transport"]["kind"], "plugin");
-    assert_eq!(h["transport"]["target"], "test-hook");
+    assert_eq!(h["transport"]["kind"], "webhook");
+    assert_eq!(h["transport"]["target"], "http://127.0.0.1:9990/");
     assert_eq!(
         h["global"], true,
         "named in global_hooks → reported as globally wired"
@@ -3106,11 +3026,12 @@ async fn test_admin_v1_hooks_read_surface() {
 #[tokio::test]
 async fn test_admin_v1_hook_health_best_effort() {
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let mk = |plugin: &str| crate::config::HookCfg {
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
+    let mk = |socket: Option<&str>, webhook: Option<&str>| crate::config::HookCfg {
         kind: crate::config::HookKind::Gate,
-        plugin: plugin.to_string(),
+        socket: socket.map(str::to_string),
+        webhook: webhook.map(str::to_string),
         timeout_ms: 5,
         on_error: "weighted".to_string(),
         prompt: crate::config::PromptAccess::No,
@@ -3124,8 +3045,8 @@ async fn test_admin_v1_hook_health_best_effort() {
     };
     let app = TestApp::new()
         .governance(gov)
-        .hook("web", mk("web-hook-plugin"))
-        .hook("sock", mk("sock-hook-plugin"))
+        .hook("web", mk(None, Some("http://127.0.0.1:9980/")))
+        .hook("sock", mk(Some("/nonexistent/busbar-hook.sock"), None))
         .build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -3153,24 +3074,20 @@ async fn test_admin_v1_hook_health_best_effort() {
         "not_found"
     );
 
-    // A hook whose `kind: hook` plugin is not installed in the (empty test) registry → reachable
-    // false with a "not installed" detail. Both hooks reference plugins now (the retired
-    // socket/webhook transports are gone).
+    // Webhook → reachable null (not probed here).
     let web: serde_json::Value = get("web").await.json().await.unwrap();
     assert_eq!(web["name"], "web");
-    assert_eq!(web["transport"]["kind"], "plugin");
-    assert_eq!(
-        web["reachable"],
-        serde_json::json!(false),
-        "uninstalled plugin is unreachable"
-    );
+    assert_eq!(web["transport"]["kind"], "webhook");
+    assert!(web["reachable"].is_null(), "webhook is not probed here");
 
+    // Socket to a nonexistent path → reachable false (best-effort connect failed).
     let sock: serde_json::Value = get("sock").await.json().await.unwrap();
-    assert_eq!(sock["transport"]["kind"], "plugin");
-    assert_eq!(
-        sock["reachable"],
-        serde_json::json!(false),
-        "uninstalled plugin is unreachable"
+    assert_eq!(sock["transport"]["kind"], "socket");
+    // On unix the connect fails → Some(false); on non-unix sockets aren't probed → null. Accept both.
+    assert!(
+        sock["reachable"] == serde_json::json!(false) || sock["reachable"].is_null(),
+        "socket to a dead path is unreachable (unix) or unprobed (non-unix): {}",
+        sock["reachable"]
     );
 
     handle.abort();
@@ -3182,11 +3099,12 @@ async fn test_admin_v1_hook_health_best_effort() {
 #[tokio::test]
 async fn test_admin_v1_plugins_catalog_by_type() {
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
     let gate = crate::config::HookCfg {
         kind: crate::config::HookKind::Gate,
-        plugin: "test-hook".to_string(),
+        socket: Some("/run/busbar/h.sock".to_string()),
+        webhook: None,
         timeout_ms: 5,
         on_error: "weighted".to_string(),
         prompt: crate::config::PromptAccess::No,
@@ -3218,24 +3136,18 @@ async fn test_admin_v1_plugins_catalog_by_type() {
         }
     };
 
-    // auth: `keys` (engine-handled) is always listed; `admin-tokens` iff its feature is on.
+    // auth: the compiled-in tokens module — present iff the auth-tokens feature is compiled in.
     let auth: serde_json::Value = get("auth").await.json().await.unwrap();
     let a_items = auth["items"].as_array().unwrap();
-    let keys = a_items
-        .iter()
-        .find(|p| p["name"] == "keys")
-        .expect("the built-in keys verifier is always listed");
-    assert_eq!(keys["loader"], "compiled-in");
-    assert_eq!(keys["type"], "auth");
-    let admin_tokens = a_items.iter().find(|p| p["name"] == "admin-tokens");
+    let tokens = a_items.iter().find(|p| p["name"] == "tokens");
     assert_eq!(
-        admin_tokens.is_some(),
-        cfg!(feature = "auth-admin-tokens"),
-        "admin-tokens listed iff compiled in"
+        tokens.is_some(),
+        cfg!(feature = "auth-tokens"),
+        "tokens listed iff compiled in"
     );
-    if let Some(admin_tokens) = admin_tokens {
-        assert_eq!(admin_tokens["loader"], "compiled-in");
-        assert_eq!(admin_tokens["type"], "auth");
+    if let Some(tokens) = tokens {
+        assert_eq!(tokens["loader"], "compiled-in");
+        assert_eq!(tokens["type"], "auth");
     }
 
     // hooks: the weighted floor is ALWAYS compiled-in; ranking iff the feature is on; plus the
@@ -3256,7 +3168,7 @@ async fn test_admin_v1_plugins_catalog_by_type() {
         .expect("external hook listed");
     assert_eq!(ext["loader"], "external");
     assert_eq!(ext["active"], true);
-    assert_eq!(ext["target"], "test-hook");
+    assert_eq!(ext["target"], "/run/busbar/h.sock");
 
     // Unknown type → 400 invalid_request.
     let bad = get("nope").await;
@@ -3272,8 +3184,8 @@ async fn test_admin_v1_plugins_catalog_by_type() {
 #[tokio::test]
 async fn test_admin_v1_auth_read() {
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
     let app = TestApp::new().governance(gov).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -3305,8 +3217,8 @@ async fn test_admin_v1_auth_read() {
 #[tokio::test]
 async fn test_admin_v1_config_validate_dry_run() {
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
     let app = TestApp::new().governance(gov).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -3332,7 +3244,7 @@ async fn test_admin_v1_config_validate_dry_run() {
     // → resolve fails with a dangling-provider error → 200 ok:false.
     let proposed = serde_json::json!({
         "config": {
-            "providers": { "openai": { "api_key": { "env": "OPENAI_KEY" } } },
+            "providers": { "openai": { "api_key_env": "OPENAI_KEY" } },
             "models": {}
         },
         "providers": {}
@@ -3367,11 +3279,12 @@ async fn test_admin_v1_config_validate_dry_run() {
 async fn test_admin_v1_config_effective_snapshot_no_secrets() {
     use crate::test_support::LaneSpec;
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
     let gate = crate::config::HookCfg {
         kind: crate::config::HookKind::Gate,
-        plugin: "test-hook".to_string(),
+        socket: None,
+        webhook: Some("http://127.0.0.1:9970/".to_string()),
         timeout_ms: 5,
         on_error: "weighted".to_string(),
         prompt: crate::config::PromptAccess::No,
@@ -3457,8 +3370,8 @@ async fn test_admin_v1_config_effective_snapshot_no_secrets() {
 #[tokio::test]
 async fn test_admin_v1_openapi_paths_all_resolve() {
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
     let app = TestApp::new().governance(gov).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -3527,8 +3440,8 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
 #[tokio::test]
 async fn test_admin_v1_all_reads_require_admin_token() {
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
     let app = TestApp::new().governance(gov).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -3578,8 +3491,8 @@ async fn test_create_key_with_aws_credential_returns_secret_once_and_hides_on_re
     // Minting with `issue_aws_credential: true` returns the AccessKeyId AND the secret access key
     // ONCE at creation; neither the AWS secret nor the key_hash is ever returned by a later read.
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
     let (addr, handle) = serve_with_gov(gov).await;
     let client = reqwest::Client::new();
 
@@ -3597,10 +3510,8 @@ async fn test_create_key_with_aws_credential_returns_secret_once_and_hides_on_re
     assert!(akid.starts_with("AKIA"), "akid shape: {akid}");
     assert_eq!(aws_secret.len(), 40, "aws secret is 40 chars");
     assert!(
-        body["token"]
-            .as_str()
-            .is_some_and(|t| t.starts_with("bbk_")),
-        "the signed token is returned once too"
+        body["secret"].is_string(),
+        "bearer secret returned once too"
     );
 
     // A plain mint (no flag) carries NO AWS fields.
@@ -3648,11 +3559,11 @@ async fn test_create_key_with_aws_credential_returns_secret_once_and_hides_on_re
 #[tokio::test]
 async fn test_create_list_usage_roundtrip_through_spawn_blocking() {
     // Exercises the create_key / list_keys / key_usage handlers end-to-end after they were moved
-    // onto spawn_blocking: a slow store call must not block a Tokio worker, and the offloaded
+    // onto spawn_blocking: a slow rusqlite call must not block a Tokio worker, and the offloaded
     // handlers must still return the same responses (no secret/hash leak; usage resolves).
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
     let (addr, handle) = serve_with_gov(gov).await;
     let client = reqwest::Client::new();
 
@@ -3667,12 +3578,7 @@ async fn test_create_list_usage_roundtrip_through_spawn_blocking() {
     assert_eq!(created.status().as_u16(), 201);
     let body: serde_json::Value = created.json().await.unwrap();
     let id = body["id"].as_str().unwrap().to_string();
-    assert!(
-        body["token"]
-            .as_str()
-            .is_some_and(|t| t.starts_with("bbk_")),
-        "signed token returned once on create"
-    );
+    assert!(body["secret"].is_string(), "secret returned once on create");
     assert!(body["key_hash"].is_null(), "key_hash must never be exposed");
 
     // list
@@ -3690,10 +3596,7 @@ async fn test_create_list_usage_roundtrip_through_spawn_blocking() {
         "list must not leak secrets"
     );
 
-    // usage - a 1.5.0 signed-token key carries NO inline rate caps (all enforcement flows through
-    // the bound group), so `rate_headroom` is always null on the key-usage read. (The capped-key
-    // headroom path can no longer be reached via mint; it is covered directly in the governance
-    // unit tests over `rate_headroom`.)
+    // usage — an UNCAPPED key reports `rate_headroom: null` (nothing to be near).
     let usage = client
         .get(format!("http://{addr}/api/v1/admin/keys/{id}/usage"))
         .header("x-admin-token", "admintok")
@@ -3705,40 +3608,72 @@ async fn test_create_list_usage_roundtrip_through_spawn_blocking() {
     assert_eq!(ub["id"], id);
     assert!(
         ub["rate_headroom"].is_null(),
-        "an inline-cap-free key has no headroom signal: {ub}"
+        "uncapped key has no headroom signal: {ub}"
+    );
+
+    // A rate-CAPPED key reports its headroom fraction (a fresh window = fully available, 1.0),
+    // so a client can back off BEFORE tripping a 429 (key-06).
+    let capped: serde_json::Value = client
+        .post(format!("http://{addr}/api/v1/admin/keys"))
+        .header("x-admin-token", "admintok")
+        .json(&serde_json::json!({"name": "k-capped", "rpm_limit": 10}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let capped_id = capped["id"].as_str().unwrap();
+    let ub: serde_json::Value = client
+        .get(format!("http://{addr}/api/v1/admin/keys/{capped_id}/usage"))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        ub["rate_headroom"], 1.0,
+        "fresh capped key is fully available: {ub}"
     );
     handle.abort();
 }
 
 #[tokio::test]
-async fn test_create_key_rejects_removed_budget_period_field() {
-    // 1.5.0 (S1): keys are PURE AUTH - `budget_period` is GONE from the mint body, and the mint
-    // struct is `#[serde(deny_unknown_fields)]`, so a body carrying the removed field is a loud 400
-    // (invalid_request), never silently accepted. The premise of the old test (a typo'd period
-    // degrading to `total`) no longer exists: there is no period on a key at all.
+async fn test_create_key_rejects_unknown_budget_period() {
+    // Regression (MEDIUM/correctness): an unrecognized budget_period (a typo) must be rejected
+    // with 400, NOT accepted at 201 and silently enforced as the all-time `"total"` window. A
+    // valid period (and the default when omitted) must still create the key.
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
     let (addr, handle) = serve_with_gov(gov).await;
     let client = reqwest::Client::new();
     let url = format!("http://{addr}/api/v1/admin/keys");
 
-    // A body naming the removed `budget_period` field is rejected by deny_unknown_fields - EVEN a
-    // once-valid value like "total" (there is no such mint field to accept it).
-    for removed in ["total", "daily", "weekly", ""] {
+    // Typo'd period → 400, no key minted.
+    for bad in ["weekly", "monthlly", "", "TOTAL"] {
         let resp = client
             .post(&url)
             .header("x-admin-token", "admintok")
-            .json(&serde_json::json!({"name": "k", "budget_period": removed}))
+            .json(&serde_json::json!({"name": "k", "budget_period": bad}))
             .send()
             .await
             .unwrap();
         assert_eq!(
             resp.status().as_u16(),
             400,
-            "the removed budget_period field must 400 via deny_unknown_fields (value '{removed}')"
+            "budget_period '{bad}' must be rejected with 400"
         );
         let body: serde_json::Value = resp.json().await.unwrap();
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap_or("")
+                .contains("budget_period"),
+            "400 body must name budget_period: {body}"
+        );
         assert_eq!(
             body["error"]["code"],
             "invalid_request", // frozen v1 envelope: keys speak the SAME code enum (H1)
@@ -3746,7 +3681,28 @@ async fn test_create_key_rejects_removed_budget_period_field() {
         );
     }
 
-    // A body WITHOUT the removed field still mints, and the response carries no `budget_period`.
+    // Each valid period (and the omitted-default) creates the key with that exact period.
+    for &good in super::VALID_BUDGET_PERIODS {
+        let resp = client
+            .post(&url)
+            .header("x-admin-token", "admintok")
+            .json(&serde_json::json!({"name": "k", "budget_period": good}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status().as_u16(),
+            201,
+            "valid budget_period '{good}' must create the key"
+        );
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(
+            body["budget_period"], good,
+            "stored period must match request"
+        );
+    }
+
+    // Omitted budget_period defaults to "total".
     let resp = client
         .post(&url)
         .header("x-admin-token", "admintok")
@@ -3754,113 +3710,13 @@ async fn test_create_key_rejects_removed_budget_period_field() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status().as_u16(), 201, "a pure-auth body still mints");
+    assert_eq!(resp.status().as_u16(), 201, "omitted period must default");
     let body: serde_json::Value = resp.json().await.unwrap();
-    assert!(
-        body.get("budget_period").is_none() || body["budget_period"].is_null(),
-        "the key surface no longer carries budget_period: {body}"
-    );
-
-    handle.abort();
-}
-
-/// M6/F2 (scrape break): mint-time labels are echoed VERBATIM as Prometheus label names on this
-/// key's metric series. A RESERVED label name (key/bucket/model/tier), a non-conforming label name,
-/// an oversized map (> 16), or an over-long name/value must be rejected with 400 (never minted) so
-/// the whole /metrics exposition can't be broken by one key. A well-formed label set still mints.
-#[tokio::test]
-async fn test_create_key_rejects_unsafe_labels() {
-    crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let (addr, handle) = serve_with_gov(gov).await;
-    let client = reqwest::Client::new();
-    let url = format!("http://{addr}/api/v1/admin/keys");
-
-    let post = |labels: serde_json::Value| {
-        let client = client.clone();
-        let url = url.clone();
-        async move {
-            client
-                .post(&url)
-                .header("x-admin-token", "admintok")
-                .json(&serde_json::json!({"name": "k", "labels": labels}))
-                .send()
-                .await
-                .unwrap()
-        }
-    };
-
-    // A `key` label (reserved) => 400.
-    let resp = post(serde_json::json!({"key": "oops"})).await;
     assert_eq!(
-        resp.status().as_u16(),
-        400,
-        "a reserved 'key' label must be rejected"
+        body["budget_period"],
+        "total", // golden wire-contract literal (kept bare on purpose)
+        "omitted period defaults to total"
     );
-    let body: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(body["error"]["code"], "invalid_request");
-    assert!(
-        body["error"]["message"]
-            .as_str()
-            .unwrap_or("")
-            .contains("reserved"),
-        "400 body must name the reserved-label reason: {body}"
-    );
-
-    // Each other reserved name is equally rejected.
-    for reserved in ["bucket", "model", "tier"] {
-        let resp = post(serde_json::json!({ reserved: "x" })).await;
-        assert_eq!(
-            resp.status().as_u16(),
-            400,
-            "reserved label '{reserved}' must be rejected"
-        );
-    }
-
-    // 100 labels => over the cap => 400.
-    let mut many = serde_json::Map::new();
-    for i in 0..100 {
-        many.insert(format!("l{i}"), serde_json::json!("v"));
-    }
-    let resp = post(serde_json::Value::Object(many)).await;
-    assert_eq!(resp.status().as_u16(), 400, "100 labels must be rejected");
-    assert!(
-        resp.json::<serde_json::Value>().await.unwrap()["error"]["message"]
-            .as_str()
-            .unwrap_or("")
-            .contains("too many labels"),
-    );
-
-    // A label name that is not a valid Prometheus label name => 400.
-    let resp = post(serde_json::json!({"team-name": "growth"})).await;
-    assert_eq!(
-        resp.status().as_u16(),
-        400,
-        "an invalid label name (hyphen) must be rejected"
-    );
-    // A name that leads with a digit is also invalid.
-    let resp = post(serde_json::json!({"1team": "growth"})).await;
-    assert_eq!(resp.status().as_u16(), 400, "leading-digit name rejected");
-
-    // An over-long label value => 400.
-    let resp = post(serde_json::json!({"team": "x".repeat(257)})).await;
-    assert_eq!(
-        resp.status().as_u16(),
-        400,
-        "an over-long label value must be rejected"
-    );
-
-    // A well-formed label set still mints (201) and round-trips.
-    let resp = post(serde_json::json!({"team": "growth", "env": "prod"})).await;
-    assert_eq!(
-        resp.status().as_u16(),
-        201,
-        "a valid label set must still mint"
-    );
-    let body: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(body["labels"]["team"], "growth");
-    assert_eq!(body["labels"]["env"], "prod");
 
     handle.abort();
 }
@@ -3872,8 +3728,8 @@ async fn test_create_key_rejects_unsafe_labels() {
 #[tokio::test]
 async fn test_admin_malformed_body_returns_generic_400_no_input_fragment() {
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
     let (addr, handle) = serve_with_gov(gov).await;
     let client = reqwest::Client::new();
 
@@ -3928,39 +3784,64 @@ async fn test_admin_malformed_body_returns_generic_400_no_input_fragment() {
 }
 
 #[tokio::test]
-async fn test_create_key_rejects_removed_max_budget_cents_field() {
-    // 1.5.0 (S1): keys carry NO inline caps - `max_budget_cents` is REMOVED from the mint body, and
-    // the mint struct is `#[serde(deny_unknown_fields)]`. The old test's premise (a negative cap
-    // slipping past serde into a silent over-budget DoS) is gone: the field no longer exists on the
-    // key surface, so ANY body carrying it - negative, zero, or positive - is a loud 400.
+async fn test_create_key_rejects_negative_max_budget_cents() {
+    // Regression (HIGH/correctness): a negative `max_budget_cents` is a signed-i64 value serde
+    // does NOT auto-reject (unlike the unsigned rpm/tpm limits). A negative cap makes governance
+    // read a brand-new key (spend 0) as over budget from request one — a silent DoS. It must be
+    // rejected with 400 and no key minted; `0` (a hard no-spend cap) and a positive value, and an
+    // omitted field (unlimited), must all still create the key.
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
     let (addr, handle) = serve_with_gov(gov).await;
     let client = reqwest::Client::new();
     let url = format!("http://{addr}/api/v1/admin/keys");
 
-    for value in [-1_i64, 0, 100_000] {
+    for bad in [-1_i64, -100, i64::MIN] {
         let resp = client
             .post(&url)
             .header("x-admin-token", "admintok")
-            .json(&serde_json::json!({"name": "k", "max_budget_cents": value}))
+            .json(&serde_json::json!({"name": "k", "max_budget_cents": bad}))
             .send()
             .await
             .unwrap();
         assert_eq!(
             resp.status().as_u16(),
             400,
-            "the removed max_budget_cents field must 400 via deny_unknown_fields (value {value})"
+            "negative max_budget_cents {bad} must be rejected with 400"
         );
         let body: serde_json::Value = resp.json().await.unwrap();
-        assert_eq!(
-            body["error"]["code"], "invalid_request",
-            "400 error code must be invalid_request: {body}"
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap_or("")
+                .contains("max_budget_cents"),
+            "400 body must name max_budget_cents: {body}"
         );
     }
 
-    // A pure-auth body (no removed field) still mints, and the response carries no max_budget_cents.
+    // Zero (hard no-spend cap) and a positive value both create the key with that exact cap.
+    for good in [0_i64, 1, 100_000] {
+        let resp = client
+            .post(&url)
+            .header("x-admin-token", "admintok")
+            .json(&serde_json::json!({"name": "k", "max_budget_cents": good}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status().as_u16(),
+            201,
+            "non-negative max_budget_cents {good} must create the key"
+        );
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(
+            body["max_budget_cents"], good,
+            "stored cap must match request"
+        );
+    }
+
+    // Omitted field → unlimited (null), still 201.
     let resp = client
         .post(&url)
         .header("x-admin-token", "admintok")
@@ -3968,11 +3849,15 @@ async fn test_create_key_rejects_removed_max_budget_cents_field() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status().as_u16(), 201, "a pure-auth body still mints");
+    assert_eq!(
+        resp.status().as_u16(),
+        201,
+        "omitted budget must create key"
+    );
     let body: serde_json::Value = resp.json().await.unwrap();
     assert!(
-        body.get("max_budget_cents").is_none() || body["max_budget_cents"].is_null(),
-        "the key surface no longer carries max_budget_cents: {body}"
+        body["max_budget_cents"].is_null(),
+        "omitted budget is unlimited (null)"
     );
 
     handle.abort();
@@ -3983,8 +3868,8 @@ async fn test_patch_key_enables_disables_and_validates_at_create_parity() {
     // #28: PATCH /admin/keys/:id can disable a key (without DELETE destroying its history) and
     // adjust caps; it is admin-gated and rejects the same invalid values create() does.
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
     let (addr, handle) = serve_with_gov(gov).await;
     let client = reqwest::Client::new();
     let base = format!("http://{addr}/api/v1/admin/keys");
@@ -4054,41 +3939,61 @@ async fn test_patch_key_enables_disables_and_validates_at_create_parity() {
 }
 
 #[tokio::test]
-async fn test_create_key_rejects_removed_rate_limit_fields() {
-    // 1.5.0 (S1): `rpm_limit`/`tpm_limit` are REMOVED from the mint body (keys carry no inline caps;
-    // enforcement flows through the bound group), and the mint struct is
-    // `#[serde(deny_unknown_fields)]`. The old test's premise (a `0` limit slipping past serde into
-    // a permanently-dead key) is gone: ANY body naming these fields is a loud 400.
+async fn test_create_key_rejects_zero_rate_limits() {
+    // Regression (LOW/bug): `rpm_limit`/`tpm_limit` are unsigned, so serde rejects a negative but
+    // accepts `0`. A zero limit is NOT "unlimited" (that is the omitted/None case): governance
+    // checks `requests >= rpm` / `tokens >= tpm` against a window starting at 0, so `0` makes the
+    // key reject every request from creation — a permanently-dead key minted with 201 and no
+    // diagnostic. Both fields must 400; a positive value, and omission (unlimited), must create it.
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
     let (addr, handle) = serve_with_gov(gov).await;
     let client = reqwest::Client::new();
     let url = format!("http://{addr}/api/v1/admin/keys");
 
     for field in ["rpm_limit", "tpm_limit"] {
-        for value in [0, 5] {
-            let resp = client
-                .post(&url)
-                .header("x-admin-token", "admintok")
-                .json(&serde_json::json!({"name": "k", field: value}))
-                .send()
-                .await
-                .unwrap();
-            assert_eq!(
-                resp.status().as_u16(),
-                400,
-                "the removed {field} field must 400 via deny_unknown_fields (value {value})"
-            );
-            let body: serde_json::Value = resp.json().await.unwrap();
-            assert_eq!(
-                body["error"]["code"], "invalid_request",
-                "400 error code must be invalid_request: {body}"
-            );
-        }
+        let resp = client
+            .post(&url)
+            .header("x-admin-token", "admintok")
+            .json(&serde_json::json!({"name": "k", field: 0}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status().as_u16(),
+            400,
+            "{field}: 0 must be rejected with 400"
+        );
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap_or("")
+                .contains(field),
+            "400 body must name {field}: {body}"
+        );
     }
 
-    // A pure-auth body (no removed fields) still mints, carrying no rate caps on the surface.
+    // A positive limit on either field still creates the key.
+    for field in ["rpm_limit", "tpm_limit"] {
+        let resp = client
+            .post(&url)
+            .header("x-admin-token", "admintok")
+            .json(&serde_json::json!({"name": "k", field: 5}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status().as_u16(),
+            201,
+            "{field}: 5 must create the key"
+        );
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body[field], 5, "stored {field} must match request");
+    }
+
+    // Omitted limits → unlimited (null), still 201.
     let resp = client
         .post(&url)
         .header("x-admin-token", "admintok")
@@ -4096,63 +4001,42 @@ async fn test_create_key_rejects_removed_rate_limit_fields() {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status().as_u16(), 201, "a pure-auth body still mints");
+    assert_eq!(
+        resp.status().as_u16(),
+        201,
+        "omitted limits must create key"
+    );
     let body: serde_json::Value = resp.json().await.unwrap();
     assert!(
-        body.get("rpm_limit").is_none() || body["rpm_limit"].is_null(),
-        "the key surface no longer carries rpm_limit: {body}"
-    );
-    assert!(
-        body.get("tpm_limit").is_none() || body["tpm_limit"].is_null(),
-        "the key surface no longer carries tpm_limit: {body}"
+        body["rpm_limit"].is_null() && body["tpm_limit"].is_null(),
+        "omitted limits are unlimited (null): {body}"
     );
 
     handle.abort();
 }
 
 #[tokio::test]
-async fn test_patch_key_three_state_group_and_enabled() {
-    // PATCH /keys/{id} is AUTH-SHAPED in 1.5.0: `{enabled?, group??}`. `group` is three-state
-    // (absent = unchanged, `null` = unbind to unlimited, a value = rebind with mint-parity
-    // existence validation). The removed 1.4.x cap fields (rpm_limit/tpm_limit/max_budget_cents)
-    // are UNKNOWN fields now and must 400 - PATCH cannot be a back door to a limit surface that
-    // no longer exists (limits live on groups).
+async fn test_patch_key_clears_caps_to_unlimited_via_null() {
+    // LOW #16/#19 (three-state): PATCH must distinguish absent (leave unchanged), JSON null
+    // (clear to unlimited), and a value (set). A single Option<T> conflated absent with null, so a
+    // cap could never be cleared once set. Verify the full matrix end-to-end through the handler.
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    // The rebind target must EXIST: give the App a cost model carrying group "eng".
-    let groups = std::collections::BTreeMap::from([(
-        "eng".to_string(),
-        crate::config::GroupCfg {
-            parent: None,
-            enabled: true,
-            limits: vec![crate::config::groups::LimitCfg {
-                metric: crate::config::groups::LimitMetric::Requests,
-                amount: 100,
-                per: Some(crate::config::groups::LimitWindow::Minute),
-                pool: None,
-                on_exhaust: None,
-                downgrade_to: None,
-            }],
-            ..Default::default()
-        },
-    )]);
-    let app = crate::test_support::TestApp::new()
-        .governance(gov)
-        .cost(crate::cost::CostModel::resolve_parts(None, 0, &groups))
-        .build();
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
+    let (addr, handle) = serve_with_gov(gov).await;
     let client = reqwest::Client::new();
     let base = format!("http://{addr}/api/v1/admin/keys");
 
-    // Mint a pure-auth key (no group).
+    // Create a key that HAS all three caps set.
     let created: serde_json::Value = client
         .post(&base)
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"name": "k"}))
+        .json(&serde_json::json!({
+            "name": "k",
+            "rpm_limit": 10,
+            "tpm_limit": 2000,
+            "max_budget_cents": 5000
+        }))
         .send()
         .await
         .unwrap()
@@ -4160,53 +4044,57 @@ async fn test_patch_key_three_state_group_and_enabled() {
         .await
         .unwrap();
     let id = created["id"].as_str().unwrap().to_string();
-    assert_eq!(created["enabled"], true, "a fresh key is enabled");
-    assert!(created["group"].is_null(), "minted without a group");
+    assert_eq!(created["rpm_limit"], 10);
+    assert_eq!(created["tpm_limit"], 2000);
+    assert_eq!(created["max_budget_cents"], 5000);
     let key_url = format!("{base}/{id}");
 
-    // SET (a present value): rebind to an existing group; the response surfaces the binding.
-    let set: serde_json::Value = client
-        .patch(&key_url)
-        .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"group": "eng"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(
-        set["group"], "eng",
-        "rebind surfaces the new binding: {set}"
-    );
-
-    // A rebind to a MISSING group is a 400 (mint parity: no dangling binding via PATCH).
-    let dangling = client
-        .patch(&key_url)
-        .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"group": "ghost"}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        dangling.status().as_u16(),
-        400,
-        "a rebind target must exist (mint parity)"
-    );
-
-    // CLEAR (present null): unbind back to authed + unlimited. Absent leaves it unchanged.
+    // Present null CLEARS each cap to unlimited (null in the response).
     let cleared: serde_json::Value = client
         .patch(&key_url)
         .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"group": null}))
+        .json(&serde_json::json!({
+            "rpm_limit": null,
+            "tpm_limit": null,
+            "max_budget_cents": null
+        }))
         .send()
         .await
         .unwrap()
         .json()
         .await
         .unwrap();
-    assert!(cleared["group"].is_null(), "null unbinds: {cleared}");
-    let toggled: serde_json::Value = client
+    assert!(
+        cleared["rpm_limit"].is_null(),
+        "rpm cleared to unlimited: {cleared}"
+    );
+    assert!(cleared["tpm_limit"].is_null(), "tpm cleared to unlimited");
+    assert!(
+        cleared["max_budget_cents"].is_null(),
+        "budget cleared to unlimited"
+    );
+
+    // Re-set them with values.
+    let reset: serde_json::Value = client
+        .patch(&key_url)
+        .header("x-admin-token", "admintok")
+        .json(&serde_json::json!({
+            "rpm_limit": 7,
+            "tpm_limit": 99,
+            "max_budget_cents": 123
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(reset["rpm_limit"], 7);
+    assert_eq!(reset["tpm_limit"], 99);
+    assert_eq!(reset["max_budget_cents"], 123);
+
+    // Absent fields LEAVE the caps unchanged (only `enabled` present here).
+    let unchanged: serde_json::Value = client
         .patch(&key_url)
         .header("x-admin-token", "admintok")
         .json(&serde_json::json!({"enabled": false}))
@@ -4216,34 +4104,32 @@ async fn test_patch_key_three_state_group_and_enabled() {
         .json()
         .await
         .unwrap();
-    assert_eq!(toggled["enabled"], false, "enabled toggles");
-    assert!(
-        toggled["group"].is_null(),
-        "an absent group field leaves the (unbound) binding unchanged"
+    assert_eq!(unchanged["enabled"], false);
+    assert_eq!(unchanged["rpm_limit"], 7, "absent leaves rpm unchanged");
+    assert_eq!(unchanged["tpm_limit"], 99, "absent leaves tpm unchanged");
+    assert_eq!(
+        unchanged["max_budget_cents"], 123,
+        "absent leaves budget unchanged"
     );
 
-    // The removed 1.4.x cap fields are UNKNOWN and 400 loudly (no silent no-op back door).
-    for gone in [
-        serde_json::json!({"rpm_limit": 5}),
-        serde_json::json!({"tpm_limit": 99}),
-        serde_json::json!({"max_budget_cents": 123}),
-    ] {
-        let r = client
-            .patch(&key_url)
-            .header("x-admin-token", "admintok")
-            .json(&gone)
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(
-            r.status().as_u16(),
-            400,
-            "a removed cap field must fail loudly: {gone}"
-        );
-    }
+    // Clearing to unlimited (null) must NOT trip the create-parity guards (those reject a present
+    // 0/negative VALUE, not a clear). null on rpm/tpm/budget all return 200.
+    let cleared2 = client
+        .patch(&key_url)
+        .header("x-admin-token", "admintok")
+        .json(&serde_json::json!({"rpm_limit": null, "max_budget_cents": null}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        cleared2.status().as_u16(),
+        200,
+        "null (clear) must not be rejected by the create-parity guards"
+    );
 
     handle.abort();
 }
+
 #[test]
 fn test_create_key_warns_on_unconfigured_allowed_pool() {
     // Regression (LOW #13, completeness): create_key accepted `allowed_pools` with NO ingress
@@ -4261,8 +4147,8 @@ fn test_create_key_warns_on_unconfigured_allowed_pool() {
     use tracing_subscriber::layer::SubscriberExt as _;
 
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
     // App has exactly one configured pool, "smart" (lane 0). "smrt" is the typo'd sibling.
     let app = TestApp::new()
         .lane(crate::test_support::LaneSpec::new(
@@ -4291,9 +4177,8 @@ fn test_create_key_warns_on_unconfigured_allowed_pool() {
                 })
                 .to_string(),
             );
-            let handle = std::sync::Arc::new(crate::state::AppHandle::new(app.clone()));
             let r1 = super::create_key(
-                axum::extract::State(handle.clone()),
+                crate::state::CurrentApp(app.clone()),
                 axum::Extension(crate::auth::AuthPrincipal(None)),
                 axum::http::HeaderMap::new(),
                 body1,
@@ -4310,7 +4195,7 @@ fn test_create_key_warns_on_unconfigured_allowed_pool() {
                 .to_string(),
             );
             let r2 = super::create_key(
-                axum::extract::State(handle),
+                crate::state::CurrentApp(app),
                 axum::Extension(crate::auth::AuthPrincipal(None)),
                 axum::http::HeaderMap::new(),
                 body2,
@@ -4357,15 +4242,17 @@ fn test_create_key_warns_on_unconfigured_allowed_pool() {
 #[tokio::test]
 async fn test_delete_existing_key_returns_200() {
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
                 name: "k".to_string(),
-                allowed_pools: None,
-                group: None,
-                labels: Default::default(),
+                allowed_pools: vec![],
+                max_budget_cents: None,
+                budget_period: super::VALID_BUDGET_PERIODS[0].to_string(),
+                rpm_limit: None,
+                tpm_limit: None,
             },
             0,
         )
@@ -4390,8 +4277,8 @@ async fn test_delete_existing_key_returns_200() {
 #[tokio::test]
 async fn test_delete_missing_key_returns_404() {
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
 
     let (addr, handle) = serve_with_gov(gov).await;
     let client = reqwest::Client::new();
@@ -4417,15 +4304,17 @@ async fn test_delete_key_is_not_idempotent_204() {
     // After a successful delete, a second delete of the same id must 404 (proves the 204 was a
     // real revocation, not a no-op masquerading as success).
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
                 name: "k".to_string(),
-                allowed_pools: None,
-                group: None,
-                labels: Default::default(),
+                allowed_pools: vec![],
+                max_budget_cents: None,
+                budget_period: super::VALID_BUDGET_PERIODS[0].to_string(),
+                rpm_limit: None,
+                tpm_limit: None,
             },
             0,
         )
@@ -4457,15 +4346,17 @@ async fn test_concurrent_delete_returns_exactly_one_204() {
     // an audit trail). The delete handler serializes its lookup→delete critical section, so the
     // winner returns 204 and every loser returns 404. Fire a burst and assert exactly one 204.
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
                 name: "k".to_string(),
-                allowed_pools: None,
-                group: None,
-                labels: Default::default(),
+                allowed_pools: vec![],
+                max_budget_cents: None,
+                budget_period: super::VALID_BUDGET_PERIODS[0].to_string(),
+                rpm_limit: None,
+                tpm_limit: None,
             },
             0,
         )
@@ -4517,15 +4408,17 @@ async fn test_patch_after_delete_404s_and_does_not_recreate_key() {
     // DELETE closes the window. This sequential case (DELETE fully precedes PATCH) proves the base
     // contract: PATCH on a deleted key 404s and leaves it deleted (a later GET/usage stays 404).
     crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
                 name: "k".to_string(),
-                allowed_pools: None,
-                group: None,
-                labels: Default::default(),
+                allowed_pools: vec![],
+                max_budget_cents: None,
+                budget_period: super::VALID_BUDGET_PERIODS[0].to_string(),
+                rpm_limit: None,
+                tpm_limit: None,
             },
             0,
         )
@@ -4589,7 +4482,7 @@ async fn test_patch_after_delete_404s_and_does_not_recreate_key() {
 /// A `Store` decorator that can pause inside `put_key` to force the exact PATCH/DELETE
 /// interleaving the resurrection race needs — something a black-box HTTP burst cannot do
 /// deterministically (the window between `update_key`'s `get_key` and `put_key` is microscopic).
-/// All methods delegate to an inner `MemoryStore`; only `put_key` is instrumented, and only once
+/// All methods delegate to an inner `SqliteStore`; only `put_key` is instrumented, and only once
 /// armed (so the create-time `put_key` during setup is unaffected).
 ///
 /// When armed, the FIRST subsequent `put_key` (the PATCH's) signals `entered` and then BLOCKS on
@@ -4597,7 +4490,7 @@ async fn test_patch_after_delete_404s_and_does_not_recreate_key() {
 /// its write, so the test can run a DELETE in that gap and observe whether the gate prevents the
 /// PATCH from re-inserting (resurrecting) the just-revoked row.
 struct BarrierStore {
-    inner: MemoryStore,
+    inner: SqliteStore,
     armed: std::sync::atomic::AtomicBool,
     entered: std::sync::mpsc::SyncSender<()>,
     release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
@@ -4619,26 +4512,35 @@ impl crate::governance::Store for BarrierStore {
     ) -> crate::governance::StoreResult<Option<crate::governance::VirtualKey>> {
         self.inner.get_key(id)
     }
+    fn get_key_by_hash(
+        &self,
+        key_hash: &str,
+    ) -> crate::governance::StoreResult<Option<crate::governance::VirtualKey>> {
+        self.inner.get_key_by_hash(key_hash)
+    }
     fn list_keys(&self) -> crate::governance::StoreResult<Vec<crate::governance::VirtualKey>> {
         self.inner.list_keys()
     }
     fn delete_key(&self, id: &str) -> crate::governance::StoreResult<()> {
         self.inner.delete_key(id)
     }
+    fn add_usage(
+        &self,
+        key_id: &str,
+        window_start: u64,
+        spend_cents: i64,
+        tokens: u64,
+        count_request: bool,
+    ) -> crate::governance::StoreResult<()> {
+        self.inner
+            .add_usage(key_id, window_start, spend_cents, tokens, count_request)
+    }
     fn get_usage(
         &self,
-        bucket_id: &str,
+        key_id: &str,
         window_start: u64,
-    ) -> crate::governance::StoreResult<busbar_api::UsageLedger> {
-        self.inner.get_usage(bucket_id, window_start)
-    }
-    fn put_usage(
-        &self,
-        bucket_id: &str,
-        window_start: u64,
-        ledger: &busbar_api::UsageLedger,
-    ) -> crate::governance::StoreResult<()> {
-        self.inner.put_usage(bucket_id, window_start, ledger)
+    ) -> crate::governance::StoreResult<crate::governance::Usage> {
+        self.inner.get_usage(key_id, window_start)
     }
     fn add_metering(
         &self,
@@ -4652,14 +4554,23 @@ impl crate::governance::Store for BarrierStore {
     ) -> crate::governance::StoreResult<Vec<crate::governance::MeteringRow>> {
         self.inner.list_metering(bucket)
     }
-    // Forward the denylist (1.5.0): DELETE revokes-then-deletes, so a store double that did not
-    // forward add_denylist would make revoke error and abort the delete (the default trait no-op
-    // errors) - breaking the resurrection-race tests. Forward to the inner MemoryStore.
-    fn add_denylist(&self, sub: &str, reason: &str) -> crate::governance::StoreResult<()> {
-        self.inner.add_denylist(sub, reason)
+    fn charge_within_budget(
+        &self,
+        key_id: &str,
+        window_start: u64,
+        cost_cents: i64,
+        max_cents: Option<i64>,
+    ) -> crate::governance::StoreResult<bool> {
+        self.inner
+            .charge_within_budget(key_id, window_start, cost_cents, max_cents)
     }
-    fn list_denylist(&self) -> crate::governance::StoreResult<Vec<String>> {
-        self.inner.list_denylist()
+    fn refund_request(
+        &self,
+        key_id: &str,
+        window_start: u64,
+        cost_cents: i64,
+    ) -> crate::governance::StoreResult<()> {
+        self.inner.refund_request(key_id, window_start, cost_cents)
     }
 }
 
@@ -4682,19 +4593,21 @@ async fn test_patch_interleaved_with_delete_never_resurrects_key() {
     let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel::<()>(1);
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
     let store = Arc::new(BarrierStore {
-        inner: MemoryStore::new(),
+        inner: SqliteStore::open_in_memory().unwrap(),
         armed: std::sync::atomic::AtomicBool::new(false),
         entered: entered_tx,
         release: std::sync::Mutex::new(release_rx),
     });
-    let gov = gov_with_signer(store.clone(), Some("admintok".to_string()));
+    let gov = Arc::new(GovState::new(store.clone(), 0, 0, Some("admintok".to_string())).unwrap());
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
                 name: "k".to_string(),
-                allowed_pools: None,
-                group: None,
-                labels: Default::default(),
+                allowed_pools: vec![],
+                max_budget_cents: None,
+                budget_period: super::VALID_BUDGET_PERIODS[0].to_string(),
+                rpm_limit: None,
+                tpm_limit: None,
             },
             0,
         )
@@ -4775,19 +4688,21 @@ async fn test_rotate_interleaved_with_delete_never_resurrects_key() {
     let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel::<()>(1);
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
     let store = Arc::new(BarrierStore {
-        inner: MemoryStore::new(),
+        inner: SqliteStore::open_in_memory().unwrap(),
         armed: std::sync::atomic::AtomicBool::new(false),
         entered: entered_tx,
         release: std::sync::Mutex::new(release_rx),
     });
-    let gov = gov_with_signer(store.clone(), Some("admintok".to_string()));
+    let gov = Arc::new(GovState::new(store.clone(), 0, 0, Some("admintok".to_string())).unwrap());
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
                 name: "k".to_string(),
-                allowed_pools: None,
-                group: None,
-                labels: Default::default(),
+                allowed_pools: vec![],
+                max_budget_cents: None,
+                budget_period: super::VALID_BUDGET_PERIODS[0].to_string(),
+                rpm_limit: None,
+                tpm_limit: None,
             },
             0,
         )
@@ -4891,19 +4806,21 @@ async fn test_cancelled_patch_keeps_gate_held_for_full_store_mutation() {
     let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel::<()>(1);
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
     let store = Arc::new(BarrierStore {
-        inner: MemoryStore::new(),
+        inner: SqliteStore::open_in_memory().unwrap(),
         armed: std::sync::atomic::AtomicBool::new(false),
         entered: entered_tx,
         release: std::sync::Mutex::new(release_rx),
     });
-    let gov = gov_with_signer(store.clone(), Some("admintok".to_string()));
+    let gov = Arc::new(GovState::new(store.clone(), 0, 0, Some("admintok".to_string())).unwrap());
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
                 name: "k".to_string(),
-                allowed_pools: None,
-                group: None,
-                labels: Default::default(),
+                allowed_pools: vec![],
+                max_budget_cents: None,
+                budget_period: super::VALID_BUDGET_PERIODS[0].to_string(),
+                rpm_limit: None,
+                tpm_limit: None,
             },
             0,
         )
@@ -4971,2170 +4888,4 @@ async fn test_cancelled_patch_keeps_gate_held_for_full_store_mutation() {
         "the DELETE runs after the gate frees and revokes the (now-present) key"
     );
     handle.abort();
-}
-
-// ── plugin admin endpoints (#13), end-to-end over the live router ─────────────────────────────────
-
-/// Serve a router whose App points its plugin surface at `dir` (allow_unsigned posture, no
-/// publishers), with a known admin token — for the install/list/remove/reload plugin endpoints.
-async fn serve_with_plugins_dir(
-    dir: std::path::PathBuf,
-) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    // The lifecycle test installs an UNSIGNED plugin tarball, so opt in to unsigned plugins (the
-    // trust DEFAULT rejects unsigned artifacts). The trust-default behavior itself is covered by
-    // the dedicated trust tests; this test is about the install/list/reload/remove lifecycle.
-    let mut plugins_cfg = crate::config::PluginsCfg::default();
-    plugins_cfg.trust.allow_unsigned = true;
-    let app = TestApp::new()
-        .governance(gov)
-        .plugins_dir(dir)
-        .plugins_cfg(plugins_cfg)
-        .build();
-    let (router, _handle) = crate::build_router_with_limits(
-        app,
-        256 * 1024 * 1024,
-        0,
-        crate::config::DEFAULT_EMIT_SERVER_TIMING,
-    );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    (addr, handle)
-}
-
-/// Build an UNSIGNED (structurally valid) plugin tarball in memory for the HTTP lifecycle tests.
-fn admin_test_tarball(name: &str, alias: &str) -> Vec<u8> {
-    admin_test_tarball_versioned(name, alias, "1.0.0")
-}
-
-/// As `admin_test_tarball`, with an explicit version so a test can build two SAME-NAME tarballs that
-/// differ only in version (and thus filename) - the H2 same-name-different-file case.
-fn admin_test_tarball_versioned(name: &str, alias: &str, version: &str) -> Vec<u8> {
-    let lib = format!("junk library bytes for {name} {version} (never dlopened)").into_bytes();
-    let lib = lib.as_slice();
-    let m = busbar_plugin_sign::Manifest {
-        name: name.into(),
-        alias: alias.into(),
-        kind: "store".into(),
-        version: version.into(),
-        publisher: "acme".into(),
-        abi_version: *busbar_plugin_loader::supported_abi("store")
-            .iter()
-            .max()
-            .expect("store abi"),
-        sha256: busbar_plugin_sign::sha256_hex(lib),
-        signature: String::new(),
-        description: String::new(),
-        homepage: String::new(),
-        license: String::new(),
-        needs: Default::default(),
-    };
-    busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap()
-}
-
-/// FULL LIFECYCLE over the wire: `POST /plugins` installs an (unsigned, allow_unsigned-posture)
-/// plugin tarball → `GET /plugins?type=store` lists it as a dynamic-library row → `POST
-/// /plugins/reload` reports it → `DELETE /plugins/{file}` removes it (204) → a second DELETE is
-/// 404. Every mutation is admin-token guarded and audited; the uploaded code is never executed.
-#[tokio::test]
-async fn test_admin_v1_plugin_install_list_reload_remove() {
-    use base64::Engine as _;
-    crate::metrics::init();
-    let tarball = admin_test_tarball("acme-store-junk", "junkstore");
-    let file = "acme-store-junk.tar.gz";
-    let dir =
-        std::env::temp_dir().join(format!("busbar-admin-plugins-http-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let (addr, handle) = serve_with_plugins_dir(dir.clone()).await;
-    let client = reqwest::Client::new();
-
-    // INSTALL — 201 with a trust verdict of "unverified" (unsigned under allow_unsigned).
-    let body = serde_json::json!({
-        "file": file,
-        "tarball_b64": base64::engine::general_purpose::STANDARD.encode(&tarball),
-    });
-    let resp = client
-        .post(format!("http://{addr}/api/v1/admin/plugins"))
-        .header("x-admin-token", "admintok")
-        .json(&body)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status().as_u16(), 201, "install returns 201 Created");
-    let v: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(v["file"], file);
-    assert_eq!(v["trust"], "unverified");
-    assert_eq!(
-        v["name"], "acme-store-junk",
-        "identity from the signed manifest"
-    );
-    assert!(dir.join(file).exists(), "tarball published to disk");
-
-    // A mutation WITHOUT the admin token is rejected (401) — the whole surface is guarded.
-    let unauth = client
-        .post(format!("http://{addr}/api/v1/admin/plugins"))
-        .json(&body)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(unauth.status().as_u16(), 401);
-
-    // LIST — the store catalog reports the memory head + our dynamic plugin (ready).
-    let list: serde_json::Value = client
-        .get(format!("http://{addr}/api/v1/admin/plugins?type=store"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let items = list["items"].as_array().unwrap();
-    assert_eq!(items[0]["name"], "memory");
-    let dyn_row = items
-        .iter()
-        .find(|p| p["loader"] == "dynamic-library")
-        .expect("dynamic-library row present");
-    assert_eq!(dyn_row["valid"], true);
-    assert_eq!(dyn_row["target"], file);
-    assert_eq!(dyn_row["name"], "acme-store-junk");
-
-    // RELOAD — reports the reconciled dynamic set (no memory head).
-    let reload: serde_json::Value = client
-        .post(format!("http://{addr}/api/v1/admin/plugins/reload"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(reload["plugins"].as_array().unwrap().len(), 1);
-
-    // REMOVE — 204, then a second remove is 404 in the frozen envelope.
-    let del = client
-        .delete(format!("http://{addr}/api/v1/admin/plugins/{file}"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(del.status().as_u16(), 204);
-    assert!(!dir.join(file).exists(), "tarball removed from disk");
-
-    let del2 = client
-        .delete(format!("http://{addr}/api/v1/admin/plugins/{file}"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(del2.status().as_u16(), 404);
-    let b: serde_json::Value = del2.json().await.unwrap();
-    assert_eq!(b["error"]["code"], "not_found");
-
-    // The install + remove both left audit rows (every mutation is audited).
-    let audit: serde_json::Value = client
-        .get(format!("http://{addr}/api/v1/admin/audit"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let actions: Vec<&str> = audit["items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|e| e["action"].as_str())
-        .collect();
-    assert!(
-        actions.contains(&"plugin.install"),
-        "install audited: {actions:?}"
-    );
-    assert!(
-        actions.contains(&"plugin.remove"),
-        "remove audited: {actions:?}"
-    );
-
-    let _ = std::fs::remove_dir_all(&dir);
-    handle.abort();
-}
-
-/// H2 (bricks next boot): installing a SAME-NAME plugin under a DIFFERENT filename (e.g. a version
-/// bump `-1.1.0.tar.gz` over an installed `-1.0.0.tar.gz`) must be a 409, NOT admitted. Two files
-/// claiming the same plugin name are a hard conflict at boot (registry::conflicts()) - admitting the
-/// second bricks the next restart. A same-name upgrade must REUSE the existing filename. The old gate
-/// exempted this case (`&& existing.manifest.name != manifest.name`).
-#[tokio::test]
-async fn test_admin_v1_plugin_install_same_name_different_file_is_409() {
-    use base64::Engine as _;
-    crate::metrics::init();
-    let dir = std::env::temp_dir().join(format!("busbar-admin-plugins-h2-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let (addr, handle) = serve_with_plugins_dir(dir.clone()).await;
-    let client = reqwest::Client::new();
-
-    let install = |file: &'static str, tarball: Vec<u8>| {
-        let client = client.clone();
-        let body = serde_json::json!({
-            "file": file,
-            "tarball_b64": base64::engine::general_purpose::STANDARD.encode(&tarball),
-        });
-        async move {
-            client
-                .post(format!("http://{addr}/api/v1/admin/plugins"))
-                .header("x-admin-token", "admintok")
-                .json(&body)
-                .send()
-                .await
-                .unwrap()
-        }
-    };
-
-    // v1.0.0 installs cleanly.
-    let v1 = admin_test_tarball_versioned("busbar-store-x", "storex", "1.0.0");
-    let r1 = install("busbar-store-x-1.0.0.tar.gz", v1).await;
-    assert_eq!(r1.status().as_u16(), 201, "first install succeeds");
-
-    // v1.1.0 - SAME manifest name, DIFFERENT filename - must be a 409 (boot would reject two files
-    // claiming the same name), NOT a silent second publish.
-    let v2 = admin_test_tarball_versioned("busbar-store-x", "storex", "1.1.0");
-    let r2 = install("busbar-store-x-1.1.0.tar.gz", v2).await;
-    assert_eq!(
-        r2.status().as_u16(),
-        409,
-        "same-name under a different filename must conflict, not brick the next boot"
-    );
-    let b: serde_json::Value = r2.json().await.unwrap();
-    assert_eq!(b["error"]["code"], "conflict");
-    assert!(
-        !dir.join("busbar-store-x-1.1.0.tar.gz").exists(),
-        "the conflicting second file must NOT be published"
-    );
-    // The original is untouched (still exactly one plugin file on disk).
-    let tars: Vec<_> = std::fs::read_dir(&dir)
-        .unwrap()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_name().to_string_lossy().ends_with(".tar.gz"))
-        .collect();
-    assert_eq!(tars.len(), 1, "only the original v1.0.0 file remains");
-
-    let _ = std::fs::remove_dir_all(&dir);
-    handle.abort();
-}
-
-/// M7 (fail-open): a CORRUPT tarball already sitting in the plugins dir makes scan_and_validate Err.
-/// The old `if let Ok(reg)` SILENTLY SKIPPED the conflict check and published anyway. Now a new
-/// install returns an error (never 201) until the offending tarball is fixed/removed.
-#[tokio::test]
-async fn test_admin_v1_plugin_install_corrupt_existing_tarball_blocks_publish() {
-    use base64::Engine as _;
-    crate::metrics::init();
-    let dir = std::env::temp_dir().join(format!("busbar-admin-plugins-m7-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    // Plant a corrupt (non-tarball) *.tar.gz that discover() picks up but examine() cannot parse.
-    std::fs::write(
-        dir.join("busbar-store-corrupt.tar.gz"),
-        b"not a real tarball",
-    )
-    .unwrap();
-    let (addr, handle) = serve_with_plugins_dir(dir.clone()).await;
-    let client = reqwest::Client::new();
-
-    let good = admin_test_tarball("busbar-store-good", "goodstore");
-    let resp = client
-        .post(format!("http://{addr}/api/v1/admin/plugins"))
-        .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({
-            "file": "busbar-store-good.tar.gz",
-            "tarball_b64": base64::engine::general_purpose::STANDARD.encode(&good),
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_ne!(
-        resp.status().as_u16(),
-        201,
-        "an unvalidatable installed set must NOT let a new install publish (fail-open closed)"
-    );
-    assert_eq!(resp.status().as_u16(), 409, "surfaced as a conflict");
-    assert!(
-        !dir.join("busbar-store-good.tar.gz").exists(),
-        "nothing published while the installed set is unvalidatable"
-    );
-
-    let _ = std::fs::remove_dir_all(&dir);
-    handle.abort();
-}
-
-/// A malformed install body (bad base64) is a `400 invalid_request` in the frozen envelope, a
-/// non-tarball upload is a `400`, and an UNSIGNED upload under the STRICT default posture is a
-/// `409 conflict` (the trust gate cannot be bypassed by pushing over the API) — nothing is
-/// published in any case, and the rejects are audited.
-#[tokio::test]
-async fn test_admin_v1_plugin_install_rejections() {
-    use base64::Engine as _;
-    crate::metrics::init();
-    let dir = std::env::temp_dir().join(format!("busbar-admin-plugins-rej-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let (addr, handle) = serve_with_plugins_dir(dir.clone()).await;
-    let client = reqwest::Client::new();
-
-    // Bad base64.
-    let bad = client
-        .post(format!("http://{addr}/api/v1/admin/plugins"))
-        .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"file": "x.tar.gz", "tarball_b64": "!!!not base64!!!"}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(bad.status().as_u16(), 400);
-    let b: serde_json::Value = bad.json().await.unwrap();
-    assert_eq!(b["error"]["code"], "invalid_request");
-
-    // Valid base64 but not a plugin tarball → structural validation fails (400).
-    let notplugin = client
-        .post(format!("http://{addr}/api/v1/admin/plugins"))
-        .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({
-            "file": "nope.tar.gz",
-            "tarball_b64": base64::engine::general_purpose::STANDARD.encode(b"not a tarball"),
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(notplugin.status().as_u16(), 400);
-    assert_eq!(
-        std::fs::read_dir(&dir).unwrap().count(),
-        0,
-        "nothing published"
-    );
-
-    // TRUST NO-BYPASS: a STRICT-posture server rejects an unsigned upload as 409 conflict.
-    {
-        let store = Arc::new(MemoryStore::new());
-        let gov = gov_with_signer(store, Some("admintok".to_string()));
-        let strict_dir = std::env::temp_dir().join(format!(
-            "busbar-admin-plugins-strict-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&strict_dir);
-        std::fs::create_dir_all(&strict_dir).unwrap();
-        let app = TestApp::new()
-            .governance(gov)
-            .plugins_dir(strict_dir.clone())
-            .plugins_cfg(crate::config::PluginsCfg::default())
-            .build();
-        let (router, _h) = crate::build_router_with_limits(
-            app,
-            256 * 1024 * 1024,
-            0,
-            crate::config::DEFAULT_EMIT_SERVER_TIMING,
-        );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let strict_addr = listener.local_addr().unwrap();
-        let strict_handle =
-            tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-        let tarball = admin_test_tarball("acme-store-x", "acmex");
-        let resp = client
-            .post(format!("http://{strict_addr}/api/v1/admin/plugins"))
-            .header("x-admin-token", "admintok")
-            .json(&serde_json::json!({
-                "file": "x.tar.gz",
-                "tarball_b64": base64::engine::general_purpose::STANDARD.encode(&tarball),
-            }))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(
-            resp.status().as_u16(),
-            409,
-            "the strict default posture rejects an unsigned upload over the API"
-        );
-        let b: serde_json::Value = resp.json().await.unwrap();
-        assert_eq!(b["error"]["code"], "conflict");
-        assert_eq!(
-            std::fs::read_dir(&strict_dir).unwrap().count(),
-            0,
-            "nothing published on a trust rejection"
-        );
-        let _ = std::fs::remove_dir_all(&strict_dir);
-        strict_handle.abort();
-    }
-
-    let _ = std::fs::remove_dir_all(&dir);
-    handle.abort();
-}
-
-/// The 1.5.0 mint surface: `budget_group` + `labels` round-trip through create/list, a mint naming
-/// a MISSING budget_group is a 400 that names the offender (fail-closed at the mint boundary), and
-/// the key-usage read derives spend at the current cost model.
-#[tokio::test]
-#[allow(clippy::field_reassign_with_default)]
-async fn test_create_key_budget_group_and_labels_roundtrip_and_missing_group_400() {
-    crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    // An App whose cost model KNOWS the "growth" group; "ghost" stays unconfigured.
-    let cost = {
-        let groups = std::collections::BTreeMap::from([(
-            "growth".to_string(),
-            crate::config::GroupCfg {
-                parent: None,
-                enabled: true,
-                limits: vec![crate::config::groups::LimitCfg {
-                    metric: crate::config::groups::LimitMetric::Budget,
-                    amount: 1_000_000,
-                    per: Some(crate::config::groups::LimitWindow::Month),
-                    pool: None,
-                    on_exhaust: None,
-                    downgrade_to: None,
-                }],
-                ..Default::default()
-            },
-        )]);
-        crate::cost::CostModel::resolve_parts(None, 0, &groups)
-    };
-    let app = TestApp::new().governance(gov).cost(cost).build();
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
-    let url = format!("http://{addr}/api/v1/admin/keys");
-
-    // A mint naming a MISSING group is a 400 naming the offender (the field is `group` in 1.5.0).
-    let resp = client
-        .post(&url)
-        .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"name": "k", "group": "ghost"}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status().as_u16(), 400);
-    let body: serde_json::Value = resp.json().await.unwrap();
-    assert!(
-        body["error"]["message"]
-            .as_str()
-            .unwrap_or("")
-            .contains("group 'ghost' does not exist"),
-        "the 400 names the missing group: {body}"
-    );
-
-    // A mint binding a CONFIGURED group with labels succeeds and echoes both. key_meta surfaces the
-    // binding under its 1.5.0 name `group`.
-    let resp = client
-        .post(&url)
-        .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({
-            "name": "grouped",
-            "group": "growth",
-            "labels": {"team": "growth", "env": "prod"}
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status().as_u16(), 201, "configured group mints");
-    let body: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(body["group"], "growth");
-    assert_eq!(body["labels"]["env"], "prod");
-    let id = body["id"].as_str().unwrap().to_string();
-
-    // The list surface carries both fields too (metadata round-trip, never the secret).
-    let list: serde_json::Value = client
-        .get(&url)
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let row = list["items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|k| k["id"] == id.as_str())
-        .expect("minted key listed");
-    assert_eq!(row["group"], "growth");
-    assert_eq!(row["labels"]["team"], "growth");
-
-    handle.abort();
-}
-
-// ── self-service mint: auto-provision + delegated mint scope + max_keys_per_principal (D2/§6a) ────
-
-/// A `budget` limit for a group tree (helper to keep the test trees readable).
-fn budget_limit(cents: u64) -> crate::config::groups::LimitCfg {
-    crate::config::groups::LimitCfg {
-        metric: crate::config::groups::LimitMetric::Budget,
-        amount: cents,
-        per: Some(crate::config::groups::LimitWindow::Month),
-        pool: None,
-        on_exhaust: None,
-        downgrade_to: None,
-    }
-}
-
-/// AUTO-PROVISION ON MINT (D2): minting into a NONEXISTENT `user:<sub>` leaf under a team carrying a
-/// `child_default` creates the leaf with the TEMPLATE limits, binds the key, and the new leaf is
-/// live in the enforcement chain (its resolved limits carry the template budget). Nearest-ancestor
-/// wins, so the leaf gets the team's per-head default. Also: `group_provisioned: true` is echoed.
-#[tokio::test]
-async fn test_mint_auto_provisions_leaf_from_child_default() {
-    crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    // acme (org) → team-payments (team, child_default $20/mo per head). No user leaf yet.
-    let groups = std::collections::BTreeMap::from([
-        (
-            "acme".to_string(),
-            crate::config::GroupCfg {
-                limits: vec![budget_limit(5_000_000)],
-                ..Default::default()
-            },
-        ),
-        (
-            "team-payments".to_string(),
-            crate::config::GroupCfg {
-                parent: Some("acme".to_string()),
-                limits: vec![budget_limit(2_000_000)],
-                child_default: Some(crate::config::groups::ChildDefault {
-                    limits: vec![budget_limit(2000)],
-                }),
-                ..Default::default()
-            },
-        ),
-    ]);
-    let app = TestApp::new().governance(gov).groups_tree(groups).build();
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
-
-    // Mint into a leaf that does NOT exist, naming its team as the parent → auto-provision.
-    let resp = client
-        .post(format!("http://{addr}/api/v1/admin/keys"))
-        .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({
-            "name": "alice-cli",
-            "group": "user:alice",
-            "parent": "team-payments"
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        resp.status().as_u16(),
-        201,
-        "auto-provision + mint succeeds"
-    );
-    let body: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(body["group"], "user:alice", "key bound to the new leaf");
-    assert_eq!(
-        body["group_provisioned"], true,
-        "the mint reports it created the leaf"
-    );
-
-    // The leaf now EXISTS, parented to the team, with the team's child_default limits stamped on.
-    let leaf: serde_json::Value = client
-        .get(format!("http://{addr}/api/v1/admin/groups/user:alice"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(leaf["parent"], "team-payments");
-    assert_eq!(leaf["enabled"], true);
-    assert_eq!(leaf["limits"][0]["metric"], "budget");
-    assert_eq!(
-        leaf["limits"][0]["amount"], 2000,
-        "leaf carries the nearest-ancestor child_default budget"
-    );
-    // The leaf is a per-user bucket, not itself a template source.
-    assert!(leaf.get("child_default").is_none());
-
-    // ENFORCEMENT CHAIN: the leaf's usage read projects the template budget as its cap (the limit is
-    // live in the cost model / governance projection — the chain will AND leaf ∩ team ∩ org).
-    let usage: serde_json::Value = client
-        .get(format!(
-            "http://{addr}/api/v1/admin/groups/user:alice/usage"
-        ))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let month_bucket = usage["buckets"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|b| b["window"] == "month")
-        .expect("a month bucket exists for the leaf");
-    assert_eq!(
-        month_bucket["budget_cap"], 2000,
-        "the leaf's budget cap is enforced from the stamped template"
-    );
-
-    // A SECOND mint into the now-existing leaf binds as-is (no re-provision).
-    let resp2 = client
-        .post(format!("http://{addr}/api/v1/admin/keys"))
-        .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({
-            "name": "alice-cli-2",
-            "group": "user:alice",
-            "parent": "team-payments"
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp2.status().as_u16(), 201);
-    let body2: serde_json::Value = resp2.json().await.unwrap();
-    assert_eq!(
-        body2["group_provisioned"], false,
-        "binding to an existing leaf does not re-provision"
-    );
-
-    handle.abort();
-}
-
-/// PARENT-MISMATCH 409: minting into an EXISTING group while naming a `parent` that is NOT its
-/// actual parent is a conflict — a mint must never silently re-home an existing leaf. Naming the
-/// CORRECT parent (or none) binds fine.
-#[tokio::test]
-async fn test_mint_parent_mismatch_is_409() {
-    crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let groups = std::collections::BTreeMap::from([
-        (
-            "team-a".to_string(),
-            crate::config::GroupCfg {
-                limits: vec![budget_limit(1_000_000)],
-                ..Default::default()
-            },
-        ),
-        (
-            "team-b".to_string(),
-            crate::config::GroupCfg {
-                limits: vec![budget_limit(1_000_000)],
-                ..Default::default()
-            },
-        ),
-        (
-            "user:bob".to_string(),
-            crate::config::GroupCfg {
-                parent: Some("team-a".to_string()),
-                limits: vec![budget_limit(3000)],
-                ..Default::default()
-            },
-        ),
-    ]);
-    let app = TestApp::new().governance(gov).groups_tree(groups).build();
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
-    let url = format!("http://{addr}/api/v1/admin/keys");
-
-    // Bob exists under team-a; a mint naming team-b as parent is a 409 (never re-home).
-    let resp = client
-        .post(&url)
-        .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"name": "k", "group": "user:bob", "parent": "team-b"}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status().as_u16(), 409, "parent mismatch is a conflict");
-    let body: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(body["error"]["code"], "conflict");
-    assert!(
-        body["error"]["message"]
-            .as_str()
-            .unwrap_or("")
-            .contains("already exists with parent"),
-        "the 409 explains the re-home refusal: {body}"
-    );
-
-    // Naming the CORRECT parent binds fine (parent matches).
-    let ok = client
-        .post(&url)
-        .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"name": "k2", "group": "user:bob", "parent": "team-a"}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(ok.status().as_u16(), 201, "matching parent binds");
-
-    handle.abort();
-}
-
-/// DELEGATED MINT SCOPE (D2): a `mint`-scoped principal can MINT keys but CANNOT register hooks nor
-/// mutate groups; a `hooks-register` principal can register hooks but CANNOT mint. The two are
-/// SIBLINGS — neither confers the other. (The module ceiling is `full` so the bound scopes resolve
-/// un-capped; the operator token stays full and ceiling-exempt.)
-#[tokio::test]
-async fn test_mint_scope_is_sibling_of_hooks_register() {
-    crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let groups = std::collections::BTreeMap::from([(
-        "team".to_string(),
-        crate::config::GroupCfg {
-            limits: vec![budget_limit(1_000_000)],
-            child_default: Some(crate::config::groups::ChildDefault {
-                limits: vec![budget_limit(1000)],
-            }),
-            ..Default::default()
-        },
-    )]);
-    let mut app = TestApp::new().governance(gov).groups_tree(groups).build();
-    {
-        let inner = Arc::get_mut(&mut app).expect("sole owner");
-        inner.admin_chain = vec!["test-scope-module".to_string(), "admin-tokens".to_string()];
-        let mut table = std::collections::BTreeMap::new();
-        table.insert(
-            "minters".to_string(),
-            crate::config::RoleBindingCfg {
-                admin_scope: Some("mint".to_string()),
-                ..Default::default()
-            },
-        );
-        table.insert(
-            "registrars".to_string(),
-            crate::config::RoleBindingCfg {
-                admin_scope: Some("hooks-register".to_string()),
-                ..Default::default()
-            },
-        );
-        inner
-            .role_bindings
-            .insert("test-scope-module".to_string(), table);
-        // Ceiling `full` so `mint` / `hooks-register` resolve un-capped (default ceiling is read-only).
-        inner
-            .auth_scope_caps
-            .insert("test-scope-module".to_string(), "full".to_string());
-    }
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
-    let with = |tok: &'static str, req: reqwest::RequestBuilder| {
-        req.header("x-admin-token", tok)
-            .header("content-type", "application/json")
-    };
-    let hook_body = serde_json::json!({
-        "name": "some-hook",
-        "config": {"kind": "tap", "plugin": "test-hook"}
-    })
-    .to_string();
-
-    // MINT principal: CAN mint (into an existing group, and auto-provision a leaf).
-    let r = with(
-        "grp:minters",
-        client.post(format!("http://{addr}/api/v1/admin/keys")),
-    )
-    .body(serde_json::json!({"name": "m", "group": "user:dev", "parent": "team"}).to_string())
-    .send()
-    .await
-    .unwrap();
-    assert_eq!(
-        r.status().as_u16(),
-        201,
-        "mint scope can mint + auto-provision"
-    );
-
-    // MINT principal: CANNOT register hooks (sibling boundary).
-    let r = with(
-        "grp:minters",
-        client.post(format!("http://{addr}/api/v1/admin/hooks")),
-    )
-    .body(hook_body.clone())
-    .send()
-    .await
-    .unwrap();
-    assert_eq!(
-        r.status().as_u16(),
-        403,
-        "mint scope must NOT register hooks"
-    );
-
-    // MINT principal: CANNOT mutate groups (group CRUD stays full).
-    let r = with(
-        "grp:minters",
-        client.post(format!("http://{addr}/api/v1/admin/groups")),
-    )
-    .body(serde_json::json!({"name": "sneaky", "config": {"parent": "team"}}).to_string())
-    .send()
-    .await
-    .unwrap();
-    assert_eq!(
-        r.status().as_u16(),
-        403,
-        "mint scope must NOT mutate arbitrary groups"
-    );
-
-    // HOOKS-REGISTER principal: CAN register a (shape-only) hook, CANNOT mint.
-    let r = with(
-        "grp:registrars",
-        client.post(format!("http://{addr}/api/v1/admin/hooks")),
-    )
-    .body(hook_body)
-    .send()
-    .await
-    .unwrap();
-    assert_eq!(r.status().as_u16(), 201, "hooks-register registers hooks");
-    let r = with(
-        "grp:registrars",
-        client.post(format!("http://{addr}/api/v1/admin/keys")),
-    )
-    .body(serde_json::json!({"name": "x", "group": "team"}).to_string())
-    .send()
-    .await
-    .unwrap();
-    assert_eq!(
-        r.status().as_u16(),
-        403,
-        "hooks-register must NOT mint keys"
-    );
-
-    handle.abort();
-}
-
-/// `max_keys_per_principal` (audit gap 7): with the cap set to 2, a group's 3rd mint is a 409 that
-/// names the cap; a DIFFERENT group is unaffected (the cap is per group = per principal). Cap `0`
-/// (default, tested elsewhere) is unlimited.
-#[tokio::test]
-async fn test_max_keys_per_principal_cap_trips() {
-    crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let groups = std::collections::BTreeMap::from([
-        (
-            "capped".to_string(),
-            crate::config::GroupCfg {
-                limits: vec![budget_limit(1_000_000)],
-                ..Default::default()
-            },
-        ),
-        (
-            "other".to_string(),
-            crate::config::GroupCfg {
-                limits: vec![budget_limit(1_000_000)],
-                ..Default::default()
-            },
-        ),
-    ]);
-    let mut app = TestApp::new().governance(gov).groups_tree(groups).build();
-    {
-        let inner = Arc::get_mut(&mut app).expect("sole owner");
-        inner.max_keys_per_principal = 2;
-    }
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
-    let url = format!("http://{addr}/api/v1/admin/keys");
-    let mint = |name: &str, group: &str| {
-        client
-            .post(&url)
-            .header("x-admin-token", "admintok")
-            .json(&serde_json::json!({"name": name, "group": group}))
-            .send()
-    };
-
-    // Two keys into `capped` — both fine (at the cap, not over it).
-    assert_eq!(mint("a", "capped").await.unwrap().status().as_u16(), 201);
-    assert_eq!(mint("b", "capped").await.unwrap().status().as_u16(), 201);
-    // The THIRD trips the cap → 409 naming the limit.
-    let r = mint("c", "capped").await.unwrap();
-    assert_eq!(
-        r.status().as_u16(),
-        409,
-        "3rd key into a capped group is a conflict"
-    );
-    let body: serde_json::Value = r.json().await.unwrap();
-    assert_eq!(body["error"]["code"], "conflict");
-    assert!(
-        body["error"]["message"]
-            .as_str()
-            .unwrap_or("")
-            .contains("max_keys_per_principal"),
-        "the 409 names the cap: {body}"
-    );
-
-    // A DIFFERENT group is unaffected — the cap is per group (= per principal).
-    assert_eq!(mint("d", "other").await.unwrap().status().as_u16(), 201);
-
-    handle.abort();
-}
-
-// ── 1.5.0 signed-token key coverage (P3) ─────────────────────────────────────────────────────────
-
-/// The MINT returns a busbar-SIGNED `token` (prefix `bbk_`) + an `expires_at`, and that token is
-/// NEVER stored: a subsequent `GET /keys/{id}` returns the binding metadata but no `token`, and the
-/// token string appears nowhere in the read body. The token is the credential, shown exactly once.
-#[tokio::test]
-async fn test_signed_mint_returns_token_and_expiry_never_stored() {
-    crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let (addr, handle) = serve_with_gov(gov).await;
-    let client = reqwest::Client::new();
-    let url = format!("http://{addr}/api/v1/admin/keys");
-
-    let created: serde_json::Value = client
-        .post(&url)
-        .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"name": "svc"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let id = created["id"].as_str().unwrap().to_string();
-    let token = created["token"]
-        .as_str()
-        .expect("mint returns a token")
-        .to_string();
-    assert!(
-        token.starts_with("bbk_"),
-        "the token is a busbar-signed token: {token}"
-    );
-    assert!(
-        created["expires_at"].as_u64().is_some(),
-        "mint returns an absolute expires_at: {created}"
-    );
-
-    // The token is NEVER returned by a read - GET carries the binding metadata only, never the
-    // once-shown credential.
-    let read = client
-        .get(format!("{url}/{id}"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(read.status().as_u16(), 200);
-    let text = read.text().await.unwrap();
-    let body: serde_json::Value = serde_json::from_str(&text).unwrap();
-    assert_eq!(body["id"], id);
-    assert!(
-        body.get("token").is_none(),
-        "a read never returns the token: {body}"
-    );
-    assert!(
-        !text.contains(&token),
-        "the once-shown token must not appear in any read body"
-    );
-
-    handle.abort();
-}
-
-/// `expires_in` duration parsing sets `expires_at` at ~now+duration; an absolute `expires_at` works
-/// verbatim; both together is a 400; a past `expires_at` is a 400; a malformed duration is a 400.
-#[tokio::test]
-async fn test_signed_mint_expiry_parsing_matrix() {
-    crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let (addr, handle) = serve_with_gov(gov).await;
-    let client = reqwest::Client::new();
-    let url = format!("http://{addr}/api/v1/admin/keys");
-    let post = |body: serde_json::Value| {
-        client
-            .post(&url)
-            .header("x-admin-token", "admintok")
-            .json(&body)
-            .send()
-    };
-
-    // `expires_in: "7d"` -> expires_at ~= now + 7*86400 (allow a few seconds of clock slop).
-    let now = crate::store::now();
-    let seven_d: serde_json::Value = post(serde_json::json!({"name": "k", "expires_in": "7d"}))
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let exp = seven_d["expires_at"].as_u64().expect("expires_at present");
-    let want = now + 7 * 86_400;
-    assert!(
-        exp.abs_diff(want) <= 5,
-        "7d must set expires_at ~= now+7d: got {exp}, want ~{want}"
-    );
-
-    // An absolute `expires_at` is used verbatim.
-    let abs_at = now + 999_999;
-    let absolute: serde_json::Value = post(serde_json::json!({"name": "k", "expires_at": abs_at}))
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(
-        absolute["expires_at"].as_u64(),
-        Some(abs_at),
-        "an absolute expires_at is used verbatim"
-    );
-
-    // Both together -> 400 (mutually exclusive).
-    let both = post(serde_json::json!({
-        "name": "k", "expires_in": "1h", "expires_at": abs_at
-    }))
-    .await
-    .unwrap();
-    assert_eq!(
-        both.status().as_u16(),
-        400,
-        "expires_in + expires_at is a 400"
-    );
-
-    // A past absolute expiry -> 400.
-    let past = post(serde_json::json!({"name": "k", "expires_at": now - 1}))
-        .await
-        .unwrap();
-    assert_eq!(past.status().as_u16(), 400, "a past expires_at is a 400");
-
-    // A malformed duration -> 400.
-    let bad = post(serde_json::json!({"name": "k", "expires_in": "7 fortnights"}))
-        .await
-        .unwrap();
-    assert_eq!(bad.status().as_u16(), 400, "a malformed duration is a 400");
-
-    handle.abort();
-}
-
-/// A minted token VERIFIES against the binding via `gov.verify_token` (resolving the subject's
-/// enabled binding). After a DELETE the same token fails verify (the subject is denylisted AND its
-/// binding is gone - revoke-then-delete). `is_revoked(sub)` becomes true.
-#[tokio::test]
-async fn test_signed_mint_verify_then_delete_denies() {
-    crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let (addr, handle) = serve_with_gov(gov.clone()).await;
-    let client = reqwest::Client::new();
-    let url = format!("http://{addr}/api/v1/admin/keys");
-
-    let created: serde_json::Value = client
-        .post(&url)
-        .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"name": "verifiable"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let id = created["id"].as_str().unwrap().to_string();
-    let token = created["token"].as_str().unwrap().to_string();
-
-    // The token resolves its binding right after mint.
-    let now = crate::store::now();
-    let resolved = gov
-        .verify_token(&token, now)
-        .expect("a fresh token verifies");
-    assert_eq!(
-        resolved.id, id,
-        "verify resolves the minted subject's binding"
-    );
-    assert!(!gov.is_revoked(&id), "a fresh subject is not revoked");
-
-    // DELETE revokes-then-deletes: the same token now fails verify (denylist + binding gone).
-    let del = client
-        .delete(format!("{url}/{id}"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(del.status().as_u16(), 204, "delete is a 204");
-    assert!(gov.is_revoked(&id), "delete denylists the subject");
-    assert!(
-        gov.verify_token(&token, now).is_none(),
-        "a deleted key's token no longer verifies"
-    );
-
-    handle.abort();
-}
-
-/// `POST /keys/{id}/revoke` denylists WITHOUT deleting: `GET /keys/{id}` still shows the binding for
-/// the record, `verify_token` now returns `None`, and `is_revoked(sub)` is true. Revoke is
-/// idempotent (a second revoke is still 200).
-#[tokio::test]
-async fn test_signed_revoke_denylists_without_deleting() {
-    crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let (addr, handle) = serve_with_gov(gov.clone()).await;
-    let client = reqwest::Client::new();
-    let url = format!("http://{addr}/api/v1/admin/keys");
-
-    let created: serde_json::Value = client
-        .post(&url)
-        .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"name": "revokable"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let id = created["id"].as_str().unwrap().to_string();
-    let token = created["token"].as_str().unwrap().to_string();
-    let now = crate::store::now();
-    assert!(
-        gov.verify_token(&token, now).is_some(),
-        "verifies before revoke"
-    );
-
-    // Revoke (no delete): 200.
-    let r = client
-        .post(format!("{url}/{id}/revoke"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(r.status().as_u16(), 200, "revoke is a 200");
-    let body: serde_json::Value = r.json().await.unwrap();
-    assert_eq!(body["revoked"], id.as_str());
-
-    // The binding is STILL present (revoke, not delete) - GET still returns it…
-    let read = client
-        .get(format!("{url}/{id}"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(read.status().as_u16(), 200, "the binding is still readable");
-    assert_eq!(read.json::<serde_json::Value>().await.unwrap()["id"], id);
-
-    // …but the subject is denylisted, so the token no longer verifies.
-    assert!(gov.is_revoked(&id), "the subject is denylisted");
-    assert!(
-        gov.verify_token(&token, now).is_none(),
-        "a revoked subject's token no longer verifies"
-    );
-
-    // Idempotent: a second revoke is still 200.
-    let again = client
-        .post(format!("{url}/{id}/revoke"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(again.status().as_u16(), 200, "revoke is idempotent");
-
-    handle.abort();
-}
-
-/// `group: None` (omitted) mints a key with NO group - authed + unlimited (access only); key_meta's
-/// `group` is null. A pool ACL matrix: OMITTED `allowed_pools` binds ALL pools (empty vec in the
-/// binding), while an explicit `[]` binds NO pools.
-#[tokio::test]
-async fn test_signed_mint_group_none_and_pool_acl_matrix() {
-    crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let (addr, handle) = serve_with_gov(gov.clone()).await;
-    let client = reqwest::Client::new();
-    let url = format!("http://{addr}/api/v1/admin/keys");
-
-    // group omitted -> a groupless key; key_meta.group is null.
-    let no_group: serde_json::Value = client
-        .post(&url)
-        .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"name": "groupless"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert!(
-        no_group["group"].is_null(),
-        "an omitted group is null: {no_group}"
-    );
-
-    // allowed_pools OMITTED = ALL pools: the binding stores the empty vec (the "all" encoding).
-    let all_pools_id = no_group["id"].as_str().unwrap().to_string();
-    let binding = gov.lookup_by_sub(&all_pools_id).expect("binding present");
-    assert!(
-        binding.allowed_pools.is_none(),
-        "omitted allowed_pools = the empty-vec ALL encoding"
-    );
-    assert!(binding.group.is_none(), "no group bound");
-
-    // allowed_pools = explicit [] -> the binding stores an explicit empty list too. On the wire the
-    // two are the same empty array; the distinction (all vs none) is a runtime interpretation of the
-    // stored vec, so we assert the binding round-trips the explicit empty and key_meta echoes it.
-    let none_pools: serde_json::Value = client
-        .post(&url)
-        .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"name": "nopools", "allowed_pools": []}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(
-        none_pools["allowed_pools"],
-        serde_json::json!([]),
-        "an explicit [] echoes as an empty pool list: {none_pools}"
-    );
-
-    handle.abort();
-}
-
-/// `POST /api/v1/admin/signing-key/rotate` reports the current kid + the revoke-all intent
-/// (`revoke_all: true`), and is admin-gated.
-#[tokio::test]
-async fn test_signing_key_rotate_reports_kid_and_revoke_all() {
-    crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let (addr, handle) = serve_with_gov(gov).await;
-    let client = reqwest::Client::new();
-    let url = format!("http://{addr}/api/v1/admin/signing-key/rotate");
-
-    // Admin-gated.
-    let unauth = client.post(&url).send().await.unwrap();
-    assert_eq!(
-        unauth.status().as_u16(),
-        401,
-        "signing-key rotate is admin-guarded"
-    );
-
-    let r = client
-        .post(&url)
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(r.status().as_u16(), 200);
-    let body: serde_json::Value = r.json().await.unwrap();
-    assert_eq!(
-        body["current_kid"],
-        crate::governance::signing::DEFAULT_KID,
-        "reports the current signing-key id: {body}"
-    );
-    assert_eq!(body["revoke_all"], true, "rotation is revoke-all by design");
-
-    handle.abort();
-}
-
-// ── per-section overlay RESET (DELETE /overlay/{section}) ──────────────────────────────────────────
-
-/// Write a minimal on-disk config.yaml (with one base group `team`) + providers.yaml under a fresh
-/// temp dir, returning `(dir, config_path, providers_path)`. The reset endpoint re-reads disk truth,
-/// so a reset test needs real files to revert to. Caller removes the dir.
-fn write_reset_fixture(tag: &str) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-reset-{}-{}-{}",
-        tag,
-        std::process::id(),
-        crate::store::now()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    let providers_path = dir.join("providers.yaml");
-    let config_path = dir.join("config.yaml");
-    std::fs::write(
-        &providers_path,
-        "test-provider:
-  protocol: anthropic
-  base_url: http://127.0.0.1:1/
-  api_key_env: BUSBAR_TEST_RESET_NO_SUCH_KEY
-",
-    )
-    .unwrap();
-    // Base config: one model/pool + a base group `team` with a month budget. This IS the truth a
-    // reset reverts to.
-    std::fs::write(
-        &config_path,
-        "listen: 127.0.0.1:0
-providers:
-  test-provider:
-    api_key: { env: BUSBAR_TEST_RESET_NO_SUCH_KEY }
-models:
-  m0:
-    provider: test-provider
-    max_concurrent: 4
-pools:
-  p:
-    members:
-      - model: m0
-groups:
-  team:
-    limits:
-      - { budget: 20000, per: month }
-",
-    )
-    .unwrap();
-    (dir, config_path, providers_path)
-}
-
-/// RESET GROUPS after a runtime group POST: the runtime group is gone, the cost model reflects base
-/// (only `team` remains), the config version bumped, and the mutation is audited + version-logged.
-/// The overlay file's groups section is cleared while the (empty) hooks section is preserved.
-#[tokio::test]
-async fn test_admin_v1_overlay_reset_groups_reverts_to_base() {
-    crate::metrics::init();
-    let (dir, config_path, providers_path) = write_reset_fixture("groups");
-    let overlay = dir.join("overlay.json");
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let mut app = TestApp::new()
-        .governance(gov)
-        .overlay_path(overlay.clone())
-        // The live App starts consistent with disk: `team` is a base group.
-        .group(
-            "team",
-            crate::config::GroupCfg {
-                limits: vec![serde_yaml::from_str("{ budget: 20000, per: month }").unwrap()],
-                ..Default::default()
-            },
-        )
-        .build();
-    {
-        let inner = Arc::get_mut(&mut app).expect("sole owner");
-        inner.config_path = Some(config_path.clone());
-        inner.providers_path = Some(providers_path.clone());
-    }
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
-    let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
-
-    // Create a runtime leaf group parented to the base `team`.
-    let created = admin(client.post(format!("http://{addr}/api/v1/admin/groups")))
-        .header("content-type", "application/json")
-        .body(
-            serde_json::json!({
-                "name": "user:alice",
-                "config": {"parent": "team", "limits": [{"budget": 5000, "per": "month"}]}
-            })
-            .to_string(),
-        )
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(created.status().as_u16(), 201, "{:?}", created.text().await);
-    // It is live in the group tree + written to the overlay.
-    let listed: serde_json::Value = admin(client.get(format!("http://{addr}/api/v1/admin/groups")))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert!(
-        listed["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|g| g["name"] == "user:alice"),
-        "the runtime group is live before the reset"
-    );
-    assert!(
-        crate::config::overlay::read(&overlay)
-            .expect("overlay written")
-            .groups
-            .contains_key("user:alice"),
-        "the runtime group is in the overlay before the reset"
-    );
-    let ver_before: serde_json::Value =
-        admin(client.get(format!("http://{addr}/api/v1/admin/info")))
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-    let v_before = ver_before["config_version"].as_u64().unwrap();
-
-    // RESET the groups section.
-    let reset = admin(client.delete(format!("http://{addr}/api/v1/admin/overlay/groups")))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(reset.status().as_u16(), 200, "{:?}", reset.text().await);
-    let body: serde_json::Value = reset.json().await.unwrap();
-    assert_eq!(body["reset"], "groups");
-    assert_eq!(body["changed"], true, "the reset discarded a mutation");
-    let v_after = body["config_version"].as_u64().unwrap();
-    assert!(v_after > v_before, "the reset bumped the config version");
-
-    // The runtime group is gone; only the base `team` remains.
-    let after: serde_json::Value = admin(client.get(format!("http://{addr}/api/v1/admin/groups")))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let names: Vec<&str> = after["items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|g| g["name"].as_str().unwrap())
-        .collect();
-    assert_eq!(
-        names,
-        vec!["team"],
-        "reverted to base groups only: {names:?}"
-    );
-
-    // The overlay's groups section is cleared on disk (the durable half survives a restart).
-    let doc = crate::config::overlay::read(&overlay).expect("overlay still present");
-    assert!(
-        doc.groups.is_empty() && doc.deleted_groups.is_empty(),
-        "the overlay groups section is cleared"
-    );
-
-    // Audited + version-logged.
-    let audit: serde_json::Value = admin(client.get(format!(
-        "http://{addr}/api/v1/admin/audit?action=overlay.reset"
-    )))
-    .send()
-    .await
-    .unwrap()
-    .json()
-    .await
-    .unwrap();
-    // The audit log is a process-global static shared across parallel tests, so match on BOTH the
-    // resource AND the applied outcome (another test may log an `overlay:groups`/rejected first).
-    assert!(
-        audit["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|e| e["resource"] == "overlay:groups" && e["outcome"] == "applied"),
-        "the applied reset is audited"
-    );
-    let versions: serde_json::Value =
-        admin(client.get(format!("http://{addr}/api/v1/admin/config/versions")))
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-    assert!(
-        versions["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|v| v["summary"]
-                .as_str()
-                .is_some_and(|s| s.contains("overlay.reset groups"))),
-        "the reset landed a version-log entry"
-    );
-
-    handle.abort();
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// RESET HOOKS after a runtime hook change restores base hooks: a runtime-registered hook is gone
-/// after the reset and the base (disk) hook surface is what remains.
-#[tokio::test]
-async fn test_admin_v1_overlay_reset_hooks_reverts_to_base() {
-    crate::metrics::init();
-    let (dir, config_path, providers_path) = write_reset_fixture("hooks");
-    let overlay = dir.join("overlay.json");
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let mut app = TestApp::new()
-        .governance(gov)
-        .overlay_path(overlay.clone())
-        .build();
-    {
-        let inner = Arc::get_mut(&mut app).expect("sole owner");
-        inner.config_path = Some(config_path.clone());
-        inner.providers_path = Some(providers_path.clone());
-    }
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
-    let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
-
-    // Register a runtime hook (the base config declares none).
-    let created = admin(client.post(format!("http://{addr}/api/v1/admin/hooks")))
-        .header("content-type", "application/json")
-        .body(
-            serde_json::json!({
-                "name": "runtime_gate",
-                "config": {"kind": "gate", "plugin": "test-hook", "global": true}
-            })
-            .to_string(),
-        )
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(created.status().as_u16(), 201, "{:?}", created.text().await);
-    assert!(
-        crate::config::overlay::read(&overlay)
-            .expect("overlay written")
-            .hooks
-            .contains_key("runtime_gate"),
-        "runtime hook in the overlay before the reset"
-    );
-
-    // RESET hooks.
-    let reset = admin(client.delete(format!("http://{addr}/api/v1/admin/overlay/hooks")))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(reset.status().as_u16(), 200, "{:?}", reset.text().await);
-    assert_eq!(
-        reset.json::<serde_json::Value>().await.unwrap()["reset"],
-        "hooks"
-    );
-
-    // The runtime hook is gone; the base hook surface (empty here) is restored.
-    let hooks: serde_json::Value = admin(client.get(format!("http://{addr}/api/v1/admin/hooks")))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert!(
-        hooks["items"].as_array().unwrap().is_empty(),
-        "the runtime hook is discarded, base hooks restored: {hooks}"
-    );
-    let doc = crate::config::overlay::read(&overlay).expect("overlay present");
-    assert!(
-        doc.hooks.is_empty() && doc.global_hooks.is_empty() && doc.deleted.is_empty(),
-        "the overlay hooks section is cleared"
-    );
-
-    handle.abort();
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// A stale `If-Match` on the reset is a `version_conflict` (409) that changes nothing — the same
-/// optimistic-concurrency guard every config-plane mutation honors.
-#[tokio::test]
-async fn test_admin_v1_overlay_reset_stale_if_match_conflicts() {
-    crate::metrics::init();
-    let (dir, config_path, providers_path) = write_reset_fixture("ifmatch");
-    let overlay = dir.join("overlay.json");
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let mut app = TestApp::new()
-        .governance(gov)
-        .overlay_path(overlay.clone())
-        .group(
-            "team",
-            crate::config::GroupCfg {
-                limits: vec![serde_yaml::from_str("{ budget: 20000, per: month }").unwrap()],
-                ..Default::default()
-            },
-        )
-        .build();
-    {
-        let inner = Arc::get_mut(&mut app).expect("sole owner");
-        inner.config_path = Some(config_path.clone());
-        inner.providers_path = Some(providers_path.clone());
-    }
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
-    let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
-
-    // Put SOMETHING in the overlay so the reset is not the empty-section no-op path.
-    admin(client.post(format!("http://{addr}/api/v1/admin/groups")))
-        .header("content-type", "application/json")
-        .body(serde_json::json!({"name": "user:bob", "config": {"parent": "team"}}).to_string())
-        .send()
-        .await
-        .unwrap();
-
-    // A deliberately-stale If-Match (0 is never the current version after a mutation).
-    let stale = admin(client.delete(format!("http://{addr}/api/v1/admin/overlay/groups")))
-        .header("If-Match", "\"0\"")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(stale.status().as_u16(), 409);
-    assert_eq!(
-        stale.json::<serde_json::Value>().await.unwrap()["error"]["code"],
-        "version_conflict"
-    );
-    // Nothing changed: the runtime group is still there.
-    let listed: serde_json::Value = admin(client.get(format!("http://{addr}/api/v1/admin/groups")))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert!(
-        listed["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|g| g["name"] == "user:bob"),
-        "a rejected reset changes nothing"
-    );
-
-    handle.abort();
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// An unknown section name is a `400 invalid_request` — only `groups`|`hooks` are valid.
-#[tokio::test]
-async fn test_admin_v1_overlay_reset_unknown_section_400() {
-    crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = TestApp::new().governance(gov).build();
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
-
-    for bad in ["auth", "plugins", "Groups", "keys"] {
-        let r = client
-            .delete(format!("http://{addr}/api/v1/admin/overlay/{bad}"))
-            .header("x-admin-token", "admintok")
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(r.status().as_u16(), 400, "`{bad}` is not a valid section");
-        assert_eq!(
-            r.json::<serde_json::Value>().await.unwrap()["error"]["code"],
-            "invalid_request"
-        );
-    }
-
-    handle.abort();
-}
-
-/// An EMPTY section (no overlay entries/tombstones) is an idempotent success no-op: `changed:false`
-/// and the config version does NOT bump. Works even with no config files on disk (nothing persisted
-/// ⇒ every section is definitionally already at base).
-#[tokio::test]
-async fn test_admin_v1_overlay_reset_empty_section_is_idempotent_noop() {
-    crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let overlay = std::env::temp_dir().join(format!(
-        "busbar-reset-empty-{}-{}.json",
-        std::process::id(),
-        crate::store::now()
-    ));
-    let _ = std::fs::remove_file(&overlay);
-    let app = TestApp::new()
-        .governance(gov)
-        .overlay_path(overlay.clone())
-        .build();
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
-    let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
-
-    let v_before: serde_json::Value = admin(client.get(format!("http://{addr}/api/v1/admin/info")))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-
-    // No overlay writes have happened → both sections are empty. A reset is a clean no-op success.
-    for section in ["groups", "hooks"] {
-        let r = admin(client.delete(format!("http://{addr}/api/v1/admin/overlay/{section}")))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(
-            r.status().as_u16(),
-            200,
-            "empty {section} reset is a success"
-        );
-        let body: serde_json::Value = r.json().await.unwrap();
-        assert_eq!(
-            body["changed"], false,
-            "an empty-section reset changes nothing"
-        );
-    }
-    let v_after: serde_json::Value = admin(client.get(format!("http://{addr}/api/v1/admin/info")))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(
-        v_before["config_version"], v_after["config_version"],
-        "an idempotent no-op reset does not bump the version"
-    );
-
-    handle.abort();
-    let _ = std::fs::remove_file(&overlay);
-}
-
-/// SCOPE: a section reset is a FULL-scope mutation (the `/overlay/*` fallthrough in the scope
-/// matrix), so a read-only principal is forbidden. The matrix is the ONE source the middleware
-/// enforces, so asserting it here is the authoritative scope check; the surface is also
-/// admin-guarded (an unauthenticated caller never even reaches the scope check).
-#[tokio::test]
-async fn test_admin_v1_overlay_reset_requires_full_scope() {
-    crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = TestApp::new().governance(gov).build();
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
-
-    // The scope matrix requires `full` for DELETE /overlay/{section} — a read-only (or
-    // hooks-register) principal cannot pass it.
-    for section in ["groups", "hooks"] {
-        let scope = crate::admin::v1::contract::required_scope(
-            &axum::http::Method::DELETE,
-            &format!("/api/v1/admin/overlay/{section}"),
-        );
-        assert_eq!(
-            scope.as_str(),
-            "full",
-            "a {section} reset is a full-scope mutation"
-        );
-    }
-    // And an unauthenticated caller is rejected (admin-guarded) — the surface never leaks.
-    let unauth = client
-        .delete(format!("http://{addr}/api/v1/admin/overlay/groups"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(unauth.status().as_u16(), 401, "the reset is admin-guarded");
-
-    handle.abort();
-}
-
-// ── /config/settings — 1.5.0 full-config coverage (the overlay `root` section) ──────────────────────
-
-/// Build an overlay-backed app wired to on-disk config files (the `write_reset_fixture` truth), spin
-/// up an HTTP server, and return everything the `/config/settings` tests need. The app starts on base
-/// config (no root overlay), so a `PUT /config/settings` is the first root mutation.
-async fn settings_test_app(
-    tag: &str,
-) -> (
-    std::path::PathBuf,   // temp dir (caller removes)
-    std::path::PathBuf,   // overlay path
-    std::net::SocketAddr, // server addr
-    tokio::task::JoinHandle<()>,
-) {
-    crate::metrics::init();
-    // A per-test tag keeps parallel `/config/settings` tests on DISTINCT temp dirs (the fixture dir
-    // is keyed on pid + coarse timestamp, which collides for same-second parallel starts).
-    let (dir, config_path, providers_path) = write_reset_fixture(&format!("settings-{tag}"));
-    let overlay = dir.join("overlay.json");
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let mut app = TestApp::new()
-        .governance(gov)
-        .overlay_path(overlay.clone())
-        .build();
-    {
-        let inner = Arc::get_mut(&mut app).expect("sole owner");
-        inner.config_path = Some(config_path.clone());
-        inner.providers_path = Some(providers_path.clone());
-    }
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    (dir, overlay, addr, handle)
-}
-
-/// ROUND-TRIP + RESTART SURVIVAL: a `PUT /config/settings` with LIVE-swappable sections (rate_card +
-/// per_request_fee + a limits field) applies live (200, version bumps), is written to the overlay
-/// `root` section, is reflected by `GET /config/settings`, and — crucially — survives a
-/// `POST /config/reload` (the restart-equivalent disk re-read). Audited + version-logged.
-#[tokio::test]
-async fn test_admin_v1_config_settings_round_trip_survives_reload() {
-    let (dir, overlay, addr, handle) = settings_test_app("roundtrip").await;
-    let client = reqwest::Client::new();
-    let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
-
-    let before: serde_json::Value = admin(client.get(format!("http://{addr}/api/v1/admin/info")))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let v_before = before["config_version"].as_u64().unwrap();
-
-    // PUT live-swappable sections only.
-    let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
-        .header("content-type", "application/json")
-        .body(
-            serde_json::json!({
-                "per_request_fee": 7,
-                "rate_card": { "m0": { "input_utok": 1.5, "output_utok": 2.0 } },
-                "limits": { "max_inbound_concurrent": 512 }
-            })
-            .to_string(),
-        )
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(put.status().as_u16(), 200, "{:?}", put.text().await);
-    let body: serde_json::Value =
-        admin(client.get(format!("http://{addr}/api/v1/admin/config/settings")))
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-    assert_eq!(body["settings"]["per_request_fee"], 7);
-    assert_eq!(body["settings"]["limits"]["max_inbound_concurrent"], 512);
-    assert!(
-        body["settings"]["rate_card"]["m0"].is_object(),
-        "rate_card round-trips"
-    );
-
-    // The overlay `root` section is on disk (the durable half).
-    let doc = crate::config::overlay::read(&overlay).expect("overlay written");
-    let root = doc.root.expect("root section present");
-    assert_eq!(root.per_request_fee, Some(7));
-
-    // The version bumped (a live swap happened).
-    let after: serde_json::Value = admin(client.get(format!("http://{addr}/api/v1/admin/info")))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert!(
-        after["config_version"].as_u64().unwrap() > v_before,
-        "the PUT bumped the config version"
-    );
-
-    // RESTART EQUIVALENT: re-run the BOOT disk-load pipeline (the exact path a fresh process takes)
-    // and confirm the overlay root re-merges onto the base DeployCfg — the settings survive a
-    // restart. (`config/reload` over HTTP resolves the overlay path from the `BUSBAR_CONFIG_OVERLAY`
-    // env var, which the direct-App test harness does not set; this asserts the same merge that boot
-    // performs, without a process-global env var that would race parallel tests.)
-    {
-        let config_path = dir.join("config.yaml");
-        let providers_path = dir.join("providers.yaml");
-        let mut loaded = crate::load_config_from_disk(
-            &config_path,
-            &providers_path,
-            false,
-            crate::config::EnvSubst::Strict,
-        )
-        .expect("disk reload");
-        // Simulate the env-derived overlay read (boot reads it via BUSBAR_CONFIG_OVERLAY).
-        loaded.overlay_doc = crate::config::overlay::read(&overlay);
-        assert_eq!(
-            loaded.deploy.per_request_fee, 0,
-            "base config.yaml has no fee (the override lives only in the overlay)"
-        );
-        if let Some(doc) = loaded.overlay_doc.as_ref() {
-            crate::config::overlay::apply_root_to_deploy(&mut loaded.deploy, doc);
-        }
-        assert_eq!(
-            loaded.deploy.per_request_fee, 7,
-            "the root overlay re-merges onto base at boot (survives a restart)"
-        );
-    }
-
-    // Audited (applied) + version-logged.
-    let audit: serde_json::Value = admin(client.get(format!(
-        "http://{addr}/api/v1/admin/audit?action=config.settings"
-    )))
-    .send()
-    .await
-    .unwrap()
-    .json()
-    .await
-    .unwrap();
-    assert!(
-        audit["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|e| e["resource"] == "config:settings" && e["outcome"] == "applied"),
-        "the applied PUT is audited"
-    );
-
-    handle.abort();
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// PROCESS-LEVEL flagging: a `PUT` touching a socket-rebind field (`listen`) and the durable `store`
-/// backend stores them durably but flags them `reload_to_apply` (they cannot hot-swap), while a
-/// live-swappable field in the SAME request is not flagged. The note explains the split.
-#[tokio::test]
-async fn test_admin_v1_config_settings_process_level_flagged_reload_to_apply() {
-    let (dir, overlay, addr, handle) = settings_test_app("proclevel").await;
-    let client = reqwest::Client::new();
-    let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
-
-    let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
-        .header("content-type", "application/json")
-        .body(
-            serde_json::json!({
-                "listen": "127.0.0.1:0",
-                "store": { "module": "memory" },
-                "per_request_fee": 3
-            })
-            .to_string(),
-        )
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(put.status().as_u16(), 200, "{:?}", put.text().await);
-    let body: serde_json::Value = put.json().await.unwrap();
-    let flagged: Vec<&str> = body["reload_to_apply"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|v| v.as_str().unwrap())
-        .collect();
-    assert!(
-        flagged.contains(&"listen") && flagged.contains(&"store"),
-        "process-level binds flagged reload-to-apply: {flagged:?}"
-    );
-    assert!(
-        !flagged.contains(&"per_request_fee"),
-        "a live-swappable field is NOT flagged: {flagged:?}"
-    );
-    assert!(
-        body["note"].as_str().unwrap().contains("reload"),
-        "the note explains the reload-to-apply split"
-    );
-    // But they ARE durably stored (the overlay carries the new listen).
-    let doc = crate::config::overlay::read(&overlay).expect("overlay written");
-    assert_eq!(
-        doc.root.unwrap().listen.as_deref(),
-        Some("127.0.0.1:0"),
-        "the reload-to-apply field is still durably persisted"
-    );
-
-    handle.abort();
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// PARTIAL UPDATE: a second `PUT` naming only `per_request_fee` preserves the earlier `rate_card`
-/// override (partial-merge semantics, like a group PATCH).
-#[tokio::test]
-async fn test_admin_v1_config_settings_partial_update_preserves_prior() {
-    let (dir, _overlay, addr, handle) = settings_test_app("partial").await;
-    let client = reqwest::Client::new();
-    let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
-
-    admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
-        .header("content-type", "application/json")
-        .body(serde_json::json!({ "rate_card": { "m0": { "input_utok": 9.0 } } }).to_string())
-        .send()
-        .await
-        .unwrap();
-    admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
-        .header("content-type", "application/json")
-        .body(serde_json::json!({ "per_request_fee": 5 }).to_string())
-        .send()
-        .await
-        .unwrap();
-    let body: serde_json::Value =
-        admin(client.get(format!("http://{addr}/api/v1/admin/config/settings")))
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-    assert_eq!(body["settings"]["per_request_fee"], 5, "new field set");
-    assert!(
-        body["settings"]["rate_card"]["m0"].is_object(),
-        "the earlier rate_card override is preserved by the partial update"
-    );
-
-    handle.abort();
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// RESET: `DELETE /overlay/root` discards the root overrides and reverts to base config.yaml — the
-/// overlay `root` section is cleared on disk (the sibling hooks/groups sections would survive).
-#[tokio::test]
-async fn test_admin_v1_config_settings_reset_reverts_to_base() {
-    let (dir, overlay, addr, handle) = settings_test_app("reset").await;
-    let client = reqwest::Client::new();
-    let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
-
-    admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
-        .header("content-type", "application/json")
-        .body(serde_json::json!({ "per_request_fee": 42 }).to_string())
-        .send()
-        .await
-        .unwrap();
-    assert!(
-        crate::config::overlay::read(&overlay)
-            .and_then(|d| d.root)
-            .is_some(),
-        "root override present before reset"
-    );
-
-    let reset = admin(client.delete(format!("http://{addr}/api/v1/admin/overlay/root")))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(reset.status().as_u16(), 200, "{:?}", reset.text().await);
-    let body: serde_json::Value = reset.json().await.unwrap();
-    assert_eq!(body["reset"], "root");
-    assert_eq!(
-        body["changed"], true,
-        "the reset discarded the root override"
-    );
-
-    // Root section cleared on disk; GET reflects base (empty overrides).
-    assert!(
-        crate::config::overlay::read(&overlay)
-            .and_then(|d| d.root)
-            .is_none(),
-        "the overlay root section is cleared"
-    );
-    let after: serde_json::Value =
-        admin(client.get(format!("http://{addr}/api/v1/admin/config/settings")))
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-    assert!(
-        after["settings"]["per_request_fee"].is_null(),
-        "no root override after reset (base config.yaml stands)"
-    );
-
-    // A second reset is an idempotent no-op (changed:false).
-    let again: serde_json::Value =
-        admin(client.delete(format!("http://{addr}/api/v1/admin/overlay/root")))
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-    assert_eq!(
-        again["changed"], false,
-        "an already-empty root reset is a no-op"
-    );
-
-    handle.abort();
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// ETAG / If-Match: a stale `If-Match` on the PUT is a 409 version_conflict that changes nothing.
-#[tokio::test]
-async fn test_admin_v1_config_settings_stale_if_match_conflicts() {
-    let (dir, _overlay, addr, handle) = settings_test_app("ifmatch").await;
-    let client = reqwest::Client::new();
-    let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
-
-    // A wildly-stale version number.
-    let stale = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
-        .header("content-type", "application/json")
-        .header("if-match", "\"999999\"")
-        .body(serde_json::json!({ "per_request_fee": 1 }).to_string())
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(stale.status().as_u16(), 409, "stale If-Match is a conflict");
-    let body: serde_json::Value = stale.json().await.unwrap();
-    assert_eq!(body["error"]["code"], "version_conflict");
-
-    // A GET emits the config-plane ETag a caller chains off.
-    let get = admin(client.get(format!("http://{addr}/api/v1/admin/config/settings")))
-        .send()
-        .await
-        .unwrap();
-    assert!(
-        get.headers().get("etag").is_some(),
-        "GET /config/settings carries the config-plane ETag"
-    );
-
-    handle.abort();
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// A typo'd root field is a loud 400 (deny_unknown_fields), audited as rejected — never a silent
-/// no-op. An invalid config after merge would likewise 400 and change nothing.
-#[tokio::test]
-async fn test_admin_v1_config_settings_unknown_field_400() {
-    let (dir, _overlay, addr, handle) = settings_test_app("badfield").await;
-    let client = reqwest::Client::new();
-    let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
-
-    let bad = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
-        .header("content-type", "application/json")
-        .body(serde_json::json!({ "lissten": "0.0.0.0:9000" }).to_string())
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(bad.status().as_u16(), 400, "a typo'd field is rejected");
-    let body: serde_json::Value = bad.json().await.unwrap();
-    assert_eq!(body["error"]["code"], "invalid_request");
-
-    handle.abort();
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// SCOPE: `PUT /config/settings` is a FULL-scope mutation (the config-plane fallthrough), `GET` is
-/// read-only — the matrix the middleware enforces.
-#[test]
-fn test_config_settings_scope_matrix() {
-    use axum::http::Method;
-    assert_eq!(
-        crate::admin::v1::contract::required_scope(&Method::PUT, "/api/v1/admin/config/settings")
-            .as_str(),
-        "full",
-        "PUT /config/settings is a full-scope mutation"
-    );
-    assert_eq!(
-        crate::admin::v1::contract::required_scope(&Method::GET, "/api/v1/admin/config/settings")
-            .as_str(),
-        "read-only",
-        "GET /config/settings is read-only"
-    );
-    // And `root` is a valid reset section requiring full scope.
-    assert_eq!(
-        crate::admin::v1::contract::required_scope(&Method::DELETE, "/api/v1/admin/overlay/root")
-            .as_str(),
-        "full",
-        "a root reset is a full-scope mutation"
-    );
 }

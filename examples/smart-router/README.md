@@ -13,24 +13,29 @@ Measured end to end through busbar's transport against this exact example binary
 (separate process, 3 candidates, 50k samples): **~7.9 µs median, p99 ~12 µs**.
 
 ```yaml
+hooks:
+  smart-router:
+    kind: gate               # it decides (returns `order`); a tap only watches
+    socket: /run/busbar/router.sock
+    timeout_ms: 1            # the default hard deadline; raise for slow hooks
+    on_error: weighted       # a broken ordering hook falls back to the weighted floor
+
 pools:
   my-smart-model:
-    hooks:
-      # 1.5.0: a hook instance is an INLINE module ref where it runs (no hooks: registry block).
-      - { module: socket, settings: { path: /run/busbar/router.sock },
-          kind: gate,            # it decides (returns `order`); a tap only watches
-          timeout_ms: 1,         # the default hard deadline; raise for slow hooks
-          on_error: weighted }   # a broken ordering hook falls back to the weighted floor
+    hooks: [smart-router]
     members:
-      # cost comes from the top-level rate_card (the only cost source), not the member.
-      - model: claude-fable
+      - target: claude-fable
         tier: fable          # best and most expensive ...
-      - model: claude-opus
+        cost_per_mtok: 25.0
+      - target: claude-opus
         tier: opus
-      - model: claude-sonnet
+        cost_per_mtok: 15.0
+      - target: claude-sonnet
         tier: sonnet
-      - model: claude-haiku
+        cost_per_mtok: 3.0
+      - target: claude-haiku
         tier: haiku          # ... down to cheap and fast
+        cost_per_mtok: 0.8
 ```
 
 Run the hook (you own its lifecycle: busbar never spawns it; connection is lazy,
@@ -49,20 +54,29 @@ portable everywhere, written in whatever your team already ships. Sub-millisecon
 co-located; plus the network if it is not.
 
 ```yaml
+hooks:
+  smart-router:
+    kind: gate
+    webhook: "http://127.0.0.1:8787/"
+    timeout_ms: 1
+    on_error: weighted
+
 pools:
   my-smart-model:
-    hooks:
-      - { module: webhook, settings: { url: "http://127.0.0.1:8787/" },
-          kind: gate, timeout_ms: 1, on_error: weighted }
+    hooks: [smart-router]
     members:
-      - model: claude-fable
+      - target: claude-fable
         tier: fable          # best and most expensive ...
-      - model: claude-opus
+        cost_per_mtok: 25.0
+      - target: claude-opus
         tier: opus
-      - model: claude-sonnet
+        cost_per_mtok: 15.0
+      - target: claude-sonnet
         tier: sonnet
-      - model: claude-haiku
+        cost_per_mtok: 3.0
+      - target: claude-haiku
         tier: haiku          # ... down to cheap and fast
+        cost_per_mtok: 0.8
 ```
 
 ```
@@ -108,4 +122,4 @@ The wire format is documented in the [routing guide](https://getbusbar.com/docs/
 
 ## Benchmark
 
-Numbers and how to reproduce them are in the [GetBusbar/benchmarking](https://github.com/GetBusbar/benchmarking) harness.
+Numbers and how to reproduce them are in [`bench/`](bench/).

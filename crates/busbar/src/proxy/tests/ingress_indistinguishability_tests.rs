@@ -409,7 +409,7 @@ async fn test_cross_protocol_response_carries_ingress_ct_and_native_id() {
 /// response is the ingress-native 500 AND that the gov budget recorded ZERO spend.
 #[tokio::test]
 async fn test_untranslatable_2xx_does_not_charge_tokens() {
-    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+    use crate::governance::{GovState, NewKeySpec, SqliteStore};
     crate::metrics::init();
     let state = Arc::new(MockServerState::new());
     // OpenAI-shaped 2xx: a real `usage` block (so the tap WOULD count 7+3=10 tokens) but an EMPTY
@@ -427,19 +427,19 @@ async fn test_untranslatable_2xx_does_not_charge_tokens() {
     });
     let server = MockServer::new(state.clone()).await;
 
-    // Gov + a virtual key. Spend is DERIVED now, so the "no token billing" intent is asserted on
-    // the token ledger itself: a zero post-call token count proves no token billing happened (the
-    // tap WOULD have ledgered 7+3=10 tokens if it wrongly ran).
-    let store = Arc::new(MemoryStore::new());
-    let gov = Arc::new(GovState::new(store, None).expect("gov"));
-    let cost = Arc::new(crate::cost::CostModel::flat(0));
+    // Gov + a virtual key: 0c/request, 100c/1k tokens, so 10 tokens would cost 1c if (wrongly)
+    // charged. A zero post-call spend proves no token billing happened.
+    let store = Arc::new(SqliteStore::open_in_memory().expect("in-memory store"));
+    let gov = Arc::new(GovState::new(store, 0, 100, None).expect("gov"));
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
                 name: "k".to_string(),
-                allowed_pools: None,
-                group: None,
-                labels: Default::default(),
+                allowed_pools: vec![],
+                max_budget_cents: Some(1_000_000),
+                budget_period: "daily".to_string(),
+                rpm_limit: None,
+                tpm_limit: None,
             },
             1_700_000_000,
         )
@@ -447,11 +447,9 @@ async fn test_untranslatable_2xx_does_not_charge_tokens() {
     let charged_at: u64 = 1_700_000_000;
     let sink = Some(UsageSink {
         gov: gov.clone(),
-        cost: cost.clone(),
-        key: std::sync::Arc::new(key.clone()),
-        pool: std::sync::Arc::from(""),
+        key_id: key.id.clone(),
+        period: key.budget_period.clone(),
         charged_at,
-        admit: None,
     });
 
     // Lane speaks OpenAI; ingress is Anthropic → cross-protocol translation hop.
@@ -496,14 +494,14 @@ async fn test_untranslatable_2xx_does_not_charge_tokens() {
         "an untranslatable cross-protocol 2xx must surface an ingress-native 500"
     );
 
-    // ...and the key's token ledger must be UNTOUCHED (the bug ledgered 10 tokens here).
-    let tokens = gov
-        .usage_for(&cost, &key.id, charged_at)
+    // ...and the key's token budget must be UNTOUCHED (the bug charged 10 tokens here).
+    let spend = gov
+        .usage_for(&key.id, charged_at)
         .expect("usage read")
-        .map(|u| u.tokens)
+        .map(|u| u.spend_cents)
         .unwrap_or(0);
     assert_eq!(
-        tokens, 0,
+        spend, 0,
         "an undelivered (untranslatable) completion must NOT charge the token budget"
     );
     server.shutdown().await;
@@ -522,23 +520,24 @@ async fn test_untranslatable_2xx_does_not_charge_tokens() {
 #[tokio::test]
 async fn test_same_protocol_nonstream_multichunk_counts_usage() {
     use super::FirstByteBody;
-    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+    use crate::governance::{GovState, NewKeySpec, SqliteStore};
     use bytes::Bytes;
     use http_body_util::BodyExt as _;
     crate::metrics::init();
 
-    // Gov + virtual key. Spend is DERIVED now, so "the tail usage was counted" is asserted on the
-    // token ledger: a 1000-token post-drain ledger proves the reassembled body's `usage` ran.
-    let store = Arc::new(MemoryStore::new());
-    let gov = Arc::new(GovState::new(store, None).expect("gov"));
-    let cost = Arc::new(crate::cost::CostModel::flat(0));
+    // Gov + virtual key: 0c/request, 100c/1k tokens → a 1000-token response costs 100c. A nonzero
+    // post-drain spend proves the reassembled body's `usage` was counted.
+    let store = Arc::new(SqliteStore::open_in_memory().expect("in-memory store"));
+    let gov = Arc::new(GovState::new(store, 0, 100, None).expect("gov"));
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
                 name: "k".to_string(),
-                allowed_pools: None,
-                group: None,
-                labels: Default::default(),
+                allowed_pools: vec![],
+                max_budget_cents: Some(1_000_000),
+                budget_period: "daily".to_string(),
+                rpm_limit: None,
+                tpm_limit: None,
             },
             1_700_000_000,
         )
@@ -546,11 +545,9 @@ async fn test_same_protocol_nonstream_multichunk_counts_usage() {
     let charged_at: u64 = 1_700_000_000;
     let sink = Some(UsageSink {
         gov: gov.clone(),
-        cost: cost.clone(),
-        key: std::sync::Arc::new(key.clone()),
-        pool: std::sync::Arc::from(""),
+        key_id: key.id.clone(),
+        period: key.budget_period.clone(),
         charged_at,
-        admit: None,
     });
 
     // An OpenAI chat.completion 2xx with 600 input + 400 output = 1000 tokens, with `usage` at the
@@ -610,25 +607,26 @@ async fn test_same_protocol_nonstream_multichunk_counts_usage() {
         "the client must still receive the complete body verbatim"
     );
 
-    // The reassembled body's 1000 tokens must have been ledgered (old code: 0). Accrual may land
-    // off the polling task, so poll until the tokens appear (bounded retries) before asserting.
-    let mut tokens = 0;
+    // The reassembled body's 1000 tokens → 100c must have been charged (old code: 0). Inside a
+    // Tokio runtime `record_tokens` offloads the SQLite write to the blocking pool, so drain it
+    // by polling until the usage row appears (bounded retries) before asserting.
+    let mut spend = 0;
     for _ in 0..200 {
         tokio::task::yield_now().await;
-        tokens = gov
-            .usage_for(&cost, &key.id, charged_at)
+        spend = gov
+            .usage_for(&key.id, charged_at)
             .expect("usage read")
-            .map(|u| u.tokens)
+            .map(|u| u.spend_cents)
             .unwrap_or(0);
-        if tokens == 1000 {
+        if spend == 100 {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(1)).await;
     }
     assert_eq!(
-        tokens, 1000,
-        "a multi-chunk same-protocol non-stream body's tail usage MUST be counted (1000 tokens)"
-    );
+            spend, 100,
+            "a multi-chunk same-protocol non-stream body's tail usage MUST be counted (1000 tokens → 100c)"
+        );
 }
 
 /// audit H3 (CHARACTERIZATION, FULL PATH): terminal token usage MUST reach the client on a
@@ -788,22 +786,22 @@ async fn test_cross_protocol_stream_delivers_trailing_usage_anthropic_sse() {
 #[tokio::test]
 async fn test_mid_stream_transport_error_does_not_bill_partial_usage() {
     use super::FirstByteBody;
-    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+    use crate::governance::{GovState, NewKeySpec, SqliteStore};
     use bytes::Bytes;
     use http_body_util::BodyExt as _;
     crate::metrics::init();
 
-    let store = Arc::new(MemoryStore::new());
-    let gov = Arc::new(GovState::new(store, None).expect("gov"));
-    // Spend is DERIVED now; the no-bill intent is asserted on the token ledger directly.
-    let cost = Arc::new(crate::cost::CostModel::flat(0));
+    let store = Arc::new(SqliteStore::open_in_memory().expect("store"));
+    let gov = Arc::new(GovState::new(store, 0, 100, None).expect("gov")); // 0c/req, 100c/1k tokens
     let (key, _s) = gov
         .create_key(
             NewKeySpec {
                 name: "k".to_string(),
-                allowed_pools: None,
-                group: None,
-                labels: Default::default(),
+                allowed_pools: vec![],
+                max_budget_cents: Some(1_000_000),
+                budget_period: "daily".to_string(),
+                rpm_limit: None,
+                tpm_limit: None,
             },
             1_700_000_000,
         )
@@ -811,11 +809,9 @@ async fn test_mid_stream_transport_error_does_not_bill_partial_usage() {
     let charged_at: u64 = 1_700_000_000;
     let sink = Some(UsageSink {
         gov: gov.clone(),
-        cost: cost.clone(),
-        key: std::sync::Arc::new(key.clone()),
-        pool: std::sync::Arc::from(""),
+        key_id: key.id.clone(),
+        period: key.budget_period.clone(),
         charged_at,
-        admit: None,
     });
 
     let app = TestApp::new()
@@ -866,24 +862,24 @@ async fn test_mid_stream_transport_error_does_not_bill_partial_usage() {
     // Drain (emits the mid-stream error frame then None), then the body drops → Drop billing gate runs.
     let _ = fbb.into_body().collect().await;
 
-    // Poll briefly: a pre-fix Drop would ledger the 150 partial tokens; the fixed gate records
-    // nothing, so the token ledger stays 0.
-    let mut tokens = 0;
+    // Poll briefly: a pre-fix Drop would offload record_tokens(150) to the blocking pool and spend
+    // becomes 15c; the fixed gate records nothing, so spend stays 0.
+    let mut spend = 0;
     for _ in 0..150 {
         tokio::task::yield_now().await;
-        tokens = gov
-            .usage_for(&cost, &key.id, charged_at)
+        spend = gov
+            .usage_for(&key.id, charged_at)
             .expect("usage read")
-            .map(|u| u.tokens)
+            .map(|u| u.spend_cents)
             .unwrap_or(0);
-        if tokens != 0 {
+        if spend != 0 {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(1)).await;
     }
     assert_eq!(
-        tokens, 0,
-        "a mid-stream transport error must NOT bill the partial usage (pre-fix ledgered 150 tokens)"
+        spend, 0,
+        "a mid-stream transport error must NOT bill the partial usage (pre-fix billed 150 tokens = 15c)"
     );
 }
 
@@ -933,7 +929,7 @@ async fn test_passthrough_no_caller_token_selects_empty_not_lane_key() {
             .api_key("sk-operator-secret"),
         )
         .pool("pa", &[(0, 1)])
-        .auth(Arc::new(AuthMiddleware::new_builtin(&passthrough)))
+        .auth(Arc::new(AuthMiddleware::new(&passthrough)))
         .build();
 
     let body = serde_json::to_vec(
@@ -1822,7 +1818,7 @@ async fn test_anthropic_same_proto_passthrough_401_relays_request_id_verbatim_on
             .provider("anthropic"),
         )
         .pool("pa", &[(0, 1)])
-        .auth(Arc::new(AuthMiddleware::new_builtin(&passthrough)))
+        .auth(Arc::new(AuthMiddleware::new(&passthrough)))
         .build();
 
     let resp = forward_with_pool(
@@ -2363,7 +2359,6 @@ async fn test_unparseable_json_400_carries_no_serde_internals() {
 #[tokio::test]
 async fn test_streaming_pre_first_byte_transport_error_refunds_budget() {
     use super::FirstByteBody;
-    use crate::store::{BreakerCfg, BreakerState, TripConfig, TripMode};
     use bytes::Bytes;
     use futures::StreamExt as _;
 
@@ -2403,23 +2398,6 @@ async fn test_streaming_pre_first_byte_transport_error_refunds_budget() {
     let inner = Box::pin(futures::stream::once(async move {
         Err::<Bytes, reqwest::Error>(reqwest_err)
     }));
-    // The 2xx headers recorded an optimistic breaker SUCCESS; simulate that so the pre-first-byte
-    // failure below has something to reverse (P2 #2). A consecutive n:1 trip config makes one
-    // recorded transient observable as Closed→Open.
-    app.store.record_success_in("p", 0);
-    let breaker_cfg = std::sync::Arc::new(BreakerCfg {
-        trip: TripConfig {
-            mode: TripMode::Consecutive,
-            consecutive_n: 1,
-            ..TripConfig::default()
-        },
-        ..BreakerCfg::default()
-    });
-    assert!(
-        matches!(app.store.breaker_state_in("p", 0), BreakerState::Closed),
-        "precondition: the pool cell is Closed after the optimistic success"
-    );
-
     let body = FirstByteBody::new(
         inner,
         true, // is_sse: streaming path
@@ -2428,7 +2406,7 @@ async fn test_streaming_pre_first_byte_transport_error_refunds_budget() {
         (), // permit: a unit placeholder is sufficient for the Stream bounds
         app.clone(),
         0,
-        breaker_cfg,
+        std::sync::Arc::new(crate::store::BreakerCfg::default()),
         "p",
         None,
         None,
@@ -2450,101 +2428,6 @@ async fn test_streaming_pre_first_byte_transport_error_refunds_budget() {
         app.store.spend_budget(0),
         "streaming pre-first-byte transport failure must refund the spent budget unit (MED #3)"
     );
-
-    // P2 #2: the pre-first-byte transport failure must ALSO record a breaker transient, reversing
-    // the optimistic 2xx success and tripping the cell Closed→Open. Before the fix the transient
-    // was gated on `had_first` and this stayed Closed - a lane that always fails before the first
-    // byte would never trip.
-    assert!(
-        matches!(
-            app.store.breaker_state_in("p", 0),
-            BreakerState::Open { .. }
-        ),
-        "pre-first-byte transport failure must record a breaker transient (P2 #2)"
-    );
-}
-
-/// REGRESSION (P2 #2): a lane whose upstream connects and returns 2xx headers but then dies BEFORE
-/// the first streamed byte on EVERY attempt must still trip its circuit breaker. Each pre-first-byte
-/// transport failure now records a breaker transient (no longer gated on `had_first`), so REPEATED
-/// pre-first-byte failures accumulate toward the trip threshold instead of silently recording
-/// nothing. This drives a cell to Open after the configured number of consecutive pre-first-byte
-/// failures. (Isolating the transient count - no intervening headers-success - so the consecutive
-/// streak reflects exactly the pre-first-byte failures: the point is that they ARE counted at all,
-/// which before the fix they were not.)
-#[tokio::test]
-async fn test_repeated_pre_first_byte_failures_trip_breaker() {
-    use super::FirstByteBody;
-    use crate::store::{BreakerCfg, BreakerState, TripConfig, TripMode};
-    use bytes::Bytes;
-    use futures::StreamExt as _;
-
-    let app = TestApp::new()
-        .lane(LaneSpec::new(
-            "m",
-            crate::proto::Protocol::anthropic(),
-            "http://127.0.0.1:1",
-        ))
-        .pool("p", &[(0, 1)])
-        .build();
-
-    // Trip only after 3 consecutive failures, so we can watch the cell stay Closed for the first
-    // two pre-first-byte failures and flip to Open on the third - proving each one is counted.
-    let breaker_cfg = std::sync::Arc::new(BreakerCfg {
-        trip: TripConfig {
-            mode: TripMode::Consecutive,
-            consecutive_n: 3,
-            ..TripConfig::default()
-        },
-        ..BreakerCfg::default()
-    });
-
-    for attempt in 1..=3u32 {
-        // The upstream dies before the first byte. A fresh connect-refused error is the pre-first-
-        // byte failure shape.
-        let reqwest_err = reqwest::Client::new()
-            .get("http://127.0.0.1:1/never")
-            .send()
-            .await
-            .expect_err("connect to a closed port must fail");
-        let inner = Box::pin(futures::stream::once(async move {
-            Err::<Bytes, reqwest::Error>(reqwest_err)
-        }));
-        let body = FirstByteBody::new(
-            inner,
-            true, // is_sse
-            "anthropic",
-            crate::handlers::CHAT,
-            (),
-            app.clone(),
-            0,
-            breaker_cfg.clone(),
-            "p",
-            None,
-            None,
-            None,
-            false, // no budget spent on this unlimited lane
-        );
-        futures::pin_mut!(body);
-        let item = body.next().await;
-        assert!(
-            matches!(item, Some(Err(_))),
-            "attempt {attempt}: pre-first-byte failure terminates the body with an error"
-        );
-
-        if attempt < 3 {
-            assert!(
-                matches!(app.store.breaker_state_in("p", 0), BreakerState::Closed),
-                "attempt {attempt}: below the threshold the cell stays Closed but the failure is \
-                 counted"
-            );
-        } else {
-            assert!(
-                matches!(app.store.breaker_state_in("p", 0), BreakerState::Open { .. }),
-                "the 3rd consecutive pre-first-byte failure must trip the breaker Closed→Open (P2 #2)"
-            );
-        }
-    }
 }
 
 /// REGRESSION (R25 MED #1, breaker symmetry): on a NON-SSE same-protocol passthrough (e.g.
@@ -2668,7 +2551,7 @@ async fn test_streaming_nonsse_mid_body_transport_error_records_transient() {
 #[tokio::test]
 async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
     use super::FirstByteBody;
-    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+    use crate::governance::{GovState, NewKeySpec, SqliteStore};
     use crate::store::{BreakerCfg, BreakerState, TripConfig, TripMode};
     use bytes::Bytes;
     use futures::StreamExt as _;
@@ -2703,30 +2586,29 @@ async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
         "pool cell must start Closed before the translate abort"
     );
 
-    // A usage sink over a real GovState: any accrual call with nonzero tokens leaves an
-    // observable token ledger in the key's window (spend derives; tokens are the ledger).
-    let store = Arc::new(MemoryStore::new());
-    let gov = Arc::new(GovState::new(store, None).expect("gov"));
-    let cost = Arc::new(crate::cost::CostModel::flat(0));
+    // A usage sink over a real GovState priced at 100c per 1k tokens, so any `record_tokens`
+    // call with nonzero tokens leaves an observable spend in the key's window.
+    let store = Arc::new(SqliteStore::open_in_memory().expect("in-memory store"));
+    let gov = Arc::new(GovState::new(store, 0, 100, None).expect("gov"));
     let charged_at: u64 = 1_700_000_000;
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
                 name: "k".to_string(),
-                allowed_pools: None,
-                group: None,
-                labels: Default::default(),
+                allowed_pools: vec![],
+                max_budget_cents: Some(1_000_000),
+                budget_period: "daily".to_string(),
+                rpm_limit: None,
+                tpm_limit: None,
             },
             charged_at,
         )
         .expect("create key");
     let sink = Some(UsageSink {
         gov: gov.clone(),
-        cost: cost.clone(),
-        key: std::sync::Arc::new(key.clone()),
-        pool: std::sync::Arc::from(""),
+        key_id: key.id.clone(),
+        period: key.budget_period.clone(),
         charged_at,
-        admit: None,
     });
 
     // Cross-protocol translator: openai EGRESS SSE → anthropic INGRESS SSE. The tap scans the
@@ -2788,18 +2670,18 @@ async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
              (cell Closed→Open), not stand as the optimistic 2xx success (R26 MED #1)"
     );
 
-    // (2) BILLING: a captured-nonzero-token aborted stream must NOT be token-billed. The old
-    // code's accrual of the captured 1000 tokens would show in the key's window ledger; the fix
-    // skips the call entirely, so the window stays at 0 tokens.
-    let ledgered = gov
-        .usage_for(&cost, &key.id, charged_at)
+    // (2) BILLING: a captured-nonzero-token aborted stream must NOT be token-billed. With the
+    // 100c/1k price, the old code's `record_tokens(.., 1000)` would have left 100c of spend in
+    // the key's window; the fix skips the call entirely, so the window stays at 0.
+    let spent = gov
+        .usage_for(&key.id, charged_at)
         .expect("usage read")
-        .map(|u| u.tokens)
+        .map(|u| u.spend_cents)
         .unwrap_or(0);
     assert_eq!(
-        ledgered, 0,
+        spent, 0,
         "an aborted cross-protocol stream must NOT charge a token fee \
-             (record_usage must not be called) - R26 LOW #7"
+             (record_tokens must not be called) — R26 LOW #7"
     );
 }
 
@@ -2813,7 +2695,7 @@ async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
 #[tokio::test]
 async fn test_cancel_drop_bills_partial_tokens() {
     use super::FirstByteBody;
-    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+    use crate::governance::{GovState, NewKeySpec, SqliteStore};
     use crate::store::BreakerCfg;
     use bytes::Bytes;
     use futures::StreamExt as _;
@@ -2827,29 +2709,27 @@ async fn test_cancel_drop_bills_partial_tokens() {
         .pool("p", &[(0, 1)])
         .build();
 
-    let store = Arc::new(MemoryStore::new());
-    let gov = Arc::new(GovState::new(store, None).expect("gov"));
-    // Spend derives; token-billing intent is asserted on the token ledger.
-    let cost = Arc::new(crate::cost::CostModel::flat(0));
+    let store = Arc::new(SqliteStore::open_in_memory().expect("in-memory store"));
+    let gov = Arc::new(GovState::new(store, 0, 100, None).expect("gov")); // 100c per 1k tokens
     let charged_at: u64 = 1_700_000_000;
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
                 name: "k".to_string(),
-                allowed_pools: None,
-                group: None,
-                labels: Default::default(),
+                allowed_pools: vec![],
+                max_budget_cents: Some(1_000_000),
+                budget_period: "daily".to_string(),
+                rpm_limit: None,
+                tpm_limit: None,
             },
             charged_at,
         )
         .expect("create key");
     let sink = Some(UsageSink {
         gov: gov.clone(),
-        cost: cost.clone(),
-        key: std::sync::Arc::new(key.clone()),
-        pool: std::sync::Arc::from(""),
+        key_id: key.id.clone(),
+        period: key.budget_period.clone(),
         charged_at,
-        admit: None,
     });
 
     let translate = crate::proto::StreamTranslate::new("anthropic", "openai")
@@ -2886,23 +2766,23 @@ async fn test_cancel_drop_bills_partial_tokens() {
                                    // body dropped here (cancel before stream end) → Drop bills the captured tokens.
     }
 
-    // The Drop's accrual may land off this task; drain it with a bounded poll.
-    let mut ledgered = 0;
+    // The Drop's record_tokens offloads the store write; drain it with a bounded poll.
+    let mut spent = 0;
     for _ in 0..200 {
-        ledgered = gov
-            .usage_for(&cost, &key.id, charged_at)
+        spent = gov
+            .usage_for(&key.id, charged_at)
             .expect("usage read")
-            .map(|u| u.tokens)
+            .map(|u| u.spend_cents)
             .unwrap_or(0);
-        if ledgered > 0 {
+        if spent > 0 {
             break;
         }
         tokio::task::yield_now().await;
     }
     assert_eq!(
-        ledgered, 1000,
+        spent, 100,
         "a mid-stream-cancelled stream must bill the captured tokens via Drop \
-             (600 input + 400 output = 1000 tokens ledgered)"
+             (1000 tokens * 100c/1k = 100c)"
     );
 }
 
@@ -2916,7 +2796,7 @@ async fn test_cancel_drop_bills_partial_tokens() {
 #[tokio::test]
 async fn test_cancel_drop_skips_billing_on_aborted_translate() {
     use super::FirstByteBody;
-    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+    use crate::governance::{GovState, NewKeySpec, SqliteStore};
     use crate::store::BreakerCfg;
     use bytes::Bytes;
     use futures::StreamExt as _;
@@ -2930,29 +2810,27 @@ async fn test_cancel_drop_skips_billing_on_aborted_translate() {
         .pool("p", &[(0, 1)])
         .build();
 
-    let store = Arc::new(MemoryStore::new());
-    let gov = Arc::new(GovState::new(store, None).expect("gov"));
-    // Spend derives; token-billing intent is asserted on the token ledger.
-    let cost = Arc::new(crate::cost::CostModel::flat(0));
+    let store = Arc::new(SqliteStore::open_in_memory().expect("in-memory store"));
+    let gov = Arc::new(GovState::new(store, 0, 100, None).expect("gov")); // 100c per 1k tokens
     let charged_at: u64 = 1_700_000_000;
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
                 name: "k".to_string(),
-                allowed_pools: None,
-                group: None,
-                labels: Default::default(),
+                allowed_pools: vec![],
+                max_budget_cents: Some(1_000_000),
+                budget_period: "daily".to_string(),
+                rpm_limit: None,
+                tpm_limit: None,
             },
             charged_at,
         )
         .expect("create key");
     let sink = Some(UsageSink {
         gov: gov.clone(),
-        cost: cost.clone(),
-        key: std::sync::Arc::new(key.clone()),
-        pool: std::sync::Arc::from(""),
+        key_id: key.id.clone(),
+        period: key.budget_period.clone(),
         charged_at,
-        admit: None,
     });
 
     let translate = crate::proto::StreamTranslate::new("anthropic", "openai")
@@ -2994,17 +2872,17 @@ async fn test_cancel_drop_skips_billing_on_aborted_translate() {
                                    // body dropped here → Drop's aborted() guard must skip billing.
     }
 
-    // Give any (erroneous) deferred accrual a chance to land, then confirm the ledger is still 0.
+    // Give any (erroneous) offloaded store write a chance to land, then confirm spend is still 0.
     for _ in 0..200 {
         tokio::task::yield_now().await;
     }
-    let ledgered = gov
-        .usage_for(&cost, &key.id, charged_at)
+    let spent = gov
+        .usage_for(&key.id, charged_at)
         .expect("usage read")
-        .map(|u| u.tokens)
+        .map(|u| u.spend_cents)
         .unwrap_or(0);
     assert_eq!(
-        ledgered, 0,
+        spent, 0,
         "a mid-stream drop after a translate ABORT must NOT bill (the Drop's aborted() guard \
              suppresses the charge), inverse of test_cancel_drop_bills_partial_tokens"
     );

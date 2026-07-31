@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
@@ -67,19 +68,19 @@ pub(crate) const KIND_REQUEST_TOO_LARGE: &str = openai_family::ERR_TYPE_REQUEST_
 /// Network-transient `err_type` values passed to `record_transient_in`.  These are distinct from
 /// the error-KIND tokens above: they label the *category* of network failure recorded in the
 /// breaker store, not the protocol-level error kind surfaced to the caller.
-pub(crate) const ERR_NET_CONNECT: &str = "connect";
-pub(crate) const ERR_NET_TIMEOUT: &str = "timeout";
+const ERR_NET_CONNECT: &str = "connect";
+const ERR_NET_TIMEOUT: &str = "timeout";
 const ERR_NET_TRANSPORT: &str = "transport";
 /// `err_type` recorded when a HalfOpen probe's degraded forward returns a non-2xx (bumps cooldown).
 const ERR_DEGRADED_NON2XX: &str = "degraded-non2xx";
 
 /// Metric-label values for the `disposition` dimension on `UPSTREAM_FAILURES_TOTAL` and the
 /// `reason` dimension on `FAILOVERS_TOTAL`.
-pub(crate) const DISPOSITION_TRANSIENT: &str = "transient_upstream";
+const DISPOSITION_TRANSIENT: &str = "transient_upstream";
 /// A single attempt's budget-clamped transport timeout fired (retryable within the request).
-pub(crate) const DISPOSITION_ATTEMPT_TIMEOUT: &str = "attempt_timeout";
-pub(crate) const DISPOSITION_HARD_DOWN: &str = "hard_down";
-pub(crate) const DISPOSITION_CONTEXT_LENGTH: &str = "context_length";
+const DISPOSITION_ATTEMPT_TIMEOUT: &str = "attempt_timeout";
+const DISPOSITION_HARD_DOWN: &str = "hard_down";
+const DISPOSITION_CONTEXT_LENGTH: &str = "context_length";
 
 /// Bounded `pool` metric-label sentinel used for every pre-routing failure (malformed body,
 /// unresolved model, governance rejection) so the label space stays finite (metrics.rs).
@@ -103,15 +104,13 @@ tokio::task_local! {
 mod egress;
 mod engine;
 mod hooks;
-mod lazy_body;
 mod response_body;
 mod select;
-pub(crate) mod usage;
+mod usage;
 mod wire;
 pub(crate) use egress::*;
 pub(crate) use engine::*;
 pub(crate) use hooks::*;
-pub(crate) use lazy_body::*;
 pub(crate) use response_body::*;
 pub(crate) use select::*;
 pub(crate) use usage::*;

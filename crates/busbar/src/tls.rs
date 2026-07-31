@@ -39,6 +39,7 @@
 
 use std::io;
 use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -53,25 +54,7 @@ fn handshake_timeout() -> Duration {
     Duration::from_secs(crate::limits::tls_handshake_timeout_secs())
 }
 
-/// Max wall-clock time allowed BETWEEN inbound request-body frames before the connection is dropped.
-/// The header-read timeout (`hardened_conn_builder`) covers ONLY the header phase - once headers are
-/// complete an unauthenticated slow-loris can dribble the request BODY one byte at a time, holding a
-/// connection task, an FD, AND (critically) one of the finite `max_inbound_concurrent` (default 8192)
-/// permits indefinitely, starving real traffic. `DefaultBodyLimit` caps total SIZE, not TIME between
-/// frames, so it does not help. This wraps every inbound body in a [`TimeoutBody`] that trips when no
-/// frame arrives within this bound. Operator-tunable via `limits.request_body_read_timeout_secs`
-/// (default 30s), read per connection through the process-wide `crate::limits` install; falls back to
-/// the default when limits aren't installed (tests / pre-install).
-fn body_read_timeout() -> Duration {
-    Duration::from_secs(crate::limits::request_body_read_timeout_secs())
-}
-
-use std::future::Future;
-use std::pin::Pin;
-use std::task::{Context, Poll};
-
 use axum::Router;
-use http_body::{Body, Frame, SizeHint};
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto::Builder as ConnBuilder;
 use hyper_util::server::graceful::GracefulShutdown;
@@ -96,106 +79,83 @@ pub(crate) fn install_crypto_provider() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 }
 
-/// Resolve a TLS secret reference to its PEM bytes, mapping any resolve error into a clear,
-/// source-named message. Never logs contents.
-fn read_pem(
-    resolver: &crate::config::secret::SecretResolver,
-    secret: &crate::config::SecretRef,
-    what: &str,
-) -> Result<Vec<u8>, String> {
-    resolver
-        .resolve(secret)
-        .map_err(|e| format!("cannot resolve TLS {what} ({}): {e}", secret.describe()))
+/// Read a file, mapping any I/O error into a clear, file-named message. Never logs contents.
+fn read_pem(path: &str, what: &str) -> Result<Vec<u8>, String> {
+    std::fs::read(Path::new(path)).map_err(|e| format!("cannot read TLS {what} '{path}': {e}"))
 }
 
-/// Parse the PEM certificate chain (leaf first). Errors name the secret source; cert bytes are
-/// public, but we still avoid echoing them.
-fn load_cert_chain(
-    resolver: &crate::config::secret::SecretResolver,
-    secret: &crate::config::SecretRef,
-) -> Result<Vec<CertificateDer<'static>>, String> {
-    let src = secret.describe();
-    let bytes = read_pem(resolver, secret, "cert")?;
+/// Parse the PEM certificate chain (leaf first). Errors name the file; cert bytes are public, but we
+/// still avoid echoing them.
+fn load_cert_chain(path: &str) -> Result<Vec<CertificateDer<'static>>, String> {
+    let bytes = read_pem(path, "cert_file")?;
     let certs = CertificateDer::pem_slice_iter(&bytes)
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("cannot parse TLS cert ({src}): {e}"))?;
+        .map_err(|e| format!("cannot parse TLS cert_file '{path}': {e}"))?;
     if certs.is_empty() {
         return Err(format!(
-            "TLS cert ({src}) contains no certificates (expected a PEM chain, leaf first)"
+            "TLS cert_file '{path}' contains no certificates (expected a PEM chain, leaf first)"
         ));
     }
     Ok(certs)
 }
 
 /// Parse the PEM private key, accepting PKCS#8, PKCS#1 (RSA), or SEC1 (EC) encodings. NEVER logs key
-/// material - error messages name only the secret source.
-fn load_private_key(
-    resolver: &crate::config::secret::SecretResolver,
-    secret: &crate::config::SecretRef,
-) -> Result<PrivateKeyDer<'static>, String> {
-    let src = secret.describe();
-    let bytes = read_pem(resolver, secret, "key")?;
+/// material — error messages name only the file path.
+fn load_private_key(path: &str) -> Result<PrivateKeyDer<'static>, String> {
+    let bytes = read_pem(path, "key_file")?;
     // `PrivateKeyDer::from_pem_slice` accepts PKCS#8, PKCS#1 (RSA), and SEC1 (EC) sections, picking the
     // first private-key section it finds. `NoItemsFound` means none was present; any other variant is a
-    // genuine parse error. Neither path echoes key material - error messages name only the source.
+    // genuine parse error. Neither path echoes key material — error messages name only the file.
     use rustls::pki_types::pem::Error as PemError;
     PrivateKeyDer::from_pem_slice(&bytes).map_err(|e| match e {
         PemError::NoItemsFound => {
-            format!("TLS key ({src}) contains no private key (expected PKCS#8 / PKCS#1 / SEC1 PEM)")
+            format!("TLS key_file '{path}' contains no private key (expected PKCS#8 / PKCS#1 / SEC1 PEM)")
         }
-        other => format!("cannot parse TLS key ({src}): {other}"),
+        other => format!("cannot parse TLS key_file '{path}': {other}"),
     })
 }
 
 /// Build the client-cert verifier root store from the operator's CA bundle (mTLS).
-fn load_client_roots(
-    resolver: &crate::config::secret::SecretResolver,
-    secret: &crate::config::SecretRef,
-) -> Result<RootCertStore, String> {
-    let src = secret.describe();
-    let bytes = read_pem(resolver, secret, "client_ca")?;
+fn load_client_roots(path: &str) -> Result<RootCertStore, String> {
+    let bytes = read_pem(path, "client_ca_file")?;
     let cas = CertificateDer::pem_slice_iter(&bytes)
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("cannot parse TLS client_ca ({src}): {e}"))?;
+        .map_err(|e| format!("cannot parse TLS client_ca_file '{path}': {e}"))?;
     if cas.is_empty() {
-        return Err(format!("TLS client_ca ({src}) contains no CA certificates"));
+        return Err(format!(
+            "TLS client_ca_file '{path}' contains no CA certificates"
+        ));
     }
     let mut roots = RootCertStore::empty();
     for ca in cas {
         roots
             .add(ca)
-            .map_err(|e| format!("invalid CA certificate in TLS client_ca ({src}): {e}"))?;
+            .map_err(|e| format!("invalid CA certificate in TLS client_ca_file '{path}': {e}"))?;
     }
     Ok(roots)
 }
 
 /// Construct the rustls [`ServerConfig`] from the operator's [`TlsCfg`].
 ///
-/// * `client_ca` present ⇒ a [`WebPkiClientVerifier`] is installed: the client MUST present a
+/// * `client_ca_file` present ⇒ a [`WebPkiClientVerifier`] is installed: the client MUST present a
 ///   certificate chaining to that CA or the handshake fails (mTLS required).
-/// * `client_ca` absent ⇒ `with_no_client_auth()` (server-only TLS).
+/// * `client_ca_file` absent ⇒ `with_no_client_auth()` (server-only TLS).
 ///
 /// ALPN advertises only `http/1.1` — busbar's axum server speaks http/1.1, so we must not advertise
-/// h2. Returns a clear, source-named error on any load/parse problem (the caller turns it into `die`).
-pub(crate) fn build_server_config(
-    tls: &TlsCfg,
-    resolver: &crate::config::secret::SecretResolver,
-) -> Result<ServerConfig, String> {
-    let certs = load_cert_chain(resolver, &tls.cert)?;
-    let key = load_private_key(resolver, &tls.key)?;
+/// h2. Returns a clear, file-named error on any load/parse problem (the caller turns it into `die`).
+pub(crate) fn build_server_config(tls: &TlsCfg) -> Result<ServerConfig, String> {
+    let certs = load_cert_chain(&tls.cert_file)?;
+    let key = load_private_key(&tls.key_file)?;
 
     let builder = ServerConfig::builder();
 
-    let builder = match &tls.client_ca {
-        Some(ca) => {
-            let roots = load_client_roots(resolver, ca)?;
+    let builder = match &tls.client_ca_file {
+        Some(ca_path) => {
+            let roots = load_client_roots(ca_path)?;
             let verifier = WebPkiClientVerifier::builder(Arc::new(roots))
                 .build()
                 .map_err(|e| {
-                    format!(
-                        "cannot build client-cert verifier from TLS client_ca ({}): {e}",
-                        ca.describe()
-                    )
+                    format!("cannot build client-cert verifier from TLS client_ca_file '{ca_path}': {e}")
                 })?;
             builder.with_client_cert_verifier(verifier)
         }
@@ -204,9 +164,8 @@ pub(crate) fn build_server_config(
 
     let mut config = builder.with_single_cert(certs, key).map_err(|e| {
         format!(
-            "TLS cert/key are not a valid pair (cert {}, key {}): {e}",
-            tls.cert.describe(),
-            tls.key.describe()
+            "TLS cert/key are not a valid pair (cert_file '{}', key_file '{}'): {e}",
+            tls.cert_file, tls.key_file
         )
     })?;
 
@@ -263,131 +222,6 @@ pub(crate) async fn serve(
     // their requests finish or their clients hang up).
     graceful.shutdown().await;
     Ok(())
-}
-
-/// An inbound-body wrapper that bounds the wall-clock time between successive frames. Wraps the
-/// hyper `Incoming` body; each `poll_frame` races the inner poll against a `body_read_timeout()`
-/// timer that is RESET on every delivered frame. If no frame arrives within the bound, the body
-/// yields an error, which hyper surfaces as a connection error - dropping the stalled connection and
-/// freeing its task, FD, and inbound-concurrency permit. A body that keeps delivering frames on time
-/// is passed through unchanged, so a slow-but-progressing large upload is never falsely killed; only
-/// a stall (no bytes for `timeout`) trips it. `SizeHint`/`is_end_stream` delegate to the inner body
-/// so framing/content-length behavior is identical to the unwrapped body.
-struct TimeoutBody<B> {
-    inner: B,
-    timeout: Duration,
-    // Lazily-armed inter-frame timer. Re-armed after every delivered frame; `None` until the first
-    // poll so the timer is driven from the runtime clock inside the connection task.
-    sleep: Option<Pin<Box<tokio::time::Sleep>>>,
-}
-
-impl<B> TimeoutBody<B> {
-    fn new(inner: B, timeout: Duration) -> Self {
-        Self {
-            inner,
-            timeout,
-            sleep: None,
-        }
-    }
-}
-
-/// The error a [`TimeoutBody`] yields when the inter-frame bound elapses. Boxed into the router's
-/// body-error type; the message is generic (no client bytes) so it is safe to surface.
-#[derive(Debug)]
-struct BodyReadTimeout;
-
-impl std::fmt::Display for BodyReadTimeout {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "inbound request body read timed out (slow-loris body bound)"
-        )
-    }
-}
-impl std::error::Error for BodyReadTimeout {}
-
-impl<B> Body for TimeoutBody<B>
-where
-    B: Body + Unpin,
-    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
-{
-    type Data = B::Data;
-    type Error = Box<dyn std::error::Error + Send + Sync>;
-
-    fn poll_frame(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        let this = &mut *self;
-        // Poll the underlying body first: a frame ready right now short-circuits the timer entirely.
-        match Pin::new(&mut this.inner).poll_frame(cx) {
-            Poll::Ready(Some(Ok(frame))) => {
-                // Progress: reset the inter-frame timer for the NEXT frame.
-                this.sleep = None;
-                Poll::Ready(Some(Ok(frame)))
-            }
-            Poll::Ready(Some(Err(e))) => Poll::Ready(Some(Err(e.into()))),
-            Poll::Ready(None) => Poll::Ready(None),
-            Poll::Pending => {
-                // No frame yet: arm (or poll) the inter-frame timer. On elapse, fail the body so the
-                // connection is dropped rather than parked indefinitely on a dribbling client.
-                let timeout = this.timeout;
-                let sleep = this
-                    .sleep
-                    .get_or_insert_with(|| Box::pin(tokio::time::sleep(timeout)));
-                match sleep.as_mut().poll(cx) {
-                    Poll::Ready(()) => Poll::Ready(Some(Err(Box::new(BodyReadTimeout)))),
-                    Poll::Pending => Poll::Pending,
-                }
-            }
-        }
-    }
-
-    fn is_end_stream(&self) -> bool {
-        self.inner.is_end_stream()
-    }
-
-    fn size_hint(&self) -> SizeHint {
-        self.inner.size_hint()
-    }
-}
-
-/// A hyper `Service` that wraps every inbound request's body in a [`TimeoutBody`] before delegating
-/// to the axum router (bridged by `TowerToHyperService`). This is the seam that installs the
-/// body-read slow-loris bound on BOTH the TLS and plain serve loops, without touching the router or
-/// the routing hot path - the router sees an ordinary `http_body::Body`, just one that fails on a
-/// stalled inbound stream.
-#[derive(Clone)]
-struct BodyTimeoutService {
-    inner: TowerToHyperService<Router>,
-    timeout: Duration,
-}
-
-impl BodyTimeoutService {
-    fn new(router: Router, timeout: Duration) -> Self {
-        Self {
-            inner: TowerToHyperService::new(router),
-            timeout,
-        }
-    }
-}
-
-impl hyper::service::Service<hyper::Request<hyper::body::Incoming>> for BodyTimeoutService {
-    type Response = <TowerToHyperService<Router> as hyper::service::Service<
-        hyper::Request<TimeoutBody<hyper::body::Incoming>>,
-    >>::Response;
-    type Error = <TowerToHyperService<Router> as hyper::service::Service<
-        hyper::Request<TimeoutBody<hyper::body::Incoming>>,
-    >>::Error;
-    type Future = <TowerToHyperService<Router> as hyper::service::Service<
-        hyper::Request<TimeoutBody<hyper::body::Incoming>>,
-    >>::Future;
-
-    fn call(&self, req: hyper::Request<hyper::body::Incoming>) -> Self::Future {
-        let timeout = self.timeout;
-        let req = req.map(|body| TimeoutBody::new(body, timeout));
-        self.inner.call(req)
-    }
 }
 
 /// Build the hyper auto connection builder shared by BOTH the plain-HTTP and TLS serve loops.
@@ -461,7 +295,7 @@ async fn serve_one_plain(
     if let Err(e) = stream.set_nodelay(true) {
         tracing::debug!(error = %e, %peer, "http: set_nodelay failed; continuing");
     }
-    let service = BodyTimeoutService::new(router, body_read_timeout());
+    let service = TowerToHyperService::new(router);
     let io = TokioIo::new(stream);
     let conn = conn_builder.serve_connection_with_upgrades(io, service);
     let conn = watcher.watch(conn);
@@ -501,7 +335,7 @@ async fn serve_one(
         }
     };
 
-    let service = BodyTimeoutService::new(router, body_read_timeout());
+    let service = TowerToHyperService::new(router);
     let io = TokioIo::new(tls_stream);
     let conn = conn_builder.serve_connection_with_upgrades(io, service);
     let conn = watcher.watch(conn);
@@ -584,11 +418,7 @@ mod tests {
     /// install provider → build ServerConfig → `tls::serve`.
     async fn spawn_tls_server(tls: &TlsCfg) -> (SocketAddr, oneshot::Sender<()>) {
         super::install_crypto_provider();
-        let server_config = super::build_server_config(
-            tls,
-            &crate::config::secret::SecretResolver::builtins_only(),
-        )
-        .expect("valid test TLS config");
+        let server_config = super::build_server_config(tls).expect("valid test TLS config");
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let (tx, rx) = oneshot::channel::<()>();
@@ -613,9 +443,9 @@ mod tests {
         let cert_file = temp_pem("srv-cert", &cert_pem);
         let key_file = temp_pem("srv-key", &key_pem);
         let tls = TlsCfg {
-            cert: crate::config::SecretRef::file(cert_file.to_string_lossy().into_owned()),
-            key: crate::config::SecretRef::file(key_file.to_string_lossy().into_owned()),
-            client_ca: None,
+            cert_file: cert_file.to_string_lossy().into_owned(),
+            key_file: key_file.to_string_lossy().into_owned(),
+            client_ca_file: None,
         };
         let (addr, _stop) = spawn_tls_server(&tls).await;
 
@@ -643,11 +473,9 @@ mod tests {
         let key_file = temp_pem("m2-srv-key", &srv_key_pem);
         let ca_file = temp_pem("m2-ca", &ca_pem);
         let tls = TlsCfg {
-            cert: crate::config::SecretRef::file(cert_file.to_string_lossy().into_owned()),
-            key: crate::config::SecretRef::file(key_file.to_string_lossy().into_owned()),
-            client_ca: Some(crate::config::SecretRef::file(
-                ca_file.to_string_lossy().into_owned(),
-            )),
+            cert_file: cert_file.to_string_lossy().into_owned(),
+            key_file: key_file.to_string_lossy().into_owned(),
+            client_ca_file: Some(ca_file.to_string_lossy().into_owned()),
         };
         let (addr, _stop) = spawn_tls_server(&tls).await;
 
@@ -678,11 +506,9 @@ mod tests {
         let key_file = temp_pem("m3-srv-key", &srv_key_pem);
         let ca_file = temp_pem("m3-ca", &ca_pem);
         let tls = TlsCfg {
-            cert: crate::config::SecretRef::file(cert_file.to_string_lossy().into_owned()),
-            key: crate::config::SecretRef::file(key_file.to_string_lossy().into_owned()),
-            client_ca: Some(crate::config::SecretRef::file(
-                ca_file.to_string_lossy().into_owned(),
-            )),
+            cert_file: cert_file.to_string_lossy().into_owned(),
+            key_file: key_file.to_string_lossy().into_owned(),
+            client_ca_file: Some(ca_file.to_string_lossy().into_owned()),
         };
         let (addr, _stop) = spawn_tls_server(&tls).await;
         let url = format!("https://localhost:{}/healthz", addr.port());
@@ -762,17 +588,13 @@ mod tests {
     #[test]
     fn bad_cert_path_errors_clearly() {
         let tls = TlsCfg {
-            cert: crate::config::SecretRef::file("/nonexistent/busbar/does-not-exist-cert.pem"),
-            key: crate::config::SecretRef::file("/nonexistent/busbar/does-not-exist-key.pem"),
-            client_ca: None,
+            cert_file: "/nonexistent/busbar/does-not-exist-cert.pem".into(),
+            key_file: "/nonexistent/busbar/does-not-exist-key.pem".into(),
+            client_ca_file: None,
         };
-        let err = super::build_server_config(
-            &tls,
-            &crate::config::secret::SecretResolver::builtins_only(),
-        )
-        .expect_err("missing cert file must error");
+        let err = super::build_server_config(&tls).expect_err("missing cert file must error");
         assert!(
-            err.contains("cert") && err.contains("does-not-exist-cert.pem"),
+            err.contains("cert_file") && err.contains("does-not-exist-cert.pem"),
             "error must name the offending file: {err}"
         );
     }
@@ -784,80 +606,14 @@ mod tests {
         let (_c, key_pem) = gen_self_signed();
         let key_file = temp_pem("ok-key", &key_pem);
         let tls = TlsCfg {
-            cert: crate::config::SecretRef::file(cert_file.to_string_lossy().into_owned()),
-            key: crate::config::SecretRef::file(key_file.to_string_lossy().into_owned()),
-            client_ca: None,
+            cert_file: cert_file.to_string_lossy().into_owned(),
+            key_file: key_file.to_string_lossy().into_owned(),
+            client_ca_file: None,
         };
-        let err = super::build_server_config(
-            &tls,
-            &crate::config::secret::SecretResolver::builtins_only(),
-        )
-        .expect_err("malformed cert must error");
-        assert!(err.contains("cert"), "error must reference the cert: {err}");
-    }
-
-    /// TEST 5 - REGRESSION (P1 slow-loris BODY): the inbound body-read timeout trips on a stalled
-    /// request body. Before the fix, only the header-read phase was bounded; a client that finished
-    /// its headers then dribbled (here: never sent) the promised body would pin the connection task,
-    /// its FD, and one of the finite inbound-concurrency permits INDEFINITELY. This drives the plain
-    /// serve loop (same `BodyTimeoutService` seam the TLS loop uses) over a raw socket: send a POST
-    /// with a `Content-Length` but NO body, and assert the server closes the connection promptly
-    /// (well inside a generous deadline) rather than hanging forever. A short body-read timeout is
-    /// installed process-wide for the test; only that one non-default limit is set, so the other
-    /// limits-accessor tests (which assert defaults for OTHER fields) are unaffected.
-    #[tokio::test]
-    async fn body_read_timeout_trips_on_stalled_body() {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-        // Install a SHORT body-read timeout (1s) so the test is fast; leave every other limit at its
-        // historical default so no other limits test is perturbed.
-        let limits = crate::config::LimitsResolved {
-            request_body_read_timeout_secs: 1,
-            ..crate::config::LimitsResolved::default()
-        };
-        crate::limits::install(&limits);
-
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let (tx, rx) = oneshot::channel::<()>();
-        tokio::spawn(async move {
-            let shutdown = async {
-                let _ = rx.await;
-            };
-            // A route that WOULD read the body (POST /echo), so the server actually awaits body frames.
-            let router = Router::new().route(
-                "/echo",
-                axum::routing::post(|body: String| async move { body }),
-            );
-            super::serve_plain(listener, router, shutdown)
-                .await
-                .unwrap();
-        });
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
-        let mut sock = tokio::net::TcpStream::connect(addr).await.unwrap();
-        // Headers announce a 100-byte body; we send NONE of it, then stall.
-        sock.write_all(b"POST /echo HTTP/1.1\r\nHost: localhost\r\nContent-Length: 100\r\n\r\n")
-            .await
-            .unwrap();
-        sock.flush().await.unwrap();
-
-        // The server must close the connection (read yields EOF/reset) once the body-read bound (1s)
-        // elapses with no body forthcoming. Bound the whole wait generously (5s): pre-fix this would
-        // hang until the test's own deadline. `read` returning Ok(0) is a clean EOF; an Err is a
-        // reset - either proves the server tore the stalled connection down.
-        let mut buf = [0u8; 256];
-        let outcome = tokio::time::timeout(Duration::from_secs(5), sock.read(&mut buf)).await;
-        match outcome {
-            Ok(Ok(0)) => {}  // clean EOF: server closed the stalled connection
-            Ok(Ok(_n)) => {} // server may first write a 4xx/408-ish response, then close
-            Ok(Err(_)) => {} // connection reset: also acceptable
-            Err(_) => panic!(
-                "body-read timeout did NOT trip: the server kept the stalled-body connection open \
-                 past the deadline (slow-loris body regression)"
-            ),
-        }
-
-        let _ = tx.send(());
+        let err = super::build_server_config(&tls).expect_err("malformed cert must error");
+        assert!(
+            err.contains("cert_file"),
+            "error must reference cert_file: {err}"
+        );
     }
 }
