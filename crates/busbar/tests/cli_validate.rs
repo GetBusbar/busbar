@@ -95,6 +95,7 @@ fn write_tarball(dir: &Path, file: &str, name: &str, alias: &str, lib: &[u8]) {
         license: String::new(),
         needs: Default::default(),
         settings_schema: None,
+        schema_derived: false,
     };
     let bytes = busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap();
     std::fs::write(dir.join("plugins").join(file), bytes).unwrap();
@@ -186,6 +187,7 @@ fn validate_fails_on_sha_mismatch() {
         license: String::new(),
         needs: Default::default(),
         settings_schema: None,
+        schema_derived: false,
     };
     let bytes = busbar_plugin_loader::tarball::package(&m, "lib.so", b"real bytes").unwrap();
     std::fs::write(dir.join("plugins/x.tar.gz"), bytes).unwrap();

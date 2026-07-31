@@ -209,6 +209,7 @@ mod tests {
             license: "Apache-2.0".into(),
             needs: Default::default(),
             settings_schema: None,
+            schema_derived: false,
         }
     }
 

@@ -244,6 +244,33 @@ pub(crate) struct HookSchemaView {
     pub(crate) schema: Option<serde_json::Value>,
 }
 
+/// `GET /plugins/{name}/schema` — the generalized, all-kinds sibling of [`HookSchemaView`]
+/// (plugin-settings-schema-SPEC.md). Carries `trust`/`source`/`schema_error` on top of
+/// `{name, schema}` so busbar-ui never has to infer trust state or the describe/manifest
+/// precedence rule from context — the server always picks exactly one source and reports which.
+#[derive(Serialize, JsonSchema)]
+pub(crate) struct PluginSchemaView {
+    pub(crate) name: String,
+    /// The plugin's settings JSON Schema verbatim, or `null` — either because the manifest never
+    /// set `settings_schema`, or (distinctly, see `schema_error`) because it did but the value
+    /// failed to parse.
+    pub(crate) schema: Option<serde_json::Value>,
+    /// Set only when the manifest's `settings_schema` was present but failed to parse as JSON —
+    /// `null` for a manifest that genuinely never set the field. Never collapsed into a bare
+    /// `schema: null` (question #3, round-4 correction): a present-but-corrupt schema is a real
+    /// authoring/packaging bug, not "this plugin simply has none."
+    pub(crate) schema_error: Option<String>,
+    /// `"trusted" | "unverified" | "rejected"` — the same vocabulary the plugin catalog already
+    /// uses (never `"verified"`; question #8, round-4 correction).
+    pub(crate) trust: String,
+    /// `"describe"` when a currently-loaded `kind: hook` answered its live `describe` wire
+    /// message (the existing describe-proxy behavior, unchanged); `"manifest"` otherwise. Lets
+    /// busbar-ui explain "why does this form look different from what I expected" without
+    /// implementing the describe/manifest precedence rule itself (question #3, round-4
+    /// correction).
+    pub(crate) source: String,
+}
+
 /// The DESIRED settings side of `hooks/{name}/status`: busbar's registry copy of the hook's settings
 /// and their version.
 #[derive(Serialize, JsonSchema)]
