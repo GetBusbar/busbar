@@ -10,6 +10,7 @@ config.json
 *.env
 .env
 .env.*
+*.key
 
 # Editor / IDE
 .idea/
