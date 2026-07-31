@@ -1,5 +1,6 @@
 use super::*;
 use axum::http::header::CONTENT_TYPE;
+use busbar_api::ScopeRef;
 
 /// Helper: a `RoleBindingCfg` from optional pool list / group / admin scope.
 fn binding(
@@ -460,7 +461,7 @@ fn test_synth_key_omitted_pools_grants_all_pools() {
     let key = crate::governance::synthesize_principal_key(&p, Some(&table))
         .expect("a bound role must synthesize a key");
     assert_eq!(
-        key.allowed_pools, None,
+        key.allowed_scopes, None,
         "omitted allowed_pools = ALL pools = None on the key"
     );
     assert!(key.enabled);
@@ -500,7 +501,7 @@ fn test_synth_key_explicit_empty_pools_fails_closed_c6_flip() {
     let p = grp_principal("test:dev", &["dev", "ops"]);
     let key = crate::governance::synthesize_principal_key(&p, Some(&table))
         .expect("an omitted-pools binding grants all pools");
-    assert_eq!(key.allowed_pools, None);
+    assert_eq!(key.allowed_scopes, None);
 }
 
 /// Explicit pool lists union across granting bindings (deduplicated); an omitted-pools binding
@@ -515,8 +516,8 @@ fn test_synth_key_pool_union_and_all_pools_dominates() {
     let key = crate::governance::synthesize_principal_key(&p, Some(&table))
         .expect("bound roles must synthesize a key");
     assert_eq!(
-        key.allowed_pools,
-        Some(vec!["p1".to_string(), "p2".to_string()])
+        key.allowed_scopes,
+        Some(vec![ScopeRef::pool("p1"), ScopeRef::pool("p2")])
     );
 
     let table = role_table(&[
@@ -527,7 +528,7 @@ fn test_synth_key_pool_union_and_all_pools_dominates() {
     let key = crate::governance::synthesize_principal_key(&p, Some(&table))
         .expect("bound roles must synthesize a key");
     assert_eq!(
-        key.allowed_pools, None,
+        key.allowed_scopes, None,
         "one omitted-pools binding widens the union to ALL pools"
     );
 }
@@ -2338,7 +2339,7 @@ async fn test_governance_accepts_vendor_carriers_and_native_401() {
 /// would call `gov.lookup("")`, match this enabled key, and be admitted unauthenticated.
 #[tokio::test]
 async fn test_governance_rejects_empty_token_even_if_empty_secret_key_exists() {
-    use crate::governance::{GovState, MemoryStore, Store, VirtualKey};
+    use crate::governance::{GovState, MemoryStore, ScopeRef, Store, VirtualKey};
     use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
     use serde_json::json;
     use std::sync::Arc;
@@ -2356,7 +2357,7 @@ async fn test_governance_rejects_empty_token_even_if_empty_secret_key_exists() {
             id: "empty".to_string(),
             generation_hash: crate::sigv4::sha256_hex(b""),
             name: "empty".to_string(),
-            allowed_pools: Some(vec!["pa".to_string()]),
+            allowed_scopes: Some(vec![ScopeRef::pool("pa")]),
             enabled: true,
             created_at: 0,
             group: None,
@@ -3316,7 +3317,7 @@ async fn test_governance_active_with_admin_token_rejects_missing_vkey() {
 /// by the main-crate tests).
 #[tokio::test]
 async fn test_inert_governance_persisted_key_is_not_enforced_static_chain_wins() {
-    use crate::governance::{GovState, MemoryStore, Store, VirtualKey};
+    use crate::governance::{GovState, MemoryStore, ScopeRef, Store, VirtualKey};
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
     use serde_json::json;
     use std::sync::Arc;
@@ -3350,7 +3351,7 @@ async fn test_inert_governance_persisted_key_is_not_enforced_static_chain_wins()
             id: "kold".to_string(),
             generation_hash: crate::sigv4::sha256_hex(persisted_secret.as_bytes()),
             name: "kold".to_string(),
-            allowed_pools: Some(vec!["restricted".to_string()]),
+            allowed_scopes: Some(vec![ScopeRef::pool("restricted")]),
             enabled: true,
             created_at: 0,
             group: None,

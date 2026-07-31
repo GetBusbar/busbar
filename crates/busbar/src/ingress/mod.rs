@@ -60,7 +60,7 @@ fn fallback_pools_authorized(
     // A key with no restriction (`allowed_pools` omitted at mint = None) admits every pool,
     // nothing to walk. (An explicit empty list is the EMPTY set and walks like any list: every
     // pool denies.)
-    key.allowed_pools.as_ref()?;
+    key.allowed_scopes.as_ref()?;
     let mut visited: std::collections::HashSet<&str> = std::collections::HashSet::new();
     let mut current = pool;
     loop {

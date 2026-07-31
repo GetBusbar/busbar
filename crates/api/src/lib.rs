@@ -34,6 +34,6 @@ pub use hooks::{
 pub use secret::{SecretError, SecretModule, SecretResult};
 pub use store::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, ModelTokens,
-    ModelTokensDelta, SecretForm, Store, StoreError, StoreResult, TierTokens, TierTokensDelta,
-    UsageDelta, UsageLedger, VirtualKey,
+    ModelTokensDelta, ScopeRef, SecretForm, Store, StoreError, StoreResult, TierTokens,
+    TierTokensDelta, UsageDelta, UsageLedger, VirtualKey,
 };

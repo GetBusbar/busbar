@@ -381,7 +381,9 @@ fn key_meta(k: &VirtualKey) -> Value {
     json!({
         "id": k.id,
         "name": k.name,
-        "allowed_pools": k.allowed_pools,
+        "allowed_pools": k.allowed_scopes.as_ref().map(|list| {
+            list.iter().map(|s| s.value.as_str()).collect::<Vec<_>>()
+        }),
         "group": k.group,
         "enabled": k.enabled,
         "created_at": k.created_at,

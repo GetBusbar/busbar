@@ -34,6 +34,8 @@ use serde::de::{self, Deserializer, MapAccess, Visitor};
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Serialize, Serializer};
 
+use busbar_api::ScopeRef;
+
 /// One `groups:` entry.
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -145,17 +147,23 @@ pub(crate) struct LimitCfg {
     pub(crate) amount: u64,
     /// `Some` for `requests`/`tokens`/`budget` (required); ALWAYS `None` for `concurrent`.
     pub(crate) per: Option<LimitWindow>,
-    /// `Some(pool)` scopes the limit to traffic dispatched through that pool - accounting becomes
-    /// per `(group, pool)`. `None` = group-wide (every request charges it). ALWAYS `None` for
-    /// `concurrent`. The pool's existence is validated against the config's `pools:` at the door.
-    pub(crate) pool: Option<String>,
+    /// `Some(scope)` scopes the limit to traffic dispatched through that scope - accounting
+    /// becomes per `(group, scope)`. `None` = group-wide (every request charges it). ALWAYS
+    /// `None` for `concurrent`. On the WIRE this is still the `pool: <name>` YAML key (gap #2 of
+    /// the generic-admission-topology generalization: a future scope kind gets its own YAML key,
+    /// e.g. `mcp_server: <name>`, never a generic `scope: {kind, value}` object) and always
+    /// decodes to `kind: "pool"`. The pool's existence is validated against the config's `pools:`
+    /// at the door - generalized discipline: "validated against the config's registered universe
+    /// for that scope's kind."
+    pub(crate) scope: Option<ScopeRef>,
     /// What BUDGET exhaustion does: `block` (the default when absent -
     /// today's 429/quota rejection) or `downgrade` (the request re-admits and dispatches through
     /// `downgrade_to` instead of being refused - expensive calls get cheaper, not blocked).
     /// `downgrade` requires `downgrade_to` + a `pool:` scope + the `budget` metric (validated).
     pub(crate) on_exhaust: Option<OnExhaust>,
-    /// The pool a `downgrade` sends exhausted traffic to. Present iff `on_exhaust: downgrade`.
-    pub(crate) downgrade_to: Option<String>,
+    /// The scope a `downgrade` sends exhausted traffic to. Present iff `on_exhaust: downgrade`.
+    /// Same wire treatment as `scope`: the YAML key stays `downgrade_to: <pool-name>`.
+    pub(crate) downgrade_to: Option<ScopeRef>,
 }
 
 /// The budget-exhaustion behavior a limit may declare (see [`LimitCfg::on_exhaust`]).
@@ -313,7 +321,7 @@ impl<'de> Deserialize<'de> for LimitCfg {
                         metric,
                         amount,
                         per: None,
-                        pool: None,
+                        scope: None,
                         on_exhaust: None,
                         downgrade_to: None,
                     }),
@@ -326,9 +334,9 @@ impl<'de> Deserialize<'de> for LimitCfg {
                         metric,
                         amount,
                         per: Some(window),
-                        pool,
+                        scope: pool.map(ScopeRef::pool),
                         on_exhaust,
-                        downgrade_to,
+                        downgrade_to: downgrade_to.map(ScopeRef::pool),
                     }),
                 }
             }
@@ -351,7 +359,7 @@ impl Serialize for LimitCfg {
     {
         let len = 1
             + usize::from(self.per.is_some())
-            + usize::from(self.pool.is_some())
+            + usize::from(self.scope.is_some())
             + usize::from(self.on_exhaust.is_some())
             + usize::from(self.downgrade_to.is_some());
         let mut map = serializer.serialize_map(Some(len))?;
@@ -359,14 +367,17 @@ impl Serialize for LimitCfg {
         if let Some(window) = self.per {
             map.serialize_entry("per", window.as_str())?;
         }
-        if let Some(pool) = &self.pool {
-            map.serialize_entry("pool", pool)?;
+        // Wire-compat (gap #2): a `kind: "pool"` scope still serializes under the bare `pool:`
+        // YAML key. There is no second kind yet, so every `scope` reaching here IS `kind: "pool"`
+        // by construction (the deserializer above only ever produces `ScopeRef::pool`).
+        if let Some(scope) = &self.scope {
+            map.serialize_entry("pool", &scope.value)?;
         }
         if let Some(on_exhaust) = self.on_exhaust {
             map.serialize_entry("on_exhaust", &on_exhaust)?;
         }
         if let Some(to) = &self.downgrade_to {
-            map.serialize_entry("downgrade_to", to)?;
+            map.serialize_entry("downgrade_to", &to.value)?;
         }
         map.end()
     }
@@ -391,7 +402,13 @@ pub(crate) fn validate_groups(
             .iter()
             .flat_map(|cd| cd.limits.iter().map(|l| (l, "child_default.limits")));
         for (limit, field) in own.chain(tmpl) {
-            if let Some(pool) = &limit.pool {
+            // Every `scope`/`downgrade_to` reaching here is `kind: "pool"` (the only registered
+            // kind, and the deserializer only ever produces `ScopeRef::pool`); validate its
+            // `.value` against the pool namespace, per the generalized discipline ("validated
+            // against the config's registered universe for that scope's kind" — for `pool` that
+            // universe is still `pools:`, unchanged).
+            if let Some(scope) = &limit.scope {
+                let pool = &scope.value;
                 if !pool_exists(pool) {
                     errors.push(format!(
                         "groups.{name}.{field} has `pool: {pool}`, but no such pool exists; \
@@ -401,6 +418,7 @@ pub(crate) fn validate_groups(
                 }
             }
             if let Some(to) = &limit.downgrade_to {
+                let to = &to.value;
                 if !pool_exists(to) {
                     errors.push(format!(
                         "groups.{name}.{field} has `downgrade_to: {to}`, but no such pool \
@@ -575,6 +593,43 @@ child_default:
         let out = serde_yaml::to_string(&budget).unwrap();
         let back: LimitCfg = serde_yaml::from_str(&out).unwrap();
         assert_eq!(budget, back);
+    }
+
+    /// THE `LimitCfg` wire-compat contract test (spec gap #2): `pool: <name>` / `downgrade_to:
+    /// <name>` in YAML — the entire existing config surface — decodes to `scope`/`downgrade_to:
+    /// Some(ScopeRef { kind: "pool", value: <name> })` in memory, and serializes back out as the
+    /// EXACT SAME bare `pool: <name>` / `downgrade_to: <name>` YAML keys, byte-for-byte — no
+    /// `kind`/`value` object ever appears on the wire. This is the property that makes the
+    /// `ScopeRef` generalization invisible to every existing `groups.yaml`.
+    #[test]
+    fn limit_pool_and_downgrade_to_wire_shape_is_byte_identical_to_pre_generalization() {
+        let l: LimitCfg = serde_yaml::from_str(
+            "{ budget: 5000, per: month, pool: frontier, on_exhaust: downgrade, \
+             downgrade_to: value }",
+        )
+        .expect("pool + downgrade_to parse");
+        assert_eq!(l.scope, Some(ScopeRef::pool("frontier")));
+        assert_eq!(l.downgrade_to, Some(ScopeRef::pool("value")));
+
+        let out = serde_yaml::to_string(&l).expect("serializes");
+        assert!(
+            out.contains("pool: frontier"),
+            "wire key stays the bare `pool: <name>`, no {{kind, value}} wrapper: {out}"
+        );
+        assert!(
+            out.contains("downgrade_to: value"),
+            "wire key stays the bare `downgrade_to: <name>`, no {{kind, value}} wrapper: {out}"
+        );
+        assert!(
+            !out.contains("kind") && !out.contains("value:"),
+            "no ScopeRef {{kind, value}} shape may leak onto the wire: {out}"
+        );
+
+        let back: LimitCfg = serde_yaml::from_str(&out).expect("reparses");
+        assert_eq!(
+            back, l,
+            "round-trip must be byte-for-byte behaviorally exact"
+        );
     }
 
     /// An org → team tree where engineering sets its own child_default, accounting inherits the org's,

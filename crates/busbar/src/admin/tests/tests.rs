@@ -4723,7 +4723,7 @@ async fn test_patch_key_three_state_group_and_enabled() {
                 metric: crate::config::groups::LimitMetric::Requests,
                 amount: 100,
                 per: Some(crate::config::groups::LimitWindow::Minute),
-                pool: None,
+                scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
             }],
@@ -6505,7 +6505,7 @@ async fn test_create_key_budget_group_and_labels_roundtrip_and_missing_group_400
                     metric: crate::config::groups::LimitMetric::Budget,
                     amount: 1_000_000,
                     per: Some(crate::config::groups::LimitWindow::Month),
-                    pool: None,
+                    scope: None,
                     on_exhaust: None,
                     downgrade_to: None,
                 }],
@@ -6589,7 +6589,7 @@ fn budget_limit(cents: u64) -> crate::config::groups::LimitCfg {
         metric: crate::config::groups::LimitMetric::Budget,
         amount: cents,
         per: Some(crate::config::groups::LimitWindow::Month),
-        pool: None,
+        scope: None,
         on_exhaust: None,
         downgrade_to: None,
     }
@@ -7593,7 +7593,7 @@ async fn test_signed_mint_group_none_and_pool_acl_matrix() {
     let all_pools_id = no_group["id"].as_str().unwrap().to_string();
     let binding = gov.lookup_by_sub(&all_pools_id).expect("binding present");
     assert!(
-        binding.allowed_pools.is_none(),
+        binding.allowed_scopes.is_none(),
         "omitted allowed_pools = the empty-vec ALL encoding"
     );
     assert!(binding.group.is_none(), "no group bound");

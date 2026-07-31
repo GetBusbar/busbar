@@ -3584,7 +3584,7 @@ fn limit_requests_per_minute(amount: u64) -> crate::config::groups::LimitCfg {
         metric: crate::config::groups::LimitMetric::Requests,
         amount,
         per: Some(crate::config::groups::LimitWindow::Minute),
-        pool: None,
+        scope: None,
         on_exhaust: None,
         downgrade_to: None,
     }
@@ -3652,7 +3652,7 @@ fn test_validate_groups_faults_are_named_with_fixes() {
     // and its child_default template are covered; a valid pool passes.
     let mut cfg = cost_cfg(&["m"]);
     let mut bad = limit_requests_per_minute(5);
-    bad.pool = Some("nope".to_string());
+    bad.scope = Some(busbar_api::ScopeRef::pool("nope"));
     cfg.groups
         .insert("team".to_string(), group(None, vec![bad]));
     let errs = validate(&cfg).expect_err("a dangling pool qualifier must fail");
@@ -3663,7 +3663,7 @@ fn test_validate_groups_faults_are_named_with_fixes() {
     );
     let mut cfg = cost_cfg(&["m"]);
     let mut tmpl = limit_requests_per_minute(5);
-    tmpl.pool = Some("nope".to_string());
+    tmpl.scope = Some(busbar_api::ScopeRef::pool("nope"));
     let mut g = group(None, vec![limit_requests_per_minute(5)]);
     g.child_default = Some(config::groups::ChildDefault { limits: vec![tmpl] });
     cfg.groups.insert("team".to_string(), g);
@@ -3675,7 +3675,7 @@ fn test_validate_groups_faults_are_named_with_fixes() {
     );
     let mut cfg = cost_cfg(&["m"]);
     let mut ok = limit_requests_per_minute(5);
-    ok.pool = Some("pool1".to_string());
+    ok.scope = Some(busbar_api::ScopeRef::pool("pool1"));
     cfg.groups.insert("team".to_string(), group(None, vec![ok]));
     validate(&cfg).expect("a pool qualifier naming a real pool must pass");
 

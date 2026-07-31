@@ -636,12 +636,12 @@ impl LimitView {
             metric: l.metric.as_str(),
             amount: l.amount,
             per: l.per.map(|w| w.as_str()),
-            pool: l.pool.clone(),
+            pool: l.scope.as_ref().map(|s| s.value.clone()),
             on_exhaust: l.on_exhaust.map(|e| match e {
                 crate::config::groups::OnExhaust::Block => "block",
                 crate::config::groups::OnExhaust::Downgrade => "downgrade",
             }),
-            downgrade_to: l.downgrade_to.clone(),
+            downgrade_to: l.downgrade_to.as_ref().map(|s| s.value.clone()),
         }
     }
 }

@@ -357,7 +357,7 @@ mod tests {
             id: id.to_string(),
             generation_hash: format!("h_{id}"),
             name: "t".to_string(),
-            allowed_pools: None,
+            allowed_scopes: None,
             enabled: true,
             created_at: 0,
             group: None,

@@ -239,7 +239,9 @@ impl GovState {
             generation_hash: binding_marker(&id, &generation),
             name: spec.name,
             // C6 intent carried intact from the mint body: None = all pools; Some([]) = none.
-            allowed_pools: spec.allowed_pools,
+            allowed_scopes: spec
+                .allowed_pools
+                .map(|list| list.into_iter().map(busbar_api::ScopeRef::pool).collect()),
             enabled: true,
             created_at: now,
             group: spec.group,
@@ -283,7 +285,9 @@ impl GovState {
             id: id.clone(),
             generation_hash: binding_marker(&id, &generation),
             name: spec.name,
-            allowed_pools: spec.allowed_pools,
+            allowed_scopes: spec
+                .allowed_pools
+                .map(|list| list.into_iter().map(busbar_api::ScopeRef::pool).collect()),
             enabled: true,
             created_at: now,
             group: spec.group,
@@ -554,7 +558,7 @@ impl GovState {
             // the key as a whole.
             let applies = match pool {
                 Some(p) => bucket.applies_to_pool(p),
-                None => bucket.pool.is_none(),
+                None => bucket.scope.is_none(),
             };
             if !applies {
                 continue;
@@ -674,7 +678,9 @@ impl GovState {
             id,
             generation_hash: hash,
             name: spec.name,
-            allowed_pools: spec.allowed_pools,
+            allowed_scopes: spec
+                .allowed_pools
+                .map(|list| list.into_iter().map(busbar_api::ScopeRef::pool).collect()),
             enabled: true,
             created_at: now,
             group: spec.group,
@@ -726,7 +732,9 @@ impl GovState {
             id: id.clone(),
             generation_hash: hash,
             name: spec.name,
-            allowed_pools: spec.allowed_pools,
+            allowed_scopes: spec
+                .allowed_pools
+                .map(|list| list.into_iter().map(busbar_api::ScopeRef::pool).collect()),
             enabled: true,
             created_at: now,
             group: spec.group,
@@ -1081,7 +1089,7 @@ impl GovState {
             out.push(busbar_api::BudgetBucketState {
                 bucket_id: bucket.bucket_id.to_string(),
                 budget_group: bucket.group_name.map(String::from),
-                pool: bucket.pool.map(String::from),
+                pool: bucket.scope.map(|s| s.value.clone()),
                 spend_micros_at_current_rate: spend_micros,
                 remaining_micros,
                 window_start: window,
@@ -1342,11 +1350,11 @@ impl GovState {
                         .to_string(),
                     metric,
                     window: Some(bucket.window),
-                    pool: bucket.pool.map(String::from),
+                    pool: bucket.scope.map(|s| s.value.clone()),
                     // `on_exhaust` is declared on (and validated against) the BUDGET metric
                     // only; a requests/tokens block on the same bucket still blocks.
                     downgrade_to: (metric == "budget")
-                        .then(|| bucket.downgrade_to.map(String::from))
+                        .then(|| bucket.downgrade_to.map(|s| s.value.clone()))
                         .flatten(),
                     retry_after: super::window_end(bucket.window, now)
                         .map(|end| end.saturating_sub(now).max(1)),

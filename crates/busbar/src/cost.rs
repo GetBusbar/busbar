@@ -28,7 +28,7 @@
 
 use std::collections::HashMap;
 
-use busbar_api::TierTokens;
+use busbar_api::{ScopeRef, TierTokens};
 
 use crate::config::groups::LimitMetric;
 
@@ -42,9 +42,12 @@ const NANOS_PER_MICRO: u128 = 1_000;
 /// The prefix namespacing GROUP bucket ids in the store, so a group named like a key id can never
 /// collide with a real key's bucket. Key buckets use the bare key id. A group's per-window buckets
 /// are `group:<name>@<window>` - one ledger row per (group, window granularity), so a group with
-/// limits in several windows never double-counts a flush into one row. A POOL-SCOPED bucket
-/// (limits carrying `pool: <name>`) appends `#<pool>`: `group:<name>@<window>#<pool>` - its own
-/// ledger row, accounting only the traffic dispatched through that pool.
+/// limits in several windows never double-counts a flush into one row. A SCOPE-QUALIFIED bucket
+/// (limits carrying `pool: <name>`, i.e. `scope: { kind: "pool", value: <name> }`) appends
+/// `#<kind>:<value>`: `group:<name>@<window>#pool:<name>` - its own ledger row, accounting only
+/// the traffic dispatched through that scope. (Generic-admission-topology generalization: the
+/// scheme was `#<pool>` before this widened to carry the kind; safe to change with no migration
+/// since no store persists this literal string durably yet — see the spec's gap #3.)
 pub(crate) const GROUP_BUCKET_PREFIX: &str = "group:";
 
 /// One model's per-token rates in integer NANO-units per token (config micro-units x 1000, rounded
@@ -109,14 +112,15 @@ pub(crate) struct GroupBucket {
     /// check time from the cell's token ledger x the current rate card (+ the flat per-request
     /// fee x requests).
     pub(crate) budget_cap: Option<i64>,
-    /// `Some(pool)` = this bucket accounts ONLY traffic dispatched through that pool (limits
-    /// carrying `pool: <name>`); `None` = group-wide (every request through the group).
-    pub(crate) pool: Option<String>,
+    /// `Some(scope)` = this bucket accounts ONLY traffic dispatched through that scope (limits
+    /// carrying `pool: <name>`, i.e. `kind: "pool"`); `None` = group-wide (every request through
+    /// the group).
+    pub(crate) scope: Option<ScopeRef>,
     /// Where BUDGET-exhausted traffic goes instead of a rejection (`on_exhaust: downgrade,
     /// downgrade_to: <pool>` on the governing budget limit). `None` = block (the default). When
     /// several budget limits merge into this bucket, the MOST RESTRICTIVE (minimum) cap's
     /// behavior governs - it is the one that actually blocks.
-    pub(crate) downgrade_to: Option<String>,
+    pub(crate) downgrade_to: Option<ScopeRef>,
 }
 
 /// One resolved group: its enabled flag, in-flight cap, per-window enforcement buckets, and parent
@@ -149,20 +153,25 @@ pub(crate) struct ChainBucket<'a> {
     pub(crate) requests_cap: Option<u64>,
     pub(crate) tokens_cap: Option<u64>,
     pub(crate) budget_cap: Option<i64>,
-    /// `Some(pool)` = the bucket is pool-scoped: it checks/charges/accrues ONLY when the request
-    /// was dispatched through that pool. `None` = applies to every request through the group.
-    pub(crate) pool: Option<&'a str>,
-    /// The budget limit's `downgrade_to` pool, when it declared `on_exhaust: downgrade`.
-    pub(crate) downgrade_to: Option<&'a str>,
+    /// `Some(scope)` = the bucket is scope-qualified: it checks/charges/accrues ONLY when the
+    /// request was dispatched through that scope (today, always `kind: "pool"`). `None` = applies
+    /// to every request through the group.
+    pub(crate) scope: Option<&'a ScopeRef>,
+    /// The budget limit's `downgrade_to` scope, when it declared `on_exhaust: downgrade`.
+    pub(crate) downgrade_to: Option<&'a ScopeRef>,
 }
 
 impl ChainBucket<'_> {
     /// Whether this bucket participates in a request dispatched through `pool` - group-wide
     /// buckets always do; a pool-scoped bucket only for its own pool. Every enforcement walk
     /// (admit / charge / refund / accrue / headroom) keys off this ONE predicate so the paths
-    /// can never disagree on what was charged vs what is refunded.
+    /// can never disagree on what was charged vs what is refunded. Hardcodes `kind: "pool"`
+    /// deliberately - THIS call site is the one that knows it is checking pool admission (see
+    /// `ScopeRef`'s doc: each admission site names the kind it expects, `ScopeRef` itself stays
+    /// kind-agnostic).
     pub(crate) fn applies_to_pool(&self, pool: &str) -> bool {
-        self.pool.is_none_or(|p| p == pool)
+        self.scope
+            .is_none_or(|s| s.kind == "pool" && s.value == pool)
     }
 }
 
@@ -280,13 +289,16 @@ impl CostModel {
                             let w = window.as_str();
                             let bucket = match buckets
                                 .iter_mut()
-                                .find(|b| b.window == w && b.pool.as_deref() == l.pool.as_deref())
+                                .find(|b| b.window == w && b.scope == l.scope)
                             {
                                 Some(b) => b,
                                 None => {
-                                    let bucket_id = match &l.pool {
-                                        Some(p) => {
-                                            format!("{GROUP_BUCKET_PREFIX}{name}@{w}#{p}")
+                                    let bucket_id = match &l.scope {
+                                        Some(s) => {
+                                            format!(
+                                                "{GROUP_BUCKET_PREFIX}{name}@{w}#{}:{}",
+                                                s.kind, s.value
+                                            )
                                         }
                                         None => format!("{GROUP_BUCKET_PREFIX}{name}@{w}"),
                                     };
@@ -296,7 +308,7 @@ impl CostModel {
                                         requests_cap: None,
                                         tokens_cap: None,
                                         budget_cap: None,
-                                        pool: l.pool.clone(),
+                                        scope: l.scope.clone(),
                                         downgrade_to: None,
                                     });
                                     buckets.last_mut().expect("just pushed")
@@ -489,7 +501,7 @@ impl CostModel {
             requests_cap: None,
             tokens_cap: None,
             budget_cap: None,
-            pool: None,
+            scope: None,
             downgrade_to: None,
         });
         let mut groups: Vec<usize> = Vec::new();
@@ -516,8 +528,8 @@ impl CostModel {
                     requests_cap: b.requests_cap,
                     tokens_cap: b.tokens_cap,
                     budget_cap: b.budget_cap,
-                    pool: b.pool.as_deref(),
-                    downgrade_to: b.downgrade_to.as_deref(),
+                    scope: b.scope.as_ref(),
+                    downgrade_to: b.downgrade_to.as_ref(),
                 });
             }
             next = g.parent;

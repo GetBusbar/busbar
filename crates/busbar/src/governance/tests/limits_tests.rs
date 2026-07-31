@@ -20,7 +20,7 @@ fn limit(metric: LimitMetric, amount: u64, per: Option<LimitWindow>) -> LimitCfg
         metric,
         amount,
         per,
-        pool: None,
+        scope: None,
         on_exhaust: None,
         downgrade_to: None,
     }
@@ -70,7 +70,7 @@ fn key(id: &str, group: Option<&str>) -> VirtualKey {
         id: id.to_string(),
         generation_hash: format!("h:{id}"),
         name: id.to_string(),
-        allowed_pools: None,
+        allowed_scopes: None,
         enabled: true,
         created_at: 0,
         group: group.map(String::from),
@@ -694,7 +694,7 @@ fn pooled(metric: LimitMetric, amount: u64, per: LimitWindow, pool: &str) -> Lim
         metric,
         amount,
         per: Some(per),
-        pool: Some(pool.to_string()),
+        scope: Some(ScopeRef::pool(pool)),
         on_exhaust: None,
         downgrade_to: None,
     }
@@ -861,7 +861,7 @@ fn budget_block_carries_downgrade_target() {
     let g = gov();
     let mut teach = pooled(LimitMetric::Budget, 25, LimitWindow::Day, "frontier");
     teach.on_exhaust = Some(crate::config::groups::OnExhaust::Downgrade);
-    teach.downgrade_to = Some("value".to_string());
+    teach.downgrade_to = Some(ScopeRef::pool("value"));
     let cm = model_with_card(&[("team", group_cfg(None, true, vec![teach]))], 10, &[]);
     let k = key("vk_dg", Some("team"));
     let now = 1_700_000_000;
@@ -884,7 +884,7 @@ fn budget_block_carries_downgrade_target() {
     let g2 = gov();
     let mut tight = pooled(LimitMetric::Budget, 25, LimitWindow::Day, "frontier");
     tight.on_exhaust = Some(crate::config::groups::OnExhaust::Downgrade);
-    tight.downgrade_to = Some("value".to_string());
+    tight.downgrade_to = Some(ScopeRef::pool("value"));
     let loose = pooled(LimitMetric::Budget, 100, LimitWindow::Day, "frontier");
     let cm2 = model_with_card(
         &[("team", group_cfg(None, true, vec![loose, tight]))],

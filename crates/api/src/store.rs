@@ -8,6 +8,63 @@
 //! These are the same records the admin API and governance enforcement speak, moved here so the
 //! contract — not the engine — owns them. No I/O, no engine state: pure data.
 
+/// A kind-tagged scope reference — e.g. `{ kind: "pool", value: "fast" }`. The generic
+/// admission-topology substrate (see `generic-admission-topology-SPEC.md`): everywhere busbar used
+/// to name "which pool" with a bare `String`, it now names "which scope, of what kind" with this
+/// pair. `kind` is a plain `String`, deliberately NEVER a closed enum — a closed set here would
+/// repeat the exact mistake this type exists to fix one level up (a hardcoded field per new thing
+/// routed through admission). Each admission call site that cares about a specific kind (pool
+/// admission, budget scoping) is the thing that knows which kind string it expects; `ScopeRef`
+/// itself stays kind-agnostic, structurally unable to privilege "pool" over any future kind (an
+/// MCP tool, an MCP server, an A2A delegate-target agent, …).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct ScopeRef {
+    pub kind: String,
+    pub value: String,
+}
+
+impl ScopeRef {
+    /// Build a `kind: "pool"` scope — today's only kind, and the one every wire-compat shim in
+    /// this generalization translates a bare pool-name string into/out of.
+    pub fn pool(value: impl Into<String>) -> Self {
+        ScopeRef {
+            kind: "pool".to_string(),
+            value: value.into(),
+        }
+    }
+}
+
+/// The wire (de)serializer for [`VirtualKey::allowed_scopes`], keeping the JSON/YAML shape
+/// BYTE-IDENTICAL to the pre-generalization `allowed_pools: Option<Vec<String>>` for the
+/// pool-only case (gap #1 of the spec): on the wire this is still a plain `allowed_pools` array of
+/// bare strings (or absent/null), never a `{kind, value}` object. The in-memory
+/// `Option<Vec<ScopeRef>>` is translated transparently at the serde boundary. Every entry that
+/// reaches this field is `kind: "pool"` by construction (a future second kind gets its OWN named
+/// wire field, e.g. `allowed_mcp_servers`, per the spec — never mixed into this one), so the
+/// translation is a straight `ScopeRef.value` <-> bare-string mapping in both directions.
+mod allowed_scopes_wire {
+    use super::ScopeRef;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub(super) fn serialize<S>(v: &Option<Vec<ScopeRef>>, s: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let bare: Option<Vec<&str>> = v
+            .as_ref()
+            .map(|list| list.iter().map(|sr| sr.value.as_str()).collect());
+        bare.serialize(s)
+    }
+
+    pub(super) fn deserialize<'de, D>(d: D) -> Result<Option<Vec<ScopeRef>>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let bare: Option<Vec<String>> = Option::deserialize(d)?;
+        Ok(bare.map(|list| list.into_iter().map(ScopeRef::pool).collect()))
+    }
+}
+
 /// A virtual key issued by busbar (distinct from upstream provider keys) - a PURE AUTH binding
 /// (1.5.0, S1): identity + pool grants + at most one `groups:` binding. Keys carry NO inline
 /// limits: every cap (requests / tokens / budget / concurrent) lives on the bound group's chain,
@@ -24,11 +81,13 @@ pub struct VirtualKey {
     /// double as a lookup key for was retired in 1.5.0; see `docs/migration-1.5.md`.)
     pub generation_hash: String,
     pub name: String,
-    /// Pools this key may target. `None` = ALL pools (the grant was omitted at mint);
-    /// `Some(list)` = exactly those pools; `Some([])` = NO pools (C6: an empty list is the empty
-    /// set, never "all").
-    #[serde(default)]
-    pub allowed_pools: Option<Vec<String>>,
+    /// Scopes this key may target, kind-tagged (`ScopeRef`). `None` = ALL scopes of every kind
+    /// (the grant was omitted at mint); `Some(list)` = exactly those scopes; `Some([])` = NO
+    /// scopes (C6: an empty list is the empty set, never "all"). Today every entry is `kind:
+    /// "pool"` (the only registered kind); on the WIRE this still serializes/deserializes as the
+    /// pre-generalization `allowed_pools: Option<Vec<String>>` — see `allowed_scopes_wire`.
+    #[serde(default, rename = "allowed_pools", with = "allowed_scopes_wire")]
+    pub allowed_scopes: Option<Vec<ScopeRef>>,
     pub enabled: bool,
     pub created_at: u64,
     /// The `groups:` bucket this key charges through (at most one; the chain walks `parent` up
@@ -59,12 +118,16 @@ pub struct VirtualKey {
 }
 
 impl VirtualKey {
-    /// Whether this key may target `pool` (C6: `allowed_pools` omitted = all pools; an explicit
-    /// list is exhaustive; an explicit empty list is NO pools).
-    pub fn pool_allowed(&self, pool: &str) -> bool {
-        match &self.allowed_pools {
+    /// Whether this key may target the scope `(kind, value)` (C6: `allowed_scopes` omitted = all
+    /// scopes of every kind; an explicit list is exhaustive PER KIND; an explicit empty list is NO
+    /// scopes at all). The generalized replacement for the pool-only `pool_allowed` — every
+    /// existing call site checking pool admission calls this as `scope_allowed("pool", pool_name)`,
+    /// which is the exact same membership test over a differently-shaped list, so behavior for a
+    /// pool-only config is unchanged.
+    pub fn scope_allowed(&self, kind: &str, value: &str) -> bool {
+        match &self.allowed_scopes {
             None => true,
-            Some(list) => list.iter().any(|p| p == pool),
+            Some(list) => list.iter().any(|s| s.kind == kind && s.value == value),
         }
     }
 
@@ -100,7 +163,7 @@ impl std::fmt::Debug for VirtualKey {
                 },
             )
             .field("name", &self.name)
-            .field("allowed_pools", &self.allowed_pools)
+            .field("allowed_scopes", &self.allowed_scopes)
             .field("enabled", &self.enabled)
             .field("created_at", &self.created_at)
             .field("group", &self.group)
@@ -804,7 +867,7 @@ mod tests {
             id: "vk_1".to_string(),
             generation_hash: "deadbeefdeadbeef".to_string(),
             name: "test".to_string(),
-            allowed_pools: Some(vec!["p".to_string()]),
+            allowed_scopes: Some(vec![ScopeRef::pool("p")]),
             enabled: true,
             created_at: 42,
             group: Some("growth".to_string()),
@@ -836,19 +899,87 @@ mod tests {
     }
 
     /// C6 pool-grant semantics on the runtime encoding: omitted (`None`) = ALL pools; an explicit
-    /// list is exhaustive; an explicit EMPTY list is NO pools (never "all").
+    /// list is exhaustive; an explicit EMPTY list is NO pools (never "all"). Exercised through
+    /// `scope_allowed("pool", ...)`, the generalized replacement for the old `pool_allowed` - this
+    /// is the "zero behavior change for pool-only configs" property the generalization promises.
     #[test]
-    fn pool_allowed_c6_semantics() {
+    fn scope_allowed_pool_kind_c6_semantics() {
         let mut k = sample_key();
-        k.allowed_pools = None;
-        assert!(k.pool_allowed("anything"), "omitted = all pools");
-        k.allowed_pools = Some(vec!["fast".to_string()]);
-        assert!(k.pool_allowed("fast"));
-        assert!(!k.pool_allowed("cold"));
-        k.allowed_pools = Some(Vec::new());
+        k.allowed_scopes = None;
+        assert!(k.scope_allowed("pool", "anything"), "omitted = all scopes");
+        k.allowed_scopes = Some(vec![ScopeRef::pool("fast")]);
+        assert!(k.scope_allowed("pool", "fast"));
+        assert!(!k.scope_allowed("pool", "cold"));
+        k.allowed_scopes = Some(Vec::new());
         assert!(
-            !k.pool_allowed("fast"),
-            "an explicit [] is the EMPTY set - no pools, never all"
+            !k.scope_allowed("pool", "fast"),
+            "an explicit [] is the EMPTY set - no scopes, never all"
+        );
+    }
+
+    /// A DIFFERENT kind never matches a `pool`-kind grant, and vice versa - `ScopeRef` is
+    /// kind-agnostic and `scope_allowed` is a strict `(kind, value)` membership test, not a bare
+    /// value match (gap #4: kind stays a plain string, never privileging "pool").
+    #[test]
+    fn scope_allowed_is_kind_specific() {
+        let mut k = sample_key();
+        k.allowed_scopes = Some(vec![ScopeRef::pool("fast")]);
+        assert!(k.scope_allowed("pool", "fast"));
+        assert!(
+            !k.scope_allowed("mcp_server", "fast"),
+            "same value, different kind: must not match"
+        );
+    }
+
+    /// THE contract test: a config using only `allowed_pools` (bare strings, no `kind` wrapper)
+    /// produces a BYTE-IDENTICAL wire shape before and after the `ScopeRef` generalization - the
+    /// entire point of the wire-compat design (spec gap #1). The in-memory representation is
+    /// `allowed_scopes: Vec<ScopeRef>`, but the JSON on the wire is still the plain
+    /// `"allowed_pools":["fast","slow"]` array of bare strings a pre-generalization admin API
+    /// client already knows how to read and write.
+    #[test]
+    fn allowed_pools_wire_shape_is_byte_identical_to_pre_generalization() {
+        let mut k = sample_key();
+        k.allowed_scopes = Some(vec![ScopeRef::pool("fast"), ScopeRef::pool("slow")]);
+        let json = serde_json::to_string(&k).unwrap();
+        assert!(
+            json.contains(r#""allowed_pools":["fast","slow"]"#),
+            "wire field must be the bare-string array under the `allowed_pools` name, no `kind` \
+             wrapper anywhere: {json}"
+        );
+        assert!(
+            !json.contains("kind"),
+            "no ScopeRef {{kind, value}} shape may leak onto the wire: {json}"
+        );
+
+        // The pre-generalization wire shape a real (already-deployed) admin API client sends -
+        // must deserialize into the exact ScopeRef list this test set up.
+        let legacy_wire = r#"{"id":"vk_1","generation_hash":"h","name":"n","allowed_pools":["fast","slow"],"enabled":true,"created_at":1}"#;
+        let back: VirtualKey = serde_json::from_str(legacy_wire).unwrap();
+        assert_eq!(
+            back.allowed_scopes,
+            Some(vec![ScopeRef::pool("fast"), ScopeRef::pool("slow")])
+        );
+
+        // Round-trip: serialize → deserialize → identical scopes (and the C6 None/empty cases,
+        // which must ALSO stay wire-identical).
+        let round: VirtualKey = serde_json::from_str(&json).unwrap();
+        assert_eq!(round.allowed_scopes, k.allowed_scopes);
+
+        let mut none_grant = sample_key();
+        none_grant.allowed_scopes = None;
+        let json_none = serde_json::to_string(&none_grant).unwrap();
+        assert!(
+            json_none.contains(r#""allowed_pools":null"#),
+            "omitted grant serializes as bare `null`, same as before: {json_none}"
+        );
+
+        let mut empty_grant = sample_key();
+        empty_grant.allowed_scopes = Some(Vec::new());
+        let json_empty = serde_json::to_string(&empty_grant).unwrap();
+        assert!(
+            json_empty.contains(r#""allowed_pools":[]"#),
+            "explicit-empty grant serializes as a bare `[]`, same as before: {json_empty}"
         );
     }
 
@@ -920,7 +1051,7 @@ mod tests {
         let minimal =
             r#"{"id":"vk_1","generation_hash":"h","name":"n","enabled":true,"created_at":1}"#;
         let k: VirtualKey = serde_json::from_str(minimal).unwrap();
-        assert_eq!(k.allowed_pools, None, "absent grant = all pools");
+        assert_eq!(k.allowed_scopes, None, "absent grant = all pools");
         assert_eq!(k.group, None);
         assert!(k.labels.is_empty());
         assert_eq!(k.expires_at, None);

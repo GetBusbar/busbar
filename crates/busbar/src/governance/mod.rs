@@ -646,7 +646,8 @@ pub(crate) fn synthesize_principal_key(
             .name
             .clone()
             .unwrap_or_else(|| principal.id.clone()),
-        allowed_pools,
+        allowed_scopes: allowed_pools
+            .map(|list| list.into_iter().map(busbar_api::ScopeRef::pool).collect()),
         enabled: true,
         created_at: 0,
         group,
@@ -741,7 +742,7 @@ fn generate_aws_secret_access_key() -> Result<String, getrandom::Error> {
 /// Whether `key` may target `pool` (C6: an OMITTED grant = all pools; an explicit list is
 /// exhaustive; an explicit `[]` = NO pools). Delegates to the contract crate's encoding.
 pub(crate) fn pool_allowed(key: &VirtualKey, pool: &str) -> bool {
-    key.pool_allowed(pool)
+    key.scope_allowed("pool", pool)
 }
 
 /// The epoch start of the window containing `now` for a given window word (C8 nouns): `total` = a
@@ -819,6 +820,12 @@ pub(crate) use busbar_api::{
 // derived views); scoping the re-export keeps the release build warning-free.
 #[cfg(test)]
 pub(crate) use busbar_api::UsageLedger;
+// `ScopeRef` is constructed directly via `busbar_api::ScopeRef` on every production call site
+// (cost.rs, config/groups.rs, governance/state.rs); this re-export exists only so test code that
+// does `use super::*` from within `governance::tests` can name it unqualified, same reasoning as
+// `UsageLedger` above.
+#[cfg(test)]
+pub(crate) use busbar_api::ScopeRef;
 
 /// Seconds in a metering day bucket. Metering is a TIME SERIES in fixed UTC-day buckets —
 /// deliberately decoupled from the per-key budget windows the enforcement counters use, so
