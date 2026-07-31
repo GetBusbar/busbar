@@ -409,17 +409,16 @@ impl<V> Sharded<V> {
     }
 }
 
-/// The two auth-path key caches, held together under `GovState::caches`'s single `RwLock` so
-/// `refresh` can swap both in one critical section. `by_id` is the subject-id → key index; it backs
+/// The two auth-path caches, held together under `GovState::caches`'s single `RwLock` so `refresh`
+/// can swap both in one critical section. `by_id` is the subject-id → key index; it backs
 /// `lookup_by_sub` (the signed-token verify hot path — 1.5.0 has exactly one bearer-credential
-/// shape, so this is the only key index needed). `by_access_key_id` is the AWS AccessKeyId →
-/// resolved-credential index for inbound SigV4 resolution on the Bedrock-ingress hot path: the
-/// AccessKeyId arrives in plaintext in the SigV4 `Authorization` header's `Credential=` field, so it
-/// is keyed on the plaintext AccessKeyId — a lookup handle, not a secret. Each entry bundles the
-/// owning `VirtualKey` with its secret access key, so the verify path resolves both in one lookup.
-/// Only keys minted WITH an AWS credential appear in `by_access_key_id`. Both are rebuilt by
-/// `refresh` from the SAME store snapshot, so a disabled/deleted/re-minted key is reflected in both
-/// — visible to readers atomically (the one lock guarantees no reader sees a half-applied swap).
+/// shape, so this is the only key index needed — bearer auth is never represented in
+/// `by_credential`, see that field's doc). `by_credential` is the ROW-LOOKED-UP credential index
+/// (today: SigV4 only) for inbound resolution on the Bedrock-ingress hot path, generalized from the
+/// old AWS-specific `by_access_key_id`/`AwsKeyEntry` — see [`busbar_api::CredentialMeta`]'s doc for
+/// why a kind belongs here at all. Both are rebuilt by `refresh` from the SAME store snapshot, so a
+/// disabled/deleted/re-minted key or revoked credential is reflected in both — visible to readers
+/// atomically (the one lock guarantees no reader sees a half-applied swap).
 struct GovCaches {
     /// Subject id (the key id / token `sub`) → key. Values are `Arc<VirtualKey>` so the per-request
     /// signed-token resolution (on the chat hot path) is a REFCOUNT BUMP rather than a deep clone of
@@ -427,8 +426,21 @@ struct GovCaches {
     /// life of the request and threaded read-only through governance/routing, so sharing it via
     /// `Arc` is exact.
     by_id: HashMap<String, Arc<VirtualKey>>,
-    by_access_key_id: HashMap<String, AwsKeyEntry>,
+    /// `(kind, public_id)` → the resolved credential secret PLUS its owning key. The wire-supplied
+    /// public identifier (SigV4: the AccessKeyId, plaintext in the `Authorization` header's
+    /// `Credential=` field — a lookup handle, not a secret) is the lookup key; the value bundles the
+    /// full [`CredentialSecret`] (its own `revoked_at`/`expires_at`) with the owning
+    /// `Arc<VirtualKey>` so the verify path resolves both key-level and credential-level admission
+    /// state in one lookup, no second index hop. Only keys with at least one live credential appear
+    /// here.
+    by_credential: CredentialIndex,
 }
+
+/// `(kind, public_id)` -> the resolved credential secret plus its owning key — see
+/// [`GovCaches::by_credential`]'s doc for the shape's reasoning. Named so clippy's
+/// `type_complexity` lint (and every future reader) sees one name instead of the raw nested type
+/// at every call site.
+pub(crate) type CredentialIndex = HashMap<(String, String), (Arc<VirtualKey>, CredentialSecret)>;
 
 /// Per-instance governance runtime: the durable `Store` plus an in-memory key cache (hashed-secret
 /// → key) so validation on the hot path is a map lookup, not a DB round-trip. Held in `App`
@@ -639,6 +651,9 @@ pub(crate) fn synthesize_principal_key(
         created_at: 0,
         group,
         labels: std::collections::BTreeMap::new(),
+        expires_at: None,
+        deleted_at: None,
+        revision: 0,
     }))
 }
 
@@ -797,8 +812,8 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 }
 
 pub(crate) use busbar_api::{
-    AwsCredential, AwsKeyEntry, MeteringDelta, MeteringRow, Store, StoreError, StoreResult,
-    TierTokens, UsageDelta, VirtualKey,
+    CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, SecretForm, Store, StoreError,
+    StoreResult, TierTokens, UsageDelta, VirtualKey,
 };
 // The full-ledger record is consumed only by TEST assertions (production reads go through the
 // derived views); scoping the re-export keeps the release build warning-free.
@@ -818,7 +833,7 @@ pub(crate) struct MeterCounts {
     pub(crate) tokens_input: u64,
     pub(crate) tokens_output: u64,
     pub(crate) tokens_cache_read: u64,
-    pub(crate) tokens_cache_creation: u64,
+    pub(crate) tokens_cache_write: u64,
 }
 
 /// Floor an epoch to its UTC-day metering bucket start.

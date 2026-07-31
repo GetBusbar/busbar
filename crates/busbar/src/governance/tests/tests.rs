@@ -145,6 +145,9 @@ fn sample_key(id: &str, hash: &str) -> VirtualKey {
         created_at: 1_700_000_000,
         group: None,
         labels: std::collections::BTreeMap::new(),
+        expires_at: None,
+        deleted_at: None,
+        revision: 1,
     }
 }
 
@@ -420,8 +423,11 @@ fn test_metering_accumulates_split_per_key_model_and_bucket() {
         tokens_input: input,
         tokens_output: output,
         tokens_cache_read: 7,
-        tokens_cache_creation: 3,
+        tokens_cache_write: 3,
         requests: 1,
+        billable_requests: 1,
+        key_group_at_use: String::new(),
+        pricing_version: String::new(),
     };
     // Two responses on the same (key, model) accumulate; a different model is its own row.
     s.add_metering(&d("gpt-x", 100, 20)).unwrap();
@@ -445,7 +451,7 @@ fn test_metering_accumulates_split_per_key_model_and_bucket() {
         "raw split accumulates + one request per response"
     );
     assert_eq!(
-        (x.tokens_cache_read, x.tokens_cache_creation),
+        (x.tokens_cache_read, x.tokens_cache_write),
         (14, 6),
         "cache reads/writes carry separately (they price differently)"
     );
@@ -486,7 +492,7 @@ fn test_record_metering_from_ir_usage_and_flat() {
             r.tokens_input,
             r.tokens_output,
             r.tokens_cache_read,
-            r.tokens_cache_creation,
+            r.tokens_cache_write,
             r.requests
         ),
         (11, 22, 5, 0, 2),
@@ -552,13 +558,15 @@ fn test_create_key_with_aws_issues_and_resolves_credential() {
     assert_eq!(akid.len(), 20); // golden wire-contract literal (kept bare on purpose)
     assert_eq!(secret.len(), 40); // golden wire-contract literal (kept bare on purpose)
                                   // The AccessKeyId resolves to the SAME key + its secret.
-    let entry = gov.lookup_by_access_key_id(&akid).expect("akid resolves");
-    assert_eq!(entry.key.id, key.id);
-    assert_eq!(entry.secret_access_key, secret);
-    assert!(entry.key.enabled);
+    let (resolved_key, cred) = gov
+        .lookup_credential("sigv4", &akid)
+        .expect("akid resolves");
+    assert_eq!(resolved_key.id, key.id);
+    assert_eq!(cred.secret, format!("v1:plain:{secret}"));
+    assert!(resolved_key.enabled);
     // An unknown AccessKeyId resolves to None.
     assert!(gov
-        .lookup_by_access_key_id("AKIAdoesnotexist0000")
+        .lookup_credential("sigv4", "AKIAdoesnotexist0000")
         .is_none());
 }
 
@@ -628,7 +636,7 @@ fn test_aws_credential_persists_across_reload() {
     };
     let gov2 = GovState::new(store, None).unwrap();
     assert!(
-        gov2.lookup_by_access_key_id(&akid).is_some(),
+        gov2.lookup_credential("sigv4", &akid).is_some(),
         "credential must survive a reload"
     );
 }
@@ -649,14 +657,14 @@ fn test_delete_key_removes_aws_credential() {
             0,
         )
         .unwrap();
-    assert!(gov.lookup_by_access_key_id(&akid).is_some());
+    assert!(gov.lookup_credential("sigv4", &akid).is_some());
     gov.delete_key(&key.id).unwrap();
     assert!(
-        gov.lookup_by_access_key_id(&akid).is_none(),
+        gov.lookup_credential("sigv4", &akid).is_none(),
         "a revoked key's AWS credential must be gone"
     );
     // And the durable credential row is gone too.
-    assert!(gov.store().list_aws_credentials().unwrap().is_empty());
+    assert!(gov.store().list_credentials(&key.id).unwrap().is_empty());
 }
 
 #[test]
@@ -692,7 +700,8 @@ fn test_refresh_updates_both_indices_atomically() {
         "subject id must resolve via by_id before delete"
     );
     assert_eq!(
-        gov.lookup_by_access_key_id(&akid).map(|e| e.key.id),
+        gov.lookup_credential("sigv4", &akid)
+            .map(|(k, _)| k.id.clone()),
         Some(key.id.clone()),
         "akid must resolve via by_access_key_id before delete"
     );
@@ -706,36 +715,42 @@ fn test_refresh_updates_both_indices_atomically() {
         "subject id must be gone from by_id after delete"
     );
     assert!(
-        gov.lookup_by_access_key_id(&akid).is_none(),
-        "akid must be gone from by_access_key_id after delete"
+        gov.lookup_credential("sigv4", &akid).is_none(),
+        "akid must be gone from by_credential after delete"
     );
 }
 
 #[test]
 fn test_aws_credential_debug_redacts_secret() {
-    // The symmetric SigV4 secret must NEVER appear in Debug output (AwsCredential or AwsKeyEntry).
-    let cred = AwsCredential {
-        access_key_id: "AKIAPUBLIC1234567890".to_string(),
-        key_id: "vk_x".to_string(),
-        secret_access_key: "SUPER-SECRET-SIGNING-KEY-zzz".to_string(),
+    // The symmetric SigV4 secret must NEVER appear in Debug output. `busbar_api::CredentialSecret`
+    // is the generalized successor to the old AWS-specific `AwsCredential`/`AwsKeyEntry` pair (its
+    // own redaction test lives in `busbar_api::store::tests::debug_redacts_secret_equivalents`) —
+    // this regression stays at the governance-crate level too since it's the type actually flowing
+    // through `create_key_with_aws`/`mint_signed_with_aws`.
+    let cred = CredentialSecret {
+        meta: CredentialMeta {
+            id: "cred_x".to_string(),
+            key_id: "vk_x".to_string(),
+            kind: "sigv4".to_string(),
+            slot: 0,
+            public_id: "AKIAPUBLIC1234567890".to_string(),
+            secret_form: SecretForm::Recoverable,
+            created_at: 0,
+            updated_at: 0,
+            expires_at: None,
+            revoked_at: None,
+            revoke_reason: None,
+            revision: 0,
+        },
+        secret: "v1:plain:SUPER-SECRET-SIGNING-KEY-zzz".to_string(),
     };
     let dbg = format!("{cred:?}");
     assert!(
         !dbg.contains("SUPER-SECRET-SIGNING-KEY-zzz"),
-        "AwsCredential Debug leaked the secret: {dbg}"
+        "CredentialSecret Debug leaked the secret: {dbg}"
     );
     assert!(dbg.contains("<redacted; present>"));
     assert!(dbg.contains("AKIAPUBLIC1234567890"), "akid is not secret");
-
-    let entry = AwsKeyEntry {
-        key: sample_key("vk_x", "hash"),
-        secret_access_key: "SUPER-SECRET-SIGNING-KEY-zzz".to_string(),
-    };
-    let edbg = format!("{entry:?}");
-    assert!(
-        !edbg.contains("SUPER-SECRET-SIGNING-KEY-zzz"),
-        "AwsKeyEntry Debug leaked the secret: {edbg}"
-    );
 }
 
 #[test]
@@ -2347,8 +2362,8 @@ mod signed_token {
         assert!(akid.starts_with("AKIA"));
         assert!(!secret.is_empty());
         // The AWS credential resolves back to the same subject.
-        let entry = g.lookup_by_access_key_id(&akid).expect("akid resolves");
-        assert_eq!(entry.key.id, binding.id);
+        let (resolved_key, _cred) = g.lookup_credential("sigv4", &akid).expect("akid resolves");
+        assert_eq!(resolved_key.id, binding.id);
     }
 
     /// Minting without a signer fails closed (no token can be issued).

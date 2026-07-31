@@ -918,6 +918,9 @@ mod tests {
             created_at: 1_700_000_000,
             group: None,
             labels: Default::default(),
+            expires_at: None,
+            deleted_at: None,
+            revision: 1,
         }
     }
 
@@ -1256,6 +1259,9 @@ mod tests {
                 created_at: 1_700_000_000,
                 group: None,
                 labels: Default::default(),
+                expires_at: None,
+                deleted_at: None,
+                revision: 1,
             };
             store.put_key(&key).unwrap();
             // Seed minimal usage so the key has a row in usage_counters and the spend gauge is

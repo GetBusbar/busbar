@@ -87,15 +87,18 @@ impl busbar_api::Store for SlowStore {
     fn list_metering(&self, bucket: u64) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
         self.inner.list_metering(bucket)
     }
-    fn put_key_with_aws_credential(
+    fn put_key_with_credential(
         &self,
         key: &busbar_api::VirtualKey,
-        cred: &busbar_api::AwsCredential,
+        secret: &busbar_api::CredentialSecret,
     ) -> busbar_api::StoreResult<()> {
-        self.inner.put_key_with_aws_credential(key, cred)
+        self.inner.put_key_with_credential(key, secret)
     }
-    fn list_aws_credentials(&self) -> busbar_api::StoreResult<Vec<busbar_api::AwsCredential>> {
-        self.inner.list_aws_credentials()
+    fn list_credentials(
+        &self,
+        key_id: &str,
+    ) -> busbar_api::StoreResult<Vec<busbar_api::CredentialMeta>> {
+        self.inner.list_credentials(key_id)
     }
 }
 

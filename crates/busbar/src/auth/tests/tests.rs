@@ -2361,6 +2361,9 @@ async fn test_governance_rejects_empty_token_even_if_empty_secret_key_exists() {
             created_at: 0,
             group: None,
             labels: Default::default(),
+            expires_at: None,
+            deleted_at: None,
+            revision: 1,
         })
         .unwrap();
     // An admin token makes the governance engine ACTIVE (the vkey-resolution branch enforces). In a
@@ -3352,6 +3355,9 @@ async fn test_inert_governance_persisted_key_is_not_enforced_static_chain_wins()
             created_at: 0,
             group: None,
             labels: Default::default(),
+            expires_at: None,
+            deleted_at: None,
+            revision: 1,
         })
         .unwrap();
     // NO admin token → INERT: the persisted key's controls are bypassed.
