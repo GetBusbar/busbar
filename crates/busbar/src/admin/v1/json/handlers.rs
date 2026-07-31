@@ -4651,6 +4651,27 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         }),
     );
 
+    // E-004 (busbar-ui/docs/ENGINE-BUGS.md, item 1): stamp a deterministic `operationId` on every
+    // operation. Third-party OpenAPI generators (Go/TS) synthesize method names from the path when
+    // `operationId` is absent, so those names churn whenever a path is touched; a stable id fixes
+    // the downstream SDK's method name across engine releases. Same METHOD+path -> PascalCase
+    // algorithm busbar-ui's own `scripts/openapi-prep.py::op_id` already synthesizes client-side
+    // (kept identical on purpose: a spec that already carries these ids makes that synthesis step a
+    // no-op, and any other consumer that pins this file gets the same ids busbar-ui does).
+    for (path, item) in paths.iter_mut() {
+        let Some(item) = item.as_object_mut() else {
+            continue;
+        };
+        for method in ["get", "put", "post", "delete", "patch"] {
+            if let Some(op) = item.get_mut(method).and_then(|v| v.as_object_mut()) {
+                op.insert(
+                    "operationId".to_string(),
+                    json!(openapi_operation_id(method, path)),
+                );
+            }
+        }
+    }
+
     json!({
         "openapi": "3.1.0",
         "info": {
@@ -4669,6 +4690,41 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         },
         "paths": paths
     })
+}
+
+/// `METHOD + path -> PascalCase operationId`, e.g. `post` + `/api/v1/admin/keys/{id}/rotate` ->
+/// `PostKeysIdRotate`. Mirrors busbar-ui's `scripts/openapi-prep.py::op_id` byte-for-byte (E-004
+/// item 1) so a spec generated here and one synthesized client-side agree.
+#[cfg(feature = "openapi-schema")]
+#[cfg_attr(not(test), allow(dead_code))]
+fn openapi_operation_id(method: &str, path: &str) -> String {
+    const PREFIX: &str = "/api/v1/admin";
+    let trimmed = path.strip_prefix(PREFIX).unwrap_or(path);
+    let mut id = capitalize(method);
+    for seg in trimmed.trim_matches('/').split('/') {
+        if seg.is_empty() {
+            continue;
+        }
+        let seg = seg.trim_matches(|c| c == '{' || c == '}');
+        for word in seg.split(|c: char| !c.is_ascii_alphanumeric()) {
+            if !word.is_empty() {
+                id.push_str(&capitalize(word));
+            }
+        }
+    }
+    id
+}
+
+/// Capitalize the first char, lowercase the rest — matches Python's `str.capitalize()`, which
+/// `openapi-prep.py::op_id` relies on.
+#[cfg(feature = "openapi-schema")]
+#[cfg_attr(not(test), allow(dead_code))]
+fn capitalize(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase(),
+        None => String::new(),
+    }
 }
 
 /// The committed, typed OpenAPI 3.1 document — generated from `openapi_doc()` (feature `openapi-schema`)

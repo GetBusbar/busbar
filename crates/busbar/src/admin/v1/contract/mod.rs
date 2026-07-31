@@ -769,6 +769,22 @@ pub(crate) struct PluginView {
     /// For a dynamic-library plugin, its NAME (not a socket path or URL — the retired 1.4.x
     /// transport target). `None` for compiled-in.
     pub(crate) target: Option<String>,
+    /// The artifact FILENAME in `plugins.dir` — the `{file}` path segment `DELETE
+    /// /plugins/{file}` and `GET /plugins/{file}/schema` key off (E-003: a list row previously
+    /// carried no field a client could feed straight back into either sibling endpoint; `target`
+    /// is documented as the manifest NAME, not necessarily the on-disk filename, and is not a
+    /// reliable substitute). `None` for compiled-in/external rows, which have no backing artifact
+    /// to name. Additive; existing consumers reading only the pre-1.5.1 fields are unaffected.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) file: Option<String>,
+    /// `true` iff `GET /plugins/{file}/schema` would resolve this row's `file` to a manifest that
+    /// declares `settings_schema` at all — i.e. iff `schema_url` below is non-null — so a plugin
+    /// catalog can render which rows are configurable in one list call instead of a fetch per row
+    /// (E-003). Mirrors `schema_url.is_some()`; kept as its own boolean rather than requiring the
+    /// caller to null-check `schema_url` for the same fact. `false` for compiled-in/external rows
+    /// (no manifest to carry a schema) and for a dynamic-library row whose manifest never set
+    /// `settings_schema`. Additive.
+    pub(crate) has_schema: bool,
     /// The plugin's semantic version, from its signed sidecar manifest (dynamic-library plugins only).
     /// `None` for compiled-in/external, or a dynamic plugin with no/invalid manifest.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -831,6 +847,8 @@ impl PluginView {
             loader,
             active,
             target,
+            file: None,
+            has_schema: false,
             version: None,
             publisher: None,
             interface_version: None,
