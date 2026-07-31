@@ -628,6 +628,10 @@
           "name": {
             "type": "string"
           },
+          "state": {
+            "description": "E-007: same field as `KeyView.state` — a fresh mint is always `\"active\"` (enabled, not\nrevoked, not deleted).",
+            "type": "string"
+          },
           "token": {
             "description": "The busbar-SIGNED token — the key credential (1.5.0, S1), shown EXACTLY once and never\nreturned by any read. (This is the field a client must capture to authenticate.)",
             "type": "string"
@@ -641,6 +645,7 @@
           "enabled",
           "created_at",
           "labels",
+          "state",
           "token",
           "expires_at",
           "group_provisioned"
@@ -1386,6 +1391,10 @@
           },
           "name": {
             "type": "string"
+          },
+          "state": {
+            "description": "E-007: `enabled` alone cannot distinguish a reversible pause from either of the two permanent\ndispositions — `PATCH {enabled:false}`, `POST /keys/{id}/revoke`, and `DELETE /keys/{id}` all\nused to leave `enabled: false` with nothing else to tell them apart. One of exactly four\nvalues, additive and derived (never independently settable):\n- `\"active\"` — enabled, not revoked, not deleted.\n- `\"disabled\"` — `PATCH {enabled:false}`. Reversible: `PATCH {enabled:true}` restores it.\n- `\"revoked\"` — `POST /keys/{id}/revoke`. Permanent: denylisted, but the binding row (and\n  `GET /keys/{id}`) stays live for audit/usage attribution.\n- `\"tombstoned\"` — `DELETE /keys/{id}`. Permanent: denylisted AND hard-deleted; the row is\n  kept only so id-attributed billing/audit history keeps resolving. Omitted from a plain\n  `GET /keys` by default; visible there with `?include=tombstoned`.",
+            "type": "string"
           }
         },
         "required": [
@@ -1395,7 +1404,8 @@
           "group",
           "enabled",
           "created_at",
-          "labels"
+          "labels",
+          "state"
         ],
         "type": "object"
       },
@@ -2243,6 +2253,10 @@
               "null"
             ]
           },
+          "state": {
+            "description": "E-007: same field as `KeyView.state` — rotate does not change `enabled`/revoked/tombstoned\nstatus, so this reflects whatever the key's disposition already was (rotating a `disabled` or\n`revoked` key is legal and leaves it exactly that; only a `tombstoned` key refuses to rotate,\nwhich surfaces as 404 instead of this response).",
+            "type": "string"
+          },
           "token": {
             "description": "The fresh busbar-SIGNED token — shown EXACTLY once (signed-token keys).",
             "type": [
@@ -2258,7 +2272,8 @@
           "group",
           "enabled",
           "created_at",
-          "labels"
+          "labels",
+          "state"
         ],
         "type": "object"
       },
@@ -5513,6 +5528,15 @@
             "description": "Opaque continuation cursor from `next_cursor`",
             "in": "query",
             "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "E-007: set to `tombstoned` to include hard-deleted keys, which are otherwise omitted (each row's `state` reads `\"tombstoned\"`)",
+            "in": "query",
+            "name": "include",
             "required": false,
             "schema": {
               "type": "string"

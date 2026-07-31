@@ -391,6 +391,29 @@ fn key_meta(k: &VirtualKey) -> Value {
     })
 }
 
+/// E-007: `enabled` alone cannot distinguish a reversible PAUSE (`PATCH {enabled:false}`) from either
+/// of the two PERMANENT states (`revoke`, `delete`) — all three land on `enabled == false`. This
+/// derives the disambiguating value from the same internal state the engine already tracks, in
+/// tombstone-first priority (a tombstoned row is also denylisted, by `revoke`-then-delete, so the
+/// checks must not be reordered):
+/// - `deleted_at.is_some()`  → **tombstoned** (`DELETE /keys/{id}`: denylisted + hard-deleted; the row
+///   is kept only so billing/audit attribution keeps resolving).
+/// - else `gov.is_revoked()` → **revoked** (`POST /keys/{id}/revoke`: denylisted, permanent, binding
+///   row kept).
+/// - else `!enabled`          → **disabled** (`PATCH {enabled:false}`: reversible, not denylisted).
+/// - else                     → **active**.
+fn key_state(k: &VirtualKey, gov: &crate::governance::GovState) -> &'static str {
+    if k.deleted_at.is_some() {
+        "tombstoned"
+    } else if gov.is_revoked(&k.id) {
+        "revoked"
+    } else if !k.enabled {
+        "disabled"
+    } else {
+        "active"
+    }
+}
+
 /// Governance-off semantics: ONE rule across the keys surface, chosen so no
 /// status is ambiguous —
 /// - collection READS (`GET /keys`) answer 200 with an EMPTY page (`disabled_empty_list`): with
@@ -972,6 +995,11 @@ pub(crate) async fn create_key(
         &actor,
     );
     let mut body = key_meta(&key);
+    // E-007: a freshly minted key is deterministically "active" — `mint_signed`/
+    // `mint_signed_with_aws` always set `enabled: true` and `deleted_at: None`, and the id is a fresh
+    // CSPRNG draw that cannot already be on the revocation denylist. No `gov.is_revoked` round-trip
+    // needed (and `gov` is not in scope here — moved into the mint closure above).
+    body["state"] = json!("active");
     // The busbar-SIGNED token IS the key credential (S1), shown exactly once.
     body["token"] = json!(token);
     body["expires_at"] = json!(exp);
@@ -1099,7 +1127,10 @@ pub(crate) async fn update_key(
     // write run TOGETHER under the gate, so the record the ETag was checked against is the same
     // record that gets updated.
     enum UpdateOutcome {
-        Updated(Box<crate::governance::VirtualKey>),
+        /// The updated row plus its E-007 `state`, computed INSIDE the gated closure below (where
+        /// `gov` — and therefore `gov.is_revoked`, needed to tell a disabled key from a revoked one —
+        /// is in scope; the outer `match` below is outside the transaction closure and has no `gov`).
+        Updated(Box<crate::governance::VirtualKey>, &'static str),
         NotFound,
         EtagStale,
         /// The destination bucket (rebind target, or the key's own group on a re-enable) is
@@ -1182,7 +1213,10 @@ pub(crate) async fn update_key(
                     }
                 }
                 Ok(match gov.update_key(&id, enabled, group)? {
-                    Some(key) => UpdateOutcome::Updated(Box::new(key)),
+                    Some(key) => {
+                        let state = key_state(&key, &gov);
+                        UpdateOutcome::Updated(Box::new(key), state)
+                    }
                     None => UpdateOutcome::NotFound,
                 })
             })()
@@ -1195,9 +1229,11 @@ pub(crate) async fn update_key(
     })
     .await;
     match res {
-        Ok(UpdateOutcome::Updated(key)) => {
+        Ok(UpdateOutcome::Updated(key, state)) => {
             audit::AUDIT.record_by("key.patch", &resource, audit::OUTCOME_APPLIED, &actor);
-            json_response(StatusCode::OK, key_meta(&key))
+            let mut body = key_meta(&key);
+            body["state"] = json!(state);
+            json_response(StatusCode::OK, body)
         }
         Ok(UpdateOutcome::EtagStale) => {
             key_err(who,
@@ -1296,23 +1332,53 @@ pub(crate) async fn list_keys(
         },
         None => 0,
     };
+    // E-007 (secondary point): a tombstoned key otherwise vanishes from this list with no marker —
+    // "it is gone" and "it never existed" looked the same. `?include=tombstoned` opts in to seeing
+    // them (each row's now-additive `state` reads `"tombstoned"`); default behaviour (their
+    // continued silent omission from a plain `GET /keys`) is unchanged, so this is purely additive.
+    let include_tombstoned = match q.get("include") {
+        None => false,
+        Some(v) if v == "tombstoned" => true,
+        Some(_) => {
+            return key_err(
+                KeyAudit::Read,
+                &AdminError::Validation("invalid `include` filter: expected `tombstoned`".into()),
+                Cond::InvalidQueryValue,
+            )
+        }
+    };
     let Some(gov) = &app.governance else {
         return disabled_empty_list();
     };
     let gov = gov.clone();
-    let res = tokio::task::spawn_blocking(move || gov.all_keys()).await;
+    let res = tokio::task::spawn_blocking(move || {
+        let keys = gov.all_keys()?;
+        // `state` (E-007) is derived HERE, on the blocking pool, where `gov` — and therefore
+        // `gov.is_revoked` — is in scope; the outer match below is past the `.await` and has no
+        // `gov` of its own (it was moved into this closure).
+        Ok::<_, crate::governance::StoreError>(
+            keys.into_iter()
+                .map(|k| {
+                    let state = key_state(&k, &gov);
+                    (k, state)
+                })
+                .collect::<Vec<_>>(),
+        )
+    })
+    .await;
     match res {
         Ok(Ok(keys)) => {
             let mut filtered: Vec<_> = keys
                 .iter()
                 // TOMBSTONE (1.5.0): `gov.all_keys()` -> `Store::list_keys` is deliberately
                 // unfiltered (billing/audit attribution needs tombstoned rows to keep resolving by
-                // id) — the admin LISTING is the caller responsible for filtering live-only, same
-                // as every other "does this key exist" surface on this handler set.
-                .filter(|k| k.deleted_at.is_none())
-                .filter(|k| enabled.is_none_or(|e| k.enabled == e))
-                .filter(|k| prefix.as_deref().is_none_or(|p| k.id.starts_with(p)))
-                .filter(|k| {
+                // id) — the admin LISTING is the caller responsible for filtering live-only by
+                // default, same as every other "does this key exist" surface on this handler set.
+                // `?include=tombstoned` opts back in (E-007).
+                .filter(|(k, _)| include_tombstoned || k.deleted_at.is_none())
+                .filter(|(k, _)| enabled.is_none_or(|e| k.enabled == e))
+                .filter(|(k, _)| prefix.as_deref().is_none_or(|p| k.id.starts_with(p)))
+                .filter(|(k, _)| {
                     group
                         .as_deref()
                         .is_none_or(|g| k.group.as_deref() == Some(g))
@@ -1320,13 +1386,17 @@ pub(crate) async fn list_keys(
                 .collect();
             // Deterministic page boundaries: sort by id (the store's iteration order is not a
             // pagination contract).
-            filtered.sort_by(|a, b| a.id.cmp(&b.id));
+            filtered.sort_by(|(a, _), (b, _)| a.id.cmp(&b.id));
             let total = filtered.len();
             let page: Vec<_> = filtered
                 .into_iter()
                 .skip(start)
                 .take(limit)
-                .map(key_meta)
+                .map(|(k, state)| {
+                    let mut v = key_meta(k);
+                    v["state"] = json!(state);
+                    v
+                })
                 .collect();
             // More rows past this page → hand back the next opaque cursor; else None (end of list).
             let end = start.saturating_add(page.len());
@@ -1429,13 +1499,19 @@ pub(crate) async fn rotate_key(
     }
     let res = tokio::task::spawn_blocking(move || {
         let _existence_guard = EXISTENCE_GATE.lock().unwrap_or_else(|e| e.into_inner());
+        // E-007: `state` is derived HERE (where `gov` is in scope, moved into this closure) rather
+        // than after the `.await` below — a rotated key can still be `disabled` or `revoked` (rotate
+        // does not touch `enabled` or the denylist, only tombstoned keys refuse to rotate at all, see
+        // `GovState::rotate_key`), so `gov.is_revoked` is genuinely needed, not just `enabled`.
         gov.rotate_key(&gid, exp)
+            .map(|opt| opt.map(|rotated| (key_state(&rotated.key, &gov), rotated)))
     })
     .await;
     match res {
-        Ok(Ok(Some(rotated))) => {
+        Ok(Ok(Some((state, rotated)))) => {
             audit::AUDIT.record_by("key.rotate", &resource, audit::OUTCOME_APPLIED, &actor);
             let mut body = key_meta(&rotated.key);
+            body["state"] = json!(state);
             // Shown exactly once, exactly like mint. 1.5.0 has exactly one bearer-credential shape,
             // so rotation always re-issues a signed token.
             body["token"] = json!(rotated.token);
@@ -1607,14 +1683,22 @@ pub(crate) async fn get_key(
     let id2 = id.clone();
     // The synchronous store read runs on the blocking pool (the SQLite backend is sync). O(1) row
     // lookup via `Store::get_key`, not a full-table `all_keys()` scan filtered by id.
-    let res = tokio::task::spawn_blocking(move || gov.store().get_key(&id2)).await;
+    // E-007: `state` is derived HERE too, alongside the read — `gov.is_revoked` needs `gov`, which is
+    // moved into this closure and unavailable after the `.await` below.
+    let res = tokio::task::spawn_blocking(move || {
+        gov.store()
+            .get_key(&id2)
+            .map(|opt| opt.map(|k| (key_state(&k, &gov), k)))
+    })
+    .await;
     match res {
-        Ok(Ok(Some(k))) => {
+        Ok(Ok(Some((state, k)))) => {
             let etag = key_etag(&k);
             // ETag lives ONLY in the HTTP `ETag` header (RFC 7232), not duplicated into the JSON
             // body — one authoritative surface, matching how config/hooks/auth expose their
             // concurrency token. (contract H4.)
-            let meta = key_meta(&k);
+            let mut meta = key_meta(&k);
+            meta["state"] = json!(state);
             let mut resp = json_response(StatusCode::OK, meta);
             if let Ok(v) = axum::http::HeaderValue::from_str(&format!("\"{etag}\"")) {
                 resp.headers_mut().insert(axum::http::header::ETAG, v);

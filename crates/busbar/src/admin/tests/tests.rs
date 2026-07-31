@@ -8067,6 +8067,207 @@ async fn test_signed_revoke_denylists_without_deleting() {
     handle.abort();
 }
 
+/// E-007: `PATCH {enabled:false}` (reversible pause), `POST /keys/{id}/revoke` (permanent denylist),
+/// and `DELETE /keys/{id}` (permanent denylist + tombstone) used to all collapse to the SAME
+/// `GET /keys/{id}` response, `{..., "enabled": false}` — byte-identical, with no field anywhere
+/// distinguishing them. This proves the fix: three keys, one put through each verb, each subsequent
+/// `GET /keys/{id}` now reports a DISTINCT `state`.
+#[tokio::test]
+async fn test_key_state_distinguishes_disable_revoke_and_tombstone() {
+    crate::metrics::init();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let (addr, handle) = serve_with_gov(gov.clone()).await;
+    let client = reqwest::Client::new();
+    let url = format!("http://{addr}/api/v1/admin/keys");
+
+    let mint = |name: &'static str| {
+        let client = client.clone();
+        let url = url.clone();
+        async move {
+            let created: serde_json::Value = client
+                .post(&url)
+                .header("x-admin-token", "admintok")
+                .json(&serde_json::json!({"name": name}))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            assert_eq!(
+                created["state"], "active",
+                "a freshly minted key's own response is state:active"
+            );
+            created["id"].as_str().unwrap().to_string()
+        }
+    };
+    let disabled_id = mint("paused").await;
+    let revoked_id = mint("revoked").await;
+    let tombstoned_id = mint("tombstoned").await;
+
+    // PATCH {enabled:false} — reversible pause.
+    let patched: serde_json::Value = client
+        .patch(format!("{url}/{disabled_id}"))
+        .header("x-admin-token", "admintok")
+        .json(&serde_json::json!({"enabled": false}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(patched["enabled"], false);
+    assert_eq!(
+        patched["state"], "disabled",
+        "PATCH's own response already carries the distinguishing state"
+    );
+
+    // POST /revoke — permanent denylist, binding kept.
+    let revoked: serde_json::Value = client
+        .post(format!("{url}/{revoked_id}/revoke"))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(revoked["revoked"], revoked_id.as_str());
+
+    // DELETE — permanent denylist + tombstone.
+    let del = client
+        .delete(format!("{url}/{tombstoned_id}"))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(del.status().as_u16(), 204);
+
+    // The three cases used to be byte-identical on GET (`{..., "enabled": false}` all round). Now
+    // each `state` is distinct, and the OLD collapsed field (`enabled`) is still false on all three
+    // — this is exactly the wire shape E-007 filed against.
+    let get_state = |id: String| {
+        let client = client.clone();
+        let url = url.clone();
+        async move {
+            let body: serde_json::Value = client
+                .get(format!("{url}/{id}"))
+                .header("x-admin-token", "admintok")
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            assert_eq!(
+                body["enabled"], false,
+                "id={id}: all three cases still collapse `enabled` to false — that's the bug \
+                 `state` exists to fix, not something this test should regress"
+            );
+            body["state"].as_str().unwrap().to_string()
+        }
+    };
+    let disabled_state = get_state(disabled_id).await;
+    let revoked_state = get_state(revoked_id).await;
+    let tombstoned_state = get_state(tombstoned_id).await;
+
+    assert_eq!(disabled_state, "disabled");
+    assert_eq!(revoked_state, "revoked");
+    assert_eq!(tombstoned_state, "tombstoned");
+    // Belt-and-braces: the whole point is that these three are PAIRWISE distinct, not just that
+    // each matches its own expected literal (a bug that mapped both revoke and delete to the same
+    // wrong string would still pass three individual `assert_eq!`s above).
+    assert_ne!(disabled_state, revoked_state);
+    assert_ne!(revoked_state, tombstoned_state);
+    assert_ne!(disabled_state, tombstoned_state);
+
+    handle.abort();
+}
+
+/// E-007 secondary point: a tombstoned key is silently omitted from a plain `GET /keys` — "it is
+/// gone" and "it never existed" looked the same. `?include=tombstoned` opts back in, additively;
+/// the default (omitted) list is unaffected.
+#[tokio::test]
+async fn test_list_keys_include_tombstoned() {
+    crate::metrics::init();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let (addr, handle) = serve_with_gov(gov.clone()).await;
+    let client = reqwest::Client::new();
+    let url = format!("http://{addr}/api/v1/admin/keys");
+
+    let created: serde_json::Value = client
+        .post(&url)
+        .header("x-admin-token", "admintok")
+        .json(&serde_json::json!({"name": "will-be-tombstoned"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = created["id"].as_str().unwrap().to_string();
+
+    let del = client
+        .delete(format!("{url}/{id}"))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(del.status().as_u16(), 204);
+
+    // Default: the tombstoned row is omitted, exactly as before this fix.
+    let plain: serde_json::Value = client
+        .get(&url)
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let plain_ids: Vec<&str> = plain["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|k| k["id"].as_str().unwrap())
+        .collect();
+    assert!(
+        !plain_ids.contains(&id.as_str()),
+        "a plain GET /keys must still omit tombstoned rows by default"
+    );
+
+    // `?include=tombstoned` opts back in, and its row's `state` reads "tombstoned".
+    let included: serde_json::Value = client
+        .get(format!("{url}?include=tombstoned"))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let row = included["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|k| k["id"] == id.as_str())
+        .expect("?include=tombstoned must surface the tombstoned row");
+    assert_eq!(row["state"], "tombstoned");
+
+    // An unrecognized `include` value is a loud 400, not a silently-ignored filter.
+    let bad = client
+        .get(format!("{url}?include=bogus"))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad.status().as_u16(), 400);
+
+    handle.abort();
+}
+
 /// `group: None` (omitted) mints a key with NO group - authed + unlimited (access only); key_meta's
 /// `group` is null. A pool ACL matrix: OMITTED `allowed_pools` binds ALL pools (empty vec in the
 /// binding), while an explicit `[]` binds NO pools.

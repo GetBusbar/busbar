@@ -4100,6 +4100,12 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                     "Opaque continuation cursor from `next_cursor`",
                     false,
                 ),
+                (
+                    "include",
+                    "E-007: set to `tombstoned` to include hard-deleted keys, which are otherwise \
+                     omitted (each row's `state` reads `\"tombstoned\"`)",
+                    false,
+                ),
             ],
         ),
         (
