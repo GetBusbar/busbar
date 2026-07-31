@@ -767,6 +767,90 @@ async fn test_admin_v1_hook_settings_patch_commit_on_ack_and_schema() {
     serve.abort();
 }
 
+/// `GET /plugins/{name}/schema`'s describe→manifest fallback (question #3's "arm 3", round-8
+/// finding against `b843992`): a loaded hook whose live `describe` answers `schema: null` is NOT
+/// evidence the plugin has no real settings shape — the handler must fall back to the manifest
+/// baseline SERVER-SIDE and return it with `source: "manifest"`, not just report `source:
+/// "describe"` with a bare null. Uses the real dlopen'd `busbar-hook-test-plugin` (its
+/// `empty_management: true` setting makes `describe()` return `{}`, the real "unsupported" reply)
+/// with a manifest stamped with a real `settings_schema`, over the live admin router.
+#[cfg(unix)]
+#[tokio::test]
+async fn test_admin_v1_plugin_schema_falls_back_to_manifest_when_describe_answers_null() {
+    crate::metrics::init();
+    let manifest_schema = serde_json::json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {"order": {"type": "array"}},
+    });
+    let Some(env) = crate::test_support::test_hook_env_with_schema(
+        &["test-hook-fallback"],
+        Default::default(),
+        Some(&manifest_schema.to_string()),
+    ) else {
+        eprintln!("skip: hook cdylib not built (run under --workspace)");
+        return;
+    };
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let app = TestApp::new().governance(gov).hook_env(env).build();
+    let router = crate::build_router(app);
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = l.local_addr().unwrap();
+    let serve = tokio::spawn(async move { axum::serve(l, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    let admin = |req: reqwest::RequestBuilder| {
+        req.header("x-admin-token", "admintok")
+            .header("content-type", "application/json")
+    };
+
+    // Register + configure the hook so `describe()` returns `{}` (empty_management: true) — a
+    // LOADED plugin that genuinely answers nothing, not merely "never loaded."
+    let created = admin(client.post(format!("http://{addr}/api/v1/admin/hooks")))
+        .body(
+            serde_json::json!({
+                "name": "fallback-hook",
+                "config": {"kind": "gate", "plugin": "test-hook-fallback"}
+            })
+            .to_string(),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(created.status().as_u16(), 201, "{:?}", created.text().await);
+    let patched = admin(client.patch(format!(
+        "http://{addr}/api/v1/admin/hooks/fallback-hook/settings"
+    )))
+    .body(serde_json::json!({"settings": {"empty_management": true}}).to_string())
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(patched.status().as_u16(), 200, "{:?}", patched.text().await);
+
+    // The GENERALIZED admin-plugins endpoint, not the hook-only `/hooks/{name}/schema` proxy —
+    // proves the fallback lives in `plugin_schema`, the code path this test targets.
+    let got: serde_json::Value = admin(client.get(format!(
+        "http://{addr}/api/v1/admin/plugins/fallback-hook/schema"
+    )))
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(
+        got["source"], "manifest",
+        "describe answered null -> falls back to the manifest baseline: {got}"
+    );
+    assert_eq!(
+        got["schema"], manifest_schema,
+        "the ACTUAL manifest schema comes back, not just a source label: {got}"
+    );
+    assert_eq!(got["schema_error"], serde_json::Value::Null);
+
+    serve.abort();
+}
+
 /// `POST /api/v1/admin/config/apply`: a body-carried full config swaps in atomically — the new
 /// topology is live, the surviving identity keeps its tripped health, and a stale
 /// If-Match is a 409 that changes nothing.

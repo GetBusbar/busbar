@@ -3122,50 +3122,49 @@ pub(crate) async fn plugin_schema(
     Path(name): Path<String>,
 ) -> Response {
     let current = handle.load();
-    // Hooks keep the live describe-proxy behavior unchanged (source: "describe") — but the
-    // response still needs `trust`, so this is no longer a pure delegate to `hook_schema` (which
-    // has its own narrower response shape for `GET /hooks/{name}/schema`).
+    // Hooks keep the live describe-proxy behavior unchanged when `describe` actually answers
+    // (source: "describe") — but a loaded hook that answers `schema: null` is NOT evidence the
+    // plugin has no real settings shape (question #3's "arm 3"): the handler falls back to the
+    // manifest baseline server-side and reports `source: "manifest"` in that case, so busbar-ui
+    // never has to implement the describe/manifest precedence rule itself. `source` reports which
+    // path the response ACTUALLY came from, not merely which branch (loaded vs. not) was checked
+    // first — a `source: "describe"` with `schema: null` is only correct when describe was asked
+    // and truly had nothing to fall back to (no resolvable manifest either).
     if let Some(hook) = current.hook_registry.get(&name) {
-        let schema =
+        let described =
             crate::hooks::fetch_schema(&name, hook, current.config_version, &current.hook_env)
                 .await;
-        // Best-effort: a hook's config-registry name doesn't have to match a dlopen'd plugin's
-        // manifest name/alias (some hooks are built-in, not backed by an installed tarball at
-        // all) — when it does resolve, report the real verdict; when it doesn't, "unverified" is
-        // the conservative label (never assert trust the manifest catalog can't back up).
-        let trust = current
-            .hook_env
-            .registry
-            .resolve(&name)
+        // The manifest baseline lives under the PLUGIN's name/alias (`hook.plugin`), not the
+        // hook's own config-registry name — the two are commonly different strings (a hook is
+        // registered as e.g. "fallback-hook" while backed by a plugin aliased "test-hook"), so
+        // resolving by `name` here would silently never find the manifest at all. Best-effort:
+        // a hook's plugin reference could in principle name something unresolvable — when it
+        // does resolve, report the real verdict; when it doesn't, "unverified" is the
+        // conservative label (never assert trust the manifest catalog can't back up).
+        let loadable = current.hook_env.registry.resolve(&hook.plugin);
+        let trust = loadable
             .map(|p| verdict_trust(&p.verdict))
             .unwrap_or("unverified");
+        if described.is_some() {
+            return ok_json(
+                StatusCode::OK,
+                &json!({ "name": name, "schema": described, "schema_error": null, "trust": trust, "source": "describe" }),
+            );
+        }
+        // describe answered null (or the hook never answered at all) — fall back to the manifest
+        // baseline, same as a never-loaded plugin, rather than reporting "no schema available"
+        // when the manifest actually has one.
+        let (schema, schema_error) = loadable.map(manifest_schema).unwrap_or((None, None));
         return ok_json(
             StatusCode::OK,
-            &json!({ "name": name, "schema": schema, "trust": trust, "source": "describe" }),
+            &json!({ "name": name, "schema": schema, "schema_error": schema_error, "trust": trust, "source": "manifest" }),
         );
     }
     let Some(loadable) = current.hook_env.registry.resolve(&name) else {
         return err_json(&AdminError::not_found(format!("plugin `{name}`")));
     };
     let trust = verdict_trust(&loadable.verdict);
-    // `settings_schema` is a raw JSON-Schema-document STRING in the manifest (kept as text rather
-    // than a nested Value so `canonical_manifest_bytes`'s sorted-key re-serialization can never
-    // reorder keys inside it and silently change what was signed) — parse it back to a Value here
-    // so the HTTP response carries real JSON, not a JSON string containing JSON. A manifest that
-    // SET the field but whose value fails to parse is a real authoring/packaging bug, distinct
-    // from a manifest that never set it at all — `schema: null` alone would collapse the two, so
-    // a parse failure instead reports `schema_error` and leaves `schema` null.
-    let (schema, schema_error): (Option<serde_json::Value>, Option<String>) =
-        match loadable.manifest.settings_schema.as_deref() {
-            None => (None, None),
-            Some(s) => match serde_json::from_str::<serde_json::Value>(s) {
-                Ok(v) => (Some(v), None),
-                Err(e) => (
-                    None,
-                    Some(format!("manifest settings_schema is not valid JSON: {e}")),
-                ),
-            },
-        };
+    let (schema, schema_error) = manifest_schema(loadable);
     ok_json(
         StatusCode::OK,
         &json!({
@@ -3176,6 +3175,28 @@ pub(crate) async fn plugin_schema(
             "source": "manifest",
         }),
     )
+}
+
+/// The manifest-baseline half of `GET /plugins/{name}/schema`: parse the SIGNED
+/// `settings_schema` string (kept as text rather than a nested `serde_json::Value` so
+/// `canonical_manifest_bytes`'s sorted-key re-serialization can never reorder keys inside it and
+/// silently change what was signed) back into real JSON. A manifest that SET the field but whose
+/// value fails to parse is a real authoring/packaging bug, distinct from a manifest that never set
+/// it at all — `schema: null` alone would collapse the two, so a parse failure instead reports
+/// `schema_error` and leaves `schema` null.
+fn manifest_schema(
+    loadable: &busbar_plugin_loader::LoadablePlugin,
+) -> (Option<serde_json::Value>, Option<String>) {
+    match loadable.manifest.settings_schema.as_deref() {
+        None => (None, None),
+        Some(s) => match serde_json::from_str::<serde_json::Value>(s) {
+            Ok(v) => (Some(v), None),
+            Err(e) => (
+                None,
+                Some(format!("manifest settings_schema is not valid JSON: {e}")),
+            ),
+        },
+    }
 }
 
 /// The catalog's own trust vocabulary (`"trusted" | "unverified" | "rejected"` — see
@@ -3472,7 +3493,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         ap("/plugins/{file}/schema"),
         json!({
             "get": {
-                "summary": "The plugin's self-described settings JSON Schema, read from the SIGNED manifest's `settings_schema` field — works for every plugin kind (store/secret/auth/hook), not just hooks. `hook` plugins keep the live describe-proxy behavior unchanged (source: describe)",
+                "summary": "The plugin's self-described settings JSON Schema, read from the SIGNED manifest's `settings_schema` field — works for every plugin kind (store/secret/auth/hook), not just hooks. `hook` plugins keep the live describe-proxy behavior when describe answers (source: describe); a loaded hook whose describe answers null falls back server-side to the manifest baseline (source: manifest)",
                 "security": [{"adminToken": []}],
                 "parameters": [{
                     "name": "file", "in": "path", "required": true,
