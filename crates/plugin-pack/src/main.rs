@@ -355,6 +355,58 @@ fn validate_secret_fields(root: &serde_json::Value) -> Result<(), String> {
                 scan(item, defs, depth + 1, resolving)?;
             }
         }
+        // Every other JSON Schema 2020-12 keyword whose value is itself a subschema (or holds one)
+        // is walked here too, against the full core+applicator+content vocabulary — `oneOf`/
+        // `anyOf`/`prefixItems` above closed one round of this exact class of gap (round-8 finding
+        // against `b843992`); this closes the rest of it in one pass rather than waiting for a
+        // fourth finder to enumerate the remaining keywords one at a time. `if`/`then`/`else` and
+        // `not` each hold a single nested schema, same shape as `items`. `dependentSchemas` and
+        // `patternProperties` are maps of key -> schema, same shape as `properties` (but their keys
+        // are property names / regexes, not field names to check against `SECRET_NAME_HINTS`
+        // themselves — only the nested schemas are scanned). `additionalProperties`/
+        // `unevaluatedProperties`/`unevaluatedItems`/`contains`/`contentSchema` each hold a single
+        // nested schema OR (except `contentSchema`) a bare bool (`true`/`false`); a bool is not a
+        // schema object and is skipped rather than scanned (`resolve_effective` would just return
+        // an empty map for it anyway, but skip explicitly so the intent is clear).
+        //
+        // `propertyNames` is deliberately NOT walked: it constrains the KEYS of an object (e.g.
+        // "must match `^[a-z]+$`"), not the shape or value of any field, so it can never itself
+        // carry an `x-busbar-secret` marker or a secret-shaped VALUE for a field — there is nothing
+        // for this scan to find there.
+        if let Some(sub) = eff.get("if") {
+            scan(sub, defs, depth + 1, resolving)?;
+        }
+        if let Some(sub) = eff.get("then") {
+            scan(sub, defs, depth + 1, resolving)?;
+        }
+        if let Some(sub) = eff.get("else") {
+            scan(sub, defs, depth + 1, resolving)?;
+        }
+        if let Some(sub) = eff.get("not") {
+            scan(sub, defs, depth + 1, resolving)?;
+        }
+        if let Some(sub) = eff.get("contentSchema") {
+            scan(sub, defs, depth + 1, resolving)?;
+        }
+        for keyword in [
+            "additionalProperties",
+            "unevaluatedProperties",
+            "unevaluatedItems",
+            "contains",
+        ] {
+            if let Some(sub) = eff.get(keyword) {
+                if sub.is_object() {
+                    scan(sub, defs, depth + 1, resolving)?;
+                }
+            }
+        }
+        for keyword in ["patternProperties", "dependentSchemas"] {
+            if let Some(map) = eff.get(keyword).and_then(|v| v.as_object()) {
+                for sub in map.values() {
+                    scan(sub, defs, depth + 1, resolving)?;
+                }
+            }
+        }
         Ok(())
     }
     scan(root, defs, 0, &mut HashSet::new())
@@ -805,6 +857,181 @@ mod tests {
             },
         });
         validate_secret_fields(&one_of_clean).unwrap();
+    }
+
+    /// The remaining JSON Schema 2020-12 subschema-bearing keywords (`if`/`then`/`else`, `not`,
+    /// `additionalProperties`, `patternProperties`, `contains`, `dependentSchemas`,
+    /// `unevaluatedProperties`/`unevaluatedItems`) are also places a field can hide — same class of
+    /// gap as `oneOf`/`anyOf`/`prefixItems` above, for the keywords that round-8 finding didn't
+    /// cover (round-8 follow-up finding: the scanner still only walked `properties`/`items`/
+    /// `oneOf`/`anyOf`/`prefixItems`, so an unmarked secret-looking field — or a marked field
+    /// placed below root depth — hidden under any of these was silently accepted and shipped
+    /// unmarked into the signed manifest).
+    #[test]
+    fn remaining_subschema_keywords_are_scanned_for_secret_violations() {
+        // `if`/`then`: an unmarked secret-looking field nested inside a `then` branch.
+        let if_then_unmarked = serde_json::json!({
+            "$schema": SCHEMA_2020_12, "type": "object",
+            "properties": {
+                "auth": {
+                    "if": {"properties": {"mode": {"const": "basic"}}},
+                    "then": {"type": "object", "properties": {"password": {"type": "string"}}},
+                },
+            },
+        });
+        assert!(validate_secret_fields(&if_then_unmarked).is_err());
+
+        // `else` branch too.
+        let if_else_unmarked = serde_json::json!({
+            "$schema": SCHEMA_2020_12, "type": "object",
+            "properties": {
+                "auth": {
+                    "if": {"properties": {"mode": {"const": "anon"}}},
+                    "else": {"type": "object", "properties": {"api_key": {"type": "string"}}},
+                },
+            },
+        });
+        assert!(validate_secret_fields(&if_else_unmarked).is_err());
+
+        // `not`: still scanned even though it constrains what must NOT match — a secret-looking
+        // field inside it is still a field a form renderer's schema walker could stumble into.
+        let not_unmarked = serde_json::json!({
+            "$schema": SCHEMA_2020_12, "type": "object",
+            "properties": {
+                "auth": {
+                    "not": {"type": "object", "properties": {"secret": {"type": "string"}}},
+                },
+            },
+        });
+        assert!(validate_secret_fields(&not_unmarked).is_err());
+
+        // `additionalProperties` as a schema (not a bool): unmarked secret-looking field.
+        let additional_props_unmarked = serde_json::json!({
+            "$schema": SCHEMA_2020_12, "type": "object",
+            "properties": {
+                "auth": {
+                    "type": "object",
+                    "additionalProperties": {"type": "object", "properties": {"token": {"type": "string"}}},
+                },
+            },
+        });
+        assert!(validate_secret_fields(&additional_props_unmarked).is_err());
+
+        // `additionalProperties: true` / `false` (bool, not a schema) must NOT crash or false-positive.
+        let additional_props_bool_true = serde_json::json!({
+            "$schema": SCHEMA_2020_12, "type": "object",
+            "properties": {"auth": {"type": "object", "additionalProperties": true}},
+        });
+        validate_secret_fields(&additional_props_bool_true).unwrap();
+        let additional_props_bool_false = serde_json::json!({
+            "$schema": SCHEMA_2020_12, "type": "object",
+            "properties": {"auth": {"type": "object", "additionalProperties": false}},
+        });
+        validate_secret_fields(&additional_props_bool_false).unwrap();
+
+        // `patternProperties`: map of pattern -> schema, unmarked secret-looking field in a value.
+        let pattern_props_unmarked = serde_json::json!({
+            "$schema": SCHEMA_2020_12, "type": "object",
+            "properties": {
+                "auth": {
+                    "type": "object",
+                    "patternProperties": {
+                        "^cred_": {"type": "object", "properties": {"client_secret": {"type": "string"}}},
+                    },
+                },
+            },
+        });
+        assert!(validate_secret_fields(&pattern_props_unmarked).is_err());
+
+        // `contains`: unmarked secret-looking field inside an array-item constraint.
+        let contains_unmarked = serde_json::json!({
+            "$schema": SCHEMA_2020_12, "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "contains": {"type": "object", "properties": {"password": {"type": "string"}}},
+                },
+            },
+        });
+        assert!(validate_secret_fields(&contains_unmarked).is_err());
+
+        // `dependentSchemas`: map of name -> schema, unmarked secret-looking field in a value.
+        let dependent_schemas_unmarked = serde_json::json!({
+            "$schema": SCHEMA_2020_12, "type": "object",
+            "properties": {
+                "auth": {
+                    "type": "object",
+                    "dependentSchemas": {
+                        "mode": {"type": "object", "properties": {"private_key": {"type": "string"}}},
+                    },
+                },
+            },
+        });
+        assert!(validate_secret_fields(&dependent_schemas_unmarked).is_err());
+
+        // `unevaluatedProperties`/`unevaluatedItems`: schema form, unmarked secret-looking field;
+        // and bool form must not crash or false-positive.
+        let unevaluated_props_unmarked = serde_json::json!({
+            "$schema": SCHEMA_2020_12, "type": "object",
+            "properties": {
+                "auth": {
+                    "type": "object",
+                    "unevaluatedProperties": {"type": "object", "properties": {"apikey": {"type": "string"}}},
+                },
+            },
+        });
+        assert!(validate_secret_fields(&unevaluated_props_unmarked).is_err());
+        let unevaluated_props_bool = serde_json::json!({
+            "$schema": SCHEMA_2020_12, "type": "object",
+            "properties": {"auth": {"type": "object", "unevaluatedProperties": false}},
+        });
+        validate_secret_fields(&unevaluated_props_bool).unwrap();
+
+        // A marked `x-busbar-secret` field placed below root depth via `additionalProperties` is
+        // still rejected by the depth-1 placement rule (the SAME evasion the round-8 `oneOf` fix
+        // closed, for a keyword that fix didn't reach): `resolve_settings()` only resolves
+        // top-level fields, so a marker this deep would silently never resolve.
+        let additional_props_marked_nested = serde_json::json!({
+            "$schema": SCHEMA_2020_12, "type": "object",
+            "properties": {
+                "auth": {
+                    "type": "object",
+                    "additionalProperties": {"type": "object", "properties": {"token": {"type": "string", "x-busbar-secret": true}}},
+                },
+            },
+        });
+        assert!(validate_secret_fields(&additional_props_marked_nested).is_err());
+
+        // `contentSchema`: describes the shape of a string's decoded content (e.g. an embedded
+        // JSON document) — its value is a full nested schema, not a bool, so an unmarked
+        // secret-looking field hidden inside it must be caught the same as any other nested
+        // placement (adversarial-review finding: missed in the first pass of this fix).
+        let content_schema_unmarked = serde_json::json!({
+            "$schema": SCHEMA_2020_12, "type": "object",
+            "properties": {
+                "blob": {
+                    "type": "string",
+                    "contentMediaType": "application/json",
+                    "contentSchema": {"type": "object", "properties": {"password": {"type": "string"}}},
+                },
+            },
+        });
+        assert!(validate_secret_fields(&content_schema_unmarked).is_err());
+
+        // A schema using these keywords with no secret-shaped fields at all is untouched.
+        let clean = serde_json::json!({
+            "$schema": SCHEMA_2020_12, "type": "object",
+            "properties": {
+                "auth": {
+                    "if": {"properties": {"mode": {"const": "basic"}}},
+                    "then": {"type": "object", "properties": {"greeting": {"type": "string"}}},
+                    "not": {"type": "object", "properties": {"nope": {"type": "boolean"}}},
+                    "additionalProperties": {"type": "string"},
+                    "patternProperties": {"^x_": {"type": "string"}},
+                },
+            },
+        });
+        validate_secret_fields(&clean).unwrap();
     }
 
     /// `x-busbar-ref: "pool" | "group" | "model" | "provider"` (question #5) is a recognized schema
