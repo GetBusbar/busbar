@@ -522,6 +522,22 @@ pub(crate) fn recorder_installed() -> bool {
 /// back to the plain macro until the recorder is installed (see the cache-module note above).
 /// Byte-for-byte the same series and value the macro produced.
 pub(crate) fn incr_requests_total(ingress_protocol: &str, pool: &str, outcome: &'static str) {
+    // MUTATION-TESTING NOTE (cargo-mutants: `delete !` here): this `!recorder_installed()` branch
+    // is real (it exists so pre-install traffic never caches a handle bound to the no-op
+    // recorder), but it is NOT practically unit-testable in this crate as it stands. `ENABLED`/
+    // `HANDLE` are process-global `OnceLock`s that install (via `init()`) exactly once per
+    // process and never uninstall; `busbar`'s crate is `[[bin]]`-only (no `[lib]` target — see
+    // Cargo.toml), so there is no way for a `tests/*.rs` integration test to link the crate's
+    // internals into its OWN separate process either (the only integration-test pattern available,
+    // `tests/cli_validate.rs`, black-box-spawns the built binary as a subprocess instead). Within
+    // the single shared `#[cfg(test)]` unit-test process, some other test has near-certainly
+    // already called `init()` before this one runs (parallel test execution, no ordering
+    // guarantee), so this branch is unreachable from a normal `#[test]`. A real fix would mean
+    // adding a `[lib]` target to this crate purely to enable a never-calls-init() integration
+    // test binary — out of scope for a mutation-testing gap. Externally, the two branches are
+    // ALSO behaviorally identical before install: both ultimately call the same no-op
+    // `metrics::counter!` macro against the default recorder, so even a real subprocess test
+    // could not distinguish them by observable effect. Left as a documented, investigated gap.
     if !recorder_installed() {
         // Pre-install: don't cache (would bind to the no-op recorder). The macro is itself a no-op.
         metrics::counter!(
@@ -868,6 +884,7 @@ pub(crate) async fn handler(crate::state::CurrentApp(app): crate::state::Current
 mod tests {
     use super::*;
     use crate::governance::{GovState, MemoryStore, Store, VirtualKey};
+    use crate::store::StateStore;
     use crate::test_support::{LaneSpec, TestApp};
     use std::sync::Arc;
 
@@ -1388,6 +1405,166 @@ mod tests {
         assert!(
             line.contains("lane=\"model-h\""),
             "lane label must be the model string, not a numeric index; got:\n{line}"
+        );
+    }
+
+    /// A pool-scoped cell that is Open with a live cooldown, while the SAME underlying lane stays
+    /// usable via a SIBLING pool's untouched (Closed) cell, must render `busbar_lane_state = 1`
+    /// (HalfOpen) for the tripped pool — not 0 (would require `pool_cooldown == 0`) and not 2
+    /// (would require the lane itself being unusable everywhere). This is the ONLY reachable path
+    /// to state 1 for a pool-routed lane: `cell_ready_breaker` reports HALF_OPEN itself as NOT
+    /// ready, so "cooldown>0 but usable" only happens when a *different* cell for the same lane is
+    /// what makes `lane_usable_any_cell` true. Proves the `pool_cooldown > 0 && !snap.usable`
+    /// (line 794) and the by-model twin (line 825) guards distinguish state 1 from state 2 for
+    /// real, not just "some non-zero value".
+    #[test]
+    fn test_lane_state_half_open_via_sibling_pool_cell() {
+        init();
+
+        let (app, store) = TestApp::new()
+            .lane(LaneSpec::new(
+                "model-ho",
+                crate::proto::Protocol::openai(),
+                "http://ho",
+            ))
+            .pool("pool-tripped", &[(0, 1)])
+            .pool("pool-sibling", &[(0, 1)])
+            .build_with_store();
+
+        let now = crate::state::now();
+        // Materialize the sibling pool's cell fresh (Closed, cooldown=0, ready) BEFORE tripping the
+        // other pool — `lane_usable_any_cell` only sees cells that have been touched at least once.
+        let _ = store.cell("pool-sibling", 0);
+        // Trip pool-tripped's cell Open with a cooldown well into the future.
+        store.force_open_in("pool-tripped", 0, now + 600);
+
+        refresh_scrape_gauges(&app);
+        let out = render();
+
+        let tripped_line = out.lines().find(|l| {
+            l.contains(LANE_STATE) && l.contains("pool=\"pool-tripped\"") && !l.starts_with('#')
+        });
+        assert!(
+            tripped_line.is_some(),
+            "lane_state for pool-tripped must be present; got:\n{out}"
+        );
+        let line = tripped_line.unwrap();
+        assert!(
+            line.ends_with(" 1") || line.ends_with(" 1.0"),
+            "a cell with cooldown>0 but a usable sibling cell must report state 1 (HalfOpen), \
+             not 0 (would need cooldown==0) or 2 (would need the lane unusable everywhere); \
+             got:\n{line}"
+        );
+
+        // The untouched sibling pool's OWN cell is genuinely Closed/healthy — state 0 — proving
+        // this isn't just "every pool on a partially-tripped lane reports 1".
+        let sibling_line = out.lines().find(|l| {
+            l.contains(LANE_STATE) && l.contains("pool=\"pool-sibling\"") && !l.starts_with('#')
+        });
+        assert!(
+            sibling_line.is_some(),
+            "lane_state for pool-sibling must be present; got:\n{out}"
+        );
+        let sline = sibling_line.unwrap();
+        assert!(
+            sline.ends_with(" 0") || sline.ends_with(" 0.0"),
+            "the sibling pool's own untouched cell must report state 0; got:\n{sline}"
+        );
+    }
+
+    /// The `by_model` (direct/no-pool routing) twin of the HalfOpen test above: the DEFAULT (`""`)
+    /// cell tripped Open with a cooldown, while a SIBLING per-pool cell for the same lane stays
+    /// fresh/Closed, must still report state 1 for the model-labeled gauge — proving line 825's
+    /// `cooldown > 0 && !snap.usable` guard (distinct code from the pool-loop's identical-looking
+    /// line 794 guard) is independently exercised. Every `TestApp` lane is auto-registered in
+    /// `by_model` regardless of pool membership, so adding a pool here (to materialize a per-pool
+    /// cell) doesn't remove the lane from the by_model gauge loop.
+    #[test]
+    fn test_lane_state_half_open_by_model_via_sibling_pool_cell() {
+        init();
+
+        let (app, store) = TestApp::new()
+            .lane(LaneSpec::new(
+                "model-by",
+                crate::proto::Protocol::openai(),
+                "http://by",
+            ))
+            .pool("some-pool", &[(0, 1)])
+            .build_with_store();
+
+        let now = crate::state::now();
+        // Materialize a per-pool cell fresh/Closed so `lane_usable_any_cell` has a ready cell to
+        // find (without this, it would fall back to the default cell itself, which we're about to
+        // trip — making usable/cooldown check the SAME cell and state 1 unreachable).
+        let _ = store.cell("some-pool", 0);
+        // Trip the DEFAULT ("") cell — the one `cooldown_remaining_in("", lane_idx, now)` reads in
+        // the by_model loop.
+        store.force_open_in("", 0, now + 600);
+
+        refresh_scrape_gauges(&app);
+        let out = render();
+
+        let model_line = out.lines().find(|l| {
+            l.contains(LANE_STATE) && l.contains("pool=\"model-by\"") && !l.starts_with('#')
+        });
+        assert!(
+            model_line.is_some(),
+            "lane_state for the by_model entry (pool label = model name) must be present; \
+             got:\n{out}"
+        );
+        let line = model_line.unwrap();
+        assert!(
+            line.ends_with(" 1") || line.ends_with(" 1.0"),
+            "default cell cooling down but the lane usable via a sibling per-pool cell must \
+             report state 1 (HalfOpen) in the by_model gauge loop too; got:\n{line}"
+        );
+    }
+
+    /// The `>` boundary in line 825's `cooldown > 0 && !snap.usable` guard specifically: with the
+    /// DEFAULT (`""`) cell UNTOUCHED (cooldown reads exactly 0, `by_model`'s direct-routing path
+    /// never went through it) while every per-pool cell for the SAME lane is Open/unusable, the
+    /// by_model gauge must report state 0 (the direct path's own cell is genuinely healthy — pool
+    /// brokenness on a completely separate traffic path is irrelevant to it), not 2. A mutated
+    /// `cooldown == 0` would flip this specific case to 2, since `0 == 0` is true where `0 > 0` is
+    /// false — the two operators only diverge exactly at cooldown == 0, which the other HalfOpen
+    /// tests (cooldown = 600) can never reach.
+    #[test]
+    fn test_lane_state_by_model_default_cell_untouched_zero_cooldown_reports_healthy() {
+        init();
+
+        let (app, store) = TestApp::new()
+            .lane(LaneSpec::new(
+                "model-zero",
+                crate::proto::Protocol::openai(),
+                "http://zero",
+            ))
+            .pool("poolX", &[(0, 1)])
+            .pool("poolY", &[(0, 1)])
+            .build_with_store();
+
+        let now = crate::state::now();
+        // Trip EVERY per-pool cell Open (unexpired cooldown) — the lane is unusable via any pool.
+        // The DEFAULT ("") cell is deliberately never touched: cooldown_remaining_in("", 0, now)
+        // reads exactly 0 (its pristine untouched state), which is the boundary value that
+        // distinguishes `>` from `==`.
+        store.force_open_in("poolX", 0, now + 600);
+        store.force_open_in("poolY", 0, now + 600);
+
+        refresh_scrape_gauges(&app);
+        let out = render();
+
+        let model_line = out.lines().find(|l| {
+            l.contains(LANE_STATE) && l.contains("pool=\"model-zero\"") && !l.starts_with('#')
+        });
+        assert!(
+            model_line.is_some(),
+            "lane_state for the by_model entry must be present; got:\n{out}"
+        );
+        let line = model_line.unwrap();
+        assert!(
+            line.ends_with(" 0") || line.ends_with(" 0.0"),
+            "the untouched default cell (cooldown == 0) must report state 0 for the direct-routing \
+             gauge regardless of unrelated pool cells being broken; got:\n{line}"
         );
     }
 

@@ -876,6 +876,20 @@ impl TestApp {
         self
     }
     pub(crate) fn build(self) -> std::sync::Arc<crate::state::App> {
+        self.build_with_store().0
+    }
+
+    /// As [`build`], but also hands back the concrete `Arc<InMemoryStore>` — `App::store` is a
+    /// `dyn StateStore` trait object with no downcast support, so a test that needs to reach
+    /// test-only breaker-cell manipulation (`InMemoryStore::cell`/`cell_open`, real Open/HalfOpen
+    /// state, not achievable through the trait's own methods) needs the typed handle to the SAME
+    /// store instance the built `App` uses, not a second independent one.
+    pub(crate) fn build_with_store(
+        self,
+    ) -> (
+        std::sync::Arc<crate::state::App>,
+        std::sync::Arc<crate::store::InMemoryStore>,
+    ) {
         let mut by_model = std::collections::HashMap::new();
         let mut lanes = Vec::with_capacity(self.lanes.len());
         let mut lane_data = Vec::with_capacity(self.lanes.len());
@@ -894,11 +908,12 @@ impl TestApp {
             &self.pools,
             &by_model,
         ));
+        let store = std::sync::Arc::new(crate::store::InMemoryStore::new(lane_data));
         let app = std::sync::Arc::new(crate::state::App {
             tslots,
             probe_schedule: std::sync::Arc::new(crate::health::ProbeSchedule::new(lanes.len())),
             lanes,
-            store: std::sync::Arc::new(crate::store::InMemoryStore::new(lane_data)),
+            store: store.clone(),
             by_model,
             pools: self.pools,
             client: crate::state::UpstreamClients::build(1, || {
@@ -961,7 +976,7 @@ impl TestApp {
         // Mirror main's boot-version floor so rollback tests have a v0 to restore.
         app.versions
             .record(0, "system", "boot", &app.hook_registry, &app.global_hooks);
-        app
+        (app, store)
     }
 }
 
