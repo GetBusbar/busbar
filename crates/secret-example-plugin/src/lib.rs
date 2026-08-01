@@ -44,12 +44,14 @@ impl SecretModule for ExampleSecret {
             .get("key")
             .and_then(|v| v.as_str())
             .ok_or_else(|| {
-                SecretError("missing or non-string `key` in secret reference settings".to_string())
+                SecretError::invalid("missing or non-string `key` in secret reference settings")
             })?;
         self.map
             .get(key)
             .map(|v| v.clone().into_bytes())
-            .ok_or_else(|| SecretError(format!("no entry named {key:?} in the example secret map")))
+            .ok_or_else(|| {
+                SecretError::not_found(format!("no entry named {key:?} in the example secret map"))
+            })
     }
 }
 

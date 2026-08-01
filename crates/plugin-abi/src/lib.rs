@@ -290,15 +290,33 @@ pub enum SecretRequest {
     /// `resolve` - one secret reference's opaque settings map in, the secret bytes out.
     Resolve {
         settings: serde_json::Map<String, serde_json::Value>,
+        /// Optional caller-side deadline in milliseconds (E-012). `#[serde(default)]` so an OLD
+        /// plugin decoding a request from a NEW engine (which doesn't know this field) still
+        /// parses fine, and a NEW plugin decoding a request from an OLD engine (which never sends
+        /// it) sees `None` — additive both directions. Advisory only: the transport itself does
+        /// not enforce it; a module that can bound its own call SHOULD honor it.
+        #[serde(default)]
+        deadline_ms: Option<u64>,
     },
 }
 
-/// The success payload for a secret `call`. Module-level failures return `STATUS_ERR` with a UTF-8
-/// message in the out buffer (which must never carry secret material).
+/// The success payload for a secret `call`. A TRANSPORT-level failure (the plugin panicked, or
+/// explicitly signals a status the loader treats as an error) still returns `STATUS_ERR` with a
+/// UTF-8 message in the out buffer (which must never carry secret material) — that path is
+/// unchanged and every plugin built before this variant existed keeps working exactly as before.
+/// `Error` (E-012) is the ADDITIVE alternative: a plugin that wants to report a TYPED module-level
+/// failure (as opposed to a transport failure) returns it here, via `STATUS_OK`, instead of the
+/// untyped `STATUS_ERR` string channel — this is what lets a host distinguish "no such secret"
+/// from "the backend is unreachable" and react correctly to each.
 #[derive(Debug, Serialize, Deserialize)]
 pub enum SecretResponse {
     /// `resolve` - the secret bytes.
     Bytes(Vec<u8>),
+    /// `resolve` failed at the module level (not the transport level) with a known taxonomy.
+    Error {
+        kind: busbar_api::SecretErrorKind,
+        message: String,
+    },
 }
 
 // ── C fn-pointer signatures the engine resolves ──────────────────────────────────────────────────

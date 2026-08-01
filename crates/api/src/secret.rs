@@ -12,26 +12,77 @@
 /// The result type every [`SecretModule`] call returns.
 pub type SecretResult<T> = Result<T, SecretError>;
 
-/// A secret-resolution failure, carried as a human-readable message. The message must NEVER carry
-/// secret material - name the source (variable name, path, module) and the failure, not the value.
+/// The taxonomy a [`SecretError`] carries (E-012, busbar-ui's ENGINE-BUGS.md): distinguishes a
+/// configuration problem an operator must fix (`NotFound`, `Invalid`, `Denied`) from an outage they
+/// must wait out (`Unavailable`) — conflating the two, as a bare string does, produces exactly the
+/// wrong operator response in both directions. `Internal` is the catch-all for anything that
+/// doesn't fit the other four (including every pre-existing untyped-string error, via `From<String>`
+/// / `From<&str>` below, so no existing caller breaks).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SecretErrorKind {
+    /// The referenced secret does not exist at the source (wrong key/path/name) — a config error.
+    NotFound,
+    /// The source could not be reached (network, auth-to-the-backend, timeout) — an outage.
+    Unavailable,
+    /// The caller is not permitted to read this secret — a config/policy error.
+    Denied,
+    /// The request itself is malformed (bad settings shape) — a config error.
+    Invalid,
+    /// Anything else, including every error that predates this taxonomy.
+    Internal,
+}
+
+/// A secret-resolution failure: a [`SecretErrorKind`] plus a human-readable message. The message
+/// must NEVER carry secret material - name the source (variable name, path, module) and the
+/// failure, not the value.
 #[derive(Debug)]
-pub struct SecretError(pub String);
+pub struct SecretError {
+    pub kind: SecretErrorKind,
+    pub message: String,
+}
+
+impl SecretError {
+    pub fn new(kind: SecretErrorKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+    pub fn not_found(message: impl Into<String>) -> Self {
+        Self::new(SecretErrorKind::NotFound, message)
+    }
+    pub fn unavailable(message: impl Into<String>) -> Self {
+        Self::new(SecretErrorKind::Unavailable, message)
+    }
+    pub fn denied(message: impl Into<String>) -> Self {
+        Self::new(SecretErrorKind::Denied, message)
+    }
+    pub fn invalid(message: impl Into<String>) -> Self {
+        Self::new(SecretErrorKind::Invalid, message)
+    }
+    pub fn internal(message: impl Into<String>) -> Self {
+        Self::new(SecretErrorKind::Internal, message)
+    }
+}
 
 impl std::fmt::Display for SecretError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "secret error: {}", self.0)
+        write!(f, "secret error ({:?}): {}", self.kind, self.message)
     }
 }
 impl std::error::Error for SecretError {}
 
+/// Every error constructed before this taxonomy existed becomes `Internal` — behaviorally identical
+/// to the old bare-string error (same message, same fail-closed treatment), just now typed.
 impl From<String> for SecretError {
     fn from(s: String) -> Self {
-        SecretError(s)
+        SecretError::internal(s)
     }
 }
 impl From<&str> for SecretError {
     fn from(s: &str) -> Self {
-        SecretError(s.to_string())
+        SecretError::internal(s)
     }
 }
 

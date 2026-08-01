@@ -31,7 +31,7 @@ pub use hooks::{
     PromptProjection, RewriteReply, RoutingContext, RoutingDecision, RoutingPolicy, RoutingRequest,
     TransformOutcome,
 };
-pub use secret::{SecretError, SecretModule, SecretResult};
+pub use secret::{SecretError, SecretErrorKind, SecretModule, SecretResult};
 pub use store::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, ModelTokens,
     ModelTokensDelta, ScopeRef, SecretForm, Store, StoreError, StoreResult, TierTokens,

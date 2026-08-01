@@ -851,13 +851,17 @@ impl busbar_api::SecretModule for DynSecret {
     ) -> busbar_api::SecretResult<Vec<u8>> {
         let req = busbar_plugin_abi::SecretRequest::Resolve {
             settings: settings.clone(),
+            deadline_ms: None,
         };
         match self
             .raw
             .transport_call::<_, busbar_plugin_abi::SecretResponse>(&req)
-            .map_err(busbar_api::SecretError)?
+            .map_err(busbar_api::SecretError::internal)?
         {
             busbar_plugin_abi::SecretResponse::Bytes(b) => Ok(b),
+            busbar_plugin_abi::SecretResponse::Error { kind, message } => {
+                Err(busbar_api::SecretError::new(kind, message))
+            }
         }
     }
 }

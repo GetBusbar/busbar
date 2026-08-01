@@ -269,7 +269,9 @@ pub fn dispatch_secret(
     req: busbar_plugin_abi::SecretRequest,
 ) -> Result<busbar_plugin_abi::SecretResponse, busbar_api::SecretError> {
     match req {
-        busbar_plugin_abi::SecretRequest::Resolve { settings } => Ok(
+        // `deadline_ms` is advisory-only at this layer (E-012) — no enforcement here; a module
+        // that can bound its own call reads it from the request before this dispatch runs.
+        busbar_plugin_abi::SecretRequest::Resolve { settings, .. } => Ok(
             busbar_plugin_abi::SecretResponse::Bytes(module.resolve(&settings)?),
         ),
     }
@@ -293,7 +295,24 @@ pub unsafe fn secret_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutc
             Ok(payload) => BoundaryOutcome::Ok(payload),
             Err(e) => BoundaryOutcome::Error(format!("response encode failed: {e}")),
         },
-        Err(e) => BoundaryOutcome::Error(e.0),
+        // A module-level failure (E-012): encode it as a TYPED SecretResponse::Error and return
+        // it via BoundaryOutcome::Ok (STATUS_OK on the wire), not the untyped STATUS_ERR string
+        // channel — this is what lets a host distinguish "no such secret" from "backend
+        // unreachable". If encoding that itself fails (should be unreachable — the payload is two
+        // primitives), fall back to the untyped channel rather than losing the failure entirely.
+        Err(e) => {
+            let typed = busbar_plugin_abi::SecretResponse::Error {
+                kind: e.kind,
+                message: e.message.clone(),
+            };
+            match serde_json::to_vec(&typed) {
+                Ok(payload) => BoundaryOutcome::Ok(payload),
+                Err(enc_err) => BoundaryOutcome::Error(format!(
+                    "{} (also failed to encode: {enc_err})",
+                    e.message
+                )),
+            }
+        }
     }
 }
 
@@ -655,7 +674,7 @@ mod tests {
         ) -> busbar_api::SecretResult<Vec<u8>> {
             match settings.get("name").and_then(|v| v.as_str()) {
                 Some(n) => Ok(format!("resolved:{n}").into_bytes()),
-                None => Err(busbar_api::SecretError("settings.name required".into())),
+                None => Err(busbar_api::SecretError::invalid("settings.name required")),
             }
         }
     }
@@ -671,24 +690,32 @@ mod tests {
         settings.insert("name".to_string(), serde_json::Value::String("db".into()));
         match dispatch_secret(
             &EchoSecret,
-            busbar_plugin_abi::SecretRequest::Resolve { settings },
+            busbar_plugin_abi::SecretRequest::Resolve {
+                settings,
+                deadline_ms: None,
+            },
         )
         .expect("resolves")
         {
             busbar_plugin_abi::SecretResponse::Bytes(b) => assert_eq!(b, b"resolved:db"),
+            other => panic!("expected Bytes, got {other:?}"),
         }
         let err = dispatch_secret(
             &EchoSecret,
             busbar_plugin_abi::SecretRequest::Resolve {
                 settings: serde_json::Map::new(),
+                deadline_ms: None,
             },
         )
         .unwrap_err();
-        assert!(err.0.contains("settings.name required"));
+        assert_eq!(err.kind, busbar_api::SecretErrorKind::Invalid);
+        assert!(err.message.contains("settings.name required"));
     }
 
     /// SECRET glue (P2): the FFI path (open -> call -> close) round-trips a resolve and surfaces a
-    /// module failure as STATUS_ERR with the message in the out buffer.
+    /// module failure as a TYPED `SecretResponse::Error` over STATUS_OK (E-012) — not the untyped
+    /// STATUS_ERR string channel, so a host can distinguish failure kinds instead of pattern-matching
+    /// message text.
     #[test]
     fn secret_ffi_roundtrip_open_call_close() {
         unsafe {
@@ -709,8 +736,11 @@ mod tests {
             // resolve success
             let mut settings = serde_json::Map::new();
             settings.insert("name".to_string(), serde_json::Value::String("x".into()));
-            let req = serde_json::to_vec(&busbar_plugin_abi::SecretRequest::Resolve { settings })
-                .unwrap();
+            let req = serde_json::to_vec(&busbar_plugin_abi::SecretRequest::Resolve {
+                settings,
+                deadline_ms: None,
+            })
+            .unwrap();
             let mut out: *mut u8 = ptr::null_mut();
             let mut out_len: usize = 0;
             let status = secret_call_impl(handle, req.as_ptr(), req.len(), &mut out, &mut out_len);
@@ -720,21 +750,31 @@ mod tests {
             free_impl(out, out_len);
             match resp {
                 busbar_plugin_abi::SecretResponse::Bytes(b) => assert_eq!(b, b"resolved:x"),
+                other => panic!("expected Bytes, got {other:?}"),
             }
 
-            // resolve failure -> STATUS_ERR with the message (never a panic across the boundary)
+            // resolve failure -> STATUS_OK carrying a typed SecretResponse::Error (never a panic
+            // across the boundary, and never the untyped STATUS_ERR channel for a module-level
+            // failure — see this test's own doc comment).
             let req = serde_json::to_vec(&busbar_plugin_abi::SecretRequest::Resolve {
                 settings: serde_json::Map::new(),
+                deadline_ms: None,
             })
             .unwrap();
             let mut out: *mut u8 = ptr::null_mut();
             let mut out_len: usize = 0;
             let status = secret_call_impl(handle, req.as_ptr(), req.len(), &mut out, &mut out_len);
-            assert_eq!(status, STATUS_ERR);
-            let msg =
-                String::from_utf8_lossy(std::slice::from_raw_parts(out, out_len)).into_owned();
+            assert_eq!(status, STATUS_OK);
+            let resp: busbar_plugin_abi::SecretResponse =
+                serde_json::from_slice(std::slice::from_raw_parts(out, out_len)).unwrap();
             free_impl(out, out_len);
-            assert!(msg.contains("settings.name required"), "got {msg}");
+            match resp {
+                busbar_plugin_abi::SecretResponse::Error { kind, message } => {
+                    assert_eq!(kind, busbar_api::SecretErrorKind::Invalid);
+                    assert!(message.contains("settings.name required"), "got {message}");
+                }
+                other => panic!("expected Error, got {other:?}"),
+            }
 
             secret_close_impl(handle);
         }
