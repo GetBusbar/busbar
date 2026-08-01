@@ -9,7 +9,13 @@ description = "A hermetic trivial kind:secret plugin cdylib. Doubles as: (1) the
 license = "Apache-2.0"
 
 [lib]
-crate-type = ["cdylib"]
+# cdylib for the C ABI delivery; rlib is REQUIRED for `cargo test` to actually emit the cdylib
+# artifact at all when this crate has no in-crate #[test]s of its own — with cdylib-only, `cargo
+# test` builds a trivial "0 tests" harness for this package but never produces the .so/.dylib,
+# identical to store-postgres-plugin's original bug (see that crate's Cargo.toml). plugin-loader's
+# tests/lib.rs dlopens "the real built cdylib" and were silently finding nothing under a scoped
+# `cargo test -p busbar-plugin-loader` as a result.
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 busbar-api = { path = "../api" }

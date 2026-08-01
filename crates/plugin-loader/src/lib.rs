@@ -2170,19 +2170,36 @@ mod tests {
     /// hermetic `busbar-secret-example-plugin` cdylib, mirroring `store_fixture_plugin_path` above — CI
     /// (`cargo test --workspace`) always builds it, so a missing cdylib there is a hard failure, not
     /// a silent skip.
+    /// Checks BOTH the "uplifted" `<profile_dir>/<name>` copy and the raw `<profile_dir>/deps/<name>`
+    /// compiler output — a SCOPED `cargo test -p busbar-plugin-loader` (what dev-gate.yml's final
+    /// step runs) does not uplift the cdylib to the top-level profile dir, only to `target/deps`,
+    /// so checking only `profile_dir` silently found nothing even though the cdylib really was
+    /// built. Same fix already applied to `store_fixture_plugin_path` above and `hook_plugin_path`
+    /// in `hook.rs`.
     fn secret_example_plugin_path() -> Option<std::path::PathBuf> {
         let candidate = (|| {
             let exe = std::env::current_exe().ok()?;
             let profile_dir = exe.parent()?.parent()?;
             let name = plugin_library_filename("busbar_secret_example_plugin");
-            let candidate = profile_dir.join(&name);
-            candidate.exists().then_some(candidate)
+            let uplifted = profile_dir.join(&name);
+            let raw = profile_dir.join("deps").join(&name);
+            [uplifted, raw]
+                .into_iter()
+                .filter_map(|p| {
+                    std::fs::metadata(&p)
+                        .and_then(|m| m.modified())
+                        .ok()
+                        .map(|mtime| (p, mtime))
+                })
+                .max_by_key(|(_, mtime)| *mtime)
+                .map(|(p, _)| p)
         })();
         if candidate.is_none() && std::env::var_os("CI").is_some() {
             panic!(
                 "the secret example plugin cdylib is not built under CI: `cargo test --workspace` \
-                 must build busbar_secret_example_plugin. Refusing to silently skip the only \
-                 over-the-ABI coverage of the DynSecret dlopen seam."
+                 must build busbar_secret_example_plugin (checked both the uplifted target dir and \
+                 target/deps). Refusing to silently skip the only over-the-ABI coverage of the \
+                 DynSecret dlopen seam."
             );
         }
         candidate
