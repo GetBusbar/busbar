@@ -593,6 +593,193 @@ fn test_read_request_missing_tools() {
     assert!(ir.tools.is_empty());
 }
 
+/// A native Cohere request with a `role: "system"` message must parse successfully (the "system"
+/// match arm is real, not dead code) and its content must be canonicalized into `IrRequest.system`
+/// — NOT carried as a System-role `IrMessage` (matching the other protocols' convention, per this
+/// function's own doc comment). Deleting the "system" match arm would fall through to the `_ =>`
+/// catch-all and reject the request as a parse error instead.
+#[test]
+fn test_read_request_role_system_maps_to_ir_system_not_a_message() {
+    let json = serde_json::json!({
+        "model": "command",
+        "messages": [
+            {"role": "system", "content": "be nice"},
+            {"role": "user", "content": "hi"}
+        ]
+    });
+    let ir = CohereReader
+        .read_request(&json)
+        .expect("a role:system message must parse, not error");
+    assert_eq!(
+        ir.messages.len(),
+        1,
+        "the system message must not appear in .messages"
+    );
+    assert_eq!(ir.messages[0].role, crate::ir::IrRole::User);
+    assert_eq!(ir.system.len(), 1);
+    assert!(matches!(
+        &ir.system[0],
+        crate::ir::IrBlock::Text { text, .. } if text == "be nice"
+    ));
+}
+
+/// System content given as an ARRAY of blocks only picks up blocks whose `"type"` is exactly
+/// `"text"` — a block with a different declared type must be skipped, not included. Guards the
+/// `bo.get("type")... == Some("text")` check inside the system-content-array branch.
+#[test]
+fn test_read_request_system_content_array_only_collects_text_typed_blocks() {
+    let json = serde_json::json!({
+        "model": "command",
+        "messages": [
+            {"role": "system", "content": [
+                {"type": "text", "text": "first"},
+                {"type": "not_text", "text": "must be skipped"},
+                {"type": "text", "text": "second"}
+            ]},
+            {"role": "user", "content": "hi"}
+        ]
+    });
+    let ir = CohereReader
+        .read_request(&json)
+        .expect("read_request should succeed");
+    let texts: Vec<&str> = ir
+        .system
+        .iter()
+        .map(|b| match b {
+            crate::ir::IrBlock::Text { text, .. } => text.as_str(),
+            _ => panic!("expected only Text blocks"),
+        })
+        .collect();
+    assert_eq!(texts, vec!["first", "second"]);
+}
+
+/// `tool_calls` on a message is only processed when that message's role is Assistant — a
+/// non-assistant message (e.g. `user`) carrying a stray `tool_calls` field must NOT have it
+/// decoded into IR tool-use blocks. Guards `if role == IrRole::Assistant` before the tool_calls
+/// branch.
+#[test]
+fn test_read_request_tool_calls_only_processed_for_assistant_role() {
+    let stray_tool_calls = serde_json::json!([{
+        "id": "call_1",
+        "function": {"name": "lookup", "arguments": "{}"}
+    }]);
+    let json = serde_json::json!({
+        "model": "command",
+        "messages": [
+            {"role": "user", "content": "hi", "tool_calls": stray_tool_calls},
+        ]
+    });
+    let ir = CohereReader
+        .read_request(&json)
+        .expect("read_request should succeed");
+    assert_eq!(ir.messages.len(), 1);
+    assert!(
+        ir.messages[0]
+            .content
+            .iter()
+            .all(|b| !matches!(b, crate::ir::IrBlock::ToolUse { .. })),
+        "a user message's tool_calls field must be ignored, not decoded: {:?}",
+        ir.messages[0].content
+    );
+
+    let json = serde_json::json!({
+        "model": "command",
+        "messages": [
+            {"role": "assistant", "content": "ok", "tool_calls": stray_tool_calls},
+        ]
+    });
+    let ir = CohereReader
+        .read_request(&json)
+        .expect("read_request should succeed");
+    assert!(
+        ir.messages[0]
+            .content
+            .iter()
+            .any(|b| matches!(b, crate::ir::IrBlock::ToolUse { .. })),
+        "an assistant message's tool_calls field must be decoded: {:?}",
+        ir.messages[0].content
+    );
+}
+
+/// Once a text block is closed (`ET_CONTENT_END`), `state.text_block_closed` latches — a LATER
+/// `ET_CONTENT_START` for a text block must be dropped (falls through to the no-op `other` arm),
+/// never reopening the already-stopped index with a second `BlockStart`.
+#[test]
+fn test_stream_content_start_after_close_does_not_reopen_the_text_block() {
+    let mut state = crate::ir::StreamDecodeState::default();
+    let reader = CohereReader;
+
+    let evs = reader.read_response_events(
+        "",
+        &serde_json::json!({"type": ET_CONTENT_START, "index": 0, "delta": {"message": {"content": {"type": "text", "text": ""}}}}),
+        &mut state,
+    );
+    assert_eq!(evs.len(), 1);
+    assert!(matches!(
+        evs[0],
+        crate::ir::IrStreamEvent::BlockStart { .. }
+    ));
+
+    let evs = reader.read_response_events(
+        "",
+        &serde_json::json!({"type": ET_CONTENT_END, "index": 0}),
+        &mut state,
+    );
+    assert_eq!(evs.len(), 1);
+    assert!(matches!(evs[0], crate::ir::IrStreamEvent::BlockStop { .. }));
+
+    // A second content-start after the close must be dropped entirely: no BlockStart, no event.
+    let evs = reader.read_response_events(
+        "",
+        &serde_json::json!({"type": ET_CONTENT_START, "index": 1, "delta": {"message": {"content": {"type": "text", "text": ""}}}}),
+        &mut state,
+    );
+    assert!(
+        evs.is_empty(),
+        "a text block reopened after close must be dropped, not re-emit BlockStart: {evs:?}"
+    );
+}
+
+/// The array-form `read_response_events` content-delta path only emits a `TextDelta` for a block
+/// whose `"type"` is exactly `"text"` — a differently-typed block in the same array must be
+/// skipped, not misread as text. Guards the second (array-form) `== Some("text")` check, distinct
+/// from the earlier object-form check on the same event type.
+#[test]
+fn test_stream_content_delta_array_form_only_emits_text_typed_blocks() {
+    let mut state = crate::ir::StreamDecodeState::default();
+    let reader = CohereReader;
+
+    let _ = reader.read_response_events(
+        "",
+        &serde_json::json!({"type": ET_CONTENT_START, "index": 0, "delta": {"message": {"content": {"type": "text", "text": ""}}}}),
+        &mut state,
+    );
+
+    let evs = reader.read_response_events(
+        "",
+        &serde_json::json!({"type": ET_CONTENT_DELTA, "index": 0, "delta": {"message": {"content": [
+            {"type": "not_text", "text": "must be skipped"},
+            {"type": "text", "text": "real"}
+        ]}}}),
+        &mut state,
+    );
+    let texts: Vec<&str> = evs
+        .iter()
+        .map(|e| match e {
+            crate::ir::IrStreamEvent::BlockDelta {
+                delta: crate::ir::IrDelta::TextDelta(t),
+                ..
+            } => t.as_str(),
+            other => panic!("expected only TextDelta events, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        texts,
+        vec!["real"],
+        "only the type:text block must emit a delta"
+    );
+}
+
 /// The NATIVE Cohere v2 error envelope is a bare `{"message": <detail>}` — NOT the generic
 /// `{"error":{"message","type"}}`, and NOT carrying a synthesized `id`. The generic `kind` must
 /// NOT leak into the body (a native SDK never reads a typed error category from a Cohere body;
