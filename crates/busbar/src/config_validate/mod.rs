@@ -1191,28 +1191,30 @@ pub(crate) fn validate_with_unset(
     // 1.4.x keys (`client_tokens:`, `modules:`) fail AT PARSE with serde's "unknown field" - a
     // loud clean-break boot error, no validate-time check needed.
     if let Some(auth) = &cfg.auth {
-        // Every module named in the data-plane chain must resolve. The built-in is `keys` (the
-        // signed-key verifier; the removed 1.4.x `static-tokens`/`tokens` module is GONE). An
-        // unknown OR uncompiled name is a hard boot error - never a silently-dropped module
-        // (which would silently open the relay). FAIL-CLOSED.
+        // Every module named in the data-plane chain must resolve to EITHER the built-in `keys`
+        // module OR a loadable `kind: auth` plugin. This function runs before the plugin registry
+        // exists (see this module's own doc + `preflight_plugins_and_secrets`'s doc comment: "the
+        // plugin pre-flight... cannot run until the registry exists"), so it CANNOT tell a genuine
+        // plugin name from a typo at this point — only `main.rs`'s post-resolve
+        // `auth_plugin_refs`/registry check (run right after this) can. Only the names this function
+        // CAN judge without registry access are handled here: `keys` passes, and the specific
+        // REMOVED 1.4.x names get an immediate, precise migration error (no need to wait for a
+        // registry lookup to know `tokens`/`static-tokens` will never resolve to a plugin). Every
+        // other name is deferred to the plugin-aware check, not rejected here — an earlier version
+        // of this rule hard-rejected every non-`keys` name unconditionally, which meant NO `kind:
+        // auth` plugin (auth-oidc included) could ever pass config_validate, since this check ran
+        // first and always lost before the plugin-aware one got a chance. FAIL-CLOSED is still
+        // preserved: an unresolvable name still hard-fails, just at the check that can actually
+        // tell whether it resolves.
         for entry in &auth.chain {
             let name = entry.module.as_str();
-            let available =
-                name == crate::config::KEYS_MODULE || (cfg!(test) && name == "test-groups-module");
-            if !available {
-                if name == "tokens" || name == "static-tokens" {
-                    errors.push(format!(
-                        "auth.chain names '{name}': the static-token allowlist module was REMOVED \
-                         in 1.5.0. Data-plane auth is `keys` (busbar-signed keys, minted via \
-                         POST /api/v1/admin/keys) and IdP auth plugins - write:\n\n    auth:\n      \
-                         chain:\n        - keys\n"
-                    ));
-                } else {
-                    errors.push(format!(
-                        "auth.chain names unknown module '{name}': the built-in data-plane module \
-                         is 'keys'; an external IdP module must be a loadable `kind: auth` plugin"
-                    ));
-                }
+            if name == "tokens" || name == "static-tokens" {
+                errors.push(format!(
+                    "auth.chain names '{name}': the static-token allowlist module was REMOVED \
+                     in 1.5.0. Data-plane auth is `keys` (busbar-signed keys, minted via \
+                     POST /api/v1/admin/keys) and IdP auth plugins - write:\n\n    auth:\n      \
+                     chain:\n        - keys\n"
+                ));
             }
         }
         // `upstream_credentials: passthrough` with a NON-EMPTY configured api_key on a provider is a
