@@ -337,6 +337,39 @@ mod tests {
         assert!(err.contains("cannot resolve"), "missing file fails: {err}");
     }
 
+    /// A whitespace-only (or empty) `env:` NAME — not value — must be rejected at the settings-shape
+    /// layer (`self_env_var_checked`), never silently treated as "no name given, fall through" or
+    /// "look up an env var literally named '   '". Distinct from `env_module_resolves_and_fails_closed`
+    /// above, which covers the RESOLVED VALUE being empty, not the configured variable name itself.
+    #[test]
+    fn env_whitespace_only_name_is_rejected() {
+        for bad in ["", "   ", "\t\n"] {
+            let r = SecretRef::env(bad);
+            let err = resolve_builtin(&r).expect_err(&format!(
+                "whitespace-only env name {bad:?} must be rejected"
+            ));
+            assert!(
+                err.contains("requires settings.key"),
+                "whitespace-only env name {bad:?} must fail the settings-shape check, got: {err}"
+            );
+        }
+    }
+
+    /// Same guard, `file:` PATH side.
+    #[test]
+    fn file_whitespace_only_path_is_rejected() {
+        for bad in ["", "   ", "\t\n"] {
+            let r = SecretRef::file(bad);
+            let err = resolve_builtin(&r).expect_err(&format!(
+                "whitespace-only file path {bad:?} must be rejected"
+            ));
+            assert!(
+                err.contains("requires settings.path"),
+                "whitespace-only file path {bad:?} must fail the settings-shape check, got: {err}"
+            );
+        }
+    }
+
     /// An unknown secret module is FAIL-CLOSED at the built-in resolver (the plugin-backed
     /// resolver layers on top; anything it cannot resolve lands here and refuses).
     #[test]
