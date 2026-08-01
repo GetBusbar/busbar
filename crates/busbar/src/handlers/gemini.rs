@@ -640,6 +640,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn protocol_name_is_gemini() {
+        assert_eq!(GeminiRequestHandler.protocol_name(), "gemini");
+    }
+
+    #[test]
+    fn path_model_extracts_the_segment_before_the_last_colon() {
+        let h = GeminiRequestHandler;
+        assert_eq!(
+            h.path_model("/v1beta/models/gemini-2.0-flash:generateContent"),
+            Some("gemini-2.0-flash".to_string())
+        );
+        assert_eq!(
+            h.path_model("/v1beta/models/gemini-1.5-pro:streamGenerateContent"),
+            Some("gemini-1.5-pro".to_string())
+        );
+        // No `/models/` segment at all -> None.
+        assert_eq!(h.path_model("/v1beta/foo:bar"), None);
+        // No trailing `:action` -> None (rsplit_once finds no colon).
+        assert_eq!(h.path_model("/v1beta/models/gemini-2.0-flash"), None);
+        // Empty model segment (colon right after `/models/`) -> None, not Some("").
+        assert_eq!(h.path_model("/v1beta/models/:generateContent"), None);
+    }
+
+    #[test]
     fn path_base_reshapes_the_gemini_url_for_vertex() {
         let h = GeminiRequestHandler;
         let model = "gemini-2.0-flash";
@@ -714,6 +738,28 @@ mod tests {
             .read_request(&body, "application/json")
             .expect_err("invalid base64 must reject");
         assert!(matches!(err, IngressReject::BadRequest(_)));
+    }
+
+    #[test]
+    fn transcription_read_response_captures_input_and_output_token_counts() {
+        // input and output must map from DIFFERENT usageMetadata fields (promptTokenCount vs
+        // candidatesTokenCount) - a dropped `output:` field would silently read back as 0
+        // regardless of the real candidatesTokenCount.
+        let wire = serde_json::to_vec(&json!({
+            "candidates": [{ "content": { "parts": [{ "text": "hello" }] } }],
+            "usageMetadata": { "promptTokenCount": 11, "candidatesTokenCount": 7 },
+        }))
+        .unwrap();
+        let ir = TRANSCRIPTION.read_response(&wire).expect("valid response");
+        let IrResp::Transcription(r) = ir else {
+            panic!("expected IrResp::Transcription");
+        };
+        assert_eq!(r.text, "hello");
+        let Some(crate::billing::Billing::Tokens(usage)) = r.usage else {
+            panic!("expected token usage");
+        };
+        assert_eq!(usage.input, 11);
+        assert_eq!(usage.output, 7);
     }
 
     #[test]
@@ -861,6 +907,37 @@ mod tests {
     }
 
     #[test]
+    fn image_read_request_captures_aspect_ratio() {
+        let body = serde_json::to_vec(&json!({
+            "instances": [{ "prompt": "a fox" }],
+            "parameters": { "aspectRatio": "16:9" },
+        }))
+        .unwrap();
+        let ir = IMG
+            .read_request(&body, "application/json")
+            .expect("valid predict body");
+        let IrReq::Image(r) = ir else {
+            panic!("expected IrReq::Image");
+        };
+        assert_eq!(r.aspect_ratio.as_deref(), Some("16:9"));
+    }
+
+    #[test]
+    fn image_read_response_captures_base64_image_bytes() {
+        let wire = serde_json::to_vec(&json!({
+            "predictions": [{ "bytesBase64Encoded": "cHJldGVuZC1pbWFnZQ==", "mimeType": "image/png" }],
+        }))
+        .unwrap();
+        let ir = IMG.read_response(&wire).expect("valid predictions body");
+        let IrResp::Image(r) = ir else {
+            panic!("expected IrResp::Image");
+        };
+        assert_eq!(r.images.len(), 1);
+        assert_eq!(r.images[0].b64.as_deref(), Some("cHJldGVuZC1pbWFnZQ=="));
+        assert_eq!(r.images[0].mime_type.as_deref(), Some("image/png"));
+    }
+
+    #[test]
     fn image_write_read_roundtrip_preserves_prompt() {
         // write_request emits instances[].prompt + parameters.sampleCount; read_request recovers.
         let req = IrReq::Image(crate::ir::image::ImageReq {
@@ -895,6 +972,64 @@ mod tests {
         assert_eq!(v["outputDimensionality"], 256);
         assert_eq!(v["taskType"], "RETRIEVAL_DOCUMENT");
         assert_eq!(v["title"], "doc");
+    }
+
+    #[test]
+    fn embeddings_taps_usage_is_true() {
+        // Token-metered same-protocol path: extract_usage must actually read this response's
+        // usage object to bill the virtual key.
+        assert!(EMB.taps_usage());
+    }
+
+    #[test]
+    fn embeddings_read_request_captures_task_type() {
+        let body = serde_json::to_vec(&json!({
+            "content": { "parts": [{ "text": "hi" }] },
+            "taskType": "RETRIEVAL_QUERY",
+        }))
+        .unwrap();
+        let ir = EMB
+            .read_request(&body, "application/json")
+            .expect("valid embedContent body");
+        let IrReq::Embeddings(r) = ir else {
+            panic!("expected IrReq::Embeddings");
+        };
+        assert_eq!(r.task_type.as_deref(), Some("RETRIEVAL_QUERY"));
+    }
+
+    #[test]
+    fn embeddings_read_response_captures_vector_and_usage() {
+        let wire = serde_json::to_vec(&json!({
+            "embedding": { "values": [0.1, 0.2, 0.3] },
+            "usageMetadata": { "promptTokenCount": 5 },
+        }))
+        .unwrap();
+        let ir = EMB
+            .read_response(&wire)
+            .expect("valid embedContent response");
+        let IrResp::Embeddings(r) = ir else {
+            panic!("expected IrResp::Embeddings");
+        };
+        assert_eq!(r.embeddings.len(), 1);
+        match r.embeddings[0].vectors.get(&EncFmt::Float) {
+            Some(VectorData::Float(v)) => assert_eq!(v, &[0.1_f32, 0.2, 0.3]),
+            other => panic!("expected a Float vector, got {other:?}"),
+        }
+        assert_eq!(r.usage.expect("usage present").input, 5);
+    }
+
+    #[test]
+    fn embeddings_write_response_emits_the_float_vector() {
+        let mut item = EmbeddingItem::default();
+        item.vectors
+            .insert(EncFmt::Float, VectorData::Float(vec![1.0, 2.0, 3.0]));
+        let ir = IrResp::Embeddings(EmbeddingsResp {
+            embeddings: vec![item],
+            ..Default::default()
+        });
+        let out = EMB.write_response(&ir);
+        let v: Value = serde_json::from_slice(&out.bytes).unwrap();
+        assert_eq!(v["embedding"]["values"], json!([1.0, 2.0, 3.0]));
     }
 
     #[test]
