@@ -1532,3 +1532,131 @@ async fn oversized_request_413_is_reshaped_on_the_live_stack() {
 
     server.abort();
 }
+
+// ── real boot-time legacy-config refusal / migration (P9.3, end to end) ────────────────────────
+//
+// Every legacy/migration test in `config::migrate::tests` drives `detect_legacy_markers` /
+// `migrate_config` directly against an in-memory `serde_yaml::Value` — none of them go through
+// `load_config_from_disk`, the REAL disk-read -> env-interpolate -> legacy-marker-check ->
+// typed-parse pipeline that boot, `POST .../config/reload`, and `--validate` all actually run. A
+// bug in the stitching around the marker check (wrong path, marker check skipped, wired to the
+// wrong error string) would pass every existing test and only show up at a real boot. These two
+// tests close that gap by writing REAL files to disk and calling the REAL boot entry point.
+
+/// A representative 1.4.x config (same shape as `config::migrate::tests::LEGACY_14X`) written to a
+/// REAL file on disk for the boot-path tests below. `admin_token` carries a REAL `${PATH}`
+/// interpolation token (rather than a plain literal) so these tests also exercise `EnvSubst::Strict`
+/// interpolation ahead of the legacy-marker check — a bug where the marker check ran on the RAW
+/// (pre-interpolation) text, or where interpolation itself introduced/hid a marker, would otherwise
+/// slip past. `PATH` is used because it's guaranteed set in any process environment, so the fixture
+/// needs no env mutation.
+const BOOT_LEGACY_14X_CONFIG: &str = r#"
+listen: "0.0.0.0:8080"
+governance:
+  enabled: true
+  store: sqlite
+  db_path: "/var/lib/busbar/governance.db"
+  admin_token: "${PATH}"
+providers:
+  anthropic:
+    api_key_env: ANTHROPIC_KEY
+models:
+  claude: { provider: anthropic }
+pools:
+  fast:
+    members:
+      - { target: claude, weight: 1 }
+"#;
+
+/// A fresh temp dir holding `config.yaml` (given content) + an empty `providers.yaml`, so
+/// `load_config_from_disk` has real files to read.
+fn boot_config_dir(
+    tag: &str,
+    config_yaml: &str,
+) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-boot-legacy-{}-{tag}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let config_path = dir.join("config.yaml");
+    let providers_path = dir.join("providers.yaml");
+    std::fs::write(&providers_path, "{}\n").unwrap();
+    std::fs::write(&config_path, config_yaml).unwrap();
+    (dir, config_path, providers_path)
+}
+
+/// THE BOOT PATH ITSELF must refuse a real 1.x config file on disk, loudly and by name — never a
+/// silent load with 1.5.0 semantics, never a bare unknown-field parse error that doesn't say what's
+/// actually wrong. This is the one path that actually proves the product's documented promise ("a
+/// loud fail-closed boot on an outdated config, never a silent behavior change").
+#[test]
+fn load_config_from_disk_refuses_a_real_legacy_config_file_loudly() {
+    let (dir, config_path, providers_path) = boot_config_dir("refuse", BOOT_LEGACY_14X_CONFIG);
+
+    let result = load_config_from_disk(
+        &config_path,
+        &providers_path,
+        false,
+        crate::config::EnvSubst::Strict,
+    );
+
+    let err = match result {
+        Ok(_) => panic!(
+            "a REAL 1.x config file on disk must be REFUSED at the real boot entry point \
+             (load_config_from_disk), not silently loaded under 1.5.0 semantics"
+        ),
+        Err(e) => e,
+    };
+    assert!(
+        err.contains("busbar --migrate-config"),
+        "the boot-time refusal must name the migrator: {err}"
+    );
+    assert!(
+        err.contains("1.x"),
+        "the boot-time refusal must name the version family: {err}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The `--migrate-config` output, written to a REAL file and fed back through the REAL boot entry
+/// point, must boot cleanly — the recovery half of the same promise: an operator who migrates ends
+/// up with a config the actual boot path accepts, not one that still trips the legacy detector or
+/// fails typed parsing for some other reason.
+#[test]
+fn migrate_config_then_load_config_from_disk_boots_the_real_migrated_file() {
+    let (dir, legacy_config_path, providers_path) =
+        boot_config_dir("migrate", BOOT_LEGACY_14X_CONFIG);
+
+    // Mirrors `migrate_config_command`: read the real file from disk, run the real migrator.
+    let raw = std::fs::read_to_string(&legacy_config_path).unwrap();
+    let migrated = crate::config::migrate::migrate_config(&raw).expect("legacy config migrates");
+
+    let migrated_path = dir.join("migrated-config.yaml");
+    std::fs::write(&migrated_path, &migrated.yaml).unwrap();
+
+    // THE REAL BOOT ENTRY POINT must accept the migrated file on disk without error.
+    let loaded = load_config_from_disk(
+        &migrated_path,
+        &providers_path,
+        false,
+        crate::config::EnvSubst::Strict,
+    )
+    .unwrap_or_else(|e| {
+        panic!("the migrated config must boot cleanly through the real boot path: {e}")
+    });
+
+    // Prove it's a real typed parse of the real content, not a stub: the migrated `listen` value
+    // and the store module the migrator selected both round-trip through the real boot path.
+    assert_eq!(loaded.deploy.listen, "0.0.0.0:8080");
+    assert_eq!(
+        loaded.deploy.store.as_ref().map(|s| s.module.as_str()),
+        Some("sqlite"),
+        "the migrated store module must survive the real disk-load pipeline"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
