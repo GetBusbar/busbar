@@ -94,22 +94,23 @@ ssh $SSHOPT "ubuntu@$IP" "git clone -q https://github.com/GetBusbar/busbar.git b
 # --jobs, not --test-threads: cargo-mutants runs whole `cargo test` invocations in parallel.
 # --file scopes to the fix round's touched files only (see FILES above).
 #
-# --all-features: without it, code behind a non-default feature (e.g. busbar's `openapi-schema`,
-# CI-only, gates openapi_doc()/openapi_operation_id()/capitalize() AND their own golden/drift
-# test) is invisible to both the mutator's build AND that feature's own real test suite — a mutant
-# injected into a cfg'd-out block compiles trivially (rustc never even type-checks stripped cfg
-# arms) and no test can catch it, so cargo-mutants reports it MISSED even though the real,
-# feature-enabled test suite genuinely catches the equivalent hand-applied mutation (confirmed by
-# hand: shard1-of-12's 11 openapi_doc/operation_id/capitalize "MISSED" mutants were entirely this
-# artifact, not real gaps). Whole-workspace default features can still hide OTHER feature-gated
-# code the same way, so opt in to all of it rather than re-discover this per shard.
-FILE_ARGS=""
-for f in $FILES; do FILE_ARGS="$FILE_ARGS --file $f"; done
-log "running mutants (-j $JOBS) over: $FILES - this is the long part"
-ssh $SSHOPT "ubuntu@$IP" bash -s <<REMOTE
-. "\$HOME/.cargo/env"
-cd ~/bench
-nohup cargo mutants --jobs $JOBS --timeout 300 --all-features $FILE_ARGS -- -- --skip $SKIP_TESTS > ~/mutants.log 2>&1 &
+# --features openapi-schema (NOT --all-features): without SOME feature enablement, code behind a
+# non-default feature (e.g. busbar's `openapi-schema`, CI-only, gates openapi_doc()/
+# openapi_operation_id()/capitalize() AND their own golden/drift test) is invisible to both the
+# mutator's build AND that feature's own real test suite — a mutant injected into a cfg'd-out
+# block compiles trivially (rustc never even type-checks stripped cfg arms) and no test can catch
+# it, so cargo-mutants reports it MISSED even though the real, feature-enabled test suite genuinely
+# catches the equivalent hand-applied mutation (confirmed by hand: shard1-of-12's 11
+# openapi_doc/operation_id/capitalize "MISSED" mutants were entirely this artifact, not real gaps).
+#
+# `--all-features` (tried first) is WRONG here and burned 6 EC2 boxes on an instant baseline-build
+# failure: `txn-fence-red` gates admin/v1/json/tests/txn_fence.rs, a NEGATIVE compile-fence test
+# that is REQUIRED to fail to type-check (its own Cargo.toml comment: "a successful build under
+# this feature is the test failing") — enabling it via --all-features makes cargo build itself fail
+# before a single mutant runs. `loom-model` is also special-purpose (scripts/loom.sh's own
+# exhaustive-interleaving harness). openapi-schema is the one feature actually worth mutating
+# under; name it explicitly instead of reaching for --all-features again.
+nohup cargo mutants --jobs $JOBS --timeout 300 --features openapi-schema $FILE_ARGS -- -- --skip $SKIP_TESTS > ~/mutants.log 2>&1 &
 echo started
 REMOTE
 
