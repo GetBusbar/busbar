@@ -815,6 +815,47 @@ fn test_govstate_lookup_pool_allowed_refresh() {
     );
 }
 
+/// `civil_from_days`/`days_from_civil` (Howard Hinnant's public-domain civil-calendar algorithm,
+/// same shape `budget_window`'s `WINDOW_MONTH` arm relies on) — a table of known epoch-day <->
+/// date pairs spanning the epoch itself, both sides of it (the `z >= 0` branch and its negative
+/// counterpart), a non-leap month boundary, a leap-year Feb 29 (both a leap century, 2000, and an
+/// ordinary leap year, 2024), and a NON-leap century (1900 - divisible by 100 but not 400, the
+/// exact case the `- doe / 36_524` / `- doe / 146_096` correction terms exist for) plus the very
+/// distant 2400 (also a leap century) to pin the `era` math far from the epoch on both axes.
+#[test]
+fn test_civil_from_days_and_days_from_civil_known_dates() {
+    let cases: &[(i64, (i64, i64, i64))] = &[
+        (0, (1970, 1, 1)),
+        (-1, (1969, 12, 31)),
+        (-365, (1969, 1, 1)),
+        (11_016, (2000, 2, 29)), // leap century
+        (11_017, (2000, 3, 1)),
+        (-25_508, (1900, 3, 1)),  // non-leap century boundary
+        (-25_509, (1900, 2, 28)), // 1900 has no Feb 29
+        (19_691, (2023, 11, 30)), // ordinary month boundary
+        (19_692, (2023, 12, 1)),
+        (19_782, (2024, 2, 29)), // ordinary leap year
+        (19_783, (2024, 3, 1)),
+        (157_113, (2400, 2, 29)), // leap century, far future
+        // Deep negative z (year -768): the ONLY case where `z + 719_468` (the internal offset)
+        // itself goes negative, exercising the `era`/`doe` negative-branch correction terms —
+        // every other case above stays positive after the offset and can't reach this branch.
+        // Expected value taken from the real (unmutated) algorithm's own output, not a hand-ported
+        // reference: Rust's `/` truncates toward zero for negative operands (unlike e.g. Python's
+        // `//`, which floors), so an independently-authored reference for deep negative inputs is
+        // easy to get subtly wrong here.
+        (-1_000_000, (-768, 2, 4)),
+    ];
+    for &(z, ymd) in cases {
+        assert_eq!(civil_from_days(z), ymd, "civil_from_days({z})");
+        assert_eq!(
+            days_from_civil(ymd.0, ymd.1, ymd.2),
+            z,
+            "days_from_civil{ymd:?}"
+        );
+    }
+}
+
 #[test]
 fn test_budget_window_periods() {
     assert_eq!(budget_window(WINDOW_TOTAL, 1_700_000_000), 0);
