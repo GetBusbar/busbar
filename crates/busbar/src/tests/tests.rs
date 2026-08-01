@@ -1695,3 +1695,19 @@ fn worker_threads_from_env_parses_valid_rejects_invalid() {
         std::env::remove_var(bad_name);
     }
 }
+
+/// `safe_mode_requested`: true iff `--safe-mode` is literally present among the args; absent, a
+/// near-miss, or an empty arg list must all return false.
+#[test]
+fn safe_mode_requested_matches_the_exact_flag_only() {
+    assert!(safe_mode_requested(
+        vec!["busbar".to_string(), "--safe-mode".to_string()].into_iter()
+    ));
+    assert!(!safe_mode_requested(
+        vec!["busbar".to_string(), "--validate".to_string()].into_iter()
+    ));
+    assert!(!safe_mode_requested(
+        vec!["busbar".to_string(), "--safe-mode=true".to_string()].into_iter()
+    ));
+    assert!(!safe_mode_requested(std::iter::empty()));
+}
