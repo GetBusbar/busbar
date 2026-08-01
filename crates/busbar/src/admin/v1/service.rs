@@ -1628,7 +1628,7 @@ impl AdminService {
         file: &str,
         tarball: &[u8],
     ) -> Result<crate::admin::v1::contract::PluginInstallView, AdminError> {
-        use busbar_plugin_sign::{evaluate, validate_structure, HOST_IDENTITY, Verdict};
+        use busbar_plugin_sign::{evaluate, validate_structure, Verdict, HOST_IDENTITY};
 
         // ── 1. filename sanity: a bare tarball filename ──
         let file = validate_plugin_filename(file)?;
@@ -1778,7 +1778,7 @@ impl AdminService {
     ///      `admin::rate::classify_mutation` via `contract::PATH_PLUGINS_INSPECT`, exactly like
     ///      `/config/validate`'s existing carve-out.
     pub(crate) fn inspect_plugin(&self, tarball: &[u8]) -> Result<serde_json::Value, AdminError> {
-        use busbar_plugin_sign::{evaluate, validate_structure, HOST_IDENTITY, Verdict};
+        use busbar_plugin_sign::{evaluate, validate_structure, Verdict, HOST_IDENTITY};
 
         if tarball.len() as u64 > busbar_plugin_loader::tarball::MAX_TARBALL_FILE_BYTES {
             return Err(AdminError::Validation(format!(
@@ -1912,7 +1912,7 @@ impl AdminService {
         ),
         AdminError,
     > {
-        use busbar_plugin_sign::{evaluate, validate_structure, HOST_IDENTITY, Verdict};
+        use busbar_plugin_sign::{evaluate, validate_structure, Verdict, HOST_IDENTITY};
         let file = validate_plugin_filename(file)?;
         let lib_path = self.app.plugins_dir.join(&file);
         if !lib_path.is_file() {
