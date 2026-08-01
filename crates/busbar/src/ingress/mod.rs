@@ -197,6 +197,16 @@ fn admit_check(
                 group,
                 ..
             }) if !visited.iter().any(|v| v == &to)
+                // Defense-in-depth, likely unreachable in practice: `visited` only ever holds
+                // downgrade TARGETS (the start `pool` is never pushed), every target must be a
+                // real `app.pools` member (the `contains_key` check below), and the revisit guard
+                // above forbids duplicates — so `visited.len()` structurally caps at
+                // `app.pools.len() - 1` (every pool except start) before this clause is even
+                // reached, making `<` vs `<=` behaviorally indistinguishable under those
+                // invariants (cargo-mutants flags this; see
+                // `test_downgrade_cycle_terminates_via_the_revisit_guard`'s doc comment for the
+                // one guard clause that IS distinguishable). Kept as an explicit bound rather than
+                // removed: it's the backstop if either invariant above is ever loosened.
                 && visited.len() < app.pools.len()
                 && app.pools.contains_key(&to)
                 && pool_authorized(gov, &to, proto).is_none()
