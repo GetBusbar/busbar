@@ -754,6 +754,152 @@ fn test_writer_tool_call_reassembles_split_json_args() {
     );
 }
 
+/// Regression: a tool call's `arguments` accumulated JSON string must not grow WITHOUT BOUND
+/// across the life of a stream. Feed enough `InputJsonDelta` fragments to exceed
+/// `crate::limits::translate_body_max_bytes()` (the cap this accumulator now enforces — the same
+/// operator-tunable limit that already bounds a buffered cross-protocol non-stream completion body
+/// elsewhere) and assert the established overflow behavior fires: fragments past the cap stop being
+/// appended (the buffer stops growing, it is not aborted and no in-band error frame is emitted), so
+/// the resulting buffer is guaranteed-malformed JSON and degrades to the SAME pre-existing
+/// `args: {}` fallback `BlockStop` already applies to any unparseable accumulation. Unfixed, this
+/// test fails because the buffer instead grows past the cap (this is the red-before-green proof for
+/// the unbounded-buffer defect).
+#[test]
+fn test_writer_tool_call_args_capped_at_max_len() {
+    let cap = crate::limits::translate_body_max_bytes();
+    let writer = GeminiWriter;
+    writer.write_response_event(&IrStreamEvent::BlockStart {
+        index: 1,
+        block: IrBlockMeta::ToolUse {
+            id: String::new(),
+            name: "big_tool".to_string(),
+        },
+    });
+
+    // Feed fragments that sum to well past the cap. Each fragment is a run of `'a'` bytes inside a
+    // JSON string value, so a successful (unfixed) accumulation would be syntactically valid JSON.
+    let fragment = "a".repeat(1024 * 1024); // 1 MiB per fragment
+    let total_fragments = (cap / fragment.len()) + 8; // overshoot the cap
+    writer.write_response_event(&IrStreamEvent::BlockDelta {
+        index: 1,
+        delta: IrDelta::InputJsonDelta("{\"blob\":\"".to_string()),
+    });
+    for _ in 0..total_fragments {
+        writer.write_response_event(&IrStreamEvent::BlockDelta {
+            index: 1,
+            delta: IrDelta::InputJsonDelta(fragment.clone()),
+        });
+    }
+
+    // Inspect the accumulator directly (before BlockStop consumes it) to prove the byte cap held.
+    {
+        let guard = writer.open_tools.lock().unwrap();
+        let (_, _, args) = guard.iter().find(|(idx, _, _)| *idx == 1).expect("open");
+        assert!(
+            args.len() <= cap,
+            "accumulated args buffer must never exceed translate_body_max_bytes() ({}), got {}",
+            cap,
+            args.len()
+        );
+        assert!(
+            args.len() as u64 + fragment.len() as u64 > cap as u64,
+            "test must actually have driven the buffer up TO the cap, not stopped early: got {}",
+            args.len()
+        );
+    }
+
+    // Flush on the SAME writer instance (preserving its accumulated buffer) — collect_function_calls
+    // would construct a fresh GeminiWriter with an empty buffer, losing all the state built above.
+    let (_, chunk) = writer
+        .write_response_event(&IrStreamEvent::BlockStop { index: 1 })
+        .expect("BlockStop on an open tool block must flush a functionCall frame");
+    let parts = chunk
+        .pointer("/candidates/0/content/parts")
+        .and_then(|p| p.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let calls: Vec<serde_json::Value> = parts
+        .iter()
+        .filter_map(|part| part.get(FIELD_FUNCTION_CALL).cloned())
+        .collect();
+    assert_eq!(
+        calls.len(),
+        1,
+        "the tool call must still flush exactly one functionCall part on overflow: {calls:?}"
+    );
+    assert_eq!(
+        calls[0].pointer("/name").and_then(|n| n.as_str()),
+        Some("big_tool"),
+        "the name must survive even when args overflowed and were truncated: {calls:?}"
+    );
+    assert_eq!(
+        calls[0].get("args"),
+        Some(&serde_json::json!({})),
+        "a truncated (malformed-JSON) args buffer must degrade to the existing args:{{}} fallback, \
+         not panic or emit a partial/invalid args object: {calls:?}"
+    );
+}
+
+/// Happy-path regression: a NORMAL-sized tool call's arguments (well under
+/// `crate::limits::translate_body_max_bytes()`) must still round-trip correctly — the cap must not
+/// false-positive on legitimate multi-fragment argument streams.
+#[test]
+fn test_writer_tool_call_args_under_cap_round_trips() {
+    let calls = collect_function_calls(&[
+        IrStreamEvent::BlockStart {
+            index: 1,
+            block: IrBlockMeta::ToolUse {
+                id: String::new(),
+                name: "get_weather".to_string(),
+            },
+        },
+        IrStreamEvent::BlockDelta {
+            index: 1,
+            delta: IrDelta::InputJsonDelta("{\"city\":\"S".to_string()),
+        },
+        IrStreamEvent::BlockDelta {
+            index: 1,
+            delta: IrDelta::InputJsonDelta("F\",\"notes\":\"".to_string()),
+        },
+        IrStreamEvent::BlockDelta {
+            index: 1,
+            // A realistically large (but well under the default 32 MiB cap) embedded text payload —
+            // e.g. a tool argument carrying a document excerpt.
+            delta: IrDelta::InputJsonDelta("x".repeat(64 * 1024)),
+        },
+        IrStreamEvent::BlockDelta {
+            index: 1,
+            delta: IrDelta::InputJsonDelta("\"}".to_string()),
+        },
+        IrStreamEvent::BlockStop { index: 1 },
+    ]);
+    assert_eq!(
+        calls.len(),
+        1,
+        "a normal-sized multi-fragment tool call must still emit exactly one functionCall part: {calls:?}"
+    );
+    assert_eq!(
+        calls[0].pointer("/name").and_then(|n| n.as_str()),
+        Some("get_weather"),
+        "name must round-trip: {calls:?}"
+    );
+    assert_eq!(
+        calls[0].pointer("/args/city").and_then(|c| c.as_str()),
+        Some("SF"),
+        "args must be the fully reassembled object, uncorrupted by the cap: {calls:?}"
+    );
+    let notes = calls[0]
+        .pointer("/args/notes")
+        .and_then(|n| n.as_str())
+        .unwrap_or("");
+    assert_eq!(
+        notes.len(),
+        64 * 1024,
+        "the large-but-under-cap notes payload must survive intact: got {} bytes",
+        notes.len()
+    );
+}
+
 /// Regression: TWO parallel tool blocks in one stream, with their
 /// BlockStarts NOT strictly interleaved with their own BlockStops (the OpenAI reader emits
 /// BlockStart(1), BlockStart(2), then their deltas, then BlockStop(1), BlockStop(2)). The
