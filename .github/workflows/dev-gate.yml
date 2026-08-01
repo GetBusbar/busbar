@@ -61,6 +61,33 @@ jobs:
           path: webrequest-hook
         continue-on-error: true
 
+      # store-postgres, store-redis, and auth-oidc are release-check.sh's Phase 2/3/4 — Postgres is
+      # a REQUIRED phase there (it hard-fails the whole gate if `../store-postgres` isn't present;
+      # Redis/OIDC degrade to a loud SKIP instead). Without these checkouts dev-gate never actually
+      # ran Phase 2 onward — every push to `dev` failed at "../store-postgres is not checked out as
+      # a sibling" before this fix, so `main` was never getting proven against its own required
+      # plugins on the branch this workflow exists to protect.
+      - name: Checkout store-postgres (first-party plugin source, REQUIRED by release-check.sh)
+        uses: actions/checkout@v7
+        with:
+          repository: GetBusbar/store-postgres
+          path: store-postgres
+        continue-on-error: true
+
+      - name: Checkout store-redis (first-party plugin source)
+        uses: actions/checkout@v7
+        with:
+          repository: GetBusbar/store-redis
+          path: store-redis
+        continue-on-error: true
+
+      - name: Checkout auth-oidc (first-party plugin source)
+        uses: actions/checkout@v7
+        with:
+          repository: GetBusbar/auth-oidc
+          path: auth-oidc
+        continue-on-error: true
+
       # store-sqlite now lives entirely in its own repo (fully extracted, same-repo 2-crate
       # workspace) — this checkout is what `crates/plugin-loader`'s loader-mechanism tests
       # (TOCTOU-safe loading, hot-swap, staged-file lifecycle, denylist-fallback classification)
