@@ -945,6 +945,57 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Kind gating: a non-auth plugin resolves but cannot serve as an auth module. Mirrors
+    /// `open_store_refuses_non_store_kind`: a store-kind manifest passes phase 1/2/3 (its default
+    /// `kind`/`abi_version` from `manifest()` are already store-admissible) and is then handed to
+    /// `open_auth`, which must reject on the KIND gate before ever attempting to load it.
+    #[test]
+    fn open_auth_refuses_non_auth_kind() {
+        let release = key(1);
+        let dir = tmpdir("authkind");
+        let m = sign(
+            &release,
+            manifest("busbar-store-redis", "redis", "busbar"),
+            b"store lib",
+        );
+        write_tarball(&dir, "redis.tar.gz", &m, b"store lib");
+        let reg = scan_and_validate(&dir, &policy(&release)).expect("scan");
+        let err = reg.open_auth("redis", "{}").map(|_| ()).unwrap_err();
+        assert!(err.contains("kind 'store'"), "got {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Kind gating: a non-hook plugin resolves but cannot serve as a routing hook. Mirrors
+    /// `open_store_refuses_non_store_kind`: a store-kind manifest passes phase 1/2/3 and is then
+    /// handed to `open_hook`, which must reject on the KIND gate before ever attempting to load it
+    /// (the dummy projectors below are never invoked - the kind check short-circuits first).
+    #[test]
+    fn open_hook_refuses_non_hook_kind() {
+        let release = key(1);
+        let dir = tmpdir("hookkind");
+        let m = sign(
+            &release,
+            manifest("busbar-store-redis", "redis", "busbar"),
+            b"store lib",
+        );
+        write_tarball(&dir, "redis.tar.gz", &m, b"store lib");
+        let reg = scan_and_validate(&dir, &policy(&release)).expect("scan");
+        let projectors = std::sync::Arc::new(crate::hook::HookProjectors {
+            decide: Box::new(|_req, _cands, _ctx| serde_json::Value::Null),
+            transform: Box::new(|_req| serde_json::Value::Null),
+            normalize: Box::new(|_v, _cands| unreachable!("kind gate must short-circuit first")),
+            transform_outcome: Box::new(|_v| unreachable!("kind gate must short-circuit first")),
+            status: Box::new(|_v| None),
+            describe_schema: Box::new(|_v| None),
+        });
+        let err = reg
+            .open_hook("redis", "{}", "redis", projectors)
+            .map(|_| ())
+            .unwrap_err();
+        assert!(err.contains("kind 'store'"), "got {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The inventory is MANIFEST-ONLY and covers every row class: ready, skipped (unknown
     /// publisher), and invalid - with the exact reason.
     #[test]
