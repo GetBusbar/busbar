@@ -3942,6 +3942,214 @@ fn test_stream_tool_block_start_before_message_start_is_dropped() {
     );
 }
 
+/// `read_response_events`'s `ET_CONTENT_BLOCK_STOP` arm must NEVER emit a `BlockStop` unless a
+/// matching block was actually observed open for that index. A `contentBlockStop` arriving before
+/// any `messageStart` (malformed/reordered stream) must be silently dropped — mirroring the
+/// `state.started` guard every START arm in this same match enforces — rather than unconditionally
+/// pushing a spurious `IrStreamEvent::BlockStop`, which would unbalance the IR stream (this file's
+/// own INV-A invariant) and, on a cross-protocol egress, serialize an invalid `content_block_stop`
+/// with no preceding `content_block_start`.
+#[test]
+fn test_stream_block_stop_before_message_start_is_dropped() {
+    use crate::ir::IrStreamEvent;
+    let mut state = crate::ir::StreamDecodeState::default();
+    let reader = BedrockReader;
+
+    let evs = reader.read_response_events(
+        "",
+        &serde_json::json!({"type": "contentBlockStop", "contentBlockIndex": 0}),
+        &mut state,
+    );
+    assert!(
+        !evs.iter()
+            .any(|e| matches!(e, IrStreamEvent::BlockStop { .. })),
+        "a contentBlockStop before messageStart must not emit a BlockStop; got {evs:?}"
+    );
+}
+
+/// A `contentBlockStop` for a tool-use index that never had a matching `contentBlockStart` (e.g. a
+/// duplicate/reordered STOP, or a STOP for an index this side never opened) must be silently
+/// dropped, not unconditionally forwarded as a `BlockStop` with no matching prior BlockStart.
+#[test]
+fn test_stream_block_stop_for_unopened_tool_index_is_dropped() {
+    use crate::ir::IrStreamEvent;
+    let mut state = crate::ir::StreamDecodeState::default();
+    let reader = BedrockReader;
+
+    let _ = reader.read_response_events(
+        "",
+        &serde_json::json!({"type": "messageStart", "role": "assistant"}),
+        &mut state,
+    );
+
+    // No contentBlockStart was ever sent for index 3 — a duplicate/reordered/unmatched STOP.
+    let evs = reader.read_response_events(
+        "",
+        &serde_json::json!({"type": "contentBlockStop", "contentBlockIndex": 3}),
+        &mut state,
+    );
+    assert!(
+        !evs.iter()
+            .any(|e| matches!(e, IrStreamEvent::BlockStop { .. })),
+        "a contentBlockStop for an index with no matching contentBlockStart must not emit a \
+         BlockStop; got {evs:?}"
+    );
+}
+
+/// Regression guard on the happy path: a well-formed toolUse `contentBlockStart` followed by its
+/// matching `contentBlockStop` at the SAME index must still emit exactly one `BlockStop` for that
+/// index — the unmatched-STOP fix above must not also suppress a legitimately matched STOP.
+#[test]
+fn test_stream_block_stop_for_opened_tool_index_still_emits() {
+    use crate::ir::IrStreamEvent;
+    let mut state = crate::ir::StreamDecodeState::default();
+    let reader = BedrockReader;
+
+    let _ = reader.read_response_events(
+        "",
+        &serde_json::json!({"type": "messageStart", "role": "assistant"}),
+        &mut state,
+    );
+    let _ = reader.read_response_events(
+        "",
+        &serde_json::json!({
+            "type": "contentBlockStart",
+            "contentBlockIndex": 2,
+            "start": {"toolUse": {"toolUseId": "t1", "name": "f"}}
+        }),
+        &mut state,
+    );
+    let evs = reader.read_response_events(
+        "",
+        &serde_json::json!({"type": "contentBlockStop", "contentBlockIndex": 2}),
+        &mut state,
+    );
+    assert_eq!(
+        evs,
+        vec![IrStreamEvent::BlockStop { index: 2 }],
+        "a contentBlockStop matching a real prior contentBlockStart must still emit exactly one \
+         BlockStop at that index; got {evs:?}"
+    );
+}
+
+/// Two concurrently open tool-use blocks (indices 0 and 1) must each close independently: a STOP
+/// for index 1 must not consume/clear index 0's open state, and vice versa. Guards against a
+/// naive single-flag fix that would only track "is *a* tool open" rather than "is *this* index open".
+#[test]
+fn test_stream_block_stop_closes_concurrent_tool_blocks_independently() {
+    use crate::ir::IrStreamEvent;
+    let mut state = crate::ir::StreamDecodeState::default();
+    let reader = BedrockReader;
+
+    let _ = reader.read_response_events(
+        "",
+        &serde_json::json!({"type": "messageStart", "role": "assistant"}),
+        &mut state,
+    );
+    for idx in [0u64, 1u64] {
+        let _ = reader.read_response_events(
+            "",
+            &serde_json::json!({
+                "type": "contentBlockStart",
+                "contentBlockIndex": idx,
+                "start": {"toolUse": {"toolUseId": format!("t{idx}"), "name": "f"}}
+            }),
+            &mut state,
+        );
+    }
+
+    let evs1 = reader.read_response_events(
+        "",
+        &serde_json::json!({"type": "contentBlockStop", "contentBlockIndex": 1}),
+        &mut state,
+    );
+    assert_eq!(evs1, vec![IrStreamEvent::BlockStop { index: 1 }]);
+
+    let evs0 = reader.read_response_events(
+        "",
+        &serde_json::json!({"type": "contentBlockStop", "contentBlockIndex": 0}),
+        &mut state,
+    );
+    assert_eq!(
+        evs0,
+        vec![IrStreamEvent::BlockStop { index: 0 }],
+        "index 0's tool block must still be open (and independently closeable) after index 1's \
+         STOP; got {evs0:?}"
+    );
+
+    // A second STOP for the already-closed index 1 must now be dropped (duplicate STOP).
+    let evs_dup = reader.read_response_events(
+        "",
+        &serde_json::json!({"type": "contentBlockStop", "contentBlockIndex": 1}),
+        &mut state,
+    );
+    assert!(
+        evs_dup.is_empty(),
+        "a duplicate contentBlockStop for an already-closed index must be dropped; got \
+         {evs_dup:?}"
+    );
+}
+
+/// Adversarial-review guard (round-9 codeaudit, correctness lens): on a MALFORMED stream that opens a
+/// tool-use block WHILE a text block is still (spuriously) open — something a well-formed sequential
+/// Converse wire never does, but a reordered/malformed upstream might — the `contentBlockStop` arm must
+/// match the STOP to its OWN tool index (via `open_tools`) rather than misattributing it to the
+/// index-blind `text_block_open` flag. Before the `open_tools`-first reordering, a STOP for the tool's
+/// index wrongly cleared `text_block_open` and left the tool's index stuck in `open_tools`, which then
+/// silently swallowed the LATER, legitimate STOP for the text block's own index.
+#[test]
+fn test_stream_block_stop_prefers_indexed_tool_over_stale_text_flag() {
+    use crate::ir::IrStreamEvent;
+    let mut state = crate::ir::StreamDecodeState::default();
+    let reader = BedrockReader;
+
+    let _ = reader.read_response_events(
+        "",
+        &serde_json::json!({"type": "messageStart", "role": "assistant"}),
+        &mut state,
+    );
+    // Text block opens at index 0 (absent-`start` shape) and is never closed before...
+    let _ = reader.read_response_events(
+        "",
+        &serde_json::json!({"type": "contentBlockStart", "contentBlockIndex": 0}),
+        &mut state,
+    );
+    // ...a malformed toolUse start interleaves at index 1 while text is still open.
+    let _ = reader.read_response_events(
+        "",
+        &serde_json::json!({
+            "type": "contentBlockStart",
+            "contentBlockIndex": 1,
+            "start": {"toolUse": {"toolUseId": "t1", "name": "f"}}
+        }),
+        &mut state,
+    );
+
+    // The tool's own STOP must close INDEX 1, not the text block.
+    let evs1 = reader.read_response_events(
+        "",
+        &serde_json::json!({"type": "contentBlockStop", "contentBlockIndex": 1}),
+        &mut state,
+    );
+    assert_eq!(
+        evs1,
+        vec![IrStreamEvent::BlockStop { index: 1 }],
+        "the tool's STOP must close its own index, not misattribute to the text flag; got {evs1:?}"
+    );
+
+    // The text block's own STOP must still fire afterward — not be silently swallowed.
+    let evs0 = reader.read_response_events(
+        "",
+        &serde_json::json!({"type": "contentBlockStop", "contentBlockIndex": 0}),
+        &mut state,
+    );
+    assert_eq!(
+        evs0,
+        vec![IrStreamEvent::BlockStop { index: 0 }],
+        "the text block's own later STOP must still emit, not be silently dropped; got {evs0:?}"
+    );
+}
+
 /// A native Converse `{"json": <value>}` block
 /// inside a `toolResult.content` array must survive a same-protocol reader→writer round-trip as a
 /// `json` block — NOT be collapsed to a `text` block (the old behaviour, which lost the json/text

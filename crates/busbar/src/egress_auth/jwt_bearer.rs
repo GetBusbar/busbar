@@ -23,11 +23,19 @@ const DEFAULT_SCOPE: &str = "https://www.googleapis.com/auth/cloud-platform";
 struct Signer {
     key_pair: ring::signature::RsaKeyPair,
     rng: ring::rand::SystemRandom,
-    /// JWT `iss`/`sub` — the service account's `client_email`.
+    /// JWT `iss` — the service account's `client_email`.
     issuer: String,
     /// JWT `aud` AND the POST target — the SA JSON `token_uri`.
     token_uri: String,
     scope: String,
+    /// JWT `sub` (RFC 7523 §3), emitted ONLY when the operator explicitly configures it
+    /// (`ProviderCfg::subject`). Left `None` — the default, and the only case that matters for a plain
+    /// (non-delegated) Google service account — the assertion carries no `sub` at all, UNCHANGED from
+    /// pre-fix behavior: for a Google service account, the mere PRESENCE of `sub` (not its value)
+    /// switches the grant into domain-wide-delegation/impersonation semantics, so it must never be
+    /// defaulted (e.g. to `iss`) or every plain SA (the shipped Vertex AI setup) starts failing
+    /// `unauthorized_client`/`invalid_grant`. Mirrors `google-auth-python`'s own opt-in `subject=`.
+    subject: Option<String>,
     http: reqwest::Client,
 }
 
@@ -40,10 +48,13 @@ struct Signer {
 /// `mint` closure to [`super::bearer_token::spawn`], which mints the
 /// first token in the background and refreshes it thereafter. `credential` is the SA JSON — inline
 /// (starts with `{`) or a path to a key file. `scope_override` replaces the default `cloud-platform`
-/// scope when set.
+/// scope when set. `subject` is the operator-configured `ProviderCfg::subject` (RFC 7523 `sub`) — `None`
+/// (the default) omits the claim entirely, unchanged from before this field existed; `Some` emits it
+/// verbatim, for Google domain-wide-delegation impersonation or a third-party IdP that requires `sub`.
 pub(crate) fn build(
     credential: &str,
     scope_override: Option<&str>,
+    subject: Option<&str>,
     ssrf: &super::MetadataSsrfPolicy,
 ) -> Result<CredentialProviderArc, String> {
     let (sa, key_pair) = parse_service_account(credential, ssrf)?;
@@ -54,6 +65,7 @@ pub(crate) fn build(
         issuer: sa.client_email,
         token_uri: sa.token_uri,
         scope: scope_override.unwrap_or(DEFAULT_SCOPE).to_string(),
+        subject: subject.map(str::to_string),
         http: super::minter_client()?,
     });
 
@@ -138,7 +150,14 @@ impl Signer {
         let now = now_epoch();
         let exp = now + 3600; // 1h assertion; the returned token's own TTL governs refresh
         let header = b64url(br#"{"alg":"RS256","typ":"JWT"}"#);
-        let claims_json = jwt_claims_json(&self.issuer, &self.scope, &self.token_uri, now, exp)?;
+        let claims_json = jwt_claims_json(
+            &self.issuer,
+            &self.scope,
+            &self.token_uri,
+            now,
+            exp,
+            self.subject.as_deref(),
+        )?;
         let claims = b64url(claims_json.as_bytes());
         let signing_input = format!("{header}.{claims}");
 
@@ -182,12 +201,12 @@ impl Signer {
         }
         let tok: TokenResponse =
             serde_json::from_str(&body).map_err(|e| format!("token response JSON invalid: {e}"))?;
-        Ok(CachedToken {
-            token: tok.access_token,
+        Ok(CachedToken::new(
+            tok.access_token,
             // saturating_add: `expires_in` is attacker-influenced (comes off the token endpoint), so a
             // huge value must clamp to u64::MAX rather than wrap/panic (1.4.0 audit, egress-auth).
-            expires_at: now.saturating_add(tok.expires_in),
-        })
+            now.saturating_add(tok.expires_in),
+        ))
     }
 }
 
@@ -197,20 +216,33 @@ impl Signer {
 /// the provider's `scope:` config (or the cloud-platform default), so this is also where a configured
 /// scope lands in the assertion. Extracted as a pure fn so the escaping and scope-placement are unit-
 /// testable without a network round-trip.
+///
+/// `subject` is RFC 7523 §3's `sub` claim, threaded from the operator's optional `ProviderCfg::subject`.
+/// It is emitted ONLY when `Some` — `None` (the default) produces a claim set with NO `sub` key at all,
+/// byte-identical to this function's behavior before `subject` existed. This is deliberately opt-in: for
+/// a Google service account, the mere PRESENCE of `sub` (regardless of value) switches the OAuth grant
+/// into domain-wide-delegation/impersonation semantics, so unconditionally setting it (e.g. to `issuer`)
+/// would break every plain, non-delegated service account — including the shipped Vertex AI config —
+/// with `unauthorized_client`/`invalid_grant`. `google-auth-python` and friends have the same opt-in
+/// `subject=` behavior; this mirrors it.
 fn jwt_claims_json(
     issuer: &str,
     scope: &str,
     aud: &str,
     iat: u64,
     exp: u64,
+    subject: Option<&str>,
 ) -> Result<String, String> {
-    let claims = serde_json::json!({
+    let mut claims = serde_json::json!({
         "iss": issuer,
         "scope": scope,
         "aud": aud,
         "iat": iat,
         "exp": exp,
     });
+    if let Some(sub) = subject {
+        claims["sub"] = serde_json::Value::String(sub.to_string());
+    }
     serde_json::to_string(&claims).map_err(|e| format!("serializing JWT claims failed: {e}"))
 }
 
@@ -377,6 +409,7 @@ mod tests {
             "https://oauth2.googleapis.com/token",
             1000,
             4600,
+            None,
         )
         .unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -390,13 +423,62 @@ mod tests {
         assert_eq!(v["exp"], 4600);
     }
 
+    /// Conformance fix (round-10 codeaudit, RFC 7523 §3): with `subject` UNSET (the default — every
+    /// existing Vertex AI config, which never sets it), the claim set must contain NO `sub` key at all —
+    /// byte-identical to pre-fix behavior. This is the regression guard: a prior attempt that
+    /// unconditionally set `sub = iss` was REFUTED by adversarial review because Google service-account
+    /// OAuth treats the mere PRESENCE of `sub` as a domain-wide-delegation/impersonation switch,
+    /// regardless of value, and would have broken every plain (non-delegated) service account.
+    #[test]
+    fn jwt_claims_omit_sub_when_subject_unset() {
+        let json = jwt_claims_json(
+            "svc@proj.iam.gserviceaccount.com",
+            DEFAULT_SCOPE,
+            "https://oauth2.googleapis.com/token",
+            1000,
+            4600,
+            None,
+        )
+        .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(
+            v.as_object().unwrap().get("sub").is_none(),
+            "no `sub` key must be present when subject is unset: {v}"
+        );
+        assert_eq!(
+            v.as_object().unwrap().len(),
+            5,
+            "exactly iss/scope/aud/iat/exp — no sub — when subject is unset: {v}"
+        );
+    }
+
+    /// Conformance fix (round-10 codeaudit, RFC 7523 §3): with `subject` explicitly configured, the
+    /// claim set MUST contain `sub` set to that exact value — this is the opt-in RFC-7523-conformant /
+    /// Google-delegation-correct path the fix adds. RED-before-green: this fails to COMPILE against the
+    /// unfixed code (`jwt_claims_json` had no 6th parameter at all — see the earlier red run) and passes
+    /// once `jwt_claims_json`/`Signer`/`build`/`ProviderCfg` grow the opt-in `subject` plumbing.
+    #[test]
+    fn jwt_claims_include_sub_with_exact_value_when_subject_set() {
+        let json = jwt_claims_json(
+            "svc@proj.iam.gserviceaccount.com",
+            DEFAULT_SCOPE,
+            "https://oauth2.googleapis.com/token",
+            1000,
+            4600,
+            Some("impersonated-user@example.com"),
+        )
+        .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["sub"], "impersonated-user@example.com");
+    }
+
     /// M10: a quote/backslash/control char in an operator-controlled claim value is ESCAPED, not
     /// spliced — the claims are always valid JSON and the value round-trips exactly. This is what the
     /// serde serializer buys over string interpolation (which would emit malformed JSON / inject).
     #[test]
     fn jwt_claims_escape_hostile_values() {
         let nasty = "a\"b\\c\nd\tsneaky\":\"injected";
-        let json = jwt_claims_json(nasty, nasty, "aud", 1, 2).unwrap();
+        let json = jwt_claims_json(nasty, nasty, "aud", 1, 2, None).unwrap();
         // Parses as valid JSON (string interpolation would have produced a parse error here)...
         let v: serde_json::Value = serde_json::from_str(&json).expect("claims must be valid JSON");
         // ...and the value round-trips exactly, with no injected keys.
@@ -451,6 +533,7 @@ oy3z0wnL4GXkIelYmU1zCk0=\n\
             issuer: "svc@proj.iam.gserviceaccount.com".to_string(),
             token_uri,
             scope: DEFAULT_SCOPE.to_string(),
+            subject: None,
             http: super::super::minter_client().unwrap(),
         }
     }
