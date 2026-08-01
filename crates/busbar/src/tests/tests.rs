@@ -1002,6 +1002,7 @@ fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::config
         path_base: None,
         token_url: None,
         scope: None,
+        subject: None,
         auth: None,
         allow_metadata_hosts: Vec::new(),
     };
