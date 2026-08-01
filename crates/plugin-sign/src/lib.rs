@@ -937,7 +937,8 @@ mod tests {
         let mut m0 = manifest("busbar-secret-vault", "vault", FIRST_PARTY_PUBLISHER);
         m0.kind = "secret".to_string();
         let m = sign(&release, m0, artifact);
-        validate_structure(&m, artifact, &abi, HOST_IDENTITY).expect("kind secret is structurally valid");
+        validate_structure(&m, artifact, &abi, HOST_IDENTITY)
+            .expect("kind secret is structurally valid");
         let pol = policy(Some(&release), &[], false, false);
         assert_eq!(
             evaluate(artifact, &m, &pol).unwrap(),
