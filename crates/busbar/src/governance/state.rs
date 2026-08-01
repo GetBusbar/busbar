@@ -154,6 +154,17 @@ impl GovState {
         // leaves the STRONGER protection already in place: a half-finished revoke has already
         // killed the SigV4 credential (or was never live to begin with) before the cheaper,
         // faster-to-propagate denylist write is attempted.
+        //
+        // Held across BOTH the store writes above and the targeted cache patch below, same as
+        // `refresh()` holds it across its own load+swap (see `refresh_lock`'s doc comment — this
+        // is the same lost-update guard, extended to cover `revoke`'s targeted patch too). Without
+        // this, a concurrent `refresh()` (triggered by any unrelated key mutation) can `load()` a
+        // store snapshot that races these writes, then swap it in AFTER this targeted patch,
+        // silently reverting the just-revoked key's cache entry back to enabled. Held for the
+        // whole function, not just the final block: the store writes must also be inside the
+        // mutual-exclusion window, or a `refresh()` could still slip its `load()` in between them
+        // and this patch.
+        let _refresh_guard = self.refresh_lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut revoked_creds = Vec::new();
         for cred in self.store.list_credentials(sub)? {
             if cred.revoked_at.is_none() {
