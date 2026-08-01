@@ -361,6 +361,232 @@ fn list_plugins_reports_statuses_without_loading() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// `--list-plugins`'s "selected" row is `plugins.enabled && row.status == "ready" && (name ==
+/// store_ref || alias == store_ref)` — every conjunct actually gates selection, not just the
+/// alias-match branch the sibling test above happens to exercise (there, alias == store_ref but
+/// name never equals it, so a name==store_ref mutant would slip through unnoticed). This test
+/// isolates each remaining conjunct:
+///   1. NAME-only match (alias deliberately different from store_ref) still selects.
+///   2. An UNTRUSTED row whose name matches store_ref does NOT select (status != "ready").
+///   3. `plugins.enabled: false` suppresses selection even when name/status both match, and
+///      reports the "inert" status instead of "LOADS".
+#[test]
+fn list_plugins_selected_row_requires_every_conjunct() {
+    // (1) name-only match.
+    let dir = fixture_dir("list-name-match");
+    write_tarball(
+        &dir,
+        "byname.tar.gz",
+        "sqlite",
+        "totally-different-alias",
+        b"n",
+    );
+    write_configs(
+        &dir,
+        &format!(
+            "{}store:\n  module: sqlite\n",
+            plugins_block(&dir, true, true)
+        ),
+    );
+    let (code, stdout, _stderr) = run_busbar(&dir, &["--list-plugins"]);
+    assert_eq!(code, 0, "{stdout}");
+    assert!(
+        stdout.contains("LOADS (store.module: sqlite)"),
+        "a NAME match alone (alias differs) must still select: {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // (2) matching name, but UNTRUSTED (not allow_unsigned) so status != "ready".
+    let dir = fixture_dir("list-untrusted-match");
+    write_tarball(&dir, "untrusted.tar.gz", "sqlite", "sqlite", b"u");
+    write_configs(
+        &dir,
+        &format!(
+            "{}store:\n  module: sqlite\n",
+            plugins_block(&dir, true, false)
+        ),
+    );
+    let (code, stdout, _stderr) = run_busbar(&dir, &["--list-plugins"]);
+    assert_eq!(code, 0, "{stdout}");
+    assert!(
+        !stdout.contains("LOADS"),
+        "a name/alias match with a non-\"ready\" status must NOT select: {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // (3) matching name AND ready, but plugins.enabled: false.
+    let dir = fixture_dir("list-disabled-match");
+    write_tarball(&dir, "disabled.tar.gz", "sqlite", "sqlite", b"d");
+    write_configs(
+        &dir,
+        &format!(
+            "{}store:\n  module: sqlite\n",
+            plugins_block(&dir, false, true)
+        ),
+    );
+    let (code, stdout, _stderr) = run_busbar(&dir, &["--list-plugins"]);
+    assert_eq!(code, 0, "{stdout}");
+    assert!(
+        !stdout.contains("LOADS"),
+        "plugins.enabled: false must suppress selection even on an otherwise-matching row: {stdout}"
+    );
+    assert!(
+        stdout.contains("inert: plugins.enabled is false"),
+        "got {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `--migrate-config`'s CHANGES/WARNINGS/TODO sections are each printed only `if !out.X.is_empty()`
+/// — a legacy config that triggers BOTH a change (`governance.db_path`) and a warning (an empty
+/// `allowed_pools: []`, whose meaning flipped in 1.5.0) must print BOTH sections.
+#[test]
+fn migrate_config_prints_changes_and_warnings_sections_when_non_empty() {
+    let dir = fixture_dir("migrate");
+    std::fs::create_dir_all(&dir).unwrap();
+    let legacy = dir.join("legacy.yaml");
+    std::fs::write(
+        &legacy,
+        "governance:\n  db_path: \"old.db\"\nauth:\n  chain:\n    - oidc\n  group_map:\n    full:\n      allowed_pools: []\n",
+    )
+    .unwrap();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
+        .args(["--migrate-config", legacy.to_str().unwrap()])
+        .output()
+        .expect("run busbar --migrate-config");
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(out.status.code(), Some(0), "stderr={stderr}");
+    assert!(
+        stderr.contains("CHANGES (") && stderr.contains("governance.db_path"),
+        "a non-empty changes list must print the CHANGES section: {stderr}"
+    );
+    assert!(
+        stderr.contains("WARNINGS (") && stderr.contains("allowed_pools"),
+        "a non-empty warnings list must print the WARNINGS section: {stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The inverse of the above: a legacy config with NEITHER a `governance.db_path` NOR any semantic-
+/// flip warning must print NEITHER section (the `if !out.X.is_empty()` guards must actually gate,
+/// not just always-print).
+#[test]
+fn migrate_config_omits_changes_and_warnings_sections_when_empty() {
+    let dir = fixture_dir("migrate-clean");
+    std::fs::create_dir_all(&dir).unwrap();
+    let legacy = dir.join("legacy.yaml");
+    std::fs::write(&legacy, "listen: \"127.0.0.1:8080\"\n").unwrap();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
+        .args(["--migrate-config", legacy.to_str().unwrap()])
+        .output()
+        .expect("run busbar --migrate-config");
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(out.status.code(), Some(0), "stderr={stderr}");
+    assert!(
+        !stderr.contains("CHANGES ("),
+        "an empty changes list must NOT print the CHANGES section: {stderr}"
+    );
+    assert!(
+        !stderr.contains("WARNINGS ("),
+        "an empty warnings list must NOT print the WARNINGS section: {stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `plugins_preflight`'s three consistency gates (store/auth/hook each referencing a plugin module
+/// while `plugins.enabled` stays at its default `false`) each guard on `!plugins_cfg.enabled` — a
+/// deleted `!` would silently invert the gate (rejecting the NORMAL enabled case instead of the
+/// actual misconfiguration). None of the three had any test coverage at all.
+#[test]
+fn validate_fails_when_a_plugin_is_referenced_but_plugins_are_disabled() {
+    // store.module referencing a non-memory backend with plugins.enabled left at its default false.
+    let dir = fixture_dir("gate-store");
+    write_configs(&dir, "store:\n  module: sqlite\n");
+    let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(code, 1, "{stderr}");
+    assert!(
+        stderr.contains("store.module: 'sqlite' requires the plugin subsystem")
+            && stderr.contains("plugins.enabled is false"),
+        "got {stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // auth.chain naming a plugin module with plugins.enabled left at its default false.
+    let dir = fixture_dir("gate-auth");
+    write_configs(&dir, "auth:\n  chain:\n    - oidc\n");
+    let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(code, 1, "{stderr}");
+    assert!(
+        stderr.contains("auth.chain names plugin module(s)") && stderr.contains("[oidc]"),
+        "got {stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // A hook naming a plugin module with plugins.enabled left at its default false.
+    let dir = fixture_dir("gate-hook");
+    write_configs(
+        &dir,
+        "global_hooks:\n  - kind: tap\n    module: webrequest\n    prompt: ro\n",
+    );
+    let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(code, 1, "{stderr}");
+    assert!(
+        stderr.contains("the hooks registry names plugin module(s)")
+            && stderr.contains("[webrequest]"),
+        "got {stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `plugins_preflight`'s store-resolution step (`Some(p) if p.manifest.kind == "store" => {}`) must
+/// reject a resolved plugin of the WRONG kind, not silently accept it — `store.module` pointing (by
+/// name/alias collision) at a `kind: hook` plugin is a real misconfiguration class, not a manifest
+/// integrity failure, so it needs its own named error rather than falling through as if it loaded.
+#[test]
+fn validate_fails_when_store_module_resolves_to_a_non_store_plugin_kind() {
+    let dir = fixture_dir("wrongkind");
+    let m = busbar_plugin_sign::Manifest {
+        name: "acme-hook-x".into(),
+        alias: "x".into(),
+        kind: "hook".into(),
+        version: "1.5.0".into(),
+        publisher: "acme".into(),
+        abi_version: *busbar_plugin_loader::supported_abi("hook")
+            .iter()
+            .max()
+            .expect("hook abi"),
+        sha256: busbar_plugin_sign::sha256_hex(b"real bytes"),
+        signature: String::new(),
+        description: String::new(),
+        homepage: String::new(),
+        license: String::new(),
+        needs: Default::default(),
+        settings_schema: None,
+        schema_derived: false,
+        host: None,
+    };
+    let bytes = busbar_plugin_loader::tarball::package(&m, "lib.so", b"real bytes").unwrap();
+    std::fs::write(dir.join("plugins/x.tar.gz"), bytes).unwrap();
+    // store.module: "x" resolves by ALIAS to the hook plugin above, not any store plugin.
+    write_configs(
+        &dir,
+        &format!("{}store:\n  module: x\n", plugins_block(&dir, true, true)),
+    );
+    let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(code, 1, "a kind mismatch must fail --validate: {stderr}");
+    assert!(
+        stderr.contains("not a store plugin"),
+        "must name the specific kind-mismatch reason, not a generic failure: {stderr}"
+    );
+    assert!(
+        stderr.contains("kind 'hook'"),
+        "must name the actual (wrong) kind resolved: {stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Run busbar with an ADDITIONAL `BUSBAR_CONFIG_OVERLAY` pointing at a fixture overlay file — the
 /// 1.5.0 full-config-coverage persistence path a real deployment uses.
 fn run_busbar_with_overlay(dir: &Path, overlay: &Path, args: &[&str]) -> (i32, String, String) {

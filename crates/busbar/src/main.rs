@@ -533,6 +533,24 @@ fn safe_mode_requested(mut args: impl Iterator<Item = String>) -> bool {
     args.any(|a| a == "--safe-mode")
 }
 
+/// A store READ failure and a chain-VERIFICATION failure on audit restore are different events: the
+/// first is a hiccup, the second is tamper evidence. Reporting both as "chain verification" trains
+/// an operator to ignore the one that matters, so `run()`'s restore-error match keys on this to pick
+/// `tracing::warn!` vs `tracing::error!`. Module-level (not inlined in the match guard) so it's
+/// unit-testable; see `tests/tests.rs`.
+fn is_audit_restore_read_hiccup(e: &str) -> bool {
+    e.starts_with("audit restore read failed")
+}
+
+/// Whether `run()`'s D3 restore should seed the audit ring from the FILE snapshot: only when the
+/// durable governance store did NOT already provide it — otherwise a stale file snapshot would
+/// clobber the store's authoritative (and more complete) history and rewind the sequence. Module-
+/// level so the precedence itself (not just the boot path that exercises it) is unit-testable; see
+/// `tests/tests.rs`.
+fn should_load_audit_from_file_snapshot(audit_restored_from_store: bool) -> bool {
+    !audit_restored_from_store
+}
+
 /// Cap on `BUSBAR_WORKER_THREADS`/`TOKIO_WORKER_THREADS` (see the `.min(MAX_WORKER_THREADS)` call in
 /// `main()` for why this exists).
 const MAX_WORKER_THREADS: usize = 128;
@@ -819,7 +837,7 @@ async fn run() {
             // A store READ failure and a chain-VERIFICATION failure are different events: the first
             // is a hiccup, the second is tamper evidence. Reporting both as "chain verification"
             // trains an operator to ignore the one that matters.
-            Err(e) if e.starts_with("audit restore read failed") => tracing::warn!(
+            Err(e) if is_audit_restore_read_hiccup(&e) => tracing::warn!(
                 error = %e,
                 "could not read the durable audit log; falling back to the state snapshot"
             ),
@@ -845,7 +863,7 @@ async fn run() {
             // Only seed the audit ring from the FILE snapshot when the durable store did NOT already
             // provide it — otherwise a stale snapshot would clobber the store's authoritative (and
             // more complete) history and rewind the sequence.
-            if !audit_restored_from_store {
+            if should_load_audit_from_file_snapshot(audit_restored_from_store) {
                 crate::admin::audit::AUDIT.load(persisted.audit);
             }
             app.versions.load(persisted.versions);
