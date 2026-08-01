@@ -610,6 +610,71 @@ mod tests {
         ));
     }
 
+    /// The real `pack()` CLI entry point, end-to-end: without `BUSBAR_SIGN_KEY` set, a plain pack
+    /// fails (ExitCode::FAILURE, no tarball written) UNLESS `--allow-unsigned` is passed, in which
+    /// case it succeeds and writes an unsigned tarball. Every other test in this module calls the
+    /// signing/packaging primitives directly and never exercises `pack()` itself, so this is the
+    /// only coverage of its env-var branch, the two ExitCode outcomes, and CLI flag wiring.
+    ///
+    /// Serialized (not run concurrently with itself — it's one `#[test]` function) since it
+    /// mutates the process-global `BUSBAR_SIGN_KEY` env var; no other test in this crate reads or
+    /// writes that var.
+    #[test]
+    fn pack_cli_respects_allow_unsigned_and_returns_the_right_exit_code() {
+        std::env::remove_var(SIGN_KEY_ENV);
+        let dir = std::env::temp_dir().join(format!("plugin-pack-cli-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let lib_path = dir.join("lib.so");
+        std::fs::write(&lib_path, b"pretend cdylib").unwrap();
+        let out_path = dir.join("out.tar.gz");
+
+        let args = |out: &std::path::Path, extra: &[&str]| -> Vec<String> {
+            let mut v = vec![
+                "--lib".to_string(),
+                lib_path.to_string_lossy().to_string(),
+                "--name".to_string(),
+                "n".to_string(),
+                "--alias".to_string(),
+                "n".to_string(),
+                "--kind".to_string(),
+                "store".to_string(),
+                "--version".to_string(),
+                "1.0.0".to_string(),
+                "--publisher".to_string(),
+                "p".to_string(),
+                "--out".to_string(),
+                out.to_string_lossy().to_string(),
+            ];
+            v.extend(extra.iter().map(|s| s.to_string()));
+            v
+        };
+
+        // No key, no --allow-unsigned: must fail closed, and must not write a tarball.
+        let _ = std::fs::remove_file(&out_path);
+        assert_eq!(pack(&args(&out_path, &[])), ExitCode::FAILURE);
+        assert!(
+            !out_path.exists(),
+            "a failed pack must not leave a tarball behind"
+        );
+
+        // --allow-unsigned with no key: must succeed and actually write the tarball.
+        assert_eq!(
+            pack(&args(&out_path, &["--allow-unsigned"])),
+            ExitCode::SUCCESS
+        );
+        assert!(
+            out_path.exists(),
+            "a successful pack must write the tarball"
+        );
+        let up = busbar_plugin_loader::tarball::unpack(&std::fs::read(&out_path).unwrap()).unwrap();
+        assert!(
+            up.manifest.signature.is_empty(),
+            "--allow-unsigned must produce an UNSIGNED manifest"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The `--needs-*` level parser accepts the ladder tokens (case/alias-insensitively) and hard-errors
     /// on anything else (a fat-fingered intent must not silently default to a weaker/stronger level).
     #[test]
@@ -794,6 +859,108 @@ mod tests {
             "properties": {"tls_key": {"type": "string", "x-busbar-secret": true}},
         });
         validate_secret_fields(&flattened).unwrap();
+    }
+
+    /// A self-referencing `$ref` cycle is rejected with a specific "cyclic" error, not an infinite
+    /// loop / stack overflow (`resolving.insert` returning `false` on a repeat name is the guard).
+    #[test]
+    fn cyclic_ref_is_rejected_not_infinitely_recursed() {
+        let cyclic = serde_json::json!({
+            "$schema": SCHEMA_2020_12,
+            "$ref": "#/$defs/A",
+            "$defs": {
+                "A": {"$ref": "#/$defs/B"},
+                "B": {"$ref": "#/$defs/A"},
+            },
+        });
+        let err = validate_secret_fields(&cyclic).unwrap_err();
+        assert!(err.contains("cyclic"), "got {err}");
+    }
+
+    /// A `$ref` sibling key (e.g. a `description` written alongside `$ref`, valid 2020-12 shape)
+    /// must survive into the merged effective schema, not be dropped — only the `$ref` KEY itself
+    /// is excluded from the copy-over.
+    #[test]
+    fn ref_sibling_keys_survive_the_merge() {
+        let schema = serde_json::json!({
+            "$schema": SCHEMA_2020_12, "type": "object",
+            "properties": {
+                "tls": {
+                    "$ref": "#/$defs/TlsConfig",
+                    "x-busbar-secret": true,
+                },
+            },
+            "$defs": {
+                "TlsConfig": {"type": "string"},
+            },
+        });
+        // If the `x-busbar-secret` sibling were dropped during the $ref merge, this would silently
+        // pass instead of being caught by the type check (string is fine) — assert success AND
+        // that swapping the referenced type to something invalid for a secret DOES get caught,
+        // proving the sibling key was actually merged in and evaluated.
+        validate_secret_fields(&schema).unwrap();
+
+        let bad_type = serde_json::json!({
+            "$schema": SCHEMA_2020_12, "type": "object",
+            "properties": {
+                "tls": {
+                    "$ref": "#/$defs/TlsConfig",
+                    "x-busbar-secret": true,
+                },
+            },
+            "$defs": {
+                "TlsConfig": {"type": "integer"},
+            },
+        });
+        assert!(
+            validate_secret_fields(&bad_type).is_err(),
+            "the sibling x-busbar-secret marker must have been merged in and enforced"
+        );
+    }
+
+    /// `allOf` branches merge their `properties` (already covered) AND their other sibling keys
+    /// (e.g. `required`) into the effective schema — a marked secret living in a NON-properties key
+    /// of an allOf branch (nothing realistic needs this for x-busbar-secret specifically, so this
+    /// proves the general merge instead: a secret-shaped field hidden inside an allOf branch's own
+    /// nested `properties` is still found).
+    #[test]
+    fn all_of_branch_properties_are_merged_and_scanned() {
+        let schema = serde_json::json!({
+            "$schema": SCHEMA_2020_12, "type": "object",
+            "allOf": [
+                {"type": "object", "properties": {"password": {"type": "string"}}},
+            ],
+        });
+        let err = validate_secret_fields(&schema).unwrap_err();
+        assert!(err.contains("password"), "got {err}");
+
+        let clean = serde_json::json!({
+            "$schema": SCHEMA_2020_12, "type": "object",
+            "allOf": [
+                {"type": "object", "properties": {"note": {"type": "string"}}},
+            ],
+        });
+        validate_secret_fields(&clean).unwrap();
+    }
+
+    /// The allOf merge copies more than just `properties` from a branch into the effective schema
+    /// — every OTHER key too (`type`, etc). Here `x-busbar-secret` is marked directly on the field,
+    /// but its `type: string` lives ONLY inside an `allOf` branch; the check can only pass if that
+    /// non-`properties` key actually got merged in.
+    #[test]
+    fn all_of_branch_non_properties_keys_are_merged_in() {
+        let schema = serde_json::json!({
+            "$schema": SCHEMA_2020_12, "type": "object",
+            "properties": {
+                "token": {
+                    "x-busbar-secret": true,
+                    "allOf": [{"type": "string"}],
+                },
+            },
+        });
+        validate_secret_fields(&schema).unwrap_or_else(|e| {
+            panic!("allOf branch's `type` must be merged into the effective schema: {e}")
+        });
     }
 
     /// `oneOf`/`anyOf`/`prefixItems` are also places a field can hide — a marked OR unmarked
@@ -1032,6 +1199,92 @@ mod tests {
             },
         });
         validate_secret_fields(&clean).unwrap();
+    }
+
+    /// Every `scan(..., depth + 1, ...)` call site accepts a CORRECTLY root-level (depth-1) marked
+    /// secret reached ONLY through that specific keyword — the `is_err()` assertions elsewhere in
+    /// this module prove a nested-and-marked field is REJECTED, but the depth check is `depth !=
+    /// 1`, so any wrong depth value (0, 2, anything but 1) produces that SAME rejection outcome and
+    /// can't tell a correct `+ 1` from a mutated `* 1`/`- 1`. Only a case that must SUCCEED (a
+    /// genuinely depth-1 field) pins the actual arithmetic down.
+    #[test]
+    fn each_combinator_keyword_accepts_a_secret_reached_at_exactly_root_depth() {
+        for (label, schema) in [
+            (
+                "items",
+                serde_json::json!({
+                    "$schema": SCHEMA_2020_12, "type": "array",
+                    "items": {"type": "string", "x-busbar-secret": true},
+                }),
+            ),
+            (
+                "oneOf",
+                serde_json::json!({
+                    "$schema": SCHEMA_2020_12,
+                    "oneOf": [{"type": "string", "x-busbar-secret": true}],
+                }),
+            ),
+            (
+                "prefixItems",
+                serde_json::json!({
+                    "$schema": SCHEMA_2020_12, "type": "array",
+                    "prefixItems": [{"type": "string", "x-busbar-secret": true}],
+                }),
+            ),
+            (
+                "if",
+                serde_json::json!({
+                    "$schema": SCHEMA_2020_12,
+                    "if": {"type": "string", "x-busbar-secret": true},
+                }),
+            ),
+            (
+                "then",
+                serde_json::json!({
+                    "$schema": SCHEMA_2020_12,
+                    "then": {"type": "string", "x-busbar-secret": true},
+                }),
+            ),
+            (
+                "else",
+                serde_json::json!({
+                    "$schema": SCHEMA_2020_12,
+                    "else": {"type": "string", "x-busbar-secret": true},
+                }),
+            ),
+            (
+                "not",
+                serde_json::json!({
+                    "$schema": SCHEMA_2020_12,
+                    "not": {"type": "string", "x-busbar-secret": true},
+                }),
+            ),
+            (
+                "contentSchema",
+                serde_json::json!({
+                    "$schema": SCHEMA_2020_12,
+                    "contentSchema": {"type": "string", "x-busbar-secret": true},
+                }),
+            ),
+            (
+                "contains",
+                serde_json::json!({
+                    "$schema": SCHEMA_2020_12, "type": "array",
+                    "contains": {"type": "string", "x-busbar-secret": true},
+                }),
+            ),
+            (
+                "patternProperties",
+                serde_json::json!({
+                    "$schema": SCHEMA_2020_12, "type": "object",
+                    "patternProperties": {"^x": {"type": "string", "x-busbar-secret": true}},
+                }),
+            ),
+        ] {
+            validate_secret_fields(&schema).unwrap_or_else(|e| {
+                panic!("{label}: a depth-1 marked secret must be accepted: {e}")
+            });
+        }
     }
 
     /// `x-busbar-ref: "pool" | "group" | "model" | "provider"` (question #5) is a recognized schema
