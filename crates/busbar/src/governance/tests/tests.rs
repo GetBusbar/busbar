@@ -1431,6 +1431,82 @@ fn test_budget_sweep_is_window_agnostic_across_cotenants() {
     );
 }
 
+/// The sweep's staleness boundary is EXACT: a bounded-window cell aged exactly `max_window`
+/// (31 days) to the second is evicted (`window_start + max_window > now` is false at equality,
+/// so `retain` drops it); one second younger survives. A mutated `>` -> `>=` would keep the
+/// exactly-31-day cell one extra sweep cycle. Same boundary, `last_touch`-aged form for the
+/// all-time (`window_start == 0`) attribution-cell branch just below it.
+#[test]
+fn test_budget_sweep_staleness_boundary_is_exact() {
+    let store = Arc::new(MemoryStore::new());
+    let gov = GovState::new(store, None).unwrap();
+    let now = 1_700_000_040u64;
+    let max_window = 31 * SECS_PER_DAY;
+    let survivor = sample_key("survivor2", "hs2");
+
+    let seeded = |window_start: u64, last_touch: u64| BudgetCell {
+        window_start,
+        requests: 1,
+        billable_requests: 1,
+        flushed_requests: 0,
+        flushed_billable_requests: 0,
+        models: Vec::new(),
+        dirty: false,
+        last_touch,
+    };
+
+    {
+        let mut map = gov.budget.write("survivor2");
+        // Bounded-window branch (`window_start != 0`): exactly at the boundary -> evicted; one
+        // second younger -> survives.
+        map.insert(
+            "bounded-at-boundary".to_string(),
+            seeded(now - max_window, now),
+        );
+        map.insert(
+            "bounded-just-under".to_string(),
+            seeded(now - max_window + 1, now),
+        );
+        // All-time branch (`window_start == 0`), aged by `last_touch` instead: same exact
+        // boundary semantics.
+        map.insert(
+            "alltime-at-boundary".to_string(),
+            seeded(0, now - max_window),
+        );
+        map.insert(
+            "alltime-just-under".to_string(),
+            seeded(0, now - max_window + 1),
+        );
+    }
+
+    gov.budget.sweep_ticker_for("survivor2").store(
+        crate::config::DEFAULT_RATE_SWEEP_INTERVAL - 1,
+        Ordering::Relaxed,
+    );
+    assert!(
+        gov.try_admit(&flat_cost(1), &survivor, "", now).is_ok(),
+        "key admits"
+    );
+
+    let map = gov.budget.read("survivor2");
+    assert!(
+        !map.contains_key("bounded-at-boundary"),
+        "a bounded-window cell aged EXACTLY max_window must be evicted (> not >=)"
+    );
+    assert!(
+        map.contains_key("bounded-just-under"),
+        "a bounded-window cell one second younger than the boundary must survive"
+    );
+    assert!(
+        !map.contains_key("alltime-at-boundary"),
+        "an all-time cell last-touched EXACTLY max_window ago must be evicted (> not >=)"
+    );
+    assert!(
+        map.contains_key("alltime-just-under"),
+        "an all-time cell touched one second more recently than the boundary must survive"
+    );
+}
+
 #[test]
 fn test_budget_sweep_cadence_post_increment_no_off_by_one() {
     // Regression for the sweep-cadence off-by-one, now on the budget shard sweep (the rate map is
@@ -2166,6 +2242,49 @@ fn test_boundary_straddle_charge_never_rewinds_the_live_cell() {
     }
 }
 
+/// The genuine-new-window roll (`window > c.window_start`, the sibling of the straddle case
+/// above): an admission whose window is STRICTLY NEWER than an EXISTING cell's window must reset
+/// that cell to a fresh one for the new window, not keep accumulating onto the old window's
+/// spend/requests. A mutated match guard that never takes this branch would let a maxed-out
+/// bounded-window cell block admission FOREVER, even long after that window ended.
+#[test]
+fn test_new_window_admission_rolls_the_stale_cell_fresh() {
+    let store = Arc::new(MemoryStore::new());
+    let gov = GovState::new(store, None).unwrap();
+    let cost = card_and_group_cost("m", 100.0, &[("g", 150, "day", None)]);
+    let mut k = sample_key("vk_roll", "h_r");
+    k.group = Some("g".to_string());
+    let bucket = "group:g@day";
+    let day0 = 3 * crate::governance::SECS_PER_DAY + 100; // well inside day 3
+    let day5 = 8 * crate::governance::SECS_PER_DAY + 100; // well inside day 8 — a genuinely new window
+
+    // Exhaust day 0's cap (well past it, to avoid any boundary ambiguity — this test is about
+    // window rollover, not the cap comparison's own boundary).
+    gov.try_admit(&cost, &k, "", day0).expect("day0 admits");
+    gov.record_usage(&cost, &k, "", "m", &tt(20_000), day0); // 100 utok/token x 20_000 / 10_000 = 200c > 150c cap
+    match gov.try_admit(&cost, &k, "", day0).unwrap_err() {
+        LimitBlocked::Limit {
+            group,
+            metric: "budget",
+            ..
+        } => assert_eq!(group, "g"),
+        other => panic!("day0 must be at-cap and block; got {other:?}"),
+    }
+
+    // A day-5 admission is a genuinely NEW window — it must roll the cell fresh (not stay blocked
+    // by day 0's exhausted spend) and the rolled cell's ledger must show ONLY the new charge.
+    gov.try_admit(&cost, &k, "", day5)
+        .expect("a genuinely new window must not be blocked by a stale window's exhausted cap");
+    let after = gov
+        .derived_bucket_usage(&cost, bucket, WINDOW_DAY, true, day5)
+        .unwrap();
+    assert_eq!(
+        (after.tokens, after.requests),
+        (0, 1),
+        "the rolled cell must carry ONLY the new window's charge, not day 0's leftover spend"
+    );
+}
+
 /// FAIL-CLOSED: a key bound to a group this node's config does not know is NOT admitted
 /// (MissingGroup named), and accrual degrades to the key bucket only (tokens never lost).
 #[test]
@@ -2287,6 +2406,75 @@ fn test_hydrate_budgets_propagates_store_error() {
     assert!(
         err.to_string().contains("simulated store blip"),
         "the store error must surface verbatim; got: {err}"
+    );
+}
+
+/// The pre-split-migration seed: a persisted `UsageLedger` with `billable_requests == 0` but a
+/// nonzero `requests` (the two counters used to be one field) must have `hydrate_budgets` seed the
+/// restored cell's `billable_requests` from `requests`, not leave it at 0 — otherwise a key's fee
+/// base (and therefore its budget spend) silently resets to zero on the first post-upgrade boot. A
+/// row that's ALREADY split (billable_requests > 0, however small) must NOT be re-seeded — it's
+/// real post-split data, not a legacy row.
+#[test]
+fn test_hydrate_budgets_seeds_billable_requests_from_a_pre_split_row() {
+    let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
+    let k = sample_key("vk_presplit", "presplit_h");
+    store.put_key(&k).unwrap();
+    // Simulate a legacy persisted row: 7 admitted requests, billable_requests never split out.
+    store
+        .put_usage(
+            "vk_presplit",
+            budget_window(WINDOW_TOTAL, 0),
+            &UsageLedger {
+                requests: 7,
+                billable_requests: 0,
+                models: vec![],
+            },
+        )
+        .unwrap();
+    let gov = GovState::new(store, None).unwrap();
+    gov.hydrate_budgets(&flat_cost(1), 0).expect("hydrate");
+    let cell_billable = gov
+        .budget
+        .read("vk_presplit")
+        .get("vk_presplit")
+        .expect("hydrated cell exists")
+        .billable_requests;
+    assert_eq!(
+        cell_billable, 7,
+        "a pre-split row's billable_requests must be seeded from requests, not left at 0"
+    );
+
+    // The other half of the boundary: an ALREADY-split row (billable_requests > 0, however far
+    // below requests — e.g. some were non-2xx refunds) must NOT be re-seeded from requests. A
+    // mutated `&&` -> `||` here would re-seed ANY row with requests > 0 regardless of whether
+    // billable_requests is already meaningfully set, silently inflating a key's billed count on
+    // every restart.
+    let store2: Arc<dyn Store> = Arc::new(MemoryStore::new());
+    let k2 = sample_key("vk_split", "split_h");
+    store2.put_key(&k2).unwrap();
+    store2
+        .put_usage(
+            "vk_split",
+            budget_window(WINDOW_TOTAL, 0),
+            &UsageLedger {
+                requests: 7,
+                billable_requests: 3,
+                models: vec![],
+            },
+        )
+        .unwrap();
+    let gov2 = GovState::new(store2, None).unwrap();
+    gov2.hydrate_budgets(&flat_cost(1), 0).expect("hydrate");
+    let cell2_billable = gov2
+        .budget
+        .read("vk_split")
+        .get("vk_split")
+        .expect("hydrated cell exists")
+        .billable_requests;
+    assert_eq!(
+        cell2_billable, 3,
+        "an already-split row must keep its own billable_requests, never re-seeded from requests"
     );
 }
 
@@ -2999,6 +3187,40 @@ mod metering_fanout {
         assert_eq!(
             n3, 0,
             "a third flush writes nothing — the entry is gone, not duplicated"
+        );
+    }
+
+    /// `flush_metering`'s all-five-counters-zero skip check (`counts.requests == 0 && ... &&
+    /// counts.tokens_cache_read == 0 && ...`) is UNREACHABLE via the only real writer,
+    /// `record_metering` (it always increments `requests` by at least 1 before an entry can land
+    /// in `pending_metering`) — so this isn't exercised by any public-API test above. It is real,
+    /// intended defensive behavior, not dead code to delete: reach into the private
+    /// `pending_metering` map directly (same crate, `governance::tests` is a descendant module of
+    /// `governance`, so this is a normal same-module-tree access, not a visibility hack) to prove
+    /// a genuinely all-zero entry is skipped — never flushed, never a store row — rather than
+    /// silently trusting the branch would work if it were ever reached.
+    #[test]
+    fn flush_metering_skips_a_genuinely_all_zero_entry() {
+        let store = Arc::new(MemoryStore::new());
+        let gov = GovState::new(store, None).unwrap();
+        let now = 1_700_300_000u64;
+        let key = (
+            "vk_zero".to_string(),
+            metering_bucket(now),
+            "m".to_string(),
+            "p".to_string(),
+        );
+        gov.pending_metering
+            .lock()
+            .unwrap()
+            .insert(key, MeterCounts::default());
+
+        let flushed = gov.flush_metering();
+        assert_eq!(flushed, 0, "an all-zero entry must not count as flushed");
+        let rows = gov.metering_for(metering_bucket(now)).unwrap();
+        assert!(
+            rows.is_empty(),
+            "an all-zero entry must never become a store row"
         );
     }
 }
