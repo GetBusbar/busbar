@@ -770,6 +770,82 @@ mod tests {
         assert_eq!(parse_amz_date(""), None);
     }
 
+    /// Exact componentwise boundaries of `!(1..=12).contains(&month) || !(1..=31).contains(&day)
+    /// || hour > 23 || min > 59 || sec > 60`. Each case below flips EXACTLY ONE field to its
+    /// first-invalid value while holding every other field at a valid value — this is what catches
+    /// a single `||` mutated to `&&` at any one junction (only one sub-condition is true, so a
+    /// mutated `&&` there would fail to reject) as well as each `>`/`>=`/`==` boundary mutation
+    /// (the boundary itself, one past it, both checked).
+    #[test]
+    fn test_parse_amz_date_componentwise_boundaries() {
+        // Valid at the boundary: hour=23, min=59, sec=60 (a real leap second) must all parse.
+        assert!(
+            parse_amz_date("20150830T235960Z").is_some(),
+            "hour 23 must be valid"
+        );
+        assert!(
+            parse_amz_date("20150830T005960Z").is_some(),
+            "min 59 must be valid"
+        );
+        assert!(
+            parse_amz_date("20150830T000060Z").is_some(),
+            "sec 60 (leap second) must be valid"
+        );
+        assert!(
+            parse_amz_date("20150801T000000Z").is_some(),
+            "day 1 must be valid"
+        );
+        assert!(
+            parse_amz_date("20150831T000000Z").is_some(),
+            "day 31 must be valid"
+        );
+        assert!(
+            parse_amz_date("20150101T000000Z").is_some(),
+            "month 1 must be valid"
+        );
+        assert!(
+            parse_amz_date("20151201T000000Z").is_some(),
+            "month 12 must be valid"
+        );
+
+        // One past the boundary, every other field valid: each must independently reject.
+        assert_eq!(
+            parse_amz_date("20150830T240000Z"),
+            None,
+            "hour 24 must be rejected"
+        );
+        assert_eq!(
+            parse_amz_date("20150830T006000Z"),
+            None,
+            "min 60 must be rejected"
+        );
+        assert_eq!(
+            parse_amz_date("20150830T000061Z"),
+            None,
+            "sec 61 must be rejected"
+        );
+        assert_eq!(
+            parse_amz_date("20150800T000000Z"),
+            None,
+            "day 0 must be rejected"
+        );
+        assert_eq!(
+            parse_amz_date("20150832T000000Z"),
+            None,
+            "day 32 must be rejected"
+        );
+        assert_eq!(
+            parse_amz_date("20150001T000000Z"),
+            None,
+            "month 0 must be rejected"
+        );
+        assert_eq!(
+            parse_amz_date("20151300T000000Z"),
+            None,
+            "month 13 must be rejected"
+        );
+    }
+
     #[test]
     fn test_verify_inbound_sigv4_roundtrip_accepts() {
         // The headline: a request signed with a secret VERIFIES against that same secret.
@@ -1033,6 +1109,23 @@ mod tests {
             parse_authorization_header(missing_sig),
             Err(VerifyError::MalformedAuthorization),
             "an unknown section does not satisfy the mandatory Signature requirement"
+        );
+    }
+
+    #[test]
+    fn test_parse_authorization_header_rejects_five_part_credential_with_wrong_termination() {
+        // `parts.len() != 5 || parts[4] != SIGV4_TERMINATION` — a mutated `&&` here would only
+        // reject when BOTH sub-conditions hold; a credential with the CORRECT part count (5) but
+        // the WRONG final segment (anything other than "aws4_request") would then be silently
+        // accepted, since `parts.len() != 5` is false and short-circuits the `&&`. This is
+        // distinct from the existing "scope not aws4_request (4 parts)" rejection case, which
+        // only exercises the `parts.len() != 5` half.
+        let v = "AWS4-HMAC-SHA256 Credential=AKID/20150830/us-east-1/bedrock/aws4_bogus, \
+                 SignedHeaders=host, Signature=x";
+        assert_eq!(
+            parse_authorization_header(v),
+            Err(VerifyError::MalformedAuthorization),
+            "a 5-part credential with the wrong termination segment must still be rejected"
         );
     }
 

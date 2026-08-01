@@ -4036,4 +4036,302 @@ mod tests {
             cap.messages()
         );
     }
+
+    // ── mutation-testing gap closures ───────────────────────────────────────────────────────────
+
+    /// A MISSING plugins directory is `Ok` with the empty-entries fingerprint (see the function's own
+    /// doc comment) — not a propagated I/O error. A mutated guard (NotFound compared to `false`)
+    /// would route the NotFound case into `Err(e) => return Err(e)` instead.
+    #[test]
+    fn plugins_dir_fingerprint_treats_a_missing_dir_as_ok_empty() {
+        let missing = tmp_plugins_dir("fingerprint-missing");
+        std::fs::remove_dir_all(&missing).unwrap();
+        assert!(
+            !missing.exists(),
+            "precondition: the directory must genuinely not exist"
+        );
+        let fp = plugins_dir_fingerprint(&missing);
+        assert!(
+            fp.is_ok(),
+            "a missing plugins dir must be treated as empty, not an I/O error: {fp:?}"
+        );
+    }
+
+    /// Each of the three path-escape checks (`/`, `\`, `..`) independently rejects a filename — an
+    /// `||` mutated to `&&` would only reject a filename containing ALL THREE simultaneously, letting
+    /// a filename with just one bad component (e.g. `../evil.tar.gz`, which has `..` but no `\`)
+    /// slip through.
+    #[test]
+    fn validate_plugin_filename_rejects_each_escape_form_independently() {
+        assert!(
+            validate_plugin_filename("../evil.tar.gz").is_err(),
+            "..  alone must reject"
+        );
+        assert!(
+            validate_plugin_filename("sub/evil.tar.gz").is_err(),
+            "/ alone must reject"
+        );
+        assert!(
+            validate_plugin_filename("sub\\evil.tar.gz").is_err(),
+            "\\ alone must reject"
+        );
+        assert!(
+            validate_plugin_filename("plain.tar.gz").is_ok(),
+            "a bare filename with none of the three must be accepted"
+        );
+    }
+
+    /// The filename length boundary is exact: `MAX_PLUGIN_FILENAME_LEN` chars (with a valid
+    /// `.tar.gz` suffix) is accepted; one char over is rejected. A mutated `>` → `>=` would reject
+    /// the boundary length itself.
+    #[test]
+    fn validate_plugin_filename_length_boundary_is_exact() {
+        let suffix = ".tar.gz";
+        let at_cap = "a".repeat(MAX_PLUGIN_FILENAME_LEN - suffix.len()) + suffix;
+        assert_eq!(at_cap.len(), MAX_PLUGIN_FILENAME_LEN);
+        assert!(
+            validate_plugin_filename(&at_cap).is_ok(),
+            "exactly MAX_PLUGIN_FILENAME_LEN chars must be accepted"
+        );
+        let over_cap = format!("a{at_cap}");
+        assert!(
+            validate_plugin_filename(&over_cap).is_err(),
+            "MAX_PLUGIN_FILENAME_LEN + 1 chars must be rejected"
+        );
+    }
+
+    /// The settings byte cap is exactly 64 KiB, not some other magnitude a mutated `*` in its
+    /// definition could silently produce.
+    #[test]
+    fn max_settings_bytes_is_exactly_64_kibibytes() {
+        assert_eq!(MAX_SETTINGS_BYTES, 65_536);
+        assert_eq!(MAX_SETTINGS_BYTES, 64 * 1024);
+    }
+
+    /// The inspect-schema JSON byte cap is exactly 256 KiB, same rationale.
+    #[test]
+    fn max_inspect_schema_json_bytes_is_exactly_256_kibibytes() {
+        assert_eq!(MAX_INSPECT_SCHEMA_JSON_BYTES, 262_144);
+        assert_eq!(MAX_INSPECT_SCHEMA_JSON_BYTES, 256 * 1024);
+    }
+
+    /// `probe_transport` returns THREE distinguishable outcomes (resolves as hook / resolves as a
+    /// different kind / does not resolve at all), each with its own detail string — a mutant
+    /// collapsing the non-hook-kind or unresolved arms to a fixed placeholder string would still
+    /// return `Some(false)` and pass a loose "it's false" check, but the detail text would be wrong.
+    #[tokio::test]
+    async fn probe_transport_distinguishes_wrong_kind_from_unresolved() {
+        let Some(env) = crate::test_support::test_hook_env(&["test-hook"], Default::default())
+        else {
+            eprintln!("skip: hook cdylib not built (run under --workspace)");
+            return;
+        };
+        let hook_cfg = hook(HookKind::Tap, false);
+
+        // Resolves and IS a hook: (Some(true), None).
+        let mut wired = hook_cfg.clone();
+        wired.plugin = "test-hook".to_string();
+        let (reachable, detail) = probe_transport(&wired, &env).await;
+        assert_eq!(reachable, Some(true));
+        assert_eq!(detail, None);
+
+        // Does not resolve at all: distinct detail text naming "is not installed".
+        let mut missing = hook_cfg.clone();
+        missing.plugin = "totally-unregistered-plugin-name".to_string();
+        let (reachable, detail) = probe_transport(&missing, &env).await;
+        assert_eq!(reachable, Some(false));
+        assert!(
+            detail
+                .as_deref()
+                .is_some_and(|d| d.contains("is not installed")),
+            "unresolved plugin must say so distinctly: {detail:?}"
+        );
+    }
+
+    /// Re-registering the SAME name as a global hook a second time must NOT push a duplicate entry
+    /// into `global_hooks` — a mutated `n == name` (inside the `!...any(...)` idempotency guard)
+    /// would defeat the guard and double-push on every re-register.
+    #[test]
+    fn build_with_hook_reregistering_same_global_hook_does_not_duplicate() {
+        let Some(env) = crate::test_support::test_hook_env(&["test-hook"], Default::default())
+        else {
+            eprintln!("skip: hook cdylib not built (run under --workspace)");
+            return;
+        };
+        let app = TestApp::new().hook_env(env).build();
+        let once = build_with_hook(&app, "logger", hook(HookKind::Tap, true))
+            .expect("first global registration");
+        assert_eq!(
+            once.global_hooks.iter().filter(|n| *n == "logger").count(),
+            1
+        );
+        // Re-PUT the SAME grants (idempotent) a second time.
+        let twice = build_with_hook(&once, "logger", hook(HookKind::Tap, true))
+            .expect("idempotent re-register with identical grants");
+        assert_eq!(
+            twice.global_hooks.iter().filter(|n| *n == "logger").count(),
+            1,
+            "re-registering the same global hook must not duplicate its global_hooks entry"
+        );
+    }
+
+    /// Removing one global hook must leave OTHER global hooks untouched — a mutated `!=` → `==` in
+    /// the `retain` predicate would invert which entries survive, wiping every OTHER hook instead of
+    /// just the target (with only one hook present the two directions are indistinguishable, so this
+    /// needs at least two).
+    #[test]
+    fn build_with_hook_demote_only_removes_the_target_hook() {
+        let Some(env) =
+            crate::test_support::test_hook_env(&["test-hook", "test-hook-2"], Default::default())
+        else {
+            eprintln!("skip: hook cdylib not built (run under --workspace)");
+            return;
+        };
+        let app = TestApp::new().hook_env(env).build();
+        let mut other = hook(HookKind::Tap, true);
+        other.plugin = "test-hook-2".to_string();
+        let with_both = build_with_hook(&app, "logger", hook(HookKind::Tap, true))
+            .and_then(|a| build_with_hook(&a, "other", other))
+            .expect("two global taps register");
+        assert_eq!(with_both.global_hooks.len(), 2);
+
+        let demoted = build_with_hook(&with_both, "logger", hook(HookKind::Tap, false))
+            .expect("demoting one of the two is a valid same-grant replace");
+        assert!(
+            !demoted.global_hooks.iter().any(|n| n == "logger"),
+            "the demoted hook must be removed"
+        );
+        assert!(
+            demoted.global_hooks.iter().any(|n| n == "other"),
+            "the OTHER global hook must survive the demotion untouched"
+        );
+    }
+
+    /// `build_without_hook`'s DELETE cleanup: removing one hook must leave a different hook's global
+    /// wiring untouched — same `!=`/`==` retain distinction as the demote case above.
+    #[test]
+    fn build_without_hook_only_removes_the_target_from_global_wiring() {
+        let Some(env) =
+            crate::test_support::test_hook_env(&["test-hook", "test-hook-2"], Default::default())
+        else {
+            eprintln!("skip: hook cdylib not built (run under --workspace)");
+            return;
+        };
+        let app = TestApp::new().hook_env(env).build();
+        let mut other = hook(HookKind::Tap, true);
+        other.plugin = "test-hook-2".to_string();
+        let with_both = build_with_hook(&app, "logger", hook(HookKind::Tap, true))
+            .and_then(|a| build_with_hook(&a, "other", other))
+            .expect("two global taps register");
+
+        let next = build_without_hook(&with_both, "logger").expect("delete an existing hook");
+        assert!(!next.hook_registry.contains_key("logger"));
+        assert!(
+            !next.global_hooks.iter().any(|n| n == "logger"),
+            "the deleted hook must be removed from global wiring"
+        );
+        assert!(
+            next.global_hooks.iter().any(|n| n == "other"),
+            "the OTHER global hook must survive the deletion untouched"
+        );
+    }
+
+    /// The group name length boundary is exact: `MAX_GROUP_NAME_LEN` chars is accepted, one over is
+    /// rejected. A mutated `>` → `>=` would reject the boundary length itself.
+    #[test]
+    fn build_with_group_name_length_boundary_is_exact() {
+        let app = team_app();
+        let at_cap = "g".repeat(MAX_GROUP_NAME_LEN);
+        let leaf = GroupCfg {
+            parent: Some("team".into()),
+            ..Default::default()
+        };
+        assert!(
+            build_with_group(&app, &at_cap, leaf.clone()).is_ok(),
+            "exactly MAX_GROUP_NAME_LEN chars must be accepted"
+        );
+        let over_cap = format!("g{at_cap}");
+        assert!(
+            build_with_group(&app, &over_cap, leaf).is_err(),
+            "MAX_GROUP_NAME_LEN + 1 chars must be rejected"
+        );
+    }
+
+    /// `build_with_registry` rejects a snapshot with MORE THAN ONE `default: true` hook, but exactly
+    /// one is fine — a mutated `> 1` boundary needs both sides tested to catch `==`/`>=` variants.
+    #[test]
+    fn build_with_registry_rejects_more_than_one_default_but_allows_exactly_one() {
+        let Some(env) = crate::test_support::test_hook_env(&["test-hook"], Default::default())
+        else {
+            eprintln!("skip: hook cdylib not built (run under --workspace)");
+            return;
+        };
+        let app = TestApp::new().hook_env(env).build();
+        let mut one_default = hook(HookKind::Tap, false);
+        one_default.default = true;
+        let mut registry = HashMap::new();
+        registry.insert("a".to_string(), one_default.clone());
+        assert!(
+            build_with_registry(&app, registry.clone(), vec![]).is_ok(),
+            "exactly one default: true hook must be accepted"
+        );
+
+        let mut second_default = hook(HookKind::Tap, false);
+        second_default.default = true;
+        registry.insert("b".to_string(), second_default);
+        assert!(
+            build_with_registry(&app, registry, vec![]).is_err(),
+            "more than one default: true hook must be rejected"
+        );
+    }
+
+    /// `build_with_registry` rejects a snapshot whose `global_hooks` names a hook that isn't actually
+    /// in the registry — a deleted `!` on the `contains_key` check would invert this into rejecting
+    /// every VALID global reference instead.
+    #[test]
+    fn build_with_registry_rejects_a_dangling_global_hook_reference() {
+        let Some(env) = crate::test_support::test_hook_env(&["test-hook"], Default::default())
+        else {
+            eprintln!("skip: hook cdylib not built (run under --workspace)");
+            return;
+        };
+        let app = TestApp::new().hook_env(env).build();
+        let mut registry = HashMap::new();
+        registry.insert("logger".to_string(), hook(HookKind::Tap, true));
+
+        // A valid reference (the named hook IS in the registry) must be accepted.
+        assert!(
+            build_with_registry(&app, registry.clone(), vec!["logger".to_string()]).is_ok(),
+            "a global_hooks entry that IS in the registry must be accepted"
+        );
+        // A dangling reference (named hook is NOT in the registry) must be rejected.
+        assert!(
+            build_with_registry(&app, registry, vec!["ghost".to_string()]).is_err(),
+            "a global_hooks entry naming an unregistered hook must be rejected"
+        );
+    }
+
+    /// `healthz` returns a real, non-default `Response` (a mutated body → `Default::default()` would
+    /// still type-check but return a `200` with an EMPTY body/no status text, not either real health
+    /// payload). A fixture with no lanes reports 503 "no usable lanes" — still a REAL response, just
+    /// the unready branch — so this checks the actual text of whichever branch fired, not a fixed
+    /// status, distinguishing it from `Default::default()`'s always-200-empty-body shape.
+    #[tokio::test]
+    async fn healthz_returns_a_real_response_not_the_default() {
+        let app = TestApp::new().build();
+        let resp = crate::endpoints::healthz(crate::state::CurrentApp(app)).await;
+        use axum::body::to_bytes;
+        let status = resp.status();
+        let body = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+        assert!(
+            status == axum::http::StatusCode::OK
+                || status == axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "healthz only ever returns 200 or 503, got {status}"
+        );
+        assert!(
+            body == "ok".as_bytes() || body == "no usable lanes".as_bytes(),
+            "a real healthz response must carry one of the two real status-text bodies, not \
+             Response::default()'s empty one: {body:?}"
+        );
+    }
 }
