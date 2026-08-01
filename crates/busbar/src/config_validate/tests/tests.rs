@@ -58,6 +58,7 @@ fn make_provider(protocol: &str, base_url: &str, api_key_env: &str) -> config::P
         path_base: None,
         token_url: None,
         scope: None,
+        subject: None,
         auth: None,
         allow_metadata_hosts: Vec::new(),
     }

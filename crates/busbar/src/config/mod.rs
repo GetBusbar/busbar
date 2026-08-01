@@ -701,6 +701,9 @@ pub(crate) struct ProviderCfg {
     /// OAuth scope for `auth: oauth-client-credentials` (see ProviderDef::scope).
     #[serde(default)]
     pub(crate) scope: Option<String>,
+    /// JWT-bearer assertion `sub` (subject) claim for `auth: jwt-bearer` (see ProviderDef::subject).
+    #[serde(default)]
+    pub(crate) subject: Option<String>,
     /// Optional auth-style override (see ProviderDef::auth).
     #[serde(default)]
     pub(crate) auth: Option<ProviderAuth>,
@@ -1735,6 +1738,17 @@ pub(crate) struct ProviderDef {
     /// otherwise. E.g. Azure OpenAI: `https://cognitiveservices.azure.com/.default`.
     #[serde(default)]
     pub(crate) scope: Option<String>,
+    /// JWT-bearer assertion `sub` (subject) claim for `auth: jwt-bearer` (RFC 7523 §3). Optional and
+    /// UNSET by default — omitted entirely, not merely empty. Google's own client libraries
+    /// (`google-auth-python` et al.) only emit `sub` when a subject/impersonation is explicitly
+    /// configured, because for a Google service account the mere PRESENCE of `sub` switches the grant
+    /// into domain-wide-delegation/impersonation semantics regardless of its value — so this must stay
+    /// opt-in, never defaulted to `iss`, or every plain (non-delegated) service account (e.g. the
+    /// shipped Vertex AI setup) starts failing `unauthorized_client`/`invalid_grant`. Set this only when
+    /// impersonating a specific principal (Google domain-wide delegation) or when a non-Google IdP's
+    /// jwt-bearer profile requires `sub`. Ignored for every other auth style.
+    #[serde(default)]
+    pub(crate) subject: Option<String>,
     /// Optional auth-style override. Defaults to the protocol's native auth (bearer for
     /// openai/anthropic/responses, `x-goog-api-key` for gemini, SigV4 for bedrock). Set to
     /// `api-key` for backends that authenticate with an `api-key: <key>` header instead of a
@@ -1775,6 +1789,10 @@ pub(crate) struct ProviderDeploy {
     /// OAuth scope for `auth: oauth-client-credentials` (see ProviderDef::scope).
     #[serde(default)]
     pub(crate) scope: Option<String>,
+    /// JWT-bearer assertion `sub` claim for `auth: jwt-bearer` (see ProviderDef::subject). Opt-in;
+    /// unset (the default) means no `sub` claim, unchanged from before this field existed.
+    #[serde(default)]
+    pub(crate) subject: Option<String>,
     /// Optional auth-style override (see ProviderDef::auth).
     #[serde(default)]
     pub(crate) auth: Option<ProviderAuth>,
@@ -2770,6 +2788,7 @@ pub(crate) fn resolve(
                     .clone()
                     .or_else(|| def.token_url.clone()),
                 scope: deploy_cfg.scope.clone().or_else(|| def.scope.clone()),
+                subject: deploy_cfg.subject.clone().or_else(|| def.subject.clone()),
                 auth: deploy_cfg.auth.or(def.auth),
                 // deployment override (Some) replaces the catalog default
                 allow_metadata_hosts: deploy_cfg

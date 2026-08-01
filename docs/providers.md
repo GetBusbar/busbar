@@ -16,6 +16,7 @@ Providers live in `providers.yaml` as a map of name → definition. The shipped 
 | `auth` | no | The egress auth mechanism, when a backend doesn't use its protocol's native auth. One of: `bearer` (default) · `api-key` (header style) · `jwt-bearer` (OAuth 2.0 JWT-bearer, RFC 7523, mints + auto-refreshes a token from a service-account key; e.g. Google Vertex AI) · `oauth-client-credentials` (OAuth 2.0 client-credentials, RFC 6749 §4.4, the `api_key` reference resolves to `client_id:client_secret`; e.g. Azure OpenAI via Entra ID). |
 | `token_url` | no | OAuth token endpoint for `auth: oauth-client-credentials`. Required for that auth style. |
 | `scope` | no | OAuth scope for `auth: oauth-client-credentials`. Required for that auth style. |
+| `subject` | no | JWT-bearer `sub` claim (RFC 7523 §3) for `auth: jwt-bearer`. Opt-in only — leave unset for a plain service account (e.g. the default Vertex AI setup below); set it only for Google domain-wide-delegation impersonation or a third-party IdP that requires `sub`. |
 | `health` | no | Optional health-probe configuration. |
 
 The API key is **not** in this file. `config.yaml` supplies it as a secret reference (`api_key: { env: VAR }` / `{ file: /path }` / a secret plugin), so secrets never live in config.
