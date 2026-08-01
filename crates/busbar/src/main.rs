@@ -259,7 +259,7 @@ fn validate_config_command() -> i32 {
     let config_path = std::path::PathBuf::from(
         std::env::var(ENV_CONFIG).unwrap_or_else(|_| DEFAULT_CONFIG_PATH.into()),
     );
-    let safe_mode = std::env::args().any(|a| a == "--safe-mode");
+    let safe_mode = safe_mode_requested(std::env::args());
 
     let mut loaded = match load_config_from_disk(
         &config_path,
@@ -525,6 +525,14 @@ fn resolve_model_context_max(
     Ok(resolved)
 }
 
+/// Whether `--safe-mode` was passed: quarantines the persisted overlay entirely (both
+/// `validate_config_command` and `run()` read this the same way, so it's factored once here rather
+/// than duplicated). Takes the arg iterator as a parameter (instead of calling `std::env::args()`
+/// itself) so it's unit-testable against a synthetic arg list.
+fn safe_mode_requested(mut args: impl Iterator<Item = String>) -> bool {
+    args.any(|a| a == "--safe-mode")
+}
+
 /// Cap on `BUSBAR_WORKER_THREADS`/`TOKIO_WORKER_THREADS` (see the `.min(MAX_WORKER_THREADS)` call in
 /// `main()` for why this exists).
 const MAX_WORKER_THREADS: usize = 128;
@@ -670,7 +678,7 @@ async fn run() {
     let config_path = std::path::PathBuf::from(
         std::env::var(ENV_CONFIG).unwrap_or_else(|_| DEFAULT_CONFIG_PATH.into()),
     );
-    let safe_mode = std::env::args().any(|a| a == "--safe-mode");
+    let safe_mode = safe_mode_requested(std::env::args());
     let loaded = load_config_from_disk(
         &config_path,
         &providers_path,
