@@ -23,18 +23,38 @@ use std::path::PathBuf;
 /// Locate the hermetic hook-test plugin cdylib in the build's target dir (like the store/auth tests).
 /// Under CI (`cargo test --workspace` always builds it) a missing cdylib is a HARD failure; locally a
 /// missing cdylib returns `None` and the caller skips cleanly.
+///
+/// Checks BOTH the "uplifted" `<profile_dir>/<name>` copy (only refreshed when `[lib]` is a ROOT
+/// build target, e.g. `cargo build --all-targets`) and the raw `<profile_dir>/deps/<name>` compiler
+/// output (refreshed on every build that recompiles the lib). A bare `cargo test` (what
+/// `cargo-mutants` runs) does NOT uplift the cdylib to the top-level profile dir, only to
+/// `target/deps` — checking only `profile_dir` silently found nothing even though the cdylib really
+/// was built, so every test gated on this returned `None` and silently skipped (confirmed by hand:
+/// `cargo test -p busbar hooks::tests::` printed "skip: hook cdylib not built" for every hook
+/// resolution test after clearing target/debug/deps). Same fix already applied to
+/// auth-oidc-plugin's/store-postgres-plugin's/webrequest-hook's equivalent `plugin_path()` helpers.
 fn hook_cdylib() -> Option<PathBuf> {
     let candidate = (|| {
         let exe = std::env::current_exe().ok()?;
         let profile_dir = exe.parent()?.parent()?;
         let name = busbar_plugin_loader::plugin_library_filename("busbar_hook_test_plugin");
-        let candidate = profile_dir.join(&name);
-        candidate.exists().then_some(candidate)
+        let uplifted = profile_dir.join(&name);
+        let raw = profile_dir.join("deps").join(&name);
+        [uplifted, raw]
+            .into_iter()
+            .filter_map(|p| {
+                std::fs::metadata(&p)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .map(|mtime| (p, mtime))
+            })
+            .max_by_key(|(_, mtime)| *mtime)
+            .map(|(p, _)| p)
     })();
     if candidate.is_none() && std::env::var_os("CI").is_some() {
         panic!(
-            "the hook-test plugin cdylib is not built under CI; refusing to silently skip the \
-             hook-plugin resolution coverage"
+            "the hook-test plugin cdylib is not built under CI (checked both the uplifted target \
+             dir and target/deps); refusing to silently skip the hook-plugin resolution coverage"
         );
     }
     candidate
@@ -122,6 +142,55 @@ fn preresolve_hook_secrets_fails_closed_on_unresolvable_secret() {
     let mut ok_hooks = HashMap::new();
     ok_hooks.insert("plain-gate".to_string(), plain);
     assert!(env.preresolve_hook_secrets(&ok_hooks).is_ok());
+}
+
+/// `preopen_gate_hooks` pre-opens ONLY `kind: gate` hooks (decision + rewrite), never taps — taps
+/// observe and legitimately fail-open, so a broken tap must never abort boot/reload. A GATE whose
+/// plugin resolves but whose settings/open() fails MUST abort (fail-closed): the gate would
+/// otherwise be silently dropped and its admission/rewrite decision lost.
+#[test]
+fn preopen_gate_hooks_aborts_on_a_broken_gate_but_never_a_broken_tap() {
+    let Some(env) = test_env() else {
+        eprintln!("skip: hook cdylib not built (run under --workspace)");
+        return;
+    };
+    // An unresolvable SecretRef in settings — the plugin itself resolves fine (it's registered in
+    // `env`), but `resolve_hook_settings` must fail BEFORE open() is ever attempted.
+    let mut settings = serde_json::Map::new();
+    settings.insert(
+        "licenseKey".to_string(),
+        serde_json::json!({ "env": "BUSBAR_TEST_DEFINITELY_UNSET_SECRET_PREOPEN" }),
+    );
+
+    // A broken TAP must not abort — taps fail-open by design.
+    let mut broken_tap = base_gate();
+    broken_tap.kind = HookKind::Tap;
+    broken_tap.settings = settings.clone();
+    let tap_hooks = registry("broken-tap", broken_tap);
+    assert!(
+        env.preopen_gate_hooks(&tap_hooks).is_ok(),
+        "a broken TAP must never abort boot/reload (taps fail-open)"
+    );
+
+    // The SAME broken settings on a GATE must abort — a decision/rewrite gate can never silently
+    // vanish while boot/reload reports success.
+    let mut broken_gate = base_gate();
+    broken_gate.settings = settings;
+    let gate_hooks = registry("broken-gate", broken_gate);
+    let err = env
+        .preopen_gate_hooks(&gate_hooks)
+        .expect_err("a gate whose settings/open() fails must abort boot/reload CLOSED");
+    assert!(
+        err.contains("broken-gate"),
+        "the error names the offending gate: {err}"
+    );
+
+    // A healthy gate (resolvable plugin, valid settings) pre-opens cleanly.
+    let ok_hooks = registry("ok-gate", base_gate());
+    assert!(
+        env.preopen_gate_hooks(&ok_hooks).is_ok(),
+        "a gate with valid settings must pre-open without error"
+    );
 }
 
 /// A pool with a native ranking strategy and no gate.
@@ -670,6 +739,242 @@ fn hook_inert_gate_banner_fires_only_for_a_gate_with_the_chain_killing_mismatch(
     assert!(
         hook_inert_gate_banner("t", "p", HookKind::Tap, NeedLevel::Ro).is_none(),
         "a tap never joins an admission chain, so it must not get the gate-outage banner"
+    );
+}
+
+/// A minimal capturing `tracing::Subscriber` (no test-only crate needed) — records every event's
+/// source line, so a test can assert exactly which `tracing::warn!`/`tracing::error!` call site
+/// fired, and how many times. Mirrors the pattern already used for
+/// `to_policy_with_floor_warns_only_on_a_non_empty_malformed_floor` in config's own test suite.
+struct LineCapturingSubscriber(std::sync::Arc<std::sync::Mutex<Vec<u32>>>);
+impl tracing::Subscriber for LineCapturingSubscriber {
+    fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        // WARN/ERROR only — `effective_access` also emits a legitimate `tracing::info!` (declared
+        // intent) whenever the manifest declares ANY need, which would otherwise pollute a test
+        // that's specifically checking for the fat-fingered-grant WARN/inert-gate ERROR.
+        let level = *event.metadata().level();
+        if level == tracing::Level::WARN || level == tracing::Level::ERROR {
+            if let Some(line) = event.metadata().line() {
+                self.0.lock().unwrap().push(line);
+            }
+        }
+    }
+    fn enter(&self, _span: &tracing::span::Id) {}
+    fn exit(&self, _span: &tracing::span::Id) {}
+}
+
+/// `effective_access`'s two "fat-fingered grant" warns (prompt-read, user-read) are PURE logging
+/// side effects — they never change the returned `(PromptAccess, UserAccess)` — so they're only
+/// observable by capturing the actual `tracing` event. Each must fire EXACTLY when the operator
+/// grants MORE than the plugin's manifest wants to READ, and never otherwise.
+#[test]
+fn effective_access_warns_on_inert_read_grants_only() {
+    use busbar_plugin_sign::NeedLevel;
+
+    let events: std::sync::Arc<std::sync::Mutex<Vec<u32>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sub = LineCapturingSubscriber(events.clone());
+
+    // Fat-fingered PROMPT grant: operator grants `ro`, manifest declares no prompt need at all.
+    // Must warn at effective_access's prompt-inert-grant call site.
+    let Some(env) = test_env_needs(
+        "inert-prompt",
+        busbar_plugin_sign::HookNeeds {
+            prompt: NeedLevel::No,
+            user: NeedLevel::No,
+        },
+    ) else {
+        eprintln!("skip: hook cdylib not built (run under --workspace)");
+        return;
+    };
+    let mut h = base_gate();
+    h.plugin = "inert-prompt".to_string();
+    h.prompt = PromptAccess::Ro;
+    tracing::subscriber::with_default(sub, || {
+        let _ = effective_access("h", &h, &env);
+    });
+    let seen = events.lock().unwrap().clone();
+    assert_eq!(
+        seen.len(),
+        1,
+        "a prompt grant the manifest never declared must warn exactly once: {seen:?}"
+    );
+
+    // The matching case (manifest declares what's granted) must NOT warn.
+    let events2: std::sync::Arc<std::sync::Mutex<Vec<u32>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sub2 = LineCapturingSubscriber(events2.clone());
+    let Some(env2) = test_env_needs(
+        "matched-prompt",
+        busbar_plugin_sign::HookNeeds {
+            prompt: NeedLevel::Ro,
+            user: NeedLevel::No,
+        },
+    ) else {
+        return;
+    };
+    let mut h2 = base_gate();
+    h2.plugin = "matched-prompt".to_string();
+    h2.prompt = PromptAccess::Ro;
+    tracing::subscriber::with_default(sub2, || {
+        let _ = effective_access("h2", &h2, &env2);
+    });
+    assert!(
+        events2.lock().unwrap().is_empty(),
+        "a grant the manifest DOES declare must not warn: {:?}",
+        events2.lock().unwrap()
+    );
+
+    // Fat-fingered USER grant: operator grants `ro`, manifest declares no user need.
+    let events3: std::sync::Arc<std::sync::Mutex<Vec<u32>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sub3 = LineCapturingSubscriber(events3.clone());
+    let Some(env3) = test_env_needs(
+        "inert-user",
+        busbar_plugin_sign::HookNeeds {
+            prompt: NeedLevel::No,
+            user: NeedLevel::No,
+        },
+    ) else {
+        return;
+    };
+    let mut h3 = base_gate();
+    h3.plugin = "inert-user".to_string();
+    h3.user = UserAccess::Ro;
+    tracing::subscriber::with_default(sub3, || {
+        let _ = effective_access("h3", &h3, &env3);
+    });
+    let seen3 = events3.lock().unwrap().clone();
+    assert_eq!(
+        seen3.len(),
+        1,
+        "a user grant the manifest never declared must warn exactly once: {seen3:?}"
+    );
+
+    // The matching user case must NOT warn.
+    let events4: std::sync::Arc<std::sync::Mutex<Vec<u32>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sub4 = LineCapturingSubscriber(events4.clone());
+    let Some(env4) = test_env_needs(
+        "matched-user",
+        busbar_plugin_sign::HookNeeds {
+            prompt: NeedLevel::No,
+            user: NeedLevel::Ro,
+        },
+    ) else {
+        return;
+    };
+    let mut h4 = base_gate();
+    h4.plugin = "matched-user".to_string();
+    h4.user = UserAccess::Ro;
+    tracing::subscriber::with_default(sub4, || {
+        let _ = effective_access("h4", &h4, &env4);
+    });
+    assert!(
+        events4.lock().unwrap().is_empty(),
+        "a user grant the manifest DOES declare must not warn: {:?}",
+        events4.lock().unwrap()
+    );
+}
+
+/// The inert-GATE-rewrite banner (`effective_access`'s WRITE-half branch) must fire EXACTLY ONCE
+/// per hook NAME per `HookEnv` lifetime — a hook resolved twice (e.g. named in two pools'
+/// `hooks:` lists) must not re-banner. Pins `banner_seen`'s de-dup guard directly (the guard IS
+/// the `.insert()` call — a hand-applied `with false`/`with true` mutation of the guard removes
+/// the call entirely, so `banner_seen` is never populated either way, distinguishing both from
+/// real code via the set's post-call membership).
+#[test]
+fn effective_access_inert_gate_rewrite_banner_fires_once_per_hook_name() {
+    use busbar_plugin_sign::NeedLevel;
+
+    let events: std::sync::Arc<std::sync::Mutex<Vec<u32>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sub = LineCapturingSubscriber(events.clone());
+
+    // The exact inert-gate scenario: kind: gate, operator grants `rw`, manifest only declares `ro`
+    // (can_rewrite() true, wants_rewrite() false) — the WRITE-half mismatch.
+    let Some(env) = test_env_needs(
+        "inert-rewrite",
+        busbar_plugin_sign::HookNeeds {
+            prompt: NeedLevel::Ro,
+            user: NeedLevel::No,
+        },
+    ) else {
+        eprintln!("skip: hook cdylib not built (run under --workspace)");
+        return;
+    };
+    let mut h = base_gate();
+    h.plugin = "inert-rewrite".to_string();
+    h.prompt = PromptAccess::Rw;
+
+    assert!(
+        !env.banner_seen.lock().unwrap().contains("h"),
+        "banner_seen must start empty for this name"
+    );
+    tracing::subscriber::with_default(sub, || {
+        let _ = effective_access("h", &h, &env);
+    });
+    assert!(
+        env.banner_seen.lock().unwrap().contains("h"),
+        "the FIRST call for an inert-rewrite gate must record the hook name in banner_seen \
+         (proves the dedup guard's `.insert()` actually ran)"
+    );
+    let banner_events = events.lock().unwrap().clone();
+    assert_eq!(
+        banner_events.len(),
+        1,
+        "the first call for an inert-rewrite gate must emit exactly one banner-adjacent event: \
+         {banner_events:?}"
+    );
+
+    // A SECOND call for the SAME name must NOT re-banner (dedup).
+    let events2: std::sync::Arc<std::sync::Mutex<Vec<u32>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sub2 = LineCapturingSubscriber(events2.clone());
+    tracing::subscriber::with_default(sub2, || {
+        let _ = effective_access("h", &h, &env);
+    });
+    assert!(
+        events2.lock().unwrap().is_empty(),
+        "a hook already in banner_seen must not re-banner on a second resolution: {:?}",
+        events2.lock().unwrap()
+    );
+
+    // A DIFFERENT non-inert (matching) gate must never enter banner_seen or emit any event.
+    let events3: std::sync::Arc<std::sync::Mutex<Vec<u32>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sub3 = LineCapturingSubscriber(events3.clone());
+    let Some(env3) = test_env_needs(
+        "matched-rewrite",
+        busbar_plugin_sign::HookNeeds {
+            prompt: NeedLevel::Rw,
+            user: NeedLevel::No,
+        },
+    ) else {
+        return;
+    };
+    let mut h3 = base_gate();
+    h3.plugin = "matched-rewrite".to_string();
+    h3.prompt = PromptAccess::Rw;
+    tracing::subscriber::with_default(sub3, || {
+        let _ = effective_access("clean", &h3, &env3);
+    });
+    assert!(
+        !env3.banner_seen.lock().unwrap().contains("clean"),
+        "a gate whose manifest matches its grant must never enter banner_seen"
+    );
+    assert!(
+        events3.lock().unwrap().is_empty(),
+        "a matched-rewrite gate must emit no banner-adjacent event: {:?}",
+        events3.lock().unwrap()
     );
 }
 
