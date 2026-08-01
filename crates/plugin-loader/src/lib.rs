@@ -1164,6 +1164,26 @@ mod tests {
         candidate
     }
 
+    /// A fresh, unique `db_path` config for the real store-sqlite-plugin fixture, so concurrent
+    /// tests in this binary never share a SQLite file. Every one of these tests used to pass `"{}"`
+    /// (the plugin's own documented "must work" empty-config default), which resolves to the
+    /// FIXED relative path `busbar-governance.db` in the test process's cwd — under `cargo test`'s
+    /// default parallel execution, every such test collided on the SAME file: `list_keys()`
+    /// assertions failed because a concurrent test had already written keys to it, and `wire_up_raw`
+    /// itself failed outright with a real SQLite `disk I/O error` under lock contention between
+    /// concurrent opens. Confirmed by hand: this reproduced consistently under `dev-gate.yml`'s
+    /// `DEV_GATE=1 cargo test --release -p busbar-plugin-loader` and locally.
+    fn unique_sqlite_cfg(name: &str) -> String {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "busbar-plugin-loader-test-{}-{name}-{n}.db",
+            std::process::id()
+        ));
+        serde_json::json!({ "db_path": path.to_string_lossy() }).to_string()
+    }
+
     /// A non-plugin library (or a missing file) is refused with a clear error, never a crash.
     #[test]
     fn refuses_non_plugin() {
@@ -1421,8 +1441,13 @@ mod tests {
             return;
         };
         let bytes = std::fs::read(&path).expect("read sibling store-sqlite-plugin cdylib");
-        let store = load_store_from_bytes(&bytes, r#"{}"#, "fixture-from-bytes", "store")
-            .expect("load from verified bytes");
+        let store = load_store_from_bytes(
+            &bytes,
+            &unique_sqlite_cfg("fixture-from-bytes"),
+            "fixture-from-bytes",
+            "store",
+        )
+        .expect("load from verified bytes");
         let key = VirtualKey {
             id: "vk_b".into(),
             generation_hash: "h".into(),
@@ -1464,12 +1489,13 @@ mod tests {
         // Confirm loading the victim PATH would pick up whatever is on disk...
         std::fs::write(&victim, b"\x7fELF hostile junk, not a plugin").unwrap();
         assert!(
-            load_store(&victim, r#"{}"#).is_err(),
+            load_store(&victim, &unique_sqlite_cfg("toctou-victim")).is_err(),
             "the swapped-in junk is not a loadable plugin (path load sees the swap)"
         );
         // ..but the from-bytes load, fed the bytes we verified BEFORE the swap, loads fine.
-        let store = load_store_from_bytes(&verified, r#"{}"#, "toctou", "store")
-            .expect("verified bytes still load despite the on-disk swap");
+        let store =
+            load_store_from_bytes(&verified, &unique_sqlite_cfg("toctou"), "toctou", "store")
+                .expect("verified bytes still load despite the on-disk swap");
         assert!(store.list_keys().expect("list over the ABI").is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1495,8 +1521,13 @@ mod tests {
         };
         let bytes = std::fs::read(&path).expect("read sibling store-sqlite-plugin cdylib");
         let staged: Option<std::path::PathBuf> = {
-            let store = load_dyn_store_from_bytes(&bytes, r#"{}"#, "no-leak-check", "store")
-                .expect("load from bytes");
+            let store = load_dyn_store_from_bytes(
+                &bytes,
+                &unique_sqlite_cfg("no-leak-check"),
+                "no-leak-check",
+                "store",
+            )
+            .expect("load from bytes");
             assert!(store.list_keys().expect("list").is_empty());
             let staged = store.staged_path().map(std::path::Path::to_path_buf);
             // While the store is ALIVE the backing must exist — otherwise the post-drop assertion
@@ -1562,7 +1593,9 @@ mod tests {
         // `from_bytes_load_leaves_no_artifact_after_drop` does) so each generation's OWN
         // `staged_path()` is reachable — asserting on it, not a process-wide directory count that a
         // concurrent test in this binary can shift in either direction between samples.
-        let old = load_dyn_store_from_bytes(&bytes, r#"{}"#, "old-gen", "store").expect("load OLD");
+        let old =
+            load_dyn_store_from_bytes(&bytes, &unique_sqlite_cfg("old-gen"), "old-gen", "store")
+                .expect("load OLD");
         let old_path = old.staged_path().map(std::path::Path::to_path_buf);
         if let Some(p) = &old_path {
             assert!(p.is_file(), "OLD's staged backing must exist while alive");
@@ -1584,8 +1617,9 @@ mod tests {
 
         // Load the NEW instance ALONGSIDE the old — both libraries are mapped simultaneously. On
         // macOS/Windows this is two staged files at once; on Linux two memfds (no disk).
-        let new = load_dyn_store_from_bytes(&bytes, r#"{}"#, "new-gen", "store")
-            .expect("load NEW alongside OLD");
+        let new =
+            load_dyn_store_from_bytes(&bytes, &unique_sqlite_cfg("new-gen"), "new-gen", "store")
+                .expect("load NEW alongside OLD");
         let new_path = new.staged_path().map(std::path::Path::to_path_buf);
         if let (Some(op), Some(np)) = (&old_path, &new_path) {
             assert!(
@@ -1674,8 +1708,13 @@ mod tests {
         // its own drop, and that no two cycles reused the same path.
         let mut seen = std::collections::HashSet::new();
         for i in 0..16 {
-            let s = load_dyn_store_from_bytes(&bytes, r#"{}"#, &format!("reload-{i}"), "store")
-                .unwrap_or_else(|e| panic!("reload {i} load: {e}"));
+            let s = load_dyn_store_from_bytes(
+                &bytes,
+                &unique_sqlite_cfg(&format!("reload-{i}")),
+                &format!("reload-{i}"),
+                "store",
+            )
+            .unwrap_or_else(|e| panic!("reload {i} load: {e}"));
             assert!(s.list_keys().expect("list").is_empty());
             let staged = s.staged_path().map(std::path::Path::to_path_buf);
             if let Some(p) = &staged {
@@ -1715,8 +1754,13 @@ mod tests {
         // the first place, but the instrument is the same flawed one the sibling tests above moved
         // away from — a concurrent test staging a file on the non-memfd fallback path between the
         // two samples would have made this assertion fail for a reason unrelated to THIS load.
-        let store =
-            load_dyn_store_from_bytes(&bytes, r#"{}"#, "memfd-check", "store").expect("memfd load");
+        let store = load_dyn_store_from_bytes(
+            &bytes,
+            &unique_sqlite_cfg("memfd-check"),
+            "memfd-check",
+            "store",
+        )
+        .expect("memfd load");
         assert!(store.list_keys().expect("list").is_empty());
         assert!(
             store.staged_path().is_none(),
@@ -1784,7 +1828,7 @@ mod tests {
             .expect("stage the sibling store-sqlite-plugin cdylib for the fake-call harness");
         let mut raw = wire_up_raw(
             lib,
-            r#"{}"#,
+            &unique_sqlite_cfg("fake-call-store"),
             "fake-call-store".to_string(),
             abi_kind::STORE,
             abi_kind::STORE,
