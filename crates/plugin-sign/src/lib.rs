@@ -541,6 +541,7 @@ pub fn validate_structure(
     m: &Manifest,
     lib_bytes: &[u8],
     supported_abi: &dyn Fn(&str) -> &'static [u32],
+    host_identity: &str,
 ) -> Result<(), String> {
     if !valid_name(&m.name) {
         return Err(format!(
@@ -570,16 +571,21 @@ pub fn validate_structure(
         return Err("manifest publisher is empty".to_string());
     }
     // HOST identity gate: an ABSENT `host` means `busbar` (backward compatible with every manifest
-    // packed before this field existed). An EXPLICIT `host` that is not this binary's own identity
+    // packed before this field existed). An EXPLICIT `host` that is not the caller's own identity
     // is a hard structural reject — not a silent ignore — because a sibling product (busbar-ui)
     // reuses the identical six-symbol ABI and signed-manifest shape, so a foreign-host manifest
     // would otherwise pass the ABI handshake and go on to answer `kind`-matched calls (e.g.
     // `store`) with an incompatible payload contract. This check runs in phase 1 (structural),
     // independent of trust/signature, so even a validly-signed foreign-host manifest is refused.
+    //
+    // `host_identity` is a PARAMETER, not a hardcoded const (see E-010 in busbar-ui's
+    // ENGINE-BUGS.md): this verifier is shared verbatim by sibling products with different host
+    // identities (busbar's own callers pass `HOST_IDENTITY` = `"busbar"`; busbar-ui passes its
+    // own), so it cannot close over a single fixed value the way `supported_abi` never did either.
     if let Some(host) = m.host.as_deref() {
-        if host != HOST_IDENTITY {
+        if host != host_identity {
             return Err(format!(
-                "manifest host '{host}' does not match this binary's host '{HOST_IDENTITY}' - \
+                "manifest host '{host}' does not match this binary's host '{host_identity}' - \
                  refusing to load a plugin packaged for a different product (same plugin kind \
                  strings can carry incompatible payload contracts across hosts)"
             ));
@@ -931,7 +937,7 @@ mod tests {
         let mut m0 = manifest("busbar-secret-vault", "vault", FIRST_PARTY_PUBLISHER);
         m0.kind = "secret".to_string();
         let m = sign(&release, m0, artifact);
-        validate_structure(&m, artifact, &abi).expect("kind secret is structurally valid");
+        validate_structure(&m, artifact, &abi, HOST_IDENTITY).expect("kind secret is structurally valid");
         let pol = policy(Some(&release), &[], false, false);
         assert_eq!(
             evaluate(artifact, &m, &pol).unwrap(),
@@ -944,7 +950,7 @@ mod tests {
         let mut bad = manifest("busbar-x", "x", FIRST_PARTY_PUBLISHER);
         bad.kind = "gizmo".to_string();
         let bad = sign(&release, bad, artifact);
-        let err = validate_structure(&bad, artifact, &abi).unwrap_err();
+        let err = validate_structure(&bad, artifact, &abi, HOST_IDENTITY).unwrap_err();
         assert!(err.contains("gizmo"), "got {err}");
     }
 
@@ -1247,54 +1253,54 @@ mod tests {
         let key = test_key(1);
         let bytes = b"lib bytes";
         let good = sign(&key, manifest("acme-p", "p", "acme"), bytes);
-        assert!(validate_structure(&good, bytes, &abi).is_ok());
+        assert!(validate_structure(&good, bytes, &abi, HOST_IDENTITY).is_ok());
 
         let mut bad = good.clone();
         bad.name = "Bad Name".into();
-        assert!(validate_structure(&bad, bytes, &abi)
+        assert!(validate_structure(&bad, bytes, &abi, HOST_IDENTITY)
             .unwrap_err()
             .contains("not a valid plugin name"));
 
         let mut bad = good.clone();
         bad.alias = "UP".into();
-        assert!(validate_structure(&bad, bytes, &abi)
+        assert!(validate_structure(&bad, bytes, &abi, HOST_IDENTITY)
             .unwrap_err()
             .contains("alias"));
 
         let mut bad = good.clone();
         bad.kind = "widget".into();
-        assert!(validate_structure(&bad, bytes, &abi)
+        assert!(validate_structure(&bad, bytes, &abi, HOST_IDENTITY)
             .unwrap_err()
             .contains("kind"));
 
         let mut bad = good.clone();
         bad.version = "latest".into();
-        assert!(validate_structure(&bad, bytes, &abi)
+        assert!(validate_structure(&bad, bytes, &abi, HOST_IDENTITY)
             .unwrap_err()
             .contains("semver"));
 
         let mut bad = good.clone();
         bad.publisher = " ".into();
-        assert!(validate_structure(&bad, bytes, &abi)
+        assert!(validate_structure(&bad, bytes, &abi, HOST_IDENTITY)
             .unwrap_err()
             .contains("publisher"));
 
         let mut bad = good.clone();
         bad.sha256 = "abc".into();
-        assert!(validate_structure(&bad, bytes, &abi)
+        assert!(validate_structure(&bad, bytes, &abi, HOST_IDENTITY)
             .unwrap_err()
             .contains("64-char hex"));
 
         // Integrity: right shape, wrong digest.
         let mut bad = good.clone();
         bad.sha256 = sha256_hex(b"other bytes");
-        assert!(validate_structure(&bad, bytes, &abi)
+        assert!(validate_structure(&bad, bytes, &abi, HOST_IDENTITY)
             .unwrap_err()
             .contains("integrity"));
 
         let mut bad = good.clone();
         bad.abi_version = 99;
-        assert!(validate_structure(&bad, bytes, &abi)
+        assert!(validate_structure(&bad, bytes, &abi, HOST_IDENTITY)
             .unwrap_err()
             .contains("abi_version"));
     }
@@ -1545,7 +1551,7 @@ mod tests {
         let m: Manifest = serde_json::from_str(json).expect("manifest with no host field parses");
         assert_eq!(m.host, None, "absent host deserializes to None");
         let m = sign(&key, m, artifact);
-        validate_structure(&m, artifact, &abi)
+        validate_structure(&m, artifact, &abi, HOST_IDENTITY)
             .expect("a manifest with no host field must still pass structural validation");
     }
 
@@ -1558,7 +1564,7 @@ mod tests {
         let mut m = manifest("busbar-store-redis", "redis", "acme");
         m.host = Some(HOST_IDENTITY.to_string());
         let m = sign(&key, m, artifact);
-        validate_structure(&m, artifact, &abi)
+        validate_structure(&m, artifact, &abi, HOST_IDENTITY)
             .expect("host: busbar matches this binary's own identity and must load");
     }
 
@@ -1576,7 +1582,7 @@ mod tests {
         let mut m = manifest("busbar-ui-store-tenants", "tenants", "acme");
         m.host = Some("busbar-ui".to_string());
         let m = sign(&key, m, artifact);
-        let err = validate_structure(&m, artifact, &abi).unwrap_err();
+        let err = validate_structure(&m, artifact, &abi, HOST_IDENTITY).unwrap_err();
         assert!(
             err.contains("busbar-ui") && err.contains("host"),
             "rejection must name both the offending host and the field, got: {err}"
@@ -1588,7 +1594,7 @@ mod tests {
         // gets a chance to be laundered through a loose trust posture.
         let pol = policy(Some(&key), &[], true, true);
         assert!(
-            validate_structure(&m, artifact, &abi).is_err(),
+            validate_structure(&m, artifact, &abi, HOST_IDENTITY).is_err(),
             "the host gate is structural and does not consult TrustPolicy at all"
         );
         let _ = pol; // constructed only to make the "trust cannot help" point explicit above
@@ -1604,6 +1610,6 @@ mod tests {
         let mut m = manifest("acme-p", "p", "acme");
         m.host = Some("Busbar".to_string()); // case mismatch is still not an exact match
         let m = sign(&key, m, artifact);
-        assert!(validate_structure(&m, artifact, &abi).is_err());
+        assert!(validate_structure(&m, artifact, &abi, HOST_IDENTITY).is_err());
     }
 }

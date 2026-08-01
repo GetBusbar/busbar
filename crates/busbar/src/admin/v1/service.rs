@@ -1628,7 +1628,7 @@ impl AdminService {
         file: &str,
         tarball: &[u8],
     ) -> Result<crate::admin::v1::contract::PluginInstallView, AdminError> {
-        use busbar_plugin_sign::{evaluate, validate_structure, Verdict};
+        use busbar_plugin_sign::{evaluate, validate_structure, HOST_IDENTITY, Verdict};
 
         // ── 1. filename sanity: a bare tarball filename ──
         let file = validate_plugin_filename(file)?;
@@ -1646,6 +1646,7 @@ impl AdminService {
             &unpacked.manifest,
             &unpacked.lib_bytes,
             &busbar_plugin_loader::supported_abi,
+            HOST_IDENTITY,
         )
         .map_err(|e| AdminError::Validation(format!("invalid plugin manifest: {e}")))?;
         let manifest = &unpacked.manifest;
@@ -1777,7 +1778,7 @@ impl AdminService {
     ///      `admin::rate::classify_mutation` via `contract::PATH_PLUGINS_INSPECT`, exactly like
     ///      `/config/validate`'s existing carve-out.
     pub(crate) fn inspect_plugin(&self, tarball: &[u8]) -> Result<serde_json::Value, AdminError> {
-        use busbar_plugin_sign::{evaluate, validate_structure, Verdict};
+        use busbar_plugin_sign::{evaluate, validate_structure, HOST_IDENTITY, Verdict};
 
         if tarball.len() as u64 > busbar_plugin_loader::tarball::MAX_TARBALL_FILE_BYTES {
             return Err(AdminError::Validation(format!(
@@ -1799,6 +1800,7 @@ impl AdminService {
             &unpacked.manifest,
             &unpacked.lib_bytes,
             &busbar_plugin_loader::supported_abi,
+            HOST_IDENTITY,
         )
         .map_err(|e| AdminError::Validation(format!("invalid plugin manifest: {e}")))?;
         let manifest = &unpacked.manifest;
@@ -1910,7 +1912,7 @@ impl AdminService {
         ),
         AdminError,
     > {
-        use busbar_plugin_sign::{evaluate, validate_structure, Verdict};
+        use busbar_plugin_sign::{evaluate, validate_structure, HOST_IDENTITY, Verdict};
         let file = validate_plugin_filename(file)?;
         let lib_path = self.app.plugins_dir.join(&file);
         if !lib_path.is_file() {
@@ -1924,6 +1926,7 @@ impl AdminService {
             &unpacked.manifest,
             &unpacked.lib_bytes,
             &busbar_plugin_loader::supported_abi,
+            HOST_IDENTITY,
         )
         .map_err(|e| AdminError::Validation(format!("invalid plugin manifest `{file}`: {e}")))?;
         let manifest = unpacked.manifest;

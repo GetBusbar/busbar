@@ -24,7 +24,7 @@
 //! filename is irrelevant.
 
 use crate::tarball;
-use busbar_plugin_sign::{evaluate, validate_structure, Manifest, TrustPolicy, Verdict};
+use busbar_plugin_sign::{evaluate, validate_structure, Manifest, TrustPolicy, Verdict, HOST_IDENTITY};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -399,7 +399,8 @@ fn examine(path: &Path, policy: &TrustPolicy) -> FileOutcome {
         Err(reason) => return FileOutcome::Invalid { file, reason },
     };
     // Phase 1b: structural completeness + well-formedness + integrity + abi.
-    if let Err(reason) = validate_structure(&unpacked.manifest, &unpacked.lib_bytes, &supported_abi)
+    if let Err(reason) =
+        validate_structure(&unpacked.manifest, &unpacked.lib_bytes, &supported_abi, HOST_IDENTITY)
     {
         return FileOutcome::Invalid { file, reason };
     }
