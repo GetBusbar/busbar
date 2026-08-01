@@ -3453,6 +3453,7 @@ mod disposition_matrix_tests {
                     path_base: None,
                     token_url: None,
                     scope: None,
+                    subject: None,
                     auth: None,
                     allow_metadata_hosts: Vec::new(),
                 },
