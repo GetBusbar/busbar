@@ -757,6 +757,13 @@ impl ProtocolReader for BedrockReader {
                                 .unwrap_or("")
                                 .to_string();
 
+                            // Record the opened index (mirroring the Gemini/OpenAI/Cohere readers'
+                            // use of the same `open_tools` field) so the matching `contentBlockStop`
+                            // can verify a BlockStart actually happened for this index before
+                            // emitting a BlockStop — this reader used to track NO tool-use open
+                            // state at all, so the STOP arm had nothing to check against.
+                            state.open_tools.insert(idx);
+
                             out.push(IrStreamEvent::BlockStart {
                                 index: idx,
                                 block: crate::ir::IrBlockMeta::ToolUse { id: tu_id, name },
@@ -907,28 +914,58 @@ impl ProtocolReader for BedrockReader {
             Some(ET_CONTENT_BLOCK_STOP) => {
                 let idx = clamp_content_block_index(data);
 
-                // Clear `text_block_open` on ANY contentBlockStop while a text block is open, not
-                // only at index 0. Bedrock indexes text blocks that follow a tool-use block at
-                // index > 0 (reachable via cross-protocol ingress where a tool-use precedes text).
-                // The old `idx == 0` guard left the flag set for a text block opened at index N>0,
-                // so the `!state.text_block_open` guard in contentBlockStart stayed true-blocked and
-                // every subsequent text block was suppressed — silently dropping the rest of the
-                // text content. At most one text block is open at a time on this wire (a new text
-                // block only opens once the prior is closed), so the open flag unambiguously belongs
-                // to the block whose stop we are processing; tool-use stops never set the flag.
-                if state.text_block_open {
-                    state.text_block_open = false;
+                // Mirror every START arm above: a BlockStop must never precede the MessageStart it
+                // belongs to, and must never be emitted unless SOME block is actually known open —
+                // never unconditionally. Before this guard, a malformed/reordered/duplicate
+                // `contentBlockStop` (arriving before `messageStart`, or for an index whose
+                // `contentBlockStart` was never observed — most notably a tool-use index, which this
+                // reader did not track at all) produced a spurious `BlockStop` with no matching prior
+                // `BlockStart`, violating this file's own unbalanced-stream (INV-A) invariant and, on
+                // a cross-protocol egress (e.g. Anthropic), serializing an invalid
+                // `content_block_stop` SSE event with no preceding `content_block_start`. Policy
+                // mirrors the START arms' handling of an out-of-order/duplicate frame: skip it
+                // silently rather than erroring the whole stream.
+                if state.started {
+                    // Check `open_tools` FIRST, ahead of the text/thinking flags. Tool-use blocks are
+                    // tracked BY INDEX (see the BlockStart arm above), so an index-specific match is
+                    // strictly more precise than the text/thinking flags below, which carry no index of
+                    // their own and only "unambiguously belong to the block whose stop we are
+                    // processing" under the assumption that at most one block of ANY kind is open at a
+                    // time. That assumption holds for a well-formed sequential Converse wire, but a
+                    // malformed/reordered stream can open a tool block while text/thinking is still
+                    // (spuriously) open; checking the index-specific set first means a STOP that
+                    // exactly matches a tracked tool index is never misattributed to whichever
+                    // index-blind flag happens to be set, and — symmetrically — doesn't leak a stale
+                    // `open_tools` entry that would silently swallow a later, legitimate text/thinking
+                    // STOP. This also correctly closes each of several concurrently open tool-use
+                    // blocks independently rather than any one STOP closing "whichever" tool happens to
+                    // be open.
+                    if state.open_tools.remove(&idx) {
+                        out.push(IrStreamEvent::BlockStop { index: idx });
+                    } else if state.text_block_open {
+                        // Clear `text_block_open` on ANY contentBlockStop while a text block is open,
+                        // not only at index 0. Bedrock indexes text blocks that follow a tool-use block
+                        // at index > 0 (reachable via cross-protocol ingress where a tool-use precedes
+                        // text). The old `idx == 0` guard left the flag set for a text block opened at
+                        // index N>0, so the `!state.text_block_open` guard in contentBlockStart stayed
+                        // true-blocked and every subsequent text block was suppressed — silently
+                        // dropping the rest of the text content. At most one text block is open at a
+                        // time on this wire (a new text block only opens once the prior is closed), so
+                        // the open flag unambiguously belongs to the block whose stop we are processing.
+                        state.text_block_open = false;
+                        out.push(IrStreamEvent::BlockStop { index: idx });
+                    } else if state.thinking_block_open {
+                        // Clear the reasoning-block open flag on its stop too, so a subsequent
+                        // reasoning block (or a reasoning-then-text sequence) opens cleanly. At most
+                        // one block of a given kind is open at a time on this wire, so the stop
+                        // unambiguously closes the open thinking block.
+                        state.thinking_block_open = false;
+                        out.push(IrStreamEvent::BlockStop { index: idx });
+                    }
+                    // else: no text/thinking/tool-use block is known open for `idx` — an
+                    // unmatched/out-of-order/duplicate contentBlockStop. Silently skip, matching the
+                    // START arms' policy for a frame that doesn't fit the established state.
                 }
-
-                // Clear the reasoning-block open flag on its stop too, so a subsequent reasoning
-                // block (or a reasoning-then-text sequence) opens cleanly. At most one block of a
-                // given kind is open at a time on this wire, so the stop unambiguously closes the
-                // open thinking block; a text/tool stop with no thinking block open is a no-op here.
-                if state.thinking_block_open {
-                    state.thinking_block_open = false;
-                }
-
-                out.push(IrStreamEvent::BlockStop { index: idx });
             }
 
             Some(ET_MESSAGE_STOP) => {
