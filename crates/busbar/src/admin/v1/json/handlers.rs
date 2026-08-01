@@ -329,14 +329,26 @@ pub(crate) async fn reload_plugins(
                 let view = AdminService::new(snapshot).reload_store_plugins()?;
                 return Ok(Outcome::Value((None, Ok(view))));
             }
-            let next = rebuild_app_from_disk(&snapshot).map_err(AdminError::Validation)?;
+            let (next, gov_rotate) =
+                rebuild_app_from_disk(&snapshot).map_err(AdminError::Validation)?;
             let installed = Arc::new(next);
             // Project the inventory of the snapshot about to go live (the reconciled, loaded set).
             // A projection hiccup is reported but never rolls the swap back, exactly as before.
             let projected = AdminService::new(installed.clone()).reload_store_plugins();
-            Ok(Outcome::swap(
+            // LIVE-only (no-op persist): the swap itself is the commit. `commit_then` defers the
+            // rotation firing to AFTER `commit_and_swap` returns `Ok` — round-8, see
+            // `build_app_from_config`'s doc comment — even though today that's immediate (persist
+            // never fails here), routing every site through the SAME mechanism means a future
+            // persist step added to this handler can't silently reintroduce the bug.
+            Ok(Outcome::commit_then(
                 installed.clone(),
-                (Some(installed), projected),
+                || Ok(()),
+                move || {
+                    if let Some(rotate) = gov_rotate {
+                        rotate();
+                    }
+                    Ok(Outcome::Value((Some(installed), projected)))
+                },
             ))
         }))
     })
@@ -480,8 +492,8 @@ pub(crate) async fn rollback_plugin(
                      was changed (the running engine still serves the current plugin)"
                 )));
             }
-            let next = match rebuild_app_from_disk(&snapshot) {
-                Ok(next) => next,
+            let (next, gov_rotate) = match rebuild_app_from_disk(&snapshot) {
+                Ok(pair) => pair,
                 Err(e) => {
                     // The rebuild failed AFTER persisting the pin — the live snapshot is unchanged
                     // (old plugin still serving, fail-closed), but the pin is now on disk. Roll the
@@ -508,8 +520,16 @@ pub(crate) async fn rollback_plugin(
             };
             let installed = Arc::new(next);
             // The pin is already durable (persisted above, before the rebuild), so the commit step
-            // carries a no-op persist — the swap is the only thing left.
-            Ok(Outcome::swap(installed.clone(), (installed, manifest)))
+            // carries a no-op persist — the swap is the only thing left. `commit_then` still defers
+            // the rotation to AFTER `commit_and_swap` returns `Ok` (round-8, see
+            // `build_app_from_config`'s doc comment) — the SAME mechanism every rotation-possible
+            // site uses, not a hand-rolled "already persisted so it's fine" special case.
+            Ok(Outcome::commit_then(installed.clone(), || Ok(()), move || {
+                if let Some(rotate) = gov_rotate {
+                    rotate();
+                }
+                Ok(Outcome::Value((installed, manifest)))
+            }))
         }))
     })
     .await;
@@ -1613,6 +1633,7 @@ pub(crate) async fn reset_overlay_section(
                 )
             })
             .map_err(AdminError::Validation)?;
+            let (built, gov_rotate) = built;
             let installed = Arc::new(built);
             // PERSIST-THEN-SWAP (fail-closed), matching plugins/rollback's durability ordering:
             // write the section-cleared overlay to disk BEFORE swapping the live App. A prior
@@ -1624,18 +1645,31 @@ pub(crate) async fn reset_overlay_section(
             // `current.overlay_path`, so it names the same overlay file. (The sibling section is
             // preserved verbatim by the read-modify-write inside `clear_section`.)
             let p = installed.clone();
-            Ok(Outcome::commit(
+            let version = installed.config_version;
+            // `commit_then` (not `commit`): the credential rotation (if any) must fire only once
+            // `commit_and_swap` has returned `Ok` — persist AND swap both done — not merely once the
+            // persist closure below has returned `Ok`. round-8: see `build_app_from_config`'s doc
+            // comment. Same mechanism every rotation-possible site uses (`reload_config`,
+            // `reload_plugins`, `plugin/rollback`, here, and `put_config_settings`), so a future
+            // change to any one site's persist step cannot silently reintroduce the bug.
+            Ok(Outcome::commit_then(
                 installed.clone(),
                 move || {
-                    crate::config::overlay::clear_section(p.overlay_path.as_deref(), section)
-                        .map_err(|e| {
+                    crate::config::overlay::clear_section(p.overlay_path.as_deref(), section).map_err(
+                        |e| {
                             format!(
                                 "overlay section reset could not be persisted: {e}; nothing was \
                                  changed (the running engine is unaffected)"
                             )
-                        })
+                        },
+                    )
                 },
-                (installed.config_version, Some(installed)),
+                move || {
+                    if let Some(rotate) = gov_rotate {
+                        rotate();
+                    }
+                    Ok(Outcome::Value((version, Some(installed))))
+                },
             ))
         }))
     })
@@ -2189,12 +2223,14 @@ pub(crate) async fn flush_credential_cache(
 /// limiters, health by stable identity). The shared core of `config/reload` AND `plugins/reload`: both
 /// re-run the exact fail-closed boot pipeline (which re-scans the plugins dir into a NEW registry and
 /// re-opens every hook transport), differing only in what they report. Returns the built `App` (the
-/// caller wraps it in `Arc` and swaps) or a human-readable error (any failure changes nothing —
+/// caller wraps it in `Arc` and swaps) plus any UNAPPLIED governance-credential rotation (round-8:
+/// the caller must fire it only once its own transaction has actually committed — see
+/// `build_app_from_config`'s doc comment), or a human-readable error (any failure changes nothing —
 /// fail-closed, the old snapshot keeps serving). Requires disk config paths (ephemeral mode has no
 /// disk truth to read).
 pub(crate) fn rebuild_app_from_disk(
     current: &Arc<crate::state::App>,
-) -> Result<crate::state::App, String> {
+) -> Result<(crate::state::App, Option<crate::GovCredentialRotation>), String> {
     let (Some(config_path), Some(providers_path)) =
         (current.config_path.clone(), current.providers_path.clone())
     else {
@@ -2226,6 +2262,13 @@ pub(crate) fn rebuild_app_from_disk(
     if let Some(doc) = loaded.overlay_doc {
         crate::config::overlay::merge_into(&mut cfg, doc);
     }
+    // `build_app_from_config` hands back any governance-credential rotation UNAPPLIED (round-8: it
+    // must not mutate the shared, process-lifetime `GovState` until the caller's own transaction is
+    // known to have SUCCEEDED — see its doc comment). This wrapper does NOT fire it: it hands the
+    // closure straight through to ITS OWN caller, which is the ONE place — `config_transaction`'s
+    // `apply()` (`txn.rs`), via `Outcome::commit_then` — that knows the transaction actually
+    // committed (persist AND swap both done). A caller of `rebuild_app_from_disk` must never fire
+    // this before that.
     crate::build_app_from_config(
         cfg,
         loaded.deploy.plugins.clone(),
@@ -2249,10 +2292,23 @@ pub(crate) async fn reload_config(
     let out = config_transaction(&handle, |txn| {
         let snapshot = txn.app().clone();
         Ok(txn.read_store(move || {
-            let next = rebuild_app_from_disk(&snapshot).map_err(AdminError::Validation)?;
+            let (next, gov_rotate) =
+                rebuild_app_from_disk(&snapshot).map_err(AdminError::Validation)?;
             // LIVE-only, exactly as before: a reload IS disk truth, so there is nothing to persist.
             let installed = Arc::new(next);
-            Ok(Outcome::swap(installed.clone(), installed))
+            // `commit_then` defers the rotation to AFTER `commit_and_swap` returns `Ok` — round-8,
+            // see `build_app_from_config`'s doc comment. Same mechanism as every other site with a
+            // possible rotation, not a hand-rolled "safe because persist is a no-op" special case.
+            Ok(Outcome::commit_then(
+                installed.clone(),
+                || Ok(()),
+                move || {
+                    if let Some(rotate) = gov_rotate {
+                        rotate();
+                    }
+                    Ok(Outcome::Value(installed))
+                },
+            ))
         }))
     })
     .await;
@@ -2459,9 +2515,23 @@ pub(crate) async fn apply_config(
                     )
                 })
                 .map_err(AdminError::Validation)?;
-            // LIVE-only (the response `note` says so): an applied config is not written to disk.
+            let (next, gov_rotate) = next;
             let installed = Arc::new(next);
-            Ok(Outcome::swap(installed.clone(), installed))
+            // LIVE-only (the response `note` says so): an applied config is not written to disk.
+            // `commit_then` still defers the rotation to AFTER `commit_and_swap` returns `Ok` —
+            // round-8, see `build_app_from_config`'s doc comment — the SAME mechanism every
+            // rotation-possible site uses, not a hand-rolled "safe because persist is a no-op"
+            // special case that a future added persist step could silently defeat.
+            Ok(Outcome::commit_then(
+                installed.clone(),
+                || Ok(()),
+                move || {
+                    if let Some(rotate) = gov_rotate {
+                        rotate();
+                    }
+                    Ok(Outcome::Value(installed))
+                },
+            ))
         }))
     })
     .await;
@@ -2908,12 +2978,18 @@ pub(crate) async fn put_config_settings(
                 )
             })
             .map_err(AdminError::Validation)?;
+            let (next, gov_rotate) = next;
             let installed = Arc::new(next);
             // PERSIST-then-SWAP, fail-closed. Persist the merged root section (the sibling
             // hooks/groups sections are preserved verbatim by the read-modify-write).
             let p = installed.clone();
             let to_persist = merged.clone();
-            Ok(Outcome::commit(
+            // `commit_then`, not `commit`: the rotation must fire only once `commit_and_swap` has
+            // fully returned `Ok` (persist AND swap), keeping "nothing was changed" on a persist
+            // failure true for the shared, process-lifetime `GovState` too — round-8, see
+            // `build_app_from_config`'s doc comment. Same mechanism as every other rotation-possible
+            // site.
+            Ok(Outcome::commit_then(
                 installed.clone(),
                 move || {
                     crate::config::overlay::persist_root(p.overlay_path.as_deref(), &to_persist)
@@ -2924,7 +3000,12 @@ pub(crate) async fn put_config_settings(
                             )
                         })
                 },
-                (installed, merged),
+                move || {
+                    if let Some(rotate) = gov_rotate {
+                        rotate();
+                    }
+                    Ok(Outcome::Value((installed, merged)))
+                },
             ))
         }))
     })
