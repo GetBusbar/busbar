@@ -894,6 +894,51 @@ mod tests {
         );
     }
 
+    /// Closes the `enabled`/`recorder_installed`/`retaining`/`describe`/`GAUGE_IDLE_TIMEOUT`
+    /// cargo-mutants gaps together, since `ENABLED`/`HANDLE` are process-global `OnceLock`s that
+    /// can only be driven through their "resolved" state once per test binary — every other test
+    /// in this module already calls `init()`, so by the time this runs the globals are certainly
+    /// resolved either way; the assertions below are meaningful regardless of ordering.
+    #[test]
+    fn test_enabled_recorder_installed_retaining_and_describe_after_init() {
+        init();
+        assert!(
+            enabled(),
+            "enabled() must be true once init() has run (ENABLED.set(true))"
+        );
+        assert!(
+            recorder_installed(),
+            "recorder_installed() must be true once init()'s recorder install completes"
+        );
+        assert!(
+            retaining(),
+            "retaining() must be true once the recorder is installed"
+        );
+        // describe() registers HELP text via describe_counter! — observable in the exposition as
+        // a `# HELP <metric> <text>` line. A no-op describe() (the `with ()` mutant) would leave
+        // this line absent even though the counter itself still renders once emitted.
+        metrics::counter!(
+            REQUESTS_TOTAL,
+            "ingress_protocol" => "describe_probe",
+            "pool" => "describe_probe",
+            "outcome" => "describe_probe"
+        )
+        .increment(1);
+        let out = render();
+        assert!(
+            out.contains("# HELP busbar_requests_total"),
+            "describe() must have registered REQUESTS_TOTAL's HELP text; got:\n{out}"
+        );
+    }
+
+    /// The gauge idle-eviction window is exactly 24h, not some other magnitude a mutated
+    /// `*`/`+`/`/` in `24 * 60 * 60` could silently produce.
+    #[test]
+    fn test_gauge_idle_timeout_is_exactly_24_hours() {
+        assert_eq!(GAUGE_IDLE_TIMEOUT, Duration::from_secs(86_400));
+        assert_eq!(GAUGE_IDLE_TIMEOUT, Duration::from_secs(24 * 60 * 60));
+    }
+
     #[test]
     fn test_init_is_idempotent_and_does_not_panic() {
         // Regression: `init()` no longer `expect()`s the recorder install. Calling it repeatedly
@@ -1436,6 +1481,104 @@ mod tests {
         assert!(
             spend_series_count > 0,
             "at least one key spend series must be emitted; got 0"
+        );
+    }
+
+    /// Build an `App` backed by a governance store seeded with `n` distinct virtual keys, each
+    /// with minimal usage so its per-key spend gauge actually emits. Shared by the key-gauge-limit
+    /// boundary tests below.
+    fn app_with_n_keys(n: usize) -> Arc<App> {
+        let store = Arc::new(MemoryStore::new());
+        for i in 0..n {
+            let id = format!("vk_bound_{i:04x}");
+            let key = VirtualKey {
+                id: id.clone(),
+                generation_hash: format!("hash-bound-{i}"),
+                name: format!("key-bound-{i}"),
+                allowed_scopes: None,
+                enabled: true,
+                created_at: 1_700_000_000,
+                group: None,
+                labels: Default::default(),
+                expires_at: None,
+                deleted_at: None,
+                revision: 1,
+            };
+            store.put_key(&key).unwrap();
+            store
+                .put_usage(
+                    &id,
+                    0,
+                    &busbar_api::UsageLedger {
+                        requests: 1,
+                        billable_requests: 1,
+                        models: vec![busbar_api::ModelTokens {
+                            model: "m".to_string(),
+                            tokens: crate::governance::TierTokens {
+                                input: 1,
+                                output: 0,
+                                cache_read: 0,
+                                cache_write: 0,
+                            },
+                        }],
+                    },
+                )
+                .unwrap();
+        }
+        let gov = Arc::new(GovState::new(store, None).unwrap());
+        TestApp::new()
+            .lane(LaneSpec::new(
+                "m",
+                crate::proto::Protocol::openai(),
+                "http://m",
+            ))
+            .pool("pool-bound", &[(0, 1)])
+            .governance(gov)
+            .build()
+    }
+
+    /// `keys.len() > key_gauge_limit` is the EXACT boundary that gates the truncation warning: a
+    /// mutated `>` (e.g. `<`) would make the warning fire on the WRONG side of the boundary
+    /// (never at `limit + 1`, always below `limit`, or some other inversion) — `render()`'s output
+    /// is unaffected either way (`.take(key_gauge_limit)` bounds emission unconditionally), so
+    /// this can only be proven via the actual `tracing::warn!` call, not the metric text.
+    #[test]
+    fn test_key_gauge_limit_warning_fires_exactly_past_the_boundary() {
+        use crate::test_support::warn_capture::WarnCapture;
+        use tracing_subscriber::layer::SubscriberExt as _;
+        init();
+        const LIMIT: usize = crate::config::DEFAULT_KEY_GAUGE_LIMIT;
+
+        // AT the limit: no warning.
+        let app_at_limit = app_with_n_keys(LIMIT);
+        let cap = WarnCapture::default();
+        let subscriber = tracing_subscriber::registry().with(cap.clone());
+        tracing::subscriber::with_default(subscriber, || {
+            refresh_scrape_gauges(&app_at_limit);
+        });
+        assert!(
+            !cap
+                .messages()
+                .iter()
+                .any(|m| m.contains("per-key gauge limit")),
+            "exactly key_gauge_limit ({LIMIT}) keys must NOT trigger the truncation warning; got: {:?}",
+            cap.messages()
+        );
+
+        // ONE past the limit: warning fires.
+        let app_over_limit = app_with_n_keys(LIMIT + 1);
+        let cap2 = WarnCapture::default();
+        let subscriber2 = tracing_subscriber::registry().with(cap2.clone());
+        tracing::subscriber::with_default(subscriber2, || {
+            refresh_scrape_gauges(&app_over_limit);
+        });
+        assert!(
+            cap2.messages()
+                .iter()
+                .any(|m| m.contains("per-key gauge limit")),
+            "key_gauge_limit + 1 ({}) keys MUST trigger the truncation warning; got: {:?}",
+            LIMIT + 1,
+            cap2.messages()
         );
     }
 

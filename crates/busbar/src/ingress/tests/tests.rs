@@ -2943,6 +2943,66 @@ async fn test_gemini_v1_no_action_returns_openai_shaped_404() {
         "v1beta no-colon path stays Gemini-shaped (status: NOT_FOUND); got {body_beta}"
     );
 
+    // (d) A colon with an EMPTY model or EMPTY action either side must NOT be accepted as a valid
+    // model:action split — both sides must be non-empty (`!m.is_empty() && !a.is_empty()`). A
+    // mutated `&&` -> `||` would wrongly accept a colon with only ONE non-empty side (e.g.
+    // `:generateContent` as model="" action="generateContent", or `gemini-flash:` as
+    // model="gemini-flash" action=""), routing an empty model/action into the proxy instead of
+    // falling through to the same not-found handling case (c) already proves.
+    let resp_empty_model = reqwest::Client::new()
+        .post(format!("http://{addr}/v1beta/models/:generateContent"))
+        .bearer_auth("t")
+        .body(json!({"contents": []}).to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp_empty_model.status().as_u16(),
+        404,
+        "empty model before the colon must fall through to not-found, not proceed with model=''"
+    );
+    let body_empty_model: serde_json::Value = resp_empty_model.json().await.unwrap();
+    // The status/status-field alone can't distinguish the two code paths here (an empty model
+    // routed downstream ALSO eventually 404s as an unknown model, same status+field) — the
+    // MESSAGE TEXT is the real signal: the correct pre-routing fallback names the raw path
+    // ("Invalid resource path: ..."), while a wrongly-accepted empty-model split instead
+    // interpolates the (empty) model into a "models/ is not found" message — confirmed by hand
+    // (manually applying the `&&` -> `||` mutation reproduces exactly that wrong wording).
+    let msg_empty_model = body_empty_model
+        .get("error")
+        .and_then(|e| e.get("message"))
+        .and_then(|m| m.as_str())
+        .unwrap_or_default();
+    assert!(
+        msg_empty_model.contains("Invalid resource path"),
+        "empty-model colon path must fall through to the pre-routing 'Invalid resource path' \
+         fallback, not a downstream unknown-model lookup; got {body_empty_model}"
+    );
+
+    let resp_empty_action = reqwest::Client::new()
+        .post(format!("http://{addr}/v1beta/models/gemini-flash:"))
+        .bearer_auth("t")
+        .body(json!({"contents": []}).to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp_empty_action.status().as_u16(),
+        404,
+        "empty action after the colon must fall through to not-found, not proceed with action=''"
+    );
+    let body_empty_action: serde_json::Value = resp_empty_action.json().await.unwrap();
+    let msg_empty_action = body_empty_action
+        .get("error")
+        .and_then(|e| e.get("message"))
+        .and_then(|m| m.as_str())
+        .unwrap_or_default();
+    assert!(
+        msg_empty_action.contains("Invalid resource path"),
+        "empty-action colon path must fall through to the pre-routing 'Invalid resource path' \
+         fallback, not a downstream unknown-model lookup; got {body_empty_action}"
+    );
+
     handle.abort();
 }
 
@@ -6236,6 +6296,115 @@ async fn test_budget_exhaustion_downgrades_pool() {
         effective.as_deref(),
         Some("value"),
         "dispatch must follow the charge to the downgrade pool"
+    );
+}
+
+/// A 3-pool downgrade CYCLE (`a` -> `b` -> `c` -> `b`, `b` revisited) must terminate via the
+/// `visited` revisit guard rather than looping or re-charging `b`'s bucket a second time. Proves
+/// the guard is `!visited.contains(&to)`, not its inverse: with the mutant `== -> !=` applied
+/// (`!visited.iter().any(|v| v != &to)`), the SECOND hop (`b` -> `c`, `visited == [b]`) would
+/// itself be wrongly rejected — `b != c` is true, so `.any()` is true, so the negated guard is
+/// false — even though `c` was never visited. `test_budget_exhaustion_downgrades_pool` above only
+/// ever exercises a single hop (`visited` still empty when the guard runs), so it can't
+/// distinguish `==` from `!=` at all; this test is the one that actually needs 2+ hops.
+#[tokio::test]
+async fn test_downgrade_cycle_terminates_via_the_revisit_guard() {
+    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+    let store = Arc::new(MemoryStore::new());
+    let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
+    let groups = std::collections::BTreeMap::from([(
+        "team".to_string(),
+        crate::config::GroupCfg {
+            parent: None,
+            enabled: true,
+            limits: vec![
+                // a: 1 request budget (10c cap, 10c fee) -> downgrades to b on exhaustion.
+                crate::config::groups::LimitCfg {
+                    metric: crate::config::groups::LimitMetric::Budget,
+                    amount: 10,
+                    per: Some(crate::config::groups::LimitWindow::Day),
+                    scope: Some(busbar_api::ScopeRef::pool("a")),
+                    on_exhaust: Some(crate::config::groups::OnExhaust::Downgrade),
+                    downgrade_to: Some(busbar_api::ScopeRef::pool("b")),
+                },
+                // b: budget is ALREADY exhausted (cap 0) -> downgrades to c.
+                crate::config::groups::LimitCfg {
+                    metric: crate::config::groups::LimitMetric::Budget,
+                    amount: 0,
+                    per: Some(crate::config::groups::LimitWindow::Day),
+                    scope: Some(busbar_api::ScopeRef::pool("b")),
+                    on_exhaust: Some(crate::config::groups::OnExhaust::Downgrade),
+                    downgrade_to: Some(busbar_api::ScopeRef::pool("c")),
+                },
+                // c: budget is ALSO already exhausted -> downgrades back to b, the CYCLE.
+                crate::config::groups::LimitCfg {
+                    metric: crate::config::groups::LimitMetric::Budget,
+                    amount: 0,
+                    per: Some(crate::config::groups::LimitWindow::Day),
+                    scope: Some(busbar_api::ScopeRef::pool("c")),
+                    on_exhaust: Some(crate::config::groups::OnExhaust::Downgrade),
+                    downgrade_to: Some(busbar_api::ScopeRef::pool("b")),
+                },
+            ],
+            ..Default::default()
+        },
+    )]);
+    let cost = crate::cost::CostModel::resolve_parts(None, 10, &groups);
+    let (key, _secret) = gov
+        .create_key(
+            NewKeySpec {
+                name: "dev".to_string(),
+                allowed_pools: None,
+                group: Some("team".to_string()),
+                labels: Default::default(),
+            },
+            1_700_000_000,
+        )
+        .unwrap();
+    let mut app = minimal_app();
+    let inner = Arc::get_mut(&mut app).expect("sole owner");
+    inner.governance = Some(gov);
+    inner.cost = std::sync::Arc::new(cost);
+    inner.pools.insert("a".to_string(), vec![]);
+    inner.pools.insert("b".to_string(), vec![]);
+    inner.pools.insert("c".to_string(), vec![]);
+
+    let gov = crate::governance::GovCtx {
+        key: Some(std::sync::Arc::new(key.clone())),
+    };
+    let at = crate::store::now();
+    // a's single-request budget admits once (no downgrade needed yet).
+    let (grant, effective) =
+        admit_check(&app, &gov, "openai", "a", at).expect("first admission under a's cap");
+    assert!(grant.is_some());
+    assert_eq!(effective, None);
+    // The 2nd request on `a` exhausts it -> downgrade a->b->c->b(revisit) -> the cycle must
+    // terminate with the PLAIN rejection (the guard breaks it), never an infinite loop, a panic,
+    // or a wrongly-admitted grant.
+    let resp = admit_check(&app, &gov, "openai", "a", at)
+        .expect_err("a cyclic downgrade chain must terminate in rejection, not admission");
+    assert_eq!(
+        resp.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "the caller sees the plain quota rejection once the cycle is detected"
+    );
+    // WHICH bucket the rejection names is the real distinguishing signal (status code alone is
+    // the same either way): the guard must let the chain walk all the way a -> b -> c BEFORE the
+    // revisit-to-b is refused, so the terminal rejection is c's bucket, not b's. Under the `==` ->
+    // `!=` mutant, the guard wrongly refuses the SECOND hop (b -> c) instead, terminating one hop
+    // early at b's bucket.
+    let body = String::from_utf8(
+        axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(
+        body.contains("pool 'c'"),
+        "the chain must walk a -> b -> c before the revisit-to-b guard breaks it, so the \
+         terminal rejection names pool 'c' (a mutated revisit guard breaks one hop early, at \
+         pool 'b'): {body}"
     );
 }
 
