@@ -128,8 +128,23 @@ while :; do
   # itself, then another "0" from the fallback) whenever nothing matched, making running_now
   # literally "0\n0" instead of "0" and permanently defeating the `== "0"` check below. No
   # fallback needed: pgrep -c's own stdout is already the right value on every path.
-  running_now="$(ssh $SSHOPT "ubuntu@$IP" 'pgrep -c cargo-mutants' 2>/dev/null)"
-  running_now="${running_now:-0}"
+  #
+  # BUT: ssh itself can fail (a transient connectivity blip over a multi-hour polling loop), and
+  # that is NOT the same thing as "confirmed zero cargo-mutants processes" -- collapsing both into
+  # "0" via a bare `${running_now:-0}` fallback (an earlier version of this fix did exactly that)
+  # made a single dropped SSH connection look identical to job completion, causing the `cleanup`
+  # trap to terminate the box and pull whatever partial report existed while cargo-mutants was
+  # still mid-run mid-run: the exact silent-data-loss failure mode the rsync-retry fix below this
+  # loop exists to prevent, just moved one step earlier. ssh's own exit code distinguishes the two:
+  # 255 is ssh's OWN connection-failure signal (never returned by a remote command, which can use
+  # any code 0-254); capture it separately and treat ONLY a real ssh failure as "unknown", not "0".
+  ssh_out="$(ssh $SSHOPT "ubuntu@$IP" 'pgrep -c cargo-mutants' 2>/dev/null)"
+  ssh_status=$?
+  if [[ "$ssh_status" -eq 255 ]]; then
+    running_now="?"
+  else
+    running_now="${ssh_out:-0}"
+  fi
   tail_now="$(ssh $SSHOPT "ubuntu@$IP" 'tail -1 ~/mutants.log 2>/dev/null' 2>/dev/null || true)"
   log "mutants running=$running_now | $tail_now"
   [[ "$running_now" == "0" ]] && break
@@ -153,7 +168,15 @@ for _ in 1 2 3 4 5; do
   log "rsync pull failed, retrying in 15s"
   sleep 15
 done
-if [[ "$pull_ok" != "1" ]] || [[ ! -e "$OUT/missed.txt" && ! -e "$OUT/mutants.log" ]]; then
+# `$OUT/mutants.log` is a near-useless completion signal on its own: bash creates it on the
+# remote box the instant `nohup cargo mutants ... > ~/mutants.log 2>&1 &` runs, whether
+# cargo-mutants ever produced real output or died instantly (bad build, wrong branch, a
+# provisioning heredoc failure this script also never checks the exit status of) — so `&& !-e
+# mutants.log` was true almost every time `pull_ok=1`, collapsing this whole check to just
+# `pull_ok != 1` and letting a genuinely broken/incomplete remote run print "report in $OUT" as
+# if it succeeded. `missed.txt`/`outcomes.json` are cargo-mutants' own real output files —
+# require one of THOSE, not the log.
+if [[ "$pull_ok" != "1" ]] || [[ ! -e "$OUT/missed.txt" && ! -e "$OUT/outcomes.json" ]]; then
   log "FAILED to pull a non-empty report from $IP after retries — leaving $IID RUNNING (not \
 terminating) so the report can be recovered by hand: rsync -az -e \"ssh $SSHOPT\" \
 \"ubuntu@$IP:~/bench/mutants.out/\" \"$OUT/\""
