@@ -630,12 +630,19 @@ fn refresh_scrape_gauges(app: &App) {
     // ── Governance: per-key spend, budget-remaining, tokens ────────────────────────────────────
     if let Some(gov) = &app.governance {
         // `all_keys()` lists every VirtualKey from the SQLite store; this is a low-frequency scrape
-        // path. On error we skip the gauge refresh rather than returning a stale/wrong value.
+        // path. On error we skip only the PER-KEY gauge refresh below (by treating the key list as
+        // empty) rather than returning a stale/wrong per-key value. This must NOT `return` out of
+        // the whole function: the group-bucket loop just below does not consume `keys` at all (it
+        // walks `app.cost.groups()` and has its own per-bucket error handling), and the lane-health
+        // gauges further down don't touch governance at all — an unrelated governance-store hiccup
+        // must not blind Prometheus to a breaker tripping during that exact window (see
+        // GAUGE_IDLE_TIMEOUT: a skipped refresh leaves the last-known value looking "current" for up
+        // to 24h).
         let keys = match gov.all_keys() {
             Ok(ks) => ks,
             Err(e) => {
-                tracing::warn!(error = %e, "metrics scrape: failed to list virtual keys; skipping spend gauges");
-                return;
+                tracing::warn!(error = %e, "metrics scrape: failed to list virtual keys; skipping per-key spend/token gauges");
+                Vec::new()
             }
         };
         // Cap per-key gauge emission. Above this many keys, emitting one series per key per scrape
@@ -1188,6 +1195,116 @@ mod tests {
         assert!(
             out.contains("pool=\"pool-x\""),
             "pool label must appear; got:\n{out}"
+        );
+    }
+
+    /// A `Store` whose `list_keys` fails on every call AFTER the first — the first call succeeds so
+    /// `GovState::new` (which loads the key cache via `list_keys` at construction time) can still
+    /// build successfully, and every call from then on (i.e. from `refresh_scrape_gauges`'s
+    /// `all_keys()`) fails, simulating a governance-store hiccup discovered exactly at scrape time.
+    /// Every other method delegates to a real in-memory `MemoryStore`.
+    struct ScrapeTimeBrokenKeyListStore {
+        inner: MemoryStore,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+    impl Store for ScrapeTimeBrokenKeyListStore {
+        fn list_keys(&self) -> crate::governance::StoreResult<Vec<VirtualKey>> {
+            let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if n == 0 {
+                self.inner.list_keys()
+            } else {
+                Err(crate::governance::StoreError(
+                    "governance store unavailable (simulated scrape-time outage)".into(),
+                ))
+            }
+        }
+        fn put_key(&self, key: &VirtualKey) -> crate::governance::StoreResult<()> {
+            self.inner.put_key(key)
+        }
+        fn get_key(&self, id: &str) -> crate::governance::StoreResult<Option<VirtualKey>> {
+            self.inner.get_key(id)
+        }
+        fn delete_key(&self, id: &str) -> crate::governance::StoreResult<()> {
+            self.inner.delete_key(id)
+        }
+        fn get_usage(
+            &self,
+            bucket_id: &str,
+            window_start: u64,
+        ) -> crate::governance::StoreResult<busbar_api::UsageLedger> {
+            self.inner.get_usage(bucket_id, window_start)
+        }
+        fn put_usage(
+            &self,
+            bucket_id: &str,
+            window_start: u64,
+            ledger: &busbar_api::UsageLedger,
+        ) -> crate::governance::StoreResult<()> {
+            self.inner.put_usage(bucket_id, window_start, ledger)
+        }
+        fn add_metering(
+            &self,
+            delta: &crate::governance::MeteringDelta,
+        ) -> crate::governance::StoreResult<()> {
+            self.inner.add_metering(delta)
+        }
+        fn list_metering(
+            &self,
+            bucket: u64,
+        ) -> crate::governance::StoreResult<Vec<crate::governance::MeteringRow>> {
+            self.inner.list_metering(bucket)
+        }
+    }
+
+    /// Regression (codeaudit round-8, correctness + error-handling lenses, independently):
+    /// `refresh_scrape_gauges` must keep refreshing `busbar_lane_state` (and the group-bucket
+    /// gauges, which don't depend on `all_keys()` either) even when the governance store's
+    /// `all_keys()` call fails during the scrape. The old code did a bare `return` on that error,
+    /// which — given the metrics recorder's 24h gauge idle-timeout — left `busbar_lane_state`
+    /// showing stale/absent values for up to a day after a single transient governance-store
+    /// hiccup, hiding a breaker that trips during that exact window from lane-health alerting.
+    #[test]
+    fn test_scrape_gauges_lane_state_survives_governance_all_keys_failure() {
+        init();
+
+        let key = sample_vkey("vk_broken_store01");
+        let store = Arc::new(ScrapeTimeBrokenKeyListStore {
+            inner: MemoryStore::new(),
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        store.put_key(&key).unwrap();
+        // Construction consumes the ONE successful `list_keys` call.
+        let gov = Arc::new(GovState::new(store, None).unwrap());
+
+        let app = TestApp::new()
+            .lane(LaneSpec::new(
+                "model-broken",
+                crate::proto::Protocol::openai(),
+                "http://broken",
+            ))
+            .pool("pool-broken", &[(0, 1)])
+            .governance(gov)
+            .build();
+
+        // Every `all_keys()` call from here on fails (simulated scrape-time governance outage).
+        refresh_scrape_gauges(&app);
+
+        let out = render();
+        // The lane-health gauge must still be present and labeled for this pool — it has nothing to
+        // do with the governance store and must not be collateral damage of the failed key list.
+        let lane_line = out.lines().find(|l| {
+            l.contains(LANE_STATE) && l.contains("pool=\"pool-broken\"") && !l.starts_with('#')
+        });
+        assert!(
+            lane_line.is_some(),
+            "busbar_lane_state for pool-broken must still be emitted despite the governance \
+             all_keys() failure; got:\n{out}"
+        );
+        // The per-key spend gauge (which DOES depend on the failed `all_keys()` read) must
+        // correctly be absent — this is the one thing that should actually be skipped.
+        assert!(
+            !out.contains("vk_broken_store01"),
+            "the failed key's id must not appear as a per-key gauge label; got:\n{out}"
         );
     }
 
