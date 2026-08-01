@@ -185,6 +185,45 @@ mod tests {
             webhook_delivery_timeout_secs: Some(webhook_delivery_timeout_secs),
             emit_server_timing: Some(emit_server_timing),
         };
+
+        let crate::config::AdvancedCfg {
+            rate_sweep_interval,
+            usage_flush_interval_ms,
+        } = crate::config::AdvancedCfg::default();
+        let _ = AdvancedPatch {
+            rate_sweep_interval: Some(rate_sweep_interval),
+            usage_flush_interval_ms: Some(usage_flush_interval_ms),
+        };
+
+        // `MetricsCfg` has no `Default` impl — `buffer_seconds` is deliberately REQUIRED (no serde
+        // default), so a literal instance stands in for `::default()`.
+        let crate::config::MetricsCfg {
+            buffer_seconds,
+            key_gauge_limit,
+        } = crate::config::MetricsCfg {
+            buffer_seconds: 60,
+            key_gauge_limit: 1_000,
+        };
+        let _ = MetricsPatch {
+            buffer_seconds: Some(buffer_seconds),
+            key_gauge_limit: Some(key_gauge_limit),
+        };
+
+        let crate::config::HealthDefaultsCfg {
+            default_probe_interval_secs,
+            default_probe_timeout_secs,
+        } = crate::config::HealthDefaultsCfg::default();
+        let _ = HealthPatch {
+            default_probe_interval_secs: Some(default_probe_interval_secs),
+            default_probe_timeout_secs: Some(default_probe_timeout_secs),
+        };
+
+        let crate::config::RoutingCfg {
+            default_policy_timeout_ms,
+        } = crate::config::RoutingCfg::default();
+        let _ = RoutingPatch {
+            default_policy_timeout_ms: Some(default_policy_timeout_ms),
+        };
     }
 
     /// THE DEFECT. A partial patch must leave every unnamed field alone. Before this, a partial
