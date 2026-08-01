@@ -77,8 +77,23 @@ impl RequestHandler for GeminiRequestHandler {
         if !(path.contains(":generateContent") || path.contains(":streamGenerateContent")) {
             return None;
         }
-        let has = |n: &[u8]| body.windows(n.len()).any(|w| w == n);
-        if has(b"responseModalities") || has(b"inline_data") || has(b"inlineData") {
+        // Single pass over the body for all three markers instead of three independent
+        // `.windows().any()` scans (each a full traversal on its own): the old code, for
+        // `false || false || false` (the common plain-chat case, where none of the markers are
+        // present), always paid for three full scans before concluding "chat" — `||` cannot
+        // short-circuit when every operand is false. Only the disjunction is ever consulted
+        // downstream, so one pass that stops at the FIRST marker found (of any of the three) is
+        // both a correct drop-in (same presence/absence result as the old `has(a) || has(b) ||
+        // has(c)`) and strictly cheaper on every input: chat still degrades to one full scan
+        // (not three), and any input that does carry a marker returns as soon as it's seen
+        // instead of scanning per-pattern first.
+        let hit = (0..body.len()).any(|i| {
+            let rest = &body[i..];
+            rest.starts_with(b"responseModalities")
+                || rest.starts_with(b"inline_data")
+                || rest.starts_with(b"inlineData")
+        });
+        if hit {
             if let Ok(v) = serde_json::from_slice::<Value>(body) {
                 let audio_out = v
                     .pointer("/generationConfig/responseModalities")
@@ -747,6 +762,43 @@ mod tests {
         assert_eq!(
             h.resolve_operation("/v1beta/models/gemini-x:generateContent", &body),
             Some(Operation::Transcription),
+        );
+    }
+
+    #[test]
+    fn resolve_operation_multiple_markers_prefers_speech_over_transcription() {
+        // A body carrying BOTH responseModalities:AUDIO and an inline_data audio part exercises
+        // the single-pass pre-filter's "any marker present" gate with more than one marker
+        // actually present, then leaves the existing JSON-pointer logic (unchanged by this fix)
+        // to disambiguate — which checks audio_out (Speech) before audio_in (Transcription), so
+        // Speech wins. Locks in that the combined-scan pre-filter doesn't change which branch the
+        // downstream classifier picks when multiple markers co-occur.
+        let body = serde_json::to_vec(&json!({
+            "contents": [{ "role": "user", "parts": [
+                { "inline_data": { "mime_type": "audio/wav", "data": "AAAA" } },
+            ]}],
+            "generationConfig": { "responseModalities": ["AUDIO"] },
+        }))
+        .unwrap();
+        let h = GeminiRequestHandler;
+        assert_eq!(
+            h.resolve_operation("/v1beta/models/gemini-x:generateContent", &body),
+            Some(Operation::Speech),
+        );
+    }
+
+    #[test]
+    fn resolve_operation_no_markers_at_all_is_chat() {
+        // An empty-ish body with none of the three markers must fall through to Chat without
+        // attempting a JSON parse of a body that isn't even valid JSON — this is the pre-filter's
+        // "false || false || false" common case the single-pass scan exists to speed up.
+        let h = GeminiRequestHandler;
+        assert_eq!(
+            h.resolve_operation(
+                "/v1beta/models/gemini-x:generateContent",
+                b"not json at all"
+            ),
+            Some(Operation::Chat),
         );
     }
 
