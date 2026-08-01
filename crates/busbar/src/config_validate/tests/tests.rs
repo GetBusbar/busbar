@@ -2523,6 +2523,16 @@ fn test_validate_rejects_self_referential_fallback_pool() {
             .any(|e| e.contains("references unknown fallback pool")),
         "a self-reference must not be reported as an unknown fallback pool; got: {errs:?}"
     );
+    // Rule 7b (the multi-hop cycle detector) deliberately excludes the length-1 ring a self-loop
+    // produces (`ring.len() > 1`) — Rule 7 above already reports it, and Rule 7b re-reporting it
+    // would be a confusing duplicate diagnostic for the same misconfiguration. A mutated `> 1` ->
+    // `>= 1` would let Rule 7b's ring (len 1 for a self-loop) also fire here.
+    assert!(
+        !errs
+            .iter()
+            .any(|e| e.contains("fallback_pool cycle detected")),
+        "a self-loop must be reported once by Rule 7, not again by Rule 7b's cycle detector; got: {errs:?}"
+    );
 }
 
 #[test]
@@ -4213,4 +4223,216 @@ advanced:
         "{joined}"
     );
     assert!(joined.contains("advanced.rate_sweep_interval"), "{joined}");
+}
+
+/// `validate_limits`'s many "must be >= 1" checks are each an EXACT boundary: 1 must be accepted,
+/// 0 must be rejected. A mutated `< 1` -> `<= 1`/`== 1` would reject the boundary value itself (1)
+/// as well as 0, or only catch the exact value 1 rather than the whole 0 case — either way silently
+/// diverging from "0 is invalid, 1 is the floor". Table-driven over every field this rule governs.
+#[test]
+fn test_validate_limits_boundary_fields_reject_zero_accept_one() {
+    macro_rules! check_floor_one {
+        ($field:ident, $needle:expr) => {{
+            let mut bad = config::LimitsResolved::default();
+            bad.$field = 0;
+            let mut errs = Vec::new();
+            validate_limits(&bad, &mut errs);
+            assert!(
+                errs.iter().any(|e| e.contains($needle)),
+                "{}=0 must be rejected; got {errs:?}",
+                stringify!($field)
+            );
+
+            let mut good = config::LimitsResolved::default();
+            good.$field = 1;
+            let mut errs = Vec::new();
+            validate_limits(&good, &mut errs);
+            assert!(
+                !errs.iter().any(|e| e.contains($needle)),
+                "{}=1 (the floor itself) must be ACCEPTED; got {errs:?}",
+                stringify!($field)
+            );
+        }};
+    }
+
+    check_floor_one!(tls_handshake_timeout_secs, "tls_handshake_timeout_secs");
+    check_floor_one!(
+        request_body_read_timeout_secs,
+        "request_body_read_timeout_secs"
+    );
+    check_floor_one!(
+        webhook_delivery_timeout_secs,
+        "webhook_delivery_timeout_secs"
+    );
+    check_floor_one!(
+        max_inflight_webhook_deliveries,
+        "max_inflight_webhook_deliveries must be >= 1"
+    );
+    check_floor_one!(max_honored_retry_after_secs, "max_honored_retry_after_secs");
+    check_floor_one!(hard_down_cooldown_secs, "hard_down_cooldown_secs");
+    check_floor_one!(
+        upstream_error_body_max_bytes,
+        "upstream_error_body_max_bytes"
+    );
+    check_floor_one!(default_max_tokens, "default_max_tokens");
+    check_floor_one!(default_probe_interval_secs, "default_probe_interval_secs");
+    check_floor_one!(default_probe_timeout_secs, "default_probe_timeout_secs");
+}
+
+/// `max_inbound_concurrent`'s ceiling is `MAX_SEMAPHORE_PERMITS` itself (the value that panics is
+/// `MAX_SEMAPHORE_PERMITS + 1`, not the ceiling itself) — a mutated `>` -> `>=` would reject the
+/// ceiling value too.
+#[test]
+fn test_validate_limits_max_inbound_concurrent_ceiling_is_exact() {
+    let at_cap = config::LimitsResolved {
+        max_inbound_concurrent: MAX_SEMAPHORE_PERMITS,
+        ..config::LimitsResolved::default()
+    };
+    let mut errs = Vec::new();
+    validate_limits(&at_cap, &mut errs);
+    assert!(
+        !errs
+            .iter()
+            .any(|e| e.contains("max_inbound_concurrent must be <=")),
+        "exactly MAX_SEMAPHORE_PERMITS must be accepted; got {errs:?}"
+    );
+
+    let over_cap = config::LimitsResolved {
+        max_inbound_concurrent: MAX_SEMAPHORE_PERMITS + 1,
+        ..config::LimitsResolved::default()
+    };
+    let mut errs = Vec::new();
+    validate_limits(&over_cap, &mut errs);
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("max_inbound_concurrent must be <=")),
+        "MAX_SEMAPHORE_PERMITS + 1 must be rejected; got {errs:?}"
+    );
+}
+
+/// The pool-hooks-list `Rule (hooks/pool-ref)` requires every hook a pool's `gates:` list names to
+/// be a GATE, not a tap (a tap is fire-and-forget and cannot influence routing). A mutated match
+/// guard (`h.kind != HookKind::Gate` -> `false`) would let a pool reference a tap silently.
+#[test]
+fn test_pool_gate_ref_rejects_a_tap() {
+    let mut cfg = hooks_test_cfg();
+    let mut tap = gate_hook("watcher-plugin", 150);
+    tap.kind = config::HookKind::Tap;
+    cfg.hooks.insert("watcher".to_string(), tap);
+    cfg.pools
+        .get_mut("p1")
+        .expect("hooks_test_cfg seeds pool p1")
+        .gates
+        .push("watcher".to_string());
+    let errs = validate(&cfg).expect_err("a pool referencing a tap in gates: must be rejected");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("watcher") && e.contains("must be a gate")),
+        "expected a wrong-kind-hook error naming the tap; got: {errs:?}"
+    );
+}
+
+/// The SAME rule must accept a real gate reference (no false-positive on the correct case).
+#[test]
+fn test_pool_gate_ref_accepts_a_real_gate() {
+    let mut cfg = hooks_test_cfg();
+    cfg.hooks
+        .insert("real-gate".to_string(), gate_hook("gate-plugin", 150));
+    cfg.pools
+        .get_mut("p1")
+        .expect("hooks_test_cfg seeds pool p1")
+        .gates
+        .push("real-gate".to_string());
+    if let Err(errs) = validate(&cfg) {
+        assert!(
+            !errs.iter().any(|e| e.contains("must be a gate")),
+            "a real gate reference must not be flagged wrong-kind; got: {errs:?}"
+        );
+    }
+}
+
+/// `reasoning_effort_budgets` must be > 0 in EVERY field independently, not only when ALL FOUR are
+/// zero — a mutated `||` -> `&&` in the zero-check would only fire on the all-zero case.
+#[test]
+fn test_reasoning_effort_budgets_rejects_a_single_zero_field() {
+    let (providers, models, pools) = valid_maps();
+    let mut cfg = make_root_cfg(providers, models, pools);
+    // Only `low` is zero; minimal/medium/high are fine. An `&&`-mutated check would miss this.
+    cfg.limits.reasoning_effort_budgets = config::ReasoningEffortBudgets {
+        minimal: 1024,
+        low: 0,
+        medium: 4096,
+        high: 8192,
+    };
+    let errs = validate(&cfg).expect_err("a single zero budget field must be rejected");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("reasoning_effort_budgets entries must be > 0")),
+        "expected the zero-entry error; got: {errs:?}"
+    );
+}
+
+/// The `max_admin_scope` / `role_bindings.*.admin_scope` incomparability check must fire ONLY on
+/// genuinely incomparable sibling scopes (`hooks-register` vs `mint`), never on a dominating pair
+/// (a `full` cap narrowed to `mint` at the binding) — the lattice relation (`allows`), not a plain
+/// `!=`. A mutated `&&` -> `||` would false-positive on the dominating case; a mutated
+/// `!cap.allows(bound)` -> `cap.allows(bound)` (deleted `!`) would miss the genuinely incomparable
+/// case.
+#[test]
+fn test_admin_scope_incomparability_check_is_the_lattice_not_inequality() {
+    // Genuinely incomparable: cap = hooks-register, bound = mint. Must error.
+    {
+        let (providers, models, pools) = valid_maps();
+        let mut cfg = make_root_cfg(providers, models, pools);
+        let mut auth = config::AuthCfg::default_none();
+        let mut entry = config::AuthChainEntry::bare("keys");
+        entry.max_admin_scope = Some("hooks-register".to_string());
+        auth.chain = vec![entry];
+        auth.role_bindings.insert(
+            "keys".to_string(),
+            std::collections::BTreeMap::from([(
+                "minter".to_string(),
+                config::RoleBindingCfg {
+                    allowed_pools: None,
+                    group: None,
+                    admin_scope: Some("mint".to_string()),
+                },
+            )]),
+        );
+        cfg.auth = Some(auth);
+        let errs = validate(&cfg)
+            .expect_err("hooks-register cap with a mint binding is genuinely incomparable");
+        assert!(
+            errs.iter().any(|e| e.contains("INCOMPARABLE")),
+            "expected the incomparability error; got: {errs:?}"
+        );
+    }
+
+    // Dominating, not incomparable: cap = full, bound = mint (a narrowing). Must NOT error.
+    {
+        let (providers, models, pools) = valid_maps();
+        let mut cfg = make_root_cfg(providers, models, pools);
+        let mut auth = config::AuthCfg::default_none();
+        let mut entry = config::AuthChainEntry::bare("keys");
+        entry.max_admin_scope = Some("full".to_string());
+        auth.chain = vec![entry];
+        auth.role_bindings.insert(
+            "keys".to_string(),
+            std::collections::BTreeMap::from([(
+                "minter".to_string(),
+                config::RoleBindingCfg {
+                    allowed_pools: None,
+                    group: None,
+                    admin_scope: Some("mint".to_string()),
+                },
+            )]),
+        );
+        cfg.auth = Some(auth);
+        if let Err(errs) = validate(&cfg) {
+            assert!(
+                !errs.iter().any(|e| e.contains("INCOMPARABLE")),
+                "a full cap narrowed to mint is a valid narrowing, not incomparable; got: {errs:?}"
+            );
+        }
+    }
 }
