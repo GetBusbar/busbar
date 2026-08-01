@@ -742,12 +742,40 @@ impl ProtocolWriter for GeminiWriter {
                 // block is tracked (no tool BlockStart seen, or a poisoned lock) the fragment is
                 // dropped silently rather than panicking on the request path — the same degraded
                 // outcome the stateless arm produced, never a crash.
+                //
+                // Bound how large this ONE block's buffer can grow across the life of the stream:
+                // nothing previously capped it, a hostile/buggy upstream streaming an unbounded run of
+                // fragments against one open index could grow this `String` without bound (a
+                // per-connection memory-amplification DoS distinct from `MAX_GEMINI_TOOL_FRAMES`, which
+                // only bounds the COUNT of distinct open blocks, not one block's accumulated size).
+                //
+                // The cap is `crate::limits::translate_body_max_bytes()` — the SAME operator-tunable,
+                // live-reconfigurable limit (default 32 MiB, coupled to `limits.request_body_max_bytes`)
+                // that already bounds a buffered cross-protocol NON-STREAM completion body elsewhere
+                // (`proxy::wire::max_translated_body_bytes`), whose own doc comment names "big tool-call
+                // arguments" as exactly why that cap must be generous. Reusing it here — rather than a
+                // new hardcoded constant — means an operator who raises the one knob to admit larger
+                // tool payloads gets that same headroom on this streaming path too, instead of the two
+                // paths silently diverging. A read per fragment is cheap (an uncontended `RwLock` read),
+                // matching every other `crate::limits` call site's per-use-site read.
+                //
+                // Once appending a fragment would cross the cap, that fragment (and every subsequent one
+                // for this block) is dropped whole rather than sliced at the boundary: the buffer is
+                // already guaranteed-unparseable JSON at that point either way, so a partial fragment
+                // buys nothing — this mirrors `MAX_GEMINI_TOOL_FRAMES`'s own stop-growing (not abort)
+                // policy. The resulting truncated buffer fails to parse as JSON on `BlockStop` and
+                // degrades to the pre-existing `args: {}` fallback there (established for ANY
+                // unparseable accumulation, cap-truncated or not) — the call is never lost and its name
+                // always survives, so this introduces no new failure mode.
                 crate::ir::IrDelta::InputJsonDelta(json_str) => {
                     if let Ok(mut guard) = self.open_tools.lock() {
                         if let Some((_, _, args)) =
                             guard.iter_mut().find(|(idx, _, _)| idx == index)
                         {
-                            args.push_str(json_str);
+                            let cap = crate::limits::translate_body_max_bytes();
+                            if args.len().saturating_add(json_str.len()) <= cap {
+                                args.push_str(json_str);
+                            }
                         }
                     }
                     None
