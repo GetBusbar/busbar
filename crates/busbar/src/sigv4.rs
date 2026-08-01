@@ -97,29 +97,6 @@ pub(crate) fn uri_encode_path(path: &str) -> String {
     out
 }
 
-/// AWS URI-encode a query-string component (key or value). IDENTICAL to [`uri_encode_path`] EXCEPT
-/// that `/` is ALSO percent-encoded (to `%2F`): in the query string `/` is not a path separator and
-/// AWS encodes it. Unreserved chars (A-Za-z0-9-_.~) pass through; everything else (including `/`)
-/// becomes %XX uppercase. Used by the inbound verifier to canonicalize the request query string the
-/// same way a signer does.
-pub(crate) fn uri_encode_query(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for &b in s.as_bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
-            }
-            _ => {
-                const HEX: &[u8; 16] = b"0123456789ABCDEF";
-                out.push('%');
-                out.push(HEX[(b >> 4) as usize] as char);
-                out.push(HEX[(b & 0x0f) as usize] as char);
-            }
-        }
-    }
-    out
-}
-
 /// Convert a Unix epoch (seconds) to (amzdate `YYYYMMDDTHHMMSSZ`, datestamp `YYYYMMDD`). Pure UTC,
 /// no external date crate (a public-domain civil-from-days algorithm).
 pub(crate) fn format_amz_time(epoch_secs: u64) -> (String, String) {
@@ -931,14 +908,6 @@ mod tests {
             verify_inbound_sigv4(&parsed, &req, secret, now),
             Err(VerifyError::MalformedAuthorization)
         );
-    }
-
-    #[test]
-    fn test_uri_encode_query_encodes_slash() {
-        // Query encoding differs from path encoding: '/' is percent-encoded in the query.
-        assert_eq!(uri_encode_query("a/b"), "a%2Fb");
-        assert_eq!(uri_encode_query("k-v_1.~"), "k-v_1.~"); // unreserved pass through
-        assert_eq!(uri_encode_query(" "), "%20");
     }
 
     /// AWS published worked example — GET iam ListUsers, 2015-08-30. If our canonical-request →

@@ -2680,6 +2680,60 @@ fn test_verify_bedrock_sigv4_roundtrip_admits_with_govctx() {
 }
 
 #[test]
+fn test_verify_bedrock_sigv4_roundtrip_with_escaped_query_param_admits() {
+    // Regression for the query-string double-encoding bug: `canonical_query_string` must NOT
+    // re-URI-encode the wire query string, which arrives already percent-encoded once by the
+    // client. A real SigV4 client signs a CanonicalQueryString built from ONE encoding pass over
+    // its query params, and sends that SAME single-encoded text on the wire. If busbar's inbound
+    // verifier ran the wire text through the encoder a second time, the canonical query string it
+    // reconstructs would diverge from what the client signed, and EVERY request carrying a query
+    // parameter that needed escaping (here, a literal '/' in the value) would fail verification.
+    crate::metrics::init();
+    let (gov, akid, secret) = gov_with_aws_key();
+    let amzdate = {
+        let (a, _d) = crate::sigv4::format_amz_time(crate::store::now());
+        a
+    };
+    let datestamp = &amzdate[0..8];
+    let path = "/model/anthropic.claude/converse";
+    // The client's ONE correct URI-encoding of a value containing '/' (per AWS SigV4 query rules,
+    // which — unlike CanonicalURI — are never double-encoded).
+    let wire_query = "p=a%2Fb";
+    let payload_hash = crate::sigv4::sha256_hex(b"");
+    let headers = vec![
+        (
+            "host".to_string(),
+            "bedrock-runtime.us-east-1.amazonaws.com".to_string(),
+        ),
+        (X_AMZ_CONTENT_SHA256.to_string(), payload_hash.clone()),
+        (X_AMZ_DATE.to_string(), amzdate.to_string()),
+    ];
+    let canonical_uri = crate::sigv4::uri_encode_path(path);
+    // The client signs the wire query text UNCHANGED — that IS its CanonicalQueryString.
+    let (sig, signed_headers) = crate::sigv4::sign_v4(
+        &secret,
+        "us-east-1",
+        "bedrock",
+        "POST",
+        &canonical_uri,
+        wire_query,
+        &headers,
+        &payload_hash,
+        &amzdate,
+        datestamp,
+    );
+    let auth = format!(
+        "AWS4-HMAC-SHA256 Credential={akid}/{datestamp}/us-east-1/bedrock/aws4_request, \
+             SignedHeaders={signed_headers}, Signature={sig}"
+    );
+    let full_path = format!("{path}?{wire_query}");
+    let req = bedrock_request(&full_path, &auth, &headers);
+    let key = verify_bedrock_sigv4(&gov, &req, b"")
+        .expect("a correctly-signed request with an escaped query param must verify");
+    assert_eq!(key.name, "bedrock");
+}
+
+#[test]
 fn test_verify_bedrock_sigv4_wrong_secret_rejected() {
     crate::metrics::init();
     let (gov, akid, _secret) = gov_with_aws_key();
@@ -2954,14 +3008,24 @@ fn test_has_sigv4_authorization_detects_scheme() {
 }
 
 #[test]
-fn test_canonical_query_string_sorts_and_encodes() {
+fn test_canonical_query_string_sorts_but_does_not_reencode() {
     assert_eq!(canonical_query_string(None), "");
     assert_eq!(canonical_query_string(Some("")), "");
-    // Sorted by key; values URI-encoded (with '/' → %2F).
+    // Sorted by key.
     assert_eq!(canonical_query_string(Some("b=2&a=1")), "a=1&b=2");
-    assert_eq!(canonical_query_string(Some("p=a/b")), "p=a%2Fb");
     // Bare key signs as key= (empty value).
     assert_eq!(canonical_query_string(Some("flag")), "flag=");
+    // REGRESSION (bug: re-URI-encoding the already-encoded wire query string): `query` is the RAW
+    // wire query string, i.e. ALREADY percent-encoded once by the client (per AWS SigV4, the client
+    // builds its wire query string and its CanonicalQueryString with the SAME single encoding pass).
+    // A wire value like `a%2Fb` (the client's one correct encoding of `a/b`) must pass through
+    // UNCHANGED — re-encoding it here would double-encode the `%` into `a%252Fb`, diverging from
+    // what the client signed and breaking verification of every request with an escaped query char.
+    assert_eq!(canonical_query_string(Some("p=a%2Fb")), "p=a%2Fb");
+    // A literal (unencoded) '/' on the wire — also valid, since '/' is unreserved-in-query per RFC
+    // 3986 and some clients don't escape it — likewise passes through unchanged: busbar trusts the
+    // wire bytes are exactly what the client signed, it does not re-derive the "should be" encoding.
+    assert_eq!(canonical_query_string(Some("p=a/b")), "p=a/b");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -1326,25 +1326,31 @@ fn has_sigv4_authorization(req: &Request<Body>) -> bool {
         .unwrap_or(false)
 }
 
-/// Canonicalize the request query string for SigV4: split into key=value pairs, URI-encode each key
-/// and value (RFC 3986 unreserved pass through), sort by encoded key (then encoded value), and join
-/// with `&`. An empty/absent query yields `""`. A bare key (`?foo`) canonicalizes to `foo=` (AWS
-/// signs a missing value as empty). This must match what the client's signer produced. Bedrock
-/// Converse requests normally carry no query, but canonicalizing correctly keeps the verifier general.
+/// Canonicalize the request query string for SigV4: split into key=value pairs, sort by (encoded)
+/// key then (encoded) value, and join with `&`. An empty/absent query yields `""`. A bare key
+/// (`?foo`) canonicalizes to `foo=` (AWS signs a missing value as empty).
+///
+/// Deliberately does NOT run each key/value through an AWS URI-encoder. `query` here is the RAW
+/// wire query string — i.e. already percent-encoded exactly once by whatever HTTP client/SDK sent
+/// the request, since a compliant SigV4 client uses the SAME single URI-encoding pass to build both
+/// the CanonicalQueryString it signs AND the query string it puts on the wire (AWS "Create a
+/// canonical request for Signature Version 4": CanonicalQueryString is built by URI-encoding each
+/// parameter name/value ONCE — unlike CanonicalURI, which for non-S3 services is deliberately
+/// double-encoded; see `uri_encode_path`'s caller in `proxy/egress.rs` and its mirror at the
+/// `canonical_uri` line above for that asymmetric, INTENTIONAL case). Running the already
+/// once-encoded wire text through an AWS URI-encoder again would double-encode it (e.g. a client's
+/// correct `a%2Fb` becomes `a%252Fb`), producing a CanonicalQueryString that diverges from the one
+/// the client actually signed — every request with a query parameter needing escaping would fail
+/// verification. Sorting is done on the RAW (already-encoded) bytes, which is equivalent to sorting
+/// on the encoded key/value per the AWS spec, since the wire bytes ARE the encoded form.
 fn canonical_query_string(query: Option<&str>) -> String {
     let Some(q) = query.filter(|q| !q.is_empty()) else {
         return String::new();
     };
-    let mut pairs: Vec<(String, String)> = q
+    let mut pairs: Vec<(&str, &str)> = q
         .split('&')
         .filter(|p| !p.is_empty())
-        .map(|pair| {
-            let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
-            (
-                crate::sigv4::uri_encode_query(k),
-                crate::sigv4::uri_encode_query(v),
-            )
-        })
+        .map(|pair| pair.split_once('=').unwrap_or((pair, "")))
         .collect();
     pairs.sort();
     pairs
