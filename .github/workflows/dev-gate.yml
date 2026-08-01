@@ -118,6 +118,18 @@ jobs:
         run: ./scripts/release-check.sh
         working-directory: busbarAI
 
+      # hook-test-plugin and secret-example-plugin are hermetic in-tree dev-fixture cdylibs
+      # plugin-loader's own tests dlopen (hook_plugin_path()/secret_example_plugin_path()) — but
+      # neither is a declared Cargo dependency of busbar-plugin-loader (they're only ever loaded at
+      # runtime via dlopen from inside a test), so the SCOPED `cargo test -p busbar-plugin-loader`
+      # step below never builds them on its own, no matter what profile-dir path that step's own
+      # cdylib-discovery helpers check. Build them explicitly first; both crates hard-panic (via
+      # their own path-discovery helpers) under CI if this step is ever skipped or reordered, so a
+      # future regression here fails loud rather than silently losing this coverage again.
+      - name: Build the in-tree hook-test-plugin and secret-example-plugin cdylibs
+        run: cargo build --release -p busbar-hook-test-plugin -p busbar-secret-example-plugin
+        working-directory: busbarAI
+
       - name: Run the loader-mechanism tests against the real sibling-built store-sqlite-plugin
         env:
           DEV_GATE: "1"

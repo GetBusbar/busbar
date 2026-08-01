@@ -290,19 +290,44 @@ mod tests {
     /// Locate the test hook plugin cdylib in the build's target dir (mirrors the sqlite loader test).
     /// Under CI (`cargo test --workspace` always builds it) a missing cdylib is a HARD failure, never
     /// a silent skip — the only over-the-ABI coverage of the DlopenPolicy seam must not vanish.
+    ///
+    /// Checks BOTH the "uplifted" `<profile_dir>/<name>` copy (only refreshed when `[lib]` is a
+    /// ROOT build target, e.g. `cargo build --all-targets`) and the raw `<profile_dir>/deps/<name>`
+    /// compiler output (refreshed on every build that recompiles the lib). A SCOPED `cargo test -p
+    /// busbar-plugin-loader` (what dev-gate.yml's final step runs — DIFFERENT from the
+    /// `crates/busbar/src/hooks/tests/tests.rs::hook_cdylib()` fix, a same-named-in-spirit but
+    /// separate function in a separate crate that was fixed earlier and did NOT cover this one)
+    /// does not uplift the cdylib to the top-level profile dir, only to `target/deps` — checking
+    /// only `profile_dir` silently found nothing even though the cdylib really was built, and
+    /// because this function only hard-panics when `CI` is set (not under a bare local `cargo
+    /// test`), every gated test here quietly "passed" via its own early return with zero real
+    /// coverage locally, only surfacing as a hard CI failure. Same fix already applied to this
+    /// crate's `store_fixture_plugin_path`/`secret_example_plugin_path` and to sibling repos'
+    /// equivalent helpers.
     fn hook_plugin_path() -> Option<std::path::PathBuf> {
         let candidate = (|| {
             let exe = std::env::current_exe().ok()?;
             let profile_dir = exe.parent()?.parent()?;
             let name = crate::plugin_library_filename("busbar_hook_test_plugin");
-            let candidate = profile_dir.join(&name);
-            candidate.exists().then_some(candidate)
+            let uplifted = profile_dir.join(&name);
+            let raw = profile_dir.join("deps").join(&name);
+            [uplifted, raw]
+                .into_iter()
+                .filter_map(|p| {
+                    std::fs::metadata(&p)
+                        .and_then(|m| m.modified())
+                        .ok()
+                        .map(|mtime| (p, mtime))
+                })
+                .max_by_key(|(_, mtime)| *mtime)
+                .map(|(p, _)| p)
         })();
         if candidate.is_none() && std::env::var_os("CI").is_some() {
             panic!(
                 "the hook test plugin cdylib is not built under CI: `cargo test --workspace` must \
-                 build busbar_hook_test_plugin. Refusing to silently skip the only over-the-ABI \
-                 coverage of the DlopenPolicy hook seam."
+                 build busbar_hook_test_plugin (checked both the uplifted target dir and \
+                 target/deps). Refusing to silently skip the only over-the-ABI coverage of the \
+                 DlopenPolicy hook seam."
             );
         }
         candidate
