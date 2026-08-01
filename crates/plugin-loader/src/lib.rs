@@ -1201,6 +1201,169 @@ mod tests {
         assert!(inventory(Path::new("/no/such/plugins/dir")).is_empty());
     }
 
+    /// `intern_name` reuses the SAME allocation for repeated sightings of the same name (that's the
+    /// whole point - bounding the leak to one per distinct name), while two DIFFERENT names get
+    /// distinct interned strings. Checked via pointer identity, not just string equality, since two
+    /// equal-but-differently-allocated `&'static str`s would defeat the interning claim silently.
+    #[test]
+    fn intern_name_reuses_the_same_allocation_for_a_repeated_name() {
+        let a1 = intern_name("plugin-a-unique-for-this-test");
+        let a2 = intern_name("plugin-a-unique-for-this-test");
+        assert_eq!(
+            a1.as_ptr(),
+            a2.as_ptr(),
+            "the same name must reuse the SAME leaked allocation, not leak a fresh one each call"
+        );
+        let b = intern_name("plugin-b-unique-for-this-test");
+        assert_ne!(
+            a1.as_ptr(),
+            b.as_ptr(),
+            "a different name is a different allocation"
+        );
+        assert_eq!(b, "plugin-b-unique-for-this-test");
+    }
+
+    #[test]
+    fn is_library_file_matches_only_this_platforms_extension() {
+        let expected_ext = if cfg!(target_os = "windows") {
+            ".dll"
+        } else if cfg!(target_os = "macos") {
+            ".dylib"
+        } else {
+            ".so"
+        };
+        assert!(is_library_file(&format!("libfoo{expected_ext}")));
+        assert!(!is_library_file("libfoo.txt"));
+        assert!(!is_library_file("libfoo"));
+        assert!(!is_library_file("README.md"));
+    }
+
+    /// `list_plugin_files` lists only library-extension files, sorted, and NEVER dlopens anything
+    /// (so it must return real filenames even for a garbage/non-plugin library file that would fail
+    /// `validate_plugin`).
+    #[test]
+    fn list_plugin_files_filters_to_libraries_only_and_sorts() {
+        let dir = std::env::temp_dir().join(format!(
+            "busbar-list-plugin-files-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ext = if cfg!(target_os = "windows") {
+            ".dll"
+        } else if cfg!(target_os = "macos") {
+            ".dylib"
+        } else {
+            ".so"
+        };
+        std::fs::write(dir.join(format!("zzz{ext}")), b"not a real library").unwrap();
+        std::fs::write(dir.join(format!("aaa{ext}")), b"not a real library either").unwrap();
+        std::fs::write(dir.join("readme.txt"), b"not a library at all").unwrap();
+        let files = list_plugin_files(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            files,
+            vec![format!("aaa{ext}"), format!("zzz{ext}")],
+            "only library-extension files, sorted, no dlopen (garbage bytes never rejected here)"
+        );
+    }
+
+    /// `inventory` reports BOTH a real valid plugin AND a garbage same-extension file in the same
+    /// directory, correctly distinguishing valid=true/false rather than silently dropping the
+    /// invalid one or crashing on it.
+    #[test]
+    fn inventory_reports_valid_and_invalid_libraries_in_the_same_directory() {
+        let Some(real_plugin) = store_fixture_plugin_path() else {
+            eprintln!("skip: store-sqlite-plugin cdylib not built (run `cargo build --release -p busbar-store-sqlite-plugin` in a sibling ../store-sqlite checkout)");
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!(
+            "busbar-inventory-mixed-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ext = if cfg!(target_os = "windows") {
+            ".dll"
+        } else if cfg!(target_os = "macos") {
+            ".dylib"
+        } else {
+            ".so"
+        };
+        std::fs::copy(&real_plugin, dir.join(format!("real{ext}"))).unwrap();
+        std::fs::write(dir.join(format!("garbage{ext}")), b"not a real library").unwrap();
+        std::fs::write(dir.join("readme.txt"), b"ignored: not a library extension").unwrap();
+        let mut items = inventory(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+        items.sort_by(|a, b| a.file.cmp(&b.file));
+        assert_eq!(
+            items.len(),
+            2,
+            "readme.txt must be excluded entirely: {items:?}"
+        );
+        let garbage = items
+            .iter()
+            .find(|i| i.file.starts_with("garbage"))
+            .unwrap();
+        assert!(!garbage.valid);
+        assert!(garbage.error.is_some());
+        let real = items.iter().find(|i| i.file.starts_with("real")).unwrap();
+        assert!(real.valid, "the real plugin must validate: {real:?}");
+        assert_eq!(real.abi_version, Some(TRANSPORT_VERSION));
+    }
+
+    /// `wire_up_raw`'s two independent kind gates must BOTH fire, and must fire for the RIGHT
+    /// reason: exported-vs-expected (the ABI seam calling this as the wrong kind) and
+    /// exported-vs-manifest (the signed manifest disagreeing with what the library actually
+    /// exports) are two different attacks and must not be conflatable into one check.
+    #[test]
+    fn wire_up_raw_rejects_a_kind_mismatch_against_the_seam_and_the_manifest() {
+        let Some(store_plugin) = store_fixture_plugin_path() else {
+            eprintln!("skip: store-sqlite-plugin cdylib not built (run `cargo build --release -p busbar-store-sqlite-plugin` in a sibling ../store-sqlite checkout)");
+            return;
+        };
+        let bytes = std::fs::read(&store_plugin).expect("read sibling store-sqlite-plugin cdylib");
+
+        // Seam mismatch: a real STORE library loaded through the SECRET entry point (expected_kind
+        // = secret, exported_kind = store) must be refused, naming both kinds.
+        let Err(err) =
+            load_secret_from_bytes(&bytes, r#"{}"#, "kind-mismatch-seam", abi_kind::STORE)
+        else {
+            panic!("a store library must not load as a secret module");
+        };
+        assert!(err.contains("store"), "must name the exported kind: {err}");
+        assert!(err.contains("secret"), "must name the expected kind: {err}");
+
+        // Manifest mismatch: expected_kind matches exported_kind (both store), but the signed
+        // manifest_kind lies about it — must still be refused.
+        let Err(err) = load_store_from_bytes(&bytes, r#"{}"#, "kind-mismatch-manifest", "secret")
+        else {
+            panic!("an exported-store/manifest-secret disagreement must be refused");
+        };
+        assert!(
+            err.contains("kind mismatch"),
+            "must name it as a manifest disagreement, not a seam mismatch: {err}"
+        );
+    }
+
+    #[test]
+    fn plugin_library_filename_matches_this_platforms_naming_convention() {
+        let name = plugin_library_filename("busbar_foo_plugin");
+        if cfg!(target_os = "windows") {
+            assert_eq!(name, "busbar_foo_plugin.dll");
+        } else if cfg!(target_os = "macos") {
+            assert_eq!(name, "libbusbar_foo_plugin.dylib");
+        } else {
+            assert_eq!(name, "libbusbar_foo_plugin.so");
+        }
+    }
+
     /// The response-length cap accepts a normal reply and REFUSES an over-cap length before any
     /// allocation — defense-in-depth against a plugin declaring a huge `out_len` and OOMing the engine.
     #[test]

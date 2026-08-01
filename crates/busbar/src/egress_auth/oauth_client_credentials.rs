@@ -182,6 +182,17 @@ mod tests {
         assert!(build("id-only:", "https://t", "s", &deny()).is_err());
     }
 
+    // `validate_credential` is the standalone `--validate` dry-run entry point (unlike `build`, it
+    // never constructs a provider or touches the network) - it must apply the SAME parse checks as
+    // `build`'s `split_credential` call, not just always succeed.
+    #[test]
+    fn validate_credential_rejects_malformed_and_accepts_well_formed() {
+        assert!(validate_credential("no-colon-here").is_err());
+        assert!(validate_credential(":secret-only").is_err());
+        assert!(validate_credential("id-only:").is_err());
+        assert!(validate_credential("id:secret").is_ok());
+    }
+
     // 1.4.0 audit (egress-auth): build() re-validates token_url for SSRF/https as defense-in-depth
     // (parity with jwt-bearer). A plaintext-http public token_url and a cloud-metadata/IMDS host are
     // rejected even with a well-formed credential; loopback http is allowed (local dev IdP).

@@ -1201,4 +1201,196 @@ mod tests {
         assert_eq!(l.requests, 2);
         assert_eq!(l.tokens_for("m").unwrap().input, 10);
     }
+
+    #[test]
+    fn virtual_key_is_live_reflects_deleted_at() {
+        let mut k = sample_key();
+        assert!(k.is_live(), "deleted_at: None must be live");
+        k.deleted_at = Some(99);
+        assert!(!k.is_live(), "deleted_at: Some(_) must not be live");
+    }
+
+    #[test]
+    fn credential_secret_plaintext_extracts_v1_plain_only() {
+        let mut c = sample_credential();
+        assert_eq!(c.plaintext(), Some("s3cr3t-signing-key"));
+        c.secret = "v1:aead:opaque-ciphertext".to_string();
+        assert_eq!(
+            c.plaintext(),
+            None,
+            "a non-plain scheme must never be treated as plaintext"
+        );
+        c.secret = String::new();
+        assert_eq!(c.plaintext(), None);
+    }
+
+    #[test]
+    fn tier_tokens_is_zero_requires_every_field_zero() {
+        assert!(TierTokens::default().is_zero());
+        assert!(!TierTokens {
+            input: 1,
+            ..Default::default()
+        }
+        .is_zero());
+        assert!(!TierTokens {
+            output: 1,
+            ..Default::default()
+        }
+        .is_zero());
+        assert!(!TierTokens {
+            cache_read: 1,
+            ..Default::default()
+        }
+        .is_zero());
+        assert!(!TierTokens {
+            cache_write: 1,
+            ..Default::default()
+        }
+        .is_zero());
+    }
+
+    #[test]
+    fn tier_tokens_delta_is_zero_requires_every_field_zero() {
+        assert!(TierTokensDelta::default().is_zero());
+        assert!(!TierTokensDelta {
+            input: 1,
+            ..Default::default()
+        }
+        .is_zero());
+        assert!(!TierTokensDelta {
+            output: -1,
+            ..Default::default()
+        }
+        .is_zero());
+        assert!(!TierTokensDelta {
+            cache_read: 1,
+            ..Default::default()
+        }
+        .is_zero());
+        assert!(!TierTokensDelta {
+            cache_write: 1,
+            ..Default::default()
+        }
+        .is_zero());
+    }
+
+    #[test]
+    fn usage_delta_is_zero_requires_requests_billable_and_every_model_zero() {
+        assert!(UsageDelta::default().is_zero());
+        assert!(!UsageDelta {
+            requests: 1,
+            ..Default::default()
+        }
+        .is_zero());
+        assert!(!UsageDelta {
+            billable_requests: 1,
+            ..Default::default()
+        }
+        .is_zero());
+        assert!(!UsageDelta {
+            models: vec![ModelTokensDelta {
+                model: "m".to_string(),
+                tokens: TierTokensDelta {
+                    input: 1,
+                    ..Default::default()
+                },
+            }],
+            ..Default::default()
+        }
+        .is_zero());
+    }
+
+    #[test]
+    fn store_error_display_wraps_the_inner_message() {
+        let e = StoreError("disk full".to_string());
+        assert_eq!(e.to_string(), "store error: disk full");
+    }
+
+    struct AuditDouble(Vec<AuditRecord>, Vec<VirtualKey>);
+    impl Store for AuditDouble {
+        fn put_key(&self, _: &VirtualKey) -> StoreResult<()> {
+            Ok(())
+        }
+        fn get_key(&self, _: &str) -> StoreResult<Option<VirtualKey>> {
+            Ok(None)
+        }
+        fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
+            Ok(self.1.clone())
+        }
+        fn delete_key(&self, _: &str) -> StoreResult<()> {
+            Ok(())
+        }
+        fn get_usage(&self, _: &str, _: u64) -> StoreResult<UsageLedger> {
+            Ok(UsageLedger::default())
+        }
+        fn put_usage(&self, _: &str, _: u64, _: &UsageLedger) -> StoreResult<()> {
+            Ok(())
+        }
+        fn add_metering(&self, _: &MeteringDelta) -> StoreResult<()> {
+            Ok(())
+        }
+        fn list_metering(&self, _: u64) -> StoreResult<Vec<MeteringRow>> {
+            Ok(Vec::new())
+        }
+        fn list_audit(&self) -> StoreResult<Vec<AuditRecord>> {
+            Ok(self.0.clone())
+        }
+    }
+
+    fn audit_record(seq: u64) -> AuditRecord {
+        AuditRecord {
+            seq,
+            ts: 0,
+            action: "test.action".to_string(),
+            resource: "test:res".to_string(),
+            outcome: "applied".to_string(),
+            principal: "vk_1".to_string(),
+            prev_hash: String::new(),
+            hash: String::new(),
+        }
+    }
+
+    /// The DEFAULTED `list_keys_since` fallback: `revision > since`, exclusive of `since` itself
+    /// (a row whose revision EQUALS `since` was already seen by that watermark and must not
+    /// re-appear, or a poller loops on the same row forever).
+    #[test]
+    fn default_list_keys_since_excludes_the_watermark_itself() {
+        let mut a = sample_key();
+        a.id = "vk_a".to_string();
+        a.revision = 5;
+        let mut b = sample_key();
+        b.id = "vk_b".to_string();
+        b.revision = 6;
+        let s = AuditDouble(Vec::new(), vec![a, b]);
+        let since5: Vec<_> = s.list_keys_since(5).unwrap();
+        assert_eq!(
+            since5.len(),
+            1,
+            "revision == since must be EXCLUDED, not included"
+        );
+        assert_eq!(since5[0].id, "vk_b");
+        assert_eq!(s.list_keys_since(4).unwrap().len(), 2);
+        assert_eq!(s.list_keys_since(6).unwrap().len(), 0);
+    }
+
+    /// The DEFAULTED `list_audit_tail` fallback: keep only the last `limit` records (drain the
+    /// HEAD, `all.len() - limit` of them), never off-by-one on the boundary.
+    #[test]
+    fn default_list_audit_tail_keeps_exactly_the_last_limit_records() {
+        let records: Vec<_> = (1..=5).map(audit_record).collect();
+        let s = AuditDouble(records, Vec::new());
+        // Exactly at the cap: nothing trimmed.
+        let exact = s.list_audit_tail(5).unwrap();
+        assert_eq!(exact.len(), 5);
+        // Under the cap: keep the tail-most `limit` records (drop the oldest, i.e. lowest seq).
+        let tail = s.list_audit_tail(3).unwrap();
+        assert_eq!(tail.len(), 3);
+        assert_eq!(
+            tail.iter().map(|r| r.seq).collect::<Vec<_>>(),
+            vec![3, 4, 5],
+            "must keep the NEWEST records, dropping the oldest from the head"
+        );
+        // limit above the total count: everything is kept, no panic on the subtraction.
+        assert_eq!(s.list_audit_tail(100).unwrap().len(), 5);
+    }
 }
