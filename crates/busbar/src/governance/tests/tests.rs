@@ -822,10 +822,19 @@ fn test_budget_window_periods() {
     assert_eq!(budget_window(WINDOW_DAY, 1_700_000_000), 1_699_920_000);
     // 1700000000 = 2023-11-14 → 2023-11-01 00:00Z = 1698796800.
     assert_eq!(budget_window(WINDOW_MONTH, 1_700_000_000), 1_698_796_800);
+    // WINDOW_HOUR: floor to the containing hour, `now / 3600 * 3600` (integer-division floor, NOT
+    // `now * 3600 * 3600` nor `now / 3600 + 3600` - a non-hour-aligned timestamp catches either).
+    // 1_700_000_000 = 2023-11-14 22:13:20 UTC → hour start 2023-11-14 22:00:00 UTC = 1_699_999_200.
+    assert_eq!(budget_window(WINDOW_HOUR, 1_700_000_000), 1_699_999_200);
     // window_end: the Retry-After source. A minute rolls at the next :00; total never rolls.
     assert_eq!(
         window_end(WINDOW_MINUTE, 1_700_000_010),
         Some(1_700_000_040)
+    );
+    // WINDOW_HOUR rolls to the NEXT hour boundary (`+ 3600`, not `* 3600`).
+    assert_eq!(
+        window_end(WINDOW_HOUR, 1_700_000_000),
+        Some(1_699_999_200 + 3600)
     );
     assert_eq!(
         window_end(WINDOW_DAY, 1_700_000_000),
