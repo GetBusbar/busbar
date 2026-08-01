@@ -866,6 +866,148 @@ fn test_env_injection_cannot_widen_auth_chain() {
     );
 }
 
+/// The structural-mismatch CULPRIT ATTRIBUTION (`assert_interpolation_preserves_structure`'s
+/// per-occurrence isolation loop) must name ONLY the variable whose value actually breaks
+/// structure, not an innocent co-occurring variable, and must fire even though the innocent
+/// variable's own hybrid substitution matches fine. This exercises `splice_occurrences`' own
+/// occurrence-index bookkeeping (each occurrence must land in the right position) together with
+/// the `!matches` culprit-recording guard.
+#[test]
+fn test_interpolate_env_multi_occurrence_names_only_the_true_culprit() {
+    // A newline is blocked by the EARLIER, cheaper control-character guard
+    // (`reject_yaml_unsafe_value`) before the structural check ever runs — to actually reach and
+    // exercise the structural-equivalence culprit-isolation loop, the injection must be a
+    // newline-free flow-collection breakout (comma + quote), the other injection shape the
+    // structural check exists specifically to catch per its own doc comment.
+    std::env::set_var("BUSBAR_T_GOOD_VAR", "hello");
+    std::env::set_var("BUSBAR_T_BAD_VAR", "hi\", c: \"extra");
+    let yaml = "obj: {a: \"${BUSBAR_T_GOOD_VAR}\", b: \"${BUSBAR_T_BAD_VAR}\"}";
+    let result = interpolate_env(yaml);
+    std::env::remove_var("BUSBAR_T_GOOD_VAR");
+    std::env::remove_var("BUSBAR_T_BAD_VAR");
+    let err = result.expect_err("the flow-mapping comma/quote breakout must be rejected");
+    assert!(
+        err.contains("BUSBAR_T_BAD_VAR"),
+        "the error must name the actual culprit: {err}"
+    );
+    assert!(
+        !err.contains("BUSBAR_T_GOOD_VAR"),
+        "the error must NOT name the innocent co-occurring variable: {err}"
+    );
+}
+
+/// `structural_shapes_match` must compare `Tagged` YAML nodes by BOTH tag equality and recursive
+/// inner-value shape — not treat every tagged node as automatically matching (that would silently
+/// let a tag-wrapped structural injection through) nor treat a tagged/untagged pair as equal (a
+/// bare scalar must never be considered shape-equivalent to an explicitly tagged one).
+#[test]
+fn structural_shapes_match_compares_tagged_nodes_by_tag_and_inner_shape() {
+    use serde_yaml::value::{Tag, TaggedValue};
+    use serde_yaml::Value;
+
+    let tagged_str = |tag: &str, inner: &str| {
+        Value::Tagged(Box::new(TaggedValue {
+            tag: Tag::new(tag),
+            value: Value::String(inner.to_string()),
+        }))
+    };
+
+    // Same tag, scalar inner content differs: scalars fold into one bucket, so this matches.
+    assert!(structural_shapes_match(
+        &tagged_str("mytag", "a"),
+        &tagged_str("mytag", "b"),
+        0
+    ));
+
+    // Different tags: must NOT match, even though the inner scalar shape is identical.
+    assert!(!structural_shapes_match(
+        &tagged_str("tag_a", "x"),
+        &tagged_str("tag_b", "x"),
+        0
+    ));
+
+    // Tagged vs. an equivalent-looking untagged scalar: must NOT match (Tagged is distinct from
+    // every other Value variant per the (Value::Tagged(_), _) | (_, Value::Tagged(_)) arms).
+    assert!(!structural_shapes_match(
+        &tagged_str("mytag", "x"),
+        &Value::String("x".to_string()),
+        0
+    ));
+
+    // Tagged wrapping a Mapping vs. Tagged wrapping a Sequence, same tag: inner shapes differ, so
+    // the recursive call must catch it (proves the recursion, not just the tag comparison, runs).
+    let mut map = serde_yaml::Mapping::new();
+    map.insert(Value::String("k".into()), Value::String("v".into()));
+    let tagged_map = Value::Tagged(Box::new(TaggedValue {
+        tag: Tag::new("t"),
+        value: Value::Mapping(map),
+    }));
+    let tagged_seq = Value::Tagged(Box::new(TaggedValue {
+        tag: Tag::new("t"),
+        value: Value::Sequence(vec![Value::String("v".into())]),
+    }));
+    assert!(!structural_shapes_match(&tagged_map, &tagged_seq, 0));
+}
+
+/// The `depth + 1` passed to every recursive call must actually INCREASE, never decrease — this
+/// is what makes `MAX_STRUCTURAL_COMPARE_DEPTH` a real cap rather than a no-op. Two single-element
+/// sequences (the simplest possible recursive call, `depth` going 0 -> 1) must both shape-match
+/// (scalar elements) AND simply return rather than panic — a `depth - 1` bug would underflow
+/// `depth: usize` on this very first recursive call.
+#[test]
+fn structural_shapes_match_recurses_into_sequence_elements_with_increasing_depth() {
+    let seq_a = serde_yaml::Value::Sequence(vec![serde_yaml::Value::String("a".to_string())]);
+    let seq_b = serde_yaml::Value::Sequence(vec![serde_yaml::Value::String("b".to_string())]);
+    assert!(structural_shapes_match(&seq_a, &seq_b, 0));
+}
+
+/// `MAX_STRUCTURAL_COMPARE_DEPTH` must be an actual CAP (`depth > LIMIT`), not a same-value-only
+/// check (`depth == LIMIT`) that a caller can simply pass through — at the boundary itself
+/// (depth == LIMIT) the compare must still proceed normally; one past it must fail closed
+/// (rejected as a shape mismatch) regardless of the two values actually matching.
+#[test]
+fn structural_shapes_match_depth_cap_is_a_real_limit_not_an_exact_match() {
+    let a = serde_yaml::Value::String("x".to_string());
+    let b = serde_yaml::Value::String("y".to_string());
+    assert!(
+        structural_shapes_match(&a, &b, MAX_STRUCTURAL_COMPARE_DEPTH),
+        "at the boundary itself, comparison must still proceed"
+    );
+    assert!(
+        !structural_shapes_match(&a, &b, MAX_STRUCTURAL_COMPARE_DEPTH + 1),
+        "one past the cap must fail closed, even for two values that would otherwise match"
+    );
+}
+
+/// The per-occurrence placeholder token must actually encode `occurrence_index` — if every
+/// occurrence collapsed to the same constant token, two DIFFERENT `${VAR}` references could never
+/// be told apart during the structural-equivalence check's culprit isolation (see this function's
+/// own doc comment: "two different `${VAR}` references never collapse to the same placeholder
+/// token").
+#[test]
+fn structural_placeholder_is_unique_per_occurrence_index() {
+    let p0 = structural_placeholder(0);
+    let p1 = structural_placeholder(1);
+    assert_ne!(p0, p1);
+    assert!(!p0.is_empty());
+    assert!(p0.contains('0'));
+    assert!(p1.contains('1'));
+}
+
+/// `mapping_key_repr`'s fallback (non-string key) must render a deterministic, comparable
+/// representation rather than e.g. collapsing every non-string key to the same string — the
+/// key-set comparison in `structural_shapes_match` relies on distinct keys staying distinguishable.
+#[test]
+fn mapping_key_repr_distinguishes_non_string_keys() {
+    let n1 = serde_yaml::Value::Number(1.into());
+    let n2 = serde_yaml::Value::Number(2.into());
+    let s = serde_yaml::Value::String("1".to_string());
+    assert_ne!(mapping_key_repr(&n1), mapping_key_repr(&n2));
+    // A string key is rendered as itself (the common-case fast path), not run through the
+    // `{:?}` fallback formatting a numeric key gets.
+    assert_eq!(mapping_key_repr(&s), "1");
+}
+
 /// An unclosed `${FOO` (missing `}`) must fail loudly with an "unclosed" error rather than be
 /// treated as `${FOO}`, regardless of whether FOO is set in the environment. Uses a unique
 /// per-test var name (process-global env, parallel tests) and a guaranteed-unset name.
@@ -1522,6 +1664,13 @@ models:
         l.upstream_error_body_max_bytes,
         DEFAULT_UPSTREAM_ERROR_BODY_MAX_BYTES
     );
+    // A literal, not a comparison against the constant's own name: the constant's DEFINITION
+    // (`256 * 1024`) is itself what needs proving, so re-deriving the expectation from the same
+    // named constant would be tautological.
+    assert_eq!(
+        DEFAULT_UPSTREAM_ERROR_BODY_MAX_BYTES, 262_144,
+        "256 * 1024 = 256KiB, not 256 + 1024"
+    );
     assert_eq!(
         l.tls_handshake_timeout_secs,
         DEFAULT_TLS_HANDSHAKE_TIMEOUT_SECS
@@ -1853,6 +2002,97 @@ fn test_auth_chain_entry_malformed_rejected() {
     let err = serde_yaml::from_str::<AuthChainEntry>("ad: { max_admin_scop: full }")
         .expect_err("a typo'd typed field must error");
     assert!(err.to_string().contains("unknown field"), "{err}");
+}
+
+/// An `AuthChainEntry` that is neither a string nor a map (e.g. a bare integer) has no matching
+/// `visit_*` override, so serde's default type-mismatch path builds the error from the Visitor's
+/// own `expecting()` text — proving that text is real and reachable, not dead documentation.
+#[test]
+fn test_auth_chain_entry_wrong_type_uses_the_real_expecting_message() {
+    let err = serde_yaml::from_str::<AuthChainEntry>("123")
+        .expect_err("an integer is not a valid auth chain entry shape");
+    assert!(
+        err.to_string().contains("an auth chain entry"),
+        "the error must surface the Visitor's real expecting() text, not a generic serde message: {err}"
+    );
+}
+
+/// `OnErrorCfg::as_name` must return the wrapped name for BOTH variants (a fallback hook
+/// reference and a reserved terminal word use the identical flat representation downstream).
+#[test]
+fn on_error_cfg_as_name_unwraps_both_variants() {
+    assert_eq!(OnErrorCfg::Terminal("fail".to_string()).as_name(), "fail");
+    assert_eq!(OnErrorCfg::Hook("my-hook".to_string()).as_name(), "my-hook");
+}
+
+/// Every `#[serde(default = "default_X")]` free function must return its documented constant, not
+/// a mutant-plausible neighbor (0/1/a different constant/a typo'd literal). One consolidated table
+/// rather than N near-identical single-purpose tests.
+#[test]
+fn serde_default_fns_return_their_documented_constants() {
+    assert_eq!(default_protocol(), "anthropic");
+    assert_eq!(default_min_requests(), 5);
+    assert_eq!(default_max_cooldown(), 120);
+    assert_eq!(default_failover_timeout(), 120);
+    assert_eq!(default_max_hops(), 3);
+    assert_eq!(default_listen(), "0.0.0.0:8080");
+    assert_eq!(default_max_keys_per_principal(), 0);
+    // `default_emit_server_timing`'s documented default is `false` (privacy-by-default: the header
+    // is a fingerprintable observable, see the field's own doc comment) — the "replace with false"
+    // mutant is a genuine EQUIVALENT mutant (the correct value IS false, so that specific mutation
+    // is behaviorally indistinguishable from correct code); only "replace with true" is a real gap.
+    assert!(!default_emit_server_timing());
+}
+
+/// `to_policy_with_floor`'s anti-downgrade-floor sanity warning must fire ONLY for a
+/// non-empty, malformed floor — never for an OMITTED floor (empty string, "no floor set", not
+/// "malformed floor") and never for a well-formed one. A minimal capturing `tracing::Subscriber`
+/// (no test-only crate needed) records whether the WARN actually fired.
+#[test]
+fn to_policy_with_floor_warns_only_on_a_non_empty_malformed_floor() {
+    use std::sync::{Arc, Mutex};
+
+    struct CapturingSubscriber(Arc<Mutex<Vec<String>>>);
+    impl tracing::Subscriber for CapturingSubscriber {
+        fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            if *event.metadata().level() == tracing::Level::WARN {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push(event.metadata().name().to_string());
+            }
+        }
+        fn enter(&self, _span: &tracing::span::Id) {}
+        fn exit(&self, _span: &tracing::span::Id) {}
+    }
+
+    let run = |floor: &str| -> usize {
+        let events: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let sub = CapturingSubscriber(events.clone());
+        let mut cfg = PluginsCfg::default();
+        cfg.min_versions.insert("p".to_string(), floor.to_string());
+        tracing::subscriber::with_default(sub, || {
+            let _ = cfg.to_policy_with_floor("1.5.0");
+        });
+        let n = events.lock().unwrap().len();
+        n
+    };
+
+    assert_eq!(run(""), 0, "an omitted floor (empty string) must not warn");
+    assert_eq!(run("1.2.3"), 0, "a well-formed floor must not warn");
+    assert_eq!(
+        run("v1.2.3"),
+        1,
+        "a malformed (leading-'v') floor must warn exactly once"
+    );
 }
 
 /// `auth.role_bindings:` parses as a module-nested map (S4): module -> role -> grant, with the C6
