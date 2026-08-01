@@ -1613,4 +1613,51 @@ mod tests {
         let m = sign(&key, m, artifact);
         assert!(validate_structure(&m, artifact, &abi, HOST_IDENTITY).is_err());
     }
+
+    /// E-010 REGRESSION GUARD: `host_identity` must be the parameter `validate_structure` actually
+    /// consults, not a decorative signature widening that still checks against a hardcoded
+    /// `HOST_IDENTITY` const internally. Every OTHER test in this file passes `HOST_IDENTITY`
+    /// verbatim, so none of them can tell the difference between "the parameter is load-bearing"
+    /// and "the parameter is ignored" — a manifest whose `host` is `busbar-ui`, validated by a
+    /// caller whose own identity IS `busbar-ui`, must load; the identical manifest validated by a
+    /// caller whose identity is `busbar` (this binary's own `HOST_IDENTITY`) must not. If a future
+    /// change reverted the body to compare against `HOST_IDENTITY` instead of the parameter, this
+    /// test is the one that would catch it — every other host test in this file would still pass.
+    #[test]
+    fn validate_structure_consults_the_host_identity_parameter_not_a_hardcoded_const() {
+        let key = test_key(1);
+        let artifact = b"sibling-product bytes";
+        let mut m = manifest("busbar-ui-store-tenants", "tenants", "acme");
+        m.host = Some("busbar-ui".to_string());
+        let m = sign(&key, m, artifact);
+
+        validate_structure(&m, artifact, &abi, "busbar-ui").expect(
+            "a busbar-ui-hosted manifest must load when the CALLER's own identity is busbar-ui",
+        );
+
+        let err = validate_structure(&m, artifact, &abi, HOST_IDENTITY).unwrap_err();
+        assert!(
+            err.contains("busbar-ui"),
+            "the same manifest validated by a busbar-identity caller must still be rejected, got: {err}"
+        );
+    }
+
+    /// An ABSENT `host` matches ANY caller's identity (the field is additive/backward-compatible —
+    /// see `manifest_with_no_host_field_parses_and_loads`), regardless of which host_identity is
+    /// passed. Proves the "absent means match" branch doesn't secretly special-case `HOST_IDENTITY`.
+    #[test]
+    fn manifest_with_no_host_matches_any_caller_identity() {
+        let key = test_key(1);
+        let artifact = b"no-host bytes";
+        let m = manifest("acme-p", "p", "acme");
+        assert_eq!(m.host, None);
+        let m = sign(&key, m, artifact);
+
+        validate_structure(&m, artifact, &abi, HOST_IDENTITY)
+            .expect("absent host must match this binary's own identity");
+        validate_structure(&m, artifact, &abi, "busbar-ui")
+            .expect("absent host must ALSO match a sibling product's identity");
+        validate_structure(&m, artifact, &abi, "some-third-product")
+            .expect("absent host must match ANY caller's identity, not just known ones");
+    }
 }
