@@ -756,9 +756,10 @@ impl ProtocolReader for CohereReader {
             // from a never-shrunk set a NON-MONOTONIC upstream `frame_idx` (a later tool with a
             // smaller wire index) retroactively shifted an earlier tool's rank between its start and
             // its end. Instead the IR index is ASSIGNED ONCE at tool-call-start by
-            // insertion order (`cohere_assign_tool_ir_index`), PACKED alongside the frame index into
-            // `state.open_tools`, and looked up VERBATIM on delta/end
-            // (`cohere_lookup_tool_ir_index`). `open_tools` is never shrunk, so the assignment
+            // insertion order (`cohere_assign_tool_ir_index`), recorded in `state.tool_ir_index`
+            // keyed by frame index (membership also tracked in `state.open_tools`), and looked up
+            // VERBATIM on delta/end (`cohere_lookup_tool_ir_index`) via an O(log n) `BTreeMap`
+            // lookup rather than a linear scan. Neither map is ever shrunk, so the assignment
             // survives the stream and start/delta/end for a tool all resolve to the same IR index
             // regardless of wire-index ordering.
             ET_TOOL_CALL_START => {
@@ -848,9 +849,9 @@ impl ProtocolReader for CohereReader {
             ET_TOOL_CALL_END => {
                 let frame_idx = clamp_frame_index(data);
                 // Only close a tool we actually opened; resolve its immutable, ASSIGNED IR index. We
-                // do NOT remove the frame's entry from `open_tools` — the recorded packed entry is
-                // what keeps each tool's IR index stable for the stream's lifetime, and removing it
-                // would let a later tool reuse a freed insertion slot.
+                // do NOT remove the frame's entry from `open_tools`/`tool_ir_index` — the recorded
+                // entry is what keeps each tool's IR index stable for the stream's lifetime, and
+                // removing it would let a later tool reuse a freed insertion slot.
                 if let Some(ir_idx) = cohere_lookup_tool_ir_index(state, frame_idx) {
                     out.push(IrStreamEvent::BlockStop { index: ir_idx });
                 }
