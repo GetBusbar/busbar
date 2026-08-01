@@ -1711,3 +1711,107 @@ fn safe_mode_requested_matches_the_exact_flag_only() {
     ));
     assert!(!safe_mode_requested(std::iter::empty()));
 }
+
+/// `is_audit_restore_read_hiccup`: exactly the "audit restore read failed" prefix routes to the
+/// hiccup (warn) path; a chain-verification failure message (or anything else) does not, even if
+/// it shares a substring or near-miss prefix — the distinction is load-bearing (tamper evidence
+/// must never be logged at the same severity as a transient read hiccup).
+#[test]
+fn audit_restore_read_hiccup_matches_only_its_own_prefix() {
+    assert!(is_audit_restore_read_hiccup(
+        "audit restore read failed: disk error"
+    ));
+    assert!(is_audit_restore_read_hiccup("audit restore read failed"));
+    assert!(!is_audit_restore_read_hiccup(
+        "audit chain verification failed: hash mismatch at seq 42"
+    ));
+    assert!(!is_audit_restore_read_hiccup(""));
+    assert!(!is_audit_restore_read_hiccup(
+        "something else entirely audit restore read failed"
+    ));
+}
+
+/// `should_load_audit_from_file_snapshot`: the file snapshot is the LAST resort — it must be
+/// skipped when the durable store already restored the audit ring (a stale file snapshot would
+/// clobber the store's authoritative, more-complete history and rewind the sequence), and used
+/// when the store did not provide it.
+#[test]
+fn audit_file_snapshot_loads_only_when_store_did_not_restore() {
+    assert!(
+        should_load_audit_from_file_snapshot(false),
+        "no durable restore happened -> the file snapshot is the only source, must load"
+    );
+    assert!(
+        !should_load_audit_from_file_snapshot(true),
+        "the durable store already restored the ring -> a stale file snapshot must NOT clobber it"
+    );
+}
+
+/// `recv_shutdown`: a `-> ()` mutant would resolve immediately regardless of the channel — the
+/// real function must genuinely BLOCK until something is sent (or the sender is dropped), then
+/// resolve promptly once it is.
+#[tokio::test(start_paused = true)]
+async fn recv_shutdown_blocks_until_a_send_then_resolves() {
+    let (tx, rx) = tokio::sync::broadcast::channel(1);
+    let handle = tokio::spawn(recv_shutdown(rx));
+
+    // Give the spawned task every chance to (wrongly) resolve on its own if it were a no-op.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert!(
+        !handle.is_finished(),
+        "recv_shutdown must still be waiting with nothing sent on the channel"
+    );
+
+    tx.send(()).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(1), handle)
+        .await
+        .expect("recv_shutdown must resolve promptly once the channel fires")
+        .unwrap();
+}
+
+/// `shutdown_signal`: a `-> ()` mutant would resolve immediately — the real function must genuinely
+/// block (nothing sends SIGINT/SIGTERM in this test), never completing within a bounded wait.
+#[tokio::test]
+async fn shutdown_signal_blocks_when_no_signal_is_delivered() {
+    let result =
+        tokio::time::timeout(std::time::Duration::from_millis(200), shutdown_signal()).await;
+    assert!(
+        result.is_err(),
+        "shutdown_signal must still be pending with no real signal delivered, not resolve as a no-op"
+    );
+}
+
+/// `serve_listener`: a `-> ()` mutant would never actually accept connections. Bind a real
+/// listener, serve a trivial router through `serve_listener`, and confirm a real HTTP request
+/// against it succeeds before the shutdown future fires.
+#[tokio::test]
+async fn serve_listener_actually_serves_real_http_traffic() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let router = Router::new().route("/probe", axum::routing::get(|| async { "ok" }));
+    let secret_resolver = Arc::new(crate::config::secret::SecretResolver::builtins_only());
+    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
+
+    let serve_handle = tokio::spawn(serve_listener(
+        listener,
+        router,
+        None,
+        secret_resolver,
+        "test",
+        recv_shutdown(shutdown_rx),
+    ));
+
+    let resp = reqwest::Client::new()
+        .get(format!("http://{addr}/probe"))
+        .send()
+        .await
+        .expect("serve_listener must actually accept and answer a real HTTP request");
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.text().await.unwrap(), "ok");
+
+    shutdown_tx.send(()).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), serve_handle)
+        .await
+        .expect("serve_listener must actually stop once shutdown fires")
+        .unwrap();
+}
