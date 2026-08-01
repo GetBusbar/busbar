@@ -751,6 +751,86 @@ fn test_validate_rejects_zero_max_concurrent() {
     );
 }
 
+/// round-8 (panics lens): an operator-supplied `max_concurrent` above `Semaphore::MAX_PERMITS` must
+/// be REJECTED as a normal `400 invalid_request` validation error — not accepted and left to panic
+/// later inside `Semaphore::new` (`permits <= Semaphore::MAX_PERMITS`) in `build_app_from_config`.
+/// The bound is the exact panic precondition (`usize::MAX >> 3`), not an invented policy cap: this
+/// module's operational-limit checks are deliberately permissive (see `validate_limits`'s doc
+/// comment) and reject only what would actually break the gateway.
+#[test]
+fn test_validate_rejects_oversized_max_concurrent() {
+    let mut providers = HashMap::new();
+    providers.insert(
+        "myprovider".to_string(),
+        make_provider("anthropic", "https://api.example.com", "API_KEY"),
+    );
+    let mut models = HashMap::new();
+    // ONE past the exact panic precondition — the tightest possible "plausible but wrong" probe,
+    // and proof this is a hard ceiling, not an arbitrary round-number policy cap.
+    models.insert(
+        "hugemodel".to_string(),
+        make_model("myprovider", tokio::sync::Semaphore::MAX_PERMITS + 1),
+    );
+    // A value that boots/applies FINE today (5 million, far above any real deployment but nowhere
+    // near the panic ceiling) must keep validating cleanly — this is not a "sane limit" policy
+    // check, so it must not newly reject a config that never panicked.
+    models.insert("bigbutok".to_string(), make_model("myprovider", 5_000_000));
+    // The exact boundary value must NOT error either.
+    models.insert(
+        "boundarymodel".to_string(),
+        make_model("myprovider", tokio::sync::Semaphore::MAX_PERMITS),
+    );
+
+    let cfg = make_root_cfg(providers, models, HashMap::new());
+    let errs = validate(&cfg).expect_err("an oversized max_concurrent must fail validation");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("hugemodel") && e.contains("max_concurrent")),
+        "expected an oversized max_concurrent error for 'hugemodel'; got: {errs:?}"
+    );
+    assert!(
+        !errs.iter().any(|e| e.contains("bigbutok")),
+        "a large-but-not-panic-triggering max_concurrent must not newly become an error: {errs:?}"
+    );
+    assert!(
+        !errs.iter().any(|e| e.contains("boundarymodel")),
+        "a max_concurrent at the exact Semaphore::MAX_PERMITS boundary must not error; got: {errs:?}"
+    );
+}
+
+/// round-8 (panics lens): the exact same `Semaphore::new` panic precondition, on the two sibling
+/// operator-config values that feed a `Semaphore::new` with no bound of their own —
+/// `limits.max_inbound_concurrent` (tower's `GlobalConcurrencyLimitLayer`, main.rs) and
+/// `observability.max_inflight_webhook_deliveries` (observability.rs). Same class, same fix, one
+/// shared constant (`MAX_SEMAPHORE_PERMITS`) — this test exists so the class stays closed if either
+/// sibling's call site changes independently of `models.<m>.max_concurrent`.
+#[test]
+fn test_validate_rejects_oversized_inbound_and_webhook_concurrency_limits() {
+    let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
+    cfg.limits.max_inbound_concurrent = tokio::sync::Semaphore::MAX_PERMITS + 1;
+    cfg.limits.max_inflight_webhook_deliveries = tokio::sync::Semaphore::MAX_PERMITS + 1;
+
+    let errs = validate(&cfg).expect_err("both oversized limits must fail validation");
+    assert!(
+        errs.iter().any(|e| e.contains("max_inbound_concurrent")),
+        "expected an oversized max_inbound_concurrent error; got: {errs:?}"
+    );
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("max_inflight_webhook_deliveries")),
+        "expected an oversized max_inflight_webhook_deliveries error; got: {errs:?}"
+    );
+
+    // The boundary value, and 0 (max_inbound_concurrent's explicit "disable the layer" posture),
+    // must both stay clean.
+    cfg.limits.max_inbound_concurrent = 0;
+    cfg.limits.max_inflight_webhook_deliveries = tokio::sync::Semaphore::MAX_PERMITS;
+    assert!(
+        validate(&cfg).is_ok(),
+        "0 (disabled) and the exact boundary value must not error"
+    );
+}
+
 /// `max_concurrent` OMITTED (None = unbounded) must VALIDATE cleanly — it is an opt-in limiter, not
 /// a required field. Only an explicit `Some(0)` is rejected; absence carries no requirement, exactly
 /// like `max_requests: -1`.
