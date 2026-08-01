@@ -259,7 +259,7 @@ fn validate_config_command() -> i32 {
     let config_path = std::path::PathBuf::from(
         std::env::var(ENV_CONFIG).unwrap_or_else(|_| DEFAULT_CONFIG_PATH.into()),
     );
-    let safe_mode = std::env::args().any(|a| a == "--safe-mode");
+    let safe_mode = safe_mode_requested(std::env::args());
 
     let mut loaded = match load_config_from_disk(
         &config_path,
@@ -525,6 +525,37 @@ fn resolve_model_context_max(
     Ok(resolved)
 }
 
+/// Whether `--safe-mode` was passed: quarantines the persisted overlay entirely (both
+/// `validate_config_command` and `run()` read this the same way, so it's factored once here rather
+/// than duplicated). Takes the arg iterator as a parameter (instead of calling `std::env::args()`
+/// itself) so it's unit-testable against a synthetic arg list.
+fn safe_mode_requested(mut args: impl Iterator<Item = String>) -> bool {
+    args.any(|a| a == "--safe-mode")
+}
+
+/// Cap on `BUSBAR_WORKER_THREADS`/`TOKIO_WORKER_THREADS` (see the `.min(MAX_WORKER_THREADS)` call in
+/// `main()` for why this exists).
+const MAX_WORKER_THREADS: usize = 128;
+
+/// Resolve a worker-thread-count env var, warning on an EXPLICITLY-SET but invalid value rather than
+/// silently ignoring it — an unset var is not warned (the normal default path). Module-level (not
+/// nested in `main()`) so it's unit-testable; see `tests/tests.rs`.
+fn worker_threads_from_env(name: &str) -> Option<usize> {
+    match std::env::var(name) {
+        Ok(v) => match v.trim().parse::<usize>() {
+            Ok(n) if n >= 1 => Some(n),
+            _ => {
+                eprintln!(
+                    "[warn] {name}={v:?} is not a positive integer; ignoring it and using the \
+                     default worker-thread count"
+                );
+                None
+            }
+        },
+        Err(_) => None, // unset — normal default path, no warning
+    }
+}
+
 fn main() {
     // CLI flags first — BEFORE building any runtime. They must work without a configured deployment,
     // and `--version` / `--validate` should never spin up a thread pool.
@@ -608,22 +639,6 @@ fn main() {
     // who pinned it on 1.3.0 keeps the same pool size. (1.4.0 audit.) `eprintln!` because this runs
     // before the tracing subscriber is installed.
     // See the `.min(MAX_WORKER_THREADS)` call below for why this exists.
-    const MAX_WORKER_THREADS: usize = 128;
-    fn worker_threads_from_env(name: &str) -> Option<usize> {
-        match std::env::var(name) {
-            Ok(v) => match v.trim().parse::<usize>() {
-                Ok(n) if n >= 1 => Some(n),
-                _ => {
-                    eprintln!(
-                        "[warn] {name}={v:?} is not a positive integer; ignoring it and using the \
-                         default worker-thread count"
-                    );
-                    None
-                }
-            },
-            Err(_) => None, // unset — normal default path, no warning
-        }
-    }
     let worker_threads = worker_threads_from_env("BUSBAR_WORKER_THREADS")
         .or_else(|| worker_threads_from_env("TOKIO_WORKER_THREADS"))
         .unwrap_or_else(|| {
@@ -663,7 +678,7 @@ async fn run() {
     let config_path = std::path::PathBuf::from(
         std::env::var(ENV_CONFIG).unwrap_or_else(|_| DEFAULT_CONFIG_PATH.into()),
     );
-    let safe_mode = std::env::args().any(|a| a == "--safe-mode");
+    let safe_mode = safe_mode_requested(std::env::args());
     let loaded = load_config_from_disk(
         &config_path,
         &providers_path,
