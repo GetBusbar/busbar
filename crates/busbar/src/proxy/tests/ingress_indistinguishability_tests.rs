@@ -2286,6 +2286,80 @@ async fn test_bedrock_converse_stream_buffered_cross_protocol_emits_binary_event
     server.shutdown().await;
 }
 
+/// HIGH/test-coverage (cargo-mutants gap, proxy engine `forward_with_pool_parsed_inner`):
+/// `client_include_usage` (`wants_stream && <client body opted into stream_options.include_usage>`)
+/// gates whether Busbar force-injects `stream_options.include_usage:true` onto the OUTGOING OpenAI
+/// egress request (`&& !client_include_usage` at the injection site) — cargo-mutants: `&&` -> `||`.
+/// Under the `||` mutant, `wants_stream` ALONE would make `client_include_usage` true for every
+/// streaming request, so this injection would be wrongly SKIPPED for the common case (a client
+/// that streams but never mentions `stream_options`) — busbar would then bill the completion at
+/// ZERO tokens, since the upstream never emits the trailing usage chunk without the opt-in. Assert
+/// the real, currently-mandatory injection actually happens on the wire.
+#[tokio::test]
+async fn test_streaming_openai_egress_without_client_opt_in_still_gets_include_usage_injected() {
+    crate::metrics::init();
+    let state = Arc::new(MockServerState::new());
+    state.push(MockResponse::Sse {
+        events: vec![
+            r#"data: {"id":"chatcmpl-x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"Hi"},"finish_reason":null}]}"#
+                .to_string(),
+            r#"data: {"id":"chatcmpl-x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#
+                .to_string(),
+            "data: [DONE]".to_string(),
+        ],
+        abort_at_index: None,
+    });
+    let server = MockServer::new(state.clone()).await;
+    let app = TestApp::new()
+        .lane(
+            LaneSpec::new(
+                "gpt-4o",
+                crate::proto::Protocol::openai(),
+                &server.base_url(),
+            )
+            .provider("openai"),
+        )
+        .pool("po", &[(0, 1)])
+        .build();
+    // Same-protocol OpenAI stream; the client body carries NO `stream_options` at all — the common
+    // case `client_include_usage` must read `false` for.
+    let body = serde_json::to_vec(&json!({
+        "model": "po",
+        "messages": [{"role": "user", "content": "hi"}],
+        "stream": true
+    }))
+    .unwrap();
+    let resp = forward_with_pool(
+        app.clone(),
+        vec![crate::state::WeightedLane {
+            reasoning: None,
+            idx: 0,
+            weight: 1,
+            attempt_timeout_ms: None,
+        }],
+        body.into(),
+        None,
+        "po",
+        None,
+        "openai",
+        crate::handlers::CHAT,
+        None,
+    )
+    .await;
+    assert_eq!(resp.status().as_u16(), 200);
+    let egress = state
+        .get_last_request_body()
+        .expect("backend received a request body");
+    let ev: Value = serde_json::from_slice(&egress).expect("egress body is JSON");
+    assert_eq!(
+        ev.pointer("/stream_options/include_usage"),
+        Some(&Value::Bool(true)),
+        "busbar must force stream_options.include_usage on the outgoing OpenAI stream request \
+             even when the client didn't opt in (or billing sees zero tokens): {ev}"
+    );
+    server.shutdown().await;
+}
+
 /// HIGH/test-coverage (proxy engine gemini JSON-array buffered-synthesis branch in
 /// `forward_with_pool`): a native Gemini `:streamGenerateContent` WITHOUT `?alt=sse` routed
 /// cross-protocol to an OpenAI lane that answers with a BUFFERED (non-SSE) 2xx must emit a
@@ -3427,4 +3501,88 @@ async fn test_cancel_drop_mid_stream_refunds_budget() {
         Some(1),
         "a mid-stream cancel must refund the headers-time spend_budget unit"
     );
+}
+
+/// HIGH/test-coverage (cargo-mutants gap, proxy engine `translate_response_cross_protocol`): the
+/// gemini JSON-array wrap (`if gemini_json_array && wants_stream`) is gated on BOTH conditions,
+/// not just `wants_stream` alone (cargo-mutants: `&&` -> `||`). `test_gemini_json_array_buffered_
+/// cross_protocol_emits_one_element_array` above proves the TRUE&&TRUE case (gemini ingress,
+/// stream shim present); this proves the far more common divergent case an `||` mutant would
+/// wrongly array-wrap: a NON-gemini streaming ingress (`gemini_json_array` is always false here —
+/// `uses_array_stream_shim()` is gemini-only) whose upstream answers buffered (non-SSE), which
+/// must fall through to the plain single-object response every non-Gemini client expects.
+#[tokio::test]
+async fn test_non_gemini_stream_buffered_cross_protocol_stays_a_plain_object_not_an_array() {
+    use http_body_util::BodyExt as _;
+    crate::metrics::init();
+    let state = Arc::new(MockServerState::new());
+    // NON-SSE buffered anthropic 2xx to a cross-protocol OpenAI-ingress streaming request.
+    state.push(MockResponse::Ok {
+        status: StatusCode::OK,
+        body: json!({
+            "id": "msg_buf",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "Hi"}],
+            "model": "claude-3",
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 7, "output_tokens": 3}
+        }),
+    });
+    let server = MockServer::new(state.clone()).await;
+    let app = TestApp::new()
+        .lane(
+            LaneSpec::new(
+                "claude-3",
+                crate::proto::Protocol::anthropic(),
+                &server.base_url(),
+            )
+            .provider("anthropic"),
+        )
+        .pool("pn", &[(0, 1)])
+        .build();
+    // OpenAI ingress, `stream: true`, NO gemini shim key — gemini_json_array must be false
+    // regardless (OpenAI's writer doesn't implement `uses_array_stream_shim`).
+    let body = serde_json::to_vec(&json!({
+        "model": "pn",
+        "messages": [{"role": "user", "content": "hi"}],
+        "stream": true
+    }))
+    .unwrap();
+    let resp = forward_with_pool(
+        app.clone(),
+        vec![crate::state::WeightedLane {
+            reasoning: None,
+            idx: 0,
+            weight: 1,
+            attempt_timeout_ms: None,
+        }],
+        body.into(),
+        None,
+        "pn",
+        None,
+        "openai",
+        crate::handlers::CHAT,
+        None,
+    )
+    .await;
+    assert_eq!(resp.status().as_u16(), 200);
+    assert_eq!(
+        resp.headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
+        Some("application/json"),
+        "buffered cross-protocol non-stream fallback is application/json"
+    );
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let parsed: Value = serde_json::from_slice(&bytes).expect("body must be JSON");
+    assert!(
+        parsed.is_object(),
+        "an `||` mutant would wrongly array-wrap this non-gemini buffered response: {parsed}"
+    );
+    assert!(
+        parsed.get("choices").is_some(),
+        "must be a native OpenAI chat-completion object: {parsed}"
+    );
+    server.shutdown().await;
 }
