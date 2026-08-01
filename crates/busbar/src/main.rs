@@ -1638,13 +1638,18 @@ pub(crate) fn plugins_preflight(
     // Every non-builtin `auth.chain` module is a `kind: auth` plugin — the same manifest-only
     // pre-flight the store ref gets, so `--validate` catches a missing/wrong-kind/untrusted auth
     // plugin BEFORE boot. `keys` is engine-handled (never a plugin); `test-groups-module` is the
-    // compiled-in test stand-in.
+    // compiled-in test stand-in — ONLY actually registered under `#[cfg(test)]`
+    // (`AuthMiddleware::new`, `crates/busbar/src/auth/mod.rs`), so filtering it out
+    // unconditionally here made `--validate`/`config_validate::validate` silently agree a RELEASE
+    // config naming it is fine, while real boot still hard-failed (the invariant `--validate`
+    // clean => the plugin half of boot succeeds too, documented a few lines below, broke). Gate
+    // the exemption the same way the module itself is gated.
     let auth_plugin_refs: Vec<&str> = auth_cfg
         .map(|a| {
             a.chain
                 .iter()
                 .map(|e| e.module.as_str())
-                .filter(|m| *m != config::KEYS_MODULE && *m != "test-groups-module")
+                .filter(|m| is_real_auth_plugin_ref(m, cfg!(test)))
                 .collect()
         })
         .unwrap_or_default();
@@ -2041,6 +2046,22 @@ fn validate_secret_module(
 /// and `POST /api/v1/admin/config/validate` ran only the first, so the admin dry-run answered
 /// `ok: true` for configs the CLI rejects and an operator could ship one straight into a failed boot.
 ///
+/// Whether `m` names a REAL `auth.chain` plugin ref that must resolve against the plugin registry
+/// (`true`) vs a builtin/test stand-in that's exempt (`false`). `keys` is engine-handled, never a
+/// plugin. `test-groups-module` is ONLY actually registered as a chain module under
+/// `#[cfg(test)]` (`AuthMiddleware::new`, `crates/busbar/src/auth/mod.rs`) — `is_test_build` MUST
+/// be `cfg!(test)` at the real call site, so this exemption only fires in a test binary. Module-
+/// level (not inlined into the `.filter(...)` closure) so the exact predicate that determines
+/// `--validate`/`config_validate::validate`'s pass/fail is unit-testable independent of which
+/// binary flavor happens to be running `cargo test` — see `tests/tests.rs`. A prior version
+/// exempted `test-groups-module` UNCONDITIONALLY (no `is_test_build` gate at all), which made
+/// `--validate` silently agree a RELEASE config naming it was fine while real boot still hard-
+/// failed (`AuthMiddleware::new` has no non-test arm for it) — breaking the documented invariant
+/// a few lines below ("a clean `--validate` means the plugin half of boot succeeds too").
+fn is_real_auth_plugin_ref(m: &str, is_test_build: bool) -> bool {
+    m != config::KEYS_MODULE && !(is_test_build && m == "test-groups-module")
+}
+
 /// Manifest-only, like the pre-flight it wraps: nothing is `dlopen`ed and no store is opened, so it
 /// is safe on the admin read path.
 pub(crate) fn preflight_plugins_and_secrets(
