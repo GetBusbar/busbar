@@ -18,6 +18,11 @@ KEYNAME="gateway-bench-key"; KEYFILE="$STATE/${KEYNAME}.pem"
 SGNAME="gateway-bench-sg"
 ITYPE="${MUTANT_ITYPE:-c7g.8xlarge}"          # 32 vCPU Graviton, compute-optimized
 JOBS="${MUTANT_JOBS:-12}"                      # test processes in flight; see note by cargo mutants below
+DISK_GB="${MUTANT_DISK_GB:-120}"               # each of JOBS parallel workers gets its own build
+                                                # copy under mutants.out; 60G was observed to run out
+                                                # mid-run (shard7-of-12, ERROR write message to log:
+                                                # No space left on device) at -j 12 on a multi-file
+                                                # shard, aborting the run with real work lost
 LABEL="${MUTANT_LABEL:-$(git -C "$HERE" branch --show-current 2>/dev/null || echo adhoc)}"
 NAME_TAG="mutants-busbarai-core-${LABEL}"
 SSM="/aws/service/canonical/ubuntu/server/24.04/stable/current/arm64/hvm/ebs-gp3/ami-id"
@@ -60,7 +65,7 @@ trap cleanup EXIT INT TERM
 log "launching $ITYPE for mutants @ $SHA, tag=$NAME_TAG, files=[$FILES]"
 IID="$(aws ec2 run-instances --image-id "$AMI" --instance-type "$ITYPE" --key-name "$KEYNAME" \
   --security-group-ids "$SG" \
-  --block-device-mappings 'DeviceName=/dev/sda1,Ebs={VolumeSize=60,VolumeType=gp3}' \
+  --block-device-mappings "DeviceName=/dev/sda1,Ebs={VolumeSize=$DISK_GB,VolumeType=gp3}" \
   --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=$NAME_TAG}]" \
   --query 'Instances[0].InstanceId' --output text)" || exit 1
 log "instance $IID"
