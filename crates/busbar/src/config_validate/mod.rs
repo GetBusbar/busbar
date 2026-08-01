@@ -9,6 +9,23 @@ use crate::config::RootCfg;
 /// over-long name is rejected at boot so a bad value cannot silently disable affinity at header
 /// construction time (the `http` crate rejects non-ASCII/over-long names as an error).
 const MAX_AFFINITY_HEADER_NAME_LEN: usize = 64;
+/// The exact panic precondition of `tokio::sync::Semaphore::new` (`permits <= MAX_PERMITS`;
+/// `usize::MAX >> 3`, target-width-dependent — as low as ~536 million on a 32-bit target). THREE
+/// operator-config values feed a `Semaphore::new` directly with no upper bound otherwise:
+/// `models.<m>.max_concurrent` (a lane's permit semaphore, main.rs), `limits.max_inbound_concurrent`
+/// (tower's `GlobalConcurrencyLimitLayer::new`, which itself calls `Semaphore::new`, main.rs), and
+/// `observability.max_inflight_webhook_deliveries` (observability.rs). A value above this bound
+/// would panic inside `build_app_from_config` at boot or, on the admin config-apply/reload path,
+/// unwind inside a `spawn_blocking` task and surface as an opaque 500 instead of the
+/// `400 invalid_request` this validator exists to guarantee.
+///
+/// Deliberately the PRECONDITION itself, not a policy opinion on what's a "reasonable" limit — this
+/// module's operational-limit checks are NEVER coded caps (see the comment on `validate_limits`);
+/// they reject only what would break the gateway, not what merely looks large. Every value at or
+/// below this bound that boots/applies TODAY keeps doing so unchanged; only values that were ALREADY
+/// guaranteed to panic (on this target width) are newly rejected as a clean `400`/boot `die()`
+/// instead.
+const MAX_SEMAPHORE_PERMITS: usize = tokio::sync::Semaphore::MAX_PERMITS;
 // SSRF obfuscation-defense primitives shared with the observability/OTLP webhook guard — the
 // byte-identical atoms live in one tested leaf so the two SSRF guards can never drift apart.
 use crate::net_guard::{
@@ -113,6 +130,24 @@ pub(crate) fn validate_with_unset(
                 "model '{}' has max_concurrent: 0; must be >= 1, or omit it (default = unbounded)",
                 model_name
             ));
+        }
+        // An explicit `max_concurrent` above this bound WOULD panic `Semaphore::new` in main.rs
+        // (`permits <= Semaphore::MAX_PERMITS`) instead of failing validation — see
+        // `MAX_SEMAPHORE_PERMITS`'s doc comment. Reject it loudly here rather than let a typo'd or
+        // "big number means unlimited" value crash `build_app_from_config` at boot, or turn a 400
+        // into a 500 on the admin config-apply/reload path. Omitting the field is still how an
+        // operator expresses "unbounded" — main.rs already realizes that as `MAX_SEMAPHORE_PERMITS`
+        // itself (see the `unwrap_or` two lines above the `Semaphore::new` call), so this bound
+        // never rejects anything an omitted field wouldn't already build fine.
+        if let Some(mc_val) = model_cfg.max_concurrent {
+            if mc_val > MAX_SEMAPHORE_PERMITS {
+                errors.push(format!(
+                    "model '{}' has max_concurrent: {mc_val}; must be <= {MAX_SEMAPHORE_PERMITS} \
+                     (tokio::sync::Semaphore's hard permit ceiling — a value above it panics at \
+                     build time instead of failing validation), or omit the field to mean unbounded",
+                    model_name
+                ));
+            }
         }
         // The exact twin of the `max_concurrent: 0` foot-gun on the lifetime-budget axis. main.rs
         // computes `limited = max_requests >= 0`, so `max_requests: 0` yields `limited=true,
@@ -1290,6 +1325,16 @@ fn validate_limits(limits: &crate::config::LimitsResolved, errors: &mut Vec<Stri
                 .to_string(),
         );
     }
+    // `observability.rs` seeds a `Semaphore::new(max_inflight_webhook_deliveries())` with no other
+    // upper bound — see `MAX_SEMAPHORE_PERMITS`'s doc comment for why this is the panic
+    // precondition, not a policy opinion.
+    if limits.max_inflight_webhook_deliveries > MAX_SEMAPHORE_PERMITS {
+        errors.push(format!(
+            "observability.max_inflight_webhook_deliveries must be <= {MAX_SEMAPHORE_PERMITS} \
+             (tokio::sync::Semaphore's hard permit ceiling — a value above it panics at build time \
+             instead of failing validation)"
+        ));
+    }
     // The honored-Retry-After ceiling and hard-down cooldown must be >= 1s to be meaningful.
     if limits.max_honored_retry_after_secs < 1 {
         errors.push(
@@ -1369,7 +1414,18 @@ fn validate_limits(limits: &crate::config::LimitsResolved, errors: &mut Vec<Stri
         );
     }
     // NOTE: `max_inbound_concurrent` is intentionally UNCONSTRAINED — any usize including 0 (the
-    // explicit unlimited posture; the DEFAULT is 8192, not 0) is valid.
+    // explicit unlimited posture; the DEFAULT is 8192, not 0) is valid, EXCEPT for the
+    // `Semaphore::new` panic ceiling below: `apply_inbound_concurrency_limit` (main.rs) wraps the
+    // router in a tower `GlobalConcurrencyLimitLayer::new(max_inbound_concurrent)` whenever the
+    // value is `> 0`, and that layer's constructor calls `Semaphore::new` internally with no bound
+    // of its own. See `MAX_SEMAPHORE_PERMITS`'s doc comment.
+    if limits.max_inbound_concurrent > MAX_SEMAPHORE_PERMITS {
+        errors.push(format!(
+            "limits.max_inbound_concurrent must be <= {MAX_SEMAPHORE_PERMITS} (tokio::sync::\
+             Semaphore's hard permit ceiling — a value above it panics at build time instead of \
+             failing validation), or 0 to disable the inbound-concurrency layer entirely"
+        ));
+    }
 }
 
 // NOTE: a long doc comment used to sit here describing a BLANK-ADMIN-TOKEN boot
