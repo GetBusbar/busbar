@@ -2421,6 +2421,13 @@ async fn test_admin_v1_rotate_idempotent_replay_survives_the_ttl_sweep() {
 
     let first: serde_json::Value = rotate("rot-replay").await.json().await.unwrap();
     let second: serde_json::Value = rotate("rot-replay").await.json().await.unwrap();
+    // Assert a real, non-empty token BEFORE comparing the two — otherwise `first["token"] ==
+    // second["token"]` passes vacuously if `token` were absent from both bodies (both index to
+    // `Value::Null`), proving nothing about a real rotation having happened at all.
+    assert!(
+        first["token"].as_str().is_some_and(|t| !t.is_empty()),
+        "rotate response must carry a real, non-empty token: {first}"
+    );
     assert_eq!(
         first["token"], second["token"],
         "an immediate same-key replay must return the FIRST rotation's token verbatim, not \

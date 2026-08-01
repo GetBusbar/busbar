@@ -1086,6 +1086,104 @@ pub(crate) fn test_hook_env_with_schema(
     ))
 }
 
+/// As [`test_hook_env`], but ALSO packs a second tarball under `wrong_kind_alias` whose manifest
+/// claims `kind: "secret"` (reusing the SAME hook-test-plugin cdylib bytes — harmless, since a
+/// resolves-to-wrong-kind check only ever reads `manifest.kind`, never `dlopen`s the wrong-kind
+/// entry). Lets a test reach `probe_transport`'s "resolves, but to a non-hook kind" arm, which
+/// `test_hook_env` alone cannot produce (every plugin it packs is `kind: "hook"`).
+pub(crate) fn test_hook_env_with_wrong_kind_plugin(
+    hook_alias: &str,
+    wrong_kind_alias: &str,
+) -> Option<crate::hooks::HookEnv> {
+    let cdylib = {
+        let exe = std::env::current_exe().ok()?;
+        let profile_dir = exe.parent()?.parent()?;
+        let name = busbar_plugin_loader::plugin_library_filename("busbar_hook_test_plugin");
+        let uplifted = profile_dir.join(&name);
+        let raw = profile_dir.join("deps").join(&name);
+        [uplifted, raw]
+            .into_iter()
+            .filter_map(|p| {
+                std::fs::metadata(&p)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .map(|mtime| (p, mtime))
+            })
+            .max_by_key(|(_, mtime)| *mtime)
+            .map(|(p, _)| p)
+    };
+    let Some(cdylib) = cdylib else {
+        if std::env::var_os("CI").is_some() {
+            panic!(
+                "the hook-test plugin cdylib is not built under CI (checked both the uplifted \
+                 target dir and target/deps); refusing to silently skip the wrong-kind-resolution \
+                 coverage"
+            );
+        }
+        return None;
+    };
+    let lib = std::fs::read(&cdylib).expect("read hook cdylib");
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-test-hook-env-wrongkind-{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let manifest_for = |name: &str, alias: &str, kind: &str| busbar_plugin_sign::Manifest {
+        name: name.to_string(),
+        alias: alias.to_string(),
+        kind: kind.to_string(),
+        version: "1.5.0".into(),
+        publisher: "acme".into(),
+        abi_version: *busbar_plugin_loader::supported_abi(kind)
+            .iter()
+            .max()
+            .unwrap(),
+        sha256: busbar_plugin_sign::sha256_hex(&lib),
+        signature: String::new(),
+        description: String::new(),
+        homepage: String::new(),
+        license: String::new(),
+        needs: Default::default(),
+        settings_schema: None,
+        schema_derived: false,
+        host: None,
+    };
+    let hook_tarball = busbar_plugin_loader::tarball::package(
+        &manifest_for("busbar-hook-test-plugin-real", hook_alias, "hook"),
+        "lib.so",
+        &lib,
+    )
+    .unwrap();
+    std::fs::write(dir.join("real-hook.tar.gz"), hook_tarball).unwrap();
+    // `kind: "secret"` is arbitrary — any non-"hook" kind proves the resolves-to-wrong-kind arm;
+    // "secret" is a real ABI kind this cdylib's manifest can validate under without needing a
+    // matching implementation, since `probe_transport` never dlopens this entry.
+    let wrong_kind_tarball = busbar_plugin_loader::tarball::package(
+        &manifest_for(
+            "busbar-hook-test-plugin-wrongkind",
+            wrong_kind_alias,
+            "secret",
+        ),
+        "lib.so",
+        &lib,
+    )
+    .unwrap();
+    std::fs::write(dir.join("wrong-kind.tar.gz"), wrong_kind_tarball).unwrap();
+    let policy = busbar_plugin_sign::TrustPolicy {
+        binary_version: "1.5.0".into(),
+        allow_unsigned: true,
+        ..Default::default()
+    };
+    let registry = busbar_plugin_loader::scan_and_validate(&dir, &policy).expect("scan");
+    let _ = std::fs::remove_dir_all(&dir);
+    Some(crate::hooks::HookEnv::new(
+        std::sync::Arc::new(registry),
+        std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
+    ))
+}
+
 /// THE METRICS RECORDER HARNESS: sum every exposition sample of `name` whose label set contains
 /// ALL the given `key="value"` pairs, read from a fresh scrape of the process-global recorder
 /// (`metrics::init` + `render` internally — callers never touch the recorder directly).
