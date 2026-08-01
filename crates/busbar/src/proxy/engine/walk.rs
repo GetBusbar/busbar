@@ -523,264 +523,29 @@ pub(crate) async fn forward_once(
             // the main forward_with_pool path so this degraded route does not leak the egress wire
             // format to a different-protocol client.
             if cross_protocol && !is_sse {
-                // COMPLETION cap (not the tight error-body cap): a legitimate 2xx can far exceed
-                // 256 KiB and must be buffered whole to translate; `truncated` lets us return a
-                // clear error instead of mis-reporting a too-large success as untranslatable.
-                let (bytes, read_end) = read_capped(r, max_translated_body_bytes()).await;
-                // Re-record the upstream RTT through full-body receipt (see the main forward path):
-                // on the buffered cross-protocol path the body-download is upstream cost, not Busbar's,
-                // so the `Server-Timing` figure must exclude it.
-                record_upstream_rtt(upstream_started.elapsed());
-                drop(permit); // a buffered (non-streamed) response holds no permit
-                if read_end == ReadEnd::TransportError {
-                    // Body failed mid-transfer after an optimistic success/budget recording on the
-                    // 2xx headers (see the main forward path): don't charge tokens for a corrupt
-                    // fragment, record a compensating transient failure against the ROUTING POOL cell
-                    // (so the pool cell — not the default `""` cell — sees the failed transfer), refund
-                    // the request budget unit spent on the headers (no usable response was delivered,
-                    // so a failed body transfer must not permanently drain the lane's `max_requests`
-                    // budget), and return an ingress-native error. Refund ONLY if the spend actually
-                    // decremented (#21) — `refund_budget` is an unconditional fetch_add, so refunding a
-                    // no-op spend would push the budget above its cap.
-                    tracing::warn!(
-                        ingress = %ingress_protocol,
-                        egress = %egress_name,
-                        "cross-protocol non-stream upstream body failed mid-transfer; \
-                         not recording success/usage, refunding budget, returning ingress-native error"
-                    );
-                    let tripped = app.store.record_transient_in(
-                        pool,
-                        i,
-                        ERR_NET_TRANSPORT,
-                        forward_once_cfg.as_ref(),
-                        None,
-                    );
-                    // A threshold-based Closed→Open trip here is a breaker trip too (#29); emit the
-                    // metric, mirroring the main forward path — otherwise BREAKER_TRIPS_TOTAL
-                    // undercounts trips on this degraded (FallbackPool/LeastBad) path.
-                    if tripped {
-                        emit_breaker_trip(app, pool, i);
-                    }
-                    // `budget_guard` is still armed here (nothing has disarmed it): dropping it on
-                    // this `return` refunds ONLY if the headers-spend actually decremented (#21).
-                    return Ok(ingress_error(
-                        ingress_protocol,
-                        StatusCode::BAD_GATEWAY,
-                        KIND_API_ERROR,
-                        GENERIC_RESPONSE_ERROR_DETAIL,
-                    ));
-                }
-                if read_end == ReadEnd::Truncated {
-                    // Upstream body exceeded OUR translation cap → client gets a 500 with no
-                    // completion, so tokens are NOT charged here (accounting lives after this guard),
-                    // matching the TransportError branch and the main forward path. This is our own
-                    // size limit, not an upstream fault, so the optimistic breaker success stands and
-                    // the budget unit is NOT refunded.
-                    tracing::warn!(
-                        ingress = %ingress_protocol,
-                        egress = %egress_name,
-                        cap = max_translated_body_bytes(),
-                        "cross-protocol non-stream success body exceeded the translation cap; \
-                         cannot translate, not charging tokens, returning ingress-native error"
-                    );
-                    budget_guard.disarm();
-                    return Ok(ingress_error(
-                        ingress_protocol,
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        KIND_API_ERROR,
-                        GENERIC_RESPONSE_ERROR_DETAIL,
-                    ));
-                }
-                // Token accounting deferred to the delivery seam below (#2), mirroring the main
-                // forward path: a 2xx whose usage parses but whose content shape is unmodeled (or
-                // whose ingress protocol fails `protocol_for`) falls through to the ingress-native
-                // 500 below with NO completion delivered, so charging before translation is proven
-                // would bill the key for a body the client never receives.
-                let egress_op = crate::handlers::request_handler(app.lanes[i].protocol.name())
-                    .and_then(|rh| rh.operation_handler(op.operation));
-                // Parse the body ONCE, then branch on JSON vs opaque (binary) — mirrors the main
-                // forward path. Without the binary arm, a cross-protocol speech/transcription response
-                // (raw audio bytes) failed the JSON parse and fell straight through to the generic 500
-                // below, so every binary-body cross-protocol op on a fallback/least-bad lane 500'd
-                // even though the main path serves it correctly.
-                let body_json = crate::json::parse::<Value>(&bytes);
-                if body_json.is_err() {
-                    let decoded = egress_op.map(|h| h.read_response(&bytes));
-                    if let Some(Err(ref e)) = decoded {
-                        tracing::warn!(
-                            ingress = %ingress_protocol,
-                            egress = %egress_name,
-                            error = ?e,
-                            "cross-protocol binary response failed the egress codec (read_response, degraded path); returning ingress-native 500",
-                        );
-                    }
-                    if let Some(Ok(mut ir)) = decoded {
-                        record_resp_usage(&ir, &usage_sink, app.lanes.get(i));
-                        // Tokens are now committed to this key; keep the lane unit too rather than
-                        // refund it out from under an already-billed request.
-                        budget_guard.disarm();
-                        ir.prepare_for_ingress(ingress_protocol, now());
-                        if let Some(wire) = crate::handlers::request_handler(ingress_protocol)
-                            .and_then(|rh| rh.operation_handler(op.operation))
-                            .map(|h| h.write_response(&ir))
-                        {
-                            let rb = Response::builder()
-                                .status(status)
-                                .header(CONTENT_TYPE, wire.content_type);
-                            let rb = maybe_attach_response_request_id(rb, ingress_protocol, None);
-                            return Ok(rb
-                                .body(Body::from(wire.bytes))
-                                .unwrap_or_else(|_| status.into_response()));
-                        }
-                    }
-                }
-                if let Ok(rv) = &body_json {
-                    let decoded = egress_op.map(|h| h.read_response_value(rv));
-                    if let Some(Err(ref e)) = decoded {
-                        // Degraded/fallback path: same swallowed-CodecError gap as the main forward
-                        // path — log the codec error before the generic 500 so repeated failures on a
-                        // fallback lane have a visible root cause.
-                        tracing::warn!(
-                            ingress = %ingress_protocol,
-                            egress = %app.lanes[i].protocol.name(),
-                            error = ?e,
-                            "cross-protocol JSON response failed the egress codec (read_response_value, degraded path); returning ingress-native 500",
-                        );
-                    }
-                    if let Some(Ok(mut ir)) = decoded {
-                        if let Some(ingress_proto) = crate::proto::protocol_for(ingress_protocol) {
-                            // Token accounting: committed to translating and delivering this body
-                            // (every exit below is a delivered response). No FirstByteBody on this
-                            // buffered path, so bill from the IR usage just decoded (Change A,
-                            // mirrors the main path).
-                            record_resp_usage(&ir, &usage_sink, app.lanes.get(i));
-                            // Tokens are now committed to this key; keep the lane unit too rather
-                            // than refund it out from under an already-billed request.
-                            budget_guard.disarm();
-                            // OPERATION-BLIND ingress preparation (identity strip, `created`
-                            // boundary signal, tool-id remap) — the SAME seam transform the main
-                            // path applies; relocated verbatim into `IrResp::prepare_for_ingress`.
-                            ir.prepare_for_ingress(ingress_protocol, now());
-                            // Bedrock ConverseStream request answered by a buffered (non-SSE) 2xx:
-                            // emit the native binary eventstream frame sequence, not an
-                            // `application/json` Converse body the SDK's stream decoder cannot parse
-                            // (mirrors the main forward path; dispatches through writer vtable).
-                            if wants_stream {
-                                let elapsed_ms =
-                                    u64::try_from(upstream_started.elapsed().as_millis()).ok();
-                                if let Some(frames) =
-                                    ir.wrap_buffered_as_stream(ingress_proto.writer(), elapsed_ms)
-                                {
-                                    let rb = Response::builder().status(status).header(
-                                        CONTENT_TYPE,
-                                        ingress_proto.writer().streaming_content_type(),
-                                    );
-                                    let rb = maybe_attach_response_request_id(
-                                        rb,
-                                        ingress_protocol,
-                                        None,
-                                    );
-                                    return Ok(rb
-                                        .body(Body::from(frames))
-                                        .unwrap_or_else(|_| status.into_response()));
-                                }
-                            }
-                            let ingress_op = crate::handlers::request_handler(ingress_protocol)
-                                .and_then(|rh| rh.operation_handler(op.operation));
-                            let Some(ingress_op) = ingress_op else {
-                                return Ok(ingress_error(
-                                    ingress_protocol,
-                                    StatusCode::NOT_FOUND,
-                                    KIND_NOT_FOUND,
-                                    DETAIL_ENDPOINT_UNSUPPORTED_OPERATION,
-                                ));
-                            };
-                            let mut translated = match ingress_op.write_response_value(&ir) {
-                                Some(t) => t,
-                                None => {
-                                    // Binary ingress dialect: relay the WireBody verbatim.
-                                    let wire = ingress_op.write_response(&ir);
-                                    let rb = Response::builder()
-                                        .status(status)
-                                        .header(CONTENT_TYPE, wire.content_type);
-                                    let rb = maybe_attach_response_request_id(
-                                        rb,
-                                        ingress_protocol,
-                                        None,
-                                    );
-                                    return Ok(rb
-                                        .body(Body::from(wire.bytes))
-                                        .unwrap_or_else(|_| status.into_response()));
-                                }
-                            };
-                            // Inject `metrics.latencyMs` for a bedrock-ingress non-stream Converse — a
-                            // native AWS Converse always populates it, so its absence is a proxy tell
-                            // (mirrors the streaming path and the buffered cross-protocol path above).
-                            // OMIT rather than fabricate `0` if timing is unavailable.
-                            ingress_proto.writer().inject_response_metrics(
-                                &mut translated,
-                                u64::try_from(upstream_started.elapsed().as_millis()).ok(),
-                            );
-                            // Gemini JSON-array streaming answered by a buffered non-SSE 2xx: wrap the
-                            // single translated object in a one-element JSON array, matching the native
-                            // non-`alt=sse` `streamGenerateContent` array framing (see the main path).
-                            if gemini_json_array && wants_stream {
-                                let arr = Value::Array(vec![translated]);
-                                return Ok(Response::builder()
-                                    .status(status)
-                                    .header(CONTENT_TYPE, APPLICATION_JSON)
-                                    .body(Body::from(
-                                        crate::json::to_vec(&arr)
-                                            .unwrap_or_else(|_| arr.to_string().into_bytes()),
-                                    ))
-                                    .unwrap_or_else(|_| status.into_response()));
-                            }
-                            // The ingress writer's vtable attaches its native response request-id
-                            // header (bedrock `x-amzn-RequestId`, anthropic `request-id`). Cross-protocol
-                            // degraded translate (ingress != egress): no upstream id to forward, so
-                            // `None` synthesizes one. ONE call per protocol — a second would APPEND a
-                            // duplicate header.
-                            let rb = Response::builder()
-                                .status(status)
-                                .header(CONTENT_TYPE, APPLICATION_JSON);
-                            let rb = maybe_attach_response_request_id(rb, ingress_protocol, None);
-                            let body_bytes = crate::json::to_vec(&translated)
-                                .unwrap_or_else(|_| translated.to_string().into_bytes());
-                            return Ok(rb
-                                .body(Body::from(body_bytes))
-                                .unwrap_or_else(|_| status.into_response()));
-                        }
-                    }
-                }
-                // Untranslatable across a protocol boundary: return an ingress-native error rather
-                // than leaking the upstream body verbatim.
-                tracing::warn!(
-                    ingress = %ingress_protocol,
-                    egress = %egress_name,
-                    "degraded cross-protocol response not translatable; returning ingress-native error"
-                );
-                // The 2xx headers optimistically recorded a breaker SUCCESS against the ROUTING POOL
-                // cell, but an undecodable body is exactly as much a lane fault as a transport
-                // failure — without this, a lane returning undecodable 200s forever never trips
-                // (unlike its TransportError sibling above, which already compensates).
-                let tripped = app.store.record_transient_in(
-                    pool,
+                return Ok(super::translate_response_cross_protocol(
+                    app,
                     i,
-                    "untranslatable-2xx",
-                    forward_once_cfg.as_ref(),
-                    None,
-                );
-                if tripped {
-                    emit_breaker_trip(app, pool, i);
-                }
-                // `budget_guard` is still armed here: dropping it on this `return` refunds the
-                // headers-time unit, symmetric with the TransportError branch above.
-                return Ok(ingress_error(
                     ingress_protocol,
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    KIND_API_ERROR,
-                    GENERIC_RESPONSE_ERROR_DETAIL,
-                ));
+                    op,
+                    pool,
+                    forward_once_cfg.as_ref(),
+                    r,
+                    permit,
+                    &mut budget_guard,
+                    usage_sink,
+                    status,
+                    wants_stream,
+                    gemini_json_array,
+                    upstream_started,
+                    // The degraded (FallbackPool/LeastBad) path has no `chosen_policy_name` in scope —
+                    // there is no routing-policy decision on this hop — and `maybe_attach_route_policy`
+                    // is already a no-op on `None`, so this reproduces the prior behavior (no
+                    // `x-busbar-route-*` headers on this path) exactly.
+                    None,
+                    true, // degraded path: selects the "degraded"-labeled warn strings
+                )
+                .await);
             }
 
             // Streaming (or same-protocol non-stream): stream with first-byte boundary tracking. On a
