@@ -93,13 +93,23 @@ ssh $SSHOPT "ubuntu@$IP" "git clone -q https://github.com/GetBusbar/busbar.git b
 
 # --jobs, not --test-threads: cargo-mutants runs whole `cargo test` invocations in parallel.
 # --file scopes to the fix round's touched files only (see FILES above).
+#
+# --all-features: without it, code behind a non-default feature (e.g. busbar's `openapi-schema`,
+# CI-only, gates openapi_doc()/openapi_operation_id()/capitalize() AND their own golden/drift
+# test) is invisible to both the mutator's build AND that feature's own real test suite — a mutant
+# injected into a cfg'd-out block compiles trivially (rustc never even type-checks stripped cfg
+# arms) and no test can catch it, so cargo-mutants reports it MISSED even though the real,
+# feature-enabled test suite genuinely catches the equivalent hand-applied mutation (confirmed by
+# hand: shard1-of-12's 11 openapi_doc/operation_id/capitalize "MISSED" mutants were entirely this
+# artifact, not real gaps). Whole-workspace default features can still hide OTHER feature-gated
+# code the same way, so opt in to all of it rather than re-discover this per shard.
 FILE_ARGS=""
 for f in $FILES; do FILE_ARGS="$FILE_ARGS --file $f"; done
 log "running mutants (-j $JOBS) over: $FILES - this is the long part"
 ssh $SSHOPT "ubuntu@$IP" bash -s <<REMOTE
 . "\$HOME/.cargo/env"
 cd ~/bench
-nohup cargo mutants --jobs $JOBS --timeout 300 $FILE_ARGS -- -- --skip $SKIP_TESTS > ~/mutants.log 2>&1 &
+nohup cargo mutants --jobs $JOBS --timeout 300 --all-features $FILE_ARGS -- -- --skip $SKIP_TESTS > ~/mutants.log 2>&1 &
 echo started
 REMOTE
 
