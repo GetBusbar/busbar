@@ -9,7 +9,13 @@ description = "A hermetic trivial kind:hook plugin cdylib used to drive the end-
 license = "Apache-2.0"
 
 [lib]
-crate-type = ["cdylib"]
+# cdylib for the real dlopen ABI seam; rlib is REQUIRED for `cargo test` to actually emit the
+# cdylib artifact at all — with cdylib-only, `cargo test -p busbar` builds a trivial "0 tests"
+# harness for this package but never produces the .so/.dylib, so every hooks::tests:: test gated on
+# `hook_cdylib()` silently found nothing and skipped (confirmed: no .so/.dylib under target/debug
+# at all after a bare `cargo test -p busbar`, only .rcgu.o object files). Same fix already applied
+# to store-postgres-plugin's identical crate-type-only-cdylib bug.
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 busbar-plugin-sdk = { path = "../plugin-sdk" }
