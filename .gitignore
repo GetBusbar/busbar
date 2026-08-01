@@ -37,3 +37,13 @@ Thumbs.db
 __pycache__/
 *.pyc
 .wrangler/
+
+# SQLite dev/test artifacts left in a crate root by a plugin's own default relative db_path
+# (e.g. crates/plugin-loader's store-sqlite-plugin fixture tests before they were isolated to a
+# tmpdir) — never something to commit.
+busbar-governance.db
+
+# cargo-mutants report output pulled from EC2 shards (scripts/run-mutants-ec2.sh) — local
+# working data, not source.
+mutants-report/
+mutants-report-live/

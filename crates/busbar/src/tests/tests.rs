@@ -1696,6 +1696,29 @@ fn worker_threads_from_env_parses_valid_rejects_invalid() {
     }
 }
 
+/// `is_real_auth_plugin_ref`: `keys` is always exempt (engine-handled, never a plugin).
+/// `test-groups-module` is exempt ONLY when `is_test_build` is true — in a release build it must
+/// be treated as a real (unresolvable) plugin ref, so `--validate` fails it the same way real boot
+/// does, rather than silently agreeing a config naming it is fine. Every other name is always a
+/// real ref regardless of build flavor.
+#[test]
+fn is_real_auth_plugin_ref_exempts_keys_always_and_test_groups_module_only_in_test_builds() {
+    assert!(!is_real_auth_plugin_ref(config::KEYS_MODULE, true));
+    assert!(!is_real_auth_plugin_ref(config::KEYS_MODULE, false));
+    assert!(
+        !is_real_auth_plugin_ref("test-groups-module", true),
+        "exempt in a test build, matching AuthMiddleware::new's #[cfg(test)] arm"
+    );
+    assert!(
+        is_real_auth_plugin_ref("test-groups-module", false),
+        "must NOT be exempt in a release build - it isn't a real registered module there, so a \
+         release config naming it must be treated as a real (and therefore unresolvable) plugin \
+         ref, not silently waved through"
+    );
+    assert!(is_real_auth_plugin_ref("oidc", true));
+    assert!(is_real_auth_plugin_ref("oidc", false));
+}
+
 /// `safe_mode_requested`: true iff `--safe-mode` is literally present among the args; absent, a
 /// near-miss, or an empty arg list must all return false.
 #[test]
