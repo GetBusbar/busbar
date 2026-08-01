@@ -334,4 +334,64 @@ mod tests {
         assert!(!is_plugin_tarball("x.tar"));
         assert!(!is_plugin_tarball("x.zip"));
     }
+
+    // The three size-cap constants are each a computed literal (multiplication / addition); assert
+    // their CONCRETE values directly rather than re-deriving them symbolically in the test (which
+    // would just re-run the same arithmetic and trivially agree with a mutated constant too).
+    #[test]
+    fn size_cap_constants_have_the_documented_concrete_values() {
+        assert_eq!(MAX_MANIFEST_BYTES, 1_048_576, "1 MiB");
+        assert_eq!(MAX_LIB_BYTES, 268_435_456, "256 MiB");
+        assert_eq!(
+            MAX_TARBALL_FILE_BYTES, 269_484_032,
+            "MAX_LIB_BYTES + MAX_MANIFEST_BYTES"
+        );
+        assert_eq!(MEMBER_RESERVE_CEILING, 65_536, "64 KiB");
+    }
+
+    #[test]
+    fn manifest_member_at_exactly_the_cap_is_accepted_one_byte_over_is_refused() {
+        // A manifest whose bytes deserialize is padded with trailing whitespace up to the exact
+        // cap, then cap+1, to exercise `read_entry_bounded`'s `size > cap` boundary in both
+        // directions (a `>` mutated to `==`/`>=` would wrongly refuse the exact-cap case).
+        // Pad by inflating the `description` field so the member stays valid JSON at exactly the
+        // cap (rather than appending raw bytes, which would break JSON parsing).
+        let mut m_padded = manifest();
+        let base_len = serde_json::to_vec(&m_padded).unwrap().len() as u64;
+        let pad_needed = (MAX_MANIFEST_BYTES - base_len) as usize;
+        m_padded.description = "x".repeat(pad_needed);
+        let mut exact = serde_json::to_vec(&m_padded).unwrap();
+        // `description`'s serialized length isn't 1:1 with `pad_needed` bytes of `x` once escaped
+        // (plain ASCII `x` needs no JSON escaping, so it is 1:1) — assert the construction is
+        // exact before trusting the boundary test built on it.
+        assert_eq!(exact.len() as u64, MAX_MANIFEST_BYTES);
+
+        let build = |manifest_bytes: &[u8]| -> Vec<u8> {
+            let gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            let mut t = tar::Builder::new(gz);
+            let mut h = tar::Header::new_gnu();
+            h.set_size(manifest_bytes.len() as u64);
+            h.set_mode(0o644);
+            h.set_cksum();
+            t.append_data(&mut h, MANIFEST_FILE, manifest_bytes)
+                .unwrap();
+            let mut hlib = tar::Header::new_gnu();
+            hlib.set_size(3);
+            hlib.set_mode(0o644);
+            hlib.set_cksum();
+            t.append_data(&mut hlib, "lib.so", &b"abc"[..]).unwrap();
+            t.into_inner().unwrap().finish().unwrap()
+        };
+
+        let bytes = build(&exact);
+        let up = unpack(&bytes).expect("a manifest of exactly MAX_MANIFEST_BYTES must be accepted");
+        assert_eq!(up.manifest.description.len(), pad_needed);
+
+        // One byte over the cap: refused (already covered for declared-size by
+        // `oversized_manifest_member_is_refused`, kept here only as the paired boundary case).
+        exact.push(b' ');
+        let bytes = build(&exact);
+        let err = unpack(&bytes).unwrap_err();
+        assert!(err.contains("cap"), "got {err}");
+    }
 }
