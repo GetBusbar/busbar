@@ -471,6 +471,7 @@ fn pack(args: &[String]) -> ExitCode {
             &manifest,
             &lib_bytes,
             &busbar_plugin_loader::supported_abi,
+            busbar_plugin_sign::HOST_IDENTITY,
         )
         .map_err(|e| format!("manifest would fail busbar's structural validation: {e}"))?;
 
@@ -540,7 +541,7 @@ mod tests {
             host: None,
         };
         let signed = sign(&key, m, lib);
-        busbar_plugin_sign::validate_structure(&signed, lib, &busbar_plugin_loader::supported_abi)
+        busbar_plugin_sign::validate_structure(&signed, lib, &busbar_plugin_loader::supported_abi, busbar_plugin_sign::HOST_IDENTITY)
             .expect("structural");
         let tarball = busbar_plugin_loader::tarball::package(&signed, "lib.so", lib).unwrap();
         let up = busbar_plugin_loader::tarball::unpack(&tarball).unwrap();
@@ -598,7 +599,7 @@ mod tests {
         };
         let signed = sign(&key, m, lib);
         assert_eq!(signed.needs.prompt, NeedLevel::Rw);
-        busbar_plugin_sign::validate_structure(&signed, lib, &busbar_plugin_loader::supported_abi)
+        busbar_plugin_sign::validate_structure(&signed, lib, &busbar_plugin_loader::supported_abi, busbar_plugin_sign::HOST_IDENTITY)
             .expect("structural");
         // Tampering the declared intent after signing breaks verification (needs is signed).
         let tarball = busbar_plugin_loader::tarball::package(&signed, "lib.so", lib).unwrap();
