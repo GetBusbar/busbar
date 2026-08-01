@@ -13,6 +13,7 @@ fn provider_def(protocol: &str, base_url: &str) -> ProviderDef {
         path_base: None,
         token_url: None,
         scope: None,
+        subject: None,
         auth: None,
         allow_metadata_hosts: Vec::new(),
     }
@@ -29,6 +30,7 @@ fn provider_deploy(env_var: &str) -> ProviderDeploy {
         path_base: None,
         token_url: None,
         scope: None,
+        subject: None,
         auth: None,
         allow_metadata_hosts: None,
         health: None,
