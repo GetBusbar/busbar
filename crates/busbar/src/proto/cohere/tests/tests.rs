@@ -1089,7 +1089,7 @@ fn test_huge_tool_frame_index_clamped_below_sentinel() {
             .open_tools
             .iter()
             .filter(|&&e| e != TEXT_BLOCK_SEEN_SENTINEL)
-            .all(|&e| tool_entry_frame(e) <= MAX_TOOL_FRAME_INDEX as usize),
+            .all(|&e| e <= MAX_TOOL_FRAME_INDEX as usize),
         "every recorded tool frame index must be clamped to MAX_TOOL_FRAME_INDEX, got {:?}",
         state.open_tools
     );
@@ -3294,6 +3294,91 @@ fn test_open_tools_growth_is_capped() {
         state.open_tools.len() <= MAX_TRACKED_TOOL_FRAMES,
         "open_tools must be capped at MAX_TRACKED_TOOL_FRAMES, got {}",
         state.open_tools.len()
+    );
+}
+
+/// Round-9 codeaudit, performance lens: `cohere_lookup_tool_ir_index`/`cohere_assign_tool_ir_index`
+/// used to do a full O(n) linear scan over `state.open_tools` on EVERY tool-call-start/delta frame
+/// (the set is never shrunk), making a stream with many sequential tool calls cost O(n²) instead of
+/// O(n) overall. The fix replaces the scan with an O(log n) `state.tool_ir_index` `BTreeMap` lookup
+/// keyed by wire `frame_idx`, while `open_tools` keeps recording the plain (clamped) `frame_idx` for
+/// membership/count — mirroring the openai_chat reader's existing `open_tools`/`tool_ir_index` split.
+///
+/// This test proves the fix is REAL (the O(log n) path is actually exercised, not dead code) and
+/// that it preserves the EXACT assignment behavior the old O(n) scan produced:
+///
+/// - Small-N hand check: three tools opened with DELIBERATELY DESCENDING (non-monotonic) wire
+///   indices must still be assigned IR indices by INSERTION ORDER (0, 1, 2) — the same invariant
+///   `test_stream_tool_ir_index_stable_under_non_monotonic_frame_indices` proves for N=3 — and every
+///   tool's index must remain resolvable after later siblings are recorded.
+/// - Large-N scale check: exactly `MAX_TRACKED_TOOL_FRAMES` tools opened with fully REVERSED wire
+///   indices (`N-1, N-2, ..., 0`) must each still be assigned insertion-order IR indices
+///   (`0, 1, ..., N-1`), every one of them must remain resolvable via `cohere_lookup_tool_ir_index`
+///   AFTER all `N` are open (exercising the O(log n) lookup against a full-sized map, not an empty
+///   or partially-filled one), and the very next frame past the cap must be rejected — proving
+///   `MAX_TRACKED_TOOL_FRAMES` is still enforced under the new structure.
+#[test]
+fn test_stream_tool_ir_index_o1_lookup_matches_insertion_order_at_scale() {
+    let mut state = crate::ir::StreamDecodeState::default();
+
+    // Small-N hand check: wires 10, 5, 2 (descending) must assign 0, 1, 2 (insertion order).
+    assert_eq!(cohere_assign_tool_ir_index(&mut state, 10), Some(0));
+    assert_eq!(cohere_assign_tool_ir_index(&mut state, 5), Some(1));
+    assert_eq!(cohere_assign_tool_ir_index(&mut state, 2), Some(2));
+    assert_eq!(cohere_lookup_tool_ir_index(&state, 10), Some(0));
+    assert_eq!(cohere_lookup_tool_ir_index(&state, 5), Some(1));
+    assert_eq!(cohere_lookup_tool_ir_index(&state, 2), Some(2));
+    // Re-asserting an already-open frame is a no-op (duplicate start): no re-assignment.
+    assert_eq!(cohere_assign_tool_ir_index(&mut state, 10), None);
+    assert_eq!(cohere_lookup_tool_ir_index(&state, 10), Some(0));
+
+    // Large-N scale check on a FRESH stream: open exactly MAX_TRACKED_TOOL_FRAMES tools with fully
+    // reversed wire indices. The i-th call opened (wire = N-1-i) must be assigned IR index i,
+    // exactly the insertion-order rule the old O(n) scan-to-find-or-insert also implemented.
+    let mut state = crate::ir::StreamDecodeState::default();
+    let n = MAX_TRACKED_TOOL_FRAMES;
+    for i in 0..n {
+        let wire = n - 1 - i;
+        assert_eq!(
+            cohere_assign_tool_ir_index(&mut state, wire),
+            Some(i),
+            "tool #{i} (wire {wire}) must be assigned IR index {i} by insertion order"
+        );
+    }
+    assert_eq!(state.open_tools.len(), n);
+    assert_eq!(state.tool_ir_index.len(), n);
+
+    // AFTER all N are open, every tool's IR index must still resolve to the value assigned at
+    // insertion — proving the O(log n) lookup is correct against a full-sized map, not just an
+    // empty/small one where a bug could hide.
+    for i in 0..n {
+        let wire = n - 1 - i;
+        assert_eq!(
+            cohere_lookup_tool_ir_index(&state, wire),
+            Some(i),
+            "tool #{i} (wire {wire}) must still resolve to its assigned IR index {i} after all {n} tools are open"
+        );
+    }
+
+    // The cap is still enforced under the new structure: every legal wire value (0..n) is already
+    // tracked, so the next fresh frame past the cap must be rejected (tracked == MAX_TRACKED_TOOL_FRAMES).
+    assert_eq!(
+        cohere_tracked_tool_count(&state),
+        MAX_TRACKED_TOOL_FRAMES,
+        "tracked tool count must equal the cap after opening exactly MAX_TRACKED_TOOL_FRAMES tools"
+    );
+    // A genuinely fresh wire index (the clamp target, guaranteed unused above since every wire in
+    // 0..n was already claimed) must be rejected — not tracked, no IR index assigned — proving the
+    // cap rejects new frames rather than merely being numerically equal to it.
+    assert_eq!(
+        cohere_assign_tool_ir_index(&mut state, MAX_TOOL_FRAME_INDEX as usize),
+        None,
+        "a fresh frame past MAX_TRACKED_TOOL_FRAMES must be rejected, not assigned a new IR index"
+    );
+    assert_eq!(
+        state.tool_ir_index.len(),
+        n,
+        "a rejected over-cap frame must not grow tool_ir_index"
     );
 }
 

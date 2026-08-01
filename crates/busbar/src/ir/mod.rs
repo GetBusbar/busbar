@@ -768,15 +768,30 @@ pub(crate) struct StreamDecodeState {
     /// reader stashes the `messageStop` stop_reason here and pairs it with the usage when `metadata`
     /// arrives. Used by the Bedrock reader only; other protocols leave it `None`.
     pub(crate) pending_stop_reason: Option<IrStopReason>,
-    /// OpenAI-only: maps each opened OpenAI tool_call `index` (the `oai_idx`) to the IR block index
-    /// its `BlockStart` was emitted with. The OpenAI flat stream lets text arrive AFTER tool calls,
-    /// and the text block's presence shifts the tool index base — so the IR index a tool's BlockStart
-    /// claimed at OPEN time can diverge from a value RECOMPUTED at finish/close time (where text is
-    /// now `Some`). Recording the emitted IR index here and replaying it verbatim at close guarantees
-    /// every tool `BlockStop` pairs with the SAME index as its `BlockStart`, regardless of later text
-    /// arrival. Empty for every other reader (which assign IR indices 1:1 or via `open_tools`/
-    /// `text_index` directly and never recompute a divergent base). Keyed by `oai_idx` so it tracks
-    /// `open_tools` one-for-one.
+    /// Maps each opened tool-call wire index (the OpenAI reader's `oai_idx` / the Cohere reader's
+    /// `frame_idx`) to the IR block index its `BlockStart` was emitted with, giving O(log n)
+    /// lookup/insert instead of a linear scan over `open_tools`. Every key inserted here is also
+    /// inserted into `open_tools` at the same time (so `open_tools` remains the membership set this
+    /// map indexes), but the reverse does not always hold: Cohere's `open_tools` additionally carries
+    /// the `TEXT_BLOCK_SEEN_SENTINEL` (cohere.rs), which is deliberately never mirrored into this map.
+    /// Neither map is shrunk for the ordinary duration of a stream, for the same reason `open_tools`
+    /// is never shrunk, so a `tool-call-end`/finish path can replay the exact index a `BlockStart` was
+    /// opened with — except the OpenAI Chat reader's terminal branch, which `mem::take`s BOTH maps
+    /// together once the finish/close events have been emitted (see `openai_chat/reader.rs`).
+    ///
+    /// OpenAI reader: the flat stream lets text arrive AFTER tool calls, and the text block's
+    /// presence shifts the tool index base — so the IR index a tool's BlockStart claimed at OPEN
+    /// time can diverge from a value RECOMPUTED at finish/close time (where text is now `Some`).
+    /// Recording the emitted IR index here and replaying it verbatim at close guarantees every tool
+    /// `BlockStop` pairs with the SAME index as its `BlockStart`, regardless of later text arrival.
+    ///
+    /// Cohere reader: the index is assigned once at `tool-call-start` and never recomputed (no
+    /// divergent base to reconcile), so this map exists purely as the O(log n) lookup counterpart to
+    /// `open_tools`'s O(log n) membership check — replacing an O(n) linear scan that made a stream
+    /// with many sequential tool calls cost O(n²) overall (round-9 codeaudit, performance lens).
+    ///
+    /// Empty for every other reader (which assign IR indices 1:1 or via `open_tools`/`text_index`
+    /// directly and never need this lookup).
     pub(crate) tool_ir_index: std::collections::BTreeMap<usize, usize>,
     /// Monotone next-free IR block index, for readers that allocate slots by ORDER OF FIRST
     /// APPEARANCE. NEVER reset for the life of the stream. The terminal branch's `mem::take` of
