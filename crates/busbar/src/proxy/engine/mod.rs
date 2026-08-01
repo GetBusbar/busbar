@@ -2600,6 +2600,40 @@ mod inject_include_usage_tests {
         );
     }
 
+    /// A body of PURE whitespace (no `{` anywhere) must fall back to the DOM injector cleanly, not
+    /// index past the end of the buffer while scanning for the opening brace (the leading-whitespace
+    /// scan's `i < payload.len()` bound, exercised right at its own boundary since the scan runs to
+    /// completion with nothing found).
+    #[test]
+    fn pristine_injector_does_not_overrun_an_all_whitespace_body() {
+        let out = inject_openai_stream_include_usage_pristine(Bytes::from_static(b"   \n\t "));
+        // Not valid JSON either way - the point is only that this does not panic, and passes the
+        // untouched bytes through (nothing looked like an object to reshape).
+        assert_eq!(&out[..], &b"   \n\t "[..]);
+    }
+
+    /// The splice path (not the DOM-reconstruct fallback) is what actually runs for a normal
+    /// object-opening body whose first key is a string - proven by preserving BYTE-FOR-BYTE
+    /// formatting the DOM path would normalize away (irregular internal whitespace here). If the
+    /// `!opens_object || next != Some(b'"')` guard's `!` were lost, EVERY object-shaped body would
+    /// wrongly fall back to the DOM injector - the semantic (parsed) assertions elsewhere can't tell
+    /// the difference since both paths produce equivalent JSON, only the raw bytes can.
+    #[test]
+    fn pristine_injector_actually_splices_rather_than_falling_back_to_dom_reconstruction() {
+        let body: &[u8] = br#"{"model":  "m",    "stream":true}"#;
+        let out = inject_openai_stream_include_usage_pristine(Bytes::from_static(body));
+        let out_str = String::from_utf8(out.to_vec()).unwrap();
+        assert!(
+            out_str.contains(r#""model":  "m",    "stream":true"#),
+            "the splice must preserve the original tail byte-for-byte (irregular whitespace \
+             intact), proving the byte-level path ran, not a DOM re-serialize: {out_str}"
+        );
+        assert!(
+            out_str.starts_with(r#"{"stream_options":{"include_usage":true},"#),
+            "the insert must land immediately after the opening brace: {out_str}"
+        );
+    }
+
     /// FINDING 3: an OpenAI Chat streaming body with NO `stream_options` gains
     /// `stream_options.include_usage: true` so the upstream reports usage busbar can bill.
     #[test]
