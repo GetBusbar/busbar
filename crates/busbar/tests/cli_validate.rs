@@ -120,6 +120,43 @@ fn validate_ok_on_valid_config_without_plugins() {
     assert_eq!(code, 0, "stdout={stdout} stderr={stderr}");
     assert!(stdout.contains("ok: config valid"), "got {stdout}");
     assert!(stdout.contains("plugins:   disabled"), "got {stdout}");
+    assert!(
+        !stdout.contains("note:") && !stdout.contains("env var(s)"),
+        "no config value here uses ${{VAR}} interpolation, so there must be no unset-env-var \
+         note: got {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `--validate`'s "N env var(s) referenced but unset" note must appear exactly when a `${VAR}`
+/// interpolation in config/providers resolves to an unset variable, and must name it. Closes a
+/// mutation-testing gap: `if !unset_env_vars.is_empty()` at main.rs's note-printing site had zero
+/// coverage of either branch (the baseline test above never referenced `${VAR}` syntax at all, so
+/// it exercised neither "note present" nor a confirmed "note absent").
+#[test]
+fn validate_notes_unset_interpolated_env_vars_by_name() {
+    let dir = fixture_dir("unsetenv");
+    // Defensive: ensure the var is genuinely unset regardless of the ambient environment (this test
+    // never sets it, only relies on its absence).
+    std::env::remove_var("BUSBAR_CLI_VALIDATE_TEST_UNSET_VAR");
+    // `${VAR}` interpolation runs on the RAW config text before YAML parsing (see
+    // config::interpolate_env_with), so a reference inside a COMMENT is still recorded as
+    // referenced/unset while being guaranteed structurally harmless -- no risk of the substituted
+    // (empty) value landing in a real field and failing config validation for an unrelated reason.
+    write_configs(
+        &dir,
+        "# smoke-tests unset-env-var interpolation: ${BUSBAR_CLI_VALIDATE_TEST_UNSET_VAR}\n",
+    );
+    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(
+        code, 0,
+        "an unset interpolation var is a note, not a failure: {stderr}"
+    );
+    assert!(
+        stdout.contains("1 env var(s) referenced but unset here")
+            && stdout.contains("BUSBAR_CLI_VALIDATE_TEST_UNSET_VAR"),
+        "expected the unset-var note naming the variable, got: {stdout}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

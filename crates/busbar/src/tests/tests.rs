@@ -1660,3 +1660,54 @@ fn migrate_config_then_load_config_from_disk_boots_the_real_migrated_file() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// `worker_threads_from_env`: an unset var returns None (the normal default path, no warning); a
+/// valid positive integer returns Some(n); zero/negative/non-numeric returns None WITH a warning
+/// printed (not silently ignored -- a v1.4.0 audit fix, see the function's own doc comment). Uses a
+/// test-unique env var name so this can never collide with a concurrently-running test.
+#[test]
+fn worker_threads_from_env_parses_valid_rejects_invalid() {
+    let unset_name = "BUSBAR_TEST_WORKER_THREADS_UNSET_MARKER_1";
+    std::env::remove_var(unset_name);
+    assert_eq!(
+        worker_threads_from_env(unset_name),
+        None,
+        "an unset var must return None"
+    );
+
+    let valid_name = "BUSBAR_TEST_WORKER_THREADS_VALID_MARKER_1";
+    std::env::set_var(valid_name, "7");
+    assert_eq!(
+        worker_threads_from_env(valid_name),
+        Some(7),
+        "a valid positive integer must round-trip exactly"
+    );
+    std::env::remove_var(valid_name);
+
+    for bad in ["0", "-1", "not-a-number", ""] {
+        let bad_name = "BUSBAR_TEST_WORKER_THREADS_BAD_MARKER_1";
+        std::env::set_var(bad_name, bad);
+        assert_eq!(
+            worker_threads_from_env(bad_name),
+            None,
+            "a non-positive-integer value ({bad:?}) must return None, not panic or parse partially"
+        );
+        std::env::remove_var(bad_name);
+    }
+}
+
+/// `safe_mode_requested`: true iff `--safe-mode` is literally present among the args; absent, a
+/// near-miss, or an empty arg list must all return false.
+#[test]
+fn safe_mode_requested_matches_the_exact_flag_only() {
+    assert!(safe_mode_requested(
+        vec!["busbar".to_string(), "--safe-mode".to_string()].into_iter()
+    ));
+    assert!(!safe_mode_requested(
+        vec!["busbar".to_string(), "--validate".to_string()].into_iter()
+    ));
+    assert!(!safe_mode_requested(
+        vec!["busbar".to_string(), "--safe-mode=true".to_string()].into_iter()
+    ));
+    assert!(!safe_mode_requested(std::iter::empty()));
+}
