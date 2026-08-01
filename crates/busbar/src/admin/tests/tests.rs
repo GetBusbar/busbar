@@ -9502,6 +9502,117 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_too_new() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// round-8 (error-handling lens): `PUT /config/settings` re-resolves `auth.admin_auth`'s admin-token
+/// secret ref on every apply (HIGH-7) and, when it changed, swaps the new digest into the shared,
+/// process-lifetime `GovState` — the SAME `GovState` the OLD (still-serving) `App` snapshot also
+/// points at. If the transaction's PERSIST step (writing the merged settings to the overlay) fails
+/// AFTER that swap, the handler reports "nothing was changed (the running engine is unaffected)" —
+/// but the credential rotation must not have already landed on the shared `GovState`, or that
+/// message is a lie: the admin token the operator believes is still "admintok-v1" would already be
+/// rejected fleet-locally. Forces the persist failure the same deterministic way
+/// `test_admin_v1_config_settings_reset_refuses_when_overlay_is_corrupt` does (a corrupt overlay
+/// file `load_for_rmw` refuses to read-modify-write).
+#[tokio::test]
+async fn test_admin_v1_config_settings_persist_failure_does_not_rotate_gov_credentials() {
+    crate::metrics::init();
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-settings-gov-rotate-persist-fail-{}-{}",
+        std::process::id(),
+        crate::store::now()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let providers_path = dir.join("providers.yaml");
+    let config_path = dir.join("config.yaml");
+    let token_path = dir.join("admin.token");
+    std::fs::write(&token_path, "admintok-v1").unwrap();
+    std::fs::write(
+        &providers_path,
+        "test-provider:
+  protocol: anthropic
+  base_url: http://127.0.0.1:1/
+  api_key_env: BUSBAR_TEST_GOV_ROTATE_NO_SUCH_KEY
+",
+    )
+    .unwrap();
+    // `auth.admin_auth` DECLARES the admin-tokens module with a file-backed ref — the precondition
+    // (main.rs's `declares_admin_tokens`) for `build_app_from_config` to re-resolve and queue a
+    // rotation on every apply.
+    std::fs::write(
+        &config_path,
+        format!(
+            "listen: 127.0.0.1:0
+providers:
+  test-provider:
+    api_key: {{ env: BUSBAR_TEST_GOV_ROTATE_NO_SUCH_KEY }}
+models:
+  m0:
+    provider: test-provider
+    max_concurrent: 4
+pools:
+  p:
+    members:
+      - model: m0
+auth:
+  admin_auth:
+    - admin-tokens: {{ token: {{ file: {token_path:?} }} }}
+"
+        ),
+    )
+    .unwrap();
+    let overlay = dir.join("overlay.json");
+    // Corrupt from the start: `load_for_rmw` refuses an unparseable-but-present overlay, so the
+    // apply's persist step (`overlay::persist_root`) fails deterministically every time.
+    std::fs::write(&overlay, b"{ not json").unwrap();
+
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok-v1".to_string()));
+    let before_hash = gov.admin_token_hash();
+    let mut app = TestApp::new()
+        .governance(gov.clone())
+        .overlay_path(overlay.clone())
+        .build();
+    {
+        let inner = Arc::get_mut(&mut app).expect("sole owner");
+        inner.config_path = Some(config_path.clone());
+        inner.providers_path = Some(providers_path.clone());
+    }
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+
+    // THE ROTATION INPUT: the secret behind the ref changes BEFORE the apply that will re-resolve
+    // it — exactly the operational sequence HIGH-7 exists to support (rotate the file, then apply).
+    std::fs::write(&token_path, "admintok-v2").unwrap();
+
+    let client = reqwest::Client::new();
+    let put = client
+        .put(format!("http://{addr}/api/v1/admin/config/settings"))
+        .header("x-admin-token", "admintok-v1")
+        .header("content-type", "application/json")
+        .body(serde_json::json!({ "per_request_fee": 42 }).to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        put.status().as_u16(),
+        400,
+        "the corrupt overlay must fail the persist step: {:?}",
+        put.text().await
+    );
+
+    assert_eq!(
+        gov.admin_token_hash(),
+        before_hash,
+        "a persist failure must leave the shared GovState's admin-token digest untouched — the \
+         response just claimed nothing was changed, and this is the process-lifetime object the \
+         OLD (still-serving) App snapshot also points at"
+    );
+
+    handle.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// `GET /config/settings` on a corrupt/unreadable overlay renders `settings: {}` (the honest
 /// "no overrides visible" answer given the fail-soft `read`), but the misreport must be
 /// ATTRIBUTABLE to THIS read — a generic `overlay.rs` warn is not enough, because a reader can't
