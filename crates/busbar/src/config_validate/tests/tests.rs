@@ -1603,16 +1603,40 @@ fn test_validate_chain_tokens_module_removed_message() {
 
 #[test]
 fn test_validate_chain_unknown_module_rejected_keys_accepted() {
-    // FAIL-CLOSED: an unknown chain module is a hard boot error (a typo must never silently
-    // drop an auth module); the built-in `keys` module and the empty chain both validate.
+    // `config_validate::validate` runs BEFORE the plugin registry exists (see this crate's
+    // `preflight_plugins_and_secrets` doc comment), so it genuinely cannot tell a real `kind: auth`
+    // plugin name from a typo -- that distinction is made by main.rs's later, registry-aware check
+    // (`auth.chain module '{name}' does not match any plugin in ...`), run right after this one. A
+    // plugin-shaped name (like `okta`, standing in for any real IdP plugin alias) must therefore NOT
+    // be rejected at THIS layer -- an earlier version of this rule hard-rejected every non-`keys`
+    // name right here, which meant NO `kind: auth` plugin (including the real `auth-oidc` plugin)
+    // could ever pass config_validate, since this always-first check always lost before the
+    // plugin-aware one got a chance to run. See `crates/busbar/tests/cli_validate.rs`'s
+    // `validate_fails_on_unresolvable_auth_chain_plugin` for the regression test proving the LATER
+    // layer still catches a genuinely unresolvable name -- fail-closed is preserved end to end, just
+    // at the check that can actually tell.
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
     cfg.auth = Some(make_auth_chain(&["okta"], crate::auth::UpstreamCreds::Own));
-    let errs = validate(&cfg).expect_err("an unknown chain module must fail validation");
     assert!(
-        errs.iter()
-            .any(|e| e.contains("auth.chain names unknown module 'okta'")),
-        "expected an unknown-module error naming 'okta'; got: {errs:?}"
+        validate(&cfg).is_ok(),
+        "a plugin-shaped (non-keys, non-removed-legacy) chain module must NOT be rejected at this \
+         pre-registry layer; got: {:?}",
+        validate(&cfg)
+    );
+
+    // The REMOVED 1.4.x names are still rejected here, precisely -- this layer CAN judge them
+    // without any registry access, so there's no reason to defer that one.
+    let (providers, models, pools) = valid_maps();
+    let mut cfg = make_root_cfg(providers, models, pools);
+    cfg.auth = Some(make_auth_chain(
+        &["tokens"],
+        crate::auth::UpstreamCreds::Own,
+    ));
+    let errs = validate(&cfg).expect_err("the removed 'tokens' module must still fail validation");
+    assert!(
+        errs.iter().any(|e| e.contains("was REMOVED in 1.5.0")),
+        "expected the removed-module migration message; got: {errs:?}"
     );
 
     // `keys` (the built-in signed-key verifier) is accepted.

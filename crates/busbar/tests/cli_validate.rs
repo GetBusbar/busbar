@@ -190,6 +190,41 @@ fn validate_fails_when_store_plugin_referenced_but_plugins_disabled() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Regression test for the config_validate/main.rs layering bug this session found and fixed:
+/// `auth.chain` naming a plugin-shaped module that ISN'T actually installed must still fail
+/// `--validate` (fail-closed end to end) -- just via the LATER, registry-aware check
+/// (`preflight_plugins_and_secrets` in main.rs), not the earlier pre-registry `config_validate`
+/// pass. Before the fix, `config_validate::validate` hard-rejected every non-`keys` chain module
+/// unconditionally, which (as an unwanted side effect neither layer's own tests caught, since each
+/// tested its own layer in isolation) meant a genuinely INSTALLED `kind: auth` plugin could never
+/// pass either -- see `crates/busbar/src/config_validate/tests/tests.rs`'s
+/// `test_validate_chain_unknown_module_rejected_keys_accepted` for that half of the regression
+/// proof. This test proves the other half: with plugins enabled but nothing actually installed
+/// under that name, `--validate` must STILL refuse, and the error must come from the registry-aware
+/// layer (naming the plugins dir / what's loadable), not silently pass.
+#[test]
+fn validate_fails_on_unresolvable_auth_chain_plugin() {
+    let dir = fixture_dir("authplugin");
+    write_configs(
+        &dir,
+        &format!(
+            "auth:\n  chain:\n    - oidc:\n        settings: {{}}\n{}",
+            plugins_block(&dir, true, true)
+        ),
+    );
+    let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(
+        code, 1,
+        "an auth.chain module with no matching installed plugin must fail --validate: {stderr}"
+    );
+    assert!(
+        stderr.contains("does not match any plugin") || stderr.contains("was not loaded"),
+        "expected the registry-aware unresolved-plugin error (not the old blanket \
+         pre-registry rejection), got: {stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// FAIL-CLOSED: ANY invalid tarball in an enabled plugins dir fails --validate naming the file,
 /// even when no plugin is referenced by the config.
 #[test]
