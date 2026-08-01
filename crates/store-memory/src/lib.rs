@@ -494,6 +494,109 @@ mod tests {
     }
 
     #[test]
+    fn put_credential_rejects_a_public_id_reused_under_a_different_key() {
+        let s = MemoryStore::new();
+        s.put_key(&key("a")).unwrap();
+        s.put_key(&key("b")).unwrap();
+        s.put_credential(&credential("c1", "a", "AKIA1")).unwrap();
+        // Different key, different id, SAME (kind, public_id) — the global AccessKeyId->credential
+        // lookup handle must resolve to exactly one credential.
+        let mut dupe = credential("c2", "b", "AKIA1");
+        dupe.meta.slot = 1; // different slot too, so only the public_id clash can reject it
+        assert!(s.put_credential(&dupe).is_err());
+        // A genuinely distinct public_id under the other key is fine.
+        let mut ok = credential("c3", "b", "AKIA2");
+        ok.meta.slot = 1;
+        assert!(s.put_credential(&ok).is_ok());
+    }
+
+    #[test]
+    fn put_credential_public_id_check_excludes_its_own_row_on_reput() {
+        // The uniqueness scan excludes the row with the SAME id (`c.meta.id != secret.meta.id`) —
+        // otherwise a credential could never even be inserted once the id already existed. This
+        // only matters once an id can legitimately be re-put; simulate it by inserting once, then
+        // putting the identical secret again under the identical id/public_id/kind and confirming
+        // it's accepted, not rejected as "colliding with itself".
+        let s = MemoryStore::new();
+        s.put_key(&key("a")).unwrap();
+        let c = credential("c1", "a", "AKIA1");
+        s.put_credential(&c).unwrap();
+        assert!(
+            s.put_credential(&c).is_ok(),
+            "a row must not collide with itself"
+        );
+    }
+
+    #[test]
+    fn list_credentials_filters_by_key_id_and_since_boundary_is_exclusive() {
+        let s = MemoryStore::new();
+        s.put_key(&key("a")).unwrap();
+        s.put_key(&key("b")).unwrap();
+        s.put_credential(&credential("c1", "a", "AKIA1")).unwrap();
+        let mut c2 = credential("c2", "b", "AKIA2");
+        c2.meta.slot = 1;
+        s.put_credential(&c2).unwrap();
+
+        let for_a = s.list_credentials("a").unwrap();
+        assert_eq!(for_a.len(), 1, "must not also return key b's credential");
+        assert_eq!(for_a[0].id, "c1");
+
+        // revision boundary: `revision > since` is exclusive of `since` itself. c2 was put after
+        // c1, so it holds the higher revision — use IT as the boundary reference, or c1 (the lower
+        // revision) would still be `> since` and the assertion below would be vacuous. The store's
+        // revision counter is global (shared with `put_key`), so c1's revision is NOT necessarily
+        // `newest_rev - 1` — read it directly rather than assuming adjacency.
+        let oldest_rev = s.list_credentials("a").unwrap()[0].revision;
+        let newest_rev = s.list_credentials("b").unwrap()[0].revision;
+        assert!(newest_rev > oldest_rev);
+        assert_eq!(
+            s.list_credentials_since(newest_rev).unwrap().len(),
+            0,
+            "since == the newest row's own revision must exclude it"
+        );
+        assert_eq!(
+            s.list_credentials_since(oldest_rev - 1).unwrap().len(),
+            2,
+            "since one below the lowest revision must include everything"
+        );
+    }
+
+    #[test]
+    fn list_keys_since_boundary_is_exclusive() {
+        let s = MemoryStore::new();
+        s.put_key(&key("a")).unwrap();
+        s.put_key(&key("b")).unwrap();
+        let rev_a = s.get_key("a").unwrap().unwrap().revision;
+        let rev_b = s.get_key("b").unwrap().unwrap().revision;
+        assert!(rev_b > rev_a);
+        assert_eq!(
+            s.list_keys_since(rev_b).unwrap().len(),
+            0,
+            "since == the newest row's own revision must exclude it"
+        );
+        assert_eq!(
+            s.list_keys_since(rev_a).unwrap().len(),
+            1,
+            "must include only b"
+        );
+        assert_eq!(s.list_keys_since(rev_a - 1).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn next_revision_is_strictly_monotonic_starting_above_zero() {
+        let s = MemoryStore::new();
+        s.put_key(&key("a")).unwrap();
+        s.put_key(&key("b")).unwrap();
+        let rev_a = s.get_key("a").unwrap().unwrap().revision;
+        let rev_b = s.get_key("b").unwrap().unwrap().revision;
+        assert!(
+            rev_a > 0,
+            "the counter must not hand out 0 as a real revision"
+        );
+        assert_eq!(rev_b, rev_a + 1, "each call must advance by exactly 1");
+    }
+
+    #[test]
     fn lookup_credential_secret_resolves_by_kind_and_public_id() {
         let s = MemoryStore::new();
         s.put_key(&key("a")).unwrap();
@@ -609,6 +712,38 @@ mod tests {
         );
     }
 
+    /// The sweep boundary itself: a window exactly `MAX_RETENTION_SECS` old sits AT the ceiling
+    /// (`window_start + MAX_RETENTION_SECS == now`) and must be evicted (`>`, not `>=`, is the
+    /// retain condition — a row must be STRICTLY inside the window to survive), while one second
+    /// fresher survives.
+    #[test]
+    fn add_usage_sweep_boundary_is_exact() {
+        let s = MemoryStore::new();
+        let n = now();
+        let at_ceiling = n.saturating_sub(MAX_RETENTION_SECS);
+        let one_inside = at_ceiling + 1;
+        let d = UsageDelta {
+            requests: 1,
+            billable_requests: 1,
+            models: vec![],
+        };
+        s.add_usage("at-ceiling", at_ceiling, &d).unwrap();
+        s.add_usage("one-inside", one_inside, &d).unwrap();
+        for _ in 0..(SWEEP_INTERVAL - 2) {
+            s.add_usage("filler", one_inside, &d).unwrap();
+        }
+        assert_eq!(
+            s.get_usage("at-ceiling", at_ceiling).unwrap(),
+            UsageLedger::default(),
+            "a window exactly at the retention ceiling must be evicted"
+        );
+        assert_eq!(
+            s.get_usage("one-inside", one_inside).unwrap().requests,
+            1,
+            "a window one second inside the ceiling must survive"
+        );
+    }
+
     /// Regression: `metering` must not grow unbounded forever either — same amortized sweep, keyed
     /// by the (day) `bucket` field this time.
     #[test]
@@ -673,5 +808,47 @@ mod tests {
         }
         assert_eq!(s.list_metering(young_bucket).unwrap().len(), 1);
         assert!(s.list_metering(old_bucket).unwrap().is_empty());
+    }
+
+    /// Same exact-boundary case as `add_usage_sweep_boundary_is_exact`, for metering's bucket
+    /// retention: a bucket exactly `MAX_RETENTION_SECS` old must be evicted, one second fresher
+    /// must survive.
+    #[test]
+    fn add_metering_sweep_boundary_is_exact() {
+        let s = MemoryStore::new();
+        let n = now();
+        let at_ceiling = n.saturating_sub(MAX_RETENTION_SECS);
+        let one_inside = at_ceiling + 1;
+        let base = MeteringDelta {
+            key_id: "k".to_string(),
+            bucket: at_ceiling,
+            model: "m".to_string(),
+            provider: "p".to_string(),
+            tokens_input: 1,
+            tokens_output: 0,
+            tokens_cache_read: 0,
+            tokens_cache_write: 0,
+            requests: 1,
+            billable_requests: 1,
+            key_group_at_use: String::new(),
+            pricing_version: String::new(),
+        };
+        let inside = MeteringDelta {
+            bucket: one_inside,
+            ..base.clone()
+        };
+        s.add_metering(&base).unwrap();
+        for _ in 0..(SWEEP_INTERVAL - 1) {
+            s.add_metering(&inside).unwrap();
+        }
+        assert!(
+            s.list_metering(at_ceiling).unwrap().is_empty(),
+            "a bucket exactly at the retention ceiling must be evicted"
+        );
+        assert_eq!(
+            s.list_metering(one_inside).unwrap().len(),
+            1,
+            "a bucket one second inside the ceiling must survive"
+        );
     }
 }
