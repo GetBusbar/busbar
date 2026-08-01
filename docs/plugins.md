@@ -67,6 +67,24 @@ The signature covers every field except `signature` itself (deterministic sorted
 be altered or swapped independently. Identity comes from the signed manifest, never the filename:
 you can name the tarball anything.
 
+> **Cross-language verifiers: the signature is over a canonical *re-serialization*, not the
+> manifest member's raw bytes as they appear in the tarball.** This works transparently as long as
+> your verifier's JSON serializer escapes identically to Rust's `serde_json` — which is not the
+> default in every language, and the failure mode is dangerous: every manifest verifies correctly
+> until one field happens to contain a character your serializer escapes differently, then
+> signature verification fails with no indication that character encoding is the cause. If you are
+> writing a non-Rust verifier (Go, Python, TypeScript, ...) that re-encodes the parsed manifest
+> struct before hashing/verifying, you MUST reproduce `serde_json`'s exact escaping, specifically:
+>
+> - `<`, `>`, `&` — some JSON encoders (e.g. Go's `encoding/json` by default) escape these; `serde_json` does not.
+> - U+2028 (LINE SEPARATOR), U+2029 (PARAGRAPH SEPARATOR) — some encoders always escape these; `serde_json` does not.
+> - `0x08` (backspace), `0x0C` (form feed) — `serde_json` writes `\b` / `\f`; some encoders write `` / ``.
+>
+> The simplest way to avoid this class of bug entirely: canonicalize from the manifest member's
+> **raw bytes as they appear in the tarball**, rather than parsing and re-serializing. A sibling
+> product (busbar-ui) does exactly this, and its own test fixtures deliberately include an `&`,
+> `<`, and `>` in a URL field to keep the case covered.
+
 `name` is the canonical identity (`[a-z0-9-]+`, e.g. `busbar-store-valkey`); `alias` is the short
 config name (`redis`). `store.module:` accepts either. `kind` is `store`, `secret`, `auth`, or `hook`.
 `version` is strict semver. `abi_version` declares which per-kind payload-schema generation the
