@@ -4277,6 +4277,99 @@ fn test_validate_limits_boundary_fields_reject_zero_accept_one() {
     check_floor_one!(default_max_tokens, "default_max_tokens");
     check_floor_one!(default_probe_interval_secs, "default_probe_interval_secs");
     check_floor_one!(default_probe_timeout_secs, "default_probe_timeout_secs");
+    // Found missing by adversarial review: a repo-wide grep confirmed NO test anywhere set these
+    // two fields to 0 — deleting either `< 1` guard in mod.rs left the whole suite green.
+    check_floor_one!(
+        upstream_request_timeout_secs,
+        "upstream_request_timeout_secs must be >= 1"
+    );
+    check_floor_one!(
+        default_policy_timeout_ms,
+        "default_policy_timeout_ms must be >= 1"
+    );
+}
+
+/// `max_inflight_webhook_deliveries`'s ceiling is `MAX_SEMAPHORE_PERMITS` itself, same exact-boundary
+/// shape as `max_inbound_concurrent`'s ceiling test below — found missing by adversarial review (only
+/// the `max_inbound_concurrent` twin had a ceiling test; this field's own `> MAX_SEMAPHORE_PERMITS`
+/// guard, mod.rs:1333, had none).
+#[test]
+fn test_validate_limits_max_inflight_webhook_deliveries_ceiling_is_exact() {
+    let at_cap = config::LimitsResolved {
+        max_inflight_webhook_deliveries: MAX_SEMAPHORE_PERMITS,
+        ..config::LimitsResolved::default()
+    };
+    let mut errs = Vec::new();
+    validate_limits(&at_cap, &mut errs);
+    assert!(
+        !errs
+            .iter()
+            .any(|e| e.contains("max_inflight_webhook_deliveries must be <=")),
+        "exactly MAX_SEMAPHORE_PERMITS must be accepted; got {errs:?}"
+    );
+
+    let over_cap = config::LimitsResolved {
+        max_inflight_webhook_deliveries: MAX_SEMAPHORE_PERMITS + 1,
+        ..config::LimitsResolved::default()
+    };
+    let mut errs = Vec::new();
+    validate_limits(&over_cap, &mut errs);
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("max_inflight_webhook_deliveries must be <=")),
+        "MAX_SEMAPHORE_PERMITS + 1 must be rejected; got {errs:?}"
+    );
+}
+
+/// `request_body_max_bytes`'s floor and ceiling are each an EXACT boundary
+/// (`REQUEST_BODY_MAX_BYTES_FLOOR`/`_CEIL`) — found missing entirely by adversarial review.
+#[test]
+fn test_validate_limits_request_body_max_bytes_floor_and_ceiling_are_exact() {
+    use crate::config::{REQUEST_BODY_MAX_BYTES_CEIL, REQUEST_BODY_MAX_BYTES_FLOOR};
+
+    let at_floor = config::LimitsResolved {
+        request_body_max_bytes: REQUEST_BODY_MAX_BYTES_FLOOR,
+        ..config::LimitsResolved::default()
+    };
+    let mut errs = Vec::new();
+    validate_limits(&at_floor, &mut errs);
+    assert!(
+        !errs.iter().any(|e| e.contains("below the")),
+        "exactly the floor must be accepted; got {errs:?}"
+    );
+
+    let below_floor = config::LimitsResolved {
+        request_body_max_bytes: REQUEST_BODY_MAX_BYTES_FLOOR - 1,
+        ..config::LimitsResolved::default()
+    };
+    let mut errs = Vec::new();
+    validate_limits(&below_floor, &mut errs);
+    assert!(
+        errs.iter().any(|e| e.contains("below the")),
+        "one byte below the floor must be rejected; got {errs:?}"
+    );
+
+    let at_ceil = config::LimitsResolved {
+        request_body_max_bytes: REQUEST_BODY_MAX_BYTES_CEIL,
+        ..config::LimitsResolved::default()
+    };
+    let mut errs = Vec::new();
+    validate_limits(&at_ceil, &mut errs);
+    assert!(
+        !errs.iter().any(|e| e.contains("exceeds the")),
+        "exactly the ceiling must be accepted; got {errs:?}"
+    );
+
+    let over_ceil = config::LimitsResolved {
+        request_body_max_bytes: REQUEST_BODY_MAX_BYTES_CEIL + 1,
+        ..config::LimitsResolved::default()
+    };
+    let mut errs = Vec::new();
+    validate_limits(&over_ceil, &mut errs);
+    assert!(
+        errs.iter().any(|e| e.contains("exceeds the")),
+        "one byte over the ceiling must be rejected; got {errs:?}"
+    );
 }
 
 /// `max_inbound_concurrent`'s ceiling is `MAX_SEMAPHORE_PERMITS` itself (the value that panics is

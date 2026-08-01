@@ -4050,17 +4050,43 @@ mod tests {
             !missing.exists(),
             "precondition: the directory must genuinely not exist"
         );
-        let fp = plugins_dir_fingerprint(&missing);
-        assert!(
-            fp.is_ok(),
-            "a missing plugins dir must be treated as empty, not an I/O error: {fp:?}"
+        let fp = plugins_dir_fingerprint(&missing).expect("a missing dir must not I/O-error");
+
+        // A REAL empty (but existing) directory must produce the IDENTICAL fingerprint — proving
+        // "empty" specifically, not just "any Ok(_) value" (which a mutant returning e.g. `Ok(0)`
+        // unconditionally would also satisfy against the weaker `.is_ok()`-only assertion this
+        // replaces).
+        let empty = tmp_plugins_dir("fingerprint-really-empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        let empty_fp =
+            plugins_dir_fingerprint(&empty).expect("a real empty dir must not I/O-error either");
+        assert_eq!(
+            fp, empty_fp,
+            "a missing dir's fingerprint must equal a real empty dir's fingerprint, not some \
+             other Ok value"
+        );
+
+        // And a NON-empty directory must differ, so this isn't trivially "every case returns the
+        // same constant".
+        std::fs::write(empty.join("something"), b"x").unwrap();
+        let nonempty_fp = plugins_dir_fingerprint(&empty).expect("a populated dir must not error");
+        assert_ne!(
+            fp, nonempty_fp,
+            "a populated dir's fingerprint must differ from the empty one"
         );
     }
 
-    /// Each of the three path-escape checks (`/`, `\`, `..`) independently rejects a filename — an
-    /// `||` mutated to `&&` would only reject a filename containing ALL THREE simultaneously, letting
-    /// a filename with just one bad component (e.g. `../evil.tar.gz`, which has `..` but no `\`)
-    /// slip through.
+    /// Each of the three path-escape checks (`/`, `\`, `..`) independently rejects a filename.
+    /// CORRECTED (adversarial review found the original rationale wrong): `../evil.tar.gz` and
+    /// `sub/evil.tar.gz` are ALSO caught by the belt-and-braces single-normal-component check a few
+    /// lines below regardless of `||` vs `&&` here — `Path::components()` on either shape never
+    /// yields exactly one `Normal` component, so those two cases can't actually distinguish the
+    /// mutant on their own. Only `sub\evil.tar.gz` (backslash) does: on Unix, `\` is not a path
+    /// separator, so `Path::components()` treats the whole string as ONE normal component and the
+    /// belt-and-braces check passes it through — making `contains('\\')` the ONLY thing standing
+    /// between it and acceptance. (On Windows, `\` IS a separator, so the belt-and-braces check
+    /// would catch it too, making this specific mutant equivalent there — this test's real
+    /// discriminating power is platform-dependent, which is fine: CI runs on Linux.)
     #[test]
     fn validate_plugin_filename_rejects_each_escape_form_independently() {
         assert!(
@@ -4121,8 +4147,10 @@ mod tests {
     /// return `Some(false)` and pass a loose "it's false" check, but the detail text would be wrong.
     #[tokio::test]
     async fn probe_transport_distinguishes_wrong_kind_from_unresolved() {
-        let Some(env) = crate::test_support::test_hook_env(&["test-hook"], Default::default())
-        else {
+        let Some(env) = crate::test_support::test_hook_env_with_wrong_kind_plugin(
+            "test-hook",
+            "test-wrong-kind",
+        ) else {
             eprintln!("skip: hook cdylib not built (run under --workspace)");
             return;
         };
@@ -4134,6 +4162,19 @@ mod tests {
         let (reachable, detail) = probe_transport(&wired, &env).await;
         assert_eq!(reachable, Some(true));
         assert_eq!(detail, None);
+
+        // Resolves, but to a DIFFERENT kind (secret, not hook): distinct detail text naming both
+        // kinds, distinguishing this arm from a mutant that collapses it to a fixed placeholder.
+        let mut wrong_kind = hook_cfg.clone();
+        wrong_kind.plugin = "test-wrong-kind".to_string();
+        let (reachable, detail) = probe_transport(&wrong_kind, &env).await;
+        assert_eq!(reachable, Some(false));
+        assert!(
+            detail.as_deref().is_some_and(|d| d.contains("test-wrong-kind")
+                && d.contains("secret")
+                && d.contains("hook")),
+            "wrong-kind resolution must name both the resolved kind and the expected kind: {detail:?}"
+        );
 
         // Does not resolve at all: distinct detail text naming "is not installed".
         let mut missing = hook_cfg.clone();
@@ -4313,9 +4354,11 @@ mod tests {
 
     /// `healthz` returns a real, non-default `Response` (a mutated body → `Default::default()` would
     /// still type-check but return a `200` with an EMPTY body/no status text, not either real health
-    /// payload). A fixture with no lanes reports 503 "no usable lanes" — still a REAL response, just
-    /// the unready branch — so this checks the actual text of whichever branch fired, not a fixed
-    /// status, distinguishing it from `Default::default()`'s always-200-empty-body shape.
+    /// payload). `TestApp::new().build()` deterministically has NO lanes (nothing in this test adds
+    /// one), so the readiness check always takes the unready branch — pinned to the SPECIFIC expected
+    /// outcome (503 "no usable lanes"), not "either of the two real branches", so an inverted
+    /// readiness condition (a mutant that flips which branch fires) is also caught, not just the
+    /// Default::default() case.
     #[tokio::test]
     async fn healthz_returns_a_real_response_not_the_default() {
         let app = TestApp::new().build();
@@ -4323,15 +4366,17 @@ mod tests {
         use axum::body::to_bytes;
         let status = resp.status();
         let body = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
-        assert!(
-            status == axum::http::StatusCode::OK
-                || status == axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            "healthz only ever returns 200 or 503, got {status}"
+        assert_eq!(
+            status,
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "a lane-less fixture must report unready (503), not Default::default()'s 200 nor an \
+             inverted readiness condition"
         );
-        assert!(
-            body == "ok".as_bytes() || body == "no usable lanes".as_bytes(),
-            "a real healthz response must carry one of the two real status-text bodies, not \
-             Response::default()'s empty one: {body:?}"
+        assert_eq!(
+            body,
+            "no usable lanes".as_bytes(),
+            "a real 503 healthz response must carry the real status text, not \
+             Response::default()'s empty body: {body:?}"
         );
     }
 }
