@@ -118,6 +118,310 @@ fn test_all_protocols_stream_write_read_roundtrip_preserves_text_and_terminal() 
     }
 }
 
+/// Encode one IR-derived `(event_type, json)` frame as wire bytes for the given protocol's
+/// transport: binary AWS event-stream framing (bedrock) or blank-line-terminated SSE (everyone
+/// else) — the two transports `StreamTranslate::feed` actually decodes on the egress side, and the
+/// two shapes `StreamTranslate`'s own output takes on the ingress side.
+fn encode_wire_frame(
+    is_eventstream: bool,
+    event_type: &str,
+    data: &serde_json::Value,
+    out: &mut Vec<u8>,
+) {
+    if is_eventstream {
+        let payload = serde_json::to_vec(data).unwrap_or_default();
+        out.extend_from_slice(&crate::eventstream::encode_frame(event_type, &payload));
+    } else {
+        write_sse_frame(out, event_type, data);
+    }
+}
+
+/// Serialize a canonical IR event stream through `proto`'s OWN writer into realistic native wire
+/// bytes for that protocol — used to build EGRESS-shaped input for `StreamTranslate::feed`. Routes
+/// every emitted chunk through `proto`'s OWN `StreamFraming` seams — the SAME vtable
+/// `StreamTranslate` itself drives when `proto` is the INGRESS — so the fixture reproduces each
+/// protocol's genuine multi-frame wire quirks instead of the single-frame shape the 1:1
+/// `write_response_event` trait can express on its own:
+///   - `on_combined_stop_delta`: fans a combined terminal `MessageDelta{stop_reason: Some, usage}`
+///     into Bedrock's native two-frame `messageStop`+`metadata` split. Without it, feeding a
+///     Bedrock-egress translator only a lone `messageStop` (no `metadata`) would never satisfy
+///     `BedrockReader`'s deferred-emit-on-metadata contract and the terminal event would never
+///     surface — a self-inflicted false negative, not a real protocol gap.
+///   - `on_egress_chunk` (with `client_include_usage(true)`, matching busbar's own upstream
+///     behavior of always forcing `include_usage` to bill): un-folds OpenAI's writer-folded
+///     terminal usage back into the genuine SEPARATE trailing `{choices:[], usage:{...}}` chunk a
+///     real OpenAI-compatible upstream sends. Without this the fixture only ever exercises
+///     `StreamTranslate`'s SINGLE-message_delta terminal path, never the trailing-usage-only
+///     `MessageDelta` merge branch (`on_usage_only_delta` / `folds_terminal_usage`'s
+///     `merge_trailing_usage`) that a real OpenAI-egress stream drives on every request (an
+///     adversarial review of this exact test caught that gap; this closes it for OpenAI, the only
+///     protocol besides Bedrock whose `new_stream_framing()` isn't the inert
+///     `PassthroughFraming`).
+///
+/// For every protocol where both seams are no-ops (`PassthroughFraming`), the event is written
+/// as-is, unchanged from the diagonal test's plain `write_response_event` loop.
+fn emit_via_framing(
+    framing: &mut dyn StreamFraming,
+    is_es: bool,
+    et: &str,
+    mut data: serde_json::Value,
+    out: &mut Vec<u8>,
+) {
+    if let Some(trailing) = framing.on_egress_chunk(&mut data) {
+        encode_wire_frame(is_es, et, &data, out);
+        encode_wire_frame(is_es, et, &trailing, out);
+    } else {
+        encode_wire_frame(is_es, et, &data, out);
+    }
+}
+
+fn encode_ir_events_as_wire(proto: &Protocol, events: &[crate::ir::IrStreamEvent]) -> Vec<u8> {
+    let is_es = proto.writer().ingress_is_eventstream();
+    let mut framing = proto.writer().new_stream_framing();
+    framing.set_client_include_usage(true);
+    let mut out = Vec::new();
+    for ev in events {
+        if let crate::ir::IrStreamEvent::MessageDelta {
+            stop_reason: Some(reason),
+            usage,
+            stop_sequence,
+        } = ev
+        {
+            if let Some(sub_events) =
+                framing.on_combined_stop_delta(*reason, stop_sequence.clone(), usage)
+            {
+                for sub in &sub_events {
+                    if let Some((et, data)) = proto.writer().write_response_event(sub) {
+                        emit_via_framing(framing.as_mut(), is_es, &et, data, &mut out);
+                    }
+                }
+                continue;
+            }
+        }
+        if let Some((et, data)) = proto.writer().write_response_event(ev) {
+            emit_via_framing(framing.as_mut(), is_es, &et, data, &mut out);
+        }
+    }
+    if let Some(flush) = framing.on_finish() {
+        if let Some((et, data)) = proto.writer().write_response_event(&flush) {
+            emit_via_framing(framing.as_mut(), is_es, &et, data, &mut out);
+        }
+    }
+    out
+}
+
+/// Decode wire bytes (as produced by a protocol's own writer, OR by `StreamTranslate::feed`/
+/// `finish` on the INGRESS side) back into `(event_type, json)` frames, for both transports.
+fn decode_wire_frames(is_eventstream: bool, bytes: &[u8]) -> Vec<(String, serde_json::Value)> {
+    if is_eventstream {
+        let mut buf = bytes.to_vec();
+        crate::eventstream::drain_frames(&mut buf)
+            .into_iter()
+            .filter_map(|(et, payload)| {
+                serde_json::from_slice::<serde_json::Value>(&payload)
+                    .ok()
+                    .map(|d| (et, d))
+            })
+            .collect()
+    } else {
+        let mut frames = Vec::new();
+        let mut consumed = 0usize;
+        while let Some((rel, term_len)) = find_frame_terminator(&bytes[consumed..]) {
+            let end = consumed + rel + term_len;
+            let frame = &bytes[consumed..end];
+            consumed = end;
+            let Some((event_type, data_str)) = parse_sse_frame(frame) else {
+                continue;
+            };
+            if data_str.is_empty() || data_str == SSE_DONE_SENTINEL {
+                continue;
+            }
+            if let Ok(data) = serde_json::from_str::<serde_json::Value>(&data_str) {
+                frames.push((event_type, data));
+            }
+        }
+        frames
+    }
+}
+
+/// FULL CROSS-PRODUCT STRUCTURAL TRANSLATION MATRIX: for every DIRECTED (ingress, egress) pair
+/// with ingress != egress — all 30 of them — genuinely drive a `StreamTranslate::new(ingress,
+/// egress)` translator (the exact production seam: `egress.reader()` → IR → `ingress.writer()`,
+/// including every framing/fan-out quirk) with EGRESS-shaped wire bytes, and assert THREE
+/// invariants survive on the INGRESS-shaped output: (1) the streamed text content, (2) a terminal
+/// signal (`MessageStop` / a stop-reason-bearing `MessageDelta`), and (3) block-index consistency
+/// (every decoded text delta's index was actually opened by a preceding `BlockStart`, so an
+/// off-by-N or cross-wired block index — which would desync a real streaming SDK's content
+/// accumulator even though the concatenated text still matched — cannot hide behind a naive
+/// concatenation check). Unlike the diagonal round-trip test above (same protocol on both sides of
+/// `write`/`read`, which cannot exercise `StreamTranslate` at all), this is genuine cross-protocol
+/// translation: the input bytes are native EGRESS wire shape (routed through the egress protocol's
+/// OWN `StreamFraming` seams — `on_combined_stop_delta` for Bedrock's two-frame stop/metadata
+/// split, `on_egress_chunk` for OpenAI's separate trailing-usage chunk — so multi-frame native
+/// quirks are reproduced, not just the single-frame shape `write_response_event` alone can
+/// express), the output bytes are native INGRESS wire shape, and the two never match syntactically
+/// for any tested pair. A regression confined to text, terminal, or block-index handling on one
+/// specific directed pair cannot hide behind an untested pair or an untested framing seam for
+/// THESE three properties; every one of the 30 pairs gets its own independent assertion, counted
+/// below to prove none was silently skipped. (Byte-exact golden-parity coverage remains a
+/// narrower, separately tracked gap — see `translate_parity_golden_tests.rs`.)
+#[test]
+fn test_all_protocol_pairs_stream_translate_roundtrip_preserves_text_and_terminal() {
+    let text = "Hello, world";
+    let events = [
+        crate::ir::IrStreamEvent::MessageStart {
+            role: crate::ir::IrRole::Assistant,
+            usage: None,
+            id: None,
+            created: None,
+            model: Some("test-model".to_string()),
+        },
+        crate::ir::IrStreamEvent::BlockStart {
+            index: 0,
+            block: crate::ir::IrBlockMeta::Text,
+        },
+        crate::ir::IrStreamEvent::BlockDelta {
+            index: 0,
+            delta: crate::ir::IrDelta::TextDelta(text.to_string()),
+        },
+        crate::ir::IrStreamEvent::BlockStop { index: 0 },
+        crate::ir::IrStreamEvent::MessageDelta {
+            stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+            stop_sequence: None,
+            usage: crate::ir::IrUsage {
+                input_tokens: 7,
+                output_tokens: 3,
+                cache_creation_input_tokens: None,
+                cache_read_input_tokens: None,
+            },
+        },
+        crate::ir::IrStreamEvent::MessageStop,
+    ];
+
+    let protocol_names = [
+        "anthropic",
+        "openai",
+        "gemini",
+        "bedrock",
+        "responses",
+        "cohere",
+    ];
+
+    let mut pairs_tested: usize = 0;
+    for &ingress in &protocol_names {
+        for &egress in &protocol_names {
+            if ingress == egress {
+                // Same-protocol identity is the diagonal test above's job (and `StreamTranslate::new`
+                // itself returns `None` for it — there is no translator to drive here).
+                continue;
+            }
+            let ingress_proto = protocol_for(ingress).expect("known ingress protocol");
+            let egress_proto = protocol_for(egress).expect("known egress protocol");
+            let ingress_is_es = ingress_proto.writer().ingress_is_eventstream();
+
+            let wire = encode_ir_events_as_wire(&egress_proto, &events);
+            assert!(
+                !wire.is_empty(),
+                "{ingress}<-{egress}: egress writer produced no wire bytes for a normal text stream"
+            );
+
+            let mut st = StreamTranslate::new(ingress, egress)
+                .unwrap_or_else(|| panic!("{ingress}<-{egress}: StreamTranslate::new returned None for a genuinely different pair"));
+            let mut out = st.feed(&wire);
+            out.extend_from_slice(&st.finish());
+            assert!(
+                !st.aborted(),
+                "{ingress}<-{egress}: translator aborted on a normal text stream; out so far: {out:?}"
+            );
+
+            let mut state = crate::ir::StreamDecodeState::default();
+            let mut decoded: Vec<crate::ir::IrStreamEvent> = Vec::new();
+            for (et, data) in decode_wire_frames(ingress_is_es, &out) {
+                // Same header-folding the diagonal test performs: on the wire, a non-SSE (event-
+                // stream) transport carries its event type in the frame header, not the JSON body;
+                // simulate the production decoder's fold of `:event-type` into `data["type"]`.
+                let mut data = data;
+                if !et.is_empty() {
+                    if let Some(obj) = data.as_object_mut() {
+                        obj.entry("type")
+                            .or_insert_with(|| serde_json::Value::String(et.clone()));
+                    }
+                }
+                decoded.extend(
+                    ingress_proto
+                        .reader()
+                        .read_response_events(&et, &data, &mut state),
+                );
+            }
+
+            let got: String = decoded
+                .iter()
+                .filter_map(|e| match e {
+                    crate::ir::IrStreamEvent::BlockDelta {
+                        delta: crate::ir::IrDelta::TextDelta(t),
+                        ..
+                    } => Some(t.as_str()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                got, text,
+                "{ingress}<-{egress}: streamed text must survive cross-protocol translation; got {got:?} from {decoded:?}"
+            );
+
+            // BLOCK-INDEX CONSISTENCY: every text delta's index must have been opened by a
+            // preceding BlockStart at the same index — an off-by-N or cross-wired index (e.g. a
+            // real production bug that mis-tags `contentBlockIndex`) would still pass the plain
+            // text-concatenation check above (the text still arrives, just under the wrong index),
+            // desyncing a real streaming SDK's per-block accumulator. Catches what the
+            // concatenation-only check cannot.
+            let mut open_indices = std::collections::BTreeSet::new();
+            for ev in &decoded {
+                match ev {
+                    crate::ir::IrStreamEvent::BlockStart { index, .. } => {
+                        open_indices.insert(*index);
+                    }
+                    crate::ir::IrStreamEvent::BlockStop { index } => {
+                        open_indices.remove(index);
+                    }
+                    crate::ir::IrStreamEvent::BlockDelta {
+                        index,
+                        delta: crate::ir::IrDelta::TextDelta(_),
+                    } => {
+                        assert!(
+                            open_indices.contains(index),
+                            "{ingress}<-{egress}: a text delta at index {index} arrived with no \
+                             matching open BlockStart — index corruption in translation; got {decoded:?}"
+                        );
+                    }
+                    _ => {}
+                }
+            }
+
+            let has_terminal = decoded.iter().any(|e| {
+                matches!(e, crate::ir::IrStreamEvent::MessageStop)
+                    || matches!(
+                        e,
+                        crate::ir::IrStreamEvent::MessageDelta {
+                            stop_reason: Some(_),
+                            ..
+                        }
+                    )
+            });
+            assert!(
+                has_terminal,
+                "{ingress}<-{egress}: a terminal (MessageStop / stop_reason MessageDelta) must survive cross-protocol translation; got {decoded:?}"
+            );
+
+            pairs_tested += 1;
+        }
+    }
+    assert_eq!(
+        pairs_tested, 30,
+        "must genuinely drive all 6*5 = 30 directed cross-protocol pairs, got {pairs_tested}"
+    );
+}
+
 /// NON-STREAMING round-trip matrix (the class the responses `write_response` bug fell in): for
 /// every protocol, an assistant text response written by `write_response` and read back by
 /// `read_response` must preserve the text. A writer that emits a non-conformant body its own
