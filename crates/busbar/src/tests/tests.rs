@@ -1157,7 +1157,10 @@ fn build_once(
     cfg: crate::config::RootCfg,
     prior: Option<&crate::state::App>,
 ) -> Result<crate::state::App, String> {
-    crate::build_app_from_config(
+    // Test-only direct call: there is no outer admin transaction / persist step here, so firing any
+    // resolved governance-credential rotation immediately (the old, pre-round-8 behavior) is correct
+    // and keeps this helper's callers (which assert on rotation taking effect) unchanged.
+    let (app, gov_rotate) = crate::build_app_from_config(
         cfg,
         crate::config::PluginsCfg::default(),
         None,
@@ -1165,7 +1168,11 @@ fn build_once(
         std::collections::HashSet::new(),
         (None, None),
         prior,
-    )
+    )?;
+    if let Some(rotate) = gov_rotate {
+        rotate();
+    }
+    Ok(app)
 }
 
 /// class-10b: an unchanged lane set must CARRY the probe schedule (same `Arc`) across a rebuild —

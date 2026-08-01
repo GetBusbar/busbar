@@ -762,18 +762,19 @@ async fn run() {
     let max_inbound = cfg.limits.max_inbound_concurrent;
     // The secret resolver the listeners resolve TLS cert/key/CA references through - the SAME seam
     // (built-in env/file + kind:secret plugins) that resolved provider keys at build time.
-    let app = Arc::new(
-        build_app_from_config(
-            cfg,
-            plugins_cfg,
-            overlay_path,
-            base_hook_names,
-            base_group_names,
-            (Some(config_path.clone()), Some(providers_path.clone())),
-            None,
-        )
-        .unwrap_or_else(|e| die(e)),
-    );
+    // Boot has no `prior` App, so `build_app_from_config` never resolves a credential rotation here
+    // (that branch is gated on `prior.is_some()`) — the discarded closure is always `None`.
+    let (boot_app, _boot_gov_rotate) = build_app_from_config(
+        cfg,
+        plugins_cfg,
+        overlay_path,
+        base_hook_names,
+        base_group_names,
+        (Some(config_path.clone()), Some(providers_path.clone())),
+        None,
+    )
+    .unwrap_or_else(|e| die(e));
+    let app = Arc::new(boot_app);
 
     // Record the BOOT snapshot as version 0 so the version history always has a rollback floor
     // (the pre-any-mutation state).
@@ -2162,6 +2163,11 @@ fn build_secret_resolver(
     )))
 }
 
+/// A queued-but-not-yet-applied governance credential rotation: `build_app_from_config` resolves it
+/// but does NOT invoke it (see the call site below for why). `Send` because it is carried across the
+/// `spawn_blocking` boundary the admin transaction (`txn.rs`) applies it on.
+pub(crate) type GovCredentialRotation = Box<dyn FnOnce() + Send>;
+
 pub(crate) fn build_app_from_config(
     cfg: config::RootCfg,
     plugins_cfg: config::PluginsCfg,
@@ -2170,7 +2176,7 @@ pub(crate) fn build_app_from_config(
     base_group_names: std::collections::HashSet<String>,
     config_paths: (Option<std::path::PathBuf>, Option<std::path::PathBuf>),
     prior: Option<&state::App>,
-) -> Result<state::App, String> {
+) -> Result<(state::App, Option<GovCredentialRotation>), String> {
     // Install the resolved operational limits process-wide BEFORE any subsystem reads them —
     // running here (not in main) so a config APPLY/RELOAD refreshes them too. The values threaded
     // explicitly (client/store/router/TLS) read `cfg.limits` directly; the deep call-stack sites
@@ -2764,11 +2770,11 @@ pub(crate) fn build_app_from_config(
     // so a bad plugin state can never produce a partial App. When plugins are disabled and nothing
     // references one, this is a no-op empty registry.
     // open the governance store + load the virtual-key cache when enabled.
-    // Credentials RE-RESOLVED on this apply/reload, applied to the reused `GovState` once the rest
-    // of the build has succeeded (see the `apply` call just before `Ok(App { .. })`). Resolution
+    // Credentials RE-RESOLVED on this apply/reload; the rotation closure is handed back to the
+    // caller (see `Ok((app, rotate_gov_credentials))` below) rather than applied here. Resolution
     // itself happens HERE and is FAIL-CLOSED: an `auth.admin_auth` token ref or an `auth.signing_key`
     // that no longer resolves aborts the apply rather than silently leaving the old credential live.
-    let mut rotate_gov_credentials: Option<Box<dyn FnOnce()>> = None;
+    let mut rotate_gov_credentials: Option<GovCredentialRotation> = None;
     let governance = if let Some(p) = prior {
         // REUSED across applies: the keys + spend/rate state must survive config changes. But the
         // CREDENTIALS on it are config, not state: `GovState` used to freeze the admin-token digest
@@ -2962,12 +2968,17 @@ pub(crate) fn build_app_from_config(
     let global_gates =
         hooks::resolve_gate_hooks(&cfg.hooks, &cfg.global_hooks, &hook_env, app_config_version);
 
-    // EVERY fallible step of this build has now succeeded, so the re-resolved governance
-    // credentials (HIGH-7) can be swapped into the reused `GovState`. Deferring to here means a
-    // build that fails later leaves the running engine's credentials exactly as they were.
-    if let Some(apply) = rotate_gov_credentials {
-        apply();
-    }
+    // EVERY fallible step of THIS build has now succeeded, so `rotate_gov_credentials` (if any) is
+    // ready to run. It is NOT invoked here, though (HIGH-7 fixed this build's own build-vs-mutate
+    // ordering; round-8 fixes a second, OUTER one): `GovState` is a process-lifetime `Arc` shared
+    // with the OLD `App` that is still serving, so invoking it now would mutate the live engine's
+    // credentials even though the candidate `App` returned below is only a CANDIDATE — the admin
+    // transaction wrapping this call (`txn.rs`) still has a fallible PERSIST step to run, and on a
+    // persist failure the transaction discards this candidate and swaps nothing. Firing the
+    // rotation here would leave the "nothing was changed" response a lie: the shared `GovState`
+    // would already carry the new credential while the old (rejected) `App` keeps serving. The
+    // caller is responsible for invoking the returned closure — after its own persist step (if any)
+    // has succeeded, never before.
 
     // The probe schedule is live state, not config-derived: it carries each lane's next-probe deadline
     // and the prober generation. `App::clone` shares it (Arc), so an in-place mutation swap keeps the
@@ -3082,7 +3093,7 @@ pub(crate) fn build_app_from_config(
     // The build reached its end without a single fallible step refusing: KEEP the limits installed
     // at the top. Every earlier `return Err` / `?` drops the guard instead and rolls them back.
     limits_guard.commit();
-    Ok(app)
+    Ok((app, rotate_gov_credentials))
 }
 
 /// Build the busbar HTTP router for a given `App` state with default limits. Factored out so the
