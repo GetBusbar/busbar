@@ -1001,6 +1001,76 @@ async fn on_error_chain_exhausted_applies_terminal() {
     );
 }
 
+/// ON_ERROR TERMINAL REJECT MUST ACTUALLY SHORT-CIRCUIT (cargo-mutants gap, proxy engine
+/// `forward_with_pool_parsed_inner`'s `PolicyOutcome::Reject` match arm): the test above
+/// (`on_error_chain_exhausted_applies_terminal`) uses a dead lane (`127.0.0.1:1`), so its 503 is
+/// ambiguous — a deleted `PolicyOutcome::Reject` arm would silently fall through to `_ => {}` and
+/// let the request proceed to dispatch, which would ALSO 503 there (dead lane), for an unrelated
+/// reason, masking the mutation entirely (confirmed by hand: deleting that match arm did not fail
+/// that test). This test uses a LIVE lane that actually serves 200, so a fail-open bug is
+/// unambiguously a 200 where a 503 is required.
+#[tokio::test]
+async fn on_error_reject_terminal_short_circuits_before_a_live_lane_ever_dispatches() {
+    let server = mock_lane("live-lane").await;
+    let mut app = TestApp::new()
+        .lane(LaneSpec::new(
+            "m0",
+            crate::proto::Protocol::anthropic(),
+            &server.base_url(),
+        ))
+        .pool("p", &[(0, 1)])
+        .build();
+    let gate = ResolvedPolicy::Policy {
+        policy: Arc::new(ErroringPolicy),
+        on_error: crate::config::PolicyOnError::Reject,
+        on_error_chain: vec![],
+        timeout: std::time::Duration::from_millis(50),
+        send_prompt: false,
+        send_user: false,
+        on_empty: crate::config::PolicyOnError::Reject,
+    };
+    Arc::get_mut(&mut app).expect("sole owner").global_gates = vec![(0u16, gate)];
+    let resp = fire(app, 1).await;
+    assert_eq!(
+        resp.status().as_u16(),
+        503,
+        "an errored gate terminating in `on_error: reject` must fail closed BEFORE dispatch — a \
+             live, healthy lane must never actually serve this request"
+    );
+}
+
+/// GLOBAL REQUEST-STAGE TAP FIRES (cargo-mutants gap, proxy engine `fire_global_taps`): every
+/// other `app.tap_hooks_*` category (route/attempt/completion) has its own firing test in this
+/// file, but the base `app.tap_hooks` (`at: request`, fired by `fire_global_taps` — see its call
+/// site's own "GLOBAL TAP (observe) FIRE" comment in engine/mod.rs) had none. A mutant replacing
+/// `fire_global_taps` with `()` would silently stop delivering request-stage taps forever with
+/// zero test failures elsewhere.
+#[tokio::test]
+async fn global_request_stage_tap_fires_on_a_real_dispatched_request() {
+    let (cap, tap) = webhook_tap().await;
+    let server = mock_lane("live-lane").await;
+    let mut app = TestApp::new()
+        .lane(LaneSpec::new(
+            "m0",
+            crate::proto::Protocol::anthropic(),
+            &server.base_url(),
+        ))
+        .pool("p", &[(0, 1)])
+        .build();
+    Arc::get_mut(&mut app).expect("sole owner").tap_hooks = vec![tap];
+    let resp = fire(app, 1).await;
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "the request must still dispatch normally"
+    );
+    let payload = wait_for_tap_body(&cap).await;
+    assert_eq!(
+        payload["op"], "notify",
+        "the global request-stage tap must receive the real notify wire envelope: {payload}"
+    );
+}
+
 /// RECONCILE: a pool's OWN gate (from `PoolRuntime.gates`) fires in phase 2 — its reject
 /// short-circuits before dispatch, proving the pool-gate half of the chain is wired.
 #[tokio::test]
