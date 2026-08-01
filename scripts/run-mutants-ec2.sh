@@ -115,7 +115,28 @@ done
 
 log "pulling report"
 mkdir -p "$OUT"
-rsync -az -e "ssh $SSHOPT" "ubuntu@$IP:~/bench/mutants.out/" "$OUT/" 2>/dev/null || true
-rsync -az -e "ssh $SSHOPT" "ubuntu@$IP:~/mutants.log" "$OUT/mutants.log" 2>/dev/null || true
+# RETRY, don't silently swallow: a bare `|| true` here previously meant a transient SSH/rsync
+# failure (e.g. several shards' boxes finishing within the same minute and contending for this
+# laptop's network) left the local report dir EMPTY while the box still got torn down by the
+# `cleanup` trap below — the mutation-testing work was done remotely but never came home, and
+# nothing said so. Retry a few times; if it still fails, DO NOT terminate the box (skip cleanup)
+# so the report can be pulled by hand from a still-live instance instead of being lost for good.
+pull_ok=0
+for _ in 1 2 3 4 5; do
+  if rsync -az -e "ssh $SSHOPT" "ubuntu@$IP:~/bench/mutants.out/" "$OUT/" \
+     && rsync -az -e "ssh $SSHOPT" "ubuntu@$IP:~/mutants.log" "$OUT/mutants.log"; then
+    pull_ok=1
+    break
+  fi
+  log "rsync pull failed, retrying in 15s"
+  sleep 15
+done
+if [[ "$pull_ok" != "1" ]] || [[ ! -e "$OUT/missed.txt" && ! -e "$OUT/mutants.log" ]]; then
+  log "FAILED to pull a non-empty report from $IP after retries — leaving $IID RUNNING (not \
+terminating) so the report can be recovered by hand: rsync -az -e \"ssh $SSHOPT\" \
+\"ubuntu@$IP:~/bench/mutants.out/\" \"$OUT/\""
+  trap - EXIT INT TERM
+  exit 1
+fi
 log "report in $OUT"
 ls -la "$OUT" | head
