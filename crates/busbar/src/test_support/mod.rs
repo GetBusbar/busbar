@@ -990,16 +990,37 @@ pub(crate) fn test_hook_env_with_schema(
         let exe = std::env::current_exe().ok()?;
         let profile_dir = exe.parent()?.parent()?;
         let name = busbar_plugin_loader::plugin_library_filename("busbar_hook_test_plugin");
-        let candidate = profile_dir.join(&name);
-        if !candidate.exists() {
+        // Check BOTH the "uplifted" `<profile_dir>/<name>` copy (only refreshed when `[lib]` is a
+        // ROOT build target, e.g. `cargo build --all-targets`) and the raw `<profile_dir>/deps/<name>`
+        // compiler output (refreshed on every build that recompiles the lib). A bare `cargo test` (a
+        // developer running `cargo test -p busbar` locally, or `cargo mutants`'s default build step)
+        // does NOT uplift the cdylib, only `target/deps` — checking only `profile_dir` silently found
+        // nothing even though the cdylib really was built, making EVERY test that calls
+        // `test_hook_env`/`test_hook_env_with_schema` (the admin hook-registration/resolution suite
+        // among others) silently no-op instead of exercising real coverage. Same fix already applied
+        // to store-postgres-plugin's, auth-oidc-plugin's, and webrequest-hook's equivalent helpers.
+        let uplifted = profile_dir.join(&name);
+        let raw = profile_dir.join("deps").join(&name);
+        let candidate = [uplifted, raw]
+            .into_iter()
+            .filter_map(|p| {
+                std::fs::metadata(&p)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .map(|mtime| (p, mtime))
+            })
+            .max_by_key(|(_, mtime)| *mtime)
+            .map(|(p, _)| p);
+        let Some(candidate) = candidate else {
             if std::env::var_os("CI").is_some() {
                 panic!(
-                    "the hook-test plugin cdylib is not built under CI; refusing to silently skip \
-                     the hook-plugin admin/resolution coverage"
+                    "the hook-test plugin cdylib is not built under CI (checked both the uplifted \
+                     target dir and target/deps); refusing to silently skip the hook-plugin \
+                     admin/resolution coverage"
                 );
             }
             return None;
-        }
+        };
         candidate
     };
     let lib = std::fs::read(&cdylib).expect("read hook cdylib");
