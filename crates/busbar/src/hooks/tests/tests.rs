@@ -624,6 +624,55 @@ fn rewrite_admission_requires_the_signed_manifest_rewrite_need() {
     }
 }
 
+/// HIGH (round-8 codeaudit): a `kind: gate` hook whose OPERATOR grant is `prompt: rw` but whose
+/// SIGNED MANIFEST declares less (`ro`/absent `needs.prompt`) is excluded from BOTH admission chains
+/// by construction — `resolve_pool_gates`/`resolve_gate_hooks` exclude it from the decision chain on
+/// the raw grant (deliberate, see `resolve_pool_gates`'s doc comment); `resolve_pool_rewrites`/
+/// `resolve_rewrite_hooks` exclude it from the rewrite chain on the effective grant (also deliberate,
+/// see `rewrite_admission_requires_the_signed_manifest_rewrite_need` above). Each exclusion is
+/// individually correct, but together they leave the hook completely inert — configured, opening fine
+/// at boot, reported registered by the admin API, yet never firing on any request — with no
+/// operator-visible signal beyond a `tracing::warn!` that RUST_LOG=error silences.
+///
+/// `hook_inert_gate_banner` is the fix: the SAME mismatch, surfaced with the SAME loudness discipline
+/// as `open_relay_banner`/`inert_durable_keys_banner` (ERROR level + unconditional stderr at the call
+/// site in `effective_access`). This test pins the banner's firing condition directly, exactly as the
+/// `open_relay_banner`/`inert_durable_keys_banner` unit tests pin theirs.
+#[test]
+fn hook_inert_gate_banner_fires_only_for_a_gate_with_the_chain_killing_mismatch() {
+    use busbar_plugin_sign::NeedLevel;
+
+    // The exact bug scenario: `kind: gate`, operator `prompt: rw`, manifest only `ro`. Must banner,
+    // loudly, naming the hook, the plugin, and both exclusion mechanisms.
+    let banner = hook_inert_gate_banner(
+        "compliance-gate",
+        "acme.compliance",
+        HookKind::Gate,
+        NeedLevel::Ro,
+    )
+    .expect("a gate with a manifest-denied rw grant must produce a banner");
+    assert!(
+        banner.contains("compliance-gate") && banner.contains("acme.compliance"),
+        "banner must name the offending hook and plugin: {banner}"
+    );
+    assert!(
+        banner.contains("INERT")
+            && banner.contains("decision-gate chain")
+            && banner.contains("rewrite chain"),
+        "banner must explain BOTH exclusions, not just one: {banner}"
+    );
+
+    // Manifest declaring `no` need is the same story (absent `needs.prompt` deserializes to `No`).
+    assert!(hook_inert_gate_banner("g", "p", HookKind::Gate, NeedLevel::No).is_some());
+
+    // A `kind: tap` hook was never in either admission chain to begin with — the same grant/manifest
+    // mismatch on a tap is a fat-fingered grant (still warn-worthy), not a silent gate outage.
+    assert!(
+        hook_inert_gate_banner("t", "p", HookKind::Tap, NeedLevel::Ro).is_none(),
+        "a tap never joins an admission chain, so it must not get the gate-outage banner"
+    );
+}
+
 /// `resolve_gate_hooks` admits the GLOBAL DECISION gates: `kind: gate` that is NOT a rewrite
 /// (`prompt: rw`) gate. A rewrite gate fires in the phase-1 transform pass (excluded here); a tap
 /// never decides (excluded). So from {rw-gate, ro-gate, no-gate, rw-tap} exactly the ro + no gates

@@ -66,6 +66,16 @@ pub(crate) struct HookEnv {
     /// its raw value BEFORE the settings cross the ABI at open/configure (ADR-0010). Shared with the
     /// store/auth open paths; the same fail-closed resolver.
     pub(crate) secret_resolver: std::sync::Arc<crate::config::secret::SecretResolver>,
+    /// Names of hooks that have already emitted the loud [`hook_inert_gate_banner`] THIS build. A
+    /// gate named in several pools' `hooks:` lists (and/or `global_hooks`) resolves once per
+    /// reference — `resolve_pool_rewrites` runs once per pool, `resolve_rewrite_hooks` once for
+    /// globals — so without this guard the same inert-gate banner would print once per reference,
+    /// unlike `open_relay_banner`/`inert_durable_keys_banner`, which fire exactly once. `Arc`-shared
+    /// so every clone of this `HookEnv` (the resolvers each take `&HookEnv`, and the offloaded
+    /// control-plane reads clone it onto a blocking thread) sees the same set; fresh and empty every
+    /// `HookEnv::new`, i.e. every boot/reload, so a still-inert hook re-banners on the NEXT
+    /// boot/reload rather than going silent forever.
+    banner_seen: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
 }
 
 impl HookEnv {
@@ -79,6 +89,9 @@ impl HookEnv {
             registry,
             projectors: plugin::projectors(),
             secret_resolver,
+            banner_seen: std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::HashSet::new(),
+            )),
         }
     }
 
@@ -404,6 +417,49 @@ fn resolve_gate_transport(
     })
 }
 
+/// Return the loud INERT-GATE banner for a hook whose operator `prompt: rw` grant exceeds what its
+/// signed manifest declares (the caller has already confirmed `grant.can_rewrite() &&
+/// !needs_prompt.wants_rewrite()`), or `None` when the hook can't actually fall out of both admission
+/// chains this way. Only a `kind: gate` hook can: `resolve_pool_gates`/`resolve_gate_hooks` exclude a
+/// `prompt: rw` hook from the phase-2 DECISION chain unconditionally on the raw operator grant
+/// (deliberate — a manifest-denied `rw` hook is never promoted into a decision gate it never asked
+/// for), and `resolve_pool_rewrites`/`resolve_rewrite_hooks` exclude it from the phase-1 REWRITE chain
+/// on the effective grant (this same mismatch). Together that's every chain a gate can join. A
+/// `kind: tap` hook was never in either chain to begin with (a tap can't decide or rewrite), so the
+/// same mismatch on a tap is just a fat-fingered grant, not a silent outage — it keeps the plain warn.
+///
+/// Mirrors `open_relay_banner`/`inert_durable_keys_banner` in `main.rs`: same wording register (names
+/// the offender, states the mechanism, states the fix), same severity discipline (the caller logs
+/// this at `error!` AND unconditionally on stderr — never only `warn!`, which is suppressed under
+/// `RUST_LOG=error`, the very level a production operator is most likely to run).
+///
+/// Deliberately does NOT claim the hook "never fires under any circumstance": `resolve_on_error_chain`
+/// pushes ANY `kind: gate` hook named as another hook's `on_error` target (no `can_rewrite` filter
+/// there), so a hook in this exact state can still be reached as a fallback link, contributing its
+/// decision verdict there (never its rewrite arm — that still normalizes to abstain). The banner
+/// therefore names the two chains it is excluded from precisely, rather than asserting total silence.
+fn hook_inert_gate_banner(
+    name: &str,
+    plugin: &str,
+    kind: crate::config::HookKind,
+    needs_prompt: busbar_plugin_sign::NeedLevel,
+) -> Option<String> {
+    if kind != crate::config::HookKind::Gate {
+        return None;
+    }
+    Some(format!(
+        "hook '{name}' (plugin '{plugin}') grants `prompt: rw` but its signed manifest only \
+         declares `needs.prompt: {needs_prompt:?}` — this hook is INERT wherever it is named \
+         directly (as a pool `hook:`/`hooks:` entry or in `global_hooks`): it is excluded from the \
+         decision-gate chain by design (a `prompt: rw` grant is never promoted into a decision gate \
+         it never asked for) AND fails the rewrite chain's effective-grant check (the manifest never \
+         declared a rewrite need). The plugin still opens successfully at boot/reload and the admin \
+         API still reports it registered with `prompt: \"rw\"`, so nothing else will tell you this. \
+         Fix: lower the hook's `prompt:` grant to match the manifest (`ro` or omit), or use a plugin \
+         build whose manifest declares `needs: {{ prompt: rw }}`."
+    ))
+}
+
 /// THE choke point for the belt-and-suspenders rule: effective access is the operator's grant MEET
 /// the plugin's signed-manifest `needs:`, on the ladder `no ⊂ ro ⊂ rw`. Read, rewrite and identity
 /// admission must all derive from here — a consumer that re-derives from `hook.prompt` bypasses the
@@ -445,14 +501,27 @@ fn effective_access(
         );
     }
     // The WRITE half: a manifest declaring at most `ro` must not be admitted to a rewrite chain —
-    // it attested it does not rewrite.
+    // it attested it does not rewrite. See `hook_inert_gate_banner` for why a `kind: gate` hook here
+    // is not merely "no rewrite chain" but silently inert on EVERY chain, and why the severity jumps
+    // to a loud banner for a gate but stays a plain warn for a tap.
     if grant_prompt.can_rewrite() && !needs.prompt.wants_rewrite() {
-        tracing::warn!(
-            hook = %name, plugin = %hook.plugin,
-            needs_prompt = ?needs.prompt,
-            "hook grants `prompt: rw` but the plugin manifest declares no prompt REWRITE need — \
-             the hook is NOT admitted to the rewrite chain (grant is inert)"
-        );
+        match hook_inert_gate_banner(name, &hook.plugin, hook.kind, needs.prompt) {
+            // ONE print per hook per build (see `banner_seen`'s doc): a hook named in several pools'
+            // `hooks:` lists resolves — and would otherwise re-banner — once per reference.
+            Some(banner) if env.banner_seen.lock().unwrap().insert(name.to_string()) => {
+                eprintln!("[error] {banner}");
+                tracing::error!("{banner}");
+            }
+            Some(_) => {}
+            None => {
+                tracing::warn!(
+                    hook = %name, plugin = %hook.plugin,
+                    needs_prompt = ?needs.prompt,
+                    "hook grants `prompt: rw` but the plugin manifest declares no prompt REWRITE \
+                     need — the hook is NOT admitted to the rewrite chain (grant is inert)"
+                );
+            }
+        }
     }
     if grant_user.sends_user() && !needs.user.wants_read() {
         tracing::warn!(
