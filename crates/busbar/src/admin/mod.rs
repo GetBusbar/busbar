@@ -141,6 +141,33 @@ fn parse_duration_secs(s: &str) -> Result<u64, String> {
         .ok_or_else(|| "duration is too large (max 10 years)".to_string())
 }
 
+#[cfg(test)]
+mod parse_duration_secs_tests {
+    use super::parse_duration_secs;
+
+    /// Unit multiplication is correct for each accepted suffix.
+    #[test]
+    fn each_unit_multiplies_correctly() {
+        assert_eq!(parse_duration_secs("30s"), Ok(30));
+        assert_eq!(parse_duration_secs("5m"), Ok(300));
+        assert_eq!(parse_duration_secs("2h"), Ok(7200));
+        assert_eq!(parse_duration_secs("3d"), Ok(259_200));
+    }
+
+    /// The max-duration bound is exactly 10 * 365 * 86_400 seconds (3650 days) — the boundary
+    /// itself must be accepted, and one day past it must be rejected. A mutated bound (e.g.
+    /// `10 + 365 * 86_400` instead of `10 * 365 * 86_400`) would reject values far below the real
+    /// 10-year limit, or accept values far above it, depending on the mutation.
+    #[test]
+    fn max_duration_boundary_is_exactly_ten_years() {
+        assert_eq!(parse_duration_secs("3650d"), Ok(10 * 365 * 86_400));
+        assert!(
+            parse_duration_secs("3651d").is_err(),
+            "one day past the 10-year bound must be rejected"
+        );
+    }
+}
+
 /// Error-type taxonomy strings shared with the forward/OpenAI-family DATA-plane vocabulary, aliased
 /// from their canonical home in `proto::openai_family` so the banks cannot drift. `main.rs`
 /// references them via `crate::admin::ERR_TYPE_*`.
@@ -210,6 +237,31 @@ fn validate_mint_labels(labels: &std::collections::BTreeMap<String, String>) -> 
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod validate_mint_labels_tests {
+    use super::{validate_mint_labels, MAX_LABEL_COUNT};
+
+    /// The count boundary is exact: `MAX_LABEL_COUNT` labels is fine; one more is rejected. A
+    /// mutated `>` → `>=` would reject the boundary count itself as "too many".
+    #[test]
+    fn label_count_boundary_is_exact() {
+        let at_cap: std::collections::BTreeMap<String, String> = (0..MAX_LABEL_COUNT)
+            .map(|i| (format!("l{i}"), "v".to_string()))
+            .collect();
+        assert!(
+            validate_mint_labels(&at_cap).is_ok(),
+            "exactly MAX_LABEL_COUNT labels must be accepted"
+        );
+
+        let mut over_cap = at_cap;
+        over_cap.insert("one_more".to_string(), "v".to_string());
+        assert!(
+            validate_mint_labels(&over_cap).is_err(),
+            "MAX_LABEL_COUNT + 1 labels must be rejected"
+        );
+    }
 }
 
 /// A valid Prometheus label name: `^[a-zA-Z_][a-zA-Z0-9_]*$` (non-empty, ASCII-alnum + underscore,
@@ -309,6 +361,35 @@ fn record_key_refusal(who: KeyAudit<'_>) {
 fn internal_error(op: &str, e: &crate::governance::StoreError) -> Response {
     tracing::error!(operation = op, error = %e, "admin store operation failed");
     crate::admin::v1::json::err_json(&AdminError::Internal)
+}
+
+#[cfg(test)]
+mod internal_error_tests {
+    use super::internal_error;
+    use crate::governance::StoreError;
+
+    /// `internal_error` must project `AdminError::Internal` onto the real error envelope — a 500
+    /// with the frozen `{"error":{"code":"internal",...}}` body — never `Response::default()`
+    /// (which axum resolves to a bare `200 OK` with an EMPTY body, disguising a store failure as a
+    /// success to the client).
+    #[tokio::test]
+    async fn projects_a_500_internal_error_envelope() {
+        let resp = internal_error("test_op", &StoreError("boom".to_string()));
+        assert_eq!(
+            resp.status(),
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "a store failure must answer 500, not the 200 `Response::default()` would give"
+        );
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(
+            !body.is_empty(),
+            "the body must carry the error envelope, not be empty like `Response::default()`"
+        );
+        let v: serde_json::Value = serde_json::from_slice(&body).expect("valid JSON body");
+        assert_eq!(v["error"]["code"], "internal");
+    }
 }
 
 // ── Admin API (the FROZEN surface — /api/v1/admin/*) ─────────────────────────────────────────────────
@@ -465,6 +546,30 @@ fn reject_overlong_id(who: KeyAudit<'_>, id: &str) -> Option<Response> {
         ))
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod reject_overlong_id_tests {
+    use super::{reject_overlong_id, KeyAudit, MAX_KEY_ID_LEN};
+
+    /// The bound is exact: an id of exactly `MAX_KEY_ID_LEN` chars is acceptable (`None`); one char
+    /// past it is rejected (`Some`). A mutated `>` → `>=` would reject the boundary length itself,
+    /// which a real minted id (`vk_` + 16 hex = 19 chars) never reaches but a caller passing exactly
+    /// the documented max legitimately could.
+    #[test]
+    fn id_length_boundary_is_exact() {
+        let at_max = "a".repeat(MAX_KEY_ID_LEN);
+        assert!(
+            reject_overlong_id(KeyAudit::Read, &at_max).is_none(),
+            "an id of exactly MAX_KEY_ID_LEN chars must be accepted"
+        );
+
+        let over_max = "a".repeat(MAX_KEY_ID_LEN + 1);
+        assert!(
+            reject_overlong_id(KeyAudit::Read, &over_max).is_some(),
+            "an id one char past MAX_KEY_ID_LEN must be rejected"
+        );
     }
 }
 

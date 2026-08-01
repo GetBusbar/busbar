@@ -2115,6 +2115,62 @@ impl crate::governance::Store for SlowKeyStore {
     }
 }
 
+/// A `Store` wrapper that sleeps on exactly the `slow_on_call`-th `put_key` invocation (0-indexed
+/// across the wrapper's whole lifetime), full speed otherwise — used to slow a SPECIFIC write (e.g.
+/// a rotate's, but not the mint's that precedes it) so a concurrent request can be landed
+/// deterministically inside the slowed call's window.
+struct SlowNthPutKeyStore {
+    inner: Arc<dyn crate::governance::Store>,
+    delay: std::time::Duration,
+    calls: std::sync::atomic::AtomicUsize,
+    slow_on_call: usize,
+}
+impl crate::governance::Store for SlowNthPutKeyStore {
+    fn put_key(&self, key: &busbar_api::VirtualKey) -> crate::governance::StoreResult<()> {
+        let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if n == self.slow_on_call {
+            std::thread::sleep(self.delay);
+        }
+        self.inner.put_key(key)
+    }
+    fn get_key(&self, id: &str) -> crate::governance::StoreResult<Option<busbar_api::VirtualKey>> {
+        self.inner.get_key(id)
+    }
+    fn list_keys(&self) -> crate::governance::StoreResult<Vec<busbar_api::VirtualKey>> {
+        self.inner.list_keys()
+    }
+    fn delete_key(&self, id: &str) -> crate::governance::StoreResult<()> {
+        self.inner.delete_key(id)
+    }
+    fn get_usage(
+        &self,
+        bucket_id: &str,
+        window_start: u64,
+    ) -> crate::governance::StoreResult<busbar_api::UsageLedger> {
+        self.inner.get_usage(bucket_id, window_start)
+    }
+    fn put_usage(
+        &self,
+        bucket_id: &str,
+        window_start: u64,
+        ledger: &busbar_api::UsageLedger,
+    ) -> crate::governance::StoreResult<()> {
+        self.inner.put_usage(bucket_id, window_start, ledger)
+    }
+    fn add_metering(
+        &self,
+        delta: &crate::governance::MeteringDelta,
+    ) -> crate::governance::StoreResult<()> {
+        self.inner.add_metering(delta)
+    }
+    fn list_metering(
+        &self,
+        bucket: u64,
+    ) -> crate::governance::StoreResult<Vec<crate::governance::MeteringRow>> {
+        self.inner.list_metering(bucket)
+    }
+}
+
 /// The double-mint reachable via an ordinary client-side timeout shorter than a slow store's write:
 /// the handler future is DROPPED mid-`config_transaction` (a client disconnect/timeout), but the
 /// mint keeps running to completion on the uncancellable blocking task and DOES write the key. A
@@ -2321,6 +2377,138 @@ async fn test_admin_v1_key_rotate_and_pagination() {
         .await
         .unwrap();
     assert_eq!(missing.status().as_u16(), 404);
+
+    handle.abort();
+}
+
+/// `rotate_key`'s idempotency cache sweeps stale entries by AGE (`now - t < IDEMPOTENCY_TTL_SECS`)
+/// before consulting it. A same-key replay taken immediately after the first call has age ~0, so it
+/// must survive the sweep and see the FIRST rotation's token again — not a fresh SECOND rotation. A
+/// mutated `<` → `==` would evict every entry whose age isn't exactly the TTL, i.e. essentially all
+/// of them, breaking replay entirely.
+#[tokio::test]
+async fn test_admin_v1_rotate_idempotent_replay_survives_the_ttl_sweep() {
+    crate::metrics::init();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let (addr, handle) = serve_with_gov(gov).await;
+    let client = reqwest::Client::new();
+    let keys_url = format!("http://{addr}/api/v1/admin/keys");
+
+    let created: serde_json::Value = client
+        .post(&keys_url)
+        .header("x-admin-token", "admintok")
+        .json(&serde_json::json!({"name": "r"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = created["id"].as_str().unwrap().to_string();
+
+    let rotate = |k: &'static str| {
+        let (c, u, id) = (client.clone(), keys_url.clone(), id.clone());
+        async move {
+            c.post(format!("{u}/{id}/rotate"))
+                .header("x-admin-token", "admintok")
+                .header("idempotency-key", k)
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+
+    let first: serde_json::Value = rotate("rot-replay").await.json().await.unwrap();
+    let second: serde_json::Value = rotate("rot-replay").await.json().await.unwrap();
+    assert_eq!(
+        first["token"], second["token"],
+        "an immediate same-key replay must return the FIRST rotation's token verbatim, not \
+         re-rotate a second time"
+    );
+
+    handle.abort();
+}
+
+/// `rotate_key`'s idempotency match guard (`if !cached.is_null()`) distinguishes a COMPLETED cached
+/// response from an IN-FLIGHT reservation (the `Null` sentinel). A concurrent request under the SAME
+/// Idempotency-Key while the first rotation is still landing must be refused as "already in flight"
+/// (409) — never treated as a completed replay, which a mutated guard (`true`) would do, handing
+/// back a bogus `200` whose body is the raw `null` sentinel instead of a real rotated key.
+#[tokio::test]
+async fn test_admin_v1_rotate_idempotency_in_flight_is_not_replayed_as_complete() {
+    crate::metrics::init();
+    let inner = Arc::new(MemoryStore::new());
+    // Slow the SECOND `put_key` call (the rotate's write) so a concurrent second request lands
+    // while the first rotation is still in flight; the mint's own `put_key` (the first call) stays
+    // fast so key creation itself isn't delayed.
+    let slow_store: Arc<dyn crate::governance::Store> = Arc::new(SlowNthPutKeyStore {
+        inner,
+        delay: std::time::Duration::from_millis(500),
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        slow_on_call: 1,
+    });
+    let gov = gov_with_signer(slow_store, Some("admintok".to_string()));
+    let app = TestApp::new().governance(gov).build();
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    let keys_url = format!("http://{addr}/api/v1/admin/keys");
+
+    let created: serde_json::Value = client
+        .post(&keys_url)
+        .header("x-admin-token", "admintok")
+        .json(&serde_json::json!({"name": "r"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = created["id"].as_str().unwrap().to_string();
+
+    let rotate_url = format!("{keys_url}/{id}/rotate");
+
+    // Fire the reserving rotation on a background task — its `put_key` sleeps 500ms.
+    let first_client = client.clone();
+    let first_url = rotate_url.clone();
+    let first = tokio::spawn(async move {
+        first_client
+            .post(&first_url)
+            .header("x-admin-token", "admintok")
+            .header("idempotency-key", "rot-inflight")
+            .send()
+            .await
+            .unwrap()
+    });
+    // Give the handler time to insert the reservation and reach the slow blocking write (well
+    // before its 500ms sleep completes).
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // A concurrent request under the SAME key must see the in-flight sentinel, not a replay.
+    let second = client
+        .post(&rotate_url)
+        .header("x-admin-token", "admintok")
+        .header("idempotency-key", "rot-inflight")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        second.status().as_u16(),
+        409,
+        "a concurrent same-key rotate while the first is still landing must be refused as \
+         already-in-flight, not replayed as a completed response: {}",
+        second.text().await.unwrap_or_default()
+    );
+
+    let first = first.await.unwrap();
+    assert_eq!(
+        first.status().as_u16(),
+        200,
+        "the reserving (first) rotation itself must still succeed"
+    );
 
     handle.abort();
 }
@@ -4473,6 +4661,60 @@ async fn test_create_key_rejects_unsafe_labels() {
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["labels"]["team"], "growth");
     assert_eq!(body["labels"]["env"], "prod");
+
+    handle.abort();
+}
+
+/// The mint's `name` length bound is exact: a name of exactly `MAX_KEY_NAME_LEN` (256) chars mints
+/// fine; one char past it is rejected. A mutated `>` → `==`/`>=` would either reject the boundary
+/// length itself or admit names arbitrarily longer than the documented cap.
+#[tokio::test]
+async fn test_create_key_name_length_boundary_is_exact() {
+    crate::metrics::init();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let (addr, handle) = serve_with_gov(gov).await;
+    let client = reqwest::Client::new();
+    let url = format!("http://{addr}/api/v1/admin/keys");
+
+    let post = |name: String| {
+        let client = client.clone();
+        let url = url.clone();
+        async move {
+            client
+                .post(&url)
+                .header("x-admin-token", "admintok")
+                .json(&serde_json::json!({"name": name}))
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+
+    let at_max = "n".repeat(256);
+    let resp = post(at_max).await;
+    assert_eq!(
+        resp.status().as_u16(),
+        201,
+        "a name of exactly 256 chars must mint"
+    );
+
+    let over_max = "n".repeat(257);
+    let resp = post(over_max).await;
+    assert_eq!(
+        resp.status().as_u16(),
+        400,
+        "a name of 257 chars must be rejected"
+    );
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "invalid_request");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("256 characters"),
+        "the 400 body must name the length reason: {body}"
+    );
 
     handle.abort();
 }
@@ -7524,6 +7766,176 @@ async fn test_max_keys_per_principal_cap_trips() {
 
     // A DIFFERENT group is unaffected — the cap is per group (= per principal).
     assert_eq!(mint("d", "other").await.unwrap().status().as_u16(), 201);
+
+    handle.abort();
+}
+
+/// The idempotency RESERVATION frees itself on an AT-CAP refusal specifically — a DIFFERENT exit
+/// than `test_admin_v1_idempotency_reservation_frees_on_failure`'s pre-validation 400: this one
+/// only reserves after the request has been handed to the transaction/mint (`IdemState::InFlight`,
+/// via `IdemReservation::clear()`'s explicit call at the `MintOutcome::AtCap` arm), so Drop alone
+/// (which only clears a still-`Reserved` sentinel) would NOT free it. Prove the reservation is
+/// genuinely released, not merely coincidentally re-tripping the same cap: free capacity between
+/// the two calls and confirm the SAME Idempotency-Key mints on retry.
+#[tokio::test]
+async fn test_admin_v1_idempotency_reservation_frees_on_at_cap_refusal() {
+    crate::metrics::init();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let groups = std::collections::BTreeMap::from([(
+        "capped".to_string(),
+        crate::config::GroupCfg {
+            limits: vec![budget_limit(1_000_000)],
+            ..Default::default()
+        },
+    )]);
+    let mut app = TestApp::new().governance(gov).groups_tree(groups).build();
+    {
+        let inner = Arc::get_mut(&mut app).expect("sole owner");
+        inner.max_keys_per_principal = 1;
+    }
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    let keys_url = format!("http://{addr}/api/v1/admin/keys");
+
+    // Fill the cap (1) with an unrelated key first — no Idempotency-Key, not part of the reuse test.
+    let filler = client
+        .post(&keys_url)
+        .header("x-admin-token", "admintok")
+        .json(&serde_json::json!({"name": "filler", "group": "capped"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(filler.status().as_u16(), 201);
+    let filler_id = filler.json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // The reserving mint: the group is already at cap, so this trips `MintOutcome::AtCap` — the
+    // reservation was inserted, promoted to InFlight, and must be freed by `r.clear()` here.
+    let at_cap = client
+        .post(&keys_url)
+        .header("x-admin-token", "admintok")
+        .header("idempotency-key", "reuse-at-cap")
+        .json(&serde_json::json!({"name": "second", "group": "capped"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        at_cap.status().as_u16(),
+        409,
+        "the reserving mint trips the cap"
+    );
+
+    // Free capacity (delete the filler) so a retry CAN succeed if — and only if — the reservation
+    // was actually released.
+    let deleted = client
+        .delete(format!("{keys_url}/{filler_id}"))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(deleted.status().as_u16(), 204);
+
+    // The SAME Idempotency-Key now mints successfully. If `IdemReservation::clear()` were a no-op,
+    // this would instead see the stale `Null` sentinel and get the idempotency-in-flight 409
+    // forever, never a fresh cap check.
+    let retry = client
+        .post(&keys_url)
+        .header("x-admin-token", "admintok")
+        .header("idempotency-key", "reuse-at-cap")
+        .json(&serde_json::json!({"name": "second", "group": "capped"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        retry.status().as_u16(),
+        201,
+        "a retry under the same key mints once capacity is free — the AtCap reservation was \
+         released, not stuck in-flight: {}",
+        retry.text().await.unwrap_or_default()
+    );
+
+    handle.abort();
+}
+
+/// `update_key`'s cap gate fires only when a PATCH would ADD a live key to its destination bucket:
+/// `will_be_counted && (!was_counted || dest_group != before.group)`. A TRUE no-op PATCH on an
+/// ALREADY-live key already counted in a group — same group, still enabled, nothing that changes
+/// its count — must stay editable (`!was_counted` is false, group is unchanged, so the `||` is
+/// false and the cap is never consulted).
+///
+/// `check_key_cap`'s own `exclude_id` (the mover is never counted against itself) means a simple
+/// "mint exactly `cap` keys via the normal admin-mint path, then no-op PATCH one of them" does NOT
+/// distinguish the mutation: excluding the patched key always leaves the OTHER `cap - 1` keys,
+/// which is under `cap` either way. The real-world case that DOES distinguish it is a cap that was
+/// TIGHTENED after the keys already existed (an operator lowering `limits.max_keys_per_principal`
+/// live) — two keys pre-seeded directly via `GovState::create_key` (bypassing the admin mint path's
+/// own cap enforcement, exactly like this file's `key_cap_tests` module does) under a cap of 1: the
+/// bucket is now genuinely OVER cap even excluding the one being patched (1 other live key >= cap
+/// of 1). Only in that shape does `!was_counted` vs `was_counted` change the outcome.
+#[tokio::test]
+async fn test_admin_v1_patch_no_op_on_an_already_counted_key_is_not_an_admission() {
+    use crate::governance::NewKeySpec;
+    crate::metrics::init();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let mint = |name: &str| {
+        gov.create_key(
+            NewKeySpec {
+                name: name.to_string(),
+                allowed_pools: None,
+                group: Some("capped".to_string()),
+                labels: Default::default(),
+            },
+            crate::store::now(),
+        )
+        .expect("mint")
+        .0
+    };
+    let a = mint("a");
+    let _b = mint("b"); // a second live key in the SAME bucket, pre-existing the cap tightening below.
+
+    let groups = std::collections::BTreeMap::from([(
+        "capped".to_string(),
+        crate::config::GroupCfg {
+            limits: vec![budget_limit(1_000_000)],
+            ..Default::default()
+        },
+    )]);
+    let mut app = TestApp::new().governance(gov).groups_tree(groups).build();
+    {
+        let inner = Arc::get_mut(&mut app).expect("sole owner");
+        // Tightened to 1 AFTER both `a` and `b` already exist — the bucket is now over cap even
+        // excluding whichever key a PATCH is touching.
+        inner.max_keys_per_principal = 1;
+    }
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+
+    // A genuinely empty PATCH on `a`: no `enabled`, no `group` — nothing that could change the
+    // count. `a` was already live+counted in `capped` before this PATCH and stays so after it.
+    let noop = client
+        .patch(format!("http://{addr}/api/v1/admin/keys/{}", a.id))
+        .header("x-admin-token", "admintok")
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+    let status = noop.status().as_u16();
+    let body = noop.text().await.unwrap_or_default();
+    assert_eq!(
+        status, 200,
+        "a true no-op PATCH on an already-counted key must not be treated as a NEW admission to \
+         its bucket, even though the bucket is now over a since-tightened cap: {body}"
+    );
 
     handle.abort();
 }
