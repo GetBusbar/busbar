@@ -368,6 +368,25 @@ async fn test_admin_v1_pool_detail_live_status() {
     );
     assert_eq!(items[0]["members"][0]["trip_count"], 0);
 
+    // ?detail=false is the explicit non-detailed request, not a rejected value: it must fall
+    // through to the plain (non-detailed) listing, same shape as omitting `detail` entirely, NOT
+    // the `pools_bad_detail`-style 400 an unrecognized value gets.
+    let plain_via_false = client
+        .get(format!("http://{addr}/api/v1/admin/pools?detail=false"))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(plain_via_false.status(), 200);
+    let plain_via_false: serde_json::Value = plain_via_false.json().await.unwrap();
+    let plain_items = plain_via_false["items"].as_array().unwrap();
+    assert_eq!(plain_items.len(), 1);
+    assert_eq!(plain_items[0]["name"], "mypool");
+    assert!(
+        plain_items[0]["members"][0].get("usable").is_none(),
+        "detail=false must NOT carry the live-status row shape: {plain_via_false}"
+    );
+
     // Unknown pool → 404 not_found.
     let missing = client
         .get(format!("http://{addr}/api/v1/admin/pools/nope"))
