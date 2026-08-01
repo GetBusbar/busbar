@@ -525,6 +525,29 @@ fn resolve_model_context_max(
     Ok(resolved)
 }
 
+/// Cap on `BUSBAR_WORKER_THREADS`/`TOKIO_WORKER_THREADS` (see the `.min(MAX_WORKER_THREADS)` call in
+/// `main()` for why this exists).
+const MAX_WORKER_THREADS: usize = 128;
+
+/// Resolve a worker-thread-count env var, warning on an EXPLICITLY-SET but invalid value rather than
+/// silently ignoring it — an unset var is not warned (the normal default path). Module-level (not
+/// nested in `main()`) so it's unit-testable; see `tests/tests.rs`.
+fn worker_threads_from_env(name: &str) -> Option<usize> {
+    match std::env::var(name) {
+        Ok(v) => match v.trim().parse::<usize>() {
+            Ok(n) if n >= 1 => Some(n),
+            _ => {
+                eprintln!(
+                    "[warn] {name}={v:?} is not a positive integer; ignoring it and using the \
+                     default worker-thread count"
+                );
+                None
+            }
+        },
+        Err(_) => None, // unset — normal default path, no warning
+    }
+}
+
 fn main() {
     // CLI flags first — BEFORE building any runtime. They must work without a configured deployment,
     // and `--version` / `--validate` should never spin up a thread pool.
@@ -608,22 +631,6 @@ fn main() {
     // who pinned it on 1.3.0 keeps the same pool size. (1.4.0 audit.) `eprintln!` because this runs
     // before the tracing subscriber is installed.
     // See the `.min(MAX_WORKER_THREADS)` call below for why this exists.
-    const MAX_WORKER_THREADS: usize = 128;
-    fn worker_threads_from_env(name: &str) -> Option<usize> {
-        match std::env::var(name) {
-            Ok(v) => match v.trim().parse::<usize>() {
-                Ok(n) if n >= 1 => Some(n),
-                _ => {
-                    eprintln!(
-                        "[warn] {name}={v:?} is not a positive integer; ignoring it and using the \
-                         default worker-thread count"
-                    );
-                    None
-                }
-            },
-            Err(_) => None, // unset — normal default path, no warning
-        }
-    }
     let worker_threads = worker_threads_from_env("BUSBAR_WORKER_THREADS")
         .or_else(|| worker_threads_from_env("TOKIO_WORKER_THREADS"))
         .unwrap_or_else(|| {
