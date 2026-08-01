@@ -346,3 +346,24 @@ fn chain_with_missing_group_fails_closed_naming_it() {
         Ok(_) => panic!("a missing group must fail chain resolution"),
     }
 }
+
+/// `RateNanos::from_cfg`'s inner `nanos()` clamp is `is_finite() && v > 0.0`, not `||`: a
+/// mutated `||` would let a non-finite-but-positive value (e.g. `+inf`, reachable from a huge
+/// `_utok` config value * 1000.0) through to `as u64`, which SATURATES to `u64::MAX` on a
+/// non-finite float cast in Rust — a garbage billing rate, not the documented "0" defense.
+/// NaN alone can't distinguish `&&` from `||` (`NaN > 0.0` is false either way), so this uses
+/// `f64::INFINITY` specifically: finite=false, `> 0.0`=true.
+#[test]
+fn rate_nanos_from_cfg_clamps_a_non_finite_positive_rate_to_zero_not_max() {
+    let cfg = RateEntryCfg {
+        input_utok: f64::INFINITY,
+        output_utok: 0.0,
+        cache_read_utok: 0.0,
+        cache_write_utok: 0.0,
+    };
+    let rn = crate::cost::RateNanos::from_cfg(&cfg);
+    assert_eq!(
+        rn.input, 0,
+        "a non-finite (but positive) rate must clamp to 0, not saturate to u64::MAX"
+    );
+}

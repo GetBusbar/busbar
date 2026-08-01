@@ -326,4 +326,25 @@ mod tests {
         assert_eq!(h.len(), 1, "poisoned lock must still yield the auth header");
         assert_eq!(h[0].1.to_str().unwrap(), "Bearer tok-poison");
     }
+
+    /// `now_epoch()` returns the REAL current unix time, not a stub. A mutant collapsing the body
+    /// to `0` would silently make `next_refresh_secs`'s "how long until expiry" math always see
+    /// 1970, i.e. every token permanently "already expired" — bracket against a wall-clock read
+    /// taken immediately before/after the call so this stays robust to real (sub-second) timing.
+    #[test]
+    fn now_epoch_returns_the_real_current_time() {
+        let before = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let got = now_epoch();
+        let after = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert!(
+            got >= before && got <= after,
+            "now_epoch() = {got}, expected within [{before}, {after}]"
+        );
+    }
 }
