@@ -4473,6 +4473,223 @@ async fn test_responses_ingress_mid_stream_transport_error_appends_response_fail
     server.shutdown().await;
 }
 
+// ---- HIGH/test-coverage: real end-to-end failover through the ACTUAL retry loop -----------------
+//
+// Every prior breaker/failover-adjacent test either pre-trips a pool cell via `force_open_in(...)`
+// before dispatch (so the failing lane is never actually selected/attempted by
+// `forward_with_pool_parsed_inner`'s dispatch loop) or unit-tests `pick_among` in isolation with a
+// synthetic policy order. Neither drives a REAL live-upstream failure through the real retry loop
+// and proves the SECOND pool member serves the client. These two tests close that gap: a genuine
+// 2-member pool, dispatched through the real router (`build_router`, the same public entry point
+// every other integration-style test in this file uses), where member 1 is a REAL `MockServer`
+// that fails and member 2 is a REAL `MockServer` that succeeds.
+//
+// Determinism note: SWRR's `current_weight` starts at 0 for a fresh pool cell, and the very first
+// pick adds each candidate's own weight then returns the max — so giving the failing member a much
+// higher weight than the healthy member makes the FIRST attempt land on the failing member on every
+// run, with no dependence on wall-clock timing or hash luck.
+
+/// Non-streaming failover: member 1 answers with a genuine HTTP 500 from a real `MockServer`;
+/// member 2 answers with a genuine 2xx carrying distinctive content. Drives a real request through
+/// the real router and asserts (a) the CLIENT receives member 2's actual content — not an error —
+/// and (b) member 1's breaker cell recorded the failure (the lane-global error counter, which
+/// `record_failure_for` bumps for BOTH the named-pool cell and `LaneState.err` on a named-pool
+/// dispatch).
+#[tokio::test]
+async fn test_real_failover_serves_second_member_after_first_5xx() {
+    crate::metrics::init();
+    const POOL: &str = "failover-e2e-pool";
+    const MODEL_BAD: &str = "failover-e2e-bad";
+    const MODEL_GOOD: &str = "failover-e2e-good";
+
+    // Member 1: a real upstream that genuinely answers 500.
+    let bad_state = StdArc::new(MockServerState::new());
+    bad_state.push(MockResponse::ServerError {
+        status: StatusCode::INTERNAL_SERVER_ERROR,
+        body: json!({ "error": { "message": "boom", "type": "server_error" } }),
+    });
+    let bad_server = MockServer::new(bad_state.clone()).await;
+
+    // Member 2: a real upstream that genuinely succeeds, with content only IT would ever return.
+    let good_state = StdArc::new(MockServerState::new());
+    good_state.push(MockResponse::Ok {
+        status: StatusCode::OK,
+        body: json!({
+            "id": "chatcmpl-good",
+            "object": "chat.completion",
+            "model": MODEL_GOOD,
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "MEMBER-2-GENUINELY-SERVED-THIS"},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 3}
+        }),
+    });
+    let good_server = MockServer::new(good_state.clone()).await;
+
+    let app = TestApp::new()
+        .lane(LaneSpec::new(
+            MODEL_BAD,
+            crate::proto::Protocol::openai(),
+            &bad_server.base_url(),
+        ))
+        .lane(LaneSpec::new(
+            MODEL_GOOD,
+            crate::proto::Protocol::openai(),
+            &good_server.base_url(),
+        ))
+        // Weight 100 vs 1: the failing member is guaranteed to be tried FIRST (see determinism
+        // note above), so a served 2xx can only have come from the real retry loop failing over.
+        .pool(POOL, &[(0, 100), (1, 1)])
+        .build();
+    let (addr, handle) = serve(app.clone()).await;
+
+    let err_before = app.store.snapshot(0, crate::store::now()).err;
+
+    let resp = reqwest::Client::new()
+        .post(format!("http://{addr}/v1/chat/completions"))
+        .bearer_auth("t")
+        .header("content-type", "application/json")
+        .body(json!({"model": POOL, "messages": [{"role": "user", "content": "hi"}]}).to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "the real retry loop must fail over to member 2 and serve its 2xx"
+    );
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(
+        body["choices"][0]["message"]["content"].as_str(),
+        Some("MEMBER-2-GENUINELY-SERVED-THIS"),
+        "the client must receive member 2's genuine content (proving member 2 was actually \
+         dispatched by the real retry loop, not a mock/short-circuit); got {body}"
+    );
+
+    let err_after = app.store.snapshot(0, crate::store::now()).err;
+    assert_eq!(
+        err_after,
+        err_before + 1,
+        "member 1's breaker cell must record exactly one failure for the attempted (and failed) \
+         dispatch"
+    );
+
+    handle.abort();
+    bad_server.shutdown().await;
+    good_server.shutdown().await;
+}
+
+/// Mid-stream boundary: member 1 streams a real first SSE frame, then the mock connection dies
+/// (a TRUE transport-level abort via `MockResponse::SseTransportError`, not a clean SSE `event:
+/// error` text frame). Member 2 is a real, independently-reachable upstream that WOULD serve a
+/// distinguishable stream if dispatched. Proves the documented "no failover after first byte, an
+/// in-band error frame instead" boundary holds end-to-end: the client must see member 1's real
+/// first frame (proving member 1 served this request) followed by an in-band OpenAI error frame,
+/// and must NEVER see member 2's marker (proving member 2 was never dispatched) — plus member 1's
+/// breaker must have recorded the mid-stream failure.
+#[tokio::test]
+async fn test_real_mid_stream_failure_does_not_fail_over_to_second_member() {
+    crate::metrics::init();
+    const POOL: &str = "mid-stream-e2e-pool";
+    const MODEL_BAD: &str = "mid-stream-e2e-primary";
+    const MODEL_GOOD: &str = "mid-stream-e2e-secondary";
+
+    let bad_state = StdArc::new(MockServerState::new());
+    bad_state.push(MockResponse::SseTransportError {
+        ok_events: vec![
+            r#"{"choices":[{"delta":{"content":"MEMBER-1-REAL-FIRST-FRAME"}}]}"#.to_string(),
+        ],
+    });
+    let bad_server = MockServer::new(bad_state.clone()).await;
+
+    // Member 2 would serve a complete, distinguishable stream IF it were ever dispatched.
+    let good_state = StdArc::new(MockServerState::new());
+    good_state.push(MockResponse::Sse {
+        events: vec![
+            r#"{"choices":[{"delta":{"content":"MEMBER-2-MUST-NEVER-APPEAR"}}]}"#.to_string(),
+        ],
+        abort_at_index: None,
+    });
+    let good_server = MockServer::new(good_state.clone()).await;
+
+    let app = TestApp::new()
+        .lane(LaneSpec::new(
+            MODEL_BAD,
+            crate::proto::Protocol::openai(),
+            &bad_server.base_url(),
+        ))
+        .lane(LaneSpec::new(
+            MODEL_GOOD,
+            crate::proto::Protocol::openai(),
+            &good_server.base_url(),
+        ))
+        // Same determinism trick: member 1 (the one that fails mid-stream) is guaranteed first.
+        .pool(POOL, &[(0, 100), (1, 1)])
+        .build();
+    let (addr, handle) = serve(app.clone()).await;
+
+    let err_before = app.store.snapshot(0, crate::store::now()).err;
+
+    let resp = reqwest::Client::new()
+        .post(format!("http://{addr}/v1/chat/completions"))
+        .bearer_auth("t")
+        .header("content-type", "application/json")
+        .body(
+            json!({"model": POOL, "stream": true, "messages": [{"role": "user", "content": "hi"}]})
+                .to_string(),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "the stream starts 2xx (member 1's real first byte)"
+    );
+    let body = resp.bytes().await.unwrap();
+    let text = String::from_utf8_lossy(&body);
+
+    assert!(
+        text.contains("MEMBER-1-REAL-FIRST-FRAME"),
+        "member 1's genuine first frame must reach the client (proves member 1 served this \
+         request, not a short-circuit); got:\n{text}"
+    );
+    assert!(
+        !text.contains("MEMBER-2-MUST-NEVER-APPEAR"),
+        "member 2 must NEVER be dispatched after member 1's first byte crossed the failover \
+         boundary — the contract is an in-band error frame, not a fresh attempt on the next \
+         member; got:\n{text}"
+    );
+    // The trailing frame is the in-band OpenAI native error (bare `data:`, no `event:` line) —
+    // mirrors `test_openai_ingress_mid_stream_transport_error_appends_native_sse`'s shape check.
+    let frames: Vec<&str> = text
+        .split("\n\n")
+        .filter(|f| !f.trim().is_empty())
+        .collect();
+    let last_data = frames
+        .last()
+        .and_then(|f| f.lines().find_map(|l| l.strip_prefix("data: ")))
+        .expect("a trailing data: error frame");
+    let v: Value = serde_json::from_str(last_data).expect("native OpenAI JSON envelope");
+    assert!(
+        v.get("error").is_some(),
+        "the in-band terminal frame must be OpenAI's native error envelope; got {v}"
+    );
+
+    let err_after = app.store.snapshot(0, crate::store::now()).err;
+    assert_eq!(
+        err_after,
+        err_before + 1,
+        "member 1's breaker cell must record exactly one mid-stream failure"
+    );
+
+    handle.abort();
+    bad_server.shutdown().await;
+    good_server.shutdown().await;
+}
+
 // ---- HIGH/conformance: no client-facing error message carries the wire-visible `router:` tell --
 
 /// CLASS regression for the `router:` prefix leak. Drives the REAL router on EVERY ingress
