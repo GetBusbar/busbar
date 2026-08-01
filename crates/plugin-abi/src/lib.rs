@@ -399,6 +399,16 @@ mod tests {
         assert_eq!(STATUS_PANIC, 3);
     }
 
+    /// The response cap is exactly 256 MiB, not some other magnitude a mutated `*`/`+`/`/` in its
+    /// definition could silently produce (e.g. `256 * 1024 + 1024` is ~262 KiB, `256 * 1024 / 1024`
+    /// is 256 bytes — both would pass a loose "it's some positive number" check but leave the loader
+    /// either OOM-vulnerable or unable to carry a real payload).
+    #[test]
+    fn max_plugin_response_len_is_exactly_256_mebibytes() {
+        assert_eq!(MAX_PLUGIN_RESPONSE_LEN, 268_435_456);
+        assert_eq!(MAX_PLUGIN_RESPONSE_LEN, 256 * 1024 * 1024);
+    }
+
     fn sample_audit() -> AuditRecord {
         AuditRecord {
             seq: 7,
