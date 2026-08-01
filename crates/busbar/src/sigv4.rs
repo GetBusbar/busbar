@@ -522,12 +522,19 @@ mod tests {
             (1_609_459_199, "20201231T235959Z", "20201231"),
             (1_717_200_000, "20240601T000000Z", "20240601"),
             (4_102_444_800, "21000101T000000Z", "21000101"),
-            // Chosen so `doe / 1460 + doe / 36_524` and a `*`-mutated left-to-right variant of the
-            // same expression diverge after the outer `/ 365` truncation (verified by hand,
-            // including a standalone build of both variants — the other 6 cases above all happen
-            // to coincide under that specific mutation post-truncation and would not catch it; the
-            // mutated variant produces the nonsensical "20040300" for this same epoch).
             (1_078_012_800, "20040229T000000Z", "20040229"),
+            // A real, previously-LIVE mutant: `doe / 1460 + doe / 36_524` (the era-boundary
+            // correction terms) mutated `+` -> `-` shifts `yoe` by `2 * (doe / 36_524)`, which is
+            // exactly 0 for every date from 2000-03-01 to 2100-02-28 — so all 7 cases above
+            // (chosen mostly from that exact window) coincide under the mutation and miss it. This
+            // one doesn't: 1970-03-01 falls before the window, `doe / 36_524 == 0` there too but
+            // the correction still isn't degenerate at this boundary (verified by brute-forcing
+            // all cargo-mutants-shaped single-operator mutations of the block against this table
+            // and confirming this is the unique remaining killer). A March date one full year
+            // after the epoch was deliberately avoided as "obviously distinguishing" — this is the
+            // FIRST date after 1970-01-01 whose month/day computation actually exercises the
+            // correction terms at all.
+            (5_097_600, "19700301T000000Z", "19700301"),
         ];
         for (epoch, expected_amz, expected_date) in cases {
             let (amz, date) = format_amz_time(*epoch);
@@ -768,6 +775,35 @@ mod tests {
         assert_eq!(parse_amz_date("20150830X123600Z"), None); // wrong sep
         assert_eq!(parse_amz_date("20151330T123600Z"), None); // month 13
         assert_eq!(parse_amz_date(""), None);
+    }
+
+    /// Table-driven EXACT-EPOCH coverage for `parse_amz_date`'s inline `days_from_civil` arithmetic
+    /// (`year`/`era`/`yoe`/`doy`/`doe`/`days`, lines just above `epoch < 0`) — the inverse of
+    /// `format_amz_time`'s own `civil_from_days` table, reusing the SAME known-correct (epoch, ymd)
+    /// pairs (cross-checked against `date -u -r <epoch>` there) so both directions are pinned by
+    /// the same ground truth. `test_parse_amz_date_componentwise_boundaries` below only asserts
+    /// `is_some()`/`is_none()` on the FIELD-RANGE guard — it never asserts the computed epoch VALUE
+    /// and so cannot catch a mutated arithmetic operator inside `days_from_civil` itself (found by
+    /// adversarial review: 8 real mutants, e.g. `month <= 2` -> `>=`, `year - 1` -> `year + 1`,
+    /// `yoe / 4 - yoe / 100` -> `+`, `if epoch < 0` -> `<= 0`, all survived until this test). A
+    /// month<=2 date (year-1 branch) and a month>2 date (year branch) are both required to exercise
+    /// the `let y = if month <= 2 {...}` split at all; the leap-century/non-leap-century pairs
+    /// exercise the era/yoe correction terms the same way the format-side table does.
+    #[test]
+    fn test_parse_amz_date_known_epochs_table() {
+        let cases: &[(u64, &str)] = &[
+            (0, "19700101T000000Z"),
+            (86_399, "19700101T235959Z"),
+            (5_097_600, "19700301T000000Z"),
+            (951_782_400, "20000229T000000Z"),
+            (1_609_459_199, "20201231T235959Z"),
+            (1_717_200_000, "20240601T000000Z"),
+            (4_102_444_800, "21000101T000000Z"),
+            (1_078_012_800, "20040229T000000Z"),
+        ];
+        for (epoch, amzdate) in cases {
+            assert_eq!(parse_amz_date(amzdate), Some(*epoch), "amzdate {amzdate}");
+        }
     }
 
     /// Exact componentwise boundaries of `!(1..=12).contains(&month) || !(1..=31).contains(&day)
