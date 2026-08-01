@@ -106,6 +106,13 @@ pub(crate) fn format_amz_time(epoch_secs: u64) -> (String, String) {
 
     // civil_from_days: days since 1970-01-01 → (year, month, day)
     let z = days + 719_468;
+    // The `z < 0` branch is UNREACHABLE for any real `u64 epoch_secs`: `days` (u64::MAX /
+    // SECS_PER_DAY, cast to i64) tops out around 2.1e14, far short of i64::MAX (~9.2e18), so `days`
+    // can never overflow negative on the cast and `z = days + 719_468` is always positive. A
+    // cargo-mutants mutation of the `z - 146_096` expression in this branch (`+`/`/` instead of
+    // `-`) is a genuine equivalent mutant here — dead code no `u64`-typed test input can reach —
+    // unlike `governance::civil_from_days`, which takes a general `i64` and DOES exercise this
+    // branch for pre-1970 dates (see that function's own test table).
     let era = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
     let doe = z - era * 146_097; // [0, 146096]
     let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
@@ -496,6 +503,37 @@ mod tests {
         let (amz, date) = format_amz_time(1_440_938_160);
         assert_eq!(amz, "20150830T123600Z");
         assert_eq!(date, "20150830");
+    }
+
+    /// Table-driven boundary coverage for the inline civil-from-days arithmetic (mirrors
+    /// `governance::civil_from_days`'s own table-driven test): each mutated `+`/`-`/`*`/`/` in the
+    /// era/doe/yoe/doy/day/month derivation changes the computed date, so a handful of known
+    /// epoch<->date pairs spanning the epoch itself, a leap-century Feb 29 (2000, divisible by
+    /// 400), a non-leap-century Jan 1 (2100, divisible by 100 but not 400), and end-of-day/
+    /// end-of-year boundaries kills every arithmetic mutant in the block. Expected values are
+    /// cross-checked against `date -u -r <epoch>`, not hand-derived, to avoid trusting the same
+    /// arithmetic the test is meant to catch bugs in.
+    #[test]
+    fn test_format_amz_time_known_dates_table() {
+        let cases: &[(u64, &str, &str)] = &[
+            (0, "19700101T000000Z", "19700101"),
+            (86_399, "19700101T235959Z", "19700101"),
+            (951_782_400, "20000229T000000Z", "20000229"),
+            (1_609_459_199, "20201231T235959Z", "20201231"),
+            (1_717_200_000, "20240601T000000Z", "20240601"),
+            (4_102_444_800, "21000101T000000Z", "21000101"),
+            // Chosen so `doe / 1460 + doe / 36_524` and a `*`-mutated left-to-right variant of the
+            // same expression diverge after the outer `/ 365` truncation (verified by hand,
+            // including a standalone build of both variants — the other 6 cases above all happen
+            // to coincide under that specific mutation post-truncation and would not catch it; the
+            // mutated variant produces the nonsensical "20040300" for this same epoch).
+            (1_078_012_800, "20040229T000000Z", "20040229"),
+        ];
+        for (epoch, expected_amz, expected_date) in cases {
+            let (amz, date) = format_amz_time(*epoch);
+            assert_eq!(amz, *expected_amz, "epoch {epoch}");
+            assert_eq!(date, *expected_date, "epoch {epoch}");
+        }
     }
 
     #[test]
