@@ -110,6 +110,12 @@ ssh $SSHOPT "ubuntu@$IP" "git clone -q https://github.com/GetBusbar/busbar.git b
 # before a single mutant runs. `loom-model` is also special-purpose (scripts/loom.sh's own
 # exhaustive-interleaving harness). openapi-schema is the one feature actually worth mutating
 # under; name it explicitly instead of reaching for --all-features again.
+FILE_ARGS=""
+for f in $FILES; do FILE_ARGS="$FILE_ARGS --file $f"; done
+log "running mutants (-j $JOBS) over: $FILES - this is the long part"
+ssh $SSHOPT "ubuntu@$IP" bash -s <<REMOTE
+. "\$HOME/.cargo/env"
+cd ~/bench
 nohup cargo mutants --jobs $JOBS --timeout 300 --features openapi-schema $FILE_ARGS -- -- --skip $SKIP_TESTS > ~/mutants.log 2>&1 &
 echo started
 REMOTE
