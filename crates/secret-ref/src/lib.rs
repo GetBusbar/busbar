@@ -326,6 +326,35 @@ mod tests {
         }
     }
 
+    /// `describe()`'s three real forms — the env/file sugar takes priority over the canonical
+    /// module+settings form, and the module fallback quotes the module name.
+    #[test]
+    fn describe_renders_env_file_and_module_forms() {
+        assert_eq!(SecretRef::env("MY_VAR").describe(), "env:MY_VAR");
+        assert_eq!(
+            SecretRef::file("/run/secrets/x").describe(),
+            "file:/run/secrets/x"
+        );
+        let r: SecretRef =
+            serde_yaml::from_str("{ module: vault, settings: { path: kv/data/x } }").unwrap();
+        assert_eq!(r.describe(), "secret module 'vault'");
+    }
+
+    /// The `Visitor::expecting` error message actually names the accepted shapes — asserted via a
+    /// real deserialize failure on a shape with NO `visit_*` override (a bare integer, unlike a
+    /// string, has no custom handler here so serde falls back to its default invalid-type error,
+    /// which is built from `expecting()`), so this also proves serde actually wires it into the
+    /// real error path, not just that the method compiles.
+    #[test]
+    fn deserialize_error_message_names_the_accepted_shapes() {
+        let err = serde_yaml::from_str::<SecretRef>("42").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("a secret reference map"),
+            "error must name the accepted shapes: {msg}"
+        );
+    }
+
     /// The derived `oneOf` is itself a valid JSON Schema 2020-12 fragment, and it accepts EXACTLY
     /// the shapes `SecretRef::deserialize` accepts (round-trip fidelity — this is the whole point of
     /// deriving instead of hand-writing).

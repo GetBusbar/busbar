@@ -990,6 +990,14 @@ pub(crate) fn encode_offset_cursor(offset: usize) -> String {
 /// Decode an opaque `?cursor=` back to its byte offset. Returns `None` for any malformed/foreign
 /// cursor so the transport can answer `invalid_request` rather than silently ignoring it.
 pub(crate) fn decode_offset_cursor(cursor: &str) -> Option<usize> {
+    // (`||` here vs `&&`) is a genuine EQUIVALENT mutant, not a coverage gap: an odd-length
+    // cursor always leaves a trailing 1-byte remainder for `step_by(2)`'s last chunk, so
+    // `cursor.get(i..i+2)` returns `None` there regardless of this early check; an empty cursor
+    // decodes to `bytes = Some(vec![])` -> `s = ""` -> `strip_prefix("o:")` fails on "" too. Both
+    // branches this guard exists to short-circuit are ALSO rejected by the decode below — checked
+    // by hand-applying `&&` here and confirming the full cursor + pagination test surface
+    // (cursor_tests, limit_zero_does_not_produce_a_self_referential_cursor,
+    // list_groups_is_cursor_paginated) still passes.
     if cursor.is_empty() || !cursor.len().is_multiple_of(2) {
         return None;
     }
