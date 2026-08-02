@@ -27,8 +27,16 @@ on:
   workflow_dispatch: {}
 
 # release-check.sh documents up to ~2h; give real headroom before GitHub's own job timeout bites.
+#
+# Key the group on the TRIGGERING branch, NOT github.ref. For a workflow_run event github.ref is
+# ALWAYS refs/heads/<default-branch> (main), so every qa-gate run — including the ones a dev/main CI
+# completion spawns that then skip via the job `if:` — would share one group. With
+# cancel-in-progress, a skipped sibling (e.g. dev's CI finishing ~seconds after qa's) would CANCEL
+# the real in-flight qa gate. head_branch scopes the group to the branch whose CI actually fired, so
+# a qa-triggered run only ever supersedes another qa-triggered run; dev/main-triggered skips sit in
+# their own harmless groups. (workflow_dispatch has no workflow_run event → falls through to ref.)
 concurrency:
-  group: qa-gate-${{ github.ref }}
+  group: qa-gate-${{ github.event.workflow_run.head_branch || github.ref }}
   cancel-in-progress: true
 
 jobs:
