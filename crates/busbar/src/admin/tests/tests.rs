@@ -9854,6 +9854,18 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_corrupt() {
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
 
+    // Bracket by seq, not just by action/resource: `AUDIT` is a process-wide ring, and
+    // `resource: "overlay:root"` is a FIXED literal every overlay-reset test shares (see the
+    // sibling `..._is_too_new` test right below, which resets the same `overlay:root` resource) --
+    // so a concurrently-running sibling's legitimate APPLIED reset can land between this test's own
+    // two REJECTED rows and fail the "never APPLIED" assertion. Same pattern as
+    // `test_admin_v1_restart_refuses_when_it_cannot_restart`'s baseline_seq bracketing.
+    let baseline_seq = crate::admin::audit::AUDIT
+        .list(1)
+        .first()
+        .map(|e| e.seq)
+        .unwrap_or(0);
+
     admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
         .header("content-type", "application/json")
         .body(serde_json::json!({ "per_request_fee": 42 }).to_string())
@@ -9880,12 +9892,16 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_corrupt() {
         reset.text().await
     );
 
-    let rows = crate::admin::audit::AUDIT.list_filtered(
-        0,
-        crate::admin::audit::MAX_AUDIT_ENTRIES,
-        None,
-        Some("overlay:root"),
-    );
+    let rows: Vec<_> = crate::admin::audit::AUDIT
+        .list_filtered(
+            0,
+            crate::admin::audit::MAX_AUDIT_ENTRIES,
+            None,
+            Some("overlay:root"),
+        )
+        .into_iter()
+        .filter(|e| e.seq > baseline_seq)
+        .collect();
     assert!(
         rows.iter()
             .any(|e| e.action == "overlay.reset"
