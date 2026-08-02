@@ -361,43 +361,23 @@ pub(crate) async fn pick_among(
             return Some((picked_lane_idx, p, epoch));
         }
 
-        // Permits saturated: park (not busy-spin) until a slot frees OR the deadline passes. A
-        // bounded `timeout` acquire yields the task efficiently and guarantees we never block past
-        // the request deadline (unbounded spinning here was a head-of-line-blocking DoS surface).
-        let remaining = request_ctx.remaining(now());
-        if remaining == 0 {
-            // Deadline already passed before we could even park — `probe_guard` drops here and
-            // releases the won-but-undispatched probe so the lane stays re-probeable.
-            return None;
-        }
-        let sem = app.store.lane_semaphore(picked_lane_idx);
-        // If this future is DROPPED while parked on the await below (client disconnect), `probe_guard`
-        // drops with it and releases the probe — the leak A1 fixes.
-        match tokio::time::timeout(
-            tokio::time::Duration::from_secs(remaining),
-            sem.acquire_owned(),
-        )
-        .await
-        {
-            // Got a permit before the deadline — a genuine dispatch; disarm the guard (the request
-            // itself will record the success/failure that releases the probe). Only BOUNDED lanes
-            // ever park here: an unbounded lane's `try_acquire` above always succeeds.
-            Ok(Ok(permit)) => {
-                let epoch = probe_guard.probe_epoch;
-                probe_guard.armed = false;
-                return Some((
-                    picked_lane_idx,
-                    crate::store::Permit::Bounded(permit),
-                    epoch,
-                ));
-            }
-            // Semaphore closed (shutdown) — no request dispatched; `probe_guard` drops and releases.
-            Ok(Err(_)) => return None,
-            // Deadline hit while waiting for a permit — no request dispatched; `probe_guard` drops and
-            // releases so the recovered lane isn't permanently benched, then give up so the caller can
-            // 503/failover.
-            Err(_) => return None,
-        }
+        // Permits saturated → treat this lane as AT-CAPACITY-UNAVAILABLE, not a queue. This is the
+        // documented "at-capacity = exhausted" contract (Bug 1): the previous realization PARKED here
+        // on `timeout(remaining, sem.acquire_owned())` until a slot freed or the failover deadline
+        // passed, which silently serialized bursts FIFO behind the busy lane and NEVER returned `None`
+        // — so `on_exhausted` never fired (no `fallback_pool` spill, no `reject` shed). Instead, mark
+        // this lane locally-excluded and re-select, exactly as the HalfOpen-probe-race path above does
+        // (`acquire_for_dispatch_in` == false). When every candidate ends up excluded the loop returns
+        // `None` and the caller runs `on_exhausted` (spill / 503-shed / least_bad).
+        //
+        // Probe safety: `probe_guard` stays ARMED, so dropping it at end-of-iteration (the `continue`
+        // ends this loop body, dropping all its locals) releases the won-but-undispatched single-flight
+        // probe. The release is EXACT because the owner epoch was captured synchronously right after
+        // winning the probe and there is NO `.await` between winning and this abandon, so no successor
+        // could have won a newer probe on this cell in between. Bounded lanes are the only ones that
+        // reach here (an unbounded lane's `try_acquire` above always succeeds).
+        local_excluded.insert(picked_lane_idx);
+        continue;
     }
 }
 

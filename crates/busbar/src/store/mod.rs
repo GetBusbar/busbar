@@ -157,6 +157,15 @@ pub(crate) struct LaneSnapshot {
     pub(crate) max_concurrent: usize,
     pub(crate) inflight: i64,
     pub(crate) free_slots: usize,
+    /// Available concurrency permits for a BOUNDED lane (`Some(n)`); `None` for an unbounded lane
+    /// (`max_concurrent` omitted — nothing is counted). Distinct from `free_slots` only in that it
+    /// makes "unbounded" explicit rather than reporting an effectively-infinite number. (Bug 1: a
+    /// saturated lane must be externally distinguishable — `Some(0)` — from an idle or unbounded one.)
+    pub(crate) available: Option<usize>,
+    /// True iff this lane is BOUNDED and has zero available permits — i.e. at its `max_concurrent`
+    /// limit. Post the at-capacity-exhaustion fix, such a lane sheds/spills rather than queueing, so
+    /// this flag is the external signal that a pool is oversubscribed (not merely slow).
+    pub(crate) at_capacity: bool,
     pub(crate) ok: u64,
     pub(crate) err: u64,
     pub(crate) client_fault: u64,
@@ -457,9 +466,6 @@ pub(crate) trait StateStore: Send + Sync + 'static {
 
     // concurrency + budget — lane-global (shared across every pool fronting the lane).
     fn try_acquire(&self, lane: usize) -> Option<Permit>;
-    /// The lane's concurrency semaphore, for a bounded async (`timeout`) acquire on the dispatch
-    /// path — the task parks instead of busy-spinning when permits are saturated.
-    fn lane_semaphore(&self, lane: usize) -> Arc<Semaphore>;
     /// Atomically consume one unit of the lane's lifetime request budget. Returns `false` when the
     /// budget was already exhausted (the spend was a no-op — the budget is never driven negative).
     /// `#[must_use]`: the bool is the over-spend signal; a silent discard hid the prior concurrent
