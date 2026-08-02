@@ -485,12 +485,19 @@ mock:
   base_url: "http://127.0.0.1:${mock_port}"
 EOF
 
+  # 1.5.1: the built-in `keys` verifier requires an explicit signing key — busbar no longer
+  # auto-generates one. Mint a real ed25519 secret via the shipping command (secret -> stdout,
+  # guidance -> stderr) into a file and reference it as a secret {file:} ref, exactly as an operator would.
+  "$BUSBAR_BIN" --generate-signing-key >"${work}/signing.key" 2>/dev/null
+  [ -s "${work}/signing.key" ] || { echo "  --generate-signing-key produced no key" >&2; exit 1; }
+
   cat >"${work}/config.yaml" <<EOF
 listen: "127.0.0.1:${listen_port}"
 admin_listen: "127.0.0.1:${admin_port}"
 auth:
   chain:
     - keys
+  signing_key: { file: "${work}/signing.key" }
   admin_auth:
     - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }
 plugins:
