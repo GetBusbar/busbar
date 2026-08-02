@@ -1,4 +1,10 @@
-# Image copies only prebuilt binaries/ + providers.yaml; keep the build context minimal.
+# Image copies only prebuilt binaries/ + providers.yaml + docker/config.yaml; keep the build
+# context minimal. plugins/ is the staged per-arch plugin tree docker.yml assembles alongside
+# binaries/. Anything the Dockerfile COPYs MUST be allowlisted here — a missing entry fails the
+# build with "<path>: not found" at the COPY's cache-key step (exactly how the 1.5.0 image build
+# failed when docker/config.yaml joined the Dockerfile without joining this list).
 *
 !binaries/
+!plugins/
 !providers.yaml
+!docker/
