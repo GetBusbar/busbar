@@ -11,10 +11,12 @@ item under **Changed**.
 
 ## [Unreleased]
 
-<!-- These are the pending 1.5.0 release notes. Per .github/workflows/cut-release.yml, release
-     notes live under [Unreleased]; dispatching the release runs roll_changelog.py, which promotes
-     this section to `## [1.5.0], <cut-date>` and stamps the real date. Do NOT hard-code a dated
-     [1.5.0] header here — that collides with the auto-promotion at tag time. -->
+<!-- Release notes accumulate here. Per .github/workflows/cut-release.yml, cutting a release runs
+     roll_changelog.py, which promotes this section to `## [X.Y.Z], <cut-date>` and stamps the
+     real date. Do NOT hard-code a dated version header here — that collides with the
+     auto-promotion at tag time. -->
+
+## [1.5.0], 2026-08-01
 
 The config / identity / cost redesign release. 1.5.0 is a deliberate, tooled, breaking-for-operators
 step: the config format changed shape (run `busbar --migrate-config`), and every 1.4.x virtual key
