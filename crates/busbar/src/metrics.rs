@@ -857,9 +857,11 @@ fn refresh_scrape_gauges(app: &App) {
     //   usable && cooldown > 0            → 1 (some cells admit but aggregate cooling down)
     //   usable && cooldown == 0           → 0 (healthy / all cells Closed)
     for (pool_name, weighted_lanes) in &app.pools {
-        // Phase 2 DEFINES `busbar_pool_queued` so Phase 3's `on_exhausted: queue` only increments a
-        // depth counter, never touches metrics.rs. No queue exists yet, so every pool reads 0.
-        metrics::gauge!(POOL_QUEUED, "pool" => pool_name.clone()).set(0.0);
+        // Phase 3: render the LIVE per-pool `on_exhausted: queue` park depth. `queued_depth` is the
+        // RAII-maintained source incremented while a request waits on a candidate lane's semaphore
+        // (see `walk.rs` `handle_queue` + `state::QueuedDepth`); a pool that never queues reads 0.
+        metrics::gauge!(POOL_QUEUED, "pool" => pool_name.clone())
+            .set(app.queued_depth.depth(pool_name) as f64);
         for wl in weighted_lanes {
             let lane_idx = wl.idx;
             let snap = app.store.snapshot(lane_idx, now);
@@ -1376,10 +1378,16 @@ mod tests {
 
     /// Find the trailing numeric value of the exposition line for `metric` labeled with `pool`.
     fn gauge_value(out: &str, metric: &str, pool: &str) -> Option<f64> {
+        // Match the metric name at an EXACT boundary (`name{`), not a bare prefix: `busbar_lane_available`
+        // is a prefix of `busbar_lane_available_permits`, so a `starts_with(metric)` match picked
+        // whichever of the two happened to render first — and prometheus group order is non-deterministic
+        // (recorder HashMap iteration), which made every prefix-of-another-metric assertion flaky. All
+        // these gauges carry labels, so requiring the `{` after the name is exact and stable.
+        let needle = format!("{metric}{{");
         out.lines()
             .find(|l| {
                 !l.starts_with('#')
-                    && l.starts_with(metric)
+                    && l.starts_with(&needle)
                     && l.contains(&format!("pool=\"{pool}\""))
             })
             .and_then(|l| l.rsplit(' ').next())
@@ -1525,6 +1533,44 @@ mod tests {
             gauge_value(&out, POOL_QUEUED, "q-pool"),
             Some(0.0),
             "busbar_pool_queued must be defined and read 0 for each pool; got:\n{out}"
+        );
+    }
+
+    /// Phase 3 wiring: `busbar_pool_queued` now renders the LIVE `queued_depth` source. Park a request
+    /// (via the same RAII `QueuedDepth::park` guard `handle_queue` holds while waiting) and the gauge
+    /// must read the real depth, not the literal 0 Phase 2 defined.
+    #[test]
+    fn test_scrape_gauges_pool_queued_reads_live_depth() {
+        init();
+        // Unique pool/model labels: the `metrics` recorder is process-global, so sharing a label with
+        // another test would cross-contaminate this gauge across tests.
+        let app = TestApp::new()
+            .lane(LaneSpec::new(
+                "q-live-model",
+                crate::proto::Protocol::openai(),
+                "http://q",
+            ))
+            .pool("q-live-pool", &[(0, 1)])
+            .build();
+
+        // Hold a park guard, as a real queued request would for the duration of its wait.
+        let guard = app.queued_depth.park("q-live-pool");
+        refresh_scrape_gauges(&app);
+        let out = render();
+        assert_eq!(
+            gauge_value(&out, POOL_QUEUED, "q-live-pool"),
+            Some(1.0),
+            "busbar_pool_queued must reflect the live park depth (1 while parked); got:\n{out}"
+        );
+
+        // Dropping the guard (request left the queue) returns the depth to 0.
+        drop(guard);
+        refresh_scrape_gauges(&app);
+        let out = render();
+        assert_eq!(
+            gauge_value(&out, POOL_QUEUED, "q-live-pool"),
+            Some(0.0),
+            "busbar_pool_queued must return to 0 once the parked request leaves; got:\n{out}"
         );
     }
 

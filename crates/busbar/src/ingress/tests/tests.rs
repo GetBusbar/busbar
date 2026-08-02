@@ -67,6 +67,7 @@ fn minimal_app() -> Arc<App> {
         pool_runtime: std::collections::HashMap::new(),
         fallback_pools: std::collections::HashMap::new(),
         on_exhausted_cfgs: std::collections::HashMap::new(),
+        queued_depth: std::sync::Arc::new(crate::state::QueuedDepth::default()),
         governance: None,
         secret_resolver: std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
         cost: std::sync::Arc::new(crate::cost::CostModel::flat(1)),

@@ -1975,6 +1975,47 @@ impl StateStore for InMemoryStore {
         }
     }
 
+    fn lane_semaphore(&self, lane: usize) -> Option<Arc<Semaphore>> {
+        let ls = self.get_lane(lane);
+        // An unbounded lane's `max` is `>= Semaphore::MAX_PERMITS` (the same sentinel `try_acquire`
+        // reads to short-circuit to `Permit::Unbounded`); it is never `AtCapacity`, so it is never a
+        // queue candidate — hand back `None` rather than a semaphore whose permits are meaningless.
+        if ls.max >= Semaphore::MAX_PERMITS {
+            return None;
+        }
+        Some(ls.sem.clone())
+    }
+
+    fn try_admit_breaker(&self, pool: &str, lane: usize, now: u64) -> Result<(), Unavailable> {
+        // Same lane-global gates as `try_admit` (SEPARATE reads, R3): the lane may have gone
+        // dead/budget-exhausted while the caller was parked on the semaphore.
+        let ls = self.get_lane(lane);
+        if ls.dead.load(Ordering::Relaxed) {
+            return Err(Unavailable::Dead);
+        }
+        if ls.limited && ls.budget.load(Ordering::Relaxed) <= 0 {
+            return Err(Unavailable::BudgetExhausted);
+        }
+        let cell = self.cell(pool, lane);
+        // Consume the SINGLE `breaker_verdict` decoder (R3) — the breaker may have TRIPPED Open (or a
+        // peer may have taken the probe) while the caller was queued, so this re-check is load-bearing:
+        // it is what prevents the queue from ever dispatching onto a now-Open lane.
+        match Self::breaker_verdict(cell.as_ref(), now) {
+            BreakerVerdict::Open { until } => return Err(Unavailable::BreakerOpen { until }),
+            BreakerVerdict::HalfOpen => return Err(Unavailable::ProbeInFlight),
+            BreakerVerdict::Ready | BreakerVerdict::ProbeWinnable => {}
+        }
+        // Win the single-flight probe (a no-op CAS on a Closed-ready cell). Unlike `try_admit` this
+        // does NOT then acquire a permit — the queue caller already holds one from the lane's own
+        // semaphore. On success the probe ownership transfers to the caller (the dispatched request
+        // releases it via `release_probe_in`, matching the fallback dispatch path); on a lost race we
+        // report `ProbeInFlight` and leave nothing armed.
+        if !Self::cell_acquire_breaker(cell.as_ref(), now) {
+            return Err(Unavailable::ProbeInFlight);
+        }
+        Ok(())
+    }
+
     fn release_probe_in(&self, pool: &str, lane: usize) {
         Self::cell_release_probe(self.cell(pool, lane).as_ref());
     }

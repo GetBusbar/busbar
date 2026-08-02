@@ -16,6 +16,11 @@ pub(crate) struct RestrictConstraint {
 pub(crate) struct RequestCtx {
     /// Computed once at start; each hop checks remaining time against this.
     deadline: u64,
+    /// The SAME failover deadline as `deadline`, captured as a monotonic wall-clock instant so the
+    /// `on_exhausted: queue` bound has MILLISECOND precision (R8). `deadline`/`remaining()` are whole
+    /// EPOCH SECONDS — a 250ms `max_ms` is unrepresentable there and a near-second-boundary
+    /// `remaining()` collapses to 0 — so the queue wait budgets against `remaining_ms()` instead.
+    deadline_wall: std::time::Instant,
     /// Accumulated excluded lane indices across hops (already tried).
     pub(crate) excluded: std::collections::HashSet<usize>,
     /// Visited pool names for loop prevention in fallback chains (e.g., A→B→A).
@@ -43,6 +48,8 @@ impl RequestCtx {
         let start = now();
         Self {
             deadline: start.saturating_add(deadline_secs),
+            deadline_wall: std::time::Instant::now()
+                + std::time::Duration::from_secs(deadline_secs),
             excluded: std::collections::HashSet::new(),
             visited_pools: std::collections::HashSet::new(),
             active_restricts: Vec::new(),
@@ -95,6 +102,15 @@ impl RequestCtx {
     /// Remaining time until deadline in seconds.
     pub(crate) fn remaining(&self, now: u64) -> u64 {
         self.deadline.saturating_sub(now)
+    }
+
+    /// Remaining failover budget in MILLISECONDS until the deadline (R8). Used by the `on_exhausted:
+    /// queue` wait so a sub-second `max_ms` is representable and a near-second-boundary budget does not
+    /// collapse to 0 the way `remaining(now) * 1000` would. Saturates to 0 once the deadline passes.
+    pub(crate) fn remaining_ms(&self) -> u64 {
+        self.deadline_wall
+            .saturating_duration_since(std::time::Instant::now())
+            .as_millis() as u64
     }
 
     /// Add a lane to the exclusion set (mark as already tried).
