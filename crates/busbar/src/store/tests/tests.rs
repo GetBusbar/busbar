@@ -30,7 +30,7 @@ fn make_lane_data(id: usize, max_permits: usize) -> LaneData {
 fn test_health_state_follows_identity_across_rebuild() {
     set_now_for_test(1000);
     // Store A: lanes [model-0, model-1] at idx 0/1.
-    let a = InMemoryStore::new(vec![make_lane_data(0, 10), make_lane_data(1, 10)]);
+    let a = HealthState::new(vec![make_lane_data(0, 10), make_lane_data(1, 10)]);
     let cfg = BreakerCfg::default();
     // Trip model-1's breaker in pool "p" (error-rate: 5/5 >= 0.5) + teach it a latency.
     for _ in 0..5 {
@@ -48,7 +48,7 @@ fn test_health_state_follows_identity_across_rebuild() {
 
     // Store B: model-9 (NEW) first, then model-1 — model-1 moved from idx 1 to idx 1→? and
     // model-0 was REMOVED. Restore from A's snapshots.
-    let b = InMemoryStore::new_with_limits_restored(
+    let b = HealthState::new_with_limits_restored(
         vec![make_lane_data(9, 10), make_lane_data(1, 10)],
         crate::config::DEFAULT_HARD_DOWN_COOLDOWN_SECS,
         crate::config::DEFAULT_MAX_HONORED_RETRY_AFTER_SECS,
@@ -85,11 +85,11 @@ fn test_health_state_follows_identity_across_rebuild() {
 #[test]
 fn test_hard_down_follows_identity_across_rebuild() {
     set_now_for_test(5000);
-    let a = InMemoryStore::new(vec![make_lane_data(3, 4)]);
+    let a = HealthState::new(vec![make_lane_data(3, 4)]);
     a.record_hard_down(0, "auth rejected (HTTP 401)");
     assert!(!a.usable(0, 5000), "hard-down blocks the default cell");
     let snaps = a.export_health();
-    let b = InMemoryStore::new_with_limits_restored(
+    let b = HealthState::new_with_limits_restored(
         vec![make_lane_data(3, 4)],
         crate::config::DEFAULT_HARD_DOWN_COOLDOWN_SECS,
         crate::config::DEFAULT_MAX_HONORED_RETRY_AFTER_SECS,
@@ -116,10 +116,10 @@ fn restored_halfopen_state_normalizes_to_open() {
 
     // End to end: a snapshot with a HalfOpen lane-global state restores as Open, not wedged.
     set_now_for_test(9000);
-    let a = InMemoryStore::new(vec![make_lane_data(3, 4)]);
+    let a = HealthState::new(vec![make_lane_data(3, 4)]);
     let mut snaps = a.export_health();
     snaps[0].breaker_state = ST_HALF_OPEN; // as if captured mid-probe
-    let b = InMemoryStore::new_with_limits_restored(
+    let b = HealthState::new_with_limits_restored(
         vec![make_lane_data(3, 4)],
         crate::config::DEFAULT_HARD_DOWN_COOLDOWN_SECS,
         crate::config::DEFAULT_MAX_HONORED_RETRY_AFTER_SECS,
@@ -141,7 +141,7 @@ fn restored_halfopen_state_normalizes_to_open() {
 fn restore_does_not_clobber_new_limit_with_unlimited_sentinel() {
     set_now_for_test(9000);
     // Snapshot taken while the lane was UNLIMITED → exports budget -1.
-    let unlimited = InMemoryStore::new(vec![make_lane_data(3, 4)]);
+    let unlimited = HealthState::new(vec![make_lane_data(3, 4)]);
     let snaps = unlimited.export_health();
     assert_eq!(
         snaps[0].budget, -1,
@@ -154,7 +154,7 @@ fn restore_does_not_clobber_new_limit_with_unlimited_sentinel() {
         budget: 100,
         ..make_lane_data(3, 4)
     };
-    let restored = InMemoryStore::new_with_limits_restored(
+    let restored = HealthState::new_with_limits_restored(
         vec![limited_ld],
         crate::config::DEFAULT_HARD_DOWN_COOLDOWN_SECS,
         crate::config::DEFAULT_MAX_HONORED_RETRY_AFTER_SECS,
@@ -173,7 +173,7 @@ fn restore_does_not_clobber_new_limit_with_unlimited_sentinel() {
     // And a genuine limited→limited carry-over still copies the REMAINING budget.
     let mut spent = snaps.clone();
     spent[0].budget = 40; // as if 60 of 100 were already spent before the snapshot
-    let carried = InMemoryStore::new_with_limits_restored(
+    let carried = HealthState::new_with_limits_restored(
         vec![LaneData {
             limited: true,
             budget: 100,
@@ -194,7 +194,7 @@ fn restore_does_not_clobber_new_limit_with_unlimited_sentinel() {
     // ceiling. old cap 500, 100 served → snap remaining 400; new cap 300 → must clamp to 300.
     let mut over = snaps.clone();
     over[0].budget = 400;
-    let clamped = InMemoryStore::new_with_limits_restored(
+    let clamped = HealthState::new_with_limits_restored(
         vec![LaneData {
             limited: true,
             budget: 300, // operator LOWERED max_requests
@@ -213,7 +213,7 @@ fn restore_does_not_clobber_new_limit_with_unlimited_sentinel() {
 
 #[test]
 fn test_floor_prevents_trip() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
 
     set_now_for_test(1000);
 
@@ -245,7 +245,7 @@ fn test_floor_prevents_trip() {
 
 #[test]
 fn test_trip_on_error_rate() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
 
     set_now_for_test(1000);
 
@@ -276,7 +276,7 @@ fn test_trip_on_error_rate() {
 /// (no multi-count); and a HalfOpen→Open reopen (failed recovery probe) is NOT a fresh trip.
 #[test]
 fn test_record_failure_returns_true_only_on_threshold_trip() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     set_now_for_test(1000);
     // Default cfg: error-rate, min_requests=5, threshold=0.5. The first four errors are below the
     // min_requests floor → no trip → false.
@@ -330,7 +330,7 @@ fn test_record_failure_returns_true_only_on_threshold_trip() {
 /// the cooldown must NEVER be 0.
 #[test]
 fn cooldown_never_zero_for_base_one() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     let lane = store.get_lane(0).clone();
     assert_eq!(lane.streak().load(Ordering::Relaxed), 0);
     let cfg = BreakerCfg {
@@ -348,7 +348,7 @@ fn cooldown_never_zero_for_base_one() {
     // span = 3 for base=1, so ~1/3 of seeds draw jitter −1; the sweep is guaranteed to hit it.
     for t in 0..600u64 {
         set_now_for_test(t);
-        let cd = InMemoryStore::compute_cooldown_with_retry_after(&*lane, t, &cfg, None, 3600);
+        let cd = HealthState::compute_cooldown_with_retry_after(&*lane, t, &cfg, None, 3600);
         assert!(
             cd >= 1,
             "base_cooldown_secs=1 must never yield a 0 cooldown (t={t} gave {cd})"
@@ -363,7 +363,7 @@ fn cooldown_never_zero_for_base_one() {
 #[test]
 fn backoff_saturates_not_wraps_at_high_streak() {
     set_now_for_test(0);
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     let lane = store.get_lane(0).clone();
     let cfg = BreakerCfg {
         base_cooldown_secs: 10, // EVEN base — the wrap-to-0 case
@@ -382,7 +382,7 @@ fn backoff_saturates_not_wraps_at_high_streak() {
         lane.streak().store(streak, Ordering::Relaxed);
         for t in 0..80u64 {
             set_now_for_test(t);
-            let cd = InMemoryStore::compute_cooldown_with_retry_after(&*lane, t, &cfg, None, 3600);
+            let cd = HealthState::compute_cooldown_with_retry_after(&*lane, t, &cfg, None, 3600);
             assert!(
                     cd >= 1,
                     "even base at streak {streak} must saturate toward max, never wrap to 0 (t={t} gave {cd})"
@@ -394,7 +394,7 @@ fn backoff_saturates_not_wraps_at_high_streak() {
 #[test]
 fn test_streak_bump_is_serialized_under_transition_lock() {
     set_now_for_test(1000);
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     // Consecutive mode, n=2: the streak alone drives both the trip decision and the cooldown
     // shift, so an over-counted streak is directly observable.
     let cfg = BreakerCfg {
@@ -499,7 +499,7 @@ fn test_spend_refund_budget_contract() {
     let mut ld = make_lane_data(0, 10);
     ld.limited = true;
     ld.budget = 1;
-    let store = Arc::new(InMemoryStore::new(vec![ld]));
+    let store = Arc::new(HealthState::new(vec![ld]));
 
     // A real spend decrements to 0 and reports success.
     assert!(
@@ -544,7 +544,7 @@ fn test_spend_refund_budget_contract() {
     let mut un = make_lane_data(1, 10);
     un.limited = false;
     un.budget = -1;
-    let ustore = Arc::new(InMemoryStore::new(vec![un]));
+    let ustore = Arc::new(HealthState::new(vec![un]));
     assert!(
         ustore.spend_budget(0),
         "spend on an unlimited lane must report true (so the forward guard treats it as spent)"
@@ -564,7 +564,7 @@ fn test_spend_refund_budget_contract() {
 /// must report not-ready. The default-cell-only `is_ready` could only ever see the `""` cell.
 #[test]
 fn test_is_ready_any_cell_false_when_every_cell_open() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     let now = 100_000;
     // Trip the default cell AND two per-pool cells Open with a future cooldown — the lane is
     // serviceable nowhere.
@@ -594,7 +594,7 @@ fn test_is_ready_any_cell_false_when_every_cell_open() {
 /// old short-circuit returns true (over-reports ready); the fix must return false.
 #[test]
 fn test_is_ready_any_cell_false_when_pool_cells_open_default_untouched() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     let now = 100_000;
     // Materialize two per-pool cells, then trip BOTH Open. The default `""` cell is deliberately
     // left in its pristine ST_CLOSED/cooldown=0 state — exactly what pool-routed traffic leaves it.
@@ -622,7 +622,7 @@ fn test_is_ready_any_cell_false_when_pool_cells_open_default_untouched() {
 /// `is_ready_any_cell` must report NOT-ready; recovering the default cell flips it back to ready.
 #[test]
 fn test_is_ready_any_cell_falls_back_to_default_when_no_pool_cells() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     let now = 100_000;
     // No per-pool cells materialized: the default cell is the only routed cell.
     store.force_open_in("", 0, now + 600);
@@ -646,7 +646,7 @@ fn test_is_ready_any_cell_falls_back_to_default_when_no_pool_cells() {
 /// with the hard-down's later cooldown intact.
 #[test]
 fn test_recover_close_does_not_clobber_concurrent_harddown() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     let now = 100_000;
     let observed = now + 600; // the (transient) cooldown a successful probe snapshotted.
                               // A concurrent hard-down wins the transition lock first and arms a STRICTER sticky cooldown.
@@ -675,7 +675,7 @@ fn test_recover_close_does_not_clobber_concurrent_harddown() {
 /// must close the cell and clear the cooldown.
 #[test]
 fn test_recover_close_recovers_tripped_cell_when_unraced() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     let now = 100_000;
     let observed = now + 600;
     store.force_open_in("", 0, observed);
@@ -703,7 +703,7 @@ fn test_recover_close_recovers_tripped_cell_when_unraced() {
 /// has a past cooldown; the recovery close must report NOT-recovered (no spurious close).
 #[test]
 fn test_recover_close_ignores_expired_past_cooldown_on_closed_cell() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     let now = 100_000;
     let past_cooldown = now - 600; // nonzero but already EXPIRED relative to `now`.
                                    // Cell is Closed (default state) with a stale past cooldown left over from a prior trip.
@@ -727,7 +727,7 @@ fn test_recover_close_ignores_expired_past_cooldown_on_closed_cell() {
 /// default-cell-only `is_ready` reads not-ready.
 #[test]
 fn test_is_ready_any_cell_true_when_a_pool_cell_is_ready() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     let now = 100_000;
     // Materialize a per-pool cell WHILE the lane is healthy (a fresh cell inherits the lane's
     // current state, so create it before tripping the default cell) and leave it Closed.
@@ -762,7 +762,7 @@ fn test_cooldown_jitter_is_symmetric() {
     for seed in 0..400u64 {
         // Distinct time-seed per iteration drives a distinct jitter; fresh store so streak resets.
         set_now_for_test(1_000_000 + seed * 7);
-        let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+        let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
         for _ in 0..5 {
             store.record_transient(0, "5xx", &cfg, None);
         }
@@ -802,7 +802,7 @@ fn test_small_base_cooldown_still_jitters() {
     let mut seen = std::collections::BTreeSet::new();
     for seed in 0..200u64 {
         set_now_for_test(1_000_000 + seed * 13);
-        let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+        let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
         store.record_transient(0, "5xx", &cfg, None); // streak 1, no trip
         let now = crate::store::now_for_test();
         seen.insert(store.cooldown_remaining(0, now));
@@ -829,7 +829,7 @@ fn test_small_base_cooldown_still_jitters() {
 #[test]
 fn test_swrr_shard_memo_preserves_selection() {
     set_now_for_test(1000);
-    let store = Arc::new(InMemoryStore::new(vec![
+    let store = Arc::new(HealthState::new(vec![
         make_lane_data(0, 10),
         make_lane_data(1, 10),
     ]));
@@ -854,7 +854,7 @@ fn test_swrr_shard_memo_preserves_selection() {
     }
     // Fresh store, identical inputs → identical sequence (SWRR is deterministic from zeroed
     // current_weight). Proves memoization left selection bit-for-bit unchanged.
-    let store2 = Arc::new(InMemoryStore::new(vec![
+    let store2 = Arc::new(HealthState::new(vec![
         make_lane_data(0, 10),
         make_lane_data(1, 10),
     ]));
@@ -887,7 +887,7 @@ fn test_set_now_for_test_zero_is_a_legal_mock_instant() {
 
 #[test]
 fn test_client_fault_never_trips() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
 
     set_now_for_test(1000);
 
@@ -921,7 +921,7 @@ fn test_client_fault_never_trips() {
 
 #[test]
 fn test_cooldown_expiry_to_halfopen() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
 
     // Put lane in Open state with specific until time
     set_now_for_test(2000);
@@ -954,7 +954,7 @@ fn test_cooldown_expiry_to_halfopen() {
 fn test_hard_down_long_cooldown_and_recovery() {
     // hard-down → long sticky cooldown + Open, recoverable via the
     // probe, NOT a permanent `dead` kill.
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     set_now_for_test(1000);
 
     store.record_hard_down(0, "billing / insufficient balance");
@@ -991,7 +991,7 @@ fn test_hard_down_long_cooldown_and_recovery() {
 
 #[test]
 fn test_single_flight_probe() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
 
     // Set time past cooldown to trigger HalfOpen transition
     set_now_for_test(2000);
@@ -1033,7 +1033,7 @@ fn test_single_flight_probe() {
 
 #[test]
 fn test_probe_success_to_closed() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
 
     // Put lane in HalfOpen with a probe in flight
     store
@@ -1059,7 +1059,7 @@ fn test_probe_success_to_closed() {
 
 #[test]
 fn test_probe_failure_to_open_with_escalated_cooldown() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
 
     // Set baseline streak to 2
     store.get_lane(0).streak.store(2, Ordering::Relaxed);
@@ -1101,7 +1101,7 @@ fn test_probe_failure_to_open_with_escalated_cooldown() {
 /// least the retry_after floor.
 #[test]
 fn test_probe_failure_honors_retry_after_floor() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     set_now_for_test(50_000);
     store.get_lane(0).streak.store(0, Ordering::Relaxed);
 
@@ -1126,7 +1126,7 @@ fn test_probe_failure_honors_retry_after_floor() {
         );
     // Control: identical single reopen WITHOUT retry_after lands only the base backoff, well
     // below the 90s floor — proving the floor came from the threaded retry_after, not the base.
-    let store2 = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store2 = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     set_now_for_test(50_000);
     store2.get_lane(0).streak.store(0, Ordering::Relaxed);
     store2
@@ -1146,7 +1146,7 @@ fn test_exhaustive_match_no_fallback() {
     // This test verifies that BreakerState is exhaustively matched
     // by checking all variants are handled in usable() and breaker_state()
 
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
 
     set_now_for_test(1000);
 
@@ -1181,7 +1181,7 @@ fn test_exhaustive_match_no_fallback() {
 
 #[test]
 fn test_streak_reset_on_success() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
 
     // Set a high streak
     store.get_lane(0).streak.store(5, Ordering::Relaxed);
@@ -1206,7 +1206,7 @@ fn test_streak_reset_on_success() {
 /// aggressively than designed. The reset is now gated on `state != Open`.
 #[test]
 fn test_success_on_open_cell_preserves_streak_for_backoff_escalation() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     set_now_for_test(1000);
 
     // Park the default cell Open with an accumulated streak (as after several consecutive
@@ -1248,7 +1248,7 @@ fn test_success_on_open_cell_preserves_streak_for_backoff_escalation() {
 
 #[test]
 fn test_consecutive_trip_mode() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     set_now_for_test(4000);
 
     // Drive the actual record path with a Consecutive(n=3) config so should_trip genuinely
@@ -1288,7 +1288,7 @@ fn test_consecutive_trip_mode() {
 /// record path — proving the configured threshold (not the hardcoded err>=5) is what fires.
 #[test]
 fn test_configured_consecutive_trip_fires_at_n() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     set_now_for_test(5000);
 
     let cfg = BreakerCfg {
@@ -1324,7 +1324,7 @@ fn test_configured_consecutive_trip_fires_at_n() {
 /// confirming the config is what changed behavior above, not some unconditional rule.
 #[test]
 fn test_default_error_rate_does_not_trip_below_floor() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     set_now_for_test(6000);
 
     let cfg = BreakerCfg::default(); // error-rate, min_requests=5
@@ -1342,7 +1342,7 @@ fn test_default_error_rate_does_not_trip_below_floor() {
 /// configured threshold.
 #[test]
 fn test_configured_error_rate_trip_fires() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     set_now_for_test(7000);
 
     let cfg = BreakerCfg {
@@ -1408,7 +1408,7 @@ fn test_config_breaker_conversion() {
 /// (probe_in_flight never cleared) so it was admitted exactly once then locked out forever.
 #[test]
 fn test_half_open_success_recovers_to_closed() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     set_now_for_test(3000);
 
     // Lane is Open with an expired cooldown.
@@ -1457,7 +1457,7 @@ fn test_concurrent_open_to_half_open_single_probe_winner() {
 
     // Many independent races to make the (formerly ~1-in-2) interleaving overwhelmingly likely.
     for _ in 0..2000 {
-        let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+        let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
         let now = 3000u64;
 
         // Lane Open with an already-expired cooldown — both racers are probe-eligible.
@@ -1517,7 +1517,7 @@ fn test_concurrent_acquire_racing_probe_success_never_wedges_flag() {
     use std::sync::Barrier;
 
     for _ in 0..2000 {
-        let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+        let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
         let now = 3000u64;
         store
             .get_lane(0)
@@ -1589,7 +1589,7 @@ fn test_concurrent_success_racing_hard_down_never_drops_sticky_cooldown() {
     use std::sync::Barrier;
 
     for _ in 0..2000 {
-        let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+        let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
         let now = 3000u64;
         // Park the cell in HalfOpen (expired prior cooldown), as if a probe was just acquired.
         store
@@ -1659,7 +1659,7 @@ fn test_concurrent_success_racing_hard_down_never_drops_sticky_cooldown() {
 /// cell — the core promise of per-(pool, lane) isolation.
 #[test]
 fn test_pool_breaker_isolation() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     set_now_for_test(8000);
 
     // Consecutive(n=1) so a single failure trips immediately.
@@ -1710,7 +1710,7 @@ fn test_pool_breaker_isolation() {
 /// bumped it, so production (named-pool) traffic reported a permanently-zero error count.
 #[test]
 fn test_named_pool_failure_bumps_lane_global_err() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     set_now_for_test(1000);
     let cfg = BreakerCfg::default();
 
@@ -1732,7 +1732,7 @@ fn test_named_pool_failure_bumps_lane_global_err() {
 /// public `/stats` err metric 2x. Symmetric to `test_named_pool_failure_bumps_lane_global_err`.
 #[test]
 fn test_default_cell_failure_counts_lane_global_err_once() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     set_now_for_test(1000);
     let cfg = BreakerCfg::default();
 
@@ -1758,7 +1758,7 @@ fn test_default_cell_failure_counts_lane_global_err_once() {
 /// (streak/window/cooldown/state) but leaves the observability counter intact.
 #[test]
 fn test_default_cell_recovery_does_not_zero_lane_err() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     set_now_for_test(1000);
     let cfg = BreakerCfg::default();
 
@@ -1800,7 +1800,7 @@ fn test_default_cell_recovery_does_not_zero_lane_err() {
 /// true` and `usable_in` benches the lane forever. After release the lane must be re-probeable.
 #[test]
 fn test_release_probe_reverts_undispatched_probe_winner() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     set_now_for_test(1000);
     let cfg = BreakerCfg::default();
 
@@ -1842,7 +1842,7 @@ fn test_release_probe_reverts_undispatched_probe_winner() {
 /// exit), and (2) `release_probe_in` un-wedges it so organic traffic resumes.
 #[test]
 fn test_usable_in_wins_probe_and_must_be_released_on_sticky_path() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     set_now_for_test(1000);
     let cfg = BreakerCfg::default();
 
@@ -1885,7 +1885,7 @@ fn test_usable_in_wins_probe_and_must_be_released_on_sticky_path() {
 /// `release_probe_in` the forward arm now calls makes the lane re-probeable on the next cooldown.
 #[test]
 fn test_client_fault_on_halfopen_lane_releases_probe() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     set_now_for_test(1000);
     let cfg = BreakerCfg::default();
 
@@ -1928,7 +1928,7 @@ fn test_client_fault_on_halfopen_lane_releases_probe() {
 /// it. Proves the forward arm's `release_probe_in` leaves the lane re-probeable.
 #[test]
 fn test_context_length_on_halfopen_lane_releases_probe() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     set_now_for_test(1000);
     let cfg = BreakerCfg::default();
 
@@ -1994,7 +1994,7 @@ fn test_lock_recover_recovers_from_poison() {
 /// normalizes inherited HalfOpen → Open so the (already-expired) cooldown drives a fresh probe.
 #[test]
 fn test_new_pool_cell_does_not_inherit_wedged_halfopen() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     set_now_for_test(1000);
     let cfg = BreakerCfg::default();
 
@@ -2024,7 +2024,7 @@ fn test_new_pool_cell_does_not_inherit_wedged_halfopen() {
 /// ceiling, and the add is saturating, so the lane stays tripped.
 #[test]
 fn test_hostile_retry_after_does_not_bypass_breaker() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     set_now_for_test(1000);
     let cfg = BreakerCfg {
         honor_retry_after: true,
@@ -2052,7 +2052,7 @@ fn test_hostile_retry_after_does_not_bypass_breaker() {
 /// first candidate.
 #[test]
 fn test_zero_weight_member_is_never_selected() {
-    let store = Arc::new(InMemoryStore::new(vec![
+    let store = Arc::new(HealthState::new(vec![
         make_lane_data(0, 10),
         make_lane_data(1, 10),
     ]));
@@ -2082,7 +2082,7 @@ fn test_zero_weight_member_is_never_selected() {
 #[test]
 #[ignore]
 fn bench_select_weighted_in_seam() {
-    let store = Arc::new(InMemoryStore::new(vec![
+    let store = Arc::new(HealthState::new(vec![
         make_lane_data(0, 100),
         make_lane_data(1, 100),
         make_lane_data(2, 100),
@@ -2123,7 +2123,7 @@ fn bench_select_weighted_in_seam() {
 /// ignored (never poison the signal).
 #[test]
 fn test_lane_latency_ewma_records_and_reads() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     // No sample yet.
     assert_eq!(store.lane_latency_ms(0), None);
     // First sample seeds the EWMA exactly.
@@ -2150,7 +2150,7 @@ fn test_lane_latency_ewma_records_and_reads() {
 /// disjoint pools and assert each independently honors its own weights.
 #[test]
 fn test_sharded_swrr_keeps_per_pool_distribution_proportional() {
-    let store = Arc::new(InMemoryStore::new(vec![
+    let store = Arc::new(HealthState::new(vec![
         make_lane_data(0, 100),
         make_lane_data(1, 100),
     ]));
@@ -2186,7 +2186,7 @@ fn test_sharded_swrr_keeps_per_pool_distribution_proportional() {
 /// would split a lane's per-pool breaker state across two objects.
 #[test]
 fn test_cell_read_path_returns_stable_identity() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     set_now_for_test(1000);
     // First touch creates the cell (write path); subsequent reads (read path) must reuse it.
     store.record_success_in("p", 0);
@@ -2206,7 +2206,7 @@ fn test_budget_is_lane_global_across_pools() {
     let mut ld = make_lane_data(0, 10);
     ld.limited = true;
     ld.budget = 1;
-    let store = Arc::new(InMemoryStore::new(vec![ld]));
+    let store = Arc::new(HealthState::new(vec![ld]));
     set_now_for_test(8100);
 
     assert!(store.spend_budget(0), "first spend succeeds");
@@ -2238,7 +2238,7 @@ fn test_refund_budget_restores_a_spent_unit() {
     let mut ld = make_lane_data(0, 10);
     ld.limited = true;
     ld.budget = 2;
-    let store = Arc::new(InMemoryStore::new(vec![ld]));
+    let store = Arc::new(HealthState::new(vec![ld]));
     set_now_for_test(8100);
 
     assert!(store.spend_budget(0), "spend 1 of 2");
@@ -2261,7 +2261,7 @@ fn test_refund_budget_restores_a_spent_unit() {
 /// unlimited lane into a counted one or otherwise perturb admission.
 #[test]
 fn test_refund_budget_unlimited_is_noop() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)])); // budget -1 = unlimited
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)])); // budget -1 = unlimited
     set_now_for_test(8100);
     store.refund_budget(0);
     assert!(store.spend_budget(0), "unlimited lane still spends freely");
@@ -2277,7 +2277,7 @@ fn test_refund_budget_unlimited_is_noop() {
 /// upstream Closed in the default cell (read by `named`/`adhoc`/direct routes) and other pools.
 #[test]
 fn test_record_hard_down_all_cells_trips_default_and_every_pool() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     set_now_for_test(9000);
 
     // Materialize per-pool cells for two pools by touching them (a successful op creates the
@@ -2317,7 +2317,7 @@ fn test_record_hard_down_all_cells_trips_default_and_every_pool() {
 /// stayed 0 for the exact class of trip (credential/billing death) an operator most needs to see.
 #[test]
 fn hard_down_all_cells_records_a_logical_trip() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     set_now_for_test(9000);
 
     assert_eq!(store.snapshot(0, 9000).trips, 0, "no trip yet");
@@ -2357,7 +2357,7 @@ fn test_spend_budget_concurrent_never_over_spends() {
     let mut ld = make_lane_data(0, 10_000);
     ld.limited = true;
     ld.budget = BUDGET;
-    let store = Arc::new(InMemoryStore::new(vec![ld]));
+    let store = Arc::new(HealthState::new(vec![ld]));
 
     let mut handles = Vec::new();
     for _ in 0..THREADS {
@@ -2395,7 +2395,7 @@ fn test_spend_budget_concurrent_never_over_spends() {
 fn test_concurrent_pool_isolation_stress() {
     use std::thread;
 
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10_000)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10_000)]));
 
     // A trip config that never trips, so transient errors increment the cell's `err` cleanly
     // (each just arms a brief cooldown) and we can assert exact counts.
@@ -2460,7 +2460,7 @@ fn test_concurrent_pool_isolation_stress() {
 /// errors that have aged out of the window must not trip a lane whose recent traffic is clean.
 #[test]
 fn test_error_rate_ignores_stale_errors_outside_window() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     let cfg = BreakerCfg {
         base_cooldown_secs: 15,
         max_cooldown_secs: 120,
@@ -2500,7 +2500,7 @@ fn test_error_rate_ignores_stale_errors_outside_window() {
 /// gate skipped it and a single 5xx benched the lane for the full cooldown.
 #[test]
 fn test_soft_cooldown_is_probeable_and_recoverable() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     set_now_for_test(9000);
     // Never trips (min_requests unreachable), so the transient only arms a soft cooldown.
     let cfg = BreakerCfg {
@@ -2541,7 +2541,7 @@ fn test_soft_cooldown_is_probeable_and_recoverable() {
 
 #[test]
 fn test_try_acquire_probe_exclusivity() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
 
     // Put lane in HalfOpen state manually
     store.get_lane(0).breaker_state.store(2, Ordering::Relaxed);
@@ -2561,7 +2561,7 @@ fn test_try_acquire_probe_exclusivity() {
 
 #[test]
 fn test_clear_probe_after_success() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
 
     // Acquire the probe
     assert!(store.try_acquire_probe(0), "should acquire probe");
@@ -2578,7 +2578,7 @@ fn test_clear_probe_after_success() {
 
 #[test]
 fn test_bounded_window_memory() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
 
     set_now_for_test(1000);
 
@@ -2597,7 +2597,7 @@ fn test_bounded_window_memory() {
 
 #[test]
 fn test_usable_transitions_on_clock_advance() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
 
     // Put lane in Open state with until = 2000
     set_now_for_test(2500);
@@ -2631,7 +2631,7 @@ fn test_usable_transitions_on_clock_advance() {
 
 #[test]
 fn test_escalating_cooldown_on_repeated_trips() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
 
     set_now_for_test(1000);
 
@@ -2659,7 +2659,7 @@ fn test_escalating_cooldown_on_repeated_trips() {
 
 #[test]
 fn test_client_fault_counter_increments_separately() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
 
     set_now_for_test(1000);
 
@@ -2691,7 +2691,7 @@ fn test_client_fault_counter_increments_separately() {
 
 #[test]
 fn test_client_fault_does_not_affect_breaker_state() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
 
     set_now_for_test(1000);
 
@@ -2715,7 +2715,7 @@ fn test_client_fault_does_not_affect_breaker_state() {
 // Honor Retry-After on transient cooldown
 #[test]
 fn test_retry_after_429_with_computed_backoff_lower() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
 
     // Use a unique timestamp that won't collide with other tests
     set_now_for_test(70000);
@@ -2756,7 +2756,7 @@ fn test_retry_after_429_with_computed_backoff_lower() {
 
 #[test]
 fn test_retry_after_exceeds_max_cooldown() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
 
     set_now_for_test(1000);
 
@@ -2787,7 +2787,7 @@ fn test_retry_after_exceeds_max_cooldown() {
 
 #[test]
 fn test_retry_after_absent_fallback_to_computed() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
 
     // Use a unique timestamp that won't collide with other tests
     set_now_for_test(60000);
@@ -2815,7 +2815,7 @@ fn test_retry_after_absent_fallback_to_computed() {
 
 #[test]
 fn test_retry_after_record_rate_limit_uses_floor() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
 
     set_now_for_test(1000);
 
@@ -2831,7 +2831,7 @@ fn test_retry_after_record_rate_limit_uses_floor() {
 
 #[test]
 fn test_retry_after_record_transient_uses_floor() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
 
     // Use a unique timestamp that won't collide with other tests
     set_now_for_test(50000);
@@ -2857,7 +2857,7 @@ fn test_retry_after_record_transient_uses_floor() {
 /// which was previously untested AND incorrectly returned the server value directly.
 #[test]
 fn test_retry_after_not_honored_ignores_server_value() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     set_now_for_test(80000);
     store.get_lane(0).streak.store(0, Ordering::Relaxed);
 
@@ -2887,7 +2887,7 @@ fn test_retry_after_not_honored_ignores_server_value() {
 /// stale probe flag makes the CAS fail for every request, so no one can ever probe again.
 #[test]
 fn test_failed_probe_does_not_permanently_lock_lane() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     let cfg = BreakerCfg::default();
 
     // Lane Open with an expired cooldown.
@@ -2941,7 +2941,7 @@ fn test_failed_probe_does_not_permanently_lock_lane() {
 /// so the operator could fix the credential/billing and the lane would still never recover.
 #[test]
 fn test_hard_down_while_probing_does_not_wedge_lane() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
 
     // Lane Open with an expired cooldown → a request wins the half-open probe.
     set_now_for_test(50_000);
@@ -2997,7 +2997,7 @@ fn test_selection_does_not_steal_probes_from_unselected_lanes() {
     let (lane0, w0) = make_lane_data_with_weight(0, 10);
     let (lane1, w1) = make_lane_data_with_weight(1, 10);
     let (lane2, w2) = make_lane_data_with_weight(2, 10);
-    let store = Arc::new(InMemoryStore::new(vec![lane0, lane1, lane2]));
+    let store = Arc::new(HealthState::new(vec![lane0, lane1, lane2]));
     set_now_for_test(20_000);
 
     // All three Open with already-expired cooldowns (so all are "ready" but each would need a
@@ -3049,7 +3049,7 @@ fn test_selection_does_not_steal_probes_from_unselected_lanes() {
 /// polling can't steal recovery probes from organic traffic).
 #[test]
 fn test_is_ready_is_side_effect_free() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     set_now_for_test(30_000);
     store
         .get_lane(0)
@@ -3083,7 +3083,7 @@ fn test_swrr_convergence_1_2_3() {
     let (lane2, w2) = make_lane_data_with_weight(2, 3);
 
     // Weights are: lane 0 -> 1, lane 1 -> 2, lane 2 -> 3
-    let store = Arc::new(InMemoryStore::new(vec![lane0, lane1, lane2]));
+    let store = Arc::new(HealthState::new(vec![lane0, lane1, lane2]));
     set_now_for_test(1000);
 
     // Run SWRR selection many times and count distribution
@@ -3124,7 +3124,7 @@ fn test_swrr_rebalance_on_trip() {
     let (lane0, w0) = make_lane_data_with_weight(0, 10);
     let (lane1, w1) = make_lane_data_with_weight(1, 3);
 
-    let store = Arc::new(InMemoryStore::new(vec![lane0, lane1]));
+    let store = Arc::new(HealthState::new(vec![lane0, lane1]));
     set_now_for_test(1000);
 
     // Put member 0 in Open state (tripped)
@@ -3164,7 +3164,7 @@ fn test_swrr_rebalance_on_trip() {
 /// fails; against the fixed code the reset waits for the lock.
 #[test]
 fn test_swrr_reset_on_recovery_happens_under_shard_lock() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     set_now_for_test(5000);
 
     // Seed a stale SWRR accumulator and park the default cell HalfOpen with the probe acquired,
@@ -3253,7 +3253,7 @@ fn test_swrr_reset_on_recovery_happens_under_shard_lock() {
 fn test_probe_success_all_cells_resets_swrr_on_half_open_close() {
     const STALE_DEFAULT: i64 = 555;
     const STALE_POOL: i64 = 999;
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     set_now_for_test(5000);
 
     // Default ("") cell and a per-pool cell, both parked HalfOpen with the probe acquired and a
@@ -3296,7 +3296,7 @@ fn test_swrr_no_open_selection() {
     let (lane1, w1) = make_lane_data_with_weight(1, 10);
     let (lane2, w2) = make_lane_data_with_weight(2, 3);
 
-    let store = Arc::new(InMemoryStore::new(vec![lane0, lane1, lane2]));
+    let store = Arc::new(HealthState::new(vec![lane0, lane1, lane2]));
     set_now_for_test(1000);
 
     // Put member 1 in Open state
@@ -3340,7 +3340,7 @@ fn test_swrr_all_down_returns_none() {
     let (lane0, w0) = make_lane_data_with_weight(0, 10);
     let (lane1, w1) = make_lane_data_with_weight(1, 3);
 
-    let store = Arc::new(InMemoryStore::new(vec![lane0, lane1]));
+    let store = Arc::new(HealthState::new(vec![lane0, lane1]));
     set_now_for_test(1000);
 
     // Put all members in Open state
@@ -3371,7 +3371,7 @@ fn test_swrr_all_down_returns_none() {
 #[test]
 fn test_open_cell_probe_failures_do_not_inflate_streak() {
     set_now_for_test(1_000);
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     // Consecutive mode so the streak alone drives the cooldown shift; small base, large max so an
     // inflated streak would visibly pin at (or near) max while the real streak stays tiny.
     let cfg = BreakerCfg {
@@ -3444,7 +3444,7 @@ fn test_streak_zero_base_cooldown_is_jittered_and_desynced() {
     // seed). The jitter band around base=200 holds only ~41 distinct values, so any TWO cells
     // collide by chance ~2.4% of the time; sampling 8 makes an all-collide false failure
     // astronomically unlikely while still proving desync.
-    let store = Arc::new(InMemoryStore::new(
+    let store = Arc::new(HealthState::new(
         (0..8).map(|i| make_lane_data(i, 10)).collect(),
     ));
     // Sub-threshold cfg: high consecutive_n / min_requests so a single failure NEVER trips — it
@@ -3463,7 +3463,7 @@ fn test_streak_zero_base_cooldown_is_jittered_and_desynced() {
             let c = store.get_lane(i).clone();
             // Fresh: streak == 0.
             assert_eq!(c.streak().load(Ordering::Relaxed), 0);
-            InMemoryStore::compute_cooldown_with_retry_after(c.as_ref(), 5_000, &cfg, None, 0)
+            HealthState::compute_cooldown_with_retry_after(c.as_ref(), 5_000, &cfg, None, 0)
         })
         .collect();
 
@@ -3490,7 +3490,7 @@ fn test_streak_zero_base_cooldown_is_jittered_and_desynced() {
 #[test]
 fn test_export_health_reads_consistent_state_cooldown_pair() {
     set_now_for_test(10_000);
-    let store = InMemoryStore::new(vec![make_lane_data(0, 4)]);
+    let store = HealthState::new(vec![make_lane_data(0, 4)]);
 
     // Trip the DEFAULT cell (lane 0) Open with a real future cooldown, writing the (state, cooldown)
     // pair together under the transition lock.
@@ -3537,7 +3537,7 @@ fn test_unbounded_lane_skips_the_semaphore_bounded_still_enforces() {
     use crate::store::Permit;
     // Unbounded: the sentinel capacity, exactly what main.rs seeds for an omitted max_concurrent.
     let unbounded =
-        InMemoryStore::new(vec![make_lane_data(0, tokio::sync::Semaphore::MAX_PERMITS)]);
+        HealthState::new(vec![make_lane_data(0, tokio::sync::Semaphore::MAX_PERMITS)]);
     let before = unbounded.available_permits(0);
     let p = unbounded.try_acquire(0).expect("unbounded always admits");
     assert!(matches!(p, Permit::Unbounded), "no slot was counted");
@@ -3549,7 +3549,7 @@ fn test_unbounded_lane_skips_the_semaphore_bounded_still_enforces() {
     drop(p); // dropping is a no-op — nothing to return
 
     // Bounded (max_concurrent: 1): the cap binds exactly.
-    let bounded = InMemoryStore::new(vec![make_lane_data(0, 1)]);
+    let bounded = HealthState::new(vec![make_lane_data(0, 1)]);
     let held = bounded.try_acquire(0).expect("first slot admits");
     assert!(matches!(held, Permit::Bounded(_)));
     assert!(
@@ -3582,13 +3582,13 @@ fn make_limited_lane(id: usize, max_permits: usize, budget: i64) -> LaneData {
 /// HalfOpen (a won probe) → HalfOpen.
 #[test]
 fn test_breaker_verdict_maps_each_cell_state() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     let now = 1000u64;
 
     // Fresh Closed cell (cooldown 0) → Ready.
     let cell = store.cell("p", 0);
     assert_eq!(
-        InMemoryStore::breaker_verdict(cell.as_ref(), now),
+        HealthState::breaker_verdict(cell.as_ref(), now),
         BreakerVerdict::Ready,
         "a Closed, elapsed-cooldown cell is Ready"
     );
@@ -3597,7 +3597,7 @@ fn test_breaker_verdict_maps_each_cell_state() {
     store.force_open_in("p", 0, now + 600);
     let cell = store.cell("p", 0);
     assert_eq!(
-        InMemoryStore::breaker_verdict(cell.as_ref(), now),
+        HealthState::breaker_verdict(cell.as_ref(), now),
         BreakerVerdict::Open { until: now + 600 },
         "an unexpired Open cell reports Open with its exact until"
     );
@@ -3606,7 +3606,7 @@ fn test_breaker_verdict_maps_each_cell_state() {
     store.force_open_in("p", 0, 0);
     let cell = store.cell("p", 0);
     assert_eq!(
-        InMemoryStore::breaker_verdict(cell.as_ref(), now),
+        HealthState::breaker_verdict(cell.as_ref(), now),
         BreakerVerdict::ProbeWinnable,
         "an expired Open cell is ProbeWinnable"
     );
@@ -3618,7 +3618,7 @@ fn test_breaker_verdict_maps_each_cell_state() {
     );
     let cell = store.cell("p", 0);
     assert_eq!(
-        InMemoryStore::breaker_verdict(cell.as_ref(), now),
+        HealthState::breaker_verdict(cell.as_ref(), now),
         BreakerVerdict::HalfOpen,
         "a HalfOpen (probe-in-flight) cell reports HalfOpen"
     );
@@ -3628,7 +3628,7 @@ fn test_breaker_verdict_maps_each_cell_state() {
 /// delegation stays behaviour-identical (Ready/ProbeWinnable ⇒ ready; Open/HalfOpen ⇒ not).
 #[test]
 fn test_cell_ready_breaker_matches_verdict() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     let now = 1000u64;
     // Closed-ready.
     assert!(store.ready_in("p", 0, now));
@@ -3647,7 +3647,7 @@ fn test_classify_emits_each_reason() {
     let now = 1000u64;
 
     // Healthy lane with a free permit → Ok.
-    let healthy = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let healthy = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     assert_eq!(healthy.classify("p", 0, now), Ok(()));
 
     // Dead lane → Dead (NOT BudgetExhausted, even though a dead lane would fail lane_admissible too).
@@ -3655,18 +3655,18 @@ fn test_classify_emits_each_reason() {
         dead: true,
         ..make_lane_data(0, 10)
     };
-    let dead = Arc::new(InMemoryStore::new(vec![dead_ld]));
+    let dead = Arc::new(HealthState::new(vec![dead_ld]));
     assert_eq!(dead.classify("p", 0, now), Err(Unavailable::Dead));
 
     // Budget-exhausted lane (limited, budget 0) → BudgetExhausted (distinct from Dead).
-    let broke = Arc::new(InMemoryStore::new(vec![make_limited_lane(0, 10, 0)]));
+    let broke = Arc::new(HealthState::new(vec![make_limited_lane(0, 10, 0)]));
     assert_eq!(
         broke.classify("p", 0, now),
         Err(Unavailable::BudgetExhausted)
     );
 
     // Unexpired Open breaker → BreakerOpen with the exact until.
-    let open = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let open = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     open.force_open_in("p", 0, now + 300);
     assert_eq!(
         open.classify("p", 0, now),
@@ -3675,7 +3675,7 @@ fn test_classify_emits_each_reason() {
 
     // Breaker healthy but all permits held (bounded, max 1) → AtCapacity. classify is read-only, so
     // it must not perturb the breaker.
-    let full = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 1)]));
+    let full = Arc::new(HealthState::new(vec![make_lane_data(0, 1)]));
     let _held = full.try_acquire(0).expect("occupy the only permit");
     assert_eq!(
         full.classify("p", 0, now),
@@ -3690,7 +3690,7 @@ fn test_classify_emits_each_reason() {
     ));
 
     // A peer holds the single-flight probe (HalfOpen) → ProbeInFlight.
-    let probing = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let probing = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     probing.force_open_in("p", 0, 0);
     assert!(
         probing.acquire_for_dispatch_in("p", 0, now),
@@ -3710,7 +3710,7 @@ fn test_classify_lane_emits_each_reason() {
     let now = 1000u64;
 
     // Healthy lane, free permit → available (Ok) and breaker Closed.
-    let healthy = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let healthy = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     assert_eq!(healthy.classify_lane(0, now), Ok(()));
     assert!(matches!(
         healthy.lane_breaker_state(0, now),
@@ -3718,7 +3718,7 @@ fn test_classify_lane_emits_each_reason() {
     ));
 
     // Dead → Dead (distinct from budget), breaker reported Open{MAX}.
-    let dead = Arc::new(InMemoryStore::new(vec![LaneData {
+    let dead = Arc::new(HealthState::new(vec![LaneData {
         dead: true,
         ..make_lane_data(0, 10)
     }]));
@@ -3729,14 +3729,14 @@ fn test_classify_lane_emits_each_reason() {
     ));
 
     // Budget exhausted → BudgetExhausted.
-    let broke = Arc::new(InMemoryStore::new(vec![make_limited_lane(0, 10, 0)]));
+    let broke = Arc::new(HealthState::new(vec![make_limited_lane(0, 10, 0)]));
     assert_eq!(
         broke.classify_lane(0, now),
         Err(Unavailable::BudgetExhausted)
     );
 
     // Unexpired Open pool cell → BreakerOpen (aggregated across the lane's routed cell).
-    let open = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let open = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     open.force_open_in("p", 0, now + 300);
     assert_eq!(
         open.classify_lane(0, now),
@@ -3748,7 +3748,7 @@ fn test_classify_lane_emits_each_reason() {
     ));
 
     // Breaker healthy, all permits held → AtCapacity, breaker still Closed (read-only).
-    let full = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 1)]));
+    let full = Arc::new(HealthState::new(vec![make_lane_data(0, 1)]));
     let _held = full.try_acquire(0).expect("occupy the only permit");
     assert_eq!(
         full.classify_lane(0, now),
@@ -3771,7 +3771,7 @@ fn test_classify_lane_open_and_at_capacity_both_visible() {
     let now = 1000u64;
 
     // Unexpired Open + saturated: breaker-first collapse → BreakerOpen; both axes still legible.
-    let wedged = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 1)]));
+    let wedged = Arc::new(HealthState::new(vec![make_lane_data(0, 1)]));
     wedged.force_open_in("p", 0, now + 60);
     let _held = wedged.try_acquire(0).expect("hold the only permit");
     assert_eq!(
@@ -3790,7 +3790,7 @@ fn test_classify_lane_open_and_at_capacity_both_visible() {
     // The pure wedge: EXPIRED-Open (probe-winnable) + saturated. The cell would win a probe, so
     // `classify_lane` reports AtCapacity — yet `lane_breaker_state` still reads Open, exposing the
     // stuck breaker whose recovery probe can never get the permit it needs.
-    let expired = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 1)]));
+    let expired = Arc::new(HealthState::new(vec![make_lane_data(0, 1)]));
     expired.force_open_in("p", 0, now); // cooldown already elapsed
     let _held2 = expired.try_acquire(0).expect("hold the only permit");
     assert_eq!(
@@ -3813,7 +3813,7 @@ fn test_classify_lane_open_and_at_capacity_both_visible() {
 /// epoch is surfaced for the caller's later owner-checked release.
 #[test]
 fn test_try_admit_ok_holds_permit() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 1)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 1)]));
     let now = 1000u64;
     let admit = store.try_admit("p", 0, now).expect("healthy lane admits");
     // The permit is held: the only slot is now taken, so a second raw acquire fails.
@@ -3833,7 +3833,7 @@ fn test_try_admit_ok_holds_permit() {
 fn test_try_admit_error_variants() {
     let now = 1000u64;
 
-    let dead = Arc::new(InMemoryStore::new(vec![LaneData {
+    let dead = Arc::new(HealthState::new(vec![LaneData {
         dead: true,
         ..make_lane_data(0, 10)
     }]));
@@ -3842,13 +3842,13 @@ fn test_try_admit_error_variants() {
         Err(Unavailable::Dead)
     ));
 
-    let broke = Arc::new(InMemoryStore::new(vec![make_limited_lane(0, 10, 0)]));
+    let broke = Arc::new(HealthState::new(vec![make_limited_lane(0, 10, 0)]));
     assert!(matches!(
         broke.try_admit("p", 0, now),
         Err(Unavailable::BudgetExhausted)
     ));
 
-    let open = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let open = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     open.force_open_in("p", 0, now + 300);
     assert!(matches!(
         open.try_admit("p", 0, now),
@@ -3865,7 +3865,7 @@ fn test_try_admit_error_variants() {
 #[test]
 fn test_try_admit_at_capacity_does_not_leak_probe() {
     // Bounded lane, single permit.
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 1)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 1)]));
     let now = 1000u64;
 
     // Occupy the only permit so `try_admit` cannot get one.
@@ -3911,7 +3911,7 @@ fn test_try_admit_at_capacity_does_not_leak_probe() {
 /// re-winnable, and once a permit frees the probe can be won and the breaker recovers to Closed.
 #[test]
 fn test_try_admit_probe_winnable_at_capacity_preserves_probe() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 1)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 1)]));
     let now = 1000u64;
 
     // Expired-Open in pool "p" → ProbeWinnable (the breaker step COULD win a probe).
@@ -3966,7 +3966,7 @@ fn test_try_admit_probe_winnable_at_capacity_preserves_probe() {
 /// HalfOpen, and hands back the CORRECT probe epoch for the caller's later owner-checked release.
 #[test]
 fn test_try_admit_probe_winnable_free_permit_succeeds() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 1)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 1)]));
     let now = 1000u64;
     store.force_open_in("p", 0, 0); // expired-Open → ProbeWinnable, permit free
 
@@ -3995,7 +3995,7 @@ fn test_try_admit_probe_winnable_free_permit_succeeds() {
 /// burn) — the Ready-branch release is a harmless no-op on a Closed cell.
 #[test]
 fn test_try_admit_closed_at_capacity_leaves_breaker_closed() {
-    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 1)]));
+    let store = Arc::new(HealthState::new(vec![make_lane_data(0, 1)]));
     let now = 1000u64;
     let _held = store.try_acquire(0).expect("occupy the only permit");
     assert!(matches!(

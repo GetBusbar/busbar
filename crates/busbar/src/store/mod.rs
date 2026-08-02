@@ -12,7 +12,7 @@ const COOLDOWN_TRANSIENT_SECS: u64 = 10;
 // A hard-down fault (bad key / billing / hard quota) gets a long sticky cooldown and recovers via
 // the half-open probe — NOT a permanent `dead` kill. A human likely has to fix the key, so fast
 // re-probes are pointless; default 30 min. Now operator-tunable via `limits.hard_down_cooldown_secs`
-// (threaded onto `InMemoryStore`); this const is the DEFAULT (== the config default) and is retained
+// (threaded onto `HealthState`); this const is the DEFAULT (== the config default) and is retained
 // only as the expected value in tests that exercise the default-configured store.
 #[cfg(test)]
 const HARD_DOWN_COOLDOWN_SECS: u64 = crate::config::DEFAULT_HARD_DOWN_COOLDOWN_SECS;
@@ -22,7 +22,7 @@ const HARD_DOWN_COOLDOWN_SECS: u64 = crate::config::DEFAULT_HARD_DOWN_COOLDOWN_S
 // cap — but never past this ceiling (default 24h), so a hostile/buggy upstream sending a near-
 // `u64::MAX` `Retry-After` cannot overflow `now + duration` (breaker bypass in release / panic in
 // debug) or bench a lane for millennia. Now operator-tunable via `limits.max_honored_retry_after_secs`
-// (threaded onto `InMemoryStore`); this const is the DEFAULT, retained only for default-config tests.
+// (threaded onto `HealthState`); this const is the DEFAULT, retained only for default-config tests.
 #[cfg(test)]
 const MAX_HONORED_RETRY_AFTER_SECS: u64 = crate::config::DEFAULT_MAX_HONORED_RETRY_AFTER_SECS;
 
@@ -220,7 +220,7 @@ impl Unavailable {
     }
 }
 
-/// The held resources a successful [`StateStore::try_admit`] transfers to the caller: the concurrency
+/// The held resources a successful [`LaneRuntime::try_admit`] transfers to the caller: the concurrency
 /// permit (held for the request's lifetime) and the single-flight probe owner token (`probe_epoch`),
 /// which the dispatched request later releases via `release_probe_owned_in` once it records an
 /// outcome. Ownership of the probe transfers OUT of `try_admit` on success; on failure `try_admit`
@@ -293,7 +293,7 @@ pub(crate) struct LaneSnapshot {
     pub(crate) last_trip_at: u64,
 }
 
-/// StateStore trait - the seam for lane state access.
+/// LaneRuntime trait - the seam for lane state access.
 /// Operations, NOT field access. `lane: usize` identifies a member.
 /// One lane's PORTABLE health state, keyed by its STABLE IDENTITY (model + provider) instead of
 /// its array position (D1). This is the carrier that lets learned reliability state survive the
@@ -346,7 +346,7 @@ pub(crate) struct PoolCellHealthSnapshot {
     pub(crate) err: u64,
 }
 
-pub(crate) trait StateStore: Send + Sync + 'static {
+pub(crate) trait LaneRuntime: Send + Sync + 'static {
     // ── Health queries ─────────────────────────────────────────────────────────────────────────
     // The bare `lane` methods operate on the lane-default cell (direct/ad-hoc routes, `/stats`);
     // the `_in(pool, …)` variants operate on the per-(pool, lane) breaker cell so a lane shared
