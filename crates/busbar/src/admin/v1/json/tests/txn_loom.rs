@@ -52,10 +52,12 @@ fn transaction_never_loses_a_swap() {
                 // stack (`generator::DEFAULT_STACK_SIZE`), which is NOT the OS thread stack
                 // RUST_MIN_STACK controls -- it overflowed on Linux CI (larger debug-build frames
                 // than this happened to need locally on macOS) even at RUST_MIN_STACK=512MiB,
-                // because that env var never reaches this mechanism at all. 4 MiB is comfortably
-                // above anything this model's call depth needs.
+                // because that env var never reaches this mechanism at all. 4 MiB was still not
+                // enough on the real Linux CI runner in a debug build (confirmed: overflowed there
+                // while passing clean locally on macOS at both --release and debug); 64 MiB gave
+                // real margin and costs nothing (only 2 threads spawned here).
                 loom::thread::Builder::new()
-                    .stack_size(4 * 1024 * 1024)
+                    .stack_size(64 * 1024 * 1024)
                     .spawn(move || {
                         let _guard = section.lock().unwrap();
                         let current = handle.load(); // the FRESH post-lock snapshot
@@ -94,7 +96,7 @@ fn unsectioned_read_build_swap_loses_an_update() {
                 // See the sibling test's comment: explicit stack_size against generator's tiny
                 // 4 KiB default, the real fix for the CI-only overflow (not RUST_MIN_STACK).
                 loom::thread::Builder::new()
-                    .stack_size(4 * 1024 * 1024)
+                    .stack_size(64 * 1024 * 1024)
                     .spawn(move || {
                         let current = handle.load(); // NO section: the read and the swap can interleave
                         handle.swap(Arc::new(*current + 1));
