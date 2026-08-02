@@ -55,9 +55,17 @@
 #     already made for OIDC and Redis above.
 #
 # WHEN TO RUN
-#   Pre-tag / pre-push, NOT on every commit. This is release infrastructure, not part of the
-#   normal `cargo test --workspace` gate. Budget up to ~2 hours (dominated by `cargo build
-#   --release` for the busbar binary + every plugin cdylib, run multiple times).
+#   Pre-release, NOT on every commit. This is release infrastructure, not part of the normal
+#   `cargo test --workspace` gate. Budget up to ~2 hours (dominated by `cargo build --release`
+#   for the busbar binary + every plugin cdylib, run multiple times).
+#
+# BRANCH MODEL (dev → qa → main)
+#   - `dev`: push often; only the cheap per-push CI (ci.yml) runs there. Nothing here.
+#   - `qa`: promoting dev→qa is what spends THIS gate — qa-gate.yml runs release-check.sh on every
+#     qa push (the pre-release soak). A green qa is what earns promotion to main.
+#   - `main`: tag-on-main.yml auto-tags crates/busbar/Cargo.toml's version when it lands on main,
+#     which cuts the release (release.yml binaries/downstream cascade + docker.yml). Prep the bump
+#     on dev with prepare-release.yml before promoting.
 #
 # PREREQUISITES
 #   - A working Rust toolchain (`cargo build --release` must succeed for this workspace).
