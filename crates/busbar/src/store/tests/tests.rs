@@ -3562,3 +3562,293 @@ fn test_unbounded_lane_skips_the_semaphore_bounded_still_enforces() {
         "the released slot admits again"
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// Lane-availability taxonomy (design §1/§2, R3/R5/R9): `breaker_verdict` (the single decoder),
+// `classify` (read-only), and `try_admit` (mutating composition). See DESIGN-lane-availability.md.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// A bounded (`limited`) lane with a finite lifetime budget, for the `BudgetExhausted` cases.
+fn make_limited_lane(id: usize, max_permits: usize, budget: i64) -> LaneData {
+    LaneData {
+        limited: true,
+        budget,
+        ..make_lane_data(id, max_permits)
+    }
+}
+
+/// R3: `breaker_verdict` is the SINGLE decoder. Assert it maps each cell FSM state to the right
+/// `BreakerVerdict` — Closed-elapsed → Ready, unexpired Open → Open, expired Open → ProbeWinnable,
+/// HalfOpen (a won probe) → HalfOpen.
+#[test]
+fn test_breaker_verdict_maps_each_cell_state() {
+    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let now = 1000u64;
+
+    // Fresh Closed cell (cooldown 0) → Ready.
+    let cell = store.cell("p", 0);
+    assert_eq!(
+        InMemoryStore::breaker_verdict(cell.as_ref(), now),
+        BreakerVerdict::Ready,
+        "a Closed, elapsed-cooldown cell is Ready"
+    );
+
+    // Open with a FUTURE cooldown → Open{until}.
+    store.force_open_in("p", 0, now + 600);
+    let cell = store.cell("p", 0);
+    assert_eq!(
+        InMemoryStore::breaker_verdict(cell.as_ref(), now),
+        BreakerVerdict::Open { until: now + 600 },
+        "an unexpired Open cell reports Open with its exact until"
+    );
+
+    // Open with an EXPIRED cooldown → ProbeWinnable (a probe could be won).
+    store.force_open_in("p", 0, 0);
+    let cell = store.cell("p", 0);
+    assert_eq!(
+        InMemoryStore::breaker_verdict(cell.as_ref(), now),
+        BreakerVerdict::ProbeWinnable,
+        "an expired Open cell is ProbeWinnable"
+    );
+
+    // Win the single-flight probe → cell is HalfOpen → verdict HalfOpen.
+    assert!(
+        store.acquire_for_dispatch_in("p", 0, now),
+        "precondition: win the probe"
+    );
+    let cell = store.cell("p", 0);
+    assert_eq!(
+        InMemoryStore::breaker_verdict(cell.as_ref(), now),
+        BreakerVerdict::HalfOpen,
+        "a HalfOpen (probe-in-flight) cell reports HalfOpen"
+    );
+}
+
+/// `cell_ready_breaker` (the selection filter) is now DEFINED via `breaker_verdict` — assert the
+/// delegation stays behaviour-identical (Ready/ProbeWinnable ⇒ ready; Open/HalfOpen ⇒ not).
+#[test]
+fn test_cell_ready_breaker_matches_verdict() {
+    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    let now = 1000u64;
+    // Closed-ready.
+    assert!(store.ready_in("p", 0, now));
+    // Unexpired Open → not ready.
+    store.force_open_in("p", 0, now + 600);
+    assert!(!store.ready_in("p", 0, now));
+    // Expired Open → ready (a probe could be won).
+    store.force_open_in("p", 0, 0);
+    assert!(store.ready_in("p", 0, now));
+}
+
+/// R3: `classify` is read-only and reads dead/budget SEPARATELY, so it distinguishes `Dead` from
+/// `BudgetExhausted`, and maps the breaker via the same decoder. Assert every variant.
+#[test]
+fn test_classify_emits_each_reason() {
+    let now = 1000u64;
+
+    // Healthy lane with a free permit → Ok.
+    let healthy = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    assert_eq!(healthy.classify("p", 0, now), Ok(()));
+
+    // Dead lane → Dead (NOT BudgetExhausted, even though a dead lane would fail lane_admissible too).
+    let dead_ld = LaneData {
+        dead: true,
+        ..make_lane_data(0, 10)
+    };
+    let dead = Arc::new(InMemoryStore::new(vec![dead_ld]));
+    assert_eq!(dead.classify("p", 0, now), Err(Unavailable::Dead));
+
+    // Budget-exhausted lane (limited, budget 0) → BudgetExhausted (distinct from Dead).
+    let broke = Arc::new(InMemoryStore::new(vec![make_limited_lane(0, 10, 0)]));
+    assert_eq!(
+        broke.classify("p", 0, now),
+        Err(Unavailable::BudgetExhausted)
+    );
+
+    // Unexpired Open breaker → BreakerOpen with the exact until.
+    let open = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    open.force_open_in("p", 0, now + 300);
+    assert_eq!(
+        open.classify("p", 0, now),
+        Err(Unavailable::BreakerOpen { until: now + 300 })
+    );
+
+    // Breaker healthy but all permits held (bounded, max 1) → AtCapacity. classify is read-only, so
+    // it must not perturb the breaker.
+    let full = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 1)]));
+    let _held = full.try_acquire(0).expect("occupy the only permit");
+    assert_eq!(
+        full.classify("p", 0, now),
+        Err(Unavailable::AtCapacity {
+            drain_hint_ms: None
+        })
+    );
+    // Read-only: the breaker cell is untouched (still Closed/Ready).
+    assert!(matches!(
+        full.breaker_state_in("p", 0),
+        BreakerState::Closed
+    ));
+
+    // A peer holds the single-flight probe (HalfOpen) → ProbeInFlight.
+    let probing = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    probing.force_open_in("p", 0, 0);
+    assert!(
+        probing.acquire_for_dispatch_in("p", 0, now),
+        "win the probe"
+    );
+    assert_eq!(
+        probing.classify("p", 0, now),
+        Err(Unavailable::ProbeInFlight)
+    );
+}
+
+/// `try_admit` happy path: a healthy lane returns `Ok(Admit)` holding a real permit, and the probe
+/// epoch is surfaced for the caller's later owner-checked release.
+#[test]
+fn test_try_admit_ok_holds_permit() {
+    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 1)]));
+    let now = 1000u64;
+    let admit = store.try_admit("p", 0, now).expect("healthy lane admits");
+    // The permit is held: the only slot is now taken, so a second raw acquire fails.
+    assert!(
+        store.try_acquire(0).is_none(),
+        "the Admit holds the lane's only permit"
+    );
+    drop(admit);
+    assert!(
+        store.try_acquire(0).is_some(),
+        "dropping the Admit releases the permit"
+    );
+}
+
+/// `try_admit` maps the non-capacity failures to the same taxonomy `classify` uses.
+#[test]
+fn test_try_admit_error_variants() {
+    let now = 1000u64;
+
+    let dead = Arc::new(InMemoryStore::new(vec![LaneData {
+        dead: true,
+        ..make_lane_data(0, 10)
+    }]));
+    assert!(matches!(
+        dead.try_admit("p", 0, now),
+        Err(Unavailable::Dead)
+    ));
+
+    let broke = Arc::new(InMemoryStore::new(vec![make_limited_lane(0, 10, 0)]));
+    assert!(matches!(
+        broke.try_admit("p", 0, now),
+        Err(Unavailable::BudgetExhausted)
+    ));
+
+    let open = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    open.force_open_in("p", 0, now + 300);
+    assert!(matches!(
+        open.try_admit("p", 0, now),
+        Err(Unavailable::BreakerOpen { until }) if until == now + 300
+    ));
+}
+
+/// THE probe-leak proof (design §10 Q1, R9): a lane that is BOTH expired-Open (so `try_admit` wins
+/// its single-flight probe) AND at capacity (so no permit can be acquired) must:
+///   1. return `Err(AtCapacity)`, and
+///   2. NOT leave the cell wedged HalfOpen — the won-but-undispatched probe is released EXACTLY
+///      (owner-checked), reverting HalfOpen→Open, so the lane is not benched; and
+///   3. NOT double-release — the cell is cleanly re-winnable afterwards.
+#[test]
+fn test_try_admit_at_capacity_does_not_leak_probe() {
+    // Bounded lane, single permit.
+    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 1)]));
+    let now = 1000u64;
+
+    // Occupy the only permit so `try_admit` cannot get one.
+    let _held = store.try_acquire(0).expect("occupy the only permit");
+    // Expired-Open in pool "p" → the breaker step will WIN a probe.
+    store.force_open_in("p", 0, 0);
+
+    // (`Admit` holds a `Permit`, which is not `Debug`, so match without formatting the Ok arm.)
+    assert!(
+        matches!(
+            store.try_admit("p", 0, now),
+            Err(Unavailable::AtCapacity {
+                drain_hint_ms: None
+            })
+        ),
+        "an at-capacity expired-Open lane yields AtCapacity"
+    );
+
+    // The crux: the cell is Open, NOT stuck HalfOpen — the probe was released, not leaked.
+    assert!(
+        matches!(store.breaker_state_in("p", 0), BreakerState::Open { .. }),
+        "the won-but-undispatched probe must be released (HalfOpen→Open), not leaked"
+    );
+    // probe_in_flight is cleared → a fresh probe is winnable again (no wedge, no double-release).
+    assert!(
+        store.acquire_for_dispatch_in("p", 0, now),
+        "the cell is cleanly re-winnable after the exact release"
+    );
+    // And releasing that fresh probe once (owner-checked) is a clean single revert, not a double.
+    let epoch = store.probe_epoch_in("p", 0);
+    store.release_probe_owned_in("p", 0, epoch);
+    assert!(
+        matches!(store.breaker_state_in("p", 0), BreakerState::Open { .. }),
+        "a single owner-checked release reverts HalfOpen→Open exactly once"
+    );
+}
+
+/// A Closed lane at capacity yields `AtCapacity` WITHOUT ever touching the breaker (no probe to
+/// burn) — the Ready-branch release is a harmless no-op on a Closed cell.
+#[test]
+fn test_try_admit_closed_at_capacity_leaves_breaker_closed() {
+    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 1)]));
+    let now = 1000u64;
+    let _held = store.try_acquire(0).expect("occupy the only permit");
+    assert!(matches!(
+        store.try_admit("p", 0, now),
+        Err(Unavailable::AtCapacity {
+            drain_hint_ms: None
+        })
+    ));
+    assert!(
+        matches!(store.breaker_state_in("p", 0), BreakerState::Closed),
+        "a Closed-ready lane at capacity stays Closed (no probe was burned)"
+    );
+}
+
+/// `recovery_hint_ms` is the single recovery-timing definition. R5: the at-capacity floor must be
+/// ≥ the shipped 2s `AT_CAPACITY_RETRY_AFTER_SECS` (2000ms) — never regressed to 1000ms — and
+/// reuses that const. Also covers the `Shedding` variant (its only constructor is here in this
+/// phase).
+#[test]
+fn test_recovery_hint_ms() {
+    let now = 1000u64;
+    // No self-recovery for administrative reasons.
+    assert_eq!(Unavailable::Dead.recovery_hint_ms(now), None);
+    assert_eq!(Unavailable::BudgetExhausted.recovery_hint_ms(now), None);
+    // Breaker recovery is EXACT: (until - now) seconds → ms.
+    assert_eq!(
+        Unavailable::BreakerOpen { until: now + 5 }.recovery_hint_ms(now),
+        Some(5000)
+    );
+    // At-capacity with no drain estimate floors at ≥ 2000ms (R5), never 1000ms.
+    let floor = Unavailable::AtCapacity {
+        drain_hint_ms: None,
+    }
+    .recovery_hint_ms(now)
+    .expect("at-capacity has an honest floor");
+    assert!(
+        floor >= 2000,
+        "R5: at-capacity floor must be >= the shipped 2s, got {floor}ms"
+    );
+    // A concrete drain estimate is used verbatim.
+    assert_eq!(
+        Unavailable::AtCapacity {
+            drain_hint_ms: Some(75)
+        }
+        .recovery_hint_ms(now),
+        Some(75)
+    );
+    // Probe/shed carry their advisory floors.
+    assert!(Unavailable::ProbeInFlight.recovery_hint_ms(now).is_some());
+    assert!(Unavailable::Shedding.recovery_hint_ms(now).is_some());
+}

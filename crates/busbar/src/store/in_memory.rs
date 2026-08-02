@@ -175,6 +175,21 @@ impl BreakerCell {
     }
 }
 
+/// The decoded breaker situation for ONE cell at an instant — the output of the single
+/// `breaker_verdict` decoder (R3). Read-only: `ProbeWinnable` reports that a probe COULD be won here,
+/// it does not win one (the mutating `cell_acquire_breaker` still owns the CAS).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BreakerVerdict {
+    /// Closed and any pending soft cooldown has elapsed — admit without a probe.
+    Ready,
+    /// Suppressed: Open (or Closed still inside a soft cooldown) whose deadline has NOT elapsed.
+    Open { until: u64 },
+    /// A peer holds the single-flight recovery probe (HalfOpen) — not winnable right now.
+    HalfOpen,
+    /// Expired-Open — a single-flight recovery probe could be won here (a mutating acquire is needed).
+    ProbeWinnable,
+}
+
 /// Read access to the breaker atomics, so the FSM logic can be written once and run against either
 /// a `LaneState` (the default cell) or a per-pool `BreakerCell` without duplication.
 pub(crate) trait BreakerCellAccess {
@@ -921,20 +936,49 @@ impl InMemoryStore {
     /// the single-flight recovery probe. The Open→HalfOpen transition + probe CAS is performed
     /// exactly once, on the single lane selection actually dispatches, via `cell_acquire_breaker`.
     pub(crate) fn cell_ready_breaker(c: &dyn BreakerCellAccess, now: u64) -> bool {
+        // Delegate to the single `breaker_verdict` decoder (R3) so there is exactly ONE implementation
+        // of "would this breaker admit". A cell is ready-to-admit iff a request could proceed WITHOUT
+        // losing a race: Closed-and-elapsed (`Ready`) or expired-Open where a probe could be won
+        // (`ProbeWinnable`). `Open`/`HalfOpen` are not ready. Behaviour is byte-identical to the prior
+        // hand-rolled match (an unexpected encoding still fails SAFE — `breaker_verdict` maps it to
+        // `Open`, i.e. not ready — preserving the no-panic-on-request-path invariant).
+        matches!(
+            Self::breaker_verdict(c, now),
+            BreakerVerdict::Ready | BreakerVerdict::ProbeWinnable
+        )
+    }
+
+    /// THE single decoder (R3) of a cell's breaker situation into [`BreakerVerdict`]. Read-only — no
+    /// Open→HalfOpen transition, no probe CAS. Every "is the breaker open" question (`cell_ready_breaker`
+    /// for the selection filter, `classify` for observability, and `try_admit` before its CAS) resolves
+    /// here, so the notions can never drift. An unexpected state fails SAFE (mapped to `Open`), matching
+    /// the request-path no-panic invariant.
+    pub(crate) fn breaker_verdict(c: &dyn BreakerCellAccess, now: u64) -> BreakerVerdict {
+        let until = c.cooldown_until().load(Ordering::Acquire);
         match c.breaker_state().load(Ordering::Acquire) {
-            ST_CLOSED => now >= c.cooldown_until().load(Ordering::Acquire),
-            ST_OPEN => now >= c.cooldown_until().load(Ordering::Acquire),
-            ST_HALF_OPEN => false,
-            // The breaker state is an atomic `u64` only ever set to one of the three ST_* sentinels,
-            // so this is not reachable today. But this runs on the request-path selection filter:
-            // `unreachable!()` would panic the task (no-panic-on-request-path invariant). Fail SAFE
-            // by reporting "not ready" (deny admission) for any unexpected encoding instead.
+            ST_CLOSED => {
+                if now >= until {
+                    BreakerVerdict::Ready
+                } else {
+                    // A Closed cell inside a pending soft cooldown is breaker-suppressed until `until`.
+                    BreakerVerdict::Open { until }
+                }
+            }
+            ST_OPEN => {
+                if now >= until {
+                    BreakerVerdict::ProbeWinnable
+                } else {
+                    BreakerVerdict::Open { until }
+                }
+            }
+            ST_HALF_OPEN => BreakerVerdict::HalfOpen,
             other => {
                 tracing::error!(
                     state = other,
-                    "unexpected breaker state; treating cell as not ready"
+                    "unexpected breaker state; treating cell as Open (deny admission)"
                 );
-                false
+                // Fail SAFE: never-elapsing Open so both `classify` and `try_admit` deny admission.
+                BreakerVerdict::Open { until: u64::MAX }
             }
         }
     }
@@ -1379,6 +1423,10 @@ impl InMemoryStore {
     /// Mutating admission check used on the dispatch path (sticky-affinity preference + the single
     /// lane SWRR selection returns): an expired-Open lane transitions to HalfOpen and the caller
     /// CAS-acquires the single-flight probe. Only ever called for a lane about to receive a request.
+    // Reached only via `usable`/`usable_in`/`acquire_for_dispatch_in`, all of which are now test-only
+    // after `pick_among` moved to `try_admit` (which calls `cell_acquire_breaker` directly). Retained
+    // as the shared mutating-admission body those tested primitives delegate to.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn usable_for(&self, pool: &str, lane: usize, now: u64) -> bool {
         if !self.lane_admissible(lane) {
             return false;
@@ -1752,6 +1800,87 @@ impl StateStore for InMemoryStore {
         // Mutating: the single dispatched lane does the Open→HalfOpen + probe CAS here. Lane-global
         // gates are re-checked (state may have changed since selection's read-only filter).
         self.usable_for(pool, lane, now)
+    }
+
+    fn classify(&self, pool: &str, lane: usize, now: u64) -> Result<(), Unavailable> {
+        // R3: read `dead` and `budget` SEPARATELY (NOT the bool-collapsing `lane_admissible`) so a
+        // dead lane and a budget-exhausted lane get DISTINCT taxonomy variants.
+        let ls = self.get_lane(lane);
+        if ls.dead.load(Ordering::Relaxed) {
+            return Err(Unavailable::Dead);
+        }
+        if ls.limited && ls.budget.load(Ordering::Relaxed) <= 0 {
+            return Err(Unavailable::BudgetExhausted);
+        }
+        // Breaker peek via the SAME decoder `try_admit` uses (R3) — read-only, no probe CAS.
+        match Self::breaker_verdict(self.cell(pool, lane).as_ref(), now) {
+            BreakerVerdict::Open { until } => Err(Unavailable::BreakerOpen { until }),
+            BreakerVerdict::HalfOpen => Err(Unavailable::ProbeInFlight),
+            // Breaker would admit; peek permits (racy — advisory). `available_permits` reports an
+            // effectively-unbounded count for unbounded lanes, so `== 0` is only ever a bounded lane
+            // truly at its `max_concurrent` limit.
+            BreakerVerdict::Ready | BreakerVerdict::ProbeWinnable => {
+                if self.available_permits(lane) == 0 {
+                    Err(Unavailable::AtCapacity {
+                        drain_hint_ms: None,
+                    })
+                } else {
+                    Ok(())
+                }
+            }
+        }
+    }
+
+    fn try_admit(&self, pool: &str, lane: usize, now: u64) -> Result<Admit, Unavailable> {
+        // Same lane-global gates as `classify`, same SEPARATE reads (R3).
+        let ls = self.get_lane(lane);
+        if ls.dead.load(Ordering::Relaxed) {
+            return Err(Unavailable::Dead);
+        }
+        if ls.limited && ls.budget.load(Ordering::Relaxed) <= 0 {
+            return Err(Unavailable::BudgetExhausted);
+        }
+        let cell = self.cell(pool, lane);
+        // R3: consume the SINGLE `breaker_verdict` decoder BEFORE the mutating CAS below, to decide
+        // the failure taxonomy without re-deriving "is the breaker open".
+        match Self::breaker_verdict(cell.as_ref(), now) {
+            BreakerVerdict::Open { until } => return Err(Unavailable::BreakerOpen { until }),
+            BreakerVerdict::HalfOpen => return Err(Unavailable::ProbeInFlight),
+            BreakerVerdict::Ready | BreakerVerdict::ProbeWinnable => {}
+        }
+        // Mutating probe acquisition — the Open→HalfOpen CAS for an expired-Open cell, a no-op for a
+        // Closed-ready one. Breaker-first, THEN permit: exactly the order the shipped `pick_among`
+        // used (`acquire_for_dispatch_in` then `try_acquire`), preserving behaviour.
+        //
+        // TODO(R9): for a `ProbeWinnable` cell that is ALSO at capacity this wins-then-reverts the
+        // single-flight probe every attempt (so its breaker can never close — a PRE-EXISTING pathology
+        // today's `pick_among` shares). Peeking the permit BEFORE this CAS for `ProbeWinnable` cells
+        // would avoid burning a probe it can't use; deferred here to keep exact behavioural parity with
+        // the shipped selection path in this phase (do not regress). The Err reason is identical either
+        // way, so failover behaviour is unaffected.
+        if !Self::cell_acquire_breaker(cell.as_ref(), now) {
+            // Lost the single-flight race (or a peer moved the cell on since the verdict peek).
+            return Err(Unavailable::ProbeInFlight);
+        }
+        // Owner token for the (possibly newly-won) probe, captured synchronously — the cell is HalfOpen
+        // (single-flight), so no peer can win a newer probe before we read it. Mirrors `pick_among`'s
+        // capture discipline; the dispatched request releases via `release_probe_owned_in`.
+        let probe_epoch = cell.probe_epoch().load(Ordering::Acquire);
+        match self.try_acquire(lane) {
+            Some(permit) => Ok(Admit {
+                permit,
+                probe_epoch,
+            }),
+            None => {
+                // At capacity: release the won-but-undispatched probe EXACTLY (owner-checked) so the
+                // cell reverts HalfOpen→Open and is not benched. A no-op on a Closed-ready cell (no
+                // probe was won) and never a double-release.
+                Self::cell_release_probe_owned(cell.as_ref(), probe_epoch);
+                Err(Unavailable::AtCapacity {
+                    drain_hint_ms: None,
+                })
+            }
+        }
     }
 
     fn release_probe_in(&self, pool: &str, lane: usize) {
