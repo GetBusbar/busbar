@@ -6,7 +6,7 @@
 #
 # Checks, in order:
 #   1. Registry shape: required fields, valid kinds/gates, unique repo/alias/crate.
-#   2. dev-gate.yml derives its sibling checkouts from the registry (its clone loop calls this
+#   2. qa-gate.yml derives its sibling checkouts from the registry (its clone loop calls this
 #      script's --list mode) — per-plugin hand-written checkout steps are gone by design, so the
 #      check is "the registry-driven step exists", not "a literal step per plugin exists".
 #   3. release-check.sh coverage per entry's `gate` kind:
@@ -23,7 +23,7 @@
 #        scripts/plugin-registry-check.sh --list
 #
 # --list is the machine-readable registry feed the other consumers iterate (release-check.sh's
-# suite loop, dev-gate.yml's clone loop): one tab-separated line per plugin —
+# suite loop, qa-gate.yml's clone loop): one tab-separated line per plugin —
 #   repo <TAB> dir <TAB> alias <TAB> kind <TAB> service <TAB> release_gate <TAB> gate <TAB> checkout_ref
 # where dir is checkout_dir (falling back to repo) and checkout_ref is "-" when unset. Shape
 # validation (check 1) still runs first, so a malformed registry fails every consumer loudly.
@@ -117,10 +117,10 @@ if list_mode:
         ]))
     sys.exit(0)
 
-# ── 2. dev-gate.yml derives its checkouts from the registry (no hand-written per-plugin steps).
-devgate = open(".github/workflows/dev-gate.yml", encoding="utf-8").read()
+# ── 2. qa-gate.yml derives its checkouts from the registry (no hand-written per-plugin steps).
+devgate = open(".github/workflows/qa-gate.yml", encoding="utf-8").read()
 if "plugin-registry-check.sh --list" not in devgate:
-    fail.append("dev-gate.yml does not clone siblings via the registry "
+    fail.append("qa-gate.yml does not clone siblings via the registry "
                 "(expected a step iterating `scripts/plugin-registry-check.sh --list`)")
 
 # ── 3. release-check.sh coverage, per each entry's declared gate kind.

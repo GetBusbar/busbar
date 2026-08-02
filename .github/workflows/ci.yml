@@ -2,11 +2,11 @@ name: CI
 
 on:
   push:
-    branches: [main, dev]
+    branches: [main, dev, qa]
   pull_request:
 
 # Without this, every push queues a fully independent run that competes for the same runners
-# instead of cancelling the one it superseded -- dev-gate.yml already has this; ci.yml never did,
+# instead of cancelling the one it superseded -- qa-gate.yml already has this; ci.yml never did,
 # so a burst of rapid pushes (e.g. iterating on a CI fix) pays for N full runs instead of 1.
 concurrency:
   group: ci-${{ github.ref }}
@@ -39,7 +39,7 @@ jobs:
       - name: Structure lint
         run: scripts/structure-lint.sh
       # THE REGISTRY GATE (plugins.yaml is the single source of truth for first-party plugins):
-      # red when a registered plugin lacks coverage anywhere — no dev-gate checkout, no
+      # red when a registered plugin lacks coverage anywhere — no qa-gate checkout, no
       # release-check phase, no published release (or a phantom release with zero assets) — or
       # when a plugin-shaped org repo exists unregistered. Found necessary during the 1.5.0 ship:
       # the plugin list was duplicated across 5+ places and the "full plugin gate" silently ran

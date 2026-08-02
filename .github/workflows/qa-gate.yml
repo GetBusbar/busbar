@@ -1,23 +1,25 @@
-# dev-gate — the automated inverse of each plugin's own CI.
+# qa-gate — the automated inverse of each plugin's own CI.
 #
 # Each first-party plugin repo runs its OWN lightweight CI on every push, proving "this plugin
 # works" against a real backend where one applies (see e.g. GetBusbar/store-postgres's real
-# postgres: service container). This workflow is the other direction: on every push to `dev`
-# (the permanent, standing bleeding-edge integration branch — see the branch-model note in
-# scripts/release-check.sh's header) or any `*-dev` version-scoped branch, it runs the real
-# end-to-end release gate, proving "busbar works against ALL its plugins together" at this exact
-# commit. Neither direction substitutes for the other.
+# postgres: service container). This workflow is the other direction: on every push to `qa`
+# (the pre-release integration branch — see the dev→qa→main branch-model note in
+# scripts/release-check.sh's header), it runs the real end-to-end release gate, proving "busbar
+# works against ALL its plugins together" at this exact commit. Neither direction substitutes for
+# the other.
 #
-# This intentionally does NOT run on `main` or on PRs — `scripts/release-check.sh` documents
-# itself as a pre-tag gate, not a per-commit one (it can take up to ~2 hours). `dev`/`*-dev` is
-# where that cost belongs: proving the moving integration branch stays real before it ever reaches
-# `main`/a release tag.
-name: dev-gate
+# BRANCH MODEL: `dev` gets only the cheap per-push CI (ci.yml) — push there often. Promoting
+# dev→`qa` is what spends this ~2h, real-money full-plugin gate; it is the pre-release soak. A
+# green qa is what earns a promotion qa→`main`, where tag-on-main.yml auto-cuts the release.
+# This intentionally does NOT run on `dev`, `main`, or PRs — `scripts/release-check.sh` documents
+# itself as a pre-release gate, not a per-commit one (it can take up to ~2 hours). `qa` is where
+# that cost belongs: proving the promoted commit is release-ready before it ever reaches `main`.
+name: qa-gate
 
 on:
   # Runs AFTER ci.yml succeeds, not on every push directly -- this is a real ~2h, real-money e2e
   # run; no point spending it on a commit that hasn't even cleared the cheaper gate yet. Only
-  # fires when the CI run that just finished was itself triggered by a push to dev/*-dev (see the
+  # fires when the CI run that just finished was itself triggered by a push to `qa` (see the
   # `if:` on the job below), and only on conclusion == success.
   workflow_run:
     workflows: ["CI"]
@@ -26,18 +28,18 @@ on:
 
 # release-check.sh documents up to ~2h; give real headroom before GitHub's own job timeout bites.
 concurrency:
-  group: dev-gate-${{ github.ref }}
+  group: qa-gate-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   release-check:
     name: release-check.sh (full plugin gate)
-    # Only run for a REAL CI success on dev/*-dev (never on a failed/cancelled CI run, and never
+    # Only run for a REAL CI success on `qa` (never on a failed/cancelled CI run, and never
     # for CI runs from other branches/PRs) -- workflow_dispatch always runs regardless.
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' &&
-       contains(fromJSON('["dev"]'), github.event.workflow_run.head_branch))
+       contains(fromJSON('["qa"]'), github.event.workflow_run.head_branch))
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
