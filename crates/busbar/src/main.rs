@@ -1974,29 +1974,44 @@ fn generate_signing_key_command() -> i32 {
         }
     };
     let hex = hex::encode(signer.secret_bytes());
-    // The secret (64 hex chars) goes to STDOUT so it is pipeable/captureable
+    let (secret_line, guidance) = signing_key_command_output(&hex);
+    // The secret (64 hex chars) goes to STDOUT ONLY so it is pipeable/captureable
     // (`busbar --generate-signing-key > /run/secrets/busbar-signing.key`); the guidance goes to
-    // STDERR so a capture gets ONLY the key. `auth.signing_key` is a secret REFERENCE (never an
-    // inline literal - busbar rejects that), so the snippets wire the key via `{ file }` / `{ env }`.
-    println!("{hex}");
-    eprintln!(
-        "\n# ed25519 signing key for busbar-signed virtual keys (64 hex chars, printed above).\n\
+    // STDERR so a capture gets ONLY the key — the guidance itself must therefore be secret-free
+    // (SECURITY: it must never embed `hex`, or the master key leaks into any sink that captures stderr:
+    // systemd journal, CI/build logs, terminal scrollback). See `signing_key_command_output`.
+    println!("{secret_line}");
+    eprintln!("{guidance}");
+    0
+}
+
+/// Split the `--generate-signing-key` output into (STDOUT secret line, STDERR guidance). The secret
+/// `hex` appears ONLY in the stdout line; the stderr guidance uses a NON-SECRET placeholder that points
+/// at the stdout value, so a stderr capture never leaks the master signing key. Pure (no I/O) so the
+/// stdout-only-secret contract is unit-testable (see `signing_key_guidance_omits_secret`), not merely
+/// asserted in a comment. `auth.signing_key` is a secret REFERENCE (never an inline literal — busbar
+/// rejects that), so the snippets wire the key via `{ file }` / `{ env }`.
+fn signing_key_command_output(hex: &str) -> (String, String) {
+    let secret_line = hex.to_string();
+    let guidance = "\n# ed25519 signing key for busbar-signed virtual keys (64 hex chars, printed above on stdout).\n\
          # auth.signing_key is a secret REFERENCE, not an inline value - wire the key like so:\n\
          #\n\
          #   # write it to a file, then reference the file:\n\
          #   busbar --generate-signing-key > /run/secrets/busbar-signing.key\n\
          #   auth:\n\
-         #     signing_key: {{ file: /run/secrets/busbar-signing.key }}\n\
+         #     signing_key: { file: /run/secrets/busbar-signing.key }\n\
          #\n\
-         #   # or export it and reference the env var (fleet: SAME value on every node):\n\
-         #   export BUSBAR_SIGNING_KEY={hex}\n\
+         #   # or export it and reference the env var (fleet: SAME value on every node).\n\
+         #   # paste the 64-hex key printed above on stdout (NOT shown here, so this guidance stays\n\
+         #   # secret-free and safe to capture in a journal/CI log):\n\
+         #   export BUSBAR_SIGNING_KEY=<paste-the-64-hex-key-printed-above>\n\
          #   auth:\n\
-         #     signing_key: {{ env: BUSBAR_SIGNING_KEY }}\n\
+         #     signing_key: { env: BUSBAR_SIGNING_KEY }\n\
          #\n\
          # Fleet-shared so every node verifies the same tokens; rotating it REVOKES every \
          outstanding virtual key."
-    );
-    0
+        .to_string();
+    (secret_line, guidance)
 }
 
 /// Validate ONE `secrets:` block key against the plugin registry and return the plugin's CANONICAL
@@ -3319,7 +3334,15 @@ fn apply_inbound_concurrency_limit(router: Router, max_inbound_concurrent: usize
         router.layer(
             tower::ServiceBuilder::new()
                 .layer(axum::error_handling::HandleErrorLayer::new(
-                    |_err: tower::BoxError| async { inbound_overloaded_response() },
+                    |err: tower::BoxError| async move {
+                        // Today LoadShed only ever emits its own `Overloaded` here, so mapping to a
+                        // capacity 503 is correct — but LOG the real error first rather than swallow it,
+                        // so if a future fallible layer (or a broadened error type) is ever added inside
+                        // this stack, a genuine internal fault is not masked behind the generic
+                        // "at capacity" 503 with no trace of its cause.
+                        tracing::debug!(error = %err, "inbound concurrency layer shed a request");
+                        inbound_overloaded_response()
+                    },
                 ))
                 .layer(tower::load_shed::LoadShedLayer::new())
                 .layer(tower::limit::GlobalConcurrencyLimitLayer::new(
