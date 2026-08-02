@@ -91,7 +91,7 @@ fn apply_rewrite_renders_per_dialect() {
     assert_eq!(b2, before, "non-text rewrite leaves bedrock untouched");
 }
 
-/// REGRESSION (audit c1r14): the gemini rewrite-hook role vocabulary must round-trip. Gemini
+/// The gemini rewrite-hook role vocabulary must round-trip. Gemini
 /// assistant turns are natively `role: "model"`; the projection now CANONICALIZES that to
 /// `assistant` (so the hook sees canonical IR), AND the write-back accepts BOTH `assistant` and
 /// `model` — so a hook that echoes the role it received no longer corrupts assistant turns into
@@ -198,30 +198,49 @@ async fn apply_global_rewrites_chains_in_order() {
     assert_eq!(v["messages"][0]["content"], "B");
 }
 
-// Regression for #29: the token fee charged at response completion must be attributed to the
+// Regression for #29: the token accrual at response completion must be attributed to the
 // SAME budget window the request was admitted in (`UsageSink::charged_at`, the header-arrival
 // epoch), NOT a fresh `store::now()` read at completion time. With a `daily` budget period, a
 // request that arrives on day N but whose (buffered or streamed) response is accounted "now" on
-// day N+1 would, under the old `now()`-based code, charge the token fee into day N+1's window —
-// splitting it from the flat per-request fee (charged into day N by `ingress::budget_check`→`try_charge_request_within_budget`). The fix
-// threads `charged_at` so both land in day N. We pin `charged_at` to a fixed past day and assert
-// the spend lands in THAT day's window regardless of the real wall clock (which is always later).
+// day N+1 would, under the old `now()`-based code, ledger the tokens into day N+1's window -
+// splitting them from the flat per-request fee (charged into day N by `ingress::budget_check`→
+// `try_charge_request_within_budget`). The fix threads `charged_at` so both land in day N. We pin
+// `charged_at` to a fixed past day and assert the tokens land in THAT day's window regardless of
+// the real wall clock (which is always later). (Spend is DERIVED now; with a flat cost model the
+// window-attribution intent is asserted on the token ledger itself.)
 #[test]
 fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
-    use crate::governance::{GovState, NewKeySpec, SqliteStore, SECS_PER_DAY};
+    use crate::governance::{GovState, MemoryStore, NewKeySpec, SECS_PER_DAY};
 
-    let store = Arc::new(SqliteStore::open_in_memory().expect("in-memory store"));
-    // 0c per request, 100c per 1k tokens → a 1000-token response costs 100c.
-    let gov = Arc::new(GovState::new(store, 0, 100, None).expect("gov"));
+    let store = Arc::new(MemoryStore::new());
+    let gov = Arc::new(GovState::new(store, None).expect("gov"));
+    // No per-request fee, no rate card: token accrual changes `tokens`, never `spend_cents`.
+    // Keys attribute all-time now, so the per-DAY window under test lives on the bound GROUP's
+    // day bucket (a loose day budget materialises it without ever blocking).
+    let groups = std::collections::BTreeMap::from([(
+        "daygrp".to_string(),
+        crate::config::GroupCfg {
+            parent: None,
+            enabled: true,
+            limits: vec![crate::config::groups::LimitCfg {
+                metric: crate::config::groups::LimitMetric::Budget,
+                amount: 1_000_000,
+                per: Some(crate::config::groups::LimitWindow::Day),
+                scope: None,
+                on_exhaust: None,
+                downgrade_to: None,
+            }],
+            ..Default::default()
+        },
+    )]);
+    let cost = Arc::new(crate::cost::CostModel::resolve_parts(None, 0, &groups));
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
                 name: "k".to_string(),
-                allowed_pools: vec![],
-                max_budget_cents: Some(1_000_000),
-                budget_period: "daily".to_string(),
-                rpm_limit: None,
-                tpm_limit: None,
+                allowed_pools: None,
+                group: Some("daygrp".to_string()),
+                labels: Default::default(),
             },
             1_700_000_000,
         )
@@ -239,10 +258,26 @@ fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
 
     let sink = Some(UsageSink {
         gov: gov.clone(),
-        key_id: key.id.clone(),
-        period: key.budget_period.clone(),
+        cost: cost.clone(),
+        key: std::sync::Arc::new(key.clone()),
+        pool: std::sync::Arc::from(""),
         charged_at,
+        admit: None,
     });
+
+    // `record_ir_usage` ledgers per-model tokens keyed by the lane's wire model, so it needs a
+    // real Lane; build one through the TestApp lane machinery (the upstream is never contacted).
+    let lane_app = crate::test_support::TestApp::new()
+        .lane(
+            crate::test_support::LaneSpec::new(
+                "m",
+                crate::proto::Protocol::openai(),
+                "http://127.0.0.1:1",
+            )
+            .provider("zai"),
+        )
+        .build();
+    let lane = lane_app.lanes[0].clone();
 
     // A buffered completion carrying 600 input + 400 output = 1000 tokens, sourced from IrUsage
     // (Change A: billing now reads the IR usage the egress reader decoded, not a byte-scan).
@@ -252,61 +287,82 @@ fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
         cache_creation_input_tokens: None,
         cache_read_input_tokens: None,
     };
-    record_ir_usage(&usage, &sink, None);
+    record_ir_usage(&usage, &sink, Some(&lane));
 
-    // The 100c token fee must be in the charged_at day's window...
+    // The 1000 tokens must be ledgered in the charged_at day's window of the GROUP day bucket...
     let in_window = gov
-        .usage_for(&key.id, charged_at)
+        .derived_bucket_usage(&cost, "group:daygrp@day", "day", true, charged_at)
         .expect("usage read")
-        .map(|u| u.spend_cents)
-        .unwrap_or(0);
+        .tokens;
     assert_eq!(
-        in_window, 100,
-        "token fee must be attributed to the charged_at (header-arrival) day window"
+        in_window, 1000,
+        "token accrual must be attributed to the charged_at (header-arrival) day window"
     );
     // ...and NOT in today's window (which the old `now()`-based code would have used).
     let in_today = gov
-        .usage_for(&key.id, crate::store::now())
+        .derived_bucket_usage(&cost, "group:daygrp@day", "day", true, crate::store::now())
         .expect("usage read")
-        .map(|u| u.spend_cents)
-        .unwrap_or(0);
+        .tokens;
     assert_eq!(
         in_today, 0,
-        "token fee must NOT leak into the wall-clock 'now' window (the #29 split bug)"
+        "token accrual must NOT leak into the wall-clock 'now' window (the #29 split bug)"
+    );
+    // The key's all-time attribution bucket sees the tokens regardless of the day (sanity).
+    assert_eq!(
+        gov.usage_for(&cost, &key.id, crate::store::now())
+            .expect("usage read")
+            .map(|u| u.tokens)
+            .unwrap_or(0),
+        1000
     );
 }
 
-/// REGRESSION (LOW #18, proxy engine token-sum): the buffered token-fee sum must use
+/// The buffered token-fee sum must use
 /// `saturating_add` over the UPSTREAM-CONTROLLED `input_tokens`/`output_tokens`. A hostile/buggy
 /// upstream that reports counts summing past `u64::MAX` would, under the old unchecked `+`, PANIC
 /// on the request path in debug (and silently WRAP in release). With `saturating_add` the sum
 /// clamps to `u64::MAX` and `record_ir_usage` returns without panicking.
 #[test]
 fn test_nonstream_token_sum_saturates_no_panic_on_overflow() {
-    use crate::governance::{GovState, NewKeySpec, SqliteStore};
+    use crate::governance::{GovState, MemoryStore, NewKeySpec};
 
-    let store = Arc::new(SqliteStore::open_in_memory().expect("in-memory store"));
-    // 0c/request, 0c/1k tokens → the gov spend math can't overflow, isolating the SUM under test.
-    let gov = Arc::new(GovState::new(store, 0, 0, None).expect("gov"));
+    let store = Arc::new(MemoryStore::new());
+    // No fee, no rate card → the derived-spend math can't overflow, isolating the SUM under test.
+    let gov = Arc::new(GovState::new(store, None).expect("gov"));
+    let cost = Arc::new(crate::cost::CostModel::flat(0));
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
                 name: "k".to_string(),
-                allowed_pools: vec![],
-                max_budget_cents: Some(1_000_000),
-                budget_period: "daily".to_string(),
-                rpm_limit: None,
-                tpm_limit: None,
+                allowed_pools: None,
+                group: None,
+                labels: Default::default(),
             },
             1_700_000_000,
         )
         .expect("create key");
     let sink = Some(UsageSink {
         gov: gov.clone(),
-        key_id: key.id.clone(),
-        period: key.budget_period.clone(),
+        cost: cost.clone(),
+        key: std::sync::Arc::new(key.clone()),
+        pool: std::sync::Arc::from(""),
         charged_at: 1_700_000_000,
+        admit: None,
     });
+
+    // The accrual path only runs with a serving lane (no lane = nothing to attribute), so build
+    // one through the TestApp lane machinery; the upstream is never contacted.
+    let lane_app = crate::test_support::TestApp::new()
+        .lane(
+            crate::test_support::LaneSpec::new(
+                "m",
+                crate::proto::Protocol::openai(),
+                "http://127.0.0.1:1",
+            )
+            .provider("zai"),
+        )
+        .build();
+    let lane = lane_app.lanes[0].clone();
 
     // input_tokens + output_tokens overflows u64: u64::MAX + 5 would panic under an unchecked `+`.
     let usage = IrUsage {
@@ -316,7 +372,7 @@ fn test_nonstream_token_sum_saturates_no_panic_on_overflow() {
         cache_read_input_tokens: None,
     };
     // Must NOT panic (the assertion is reaching this line at all under a debug-overflow build).
-    record_ir_usage(&usage, &sink, None);
+    record_ir_usage(&usage, &sink, Some(&lane));
 }
 
 #[test]
@@ -326,4 +382,119 @@ fn test_stable_hash_is_deterministic() {
     // FNV1A_OFFSET_BASIS/PRIME swap is caught directly, not merely via the indirect routing test.
     assert_eq!(stable_hash("session-abc"), 0xe909_c864_ab05_9bea);
     assert_ne!(stable_hash("session-abc"), stable_hash("session-xyz"));
+}
+
+/// THE LEDGER'S MODEL KEY IS THE RATE CARD'S MODEL KEY.
+///
+/// The rate card is keyed by the CONFIG model name — `validate_cost_model` enforces it in both
+/// directions (every `models:` key needs a card entry; a card entry naming a non-`models:` key is a
+/// boot error). But all three accrual sites passed `lane.wire_model()`, which returns
+/// `upstream_model` whenever the lane sets one. For every ALIASED lane — the documented flagship
+/// multi-provider configuration — `rate_for()` therefore looked up a string that CANNOT be in the
+/// card, silently took its `None` arm, and derived spend of ZERO: a `budget:`-capped group was
+/// effectively uncapped on token cost, `busbar_bucket_spend_cents` read 0 with full headroom, and
+/// the same traffic priced CORRECTLY on `/api/v1/admin/usage`, which meters under `lane.model`.
+///
+/// The lane below is exactly that shape: config name `gpt-4o`, `upstream_model: glm-4.6`. The
+/// assertion is that spend is derived, and derived at the card's rate.
+#[test]
+fn ledger_prices_an_aliased_lane_at_the_rate_card() {
+    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+
+    let store = Arc::new(MemoryStore::new());
+    let gov = Arc::new(GovState::new(store, None).expect("gov"));
+    // A rate card keyed by the CONFIG model name — the only key space it is allowed to use.
+    // 1000 micro-units per token on input and output (a micro-unit is 1e-4 cents), nothing else.
+    let card = std::collections::BTreeMap::from([(
+        "gpt-4o".to_string(),
+        crate::config::RateEntryCfg {
+            input_utok: 1000.0,
+            output_utok: 1000.0,
+            cache_read_utok: 0.0,
+            cache_write_utok: 0.0,
+        },
+    )]);
+    let groups = std::collections::BTreeMap::from([(
+        "g".to_string(),
+        crate::config::GroupCfg {
+            parent: None,
+            enabled: true,
+            limits: vec![crate::config::groups::LimitCfg {
+                metric: crate::config::groups::LimitMetric::Budget,
+                amount: 1_000_000_000,
+                per: Some(crate::config::groups::LimitWindow::Day),
+                scope: None,
+                on_exhaust: None,
+                downgrade_to: None,
+            }],
+            ..Default::default()
+        },
+    )]);
+    let cost = Arc::new(crate::cost::CostModel::resolve_parts(
+        Some(&card),
+        0,
+        &groups,
+    ));
+    let (key, _secret) = gov
+        .create_key(
+            NewKeySpec {
+                name: "k".to_string(),
+                allowed_pools: None,
+                group: Some("g".to_string()),
+                labels: Default::default(),
+            },
+            1_700_000_000,
+        )
+        .expect("create key");
+    let charged_at: u64 = 1_700_000_000;
+    let sink = Some(UsageSink {
+        gov: gov.clone(),
+        cost: cost.clone(),
+        key: std::sync::Arc::new(key.clone()),
+        pool: std::sync::Arc::from(""),
+        charged_at,
+        admit: None,
+    });
+
+    // THE ALIASED LANE: config name `gpt-4o` (what the card prices), wire name `glm-4.6` (what the
+    // provider is sent, and what the ledger used to key on).
+    let lane_app = crate::test_support::TestApp::new()
+        .lane(
+            crate::test_support::LaneSpec::new(
+                "gpt-4o",
+                crate::proto::Protocol::openai(),
+                "http://127.0.0.1:1",
+            )
+            .provider("zai")
+            .upstream_model("glm-4.6"),
+        )
+        .build();
+    let lane = lane_app.lanes[0].clone();
+    assert_ne!(
+        lane.wire_model(),
+        lane.model,
+        "test precondition: the lane must be ALIASED, or the bug is masked"
+    );
+
+    record_ir_usage(
+        &IrUsage {
+            input_tokens: 600,
+            output_tokens: 400,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: None,
+        },
+        &sink,
+        Some(&lane),
+    );
+
+    let derived = gov
+        .derived_bucket_usage(&cost, "group:g@day", "day", true, charged_at)
+        .expect("usage read");
+    assert_eq!(derived.tokens, 1000, "tokens are ledgered either way");
+    // 1000 tokens x 1000 micro-units/token = 1_000_000 micro-units = 100 cents.
+    assert_eq!(
+        derived.spend_cents, 100,
+        "an aliased lane's tokens must price against the rate card — deriving 0 here is a \
+         budget-capped group being uncapped on token cost"
+    );
 }

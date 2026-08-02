@@ -59,6 +59,68 @@ const STOP_REFUSAL: &str = "refusal";
 /// Anthropic content block `type` values not covered by the delta sub-type constants above.
 const BLOCK_TYPE_REDACTED_THINKING: &str = "redacted_thinking";
 
+/// `extra` key parking the RAW native content blocks the IR cannot model (e.g. `document`), by
+/// their position in `req.messages` (system-role messages excluded — they never reach this array
+/// on either side, see `read_request`/`write_request`). Each entry is `{"m": <message index>,
+/// "i": <block index>, "block": <raw block JSON>}`. `read_block`'s degrade-to-empty-Text arm holds
+/// the block's SHAPE in the turn (so message/tool-call ordering survives even cross-protocol,
+/// where this sentinel is cleared along with the rest of `extra`); this sentinel additionally lets
+/// an Anthropic-to-Anthropic hop that goes through the IR (not a byte-verbatim same-protocol
+/// passthrough) splice the ORIGINAL block back in place of the placeholder, so the block survives
+/// its own protocol's round-trip instead of being destroyed.
+const ANTHROPIC_UNMODELED_BLOCKS_SENTINEL: &str = "__busbar_anthropic_unmodeled_blocks";
+
+/// The native Anthropic content-block `type` values [`read_block`] models. Anything else degrades
+/// to an empty Text placeholder there; used here to find which raw blocks need parking under
+/// [`ANTHROPIC_UNMODELED_BLOCKS_SENTINEL`] without duplicating `read_block`'s parse logic.
+fn is_modeled_anthropic_block_type(t: &str) -> bool {
+    matches!(
+        t,
+        "text"
+            | "thinking"
+            | STOP_TOOL_USE
+            | "tool_result"
+            | "image"
+            | BLOCK_TYPE_REDACTED_THINKING
+    )
+}
+
+/// Scan a message's RAW `content` array (as read from the wire, BEFORE `read_block` parses it) for
+/// unmodeled blocks, pushing `{"m","i","block"}` sentinel entries for each. `read_block` parses
+/// every raw block 1:1 with no filtering, so a raw-array index always matches the parsed
+/// `IrMessage.content` index at the same position — no separate index bookkeeping needed.
+fn stash_unmodeled_blocks(
+    msg_val: &serde_json::Value,
+    m: usize,
+    sink: &mut Vec<serde_json::Value>,
+) {
+    let Some(content_arr) = msg_val.get("content").and_then(|c| c.as_array()) else {
+        return;
+    };
+    for (i, block_val) in content_arr.iter().enumerate() {
+        let block_type = block_val.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        if !is_modeled_anthropic_block_type(block_type) {
+            sink.push(serde_json::json!({ "m": m, "i": i, "block": block_val }));
+        }
+    }
+}
+
+/// Look up a stashed raw block for position `(m, i)` in the sentinel array (as read back out of
+/// `req.extra`), for [`write_message`] to splice in place of the empty-Text placeholder.
+fn find_stashed_block(
+    sentinel: &[serde_json::Value],
+    m: usize,
+    i: usize,
+) -> Option<serde_json::Value> {
+    sentinel.iter().find_map(|entry| {
+        let em = entry.get("m")?.as_u64()? as usize;
+        let ei = entry.get("i")?.as_u64()? as usize;
+        (em == m && ei == i)
+            .then(|| entry.get("block").cloned())
+            .flatten()
+    })
+}
+
 /// Anthropic error `type` strings used in error envelopes and in-stream error events. Values
 /// shared with the forward/OpenAI-family vocabulary alias their canonical home in
 /// `openai_family.rs`; only `timeout_error` is an Anthropic-specific spelling (the forward layer's
@@ -124,37 +186,52 @@ fn synth_request_id() -> String {
 /// counter at all: a 24-char base62 token is ~142 bits of entropy with a ~2^71 birthday bound, so
 /// pure CSPRNG output is collision-free in practice and every position stays fully random, exactly
 /// like a native Anthropic id. Never panics on the request path.
-fn synth_id_with_prefix(prefix: &str) -> String {
-    // Fill the entire token with CSPRNG bytes mapped into base62 via REJECTION SAMPLING. A bare
-    // `byte % 62` is biased: 256 = 4*62 + 8, so the residues 0..7 are drawn from 5 source bytes and
-    // 8..61 from only 4 — over-representing the low characters by ~25%, a statistical fingerprint
-    // that distinguishes a synthesized id from a native (uniform) one. We therefore reject any byte
-    // >= 248 (the largest multiple of 62 that fits in a u8) and consume only the in-range bytes,
-    // mirroring `openai_chat::synth_completion_id` (the other rejection-sampling base62 synth; the sibling
-    // `synth_anthropic_request_id` reaches a uniform distribution differently, via u128
-    // division). On an entropy failure we leave the remaining '0' fill rather than panic; no counter.
-    // Same ordering-independent reduction cutoff as every other base62 synth (4 * 62 = 248); only
-    // this module's ALPHABET *ordering* (uppercase-first) is intentionally local.
+/// Fill `out` with uniformly-distributed base62 characters drawn from `alphabet`, via REJECTION
+/// SAMPLING. A bare `byte % 62` is biased: 256 = 4*62 + 8, so the residues 0..7 are drawn from 5
+/// source bytes and 8..61 from only 4 — over-representing the low characters by ~25%, a
+/// statistical fingerprint that distinguishes a synthesized id from a native (uniform) one. We
+/// therefore reject any byte >= 248 (the largest multiple of 62 that fits in a u8) and consume
+/// only the in-range bytes — the ONE bias-elimination scheme this module uses, shared by both
+/// `synth_id_with_prefix` and `synth_anthropic_request_id` (mirrors
+/// `openai_chat::synth_completion_id`, the other rejection-sampling base62 synth). Returns `false`
+/// on an entropy failure — callers decide what to do with the partially-filled buffer; `out` is
+/// left with whatever prefix was already written plus its initial contents for the rest.
+fn fill_base62(out: &mut [u8], alphabet: &[u8; 62]) -> bool {
     const BASE62_REJECT_FLOOR: u8 = crate::proto::BASE62_REJECT_THRESHOLD;
-    let mut token = [b'0'; SYNTH_ID_TOKEN_LEN];
+    // Fixed stack buffer, no heap allocation on this hot path — both callers' tokens (24 chars)
+    // fit comfortably; a batch this size draws `len` fresh bytes per retry round, same as before.
+    debug_assert!(
+        out.len() <= 32,
+        "fill_base62 batch buffer is sized for <=32 chars"
+    );
+    let len = out.len();
     let mut filled = 0usize;
-    'outer: while filled < SYNTH_ID_TOKEN_LEN {
-        let mut batch = [0u8; SYNTH_ID_TOKEN_LEN];
-        if getrandom::fill(&mut batch).is_err() {
-            // Near-impossible entropy failure: keep the remaining '0' fill rather than panic.
-            break 'outer;
+    'outer: while filled < len {
+        let mut batch = [0u8; 32];
+        let batch = &mut batch[..len];
+        if getrandom::fill(batch).is_err() {
+            return false;
         }
         for &byte in batch.iter() {
             if byte >= BASE62_REJECT_FLOOR {
                 continue; // biased residue — discard to keep the distribution uniform
             }
-            token[filled] = ANTHROPIC_NATIVE_ALPHABET[(byte % 62) as usize];
+            out[filled] = alphabet[(byte % 62) as usize];
             filled += 1;
-            if filled == SYNTH_ID_TOKEN_LEN {
+            if filled == len {
                 break 'outer;
             }
         }
     }
+    true
+}
+
+fn synth_id_with_prefix(prefix: &str) -> String {
+    // On an entropy failure we leave the remaining '0' fill rather than panic; no counter. Same
+    // ordering-independent reduction cutoff as every other base62 synth (4 * 62 = 248); only this
+    // module's ALPHABET *ordering* (uppercase-first) is intentionally local.
+    let mut token = [b'0'; SYNTH_ID_TOKEN_LEN];
+    fill_base62(&mut token, ANTHROPIC_NATIVE_ALPHABET);
 
     // `token` is ASCII base62 by construction, hence always valid UTF-8; the fallback only guards
     // against an impossible non-ASCII byte and keeps the path panic-free.
@@ -175,24 +252,16 @@ fn synth_id_with_prefix(prefix: &str) -> String {
 /// response-header length is not a fingerprint tell (a 22-char value would be 8 chars short of
 /// native). Returns `None` (caller OMITS the header) only if entropy is unavailable — on the request
 /// path, must never panic. Uses the SHARED `crate::proto::BASE62_ALPHABET` (lowercase-first ordering)
-/// deliberately — NOT this module's local uppercase-first `ANTHROPIC_NATIVE_ALPHABET` — preserving the
-/// exact distribution it had when it lived in `proto::mod`.
+/// deliberately — NOT this module's local uppercase-first `ANTHROPIC_NATIVE_ALPHABET`. The alphabet
+/// ORDERING differs from the sibling synth, but a uniform draw over a permuted alphabet is uniform
+/// over the same character set, so that difference is irrelevant to the distribution.
 pub(crate) fn synth_anthropic_request_id() -> Option<String> {
-    const ALPHABET: &[u8; 62] = crate::proto::BASE62_ALPHABET;
-    // 24 base62 chars (≈143 bits) of CSPRNG entropy. A u128 holds at most 12 base62 digits worth of
-    // headroom safely (62^12 < 2^128), so build the 24-char token from two independent 9-byte (72-bit)
-    // draws, each emitting 12 base62 digits — collision-free in practice and matching the native
-    // `req_01` + 24 = 30-char shape.
+    // 24 base62 chars via the SAME rejection-sampling fill `synth_id_with_prefix` uses — the
+    // `Option` contract (omit the header on entropy failure) differs from that sibling's
+    // '0'-fill-on-failure contract, so this stays a separate call rather than delegating to it.
     let mut token = [0u8; 24];
-    for half in 0..2 {
-        let mut buf = [0u8; 9];
-        getrandom::fill(&mut buf).ok()?;
-        // 72 bits → 12 base62 digits (62^12 > 2^71, so 9 bytes fit in 12 digits).
-        let mut n = buf.iter().fold(0u128, |acc, &b| (acc << 8) | b as u128);
-        for slot in token[half * 12..half * 12 + 12].iter_mut().rev() {
-            *slot = ALPHABET[(n % 62) as usize];
-            n /= 62;
-        }
+    if !fill_base62(&mut token, crate::proto::BASE62_ALPHABET) {
+        return None;
     }
     // token is ASCII base62, always valid UTF-8.
     let token = std::str::from_utf8(&token).unwrap_or("000000000000000000000000");
@@ -347,6 +416,8 @@ fn read_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock, IrErr
                 name,
                 input,
                 cache_control,
+                // Anthropic has no wire concept of a Gemini thoughtSignature.
+                thought_signature: None,
             })
         }
         "tool_result" => {
@@ -536,6 +607,7 @@ fn read_tool(tool_val: &serde_json::Value) -> Result<crate::ir::IrTool, IrError>
         description,
         input_schema,
         cache_control,
+        hosted: None,
     })
 }
 
@@ -855,6 +927,10 @@ fn write_block(block: &crate::ir::IrBlock) -> serde_json::Value {
             name,
             input,
             cache_control,
+            // Explicit field list here is intentional documentation of every IrBlock::ToolUse
+            // field this writer considered — Anthropic has no wire concept of a Gemini
+            // thoughtSignature, so this one is deliberately unused.
+            thought_signature: _,
         } => {
             let mut obj = serde_json::Map::new();
             obj.insert("type".to_string(), serde_json::json!(STOP_TOOL_USE));
@@ -945,7 +1021,11 @@ fn write_block(block: &crate::ir::IrBlock) -> serde_json::Value {
     }
 }
 
-fn write_message(msg: &crate::ir::IrMessage) -> serde_json::Value {
+fn write_message(
+    msg: &crate::ir::IrMessage,
+    m: usize,
+    unmodeled_sentinel: &[serde_json::Value],
+) -> serde_json::Value {
     let role_str = match msg.role {
         crate::ir::IrRole::User => "user",
         crate::ir::IrRole::Assistant => "assistant",
@@ -961,34 +1041,52 @@ fn write_message(msg: &crate::ir::IrMessage) -> serde_json::Value {
     };
     // REQUEST-side filter (write_message feeds write_request only; write_response/_event call
     // write_block directly, so response reasoning still surfaces). Anthropic's Messages API rejects
-    // an assistant `thinking` block that lacks a `signature` with a 400 — a signature is mandatory
-    // on the request path. A cross-protocol IR may carry a Thinking block whose signature is None
-    // (e.g. reasoning translated from a provider that emits no signature), so drop those blocks here
-    // rather than forward an egress that the upstream will 400. Other block types pass through.
+    // an assistant PLAINTEXT `thinking` block that lacks a `signature` with a 400 — a signature is
+    // mandatory on the request path for a `thinking` block. A cross-protocol IR may carry such a
+    // block whose signature is None (e.g. reasoning translated from a provider that emits no
+    // signature), so drop those rather than forward an egress that the upstream will 400.
+    //
+    // A REDACTED thinking block (`redacted: true`) is a DIFFERENT wire shape: it re-emits as a
+    // native `redacted_thinking` block carrying opaque `data` bytes and NO `signature` — Anthropic
+    // accepts it without one (the signature requirement is specific to plaintext `thinking`). So the
+    // `redacted: false` guard below is load-bearing: WITHOUT it, every redacted block (which always
+    // has `signature: None`) is silently dropped here before `write_block` can re-emit it, losing
+    // the encrypted reasoning that lets a multi-turn extended-thinking conversation replay. Only
+    // drop UNSIGNED PLAINTEXT thinking. Other block types pass through.
     let mut dropped_unsigned_thinking = 0usize;
     let mut dropped_file_id_image = 0usize;
-    let blocks: Vec<&crate::ir::IrBlock> = msg
+    // Original-index `enumerate()` BEFORE the drop filter — `find_stashed_block` keys on the
+    // position `read_request` recorded, which is the RAW pre-filter content index; collapsing
+    // dropped blocks out of the index space here would misalign every stash lookup after the
+    // first drop.
+    let blocks: Vec<serde_json::Value> = msg
         .content
         .iter()
-        .filter(|block| {
+        .enumerate()
+        .filter_map(|(i, block)| {
             if let crate::ir::IrBlock::Thinking {
-                signature: None, ..
+                signature: None,
+                redacted: false,
+                ..
             } = block
             {
                 dropped_unsigned_thinking += 1;
-                false
-            } else if let crate::ir::IrBlock::Image { source, .. } = block {
+                return None;
+            }
+            if let crate::ir::IrBlock::Image { source, .. } = block {
                 // A Responses `file_id` / Bedrock `s3Location` image is an unresolvable cross-vendor
                 // reference with no Anthropic projection. SKIP it rather than emit a corrupt block.
                 if super::is_unresolvable_image_ref(source) {
                     dropped_file_id_image += 1;
-                    false
-                } else {
-                    true
+                    return None;
                 }
-            } else {
-                true
             }
+            // A parked unmodeled block (e.g. `document`) at this exact position: splice the
+            // ORIGINAL raw block back rather than emitting `write_block`'s empty-Text placeholder.
+            if let Some(raw) = find_stashed_block(unmodeled_sentinel, m, i) {
+                return Some(raw);
+            }
+            Some(write_block(block))
         })
         .collect();
     if dropped_unsigned_thinking > 0 {
@@ -1013,8 +1111,7 @@ fn write_message(msg: &crate::ir::IrMessage) -> serde_json::Value {
     // is a well-formed message with zero content blocks that the API accepts. This matches the
     // empty-array skeleton `write_response_event` already emits for `message_start.message.content`
     // (a message with no blocks yet). The non-empty branch is unchanged: a populated array of blocks.
-    let content_val: serde_json::Value =
-        serde_json::Value::Array(blocks.into_iter().map(write_block).collect());
+    let content_val: serde_json::Value = serde_json::Value::Array(blocks);
     serde_json::json!({ "role": role_str, "content": content_val })
 }
 

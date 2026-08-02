@@ -82,7 +82,7 @@ fn test_find_frame_terminator_crlf_frame_split_is_clean() {
 
 /// The default `ProtocolWriter::write_error` (the only impl in this wave — no per-protocol
 /// overrides yet) must produce valid JSON carrying the message and the `kind` as `error.type`,
-/// so the §8.1 / Unit I plumbing exists before per-protocol envelopes land. (Content-type is a
+/// so the / Unit I plumbing exists before per-protocol envelopes land. (Content-type is a
 /// caller concern; the doc contract says `application/json` for all protocols.)
 #[test]
 fn test_write_error_default_envelope_is_valid_json() {
@@ -169,6 +169,43 @@ fn test_synth_anthropic_request_id_is_well_formed() {
     // Distinct across calls (CSPRNG-backed) — no fixed/predictable id.
     let id2 = synth_anthropic_request_id().expect("entropy available in test");
     assert_ne!(id, id2, "successive ids must differ");
+}
+
+/// MEDIUM/correctness (synth_anthropic_request_id): the two 9-byte (72-bit) draws folded to 12
+/// base62 digits via repeated `% 62` / `/= 62` are NOT uniform — `62^12 ≈ 3.226e21 < 2^72 ≈
+/// 4.722e21`, so the map cannot be injective. The bias concentrates in the MOST-SIGNIFICANT digit
+/// of each half (`token[0]` and `token[12]`, since the fill loop writes `.rev()`): after eleven
+/// divisions the residual is `floor(n / 62^11) in [0, 90]`, so alphabet indices 0..28 get TWO
+/// preimages each and 29..61 get ONE, giving `P(token[msd] in alphabet[0..29]) = 58/91 ≈ 63.7%`
+/// against a uniform `29/62 ≈ 46.8%`. This test asserts positions 0 AND 12 SPECIFICALLY — a test
+/// over all 24 positions would dilute the signal to 2/24 of the bias and could plausibly pass on
+/// the broken code; do not "simplify" it to scan every position.
+#[test]
+fn synth_anthropic_request_id_msd_is_uniform() {
+    const N: usize = 4000;
+    let mut low = 0usize; // token[msd] in alphabet[0..29]
+    let mut total = 0usize;
+    for _ in 0..N {
+        let id = synth_anthropic_request_id().expect("entropy available in test");
+        let token = &id["req_01".len()..];
+        let bytes = token.as_bytes();
+        for &msd in &[bytes[0], bytes[12]] {
+            total += 1;
+            if crate::proto::BASE62_ALPHABET[..29].contains(&msd) {
+                low += 1;
+            }
+        }
+    }
+    let frac = low as f64 / total as f64;
+    // Uniform expectation is 29/62 ≈ 0.468; the pre-fix bias measures ≈0.637, about 30 standard
+    // errors outside a ±4% band at n=8000 (σ ≈ 0.56%) — wide enough to never be flaky, narrow
+    // enough that the ~17-point defect cannot slip through.
+    assert!(
+        (0.468 - 0.04..=0.468 + 0.04).contains(&frac),
+        "token[0]/token[12] must be uniform over the alphabet's first 29 chars \
+         (~46.8% +/- 4%); got {:.4} over {total} draws — non-uniform MSD is a fingerprintable tell",
+        frac
+    );
 }
 
 /// MEDIUM/conformance (GeminiJsonArrayFramer::finish_with_error): the truncation error element must
@@ -521,7 +558,7 @@ fn test_cache_control_preserved() {
     }
 }
 
-/// REGRESSION (found live, Claude Code → Nova on Bedrock): an Anthropic `cache_control`
+/// An Anthropic `cache_control`
 /// breakpoint translated to a Bedrock `cachePoint` marker, which Amazon Nova hard-rejects
 /// (400 "extraneous key [cachePoint] is not permitted"). Bedrock's marker is MODEL-gated, so
 /// the seam must clear the cache ask unless the lane asserts `prompt_caching` — mirroring the
@@ -545,6 +582,7 @@ fn cache_breakpoints_gated_by_lane_capability_on_bedrock() {
     });
 
     let prep = |allowed: bool| crate::ir::variant::EgressPrep {
+        thought_signature_fill: false,
         ingress_protocol: "anthropic",
         egress_requires_max_tokens: false,
         lane_default_max_tokens: None,
@@ -552,6 +590,7 @@ fn cache_breakpoints_gated_by_lane_capability_on_bedrock() {
         reasoning_allowed: false,
         reasoning_budgets: [1024, 4096, 8192, 16384],
         prompt_caching_allowed: allowed,
+        cache_control_cap: None,
     };
     let contains_cache_point =
         |wire: &serde_json::Value| serde_json::to_string(wire).unwrap().contains("cachePoint");
@@ -802,13 +841,17 @@ fn test_stream_roundtrip_identity() {
     // (the reader dispatches on the SSE `event:` header, not `data.type`, so the field is dropped
     // on read and re-synthesized by the writer — exact-equality holds with `type` present in the
     // fixture).
+    // Native Anthropic seeds `input:{}` on a tool_use `content_block_start` so an SDK accumulator
+    // initializes the partial-json buffer before the first `input_json_delta`; the writer emits that
+    // seed, so the fixture must carry it for exact-equality round-trip.
     let data = serde_json::json!({
         "type": "content_block_start",
         "index": 0,
         "content_block": {
             "type": "tool_use",
             "id": "tool_123",
-            "name": "get_weather"
+            "name": "get_weather",
+            "input": {}
         }
     });
     let ev = reader.read_response_event("content_block_start", &data);
@@ -1270,7 +1313,7 @@ fn test_protocol_clone_works() {
     let _cloned_writer = openai_writer.clone();
 }
 
-/// audit H4: Cohere v2 carries the assistant's pre-tool reasoning in `message.tool_plan`. It must be
+/// Cohere v2 carries the assistant's pre-tool reasoning in `message.tool_plan`. It must be
 /// read as a LEADING Text block (ahead of the tool call) or it vanishes on any Cohere→X hop.
 #[test]
 fn cohere_read_response_surfaces_tool_plan_as_leading_text() {
@@ -1307,6 +1350,7 @@ fn string_args_writers_emit_raw_tool_args_verbatim() {
     let ir = crate::ir::IrResponse {
         role: crate::ir::IrRole::Assistant,
         content: vec![crate::ir::IrBlock::ToolUse {
+            thought_signature: None,
             id: "call_1".into(),
             name: "do_it".into(),
             input: serde_json::Value::String(raw.into()),
@@ -1382,6 +1426,56 @@ fn cohere_tool_ids_pass_through_verbatim_no_decode() {
     let mut remap = ToolIdRemap::default();
     assert_eq!(remap.native_for("cohere", "call_xyz"), "call_xyz");
     assert_eq!(remap.native_for("cohere", "bb161626364"), "bb161626364");
+}
+
+/// `clamp_stop`'s warning must report how many sequences were DROPPED, not the total provided —
+/// "carried 8 more than that vendor allows" overstates the excess by the cap (with 8 provided and
+/// a cap of 5, only 3 were actually dropped).
+#[test]
+fn clamp_stop_warn_reports_the_dropped_count_not_the_total() {
+    use crate::test_support::warn_capture::WarnCapture;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let stop: Vec<String> = (0..8).map(|i| format!("s{i}")).collect();
+    let cap = WarnCapture::default();
+    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    let out = tracing::subscriber::with_default(subscriber, || {
+        crate::proto::clamp_stop(&stop, 5, "OpenAI")
+    });
+
+    assert_eq!(
+        out,
+        stop[..5],
+        "clamp_stop must still truncate to the cap, unaffected by the fix"
+    );
+
+    let msgs = cap.messages();
+    assert!(
+        msgs.iter().any(|m| m.contains("dropped=3")),
+        "the warning must report the actually-dropped count: {msgs:?}"
+    );
+    assert!(
+        !msgs.iter().any(|m| m.contains("8 more")),
+        "the warning must not overstate the excess as the total minus zero: {msgs:?}"
+    );
+}
+
+/// CHARACTERIZATION (not a RED test — this passes before and after `write_sse_frame` by
+/// construction, since it is pinning byte-for-byte output rather than a behavior change). The
+/// real guard for the `reframe_sse` → `write_sse_frame` refactor (String-per-frame allocation →
+/// append-in-place) is the byte-parity golden wall
+/// (`proto/tests/translate_parity_golden_tests.rs`), which must stay green across this change.
+#[test]
+fn write_sse_frame_pins_both_framings_byte_for_byte() {
+    let data = serde_json::json!({"a": 1});
+
+    let mut out = Vec::new();
+    crate::proto::write_sse_frame(&mut out, "x", &data);
+    assert_eq!(out, b"event: x\ndata: {\"a\":1}\n\n");
+
+    let mut out = Vec::new();
+    crate::proto::write_sse_frame(&mut out, "", &data);
+    assert_eq!(out, b"data: {\"a\":1}\n\n");
 }
 
 #[cfg(test)]
@@ -1985,13 +2079,16 @@ mod ir_property_tests {
         // (matching the SSE `event:` header) that `AnthropicWriter` now emits; the reader drops it
         // (it dispatches on the header, not `data.type`) and the writer re-synthesizes it, so the
         // same-protocol round-trip stays byte-identical with `type` present in the fixture.
+        // Native Anthropic seeds `input:{}` on a tool_use `content_block_start`; the writer emits it,
+        // so the fixture carries it for the byte-identical same-protocol round-trip.
         let data = serde_json::json!({
             "type": "content_block_start",
             "index": 0,
             "content_block": {
                 "type": "tool_use",
                 "id": "call_123",
-                "name": "get_weather"
+                "name": "get_weather",
+                "input": {}
             }
         });
         let ev = reader.read_response_event("content_block_start", &data);
@@ -2427,5 +2524,120 @@ mod ir_property_tests {
                 .and_then(|m| m.as_str()),
             Some("boom")
         );
+    }
+
+    // Indistinguishability fix (same-proto `usage:null` tell): the byte-level top-level `usage` member
+    // remover must delete exactly the `usage` member (with the right adjacent comma) and leave every
+    // other byte intact, AND must NEVER corrupt a frame where the literal text `"usage":null` appears
+    // inside string content. These exercise the stripper directly on representative frame shapes.
+
+    // Re-parse both sides and assert JSON equality with `usage` gone, plus assert the raw output has no
+    // top-level `usage` key. Parsing both proves the splice stayed well-formed.
+    fn assert_stripped_ok(input: &str) -> String {
+        let out = crate::proto::strip_top_level_usage_member(input)
+            .unwrap_or_else(|| panic!("expected a byte-level strip for: {input}"));
+        let parsed: serde_json::Value = serde_json::from_str(&out)
+            .unwrap_or_else(|e| panic!("stripped output invalid: {e}: {out}"));
+        assert!(
+            parsed.get("usage").is_none(),
+            "top-level usage must be gone: {out}"
+        );
+        out
+    }
+
+    #[test]
+    fn strip_usage_last_key() {
+        // `usage` as the LAST member: the preceding comma must be removed too.
+        let input = r#"{"id":"x","choices":[{"delta":{"content":"hi"}}],"usage":null}"#;
+        let out = assert_stripped_ok(input);
+        assert_eq!(out, r#"{"id":"x","choices":[{"delta":{"content":"hi"}}]}"#);
+    }
+
+    #[test]
+    fn strip_usage_first_key() {
+        // `usage` as the FIRST member: the trailing comma must be removed instead.
+        let input = r#"{"usage":null,"id":"x","choices":[]}"#;
+        let out = assert_stripped_ok(input);
+        assert_eq!(out, r#"{"id":"x","choices":[]}"#);
+    }
+
+    #[test]
+    fn strip_usage_middle_key() {
+        // `usage` in the MIDDLE: exactly one adjacent comma removed, both neighbors intact.
+        let input = r#"{"id":"x","usage":null,"choices":[{"delta":{}}]}"#;
+        let out = assert_stripped_ok(input);
+        assert_eq!(out, r#"{"id":"x","choices":[{"delta":{}}]}"#);
+    }
+
+    #[test]
+    fn strip_usage_whitespace_variants() {
+        // Whitespace around the key, colon, and comma must be handled without leaving a dangling comma.
+        let input = "{ \"id\" : \"x\" , \"usage\" : null , \"model\":\"m\" }";
+        let out = assert_stripped_ok(input);
+        let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed.get("id").and_then(|v| v.as_str()), Some("x"));
+        assert_eq!(parsed.get("model").and_then(|v| v.as_str()), Some("m"));
+    }
+
+    #[test]
+    fn strip_usage_object_value() {
+        // A `usage` that is an OBJECT (real counts), not null - the whole nested object is removed.
+        let input =
+            r#"{"id":"x","choices":[{"delta":{}}],"usage":{"prompt_tokens":10,"total_tokens":25}}"#;
+        let out = assert_stripped_ok(input);
+        assert_eq!(out, r#"{"id":"x","choices":[{"delta":{}}]}"#);
+    }
+
+    #[test]
+    fn strip_usage_only_member() {
+        // `usage` as the SOLE member leaves an empty object.
+        let input = r#"{"usage":null}"#;
+        let out = assert_stripped_ok(input);
+        let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert!(parsed.as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn strip_usage_never_corrupts_string_content() {
+        // The literal text `"usage":null` appears INSIDE a message-content string. The stripper must
+        // NOT touch it: there is no top-level `usage` key, so it returns None (no byte edit).
+        let input =
+            r#"{"id":"x","choices":[{"delta":{"content":"the json \"usage\":null tell"}}]}"#;
+        assert!(
+            crate::proto::strip_top_level_usage_member(input).is_none(),
+            "must not match `usage` inside a string value"
+        );
+    }
+
+    #[test]
+    fn strip_usage_string_content_plus_real_key() {
+        // A frame that BOTH mentions `"usage":null` inside content AND carries a real top-level
+        // `usage` member: only the top-level member is removed; the string content is preserved verbatim.
+        let input = r#"{"choices":[{"delta":{"content":"see \"usage\":null here"}}],"usage":null}"#;
+        let out = assert_stripped_ok(input);
+        let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            parsed["choices"][0]["delta"]["content"].as_str(),
+            Some("see \"usage\":null here"),
+            "string content must survive the strip byte-for-byte"
+        );
+    }
+
+    #[test]
+    fn strip_usage_nested_usage_key_not_matched() {
+        // A `usage` key nested inside another object is NOT top-level - the stripper must not remove it,
+        // and with no TOP-LEVEL usage it returns None.
+        let input = r#"{"id":"x","meta":{"usage":null},"choices":[]}"#;
+        assert!(
+            crate::proto::strip_top_level_usage_member(input).is_none(),
+            "nested usage must not be treated as the top-level member"
+        );
+    }
+
+    #[test]
+    fn strip_usage_no_usage_key_returns_none() {
+        // A content chunk with no `usage` key at all - nothing to do.
+        let input = r#"{"id":"x","choices":[{"delta":{"content":"hi"}}]}"#;
+        assert!(crate::proto::strip_top_level_usage_member(input).is_none());
     }
 }

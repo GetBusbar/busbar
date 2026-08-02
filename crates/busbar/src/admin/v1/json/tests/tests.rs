@@ -20,7 +20,7 @@ async fn parts(resp: Response) -> (StatusCode, String, serde_json::Value) {
 /// shape v1 tooling parses — served as application/json.
 #[tokio::test]
 async fn err_json_uses_stable_envelope() {
-    let (status, ct, body) = parts(err_json(&AdminError::NotFound("hook".into()))).await;
+    let (status, ct, body) = parts(err_json(&AdminError::not_found("hook"))).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(ct, crate::proxy::APPLICATION_JSON);
     assert_eq!(body["error"]["code"], "not_found");
@@ -117,17 +117,40 @@ fn emit_openapi_artifact() {
 #[cfg(feature = "openapi-schema")]
 #[test]
 fn openapi_paths_annotate_required_scope() {
+    // Re-derives `required_scope`'s decision INDEPENDENTLY (not by calling it) so a change to the
+    // production matrix moves only the annotation side, not this expectation — `required_scope` is
+    // the single producer that stamps BOTH the OpenAPI annotation (`handlers.rs`'s stamping loop)
+    // and enforces the auth middleware, so comparing the annotation against a call to that same
+    // function is a tautology: editing the matrix moves both sides together and can never fail.
+    fn expected_scope(method: &str, path: &str) -> &'static str {
+        use crate::admin::v1::contract::{
+            ADMIN_PREFIX, PATH_CONFIG_VALIDATE, PATH_HOOKS, PATH_KEYS,
+        };
+        if method == "get" || method == "head" {
+            return "read-only";
+        }
+        let is_mutation = matches!(method, "post" | "put" | "patch" | "delete");
+        let rel = path.strip_prefix(ADMIN_PREFIX).unwrap_or(path);
+        if rel == PATH_CONFIG_VALIDATE {
+            return "read-only";
+        }
+        if is_mutation && (rel == PATH_HOOKS || rel.starts_with("/hooks/")) {
+            return "hooks-register";
+        }
+        if method == "post" && rel == PATH_KEYS {
+            return "mint";
+        }
+        "full"
+    }
+
     let doc = openapi_doc();
     let paths = doc["paths"].as_object().expect("paths object");
     assert!(!paths.is_empty());
+    let mut checked = 0usize;
     for (path, methods) in paths {
         for (method, op) in methods.as_object().expect("methods") {
-            let m = match method.as_str() {
-                "get" => axum::http::Method::GET,
-                "post" => axum::http::Method::POST,
-                "put" => axum::http::Method::PUT,
-                "patch" => axum::http::Method::PATCH,
-                "delete" => axum::http::Method::DELETE,
+            match method.as_str() {
+                "get" | "post" | "put" | "patch" | "delete" => {}
                 // Path-item `x-*` specification extensions (e.g. `x-busbar-error-envelope`) are
                 // valid OpenAPI and are not operations — they carry no scope annotation.
                 ext if ext.starts_with("x-") => continue,
@@ -136,10 +159,106 @@ fn openapi_paths_annotate_required_scope() {
             let annotated = op["x-busbar-required-scope"]
                 .as_str()
                 .unwrap_or_else(|| panic!("{method} {path} missing scope annotation"));
-            let enforced = crate::admin::v1::contract::required_scope(&m, path).as_str();
-            assert_eq!(annotated, enforced, "{method} {path} annotation drifted");
+            let golden = expected_scope(method, path);
+            assert_eq!(
+                annotated, golden,
+                "{method} {path} annotation drifted from the independently-derived golden scope"
+            );
+            checked += 1;
         }
     }
+    assert!(checked > 0, "no operations were checked");
+}
+
+/// E-004 item 1 (busbar-ui/docs/ENGINE-BUGS.md): every operation carries a stable `operationId`,
+/// PascalCase METHOD+path (`GetKeysId`, `PostKeysIdRotate`, …), so third-party generators (Go/TS)
+/// get a method name that does not churn when a path is touched. Locks presence, uniqueness, and
+/// the exact naming scheme busbar-ui's own `scripts/openapi-prep.py::op_id` synthesizes — so a spec
+/// generated here and one synthesized client-side always agree.
+#[cfg(feature = "openapi-schema")]
+#[test]
+fn openapi_operations_carry_stable_operation_ids() {
+    use std::collections::HashMap;
+    let doc = openapi_doc();
+    let paths = doc["paths"].as_object().expect("paths object");
+    let mut seen: HashMap<String, (String, String)> = HashMap::new();
+    let mut checked = 0usize;
+    for (path, methods) in paths {
+        for (method, op) in methods.as_object().expect("methods") {
+            if !matches!(method.as_str(), "get" | "post" | "put" | "patch" | "delete") {
+                continue;
+            }
+            let oid = op["operationId"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{method} {path} missing operationId"));
+            assert!(!oid.is_empty(), "{method} {path} has an empty operationId");
+            if let Some((prev_method, prev_path)) =
+                seen.insert(oid.to_string(), (method.clone(), path.clone()))
+            {
+                panic!("operationId {oid} collides: {prev_method} {prev_path} vs {method} {path}");
+            }
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 55, "expected exactly 55 admin operations");
+    // Spot-check the exact naming scheme against a few representative paths.
+    assert_eq!(
+        doc["paths"]["/api/v1/admin/keys"]["get"]["operationId"],
+        "GetKeys"
+    );
+    assert_eq!(
+        doc["paths"]["/api/v1/admin/keys/{id}/rotate"]["post"]["operationId"],
+        "PostKeysIdRotate"
+    );
+    assert_eq!(
+        doc["paths"]["/api/v1/admin/plugins/{file}/schema"]["get"]["operationId"],
+        "GetPluginsFileSchema"
+    );
+    assert_eq!(
+        doc["paths"]["/api/v1/admin/admin-auth"]["put"]["operationId"],
+        "PutAdminAuth"
+    );
+}
+
+/// E-004 (busbar-ui/docs/ENGINE-BUGS.md): the document must never contain a boolean `items`
+/// sub-schema (`"items": true`/`"items": false`) — `kin-openapi` (the parser under `oapi-codegen`,
+/// which every published SDK generates through) cannot represent a JSON-Schema-2020-12 boolean
+/// sub-schema at all and aborts the parse. `HookStatusView.metrics` was the one offender
+/// (`serde_json::Value`'s blanket schemars impl renders as boolean `true`, which is fine as a bare
+/// schema but fatal nested under `items`); it now overrides to `{}` via `schema_with`. This test is
+/// a structural sweep, not a one-field regression check, so any FUTURE `Vec<serde_json::Value>` (or
+/// equivalent) added anywhere in the doc is caught the same way. `additionalProperties: true/false`
+/// is a different, non-fatal position and is deliberately not checked here.
+#[cfg(feature = "openapi-schema")]
+#[test]
+fn openapi_never_emits_a_boolean_items_subschema() {
+    fn walk(v: &serde_json::Value, path: &str, offenders: &mut Vec<String>) {
+        match v {
+            serde_json::Value::Object(map) => {
+                if let Some(items) = map.get("items") {
+                    if items.is_boolean() {
+                        offenders.push(format!("{path}/items = {items}"));
+                    }
+                }
+                for (k, vv) in map {
+                    walk(vv, &format!("{path}/{k}"), offenders);
+                }
+            }
+            serde_json::Value::Array(arr) => {
+                for (i, vv) in arr.iter().enumerate() {
+                    walk(vv, &format!("{path}[{i}]"), offenders);
+                }
+            }
+            _ => {}
+        }
+    }
+    let doc = openapi_doc();
+    let mut offenders = Vec::new();
+    walk(&doc, "", &mut offenders);
+    assert!(
+        offenders.is_empty(),
+        "boolean `items` sub-schema(s) found — fatal to kin-openapi/oapi-codegen: {offenders:?}"
+    );
 }
 
 /// CONTRACT LOCK: the openapi Error-schema `code` enum must EXACTLY match the frozen `AdminError`
@@ -159,7 +278,7 @@ fn openapi_error_enum_matches_admin_error_codes() {
         .collect();
     // The exhaustive set of AdminError codes — kept in lock-step with `AdminError::code`.
     let actual_codes: BTreeSet<String> = [
-        AdminError::NotFound(String::new()),
+        AdminError::not_found(""),
         AdminError::Unauthorized,
         AdminError::Forbidden {
             needed: crate::admin::v1::contract::Scope::Full,
@@ -180,7 +299,7 @@ fn openapi_error_enum_matches_admin_error_codes() {
     );
 }
 
-/// REGRESSION (audit c1r12): the §6.3 escalation 403 fires on PUT `/hooks/{name}` and PATCH
+/// The escalation 403 fires on PUT `/hooks/{name}` and PATCH
 /// `/hooks/{name}/settings` (a `hooks-register` principal touching a content-seeing / global
 /// hook), exactly as it does on POST `/hooks` — so all three must DOCUMENT the 403.
 #[cfg(feature = "openapi-schema")]
@@ -196,7 +315,7 @@ fn openapi_hook_escalation_endpoints_document_403() {
     for (path, method) in cases {
         assert!(
             doc["paths"][path][method]["responses"]["403"].is_object(),
-            "{method} {path} can 403 on §6.3 escalation but its openapi omits it"
+            "{method} {path} can 403 on escalation but its openapi omits it"
         );
     }
 }
@@ -249,6 +368,24 @@ fn served_openapi_equals_committed_file() {
     let committed =
         std::fs::read_to_string(COMMITTED_OPENAPI_PATH).expect("read committed openapi");
     assert_eq!(super::OPENAPI_JSON, committed);
+}
+
+/// class-13/14 R2: `POST /restart`'s handler explicitly treats an absent body as `RestartReq::default()`
+/// (`handlers.rs`'s own doc comment on `restart()` — "Absent is the same as `{}`"), but `body_raw!`
+/// hardcodes `"required": true` on every attached request body, so the openapi contract asserts the
+/// no-body call (the common one — an operator with a supervisor never needs `confirm`) is invalid. A
+/// generated client honouring `required: true` would refuse to emit the call the server supports.
+#[cfg(feature = "openapi-schema")]
+#[test]
+fn restart_request_body_is_documented_optional() {
+    let doc = openapi_doc();
+    let required = &doc["paths"]["/api/v1/admin/restart"]["post"]["requestBody"]["required"];
+    assert_eq!(
+        required.as_bool(),
+        Some(false),
+        "POST /restart's body must be documented optional, matching the handler's \
+         absent-body-is-default() behavior; got: {required:?}"
+    );
 }
 
 /// COVERAGE LOCK: 100% of operations carry a typed success-response BODY schema. Every operation
@@ -315,4 +452,257 @@ fn openapi_every_operation_has_a_typed_response_schema() {
         with_body >= 28,
         "too few operations with a response body: {with_body}/{op_count}"
     );
+}
+
+/// EXHAUSTIVENESS BRIDGE: every `AdminError` variant is classified — either as a
+/// per-endpoint-declarable `ErrKind` or as ALGORITHMIC (`None`, stamped on every operation). The
+/// bridge itself is `err_kind_of`'s `match`, which will not COMPILE once a new variant exists; this
+/// test locks the other half: that the declarable kinds round-trip to the same frozen code + status
+/// the taxonomy already froze, and that the algorithmic bucket is exactly the universal errors.
+///
+/// Together with the golden, this subsumes `openapi_error_enum_matches_admin_error_codes`: the code
+/// enum can no longer be right while a per-endpoint response set is wrong.
+#[test]
+fn err_kind_bridges_every_admin_error_variant() {
+    use crate::admin::v1::contract::taxonomy::{err_kind_of, ErrKind};
+    let declarable = [
+        (AdminError::not_found(""), ErrKind::NotFound),
+        (AdminError::Validation(String::new()), ErrKind::Validation),
+        (
+            AdminError::VersionConflict(String::new()),
+            ErrKind::VersionConflict,
+        ),
+        (AdminError::Conflict(String::new()), ErrKind::Conflict),
+        (
+            AdminError::Forbidden {
+                needed: crate::admin::v1::contract::Scope::Full,
+            },
+            ErrKind::Forbidden,
+        ),
+    ];
+    for (e, kind) in declarable {
+        assert_eq!(err_kind_of(&e), Some(kind), "{e:?} lost its ErrKind");
+        assert_eq!(
+            kind.code(),
+            e.code(),
+            "{kind:?} code drifted from AdminError"
+        );
+        assert_eq!(
+            kind.status(),
+            e.http_status(),
+            "{kind:?} status drifted from AdminError"
+        );
+    }
+    // The universal half: emitted for EVERY operation, so never declarable per endpoint.
+    for e in [
+        AdminError::Unauthorized,
+        AdminError::MethodNotAllowed,
+        AdminError::RateLimited,
+        AdminError::Internal,
+    ] {
+        assert_eq!(
+            err_kind_of(&e),
+            None,
+            "{e:?} is algorithmic — declaring it per endpoint would be noise AND a drift vector"
+        );
+    }
+}
+
+/// TOTALITY of the declaration itself: every entry resolves to a real 4xx with a non-empty phrase,
+/// and no operation names the same condition twice (which would render a duplicated clause). Cheap,
+/// always-on, and it makes a typo'd table entry impossible rather than merely unlikely.
+#[cfg(feature = "openapi-schema")]
+#[test]
+fn declared_errors_is_total_and_well_formed() {
+    use crate::admin::v1::contract::taxonomy::{declared_errors, declared_responses, MethodTag};
+    let doc = openapi_doc();
+    let prefix = crate::admin::v1::contract::ADMIN_PREFIX;
+    for (path, methods) in doc["paths"].as_object().expect("paths") {
+        let rel = path.strip_prefix(prefix).unwrap_or(path);
+        for (key, op) in methods.as_object().expect("methods") {
+            let Some(method) = MethodTag::from_op_key(key) else {
+                continue;
+            };
+            let declared = declared_errors(method, rel);
+            let mut seen = std::collections::BTreeSet::new();
+            for de in declared {
+                assert!(
+                    (400..500).contains(&de.kind.status()),
+                    "{key} {rel} declares {:?}, whose status {} is not a 4xx — only client-visible \
+                     failures are per-endpoint declarable",
+                    de.kind,
+                    de.kind.status()
+                );
+                assert!(
+                    !de.cond.phrase().is_empty(),
+                    "{key} {rel}: {:?} has no phrase",
+                    de.cond
+                );
+                assert!(
+                    seen.insert((de.kind, de.cond)),
+                    "{key} {rel} declares {:?}/{:?} twice",
+                    de.kind,
+                    de.cond
+                );
+            }
+            // The document IS the projection: every status the declaration produces is present in
+            // the generated operation, with exactly the projected description.
+            let responses = op["responses"].as_object().expect("responses");
+            for (status, description) in declared_responses(method, rel) {
+                assert_eq!(
+                    responses[&status]["description"].as_str(),
+                    Some(description.as_str()),
+                    "{key} {rel} {status} is not the projection of its declaration — someone \
+                     hand-wrote a response body again"
+                );
+            }
+        }
+    }
+}
+
+/// The mirror of the response drift test, for REQUEST bodies. Every mutating operation must either
+/// declare a `requestBody` whose schema resolves, or be named in `BODYLESS` — so an operation can
+/// never escape coverage by being silently omitted, which is exactly how all 26 came to document
+/// no body at all.
+#[cfg(feature = "openapi-schema")]
+#[test]
+fn openapi_every_mutating_operation_declares_a_request_body() {
+    /// Operations that take NO body. Each is a pure command: the target rides the path, and
+    /// optimistic concurrency rides `If-Match`.
+    const BODYLESS: &[(&str, &str)] = &[
+        ("post", "/api/v1/admin/config/reload"),
+        ("post", "/api/v1/admin/plugins/reload"),
+        ("post", "/api/v1/admin/signing-key/rotate"),
+        ("post", "/api/v1/admin/keys/{id}/revoke"),
+        ("post", "/api/v1/admin/keys/{id}/rotate"),
+        ("delete", "/api/v1/admin/groups/{name}"),
+        ("delete", "/api/v1/admin/hooks/{name}"),
+        ("delete", "/api/v1/admin/keys/{id}"),
+        ("delete", "/api/v1/admin/overlay/{section}"),
+        ("delete", "/api/v1/admin/plugins/{file}"),
+    ];
+
+    let doc = openapi_doc();
+    let schemas = doc["components"]["schemas"].as_object().expect("schemas");
+    let paths = doc["paths"].as_object().expect("paths");
+    let mut declared = 0usize;
+    let mut bodyless_seen = Vec::new();
+
+    for (path, methods) in paths {
+        for (method, op) in methods.as_object().expect("methods") {
+            if method.starts_with("x-") || method == "get" {
+                continue;
+            }
+            let listed = BODYLESS.contains(&(method.as_str(), path.as_str()));
+            let body = op.get("requestBody");
+            if listed {
+                assert!(
+                    body.is_none(),
+                    "{method} {path} is declared bodyless but documents a requestBody"
+                );
+                bodyless_seen.push((method.clone(), path.clone()));
+                continue;
+            }
+            let body = body.unwrap_or_else(|| {
+                panic!(
+                    "{method} {path} documents no requestBody and is not declared bodyless — a \
+                     client cannot construct a call to it"
+                )
+            });
+            let schema = &body["content"]["application/json"]["schema"];
+            // Either a component `$ref` (derived from the request struct) or an inline object
+            // schema (the config-carrying bodies, which are declared by hand on purpose).
+            if let Some(reference) = schema["$ref"].as_str() {
+                let name = reference
+                    .strip_prefix("#/components/schemas/")
+                    .unwrap_or_else(|| {
+                        panic!("{method} {path} $ref is not a component: {reference}")
+                    });
+                assert!(
+                    schemas.contains_key(name),
+                    "{method} {path} references undefined component {name}"
+                );
+            } else {
+                assert_eq!(
+                    schema["type"], "object",
+                    "{method} {path} requestBody must be a $ref or an object schema"
+                );
+            }
+            declared += 1;
+        }
+    }
+
+    assert_eq!(
+        bodyless_seen.len(),
+        BODYLESS.len(),
+        "every BODYLESS entry must name a real operation; saw {bodyless_seen:?}"
+    );
+    assert_eq!(
+        declared, 17,
+        "17 mutating operations take a body; a change here is a deliberate API change"
+    );
+}
+
+/// An operation summary must not advertise a body field the request schema forbids. The keys PATCH
+/// summary listed `allowed_pools` and `labels`, which are mint-only — `UpdateKeyReq` is
+/// `deny_unknown_fields` over `{enabled, group}`, so a client following the document got a 400.
+/// Now that the operation also publishes a schema, the two would contradict each other in one file.
+#[cfg(feature = "openapi-schema")]
+#[test]
+fn openapi_summaries_do_not_advertise_forbidden_body_fields() {
+    let doc = openapi_doc();
+    let schemas = doc["components"]["schemas"].as_object().expect("schemas");
+    let paths = doc["paths"].as_object().expect("paths");
+
+    // Every field name declared by any closed request schema. A name in this set means something
+    // specific to a client, so naming it in a summary is a promise the schema must keep.
+    let mut known: Vec<String> = Vec::new();
+    for schema in schemas.values() {
+        if schema["additionalProperties"] != serde_json::Value::Bool(false) {
+            continue;
+        }
+        if let Some(props) = schema["properties"].as_object() {
+            known.extend(props.keys().cloned());
+        }
+    }
+    known.sort();
+    known.dedup();
+
+    for (path, methods) in paths {
+        for (method, op) in methods.as_object().expect("methods") {
+            if method.starts_with("x-") {
+                continue;
+            }
+            let Some(reference) = op["requestBody"]["content"]["application/json"]["schema"]
+                ["$ref"]
+                .as_str()
+                .and_then(|r| r.strip_prefix("#/components/schemas/"))
+            else {
+                continue;
+            };
+            let schema = &schemas[reference];
+            if schema["additionalProperties"] != serde_json::Value::Bool(false) {
+                continue;
+            }
+            let declared: Vec<&str> = schema["properties"]
+                .as_object()
+                .map(|p| p.keys().map(String::as_str).collect())
+                .unwrap_or_default();
+            let summary = op["summary"].as_str().unwrap_or("");
+            for name in &known {
+                if declared.contains(&name.as_str()) {
+                    continue;
+                }
+                // Only a word-boundary hit counts, so a summary mentioning `group` does not trip on
+                // a schema that declares `groups`.
+                let named = summary
+                    .split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .any(|w| w == name);
+                assert!(
+                    !named,
+                    "{method} {path} summary advertises `{name}`, which {reference} forbids: {summary}"
+                );
+            }
+        }
+    }
 }

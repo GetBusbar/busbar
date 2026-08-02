@@ -26,9 +26,11 @@ pub(crate) const GEMINI_JSON_ARRAY_SHIM_KEY: &str = "__busbar_gemini_json_array"
 pub(crate) const GEMINI_BAD_KEY_MESSAGE: &str = "API key not valid. Please pass a valid API key.";
 
 /// Hard cap on the number of distinct tool-call block indices recorded in `state.open_tools` for a
-/// single Gemini SSE stream. The set is only drained when a `finishReason` chunk arrives (the
-/// terminal frame closes every open tool block), so a hostile or buggy upstream that streams an
-/// unbounded run of `functionCall` parts WITHOUT ever emitting `finishReason` would grow it without
+/// single Gemini SSE stream. The set is drained on either of the stream's TWO terminal paths — a
+/// `finishReason` chunk (the normal candidate-terminated close) or a mid-stream prompt-block envelope
+/// (`candidates_absent` + `promptFeedback.blockReason`, which also closes every open block before its
+/// terminal `MessageDelta`/`MessageStop`) — so a hostile or buggy upstream that streams an unbounded
+/// run of `functionCall` parts WITHOUT ever reaching either terminal path would grow it without
 /// bound — one inserted index per part — until the process is OOM-killed. No legitimate Gemini
 /// response approaches this many parallel tool calls in a single turn; past the cap we stop both
 /// recording new tool frames and emitting their BlockStart/BlockDelta events, so per-request heap
@@ -67,6 +69,11 @@ const FIELD_PROMPT_TOKEN_COUNT: &str = "promptTokenCount";
 const FIELD_CANDIDATES_TOKEN_COUNT: &str = "candidatesTokenCount";
 /// JSON key for the total token count inside `usageMetadata`.
 const FIELD_TOTAL_TOKEN_COUNT: &str = "totalTokenCount";
+/// JSON key for the THINKING (reasoning) token count inside `usageMetadata`. Reported by the
+/// 2.5-series models and, unlike OpenAI's `reasoning_tokens`, it is NOT a subset of the visible
+/// output count — Google reports it as a separate ADDITIVE term
+/// (`totalTokenCount = promptTokenCount + candidatesTokenCount + thoughtsTokenCount`).
+const FIELD_THOUGHTS_TOKEN_COUNT: &str = "thoughtsTokenCount";
 /// JSON key for the context-cache token count inside `usageMetadata`.
 const FIELD_CACHED_CONTENT_TOKEN_COUNT: &str = "cachedContentTokenCount";
 
@@ -233,20 +240,34 @@ fn synth_response_id() -> String {
 /// `tool_result`/`tool` message. With an empty id, two tool calls sharing a function name could not
 /// be told apart and `tool_result` routing broke.
 ///
-/// We derive a deterministic id from `(call_index, function_name)` via the stdlib
+/// We derive a deterministic id from `(call_index, function_name, turn_salt)` via the stdlib
 /// `std::collections::hash_map::DefaultHasher` (SipHash-1-3; no new dependency). Determinism within a
 /// run is all we need here — `DefaultHasher::new()` seeds from fixed constants (it is NOT the
-/// per-process randomized `RandomState` used by `HashMap`), so the same `(index, name)` always hashes
-/// to the same id. The id only needs to be stable WITHIN a single request so the
+/// per-process randomized `RandomState` used by `HashMap`), so the same `(index, name, salt)` always
+/// hashes to the same id. The id only needs to be stable WITHIN a single request/response so the
 /// synthesized `tool_result` (which the reader keys by function name — Gemini's only correlation
 /// handle) and the `tool_use` agree; including the call index disambiguates repeated function
-/// names. The `call_` prefix keeps it visibly synthetic and matches no native id shape we must
-/// preserve. An empty `name` still yields a non-empty id (the index disambiguates).
-fn synth_tool_call_id(call_index: usize, function_name: &str) -> String {
+/// names within one turn. The `call_` prefix keeps it visibly synthetic and matches no native id
+/// shape we must preserve. An empty `name` still yields a non-empty id (the index disambiguates).
+///
+/// `turn_salt` disambiguates ACROSS turns: `call_index` alone restarts at 0 on every independent
+/// `read_response`/`read_response_events` call (each Gemini response is exactly one turn, decoded in
+/// isolation with no visibility into any other turn), so two DIFFERENT turns in the SAME growing
+/// conversation whose first tool call shares a name (e.g. `get_weather` called again for a different
+/// city on a later turn) used to synthesize the IDENTICAL id — a real cross-protocol correlation bug
+/// (Anthropic/OpenAI require a tool_use id to be unique per message/conversation) and exactly the
+/// ambiguity this function exists to prevent. Response call sites pass the response's own
+/// `responseId` (present on essentially every real Gemini response — see `write_response`'s own
+/// synth-when-absent handling) as the salt, so different turns produce different ids. The
+/// REQUEST reader (`read_request`) passes `""`: its `call_index` is already global across the WHOLE
+/// `contents` array (every turn in the visible history, not reset per turn — see its call site), so
+/// it has no cross-turn collision to begin with and needs no additional salt.
+fn synth_tool_call_id(call_index: usize, function_name: &str, turn_salt: &str) -> String {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     call_index.hash(&mut hasher);
     function_name.hash(&mut hasher);
+    turn_salt.hash(&mut hasher);
     format!("call_{:016x}", hasher.finish())
 }
 
@@ -421,15 +442,53 @@ fn coerce_tool_args(input: &serde_json::Value) -> serde_json::Value {
     }
 }
 
-/// L2: map a Gemini candidate's `citationMetadata.citationSources[]` → neutral
+/// Convert a Gemini `startIndex`/`endIndex` BYTE offset (Google's `CitationSource` is documented
+/// measured in bytes) into a CHARACTER offset — the IR's `IrCitation::start_index`/`end_index`
+/// contract (`ir/mod.rs`). `byte_idx` is clamped to `text.len()` so an
+/// out-of-range upstream value degrades to "end of text" rather than panicking on a non-boundary
+/// slice.
+fn gemini_byte_offset_to_char(text: &str, byte_idx: i64) -> i64 {
+    let clamped = byte_idx.max(0) as usize;
+    let boundary = clamped.min(text.len());
+    // A byte index that lands mid-codepoint (a malformed/adversarial upstream value) has no valid
+    // char count at that exact point; fall back to the nearest earlier boundary rather than panic.
+    let safe_boundary = (0..=boundary)
+        .rev()
+        .find(|&b| text.is_char_boundary(b))
+        .unwrap_or(0);
+    text[..safe_boundary].chars().count() as i64
+}
+
+/// The inverse of [`gemini_byte_offset_to_char`]: a CHARACTER offset (the IR contract) back to the
+/// BYTE offset Gemini's wire format expects. `char_idx` is clamped to the text's char count.
+fn gemini_char_offset_to_byte(text: &str, char_idx: i64) -> i64 {
+    let clamped = char_idx.max(0) as usize;
+    match text.char_indices().nth(clamped) {
+        Some((byte_idx, _)) => byte_idx as i64,
+        None => text.len() as i64,
+    }
+}
+
+/// Map a Gemini candidate's `citationMetadata.citationSources[]` → neutral
 /// [`crate::ir::IrCitation`]s. A Gemini citation source is a grounding/web-search reference carrying
-/// `startIndex`/`endIndex` (character offsets into the response text), `uri`, `title`, and `license`.
-/// We project it onto the neutral fields (uri→url, indices→start/end, title→title) and stash the
-/// source object verbatim in `raw` so a same-protocol Gemini path could re-emit it. The neutral
-/// `kind` is `web_search_result_location` — a grounding source IS a URL reference, which is also the
-/// Anthropic variant a cross-protocol Anthropic egress synthesizes for it. Returns empty when the
-/// candidate has no citation metadata.
-fn read_gemini_citations(candidate: &serde_json::Value) -> Vec<crate::ir::IrCitation> {
+/// `startIndex`/`endIndex` — measured in BYTES per Google's `CitationSource` reference, converted to
+/// CHARACTERS here since the IR's contract is characters — plus `uri`, `title`,
+/// and `license`. We project it onto the neutral fields (uri→url, indices→start/end, title→title)
+/// and stash the source object verbatim in `raw` so a same-protocol Gemini path can re-emit the
+/// UNCONVERTED original (see `write_gemini_citation`'s raw short-circuit). The neutral `kind` is
+/// `web_search_result_location` — a grounding source IS a URL reference, which is also the Anthropic
+/// variant a cross-protocol Anthropic egress synthesizes for it. Returns empty when the candidate has
+/// no citation metadata.
+///
+/// `anchor_text` is the response text these offsets index into (needed for the byte->char
+/// conversion). NON-STREAM PATH ONLY: the streaming reader (`read_response_events`) has no
+/// accumulated full-response text to convert against (`GeminiStreamState` carries only an index, not
+/// text) — adding one for an offset correction would put a full-text accumulator on a hot streaming
+/// path, so the streaming arm is left with byte offsets and a comment stating why.
+fn read_gemini_citations(
+    candidate: &serde_json::Value,
+    anchor_text: Option<&str>,
+) -> Vec<crate::ir::IrCitation> {
     let sources = candidate
         .get("citationMetadata")
         .and_then(|m| m.get("citationSources"))
@@ -439,30 +498,147 @@ fn read_gemini_citations(candidate: &serde_json::Value) -> Vec<crate::ir::IrCita
     };
     sources
         .iter()
-        .map(|src| crate::ir::IrCitation {
-            kind: Some("web_search_result_location".to_string()),
-            cited_text: None,
-            title: src
-                .get("title")
-                .and_then(|v| v.as_str())
-                .map(str::to_string),
-            url: src.get("uri").and_then(|v| v.as_str()).map(str::to_string),
-            document_index: None,
-            start_index: src.get("startIndex").and_then(|v| v.as_i64()),
-            end_index: src.get("endIndex").and_then(|v| v.as_i64()),
-            encrypted_index: None,
-            raw: Some(src.clone()),
+        .map(|src| {
+            let raw_start = src.get("startIndex").and_then(|v| v.as_i64());
+            let raw_end = src.get("endIndex").and_then(|v| v.as_i64());
+            let (start_index, end_index) = match anchor_text {
+                Some(text) => (
+                    raw_start.map(|b| gemini_byte_offset_to_char(text, b)),
+                    raw_end.map(|b| gemini_byte_offset_to_char(text, b)),
+                ),
+                // Streaming path: no accumulated text to convert against. Leave as the raw wire
+                // value (bytes) rather than silently mislabeling it as characters.
+                None => (raw_start, raw_end),
+            };
+            crate::ir::IrCitation {
+                kind: Some("web_search_result_location".to_string()),
+                cited_text: None,
+                title: src
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+                url: src.get("uri").and_then(|v| v.as_str()).map(str::to_string),
+                document_index: None,
+                start_index,
+                end_index,
+                encrypted_index: None,
+                raw: Some(src.clone()),
+            }
         })
         .collect()
 }
 
-/// L2: map a neutral [`crate::ir::IrCitation`] → a Gemini `citationSources[]` entry.
+/// Attach a Gemini candidate's `citationMetadata.citationSources[]` onto the RIGHT Text block(s) of
+/// `content`, with indices re-expressed RELATIVE TO THAT BLOCK'S OWN TEXT — the non-stream (buffered)
+/// response path only, mirroring [`read_gemini_citations`]'s own NON-STREAM-PATH-ONLY scoping.
+///
+/// Google's `citationSources[].startIndex`/`endIndex` are byte offsets into the candidate's FULL
+/// output text — the concatenation of every text part in order, NOT any single part. A candidate
+/// commonly emits its answer as one `text` part, so anchoring against "the" text block used to be
+/// harmless; but a candidate CAN split its output across multiple text parts (each of which becomes
+/// its own `IrBlock::Text` — see the `content.push` loop above), and Gemini's offsets still address
+/// the FULL concatenation, not the part they happen to land in.
+///
+/// The PRE-FIX code anchored the byte->char conversion against only the FIRST Text block's own text
+/// and always attached every citation to that first block. Once a response had more than one text
+/// part, any citation whose span fell in a LATER part got silently CLAMPED to the first part's
+/// length (a garbage, off-by-however-much index) and was attached to the wrong block entirely — a
+/// citation regression invisible on the single-part case this function's predecessor was written
+/// against.
+///
+/// Fix: convert against the FULL concatenated candidate text (matching Google's actual offset
+/// contract), then locate the Text block whose span (by cumulative char length) contains the
+/// citation's start, and re-express `start_index`/`end_index` RELATIVE TO THAT BLOCK — matching the
+/// per-block-relative contract Anthropic's own `char_location` variant already uses for
+/// [`crate::ir::IrCitation`] (see its doc comment: "char index (`char_location`)" is scoped to
+/// whichever content block the citation is attached to, not the whole message). A citation whose
+/// start lands past every block's end (an out-of-range upstream value) falls back to the LAST text
+/// block, mirroring [`gemini_byte_offset_to_char`]'s own clamp-to-end fallback.
+fn attach_gemini_citations_to_text_blocks(
+    candidate: &serde_json::Value,
+    content: &mut [crate::ir::IrBlock],
+) {
+    // Every Text block's content-array index + its own text, in candidate order.
+    let text_positions: Vec<(usize, String)> = content
+        .iter()
+        .enumerate()
+        .filter_map(|(i, b)| match b {
+            crate::ir::IrBlock::Text { text, .. } => Some((i, text.clone())),
+            _ => None,
+        })
+        .collect();
+    if text_positions.is_empty() {
+        return; // No text block to anchor against (e.g. a tool-only turn) — nothing to attach.
+    }
+
+    // The candidate's FULL output text — the actual anchor Google's byte offsets are measured
+    // against — is every text part concatenated IN ORDER, with no separator (Gemini streams answer
+    // text as a single logical run split across parts; there is no implicit whitespace between them).
+    let full_text: String = text_positions.iter().map(|(_, t)| t.as_str()).collect();
+
+    let citations = read_gemini_citations(candidate, Some(&full_text));
+    if citations.is_empty() {
+        return;
+    }
+
+    // Cumulative CHAR start offset of each Text block within `full_text`, so a candidate-relative
+    // citation index can be mapped to (owning block, block-relative index).
+    let mut block_char_ranges: Vec<(usize, i64, i64)> = Vec::with_capacity(text_positions.len());
+    let mut cursor: i64 = 0;
+    for (content_idx, text) in &text_positions {
+        let len = text.chars().count() as i64;
+        block_char_ranges.push((*content_idx, cursor, cursor + len));
+        cursor += len;
+    }
+
+    for citation in citations {
+        let start = citation.start_index.unwrap_or(0);
+        let owner = block_char_ranges
+            .iter()
+            .find(|&&(_, s, e)| start >= s && start < e)
+            // An out-of-range start (upstream garbage, or a start exactly at the end of the last
+            // block) falls back to the last text block rather than being silently dropped.
+            .or_else(|| block_char_ranges.last());
+        let Some(&(content_idx, block_start, _)) = owner else {
+            continue; // Unreachable (text_positions non-empty guarantees at least one range).
+        };
+        let mut relative = citation;
+        relative.start_index = relative.start_index.map(|s| s - block_start);
+        relative.end_index = relative.end_index.map(|e| e - block_start);
+        if let Some(crate::ir::IrBlock::Text {
+            citations: block_citations,
+            ..
+        }) = content.get_mut(content_idx)
+        {
+            block_citations.push(relative);
+        }
+    }
+}
+
+/// Map a neutral [`crate::ir::IrCitation`] → a Gemini `citationSources[]` entry.
 ///
 /// SAME-PROTOCOL FIDELITY: when `raw` is present AND it is a Gemini citation source (has a `uri` or
-/// the Gemini index fields), re-emit it verbatim so a Gemini→IR→Gemini path is byte-exact. A `raw`
-/// from a FOREIGN protocol (e.g. an Anthropic citation object on an Anthropic→Gemini hop) would not
-/// be a valid Gemini source, so we ignore it and BUILD a Gemini source from the neutral fields.
-fn write_gemini_citation(c: &crate::ir::IrCitation) -> serde_json::Value {
+/// the Gemini index fields), re-emit it verbatim so a Gemini→IR→Gemini path is byte-exact — `raw`
+/// already carries the ORIGINAL byte offsets, so no conversion runs on that path. A `raw` from a
+/// FOREIGN protocol (e.g. an Anthropic citation object on an Anthropic→Gemini hop, or no `raw` at
+/// all) would not be a valid Gemini source, so we ignore it and BUILD a Gemini source from the
+/// neutral fields — which are CHARACTERS (the IR contract) and must be converted back to the BYTES
+/// Gemini's wire format expects (the inverse of `gemini_byte_offset_to_char`),
+/// against `text` (this block's own text, the same anchor the reader converted against).
+///
+/// `byte_prefix` is the BYTE length of every text part that precedes this block's text in the
+/// candidate's full output (0 for the first/only text block). The IR's `start_index`/`end_index` on
+/// `c` are relative to THIS block's own text (the per-block-relative contract
+/// `attach_gemini_citations_to_text_blocks` establishes on read), but Gemini's wire
+/// `startIndex`/`endIndex` are candidate-relative byte offsets into the FULL concatenated text — so
+/// the block-local converted byte offset must be shifted by `byte_prefix` to become candidate-wide
+/// again. Callers with no multi-part accumulation (single text block, or the streaming call site
+/// with no anchor at all) pass `0`.
+fn write_gemini_citation(
+    c: &crate::ir::IrCitation,
+    text: &str,
+    byte_prefix: i64,
+) -> serde_json::Value {
     if let Some(raw) = &c.raw {
         if raw.get("uri").is_some()
             || raw.get("startIndex").is_some()
@@ -471,12 +647,23 @@ fn write_gemini_citation(c: &crate::ir::IrCitation) -> serde_json::Value {
             return raw.clone();
         }
     }
+    // `text.is_empty()` marks "no anchor text available" (the streaming egress call site — see its
+    // caller comment): converting against an empty string would collapse every offset to 0, which
+    // is worse than the pre-fix behavior. Pass the value through UNCONVERTED there rather than
+    // corrupt it; the non-stream call site always supplies the real anchor text.
+    let convert = |v: i64| {
+        if text.is_empty() {
+            v
+        } else {
+            gemini_char_offset_to_byte(text, v) + byte_prefix
+        }
+    };
     let mut obj = serde_json::Map::new();
     if let Some(s) = c.start_index {
-        obj.insert("startIndex".to_string(), serde_json::json!(s));
+        obj.insert("startIndex".to_string(), serde_json::json!(convert(s)));
     }
     if let Some(e) = c.end_index {
-        obj.insert("endIndex".to_string(), serde_json::json!(e));
+        obj.insert("endIndex".to_string(), serde_json::json!(convert(e)));
     }
     if let Some(u) = &c.url {
         obj.insert("uri".to_string(), serde_json::json!(u));
@@ -625,7 +812,10 @@ fn write_gemini_response_format(
         serde_json::json!(MIME_APPLICATION_JSON),
     );
     if let Some(schema) = &rf.schema {
-        gen_config.insert("responseSchema".to_string(), sanitize_gemini_schema(schema));
+        gen_config.insert(
+            "responseSchema".to_string(),
+            sanitize_gemini_schema(&resolve_gemini_schema_refs(schema)),
+        );
     }
 }
 
@@ -635,13 +825,45 @@ fn write_gemini_response_format(
 /// tool/structured-output schema hard-fail the request. Stripping them (recursively) lets a
 /// cross-protocol tool/structured-output definition survive instead of 400-ing (L3 / M1). Kept as one
 /// list so both `responseSchema` and tool `parameters` sanitize identically.
+///
+/// RESEARCHED AGAINST THE LIVE API (2026-07-30), not just Google's docs, because the docs and the
+/// backend disagree on `$ref`/`$defs`:
+///
+/// - Google's structured-output docs (<https://ai.google.dev/gemini-api/docs/structured-output>) and
+///   announcement (<https://blog.google/innovation-and-ai/technology/developers-tools/gemini-api-structured-outputs/>)
+///   both say `$ref`/`$defs`/`additionalProperties` are now supported keywords. Taken at face value
+///   that would mean just deleting them from this list. It is NOT that simple:
+/// - `$ref` into a NAMED `$defs`/`definitions` entry — exactly what every Pydantic/Zod-generated
+///   nested-model tool schema produces — still 400s on the live backend today:
+///   google-gemini/gemini-cli#13326 ("can't resolve reference #/$defs/Issue from id #", closed by
+///   pointing callers at `google.genai._transformers.process_schema`, which INLINES refs before
+///   sending rather than relying on the backend to resolve them) and vercel/ai#14369 ("The referenced
+///   name #/$defs/__schema0 ... does not match to a display_name", fixed the same way: inline `$ref`
+///   against `$defs` client-side). The docs' own `$ref` example is `"$ref": "#"` — self-reference to
+///   the schema ROOT for recursive types — not the named-`$defs`-entry pattern SDKs actually emit.
+///   So `$ref`/`$defs`/`definitions` STAY on this list: [`resolve_gemini_schema_refs`] runs BEFORE
+///   this filter and inlines every named `$ref` against its `$defs`/`definitions` entry, so by the
+///   time this filter sees a schema, no resolvable `$ref`/`$defs`/`definitions` remain — this filter
+///   catches only the leftover, defensive case (an unresolvable/dangling ref, or a cyclic one this
+///   crate deliberately declines to inline; see [`inline_gemini_schema_refs`]).
+/// - `additionalProperties` genuinely IS accepted by the live backend, but ONLY as a boolean.
+///   google-gemini/gemini-cli#13694 (closed not-planned) shows the backend 400ing with "Expected
+///   boolean, received object" the moment it carries a schema — the shape Pydantic's
+///   `dict[str, Model]` / Zod's record types emit (`{"additionalProperties": {"$ref": ...}}`).
+///   So `additionalProperties` is handled specially in [`sanitize_gemini_schema`] (kept when boolean,
+///   stripped when a schema) rather than being an unconditional entry in this list.
+/// - The remaining keys (`$schema`, `$id`, `$comment`, `additionalItems`, `patternProperties`,
+///   `unevaluatedProperties`, `const`, `examples`) are NOT listed as supported anywhere in the current
+///   docs' explicit keyword table (`type`, `title`, `description`, `properties`, `required`,
+///   `additionalProperties`, `enum`, `format`, `minimum`, `maximum`, `items`, `prefixItems`,
+///   `minItems`, `maxItems`, `anyOf`, `$ref`) and the docs still warn "Not all JSON Schema features are
+///   supported" — no independent evidence surfaced that any of them are now accepted, so they stay.
 const GEMINI_SCHEMA_REJECTED_KEYS: &[&str] = &[
     "$schema",
     "$id",
     "$ref",
     "$defs",
     "definitions",
-    "additionalProperties",
     "additionalItems",
     "patternProperties",
     "unevaluatedProperties",
@@ -650,21 +872,51 @@ const GEMINI_SCHEMA_REJECTED_KEYS: &[&str] = &[
     "$comment",
 ];
 
+/// The JSON-Schema keywords whose VALUE is a map from a USER-CHOSEN NAME to a subschema, rather than
+/// a subschema itself. Inside these maps the keys are field names the caller invented, not keywords,
+/// so [`GEMINI_SCHEMA_REJECTED_KEYS`] must not be applied to them — see [`sanitize_gemini_schema`].
+/// (`$defs`, `definitions` and `patternProperties` are name-keyed too, but they are stripped whole,
+/// so they never reach the descent.)
+const GEMINI_SCHEMA_NAME_KEYED_MAPS: &[&str] = &["properties", "dependentSchemas"];
+
 /// Recursively strip the JSON-Schema keywords Gemini rejects (`GEMINI_SCHEMA_REJECTED_KEYS`) from a
 /// schema value so a cross-protocol tool / `responseSchema` definition does not hard-fail with a 400
-/// (L3). Walks objects and arrays; non-container values are returned unchanged. Returns a cleaned
-/// clone — the source IR value is left intact (only the egress wire copy is sanitized), so the
-/// stripped keys still round-trip same-protocol via the preserved raw object in `extra` where
-/// applicable.
+/// (L3). Returns a cleaned clone — the source IR value is left intact (only the egress wire copy is
+/// sanitized), so the stripped keys still round-trip same-protocol via the preserved raw object in
+/// `extra` where applicable.
+///
+/// THE FILTER IS POSITIONAL, and has to be. It used to match on the key at EVERY object level with
+/// no notion of where in the schema it was, so it also fired inside a `properties` map — where the
+/// keys are FIELD NAMES THE CALLER CHOSE, not keywords. A perfectly ordinary tool schema with a
+/// property named `examples`, `const`, `definitions` or `$ref` had that property silently deleted
+/// from `properties` while `required` — an array of strings the walker never inspects — went on
+/// naming it. Gemini then 400s the request for a `required` entry with no property (a hard failure
+/// the translation layer exists to prevent); if the field was optional it merely became invisible to
+/// the model, so the tool call came back without it. Descending into the name-keyed maps through
+/// [`sanitize_gemini_schema_names`] keeps the keyword filter where keywords actually live.
 fn sanitize_gemini_schema(schema: &serde_json::Value) -> serde_json::Value {
     match schema {
         serde_json::Value::Object(map) => {
             let mut cleaned = serde_json::Map::new();
             for (k, v) in map {
+                // `additionalProperties` is value-dependent, not a blanket reject: the live API
+                // accepts the boolean form but 400s on the schema form (see the research note on
+                // GEMINI_SCHEMA_REJECTED_KEYS), so it is handled here rather than in that list.
+                if k == "additionalProperties" {
+                    if matches!(v, serde_json::Value::Bool(_)) {
+                        cleaned.insert(k.clone(), v.clone());
+                    }
+                    continue;
+                }
                 if GEMINI_SCHEMA_REJECTED_KEYS.contains(&k.as_str()) {
                     continue;
                 }
-                cleaned.insert(k.clone(), sanitize_gemini_schema(v));
+                let sanitized = if GEMINI_SCHEMA_NAME_KEYED_MAPS.contains(&k.as_str()) {
+                    sanitize_gemini_schema_names(v)
+                } else {
+                    sanitize_gemini_schema(v)
+                };
+                cleaned.insert(k.clone(), sanitized);
             }
             serde_json::Value::Object(cleaned)
         }
@@ -673,6 +925,164 @@ fn sanitize_gemini_schema(schema: &serde_json::Value) -> serde_json::Value {
         }
         other => other.clone(),
     }
+}
+
+/// The NAME-KEYED half of [`sanitize_gemini_schema`]: every key is kept verbatim (it is a caller's
+/// field name, not a keyword) and every VALUE is sanitized as a schema object. A non-object here is
+/// malformed schema, so it falls back to the keyword walker rather than being invented into one.
+fn sanitize_gemini_schema_names(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => serde_json::Value::Object(
+            map.iter()
+                .map(|(k, v)| (k.clone(), sanitize_gemini_schema(v)))
+                .collect(),
+        ),
+        other => sanitize_gemini_schema(other),
+    }
+}
+
+/// Collect every `$defs`/`definitions` map found anywhere in a schema, keyed by definition name, so
+/// [`inline_gemini_schema_refs`] can resolve a `$ref` against it. POSITIONAL, exactly like
+/// [`sanitize_gemini_schema`]: does not descend into [`GEMINI_SCHEMA_NAME_KEYED_MAPS`] (`properties`,
+/// `dependentSchemas`) as if their keys were `$defs`/`definitions` keywords, because those keys are
+/// CALLER-CHOSEN FIELD NAMES — a tool with a property literally named `definitions` must not have its
+/// contents mistaken for a definitions map (the same bug class [`sanitize_gemini_schema`]'s doc
+/// comment describes for the keyword filter). An earlier-collected name wins on collision, matching
+/// nearest-scope-wins JSON Schema semantics closely enough for the generated (never hand-authored)
+/// schemas this sanitizer exists to handle.
+fn collect_gemini_schema_defs(
+    schema: &serde_json::Value,
+    out: &mut serde_json::Map<String, serde_json::Value>,
+) {
+    match schema {
+        serde_json::Value::Object(map) => {
+            for defs_key in ["$defs", "definitions"] {
+                if let Some(serde_json::Value::Object(defs)) = map.get(defs_key) {
+                    for (k, v) in defs {
+                        out.entry(k.clone()).or_insert_with(|| v.clone());
+                    }
+                }
+            }
+            for (k, v) in map {
+                if k == "$defs" || k == "definitions" {
+                    continue;
+                }
+                if GEMINI_SCHEMA_NAME_KEYED_MAPS.contains(&k.as_str()) {
+                    if let serde_json::Value::Object(names) = v {
+                        for nv in names.values() {
+                            collect_gemini_schema_defs(nv, out);
+                        }
+                    }
+                } else {
+                    collect_gemini_schema_defs(v, out);
+                }
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for v in arr {
+                collect_gemini_schema_defs(v, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Recursively inline every `$ref` that points at a NAMED `#/$defs/X` or `#/definitions/X` entry in
+/// `defs`, replacing the reference with the (recursively resolved) target subschema. `active` is the
+/// stack of definition names currently being expanded on the current path — a genuinely recursive
+/// model (a def that refs itself, directly or through a cycle) has no finite inlining, and the live
+/// Gemini backend does not reliably resolve `$ref` into named `$defs` entries anyway (see the research
+/// note on [`GEMINI_SCHEMA_REJECTED_KEYS`]), so a cycle falls back to an untyped `{}` for that branch
+/// rather than looping forever or re-emitting a reference Gemini will 400 on. A `$ref` that does not
+/// resolve (dangling name, external URI, or a bare root self-reference like `"$ref":"#"`) is left
+/// alone here and caught defensively by [`sanitize_gemini_schema`]'s keyword filter downstream.
+/// POSITIONAL in the same way [`collect_gemini_schema_defs`] is: [`GEMINI_SCHEMA_NAME_KEYED_MAPS`]
+/// values are walked as name→subschema maps, not schema objects themselves.
+fn inline_gemini_schema_refs(
+    schema: &serde_json::Value,
+    defs: &serde_json::Map<String, serde_json::Value>,
+    active: &mut Vec<String>,
+) -> serde_json::Value {
+    match schema {
+        serde_json::Value::Object(map) => {
+            if let Some(serde_json::Value::String(r)) = map.get("$ref") {
+                let target_name = r
+                    .strip_prefix("#/$defs/")
+                    .or_else(|| r.strip_prefix("#/definitions/"));
+                if let Some(name) = target_name {
+                    if let Some(target) = defs.get(name) {
+                        if active.contains(&name.to_string()) {
+                            return serde_json::json!({});
+                        }
+                        active.push(name.to_string());
+                        let inlined = inline_gemini_schema_refs(target, defs, active);
+                        active.pop();
+                        // Sibling keywords beside `$ref` (e.g. a caller-added `description`)
+                        // override/extend the inlined target rather than being discarded.
+                        if map.len() > 1 {
+                            if let serde_json::Value::Object(mut inlined_map) = inlined {
+                                for (k, v) in map {
+                                    if k != "$ref" {
+                                        inlined_map.insert(
+                                            k.clone(),
+                                            inline_gemini_schema_refs(v, defs, active),
+                                        );
+                                    }
+                                }
+                                return serde_json::Value::Object(inlined_map);
+                            }
+                        }
+                        return inlined;
+                    }
+                }
+            }
+            let cleaned: serde_json::Map<String, serde_json::Value> = map
+                .iter()
+                .filter(|(k, _)| k.as_str() != "$defs" && k.as_str() != "definitions")
+                .map(|(k, v)| {
+                    let resolved = if GEMINI_SCHEMA_NAME_KEYED_MAPS.contains(&k.as_str()) {
+                        match v {
+                            serde_json::Value::Object(names) => serde_json::Value::Object(
+                                names
+                                    .iter()
+                                    .map(|(nk, nv)| {
+                                        (nk.clone(), inline_gemini_schema_refs(nv, defs, active))
+                                    })
+                                    .collect(),
+                            ),
+                            other => inline_gemini_schema_refs(other, defs, active),
+                        }
+                    } else {
+                        inline_gemini_schema_refs(v, defs, active)
+                    };
+                    (k.clone(), resolved)
+                })
+                .collect();
+            serde_json::Value::Object(cleaned)
+        }
+        serde_json::Value::Array(arr) => serde_json::Value::Array(
+            arr.iter()
+                .map(|v| inline_gemini_schema_refs(v, defs, active))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+/// Entry point: resolve every `$ref` in a schema against its own `$defs`/`definitions` maps and drop
+/// those maps, so a Pydantic/Zod-generated nested-model tool/structured-output schema arrives at
+/// [`sanitize_gemini_schema`] already flattened into real, typed structure instead of a reference the
+/// live Gemini backend does not reliably resolve. Called BEFORE [`sanitize_gemini_schema`] at both
+/// call sites (`responseSchema` and tool `parameters`). A schema with no `$defs`/`definitions`
+/// anywhere is returned unchanged (the common case — most tool schemas are not nested).
+fn resolve_gemini_schema_refs(schema: &serde_json::Value) -> serde_json::Value {
+    let mut defs = serde_json::Map::new();
+    collect_gemini_schema_defs(schema, &mut defs);
+    if defs.is_empty() {
+        return schema.clone();
+    }
+    let mut active = Vec::new();
+    inline_gemini_schema_refs(schema, &defs, &mut active)
 }
 
 /// Parse a Gemini `usageMetadata` block into `IrUsage`, defaulting every counter to 0 when the
@@ -698,10 +1108,35 @@ fn gemini_usage(data: &serde_json::Value) -> crate::ir::IrUsage {
         // already INCLUDES `cachedContentTokenCount`, so subtract the cached tokens to leave only
         // the uncached input. `saturating_sub` guards an odd upstream where cached > prompt.
         input_tokens: prompt.saturating_sub(cached.unwrap_or(0)),
+        // THINKING TOKENS ARE OUTPUT TOKENS. `candidatesTokenCount` counts only the VISIBLE answer;
+        // the 2.5-series models' reasoning tokens arrive in the separate, ADDITIVE
+        // `thoughtsTokenCount` (Google's own `totalTokenCount` is prompt + candidates + thoughts).
+        // Reading only `candidatesTokenCount` ledgered every thinking token as ZERO while Google
+        // billed it at the output rate — and 2.5 Flash/Pro think BY DEFAULT with no `thinkingConfig`
+        // in the request, so this was ordinary traffic, not a reasoning opt-in, and the undercount
+        // is unbounded (a large thinking budget dwarfs the visible answer). Summing them here is
+        // what makes `IrUsage.output_tokens` mean the same thing it means for every other provider:
+        // all tokens GENERATED, billed at the output rate. Anthropic already counts its thinking
+        // tokens inside `output_tokens` upstream, and OpenAI's `reasoning_tokens` is a SUBSET of
+        // `completion_tokens` — Gemini is the only family that splits the term out, so it is the
+        // only one that needs the add.
+        //
+        // WIRE CONSEQUENCE (deliberate): the Gemini WRITER reconstructs `candidatesTokenCount` from
+        // `output_tokens`, so a CROSS-PROTOCOL egress into the Gemini dialect now reports the
+        // thinking tokens inside `candidatesTokenCount` rather than as their own field. The
+        // `totalTokenCount` it synthesizes becomes RIGHT (it was short by the thinking tokens
+        // before), which is the number clients reconcile against a bill. Same-protocol Gemini
+        // traffic passes through byte-for-byte and never reaches the writer, so no native client
+        // sees a reshaped `usageMetadata`.
         output_tokens: u
             .and_then(|u| u.get(FIELD_CANDIDATES_TOKEN_COUNT))
             .and_then(|v| v.as_u64())
-            .unwrap_or(0),
+            .unwrap_or(0)
+            .saturating_add(
+                u.and_then(|u| u.get(FIELD_THOUGHTS_TOKEN_COUNT))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+            ),
         cache_creation_input_tokens: None,
         cache_read_input_tokens: cached,
     }

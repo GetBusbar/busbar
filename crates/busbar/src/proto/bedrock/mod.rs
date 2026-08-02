@@ -220,6 +220,28 @@ const CACHE_POINTS_SENTINEL: &str = "__busbar_bedrock_cache_points";
 /// extra-merge), so the sentinel never appears on the wire.
 const GUARD_CONTENT_SENTINEL: &str = "__busbar_bedrock_guard_content";
 
+/// `extra` key under which the Bedrock reader stashes the positions of native Converse `document`
+/// and `video` content blocks that appear INSIDE each message's `content` array (a `{"document":
+/// {...}}` or `{"video": {...}}` member of the Converse `ContentBlock` union).
+///
+/// A top-level `document`/`video` block has NO IR `IrBlock` counterpart (the IR models only
+/// Text/Thinking/ToolUse/ToolResult/Image/Json): a Converse document (a PDF/CSV/etc. the model
+/// reasons over) and a video reference carry format + source (`bytes`/`s3Location`) that no neutral
+/// IR block expresses. Without this capture the reader silently DROPPED every top-level document and
+/// video block on a same-protocol Bedrock passthrough, making the proxy diverge from a direct AWS
+/// call (a caller uploading a PDF for analysis had it vanish). It is a Bedrock-NATIVE block with no
+/// cross-protocol meaning, so stashing it in `extra` is exactly right: it survives a same-protocol
+/// round-trip and is correctly dropped on the cross-protocol seam (where `extra` is cleared) rather
+/// than leaking a Bedrock-only block onto a foreign wire.
+///
+/// The stash records each block's ORIGINAL absolute index in its message `content` array (the same
+/// `{ "m": <usize>, "i": <usize>, "block": <value> }` shape as the `guardContent` stash) so
+/// `write_request` splices it back at the same position via the shared `splice_cache_points` helper.
+/// The leading `__busbar` prefix keeps it from colliding with any real Bedrock key, and
+/// `write_request` consumes it (never re-emitting it via the trailing extra-merge), so the sentinel
+/// never appears on the wire.
+const DOC_VIDEO_SENTINEL: &str = "__busbar_bedrock_doc_video";
+
 /// AWS Bedrock ConverseStream wire event-type names — the discriminator on every stream frame (the
 /// SDK's `:event-type` header, surfaced as the `"type"` tag on busbar's decoded JSON). Named once here
 /// so no bare wire literal is scattered across the reader / writer / framing, and so a typo is a
@@ -659,7 +681,22 @@ fn write_bedrock_tool_choice(tc: &crate::ir::IrToolChoice) -> Option<serde_json:
     match tc {
         crate::ir::IrToolChoice::Auto => Some(serde_json::json!({"auto": {}})),
         crate::ir::IrToolChoice::Required => Some(serde_json::json!({"any": {}})),
-        crate::ir::IrToolChoice::Tool { name } => Some(serde_json::json!({"tool": {"name": name}})),
+        crate::ir::IrToolChoice::Tool { name } => {
+            // AWS documents `toolChoice.tool` (force this SPECIFIC tool) as Anthropic-Claude-only
+            // on Converse — Titan/Llama/other model families reject it. The writer cannot gate on
+            // the model: `write_request(&self, req: &IrRequest)` receives only the IR, which has no
+            // `model` field (Bedrock carries the model in the URL, not the body). A real fix needs
+            // new `EgressPrep` capability plumbing — out of scope here; emit it (the common case,
+            // Claude-on-Bedrock, is unaffected) and warn so a non-Claude target's guaranteed
+            // ValidationException is at least diagnosable from the logs.
+            tracing::warn!(
+                "emitting toolChoice.tool (force a SPECIFIC tool) on Bedrock egress: this directive \
+                 is documented Anthropic-Claude-only on Converse and Bedrock model families that are \
+                 not Claude will reject it; the writer has no way to know which model this request \
+                 targets"
+            );
+            Some(serde_json::json!({"tool": {"name": name}}))
+        }
         crate::ir::IrToolChoice::None => None,
     }
 }
@@ -921,8 +958,68 @@ impl super::StreamFraming for BedrockStreamFraming {
     }
 }
 
-#[derive(Clone)]
-pub(crate) struct BedrockWriter;
+/// Per-stream set of IR block indices for which this writer actually projected a
+/// `contentBlockStart` frame (Text / ToolUse / Thinking — NOT `Image`, which `writer.rs`'s
+/// `BlockStart` arm maps to `None`). The `BlockStop` arm carries only the integer index, no block
+/// kind, so without this it cannot tell an untracked index (whose start was suppressed) from a
+/// tracked one, and previously closed EVERY index unconditionally — emitting an orphan
+/// `contentBlockStop` for a block a real ConverseStream client never saw opened (finding 7.2).
+/// `Mutex` keeps the writer `Sync` as `ProtocolWriter` requires; a stream is single-threaded at any
+/// instant, so lock contention never happens in practice. Lock poisoning degrades to a no-op /
+/// `false` rather than panicking on the request path — mirrors `CohereWriter`'s identical guard
+/// (`cohere/mod.rs`).
+pub(crate) struct BedrockWriter {
+    open_block_indices: std::sync::Mutex<std::collections::BTreeSet<usize>>,
+}
+
+/// Value-namespace constructor for [`BedrockWriter`], mirroring `CohereWriter`'s identically-shaped
+/// const: `protocol_for` (`proto/mod.rs`) builds a FRESH `Protocol`, and therefore a fresh writer,
+/// per stream — each use of this const inlines an independent empty set, so per-writer state cannot
+/// leak across concurrent streams. `clippy::declare_interior_mutable_const` is suppressed
+/// deliberately: a shared `static` here WOULD leak one stream's open indices into another, which is
+/// exactly the bug this guard exists to prevent.
+#[allow(non_upper_case_globals)]
+#[allow(clippy::declare_interior_mutable_const)]
+pub(crate) const BedrockWriter: BedrockWriter = BedrockWriter {
+    open_block_indices: std::sync::Mutex::new(std::collections::BTreeSet::new()),
+};
+
+impl Clone for BedrockWriter {
+    fn clone(&self) -> Self {
+        // Carry the open-index set across a clone so a mid-stream `Protocol::clone` keeps the
+        // in-flight open/close correlation; a poisoned lock degrades to an empty set rather than
+        // panicking on the request path.
+        BedrockWriter {
+            open_block_indices: std::sync::Mutex::new(
+                self.open_block_indices
+                    .lock()
+                    .map(|set| set.clone())
+                    .unwrap_or_default(),
+            ),
+        }
+    }
+}
+
+impl BedrockWriter {
+    /// Record that a `contentBlockStart` frame was projected at IR block `index`. Lock poisoning
+    /// degrades to a no-op rather than panicking on the request path.
+    fn mark_block_open(&self, index: usize) {
+        if let Ok(mut set) = self.open_block_indices.lock() {
+            set.insert(index);
+        }
+    }
+
+    /// Return true and forget `index` if a `contentBlockStart` was projected for it; false if the
+    /// start was suppressed (e.g. an `Image` block), in which case the matching `BlockStop` must
+    /// also emit nothing. Lock poisoning degrades to `false` (suppress) rather than panicking on the
+    /// request path.
+    fn take_block_open(&self, index: usize) -> bool {
+        self.open_block_indices
+            .lock()
+            .map(|mut set| set.remove(&index))
+            .unwrap_or(false)
+    }
+}
 
 /// Wrap a SINGLE non-stream `IrResponse` into a Bedrock ConverseStream binary `eventstream` byte
 /// sequence (`application/vnd.amazon.eventstream`), for the case where a bedrock-ingress client
@@ -987,7 +1084,11 @@ pub(crate) fn bedrock_response_to_eventstream(
 
     // Per content block: contentBlockStart → contentBlockDelta(s) → contentBlockStop. Mirror the
     // live streaming fan-out (`read_response_events`) so the SDK sees the same per-block framing.
-    for (index, block) in ir.content.iter().enumerate() {
+    // `index` is incremented only when a block actually emits frames (NOT `enumerate()` over
+    // `ir.content`): ToolResult/Image/Json blocks below emit nothing, and enumerate()'s position
+    // would burn an index on them, leaving a gap a native ConverseStream never has.
+    let mut index = 0usize;
+    for block in ir.content.iter() {
         match block {
             IrBlock::Text { text, .. } => {
                 push(
@@ -1005,6 +1106,7 @@ pub(crate) fn bedrock_response_to_eventstream(
                     &mut out,
                 );
                 push(&IrStreamEvent::BlockStop { index }, &mut out);
+                index += 1;
             }
             IrBlock::ToolUse {
                 id, name, input, ..
@@ -1027,6 +1129,7 @@ pub(crate) fn bedrock_response_to_eventstream(
                     &mut out,
                 );
                 push(&IrStreamEvent::BlockStop { index }, &mut out);
+                index += 1;
             }
             // A Thinking (reasoningContent) block DOES have native ConverseStream frames — the
             // Bedrock writer emits `contentBlockStart{reasoningContent:{}}` for the
@@ -1034,7 +1137,7 @@ pub(crate) fn bedrock_response_to_eventstream(
             // ThinkingDelta / SignatureDelta / RedactedReasoningDelta deltas. The old comment claimed
             // the writer maps them to None and skipped the block, silently dropping upstream
             // reasoning on a cross-protocol→Bedrock streaming client. Synthesize the same
-            // start/delta(s)/stop the live streaming path produces. (found: audit c2r2.)
+            // start/delta(s)/stop the live streaming path produces.
             IrBlock::Thinking {
                 text,
                 signature,
@@ -1076,10 +1179,12 @@ pub(crate) fn bedrock_response_to_eventstream(
                     }
                 }
                 push(&IrStreamEvent::BlockStop { index }, &mut out);
+                index += 1;
             }
             // ToolResult/Image/Json blocks have no native ConverseStream content-delta frame on this
-            // synthesized path; skip them. Enumerated EXPLICITLY (no `_` catch-all) so a future
-            // `IrBlock` variant is a COMPILE error here rather than silent data loss.
+            // synthesized path; skip them WITHOUT advancing `index` — no frame emitted, no index
+            // spent. Enumerated EXPLICITLY (no `_` catch-all) so a future `IrBlock` variant is a
+            // COMPILE error here rather than silent data loss.
             IrBlock::ToolResult { .. } | IrBlock::Image { .. } | IrBlock::Json(_) => {}
         }
     }

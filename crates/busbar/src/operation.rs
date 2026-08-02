@@ -1,21 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The `Operation` axis — busbar's semantic operation vocabulary (design-operations-oop.md §1b/§6).
+//! The `Operation` axis — busbar's semantic operation vocabulary.
 //!
 //! A coarse TAG only: a metrics label and the `paths:` config key. It carries NO capability booleans
 //! — whether a given (protocol, operation, model) streams or reports usage is an OperationHandler fact and lives on
-//! the `OperationHandler`, not here (design §6, M1). Variant names are 1:1 with the forthcoming
+//! the `OperationHandler`, not here. Variant names are 1:1 with the forthcoming
 //! `enum Ir` (design C2), so the egress-`write` dispatch is a trivial same-name match.
 //!
-//! Semantic, endpoint-count-agnostic (§1b): `translation` is `Transcription` with a `target_language`;
+//! Semantic, endpoint-count-agnostic: `translation` is `Transcription` with a `target_language`;
 //! image edit/variation are `Image` with an `op` discriminant — NOT separate operations.
 //!
 //! Foundation type; `dead_code` allowed until the Router/IR wiring lands.
-#![allow(dead_code)]
 
 /// The seven semantic operations busbar 1.2 speaks. Closed set — adding one is a compile error at
-/// every exhaustive match (the removability/symmetry gate, §9).
+/// every exhaustive match (the removability/symmetry gate).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Operation {
     Chat,

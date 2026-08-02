@@ -4,57 +4,80 @@
 //! Governance persistence. A durable `Store` seam — SEPARATE from the hot in-memory `StateStore`
 //! (breaker/lane health) — holding only bounded ENFORCEMENT state: virtual keys + config, and
 //! per-key usage counters (spend/tokens/requests) per budget window. Historical request logs are
-//! NOT stored here (they go to the observability pipeline). The default impl is `SqliteStore`
-//! (embedded, single file, statically linked — preserves the single-binary story); a
-//! `PostgresStore` could implement the same trait later for multi-node.
+//! NOT stored here (they go to the observability pipeline). The `Store` CONTRACT lives in
+//! `busbar-api`; the DEFAULT backend is the in-memory `MemoryStore` (ephemeral, zero-setup), with
+//! `SqliteStore` (durable) and future backends as swappable plugin crates chosen by `store.module`.
 
-use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 
-/// Length of the fixed rate-limit window (RPM/TPM are evaluated per this many seconds).
-const RATE_WINDOW_SECS: u64 = 60;
-
-/// Amortize the bounded eviction sweep of the rate map: a full `retain` (O(active keys)) runs at
-/// most once per this many `check_rate` admissions, instead of on every single admission. Per-key
-/// correctness does not depend on the sweep — `check_rate` already resets a looked-up key's entry
-/// when its `window_start` is stale — so the sweep is purely to bound the map's memory by evicting
-/// keys that have gone silent. Running it occasionally keeps the per-request cost off the hot path
-/// while still guaranteeing the map cannot grow unboundedly across windows.
-/// Operator-tunable via `governance.rate_sweep_interval` (default 256). Read in production through
-/// `crate::limits::rate_sweep_interval()`; this const is retained (as the config DEFAULT) only for
-/// the tests that exercise the default-configured sweep cadence.
-#[cfg(test)]
-const RATE_SWEEP_INTERVAL: u32 = crate::config::DEFAULT_RATE_SWEEP_INTERVAL;
-/// Millicents per whole cent — the divisor that flushes the sub-cent spend carry (`record_tokens`).
-/// This is the milli-prefix scale (1/1000), NOT a token-pricing unit: `price_per_1k_tokens_cents` is
-/// cents-per-1000-tokens ≡ millicents-per-token, so `tokens * price` already lands in millicents and
-/// `/ MILLICENTS_PER_CENT` flushes whole cents with a 0..999 millicent remainder. Named for the
-/// milli→cent conversion it actually performs so a future change to the token-pricing scale (e.g.
-/// per-100-tokens) cannot silently corrupt this divisor.
-const MILLICENTS_PER_CENT: u64 = 1_000;
 /// Seconds in a UTC day, for `budget_window`'s day/month arithmetic. `pub(crate)` so cross-module
 /// TEST code can reference it as `crate::governance::SECS_PER_DAY`; production modules that need the
 /// same value independently (e.g. `sigv4.rs`) keep a private copy where layering prohibits importing
 /// it for a one-line constant.
 pub(crate) const SECS_PER_DAY: u64 = 86_400;
 
-// ── Budget-period sentinel tokens (matched in `budget_window`) ───────────────────────────────────
-/// The "all-time" budget window sentinel: a single window from epoch 0.
-pub(crate) const BUDGET_PERIOD_TOTAL: &str = "total";
-/// The "daily" budget window sentinel: resets at UTC midnight.
-pub(crate) const BUDGET_PERIOD_DAILY: &str = "daily";
-/// The "monthly" budget window sentinel: resets at UTC first-of-month.
-pub(crate) const BUDGET_PERIOD_MONTHLY: &str = "monthly";
+// ── Window sentinel tokens (C8 nouns; matched in `budget_window`). The SAME strings are the
+// `groups:` config vocabulary (`per: minute|hour|day|month|total`), the ledger-bucket window
+// suffix, and the metrics/error dimension - one vocabulary everywhere. ─────────────────────────────
+/// The "all-time" window sentinel: a single window from epoch 0.
+pub(crate) const WINDOW_TOTAL: &str = "total";
+/// The "day" window sentinel: resets at UTC midnight.
+pub(crate) const WINDOW_DAY: &str = "day";
+/// The "month" window sentinel: resets at UTC first-of-month.
+pub(crate) const WINDOW_MONTH: &str = "month";
+/// The "minute" window sentinel: resets each UTC minute.
+pub(crate) const WINDOW_MINUTE: &str = "minute";
+/// The "hour" window sentinel: resets each UTC hour.
+pub(crate) const WINDOW_HOUR: &str = "hour";
 
 // ── Virtual-key / bearer-secret formats ──────────────────────────────────────────────────────────
 /// The `"vk_"` prefix prepended to the 16-hex-char hash prefix to form a virtual-key id.
 const VK_ID_PREFIX: &str = "vk_";
 /// Number of hex characters from the SHA-256 hash used as the suffix of a virtual-key id.
+#[cfg_attr(not(test), allow(dead_code))]
 const VK_ID_HASH_PREFIX_LEN: usize = 16;
 /// The `"sk-bb-"` prefix for bearer secrets returned by `generate_secret`.
 const SK_SECRET_PREFIX: &str = "sk-bb-";
+/// The `generation_hash` prefix of a 1.5.0 signed-token binding row. A signed-token key has NO
+/// hashed bearer secret: the token is the credential, and the `generation_hash` column holds
+/// `binding:<id>:<generation>` — not a hash at all, a fingerprint compared post-resolution against
+/// a token's `generation` claim (`generation_matches`) so a rotation can be detected. Every live key
+/// is a signed-token binding (1.5.0 retired the legacy hashed-secret credential shape entirely — see
+/// `docs/migration-1.5.md`), so this is the only `generation_hash` shape that exists.
+pub(crate) const BINDING_MARKER_PREFIX: &str = "binding:";
+
+/// The `generation_hash` marker for a signed-token binding at a given rotation generation.
+pub(crate) fn binding_marker(id: &str, generation: &str) -> String {
+    format!("{BINDING_MARKER_PREFIX}{id}:{generation}")
+}
+
+/// The rotation GENERATION carried by a binding row's `generation_hash` marker, if any. `None` for a
+/// pre-generation binding marker (`binding:<id>`, minted before rotation carried a generation) —
+/// only a token likewise carrying no generation may verify against it.
+pub(crate) fn binding_generation(generation_hash: &str) -> Option<&str> {
+    generation_hash
+        .strip_prefix(BINDING_MARKER_PREFIX)?
+        .split_once(':')
+        .map(|(_id, generation)| generation)
+}
+
+/// Whether a presented token's generation claim matches the binding row's CURRENT generation —
+/// the rotation gate on the signed-token verify path. Exact equality including the `None` case:
+/// a pre-generation token (`None`) verifies only against a pre-generation binding (`None`), so a
+/// rotation can never be defeated by simply omitting the claim.
+pub(crate) fn generation_matches(generation_hash: &str, presented: Option<&str>) -> bool {
+    binding_generation(generation_hash) == presented
+}
+
+/// A fresh unguessable binding GENERATION (128 bits of OS CSPRNG, hex). Fails closed on no entropy,
+/// exactly like every other credential-shaped draw in this module.
+fn generate_binding_generation() -> Result<String, getrandom::Error> {
+    let mut raw = [0u8; 16];
+    getrandom::fill(&mut raw)?;
+    Ok(hex::encode(raw))
+}
 
 // ── AWS-key formats ───────────────────────────────────────────────────────────────────────────────
 /// The literal `"AKIA"` prefix required by AWS SDK validators for long-term AccessKeyIds.
@@ -66,123 +89,534 @@ const AWS_SECRET_ACCESS_KEY_LEN: usize = 40;
 
 // SQLite `busy_timeout` for the on-disk DB: a transient lock contention retries for this many
 // milliseconds before failing, rather than erroring instantly with `SQLITE_BUSY`. Operator-tunable
-// via `governance.sqlite_busy_timeout_ms` (default 5000); read through `crate::limits`.
+// via the store module's own `settings.busy_timeout_ms` (default 5000).
 
-/// Per-key rate-limit state for the current 60s window. Ephemeral (in-memory, not persisted):
-/// rate windows are single-node; cross-node distributed limits would be a future concern.
-#[derive(Default)]
-struct RateState {
+/// One model's in-cell token counters: the CURRENT tier tokens plus the last durably-ACKNOWLEDGED
+/// (flushed) tier tokens - the additive-flush baseline, per model. The model name is an
+/// `Arc<str>` interned ONCE per (bucket, model) on first sight (allocate-on-miss); the per-request
+/// accrual after that is a linear scan over the few models the bucket actually used plus integer
+/// adds - no hashing, no allocation.
+#[derive(Clone)]
+struct ModelCell {
+    model: std::sync::Arc<str>,
+    cur: busbar_api::TierTokens,
+    flushed: busbar_api::TierTokens,
+}
+
+/// In-memory TOKEN-LEDGER cell for a bucket's CURRENT window - the AUTHORITATIVE hot-path
+/// enforcement state. A bucket is a key's own budget bucket OR a budget-group bucket (same shape).
+/// NO SPEND FIELD: dollars are derived at check time as `cell tokens x rate card` (+ the flat fee
+/// x requests on the key bucket) - tokens are the only stored truth, so a rate-card correction
+/// reprices everything on the next read with no data fix. The durable store is a write-behind
+/// layer flushed off the request path. One cell per bucket (current window only; reset on
+/// rollover), so growth is bucket-count-bounded (keys + group-window buckets).
+#[derive(Clone, Default)]
+struct BudgetCell {
     window_start: u64,
-    requests: u32,
-    tokens: u64,
+    /// ADMISSION count: incremented once per admitted request, NEVER refunded. This backs the
+    /// `requests`-LIMIT metric, so a caller cannot escape the requests cap by hammering failing
+    /// requests (each still consumed a request slot at admission).
+    requests: u64,
+    /// BILLABLE request count: admitted requests MINUS non-2xx refunds. This backs the flat
+    /// per-request-FEE component of the `budget` metric (the fee bills 2xx only), so budget spend
+    /// derives from this, never from `requests`. Charged with `requests` at admission; a non-2xx
+    /// outcome decrements ONLY this via `refund_bucket`.
+    billable_requests: u64,
+    /// The last durably-acknowledged admission-request count - the additive-flush baseline. Each
+    /// flush writes only the DELTA (current - flushed) via `Store::add_usage`, then advances the
+    /// baselines on success, so a shared store accumulates the TRUE fleet total across nodes. On
+    /// a failed flush the baseline does not advance and the cell is re-marked dirty, so the
+    /// unacked delta is retried (at-least-once: an ack lost after the write landed can
+    /// double-count at most one flush interval - documented).
+    flushed_requests: u64,
+    /// The billable-request flush baseline (twin of `flushed_requests` for the fee-base counter).
+    flushed_billable_requests: u64,
+    /// Per-(model, tier) token counters + flush baselines. Small Vec (the models this bucket
+    /// actually used), scanned linearly.
+    models: Vec<ModelCell>,
+    dirty: bool,
+    /// Wall-clock of the last accrual or admission charge. The eviction sweep ages cells by
+    /// `window_start`, but a key's own bucket and a synthesized SSO principal's bucket both live in
+    /// the all-time window (`window_start == 0`), which never ages — so those cells were retained
+    /// for the process lifetime even after the key was deleted or the principal stopped appearing.
+    /// `dirty` alone cannot substitute: the flusher clears it every 100ms, so a busy cell is
+    /// legitimately clean and would be swept mid-use.
+    last_touch: u64,
 }
 
-/// The two auth-path key caches, held together under `GovState::caches`'s single `RwLock` so
-/// `refresh` can swap both in one critical section. `by_hash` is the hashed-secret → key index; it
-/// backs `lookup`. `by_access_key_id` is the AWS AccessKeyId → resolved-credential index for inbound
-/// SigV4 resolution on the Bedrock-ingress hot path: the AccessKeyId arrives in plaintext in the
-/// SigV4 `Authorization` header's `Credential=` field, so it is keyed on the plaintext AccessKeyId
-/// (NOT hashed like `by_hash`) — a lookup handle, not a secret. Each entry bundles the owning
-/// `VirtualKey` with its secret access key, so the verify path resolves both in one lookup. Only keys
-/// minted WITH an AWS credential appear in `by_access_key_id`. Both are rebuilt by `refresh` from the
-/// SAME store snapshot, so a disabled/deleted/re-minted key is reflected in both — now also visible
-/// to readers atomically (the one lock guarantees no reader sees a half-applied swap).
-struct GovCaches {
-    by_hash: HashMap<String, VirtualKey>,
-    by_access_key_id: HashMap<String, AwsKeyEntry>,
+impl BudgetCell {
+    fn fresh(window_start: u64) -> Self {
+        Self {
+            window_start,
+            ..Self::default()
+        }
+    }
+
+    /// Accrue one response's tier tokens under `model`, interning the model name on first sight.
+    fn accrue(&mut self, model: &str, t: &busbar_api::TierTokens) {
+        let cell = match self.models.iter_mut().find(|m| &*m.model == model) {
+            Some(m) => m,
+            None => {
+                // Allocate ONLY on the first sight of a (bucket, model) pair.
+                self.models.push(ModelCell {
+                    model: std::sync::Arc::from(model),
+                    cur: busbar_api::TierTokens::default(),
+                    flushed: busbar_api::TierTokens::default(),
+                });
+                self.models.last_mut().expect("just pushed")
+            }
+        };
+        cell.cur.input = cell.cur.input.saturating_add(t.input);
+        cell.cur.output = cell.cur.output.saturating_add(t.output);
+        cell.cur.cache_read = cell.cur.cache_read.saturating_add(t.cache_read);
+        cell.cur.cache_write = cell.cur.cache_write.saturating_add(t.cache_write);
+    }
+
+    /// Borrowed (model, current tokens) view for the spend derivation - the few multiply-adds the
+    /// admission check runs.
+    fn model_views(&self) -> impl Iterator<Item = (&str, &busbar_api::TierTokens)> {
+        self.models.iter().map(|m| (&*m.model, &m.cur))
+    }
+
+    /// Drop DEAD `ModelCell`s so the `models` Vec cannot grow without bound in a long-lived,
+    /// never-rolled cell (the all-time `window_start == 0` cell, which the sweep never ages out).
+    /// `accrue` interns a `ModelCell` on the FIRST sight of a (bucket, model) pair — including a
+    /// zero-token response — so over a long-running process a bucket accumulates one entry per model
+    /// name EVER seen, most of them long dormant. A cell is DEAD iff it carries no current tokens
+    /// (`cur.total() == 0`) AND nothing unflushed (`flushed.total() == 0`): removing it loses no
+    /// enforcement truth (its token contribution is zero) and no unacked write-behind delta (there is
+    /// none). A model that later reappears is simply re-interned by `accrue`. Called from the
+    /// amortized cell sweep, so it costs one linear pass on the same cadence as the stale-cell prune.
+    fn prune_dead_models(&mut self) {
+        self.models
+            .retain(|m| m.cur.total() != 0 || m.flushed.total() != 0);
+    }
+
+    /// Total current tokens across models and tiers (the legacy scalar view for admin reads).
+    fn total_tokens(&self) -> u64 {
+        self.models
+            .iter()
+            .fold(0u64, |acc, m| acc.saturating_add(m.cur.total()))
+    }
 }
+
+/// Why an admission was refused by the group limit chain - carried to ingress so the rejection
+/// NAMES the exact blocking bucket (group + metric + window). Built only on the rejection path
+/// (cold), so the owned Strings are off the admit hot path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum LimitBlocked {
+    /// A specific limit bucket blocked: the owning group, the metric (`requests` | `tokens` |
+    /// `budget` | `concurrent`), the window word (`None` for the instantaneous `concurrent`
+    /// gauge), the pool scope (`Some` when a pool-qualified limit blocked - only that pool's
+    /// traffic is capped), and - for a windowed limit - the seconds until its window rolls
+    /// (`None` for `total`, which never rolls).
+    Limit {
+        group: String,
+        metric: &'static str,
+        window: Option<&'static str>,
+        pool: Option<String>,
+        /// For a BUDGET block whose limit declared `on_exhaust: downgrade`: the pool ingress
+        /// should re-admit + dispatch through instead of refusing. `None` = block.
+        downgrade_to: Option<String>,
+        retry_after: Option<u64>,
+    },
+    /// A group in the chain is FROZEN (`enabled: false`): every request charging through it is
+    /// rejected while its history is kept (C10).
+    Disabled(String),
+    /// The key names a `group` that does not exist in this node's config - FAIL-CLOSED
+    /// (mint and boot validate this; it can only arise from a shared durable store whose keys
+    /// reference a group another node's config no longer has).
+    MissingGroup(String),
+}
+
+/// The in-flight HOLD an admission acquires on every `concurrent`-capped group in the key's chain.
+/// RAII: dropping the grant releases the gauges, so the in-flight count can never leak - the grant
+/// rides inside the request's `UsageSink` (dropped when the response stream completes / the request
+/// context unwinds on any error path). The Vec is EMPTY (no allocation) for the common chain with
+/// no concurrent caps.
+#[derive(Default)]
+pub(crate) struct AdmitGrant {
+    gauges: Vec<Arc<std::sync::atomic::AtomicI64>>,
+}
+
+impl AdmitGrant {
+    /// TEST-ONLY: how many gauges this grant holds.
+    #[cfg(test)]
+    pub(crate) fn held(&self) -> usize {
+        self.gauges.len()
+    }
+}
+
+impl Drop for AdmitGrant {
+    fn drop(&mut self) {
+        for g in &self.gauges {
+            g.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+}
+
+impl std::fmt::Debug for AdmitGrant {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AdmitGrant")
+            .field("gauges", &self.gauges.len())
+            .finish()
+    }
+}
+
+/// A derived (read-time) usage view for admin/metrics consumers: `spend_cents` is COMPUTED from
+/// the token ledger x the current rate card at the moment of the read - never stored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct DerivedUsage {
+    pub(crate) spend_cents: i64,
+    pub(crate) tokens: u64,
+    pub(crate) requests: u64,
+}
+
+/// THE REVOCATION STALENESS WINDOW (seconds). The in-memory denylist is a CACHE of the durable
+/// store's revocation set, not the truth: every auth path re-reads the store denylist when its copy
+/// is older than this, so a revoke performed on ANOTHER NODE of a fleet sharing one store — or
+/// written out-of-band directly against the store — is honoured here within at most this many
+/// seconds. A revoke performed on THIS node is applied to the in-memory set synchronously by
+/// [`GovState::revoke`] and takes effect on the very next check (zero window).
+///
+/// The re-read is SCHEDULED by the request path, not performed by it (see
+/// [`revocation::RevocationSync`]), so a peer's revoke lands within roughly two of these windows on
+/// a healthy store — the price of never parking a reactor thread inside a store call.
+///
+/// WHY 5s: the re-read costs ONE small store query per node per window regardless of request rate
+/// (single-flighted by a CAS on the attempt stamp), so at 5s even a 50k-RPS node adds 0.2
+/// queries/sec — negligible — while bounding the worst case that matters (a compromised credential
+/// still authenticating after the operator revoked it) to seconds rather than the lifetime of the
+/// process. Shorter windows buy little (a revoke is an operator action measured in seconds anyway)
+/// and start to matter for a network-backed store plugin; longer windows re-open the hole this
+/// closes. It is deliberately a CONSTANT, not a knob: an operator cannot accidentally widen a
+/// security window, and there is no deployment for which "revocation lands within 5 seconds" is
+/// wrong.
+pub(crate) const REVOCATION_SYNC_TTL_SECS: u64 = 5;
+
+/// Number of shards for the per-key enforcement maps (`rate`, `budget`, `token_spend_carry`). A
+/// power of two so `hash & (N-1)` selects the shard with a mask (no modulo). 64 keeps lock
+/// contention low well past typical core counts while adding trivial fixed memory (64 small empty
+/// maps + 64 atomics per `GovState`). Each key deterministically maps to ONE shard, so a key's
+/// read-modify-write (rate window, budget charge, spend carry) stays atomic within that shard's lock
+/// exactly as it was under the single global lock — sharding only removes CROSS-key serialization,
+/// never a per-key invariant.
+const GOV_SHARDS: usize = 64;
+
+/// One shard of a [`Sharded`] map: the key→value map plus its OWN amortized-sweep ticker (the sweep
+/// is per-shard, so a shard scans only its own — ~1/64th — of the keys when it fires).
+struct MapShard<V> {
+    map: RwLock<HashMap<String, V>>,
+    sweep_ticker: AtomicU32,
+}
+
+impl<V> Default for MapShard<V> {
+    fn default() -> Self {
+        Self {
+            map: RwLock::new(HashMap::new()),
+            sweep_ticker: AtomicU32::new(0),
+        }
+    }
+}
+
+/// A key-id-sharded `HashMap`, replacing a single `RwLock<HashMap>` that every governed request
+/// contended. A key always resolves to the SAME shard (`stable_hash(key_id) & (GOV_SHARDS-1)`), so
+/// per-key semantics (window straddle, atomic check-and-charge, spend carry) are byte-identical to
+/// the single-lock version — only requests for DIFFERENT keys whose ids land in different shards no
+/// longer serialize on one lock. Whole-map operations (flush / hydrate / usage sweep) iterate every
+/// shard.
+struct Sharded<V> {
+    shards: Box<[MapShard<V>]>,
+}
+
+impl<V> Sharded<V> {
+    fn new() -> Self {
+        let mut shards = Vec::with_capacity(GOV_SHARDS);
+        shards.resize_with(GOV_SHARDS, MapShard::default);
+        Self {
+            shards: shards.into_boxed_slice(),
+        }
+    }
+
+    /// The shard owning `key_id`. `GOV_SHARDS` is a power of two, so this masks the stable hash — a
+    /// process-stable hash (NOT `DefaultHasher`) so a key maps to the same shard across restarts,
+    /// which is irrelevant to correctness (the maps are ephemeral) but keeps behaviour deterministic.
+    #[inline]
+    fn shard_for(&self, key_id: &str) -> &MapShard<V> {
+        let h = crate::store::fnv1a_u64(key_id) as usize;
+        &self.shards[h & (GOV_SHARDS - 1)]
+    }
+
+    /// The shard INDEX owning `key_id` - for the budget-chain charge, which must acquire SEVERAL
+    /// shards' locks in ascending index order (a canonical order makes the multi-shard critical
+    /// section deadlock-free).
+    #[inline]
+    fn shard_index(&self, key_id: &str) -> usize {
+        (crate::store::fnv1a_u64(key_id) as usize) & (GOV_SHARDS - 1)
+    }
+
+    /// The shard at a known index (see [`Sharded::shard_index`]).
+    #[inline]
+    fn shard_at(&self, idx: usize) -> &MapShard<V> {
+        &self.shards[idx]
+    }
+
+    /// Acquire this key's shard for writing (poison-recovering — a panic under any holder must not
+    /// cascade into a governance outage on the request path; the maps' invariants are re-established
+    /// per call, so the recovered guard is safe to use).
+    #[inline]
+    fn write(&self, key_id: &str) -> std::sync::RwLockWriteGuard<'_, HashMap<String, V>> {
+        self.shard_for(key_id)
+            .map
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Acquire this key's shard for reading (poison-recovering, same rationale as [`Sharded::write`]).
+    #[inline]
+    fn read(&self, key_id: &str) -> std::sync::RwLockReadGuard<'_, HashMap<String, V>> {
+        self.shard_for(key_id)
+            .map
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Every shard's write guard, in shard order — for the whole-map operations that must visit ALL
+    /// keys (the write-behind flush snapshot). Each guard is acquired lazily by the iterator, so only
+    /// one shard is locked at a time (no cross-shard deadlock, and a concurrent per-key op contends
+    /// only for the single shard the iterator currently holds).
+    fn write_all(
+        &self,
+    ) -> impl Iterator<Item = std::sync::RwLockWriteGuard<'_, HashMap<String, V>>> {
+        self.shards
+            .iter()
+            .map(|s| s.map.write().unwrap_or_else(|p| p.into_inner()))
+    }
+
+    /// TEST-ONLY: the sweep ticker for the shard owning `key_id`, so a test can drive the amortized
+    /// sweep cadence for a specific key exactly as it did against the old single global ticker.
+    #[cfg(test)]
+    fn sweep_ticker_for(&self, key_id: &str) -> &AtomicU32 {
+        &self.shard_for(key_id).sweep_ticker
+    }
+
+    /// TEST-ONLY: the raw shard lock owning `key_id`, for the poison-recovery test (it panics inside
+    /// the write guard to poison exactly the shard the key resolves to, then asserts the hot path
+    /// recovers for that same key).
+    #[cfg(test)]
+    fn shard_lock_for(&self, key_id: &str) -> &RwLock<HashMap<String, V>> {
+        &self.shard_for(key_id).map
+    }
+}
+
+/// The two auth-path caches, held together under `GovState::caches`'s single `RwLock` so `refresh`
+/// can swap both in one critical section. `by_id` is the subject-id → key index; it backs
+/// `lookup_by_sub` (the signed-token verify hot path — 1.5.0 has exactly one bearer-credential
+/// shape, so this is the only key index needed — bearer auth is never represented in
+/// `by_credential`, see that field's doc). `by_credential` is the ROW-LOOKED-UP credential index
+/// (today: SigV4 only) for inbound resolution on the Bedrock-ingress hot path, generalized from the
+/// old AWS-specific `by_access_key_id`/`AwsKeyEntry` — see [`busbar_api::CredentialMeta`]'s doc for
+/// why a kind belongs here at all. Both are rebuilt by `refresh` from the SAME store snapshot, so a
+/// disabled/deleted/re-minted key or revoked credential is reflected in both — visible to readers
+/// atomically (the one lock guarantees no reader sees a half-applied swap).
+struct GovCaches {
+    /// Subject id (the key id / token `sub`) → key. Values are `Arc<VirtualKey>` so the per-request
+    /// signed-token resolution (on the chat hot path) is a REFCOUNT BUMP rather than a deep clone of
+    /// a multi-`String` `VirtualKey` under the read lock — the resolved key is immutable for the
+    /// life of the request and threaded read-only through governance/routing, so sharing it via
+    /// `Arc` is exact.
+    by_id: HashMap<String, Arc<VirtualKey>>,
+    /// `(kind, public_id)` → the resolved credential secret PLUS its owning key. The wire-supplied
+    /// public identifier (SigV4: the AccessKeyId, plaintext in the `Authorization` header's
+    /// `Credential=` field — a lookup handle, not a secret) is the lookup key; the value bundles the
+    /// full [`CredentialSecret`] (its own `revoked_at`/`expires_at`) with the owning
+    /// `Arc<VirtualKey>` so the verify path resolves both key-level and credential-level admission
+    /// state in one lookup, no second index hop. Only keys with at least one live credential appear
+    /// here.
+    by_credential: CredentialIndex,
+}
+
+/// `(kind, public_id)` -> the resolved credential secret plus its owning key — see
+/// [`GovCaches::by_credential`]'s doc for the shape's reasoning. Named so clippy's
+/// `type_complexity` lint (and every future reader) sees one name instead of the raw nested type
+/// at every call site.
+pub(crate) type CredentialIndex = HashMap<(String, String), (Arc<VirtualKey>, CredentialSecret)>;
 
 /// Per-instance governance runtime: the durable `Store` plus an in-memory key cache (hashed-secret
 /// → key) so validation on the hot path is a map lookup, not a DB round-trip. Held in `App`
-/// (`Option`: `None` = governance disabled) — NOT a process-global, so tests stay isolated.
+/// (always `Some` in a running engine — governance is always constructed; `None` only in tests that
+/// omit it) — NOT a process-global, so tests stay isolated.
 pub(crate) struct GovState {
     store: Arc<dyn Store>,
     /// Both auth-path caches under ONE lock so `refresh` swaps them atomically — a reader can never
     /// observe a new `by_hash` against a stale `by_access_key_id`. See `GovCaches`.
     caches: RwLock<GovCaches>,
-    /// Flat cents charged per request (one half of the cost model; the other is per-token, below).
-    /// Total budget spend = per-request fee + tokens/1000 * price_per_1k_tokens_cents.
-    price_per_request_cents: i64,
-    /// cents per 1000 tokens (input + output), accrued from response usage at stream end.
-    price_per_1k_tokens_cents: i64,
-    /// per-key RPM/TPM windows (ephemeral).
-    rate: RwLock<HashMap<String, RateState>>,
-    /// Per-key accumulator of the sub-cent (millicent) remainder of token spend. Token cost is
-    /// `tokens/1000 * price_per_1k_tokens_cents`; in pure integer cents a request whose cost is < 1
-    /// cent (e.g. 500 tokens at 1¢/1k = 0.5¢) used to TRUNCATE to 0 and be lost forever. We instead
-    /// accrue spend in MILLICENTS (`tokens * price_per_1k_cents`), flush WHOLE cents to the durable
-    /// store, and carry the 0..999 millicent remainder here until it crosses a cent on a later
-    /// request. In-memory only (dropping a sub-1¢ remainder per key on restart is acceptable);
-    /// bounded by the key count (the same set `caches.by_hash` already holds). The `Mutex` keeps the
-    /// per-key read-modify-write atomic under concurrent requests for the same key. The value is
-    /// `(window, remainder)`: the remainder is attributed to the budget WINDOW it was generated in and
-    /// RESET when the window rolls over, so a sub-cent remainder never leaks across a day/month boundary
-    /// into the next window's spend (the <1¢ dropped at a rollover is the same accepted trade-off as the
-    /// on-restart drop). One entry per key (not per key×window), so growth stays key-count-bounded.
-    token_spend_carry: std::sync::Mutex<HashMap<String, (u64, u64)>>,
-    /// Admission counter that amortizes the bounded eviction sweep of `rate` (see
-    /// `RATE_SWEEP_INTERVAL`): every Nth `check_rate` call performs the full stale-entry retain,
-    /// so the per-request hot path does not scan all active keys on every admission.
-    rate_sweep_ticker: AtomicU32,
-    /// Admission counter that amortizes the bounded eviction sweep of `token_spend_carry`. The sweep is
-    /// only useful for churned, ageable (windowed) keys; a deployment with many long-lived `total`-period
-    /// keys (`window == 0`, never age out) keeps the map size permanently above the threshold, so gating
-    /// the O(n) retain solely on `len > THRESHOLD` would run it under-lock on EVERY flush. This ticker
-    /// makes the scan fire only every Nth over-threshold flush — restoring the amortized-O(1) hot path.
-    carry_sweep_ticker: AtomicU32,
-    /// SHA-256 hex digest of the configured /admin bearer token, computed once at construction. The
-    /// plaintext token is NOT retained — only its digest, which is all the constant-time compare on
-    /// the /admin path needs (less plaintext secret held in memory). `None` = admin API disabled.
-    admin_token_hash: Option<String>,
-    /// Fail-mode for the atomic budget check-and-charge on a STORE ERROR. `Allow` (default) fails
-    /// open (proceed → availability); `Deny` fails closed (reject → hard guarantee). Only the
-    /// store-error path consults this; a definitive over-budget result always rejects. Set from
-    /// `GovernanceCfg::budget_on_store_error` via `with_budget_on_store_error` at construction.
-    budget_on_store_error: crate::config::BudgetOnStoreError,
+    /// Per-GROUP in-flight gauges for the `concurrent` limit metric (instantaneous - no window).
+    /// Keyed by group NAME (stable across config applies, while `CostModel` group indices are
+    /// not); values are `Arc`ed atomics so an [`AdmitGrant`] holds its release handles without
+    /// touching the map again. Read-locked on the hot path (atomics mutate through a shared ref);
+    /// write-locked only to materialise a gauge on first sight.
+    concurrent: RwLock<HashMap<String, Arc<std::sync::atomic::AtomicI64>>>,
+    /// SHA-256 hex digest of the configured /admin bearer token. The plaintext token is NOT retained
+    /// — only its digest, which is all the constant-time compare on the /admin path needs (less
+    /// plaintext secret held in memory). `None` = admin API disabled.
+    ///
+    /// RE-SETTABLE (`set_admin_token`): `GovState` is process-lifetime and is REUSED across every
+    /// config apply/reload (the key cache, ledgers and rate windows must survive one), so a digest
+    /// frozen at construction meant rotating `auth.admin_auth`'s token secret and reloading had NO
+    /// effect — the process kept accepting the boot-time credential forever.
+    admin_token_hash: RwLock<Option<String>>,
+    /// AUTHORITATIVE in-memory TOKEN-LEDGER cells - the hard-cap admission state consulted (and
+    /// charged) on the request hot path with NO await and NO store round-trip. Keyed by BUCKET id:
+    /// a virtual key's id, or `group:<name>` for a budget-group bucket - key buckets and group
+    /// buckets are the same machinery. One `BudgetCell` per bucket for its CURRENT window (reset on
+    /// rollover), so the map is bucket-count-bounded (keys + group-window buckets). The durable store is a
+    /// WRITE-BEHIND layer: `flush_budgets` pushes each dirty cell's per-model TOKEN deltas
+    /// additively off the request path, and boot `hydrate_budgets` re-loads accrued ledgers so a
+    /// restart forgets nothing. The atomic chain check-and-charge acquires every involved shard
+    /// lock in ascending shard order (deadlock-free), so admission against the whole chain is one
+    /// indivisible critical section per node.
+    /// NOTE (perf, playbook): the old `token_spend_carry` sub-cent carry map is GONE - the ledger
+    /// stores raw tokens and spend derives at read time, so there is no remainder to carry and no
+    /// O(n) carry sweep to amortize.
+    budget: Sharded<BudgetCell>,
+    /// Write-behind ACCUMULATOR for metering rows, keyed by the stores' own upsert key
+    /// `(key_id, bucket, model, provider)`. `record_metering` is a hot-path sync fn (no await,
+    /// called from the response tap) so this is a `std::sync::Mutex`, not a tokio one — matches
+    /// `flush_metering`, which runs inside `spawn_blocking` and also never awaits. `flush_metering`
+    /// DRAINS this map (not a baseline like `budget`): metering cells are authoritative for
+    /// nothing — nothing enforces against them, the store is the only consumer — so there is no
+    /// running total to protect and a drained-empty entry needs no reaper or growth cap.
+    pending_metering: std::sync::Mutex<HashMap<(String, u64, String, String), MeterCounts>>,
+    /// The busbar SIGNING material (1.5.0, S1/S2) — the mint-side signer paired with the
+    /// verify-side public keyset, held together so they can never drift. `Some` once a signing key
+    /// is resolved/generated at boot; `None` in the (test) path that constructs GovState without
+    /// signing (SigV4-only / legacy-hash tests).
+    ///
+    /// RE-SETTABLE (`set_signing_key`) for the same reason as `admin_token_hash`: `auth.signing_key`
+    /// is a SecretRef, and a reused `GovState` never re-resolved it, so rotating the underlying
+    /// secret and reloading silently kept minting and accepting tokens under the old key. Read as an
+    /// `Arc` clone on the verify hot path, so the lock is held only for the clone.
+    signing: RwLock<Option<Arc<SigningMaterial>>>,
+    /// The revocation DENYLIST as an in-memory set of subject ids, hydrated from the store at boot,
+    /// updated live on revoke, and RE-HYDRATED from the store on a bounded TTL (see
+    /// [`REVOCATION_SYNC_TTL_SECS`]). A verified token whose `sub` is present is rejected - the ONLY
+    /// state the otherwise-stateless verify path reads.
+    ///
+    /// The re-hydration is a blocking store round-trip and the auth path is an `async fn` on a Tokio
+    /// worker, so the set and its refresh live in [`revocation::RevocationSync`], which keeps the
+    /// read OFF the reactor and BOUNDS it. The request path only ever reads the set; see that
+    /// module's docs for why, and for what the offload costs.
+    denylist: Arc<revocation::RevocationSync>,
+    /// Serializes `refresh` so a slow reader-load cannot clobber a newer swap (lost-update guard).
+    /// `refresh` loads the full key set from the store OUTSIDE the `caches` write lock (to keep that
+    /// critical section short), then swaps. Without serialization, two concurrent refreshes could
+    /// interleave load-A, load-B, swap-B, swap-A where load-A predates B's committed mutation — so
+    /// the final cache is missing B's key until the next mutation. Holding this mutex across the
+    /// ENTIRE load→swap means a later refresh's load begins only after the earlier refresh's swap
+    /// has committed, so it can never contain strictly-older store state. Guarded data is `()`;
+    /// a poisoned lock is recovered with `into_inner()` (serializing is strictly better than not).
+    refresh_lock: std::sync::Mutex<()>,
 }
 
-/// Parameters for minting a new virtual key (from the management API).
+/// The busbar signing key as ONE unit: the mint-side signer and the verify-side keyset derived
+/// from it. Swapped atomically by `GovState::set_signing_key`, so a reload can never leave the
+/// engine minting under one key while verifying under another.
+pub(crate) struct SigningMaterial {
+    signer: crate::governance::signing::TokenSigner,
+    verifier: crate::governance::signing::TokenVerifier,
+}
+
+impl SigningMaterial {
+    /// Derive the verifier from the signer (the only construction path — they cannot drift).
+    fn new(signer: crate::governance::signing::TokenSigner) -> Self {
+        let verifier =
+            crate::governance::signing::TokenVerifier::single(signer.kid(), signer.verifying_key());
+        Self { signer, verifier }
+    }
+}
+
+/// What `POST /keys/{id}/rotate` re-issued: a 1.5.0 signed-token binding at a freshly-minted
+/// generation. Every token issued before the rotation is now rejected by `verify_token`. (1.5.0 has
+/// exactly one bearer-credential shape — a signed token — so rotation has exactly one outcome; the
+/// legacy hashed-secret rotation arm this type used to carry was removed with the legacy verify
+/// path itself.)
+pub(crate) struct RotatedCredential {
+    pub(crate) key: VirtualKey,
+    pub(crate) token: String,
+    pub(crate) exp: u64,
+}
+
+/// Parameters for minting a new virtual key (from the management API) - PURE AUTH (S1): identity,
+/// pool grants, at most one group binding, labels. No limits: they live on the bound group.
 pub(crate) struct NewKeySpec {
     pub(crate) name: String,
-    pub(crate) allowed_pools: Vec<String>,
-    pub(crate) max_budget_cents: Option<i64>,
-    pub(crate) budget_period: String,
-    pub(crate) rpm_limit: Option<u32>,
-    pub(crate) tpm_limit: Option<u32>,
+    /// Pool grants with the C6 intent carried intact: `None` = the mint body OMITTED
+    /// `allowed_pools` = ALL pools; `Some(list)` = exactly those; `Some([])` = NO pools.
+    pub(crate) allowed_pools: Option<Vec<String>>,
+    /// Optional `groups:` binding (validated to exist at mint).
+    pub(crate) group: Option<String>,
+    /// Optional mint-time labels echoed onto metrics (never interpreted by enforcement).
+    pub(crate) labels: std::collections::BTreeMap<String, String>,
 }
 
+pub(crate) mod revocation;
+pub(crate) mod signing;
 mod state;
 
-/// THE GOVERNANCE RE-KEY (design-hooks-v2 §2.3): synthesize the governance grants for a
-/// GROUP-CARRYING principal from the UNION of its `group_map:` entries — the same `VirtualKey`
-/// shape every enforcement site already speaks, keyed by the PRINCIPAL id, so an SSO user and a
-/// virtual key get identical enforcement (pool ACL, RPM/TPM windows, budget, usage attribution,
-/// the hook `send_user` projection) through identical code.
+/// THE GOVERNANCE RE-KEY for a ROLE-CARRYING principal (an external auth module's verdict): a
+/// synthesized `VirtualKey` built from the principal's roles under the identifying MODULE's
+/// `role_bindings` table (S4: bindings are nested by module - `bindings` here is
+/// `role_bindings.<identifying module>`; a role asserted by another module never rides it).
+/// An SSO user and a virtual key then get identical enforcement (pool ACL, group limits, usage
+/// attribution, the hook `send_user` projection) through identical code.
 ///
-/// Fail-closed: `None` unless at least one mapped group SETS `allowed_pools` (the data-plane
-/// grant; an admin-only group confers no inference access). Union is most-permissive: pool lists
-/// union (an explicit `[]` = every pool); a granting group without an rpm/tpm/budget cap makes the
-/// principal uncapped on that axis, otherwise the max wins.
+/// Fail-closed: `None` when no role of the principal is bound (an unbound role grants nothing),
+/// or when the bound pool grants union to the EMPTY SET (C6: `allowed_pools: []` = NO pools).
+/// Pool semantics per C6: a binding that OMITS `allowed_pools` grants ALL pools; lists union.
+/// Limits come ONLY from the bound `group:` (keys/principals carry no inline caps); with several
+/// bound groups the first in role order wins (one group per principal - the chain is a tree).
 pub(crate) fn synthesize_principal_key(
     principal: &crate::auth::Principal,
-    group_map: &std::collections::HashMap<String, crate::config::GroupMapEntry>,
-) -> Option<VirtualKey> {
-    let granting: Vec<&crate::config::GroupMapEntry> = principal
-        .groups
+    bindings: Option<&std::collections::BTreeMap<String, crate::config::RoleBindingCfg>>,
+) -> Option<Arc<VirtualKey>> {
+    // BUCKET-NAMESPACE GUARD (audit cost-1.5.0): the synthesized key's `id` becomes its LEDGER
+    // BUCKET id, and group buckets live in the same store namespace as `group:<name>`. A
+    // principal id (attacker-influenced at the IdP) literally starting with `group:` would alias a
+    // group's cell - charging it, reading it, and corrupting group enforcement. Fail closed:
+    // such a principal gets NO synthetic key (no data-plane access), never a colliding bucket.
+    //
+    // The SAME hazard applies to the `vk_` prefix: a real virtual key's id is `vk_<16 hex>` and is
+    // its ledger/rate bucket id. An IdP subject shaped `vk_<...>` would alias a real virtual key's
+    // ledger + rate bucket (charging/reading it, or riding its rate window). Reserve `vk_` too.
+    if principal.id.starts_with(crate::cost::GROUP_BUCKET_PREFIX)
+        || principal.id.starts_with(VK_ID_PREFIX)
+    {
+        tracing::warn!(
+            principal = %principal.id,
+            "refusing to synthesize a governance key: principal id collides with a reserved bucket \
+             namespace (group: or vk_)"
+        );
+        return None;
+    }
+    let table = bindings?;
+    let granting: Vec<&crate::config::RoleBindingCfg> = principal
+        .roles
         .iter()
-        .filter_map(|g| group_map.get(g))
-        .filter(|e| e.allowed_pools.is_some())
+        .filter_map(|role| table.get(role))
         .collect();
     if granting.is_empty() {
         return None;
     }
-    // Pool union. An explicit `[]` on any granting group = unrestricted (empty Vec is the
-    // VirtualKey encoding for "all pools").
+    // Pool union under C6 semantics: OMITTED `allowed_pools` on any granting binding = ALL pools
+    // (`None` in the runtime encoding too); an explicit list contributes its entries; an explicit
+    // `[]` contributes nothing. An all-bindings-empty union = the EMPTY SET = no data-plane access
+    // (fail closed: no key at all - nothing to admit).
     let mut pools: Vec<String> = Vec::new();
     let mut all_pools = false;
-    for e in &granting {
-        match e.allowed_pools.as_deref() {
-            Some([]) => all_pools = true,
+    for b in &granting {
+        match b.allowed_pools.as_deref() {
+            None => all_pools = true,
             Some(list) => {
                 for p in list {
                     if !pools.contains(p) {
@@ -190,48 +624,48 @@ pub(crate) fn synthesize_principal_key(
                     }
                 }
             }
-            None => unreachable!("filtered on is_some"),
         }
     }
-    if all_pools {
-        pools.clear();
-    }
-    // Most-permissive cap union: any granting group WITHOUT the cap lifts it entirely.
-    let cap_union = |get: fn(&crate::config::GroupMapEntry) -> Option<i64>| -> Option<i64> {
-        let mut max: Option<i64> = None;
-        for e in &granting {
-            let v = get(e)?; // a capless granting group lifts the cap entirely
-            max = Some(max.map_or(v, |m: i64| m.max(v)));
-        }
-        max
+    let allowed_pools = if all_pools {
+        None // any omitted grant widens the union to ALL pools
+    } else if pools.is_empty() {
+        // Every granting binding said `allowed_pools: []` - the empty set. No access (C6).
+        return None;
+    } else {
+        Some(pools)
     };
-    let rpm = cap_union(|e| e.rpm_limit.map(i64::from)).map(|v| v as u32);
-    let tpm = cap_union(|e| e.tpm_limit.map(i64::from)).map(|v| v as u32);
-    let budget = cap_union(|e| e.max_budget_cents);
-    Some(VirtualKey {
+    // The bound group (first in role order). Group limits are enforced through the group chain;
+    // the key itself carries NO inline caps (keys are pure auth).
+    let group = granting.iter().find_map(|b| b.group.clone());
+    Some(Arc::new(VirtualKey {
         id: principal.id.clone(),
         // NOT a credential hash — a marker. The synthetic key never authenticates anything (the
         // auth module already did); it exists purely to carry grants through enforcement.
-        key_hash: format!("principal:{}", principal.id),
+        generation_hash: format!("principal:{}", principal.id),
         name: principal
             .name
             .clone()
             .unwrap_or_else(|| principal.id.clone()),
-        allowed_pools: pools,
-        max_budget_cents: budget,
-        budget_period: BUDGET_PERIOD_TOTAL.to_string(),
-        rpm_limit: rpm,
-        tpm_limit: tpm,
+        allowed_scopes: allowed_pools
+            .map(|list| list.into_iter().map(busbar_api::ScopeRef::pool).collect()),
         enabled: true,
         created_at: 0,
-    })
+        group,
+        labels: std::collections::BTreeMap::new(),
+        expires_at: None,
+        deleted_at: None,
+        revision: 0,
+    }))
 }
 
 /// Resolved governance context attached to each request by the auth middleware. `key` is `None`
 /// when governance is disabled (so downstream enforcement is a no-op).
 #[derive(Clone, Debug, Default)]
 pub(crate) struct GovCtx {
-    pub(crate) key: Option<VirtualKey>,
+    /// The resolved virtual key (or synthesized principal key), shared via `Arc`: attaching it to the
+    /// request and threading it through governance/routing is then a refcount bump, never a clone of
+    /// the key's `String` fields. `None` when governance is disabled (enforcement is a no-op).
+    pub(crate) key: Option<Arc<VirtualKey>>,
 }
 
 /// Generate a virtual-key secret from 32 bytes of the OS CSPRNG (portable across Unix/Windows via
@@ -305,35 +739,53 @@ fn generate_aws_secret_access_key() -> Result<String, getrandom::Error> {
     Ok(out)
 }
 
-/// Whether `key` may target `pool` (empty allowed_pools = all pools).
+/// Whether `key` may target `pool` (C6: an OMITTED grant = all pools; an explicit list is
+/// exhaustive; an explicit `[]` = NO pools). Delegates to the contract crate's encoding.
 pub(crate) fn pool_allowed(key: &VirtualKey, pool: &str) -> bool {
-    key.allowed_pools.is_empty() || key.allowed_pools.iter().any(|p| p == pool)
+    key.scope_allowed("pool", pool)
 }
 
-/// The epoch start of the budget window containing `now` for a given period. "total" = a
-/// single all-time window (0); "daily" = UTC midnight; "monthly" = UTC first-of-month.
+/// The epoch start of the window containing `now` for a given window word (C8 nouns): `total` = a
+/// single all-time window (0); `day` = UTC midnight; `month` = UTC first-of-month.
 pub(crate) fn budget_window(period: &str, now: u64) -> u64 {
     match period {
-        BUDGET_PERIOD_DAILY => now / SECS_PER_DAY * SECS_PER_DAY,
-        BUDGET_PERIOD_MONTHLY => {
+        WINDOW_MINUTE => now / 60 * 60,
+        WINDOW_HOUR => now / 3600 * 3600,
+        WINDOW_DAY => now / SECS_PER_DAY * SECS_PER_DAY,
+        WINDOW_MONTH => {
             let days = (now / SECS_PER_DAY) as i64;
             let (y, m, _) = civil_from_days(days);
             (days_from_civil(y, m, 1) as u64) * SECS_PER_DAY
         }
-        BUDGET_PERIOD_TOTAL => 0, // explicit all-time window (the documented sentinel)
-        // An unrecognized period (typo such as `monthlly`, or an unsupported value such as
-        // `weekly`) is NOT silently accepted as `total`: it almost always means a misconfigured
-        // key. We fail safe to the all-time window (0) — the tightest enforcement, never wider —
-        // but emit a diagnostic so the misconfiguration is visible instead of silent. (Rejecting
-        // the value at key-creation time is the admin handler's job; this is the evaluation-path
-        // backstop.) Misconfiguration is rare, so the per-evaluation warn is acceptable.
+        WINDOW_TOTAL => 0, // explicit all-time window (the documented sentinel)
+        // An unrecognized window word can only arise from a corrupt/foreign store row (config
+        // parse rejects it). Fail SAFE to the all-time window (0), the tightest enforcement,
+        // never wider, with a diagnostic so the corruption is visible instead of silent.
         other => {
             tracing::warn!(
-                budget_period = other,
-                "unrecognized budget_period; enforcing as all-time ('total') window"
+                window = other,
+                "unrecognized limit window; enforcing as all-time ('total') window"
             );
             0
         }
+    }
+}
+
+/// The epoch at which `period`'s window containing `now` ROLLS to the next window - the
+/// `Retry-After` source for a windowed-limit rejection. `None` for `total` (never rolls) and for
+/// an unrecognized word (backstopped to `total` above).
+pub(crate) fn window_end(period: &str, now: u64) -> Option<u64> {
+    match period {
+        WINDOW_MINUTE => Some(now / 60 * 60 + 60),
+        WINDOW_HOUR => Some(now / 3600 * 3600 + 3600),
+        WINDOW_DAY => Some(now / SECS_PER_DAY * SECS_PER_DAY + SECS_PER_DAY),
+        WINDOW_MONTH => {
+            let days = (now / SECS_PER_DAY) as i64;
+            let (y, m, _) = civil_from_days(days);
+            let (ny, nm) = if m == 12 { (y + 1, 1) } else { (y, m + 1) };
+            Some((days_from_civil(ny, nm, 1) as u64) * SECS_PER_DAY)
+        }
+        _ => None,
     }
 }
 
@@ -360,956 +812,196 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
-/// A virtual key issued by busbar (distinct from upstream provider keys). Maps a caller to the
-/// pools they may use plus their budget/rate-limit policy.
-#[derive(Clone, PartialEq)]
-pub(crate) struct VirtualKey {
-    pub(crate) id: String,
-    /// SHA-256 hex of the presented secret (the secret itself is never stored).
-    pub(crate) key_hash: String,
-    pub(crate) name: String,
-    /// Pools this key may target; empty = all pools allowed.
-    pub(crate) allowed_pools: Vec<String>,
-    /// Spend cap in cents for the budget period; None = unlimited.
-    pub(crate) max_budget_cents: Option<i64>,
-    /// "total" | "daily" | "monthly".
-    pub(crate) budget_period: String,
-    /// Requests-per-minute cap; None = unlimited.
-    pub(crate) rpm_limit: Option<u32>,
-    /// Tokens-per-minute cap; None = unlimited.
-    pub(crate) tpm_limit: Option<u32>,
-    pub(crate) enabled: bool,
-    pub(crate) created_at: u64,
-}
-
-// MANUAL Debug that REDACTS `key_hash`. A derived `Debug` would print the SHA-256 of the key's
-// secret in PLAINTEXT — a latent credential leak any time a `VirtualKey` (or `GovCtx`, which embeds
-// one and whose derived Debug delegates here transitively) is debug-logged. The hash is the stored
-// authenticator (a presented secret is matched by hashing it and looking up this value), so it is
-// secret-equivalent and must never reach a log. Print presence only, never the value — mirroring
-// `config::GovernanceCfg`/`auth::AuthMiddleware`. All non-secret fields are shown verbatim so the
-// struct stays diagnosable.
-impl std::fmt::Debug for VirtualKey {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("VirtualKey")
-            .field("id", &self.id)
-            .field(
-                "key_hash",
-                &if self.key_hash.is_empty() {
-                    "<absent>"
-                } else {
-                    "<redacted; present>"
-                },
-            )
-            .field("name", &self.name)
-            .field("allowed_pools", &self.allowed_pools)
-            .field("max_budget_cents", &self.max_budget_cents)
-            .field("budget_period", &self.budget_period)
-            .field("rpm_limit", &self.rpm_limit)
-            .field("tpm_limit", &self.tpm_limit)
-            .field("enabled", &self.enabled)
-            .field("created_at", &self.created_at)
-            .finish()
-    }
-}
-
-/// A durable AWS-style credential row (the `aws_credentials` table), tying an AccessKeyId + secret
-/// access key to a virtual key's id (the MinIO/S3-compatible model). Stored separately from the
-/// `VirtualKey` row so the key's shape is unchanged. The `secret_access_key` is the SYMMETRIC SigV4
-/// signing secret (stored plaintext because HMAC verification needs the same value the client signs
-/// with), so this type carries a manual redacting `Debug`.
-#[derive(Clone, PartialEq)]
-pub(crate) struct AwsCredential {
-    /// The plaintext AccessKeyId carried in the inbound SigV4 `Authorization` header (not secret).
-    pub(crate) access_key_id: String,
-    /// The owning `VirtualKey.id`.
-    pub(crate) key_id: String,
-    /// The symmetric SigV4 secret access key — SECRET-EQUIVALENT (never log it).
-    pub(crate) secret_access_key: String,
-}
-
-// MANUAL Debug that REDACTS `secret_access_key` (the symmetric SigV4 signing secret). A derived Debug
-// would print it verbatim — a credential leak the moment an `AwsCredential` is debug-logged. The
-// AccessKeyId and key_id are NOT secret and are shown for diagnosability; the secret prints presence
-// only, never the value/length (a length is a small oracle).
-impl std::fmt::Debug for AwsCredential {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AwsCredential")
-            .field("access_key_id", &self.access_key_id)
-            .field("key_id", &self.key_id)
-            .field(
-                "secret_access_key",
-                &if self.secret_access_key.is_empty() {
-                    "<absent>"
-                } else {
-                    "<redacted; present>"
-                },
-            )
-            .finish()
-    }
-}
-
-/// A resolved AWS-credential cache entry: the owning `VirtualKey` plus the secret access key needed to
-/// verify the inbound SigV4 signature. Returned by `GovState::lookup_by_access_key_id`. Carries a
-/// manual redacting `Debug` for the same reason as `AwsCredential` — the secret must never reach a log.
-#[derive(Clone, PartialEq)]
-pub(crate) struct AwsKeyEntry {
-    pub(crate) key: VirtualKey,
-    /// The symmetric SigV4 secret access key — SECRET-EQUIVALENT (never log it).
-    pub(crate) secret_access_key: String,
-}
-
-impl std::fmt::Debug for AwsKeyEntry {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AwsKeyEntry")
-            .field("key", &self.key)
-            .field(
-                "secret_access_key",
-                &if self.secret_access_key.is_empty() {
-                    "<absent>"
-                } else {
-                    "<redacted; present>"
-                },
-            )
-            .finish()
-    }
-}
-
-/// Accumulated usage for a key within a budget window.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) struct Usage {
-    pub(crate) spend_cents: i64,
-    pub(crate) tokens: u64,
-    pub(crate) requests: u64,
-}
+pub(crate) use busbar_api::{
+    CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, SecretForm, Store, StoreError,
+    StoreResult, TierTokens, UsageDelta, VirtualKey,
+};
+// The full-ledger record is consumed only by TEST assertions (production reads go through the
+// derived views); scoping the re-export keeps the release build warning-free.
+#[cfg(test)]
+pub(crate) use busbar_api::UsageLedger;
+// `ScopeRef` is constructed directly via `busbar_api::ScopeRef` on every production call site
+// (cost.rs, config/groups.rs, governance/state.rs); this re-export exists only so test code that
+// does `use super::*` from within `governance::tests` can name it unqualified, same reasoning as
+// `UsageLedger` above.
+#[cfg(test)]
+pub(crate) use busbar_api::ScopeRef;
 
 /// Seconds in a metering day bucket. Metering is a TIME SERIES in fixed UTC-day buckets —
 /// deliberately decoupled from the per-key budget windows the enforcement counters use, so
 /// per-model aggregation ACROSS keys has one well-defined time base.
 pub(crate) const METERING_BUCKET_SECS: u64 = 86_400;
 
+/// One `pending_metering` entry: the same five counters `MeteringDelta` carries, accumulated
+/// in-memory across every `record_metering` call that lands on this key before the next flush.
+#[derive(Default, Clone, Copy)]
+pub(crate) struct MeterCounts {
+    pub(crate) requests: u64,
+    pub(crate) tokens_input: u64,
+    pub(crate) tokens_output: u64,
+    pub(crate) tokens_cache_read: u64,
+    pub(crate) tokens_cache_write: u64,
+}
+
 /// Floor an epoch to its UTC-day metering bucket start.
 pub(crate) fn metering_bucket(now: u64) -> u64 {
     now - (now % METERING_BUCKET_SECS)
 }
 
-/// One per-(key, model, provider) metering accumulation from a completed response — RAW consumption
-/// counts, never money. Spend is DERIVED at read time from the operator's configured prices, and a
-/// third party with its own (special/negotiated) price catalog reconstructs cost from these counts:
-/// input, output, cache-read, and cache-creation tokens all price differently, so each is carried
-/// separately (design: expose the inputs of the cost computation, not just busbar's own result).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct MeteringDelta {
-    pub(crate) key_id: String,
-    /// The UTC-day bucket this response is attributed to (see [`metering_bucket`]); derived from the
-    /// request's pinned header-arrival epoch, same as the budget charges (#29).
-    pub(crate) bucket: u64,
-    /// The SERVING lane's configured model name (post-failover — the lane that actually answered).
-    pub(crate) model: String,
-    /// The serving lane's provider name.
-    pub(crate) provider: String,
-    /// Uncached input tokens (the normalized additive-cache convention, per `billing::TokenUsage`).
-    pub(crate) tokens_input: u64,
-    pub(crate) tokens_output: u64,
-    pub(crate) tokens_cache_read: u64,
-    pub(crate) tokens_cache_creation: u64,
+// The durable-store contract (the `Store` trait, its records, and `StoreError`) now lives in the
+// `busbar-api` contract crate, re-exported above so the rest of the engine names them unchanged.
+// getrandom errors convert into the api's backend-agnostic `StoreError` HERE via a local
+// extension trait (the contract crate stays dependency-light). The SQLite backend lives in its own
+// plugin crate (`busbar-store-sqlite`); the engine only names the `Store` contract + the re-exported type.
+trait IntoStoreResult<T> {
+    fn store(self) -> StoreResult<T>;
 }
-
-/// One accumulated metering row read back for a bucket (the raw material of `GET usage` by_model /
-/// by_key aggregations — the service aggregates in memory; buckets are bounded by (keys × models)).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct MeteringRow {
-    pub(crate) key_id: String,
-    pub(crate) model: String,
-    pub(crate) provider: String,
-    pub(crate) tokens_input: u64,
-    pub(crate) tokens_output: u64,
-    pub(crate) tokens_cache_read: u64,
-    pub(crate) tokens_cache_creation: u64,
-    pub(crate) requests: u64,
-}
-
-pub(crate) type StoreResult<T> = Result<T, StoreError>;
-
-#[derive(Debug)]
-pub(crate) struct StoreError(pub(crate) String);
-
-impl std::fmt::Display for StoreError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "store error: {}", self.0)
-    }
-}
-impl std::error::Error for StoreError {}
-impl From<rusqlite::Error> for StoreError {
-    fn from(e: rusqlite::Error) -> Self {
-        StoreError(e.to_string())
-    }
-}
-impl From<getrandom::Error> for StoreError {
-    fn from(e: getrandom::Error) -> Self {
-        StoreError(format!("OS CSPRNG (getrandom) unavailable: {e}"))
+impl<T> IntoStoreResult<T> for Result<T, getrandom::Error> {
+    fn store(self) -> StoreResult<T> {
+        self.map_err(|e| StoreError(format!("OS CSPRNG (getrandom) unavailable: {e}")))
     }
 }
 
-/// The durable governance store seam. Swappable: `SqliteStore` today, `PostgresStore`
-/// later behind the same trait.
-///
-/// DUAL FLAVOR (sync + async). The per-request accounting methods come in two flavors: the original
-/// SYNCHRONOUS form (called directly under the governance/admin locks and in tests — e.g. the gated
-/// `EXISTENCE_GATE` compound ops, the batched metrics scrape) and an ASYNC form (`*_async`) used on
-/// the per-request hot path. The per-request offload is now OWNED BY THE BACKEND: each backend
-/// decides how to satisfy the async flavor. The `SqliteStore` impl fulfills it by offloading the
-/// synchronous SQL onto the blocking pool (`spawn_blocking`); a future `PostgresStore` would await a
-/// real async driver natively. The DEFAULT trait impls simply call the matching sync method inline
-/// — correct for lightweight test doubles, where no real offload is needed.
-#[async_trait::async_trait]
-pub(crate) trait Store: Send + Sync + 'static {
-    fn put_key(&self, key: &VirtualKey) -> StoreResult<()>;
-    fn get_key(&self, id: &str) -> StoreResult<Option<VirtualKey>>;
-    // Lookup by key hash — exercised only by unit tests that probe the DB directly; the hot-path
-    // key resolution uses the in-memory `by_hash` cache and never calls through the trait. Gated to
-    // test builds so it (and its `SqliteStore` impl) leaves no dead surface in the release binary.
-    #[cfg(test)]
-    fn get_key_by_hash(&self, key_hash: &str) -> StoreResult<Option<VirtualKey>>;
-    fn list_keys(&self) -> StoreResult<Vec<VirtualKey>>;
-    fn delete_key(&self, id: &str) -> StoreResult<()>;
-    /// Add usage to a key's counter for the given budget-window start (UPSERT/accumulate).
-    /// `count_request` increments the request counter by one — true for the per-request fee, false
-    /// when only accruing token spend for an already-counted request (so requests aren't double
-    /// counted when both the flat fee and token usage are recorded for one request).
-    fn add_usage(
-        &self,
-        key_id: &str,
-        window_start: u64,
-        spend_cents: i64,
-        tokens: u64,
-        count_request: bool,
-    ) -> StoreResult<()>;
-    fn get_usage(&self, key_id: &str, window_start: u64) -> StoreResult<Usage>;
+// The RAM store is the always-on DEFAULT governance backend (and the universal test double). The
+// SQLite backend is no longer compiled in — it is a dynamic-library plugin loaded at boot (see
+// crate::main's store selection + busbar-plugin-loader).
+pub(crate) use busbar_store_memory::MemoryStore;
 
-    /// Accumulate one completed response's RAW consumption into the per-(key, bucket, model,
-    /// provider) metering row (UPSERT/add; +1 request). Metering is observability — best-effort,
-    /// never consulted for enforcement (budgets stay on `add_usage`/`charge_within_budget`).
-    fn add_metering(&self, delta: &MeteringDelta) -> StoreResult<()>;
-
-    /// Every metering row accumulated in `bucket` (a [`metering_bucket`] day start), for the usage
-    /// read's by-model / by-key aggregations.
-    fn list_metering(&self, bucket: u64) -> StoreResult<Vec<MeteringRow>>;
-
-    /// ATOMIC budget check-and-charge (the HARD-cap primitive). In a SINGLE store round-trip, charge
-    /// `cost_cents` (the flat per-request fee) + one request to the key's `window_start` counter IFF
-    /// the post-charge spend stays within `max_cents` (`None` = uncapped → always charges). Returns
-    /// `true` when the charge landed (request admitted), `false` when it would exceed the cap (reject).
-    ///
-    /// This replaces the non-atomic `is_over_budget` (read) + `record_request` (write) pair on the
-    /// admission path: because the check and the charge are one indivisible UPSERT, N concurrent
-    /// requests for the same key can NO LONGER each read "under budget" and all charge — the cap is a
-    /// HARD cap for the flat fee. (Token cost is still reconciled post-response, so a single in-flight
-    /// request's own tokens can push spend marginally over — bounded to ONE request, not N. See the
-    /// call site in `ingress`.)
-    fn charge_within_budget(
-        &self,
-        key_id: &str,
-        window_start: u64,
-        cost_cents: i64,
-        max_cents: Option<i64>,
-    ) -> StoreResult<bool>;
-
-    /// REFUND a previously-charged flat per-request fee + its request count. The
-    /// atomic admission charge bills EVERY admitted request up front (hard cap); a request that then
-    /// produced no usable upstream result (non-2xx) must be refunded so the flat-fee billing policy
-    /// stays "charge successful requests only" — matching the pre-fix behavior where `finish` only
-    /// billed 2xx. Decrements spend by `cost_cents` and requests by one, both floored at 0 so a
-    /// refund can never drive a counter negative. Best-effort (called off the request path).
-    fn refund_request(&self, key_id: &str, window_start: u64, cost_cents: i64) -> StoreResult<()>;
-
-    // ── ASYNC flavor of the per-request accounting methods ───────────────────────────────────────
-    // The per-request offload is owned by the backend (see the trait-level doc). These mirror the
-    // four hot-path accounting methods above; the request path (`GovState`) calls THESE instead of
-    // hand-rolling a `spawn_blocking` around the sync forms. The DEFAULT impl calls the sync method
-    // inline (correct for test doubles); `SqliteStore` overrides each to offload onto the blocking
-    // pool so a slow rusqlite call never stalls a Tokio worker.
-
-    /// Async flavor of [`Store::charge_within_budget`]. Default: calls the sync form inline.
-    async fn charge_within_budget_async(
-        &self,
-        key_id: &str,
-        window_start: u64,
-        cost_cents: i64,
-        max_cents: Option<i64>,
-    ) -> StoreResult<bool> {
-        self.charge_within_budget(key_id, window_start, cost_cents, max_cents)
-    }
-
-    /// Async flavor of [`Store::get_usage`]. Default: calls the sync form inline.
-    // Superseded on the request path by the atomic charge primitive; its only remaining caller is the
-    // test-only `is_over_budget_async`, so `#[cfg(test)]` (compiled out of the release binary) rather
-    // than a dead-code allow — mirrors the `is_over_budget_async` hygiene in the same module.
-    #[cfg(test)]
-    async fn get_usage_async(&self, key_id: &str, window_start: u64) -> StoreResult<Usage> {
-        self.get_usage(key_id, window_start)
-    }
-
-    /// Persist an AWS-style credential (the MinIO/S3-compatible model) for inbound SigV4 verification.
-    /// UPSERTs on the `access_key_id` PRIMARY KEY. The `secret_access_key` is the symmetric SigV4
-    /// signing secret stored in plaintext (HMAC verification needs the same value the client signs
-    /// with); callers must never log it.
-    ///
-    /// DEFAULTED so the (many) lightweight test-double `Store` impls scattered across the crate need
-    /// not implement the AWS surface — only the real `SqliteStore` does. The default is a no-op-shaped
-    /// error so a misconfigured store that silently dropped a credential cannot pass as success.
-    fn put_aws_credential(&self, _cred: &AwsCredential) -> StoreResult<()> {
-        Err(StoreError(
-            "this Store does not support AWS credentials".to_string(),
-        ))
-    }
-
-    /// ATOMIC key+credential mint. Persist the bearer `VirtualKey` row AND its paired `AwsCredential`
-    /// row together or not at all. Under SQLite autocommit, `put_key` then `put_aws_credential` are two
-    /// independent commits: a storage error (I/O, disk full, constraint) after the first leaves an
-    /// inert key row with no resolvable AccessKeyId — an orphan that `create_key_with_aws` would then
-    /// surface as a failure while the half-written row lingers. A real transactional store overrides
-    /// this to wrap both writes in one `conn.transaction()` (mirroring `delete_key`).
-    ///
-    /// DEFAULT fallback: test-double stores that don't expose a transaction simply do the two writes in
-    /// sequence — they have no durability boundary to violate, and this keeps the (many) lightweight
-    /// `Store` impls from needing to implement the transactional path.
-    fn put_key_with_aws_credential(
-        &self,
-        key: &VirtualKey,
-        cred: &AwsCredential,
-    ) -> StoreResult<()> {
-        self.put_key(key)?;
-        self.put_aws_credential(cred)?;
-        Ok(())
-    }
-
-    /// All AWS credentials (used to rebuild the in-memory AccessKeyId index at boot / on refresh).
-    /// DEFAULTED to an empty list (see `put_aws_credential`): a store with no AWS-credential support
-    /// simply has none to index, so SigV4 ingress is unavailable — never an auth bypass.
-    fn list_aws_credentials(&self) -> StoreResult<Vec<AwsCredential>> {
-        Ok(Vec::new())
-    }
-}
-
-const SCHEMA: &str = "
-CREATE TABLE IF NOT EXISTS virtual_keys (
-    id               TEXT PRIMARY KEY,
-    key_hash         TEXT NOT NULL UNIQUE,
-    name             TEXT NOT NULL,
-    allowed_pools    TEXT NOT NULL DEFAULT '',
-    max_budget_cents INTEGER,
-    budget_period    TEXT NOT NULL DEFAULT 'total',
-    rpm_limit        INTEGER,
-    tpm_limit        INTEGER,
-    enabled          INTEGER NOT NULL DEFAULT 1,
-    created_at       INTEGER NOT NULL
-);
--- AWS-style credentials for inbound SigV4 verification (the MinIO/S3-compatible model), kept in a
--- SEPARATE table keyed by the virtual key's id rather than as columns on `virtual_keys`. This keeps
--- the `VirtualKey` row shape (and every existing construction of it elsewhere) unchanged while still
--- TYING the credential to the key: `access_key_id` is the plaintext lookup handle carried in the
--- SigV4 `Authorization` header, and `secret_access_key` is the symmetric signing secret (stored in
--- plaintext because HMAC verification needs the same value the client signs with). `access_key_id`
--- is the PRIMARY KEY (a given AccessKeyId resolves to exactly one key); `key_id` carries the FK
--- relationship to `virtual_keys.id`. Rows are removed when the owning key is deleted (see
--- `delete_key`), so a revoked key's AWS credential cannot outlive it.
-CREATE TABLE IF NOT EXISTS aws_credentials (
-    access_key_id     TEXT PRIMARY KEY,
-    key_id            TEXT NOT NULL,
-    secret_access_key TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_aws_credentials_key_id ON aws_credentials (key_id);
-CREATE TABLE IF NOT EXISTS usage_counters (
-    key_id       TEXT NOT NULL,
-    window_start INTEGER NOT NULL,
-    spend_cents  INTEGER NOT NULL DEFAULT 0,
-    tokens       INTEGER NOT NULL DEFAULT 0,
-    requests     INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (key_id, window_start)
-);
-CREATE TABLE IF NOT EXISTS usage_metering (
-    key_id                TEXT NOT NULL,
-    bucket                INTEGER NOT NULL,
-    model                 TEXT NOT NULL,
-    provider              TEXT NOT NULL,
-    tokens_input          INTEGER NOT NULL DEFAULT 0,
-    tokens_output         INTEGER NOT NULL DEFAULT 0,
-    tokens_cache_read     INTEGER NOT NULL DEFAULT 0,
-    tokens_cache_creation INTEGER NOT NULL DEFAULT 0,
-    requests              INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (key_id, bucket, model, provider)
-);
-";
-
-/// Embedded SQLite store (the default `Store`). The single `Connection` is mutex-guarded; the
-/// governance surface is low-frequency (key CRUD) or batched (usage), so this is not on the hot path.
-pub(crate) struct SqliteStore {
-    // `Arc<Mutex<…>>` (not a bare `Mutex`): the async accounting flavor offloads the synchronous SQL
-    // onto the blocking pool, which needs an owned handle to the connection mutex it can move into the
-    // `spawn_blocking` closure. The `Arc` lets each offload clone a cheap shared handle while
-    // `lock_conn()` (and every synchronous method) still locks the SAME single connection — the Arc
-    // derefs to the inner `Mutex`, so serialization across sync and async callers is preserved.
-    conn: Arc<Mutex<Connection>>,
-}
-
-impl SqliteStore {
-    pub(crate) fn open(path: &str) -> StoreResult<Self> {
-        let conn = Connection::open(path)?;
-        // Harden the on-disk DB against `SQLITE_BUSY` from a second connection or an external tool
-        // (backup/inspection): WAL lets readers and a writer proceed concurrently, and a 5s busy
-        // timeout makes a transient lock contention retry-then-succeed rather than fail instantly.
-        // Skip both for an in-memory path: `:memory:` ignores WAL (no rollback journal file exists)
-        // and has no second connection to contend with, so the pragmas are inapplicable there.
-        if !path.starts_with(":memory:") && !path.contains("mode=memory") {
-            // `journal_mode` returns the resulting mode as a row, so use `pragma_update`/query rather
-            // than `execute` (which rejects a statement that yields rows). `busy_timeout` is a plain
-            // setter and is safe via `execute_batch`.
-            conn.pragma_update(None, "journal_mode", "WAL")?;
-            conn.pragma_update(
-                None,
-                "busy_timeout",
-                crate::limits::sqlite_busy_timeout_ms(),
-            )?;
-        }
-        let store = Self {
-            conn: Arc::new(Mutex::new(conn)),
-        };
-        store.migrate()?;
-        Ok(store)
-    }
-
-    /// In-memory SQLite store, for unit tests.
-    #[cfg(test)]
-    pub(crate) fn open_in_memory() -> StoreResult<Self> {
-        let store = Self {
-            conn: Arc::new(Mutex::new(Connection::open_in_memory()?)),
-        };
-        store.migrate()?;
-        Ok(store)
-    }
-
-    /// Acquire the SQLite connection mutex, recovering from a poisoned lock instead of panicking.
-    /// Mirrors `rate_write`/`caches_read`: this lock is reachable from the request path (the atomic
-    /// admission charge in `charge_within_budget_async` → `charge_within_budget_inner` runs inside
-    /// `spawn_blocking`), and the project
-    /// rule is no panic on the request path. A panic under the connection lock would otherwise poison
-    /// it and cascade into a governance-wide outage on every subsequent CRUD/usage call. SQLite's own
-    /// state stays consistent across a recovered guard (a panicked statement is rolled back by
-    /// rusqlite's Drop), so continuing with `into_inner()` is safe.
-    fn lock_conn(&self) -> std::sync::MutexGuard<'_, Connection> {
-        Self::lock_conn_raw(&self.conn)
-    }
-
-    /// Poison-recovering lock of a raw `&Mutex<Connection>` — same rationale as [`Self::lock_conn`],
-    /// but takes the mutex by reference so the shared `*_inner` SQL bodies (called from BOTH the sync
-    /// trait methods, holding `&self.conn`, AND the async offloads, holding a cloned `Arc`) can lock
-    /// it without needing `&self`.
-    fn lock_conn_raw(conn: &Mutex<Connection>) -> std::sync::MutexGuard<'_, Connection> {
-        conn.lock().unwrap_or_else(|p| p.into_inner())
-    }
-
-    fn migrate(&self) -> StoreResult<()> {
-        // `CREATE TABLE IF NOT EXISTS` for both `virtual_keys` and the new `aws_credentials` table is
-        // idempotent and backward-compatible: an existing on-disk DB keeps its `virtual_keys` rows
-        // untouched and simply gains the `aws_credentials` table (a NEW table, so no `ALTER`/column-add
-        // dance and no risk to existing rows). A bearer-only DB from an older build upgrades cleanly.
-        self.lock_conn().execute_batch(SCHEMA)?;
-        Ok(())
-    }
-
-    // ── Shared SQL bodies for the dual-flavor accounting methods ─────────────────────────────────
-    // Each `*_inner` holds the EXACT SQL of its accounting method, locking the passed connection
-    // mutex (poison-recovering) so it can run from EITHER the synchronous trait method (`&self.conn`)
-    // OR an async offload (a cloned `Arc<Mutex<Connection>>` moved into a `spawn_blocking` closure).
-    // No `&self`, so the offload closure need not borrow the store. The SQL is byte-for-byte the
-    // original — sync and async share one body, so they can never drift.
-
-    fn add_usage_inner(
-        conn: &Mutex<Connection>,
-        key_id: &str,
-        window_start: u64,
-        spend_cents: i64,
-        tokens: u64,
-        count_request: bool,
-    ) -> StoreResult<()> {
-        let req_delta = i64::from(count_request);
-        let conn = Self::lock_conn_raw(conn);
-        conn.execute(
-            "INSERT INTO usage_counters (key_id, window_start, spend_cents, tokens, requests)
-             VALUES (?1,?2,?3,?4,?5)
-             ON CONFLICT(key_id, window_start) DO UPDATE SET
-                spend_cents = spend_cents + excluded.spend_cents,
-                tokens      = tokens + excluded.tokens,
-                requests    = requests + excluded.requests",
-            params![
-                key_id,
-                window_start as i64,
-                spend_cents,
-                i64::try_from(tokens).unwrap_or(i64::MAX),
-                req_delta
-            ],
-        )?;
-        Ok(())
-    }
-
-    fn add_metering_inner(conn: &Mutex<Connection>, d: &MeteringDelta) -> StoreResult<()> {
-        let conn = Self::lock_conn_raw(conn);
-        conn.execute(
-            "INSERT INTO usage_metering (key_id, bucket, model, provider,
-                 tokens_input, tokens_output, tokens_cache_read, tokens_cache_creation, requests)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,1)
-             ON CONFLICT(key_id, bucket, model, provider) DO UPDATE SET
-                 tokens_input          = tokens_input + excluded.tokens_input,
-                 tokens_output         = tokens_output + excluded.tokens_output,
-                 tokens_cache_read     = tokens_cache_read + excluded.tokens_cache_read,
-                 tokens_cache_creation = tokens_cache_creation + excluded.tokens_cache_creation,
-                 requests              = requests + 1",
-            params![
-                d.key_id,
-                d.bucket as i64,
-                d.model,
-                d.provider,
-                i64::try_from(d.tokens_input).unwrap_or(i64::MAX),
-                i64::try_from(d.tokens_output).unwrap_or(i64::MAX),
-                i64::try_from(d.tokens_cache_read).unwrap_or(i64::MAX),
-                i64::try_from(d.tokens_cache_creation).unwrap_or(i64::MAX),
-            ],
-        )?;
-        Ok(())
-    }
-
-    fn list_metering_inner(conn: &Mutex<Connection>, bucket: u64) -> StoreResult<Vec<MeteringRow>> {
-        let conn = Self::lock_conn_raw(conn);
-        let mut stmt = conn.prepare(
-            "SELECT key_id, model, provider,
-                    tokens_input, tokens_output, tokens_cache_read, tokens_cache_creation, requests
-             FROM usage_metering WHERE bucket = ?1",
-        )?;
-        let rows = stmt
-            .query_map(params![bucket as i64], |r| {
-                // DI-3 posture (matches get_usage): clamp a corrupt negative stored counter to 0
-                // instead of wrapping a negative i64 to a huge u64 via `as`.
-                let u = |v: i64| v.max(0) as u64;
-                Ok(MeteringRow {
-                    key_id: r.get(0)?,
-                    model: r.get(1)?,
-                    provider: r.get(2)?,
-                    tokens_input: u(r.get(3)?),
-                    tokens_output: u(r.get(4)?),
-                    tokens_cache_read: u(r.get(5)?),
-                    tokens_cache_creation: u(r.get(6)?),
-                    requests: u(r.get(7)?),
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(rows)
-    }
-
-    fn charge_within_budget_inner(
-        conn: &Mutex<Connection>,
-        key_id: &str,
-        window_start: u64,
-        cost_cents: i64,
-        max_cents: Option<i64>,
-    ) -> StoreResult<bool> {
-        // First-request-in-window guard: if the row does not yet exist the UPSERT's INSERT branch
-        // fires unconditionally (a `WHERE` clause only guards the DO UPDATE branch), so a flat fee
-        // that ALONE exceeds the cap would slip in. Reject it up front — a single request costing
-        // more than the whole budget can never be admitted. (cost_cents is clamped >= 0 by the
-        // caller; max_cents None means uncapped.)
-        if let Some(max) = max_cents {
-            if cost_cents > max {
-                return Ok(false);
+/// The write-behind flusher: on a fixed cadence (and once more on graceful shutdown) pushes the
+/// dirty in-memory budget cells, the accumulated `pending_metering` rows, AND the durable audit log's
+/// pending write-through (`admin::audit::AuditLog::flush_durable`) to the durable store off the
+/// request hot path. Mirrors the D3 `state_persist::spawn_snapshotter` shape — a spawned loop
+/// that ticks, does the durable write, and runs one FINAL flush on the shutdown signal so a graceful
+/// stop loses nothing. The in-memory budget cells stay AUTHORITATIVE for enforcement; metering cells
+/// are authoritative for nothing (the store is their only consumer). `flush_budgets` and
+/// `flush_metering` are best-effort and re-queue their unwritten data on a store error, so a
+/// transient write failure is retried on the next tick rather than lost; `flush_durable` is likewise
+/// best-effort — see `admin::audit::WRITE_THROUGH_HEADROOM` for what backstops it when a tick stalls.
+pub(crate) fn spawn_budget_flusher(
+    gov: std::sync::Arc<GovState>,
+    mut shutdown: tokio::sync::broadcast::Receiver<()>,
+) -> tokio::task::JoinHandle<()> {
+    let interval = std::time::Duration::from_millis(crate::limits::usage_flush_interval_ms());
+    // SERIALIZE flushes: `flush_budgets` snapshots each dirty cell's DELTA against its acked
+    // baseline and `add_usage`-accumulates it, advancing the baseline only on success. If a slow
+    // flush outlasts a tick, a second concurrent flush would snapshot against the SAME un-advanced
+    // baseline and re-send the first flush's still-in-flight delta - a durable DOUBLE-COUNT. A
+    // single-permit async gate makes at most one flush in flight at a time: the periodic tick SKIPS
+    // if a flush is still running (`try_lock`), and the shutdown arm WAITS for the in-flight flush to
+    // drain (`lock().await`) before its final flush, so shutdown never overlaps and never loses the
+    // last window's spend.
+    let flush_gate = std::sync::Arc::new(tokio::sync::Mutex::new(()));
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep(interval) => {
+                    // `flush_budgets` runs SYNCHRONOUS SQLite writes (store `*_inner` on a std Mutex);
+                    // calling it inline here would block a Tokio worker thread for the duration of the
+                    // durable write. Offload to the blocking pool so the async runtime keeps serving
+                    // requests. `gov` is an Arc, so clone the handle into the blocking task; we do not
+                    // await the join (write-behind is fire-and-forget - a store error re-marks the cell
+                    // dirty and the next tick retries).
+                    //
+                    // SKIP-IF-STILL-FLUSHING: acquire the flush gate with `try_lock`; if a prior flush
+                    // is still in flight, this tick is a no-op (its dirty cells stay dirty and the next
+                    // free tick flushes them) rather than racing a second overlapping flush. The guard
+                    // is moved INTO the blocking task and dropped when the flush returns, releasing the
+                    // gate for the next tick.
+                    let Ok(guard) = flush_gate.clone().try_lock_owned() else {
+                        continue;
+                    };
+                    let gov = gov.clone();
+                    tokio::task::spawn_blocking(move || {
+                        gov.flush_budgets();
+                        gov.flush_metering();
+                        // Reuses this same tick/gate/offload plumbing for the audit log's
+                        // write-behind drain: `durable_write_through`'s
+                        // unit of work is already a coalescing RANGE, so one call here persists
+                        // every seq `record_by`'s pressure valve left pending since the last tick.
+                        crate::admin::audit::AUDIT.flush_durable();
+                        drop(guard);
+                    });
+                }
+                _ = shutdown.recv() => {
+                    // Graceful shutdown: one FINAL flush so no accrued spend/requests is lost, then exit.
+                    // WAIT for any in-flight periodic flush to drain first (`lock().await`) so the final
+                    // flush never overlaps one - otherwise the final flush's newer snapshot could be
+                    // overwritten by the older in-flight flush completing after it. This one is AWAITED
+                    // (via spawn_blocking + join) rather than fire-and-forget: the task is about to break
+                    // and stop ticking, so the final durable write must COMPLETE before we exit or the
+                    // last window's accrued spend is lost. It still runs on the blocking pool (not inline
+                    // on the worker), and a join error falls back to nothing flushed - best-effort.
+                    let guard = flush_gate.clone().lock_owned().await;
+                    let gov = gov.clone();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        gov.flush_budgets();
+                        gov.flush_metering();
+                        crate::admin::audit::AUDIT.flush_durable();
+                        drop(guard);
+                    })
+                    .await;
+                    break;
+                }
             }
         }
-        let conn = Self::lock_conn_raw(conn);
-        // ONE atomic UPSERT: insert the first request in the window (always within cap given the
-        // guard above), or accumulate onto an existing row ONLY IF the post-charge spend stays within
-        // `max_cents`. `RETURNING` yields a row exactly when the charge landed; zero rows ⇒ the
-        // conditional DO UPDATE's WHERE failed ⇒ over budget ⇒ reject. SQLite evaluates the bare
-        // column names in the WHERE against the EXISTING row (pre-update), so `spend_cents + :cost`
-        // is the prospective post-charge total. `:max IS NULL` (uncapped) short-circuits to always-charge.
-        // OVERFLOW SAFETY: SQLite arithmetic does NOT wrap on i64 overflow — it promotes the result to
-        // REAL (floating point). So if `spend_cents` were ever near i64::MAX, `spend_cents + :cost`
-        // becomes a large REAL (~9.2e18) which fails `<= :max` and the charge is correctly REJECTED —
-        // there is no C-style negative-wrap that could sneak a charge past the cap. (Verified empirically.)
-        let charged: Option<i64> = conn
-            .query_row(
-                "INSERT INTO usage_counters (key_id, window_start, spend_cents, tokens, requests)
-                 VALUES (?1, ?2, ?3, 0, 1)
-                 ON CONFLICT(key_id, window_start) DO UPDATE SET
-                     spend_cents = spend_cents + ?3,
-                     requests    = requests + 1
-                   WHERE ?4 IS NULL OR spend_cents + ?3 <= ?4
-                 RETURNING spend_cents",
-                params![key_id, window_start as i64, cost_cents, max_cents],
-                |r| r.get::<_, i64>(0),
-            )
-            .optional()?;
-        Ok(charged.is_some())
-    }
-
-    fn refund_request_inner(
-        conn: &Mutex<Connection>,
-        key_id: &str,
-        window_start: u64,
-        cost_cents: i64,
-    ) -> StoreResult<()> {
-        let conn = Self::lock_conn_raw(conn);
-        // Reverse exactly one atomic charge: subtract the flat fee from spend and one from requests,
-        // each floored at 0 (MAX(0, …)) so a refund can never push a counter negative even if windows
-        // or rows were reset between charge and refund. UPDATE-only: if the row is gone there is
-        // nothing to refund (a no-op, not an error).
-        conn.execute(
-            "UPDATE usage_counters SET
-                 spend_cents = MAX(0, spend_cents - ?3),
-                 requests    = MAX(0, requests - 1)
-             WHERE key_id = ?1 AND window_start = ?2",
-            params![key_id, window_start as i64, cost_cents],
-        )?;
-        Ok(())
-    }
-
-    fn get_usage_inner(
-        conn: &Mutex<Connection>,
-        key_id: &str,
-        window_start: u64,
-    ) -> StoreResult<Usage> {
-        let conn = Self::lock_conn_raw(conn);
-        let row = conn
-            .query_row(
-                "SELECT spend_cents, tokens, requests FROM usage_counters WHERE key_id=?1 AND window_start=?2",
-                params![key_id, window_start as i64],
-                |r| {
-                    Ok(Usage {
-                        spend_cents: r.get(0)?,
-                        // DI-3: clamp a (corrupt / direct-DB) negative stored counter to 0 instead
-                        // of wrapping a negative i64 to a huge u64 via `as`.
-                        tokens: r.get::<_, i64>(1)?.max(0) as u64,
-                        requests: r.get::<_, i64>(2)?.max(0) as u64,
-                    })
-                },
-            )
-            .optional()?;
-        Ok(row.unwrap_or_default())
-    }
-}
-
-// `allowed_pools` is stored in the `allowed_pools TEXT` column. The historical format was a bare
-// comma-delimited string, which CORRUPTS any pool name containing a comma: a single intended pool
-// `"prod,special"` round-trips as two pools `["prod", "special"]`, so `pool_allowed` matches EITHER
-// fragment (a silent privilege expansion) and never matches the real compound name (a silent deny).
-// A JSON array is delimiter-safe for arbitrary string values, so we now SERIALIZE as JSON. We still
-// READ legacy comma-delimited rows transparently (a value that is not valid JSON array TEXT — i.e.
-// every row written before this change — falls back to the comma split), so an existing on-disk DB
-// keeps working without a migration. New writes are always JSON, so a comma-bearing name survives a
-// write/read round-trip exactly.
-fn pools_to_storage(pools: &[String]) -> String {
-    // serde_json::to_string over a `&[String]` is infallible (no map keys, no non-finite floats),
-    // but we must not panic on the admin write path: on the unreachable error fall back to the empty
-    // JSON array, which `pools_from_storage` reads back as "no restriction" — fail-safe, and far
-    // better than aborting the request task.
-    serde_json::to_string(pools).unwrap_or_else(|_| "[]".to_string())
-}
-fn pools_from_storage(stored: &str) -> Vec<String> {
-    let trimmed = stored.trim();
-    if trimmed.is_empty() {
-        return Vec::new();
-    }
-    // New format: a JSON array of strings. Parse it as the source of truth.
-    if let Ok(pools) = serde_json::from_str::<Vec<String>>(trimmed) {
-        return pools;
-    }
-    // Legacy format (written before the JSON migration): bare comma-delimited string. A comma-free
-    // legacy value round-trips identically; a comma-bearing one is preserved as-is by future JSON
-    // writes once the key is next persisted.
-    trimmed.split(',').map(String::from).collect()
-}
-
-// Shared SQL bodies for the key/credential UPSERTs, so the autocommit single-statement methods
-// (`put_key`, `put_aws_credential`) and the transactional mint (`put_key_with_aws_credential`) hold
-// the SQL EXACTLY ONCE and can never drift. `rusqlite::Transaction` derefs to `Connection`, so a
-// `&tx` coerces to `&Connection` here — the same body runs whether `conn` is a plain connection
-// guard or a transaction. The SQL is byte-for-byte the original inline statements.
-
-fn put_key_inner(conn: &rusqlite::Connection, key: &VirtualKey) -> StoreResult<()> {
-    conn.execute(
-        "INSERT INTO virtual_keys
-                (id, key_hash, name, allowed_pools, max_budget_cents, budget_period, rpm_limit, tpm_limit, enabled, created_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
-             ON CONFLICT(id) DO UPDATE SET
-                key_hash=excluded.key_hash, name=excluded.name, allowed_pools=excluded.allowed_pools,
-                max_budget_cents=excluded.max_budget_cents, budget_period=excluded.budget_period,
-                rpm_limit=excluded.rpm_limit, tpm_limit=excluded.tpm_limit, enabled=excluded.enabled",
-        params![
-            key.id,
-            key.key_hash,
-            key.name,
-            pools_to_storage(&key.allowed_pools),
-            key.max_budget_cents,
-            key.budget_period,
-            key.rpm_limit,
-            key.tpm_limit,
-            key.enabled as i64,
-            key.created_at as i64,
-        ],
-    )?;
-    Ok(())
-}
-
-fn put_aws_credential_inner(conn: &rusqlite::Connection, cred: &AwsCredential) -> StoreResult<()> {
-    conn.execute(
-        "INSERT INTO aws_credentials (access_key_id, key_id, secret_access_key)
-             VALUES (?1, ?2, ?3)
-             ON CONFLICT(access_key_id) DO UPDATE SET
-                key_id=excluded.key_id, secret_access_key=excluded.secret_access_key",
-        params![cred.access_key_id, cred.key_id, cred.secret_access_key],
-    )?;
-    Ok(())
-}
-
-#[async_trait::async_trait]
-impl Store for SqliteStore {
-    fn put_key(&self, key: &VirtualKey) -> StoreResult<()> {
-        put_key_inner(&self.lock_conn(), key)
-    }
-
-    fn get_key(&self, id: &str) -> StoreResult<Option<VirtualKey>> {
-        let conn = self.lock_conn();
-        let row = conn
-            .query_row(
-                "SELECT id,key_hash,name,allowed_pools,max_budget_cents,budget_period,rpm_limit,tpm_limit,enabled,created_at
-                 FROM virtual_keys WHERE id=?1",
-                params![id],
-                row_to_key,
-            )
-            .optional()?;
-        Ok(row)
-    }
-
-    #[cfg(test)]
-    fn get_key_by_hash(&self, key_hash: &str) -> StoreResult<Option<VirtualKey>> {
-        let conn = self.lock_conn();
-        let row = conn
-            .query_row(
-                "SELECT id,key_hash,name,allowed_pools,max_budget_cents,budget_period,rpm_limit,tpm_limit,enabled,created_at
-                 FROM virtual_keys WHERE key_hash=?1",
-                params![key_hash],
-                row_to_key,
-            )
-            .optional()?;
-        Ok(row)
-    }
-
-    fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
-        let conn = self.lock_conn();
-        let mut stmt = conn.prepare(
-            "SELECT id,key_hash,name,allowed_pools,max_budget_cents,budget_period,rpm_limit,tpm_limit,enabled,created_at
-             FROM virtual_keys ORDER BY created_at",
-        )?;
-        let rows = stmt.query_map([], row_to_key)?;
-        let mut out = Vec::new();
-        for r in rows {
-            out.push(r?);
-        }
-        Ok(out)
-    }
-
-    fn delete_key(&self, id: &str) -> StoreResult<()> {
-        // Both DELETEs must be atomic. Under SQLite autocommit each `execute` commits on its own, so
-        // a failure of the second statement (I/O error, disk full, constraint) would leave the key
-        // row gone but its usage_counters rows orphaned — accumulating forever and, worse, poisoning
-        // any future key re-created with the same id with stale usage. Wrap both in one transaction
-        // so they commit together or not at all. The Mutex already serializes us against other
-        // writers, so the transaction cannot deadlock against a concurrent busbar caller.
-        let mut conn = self.lock_conn();
-        let tx = conn.transaction()?;
-        tx.execute("DELETE FROM virtual_keys WHERE id=?1", params![id])?;
-        tx.execute("DELETE FROM usage_counters WHERE key_id=?1", params![id])?;
-        // Remove any AWS credential rows tied to this key in the SAME transaction: a revoked key's
-        // SigV4 credential must NOT outlive the key, or a Bedrock-SDK client signing with that
-        // AccessKeyId could keep authenticating after revocation (an auth-bypass). The in-memory
-        // AccessKeyId index is rebuilt on the post-delete `refresh`, and even before that rebuild the
-        // index already skips a credential whose key row is gone (see `load_by_access_key_id`), so the
-        // revocation is effective immediately and durably.
-        tx.execute("DELETE FROM aws_credentials WHERE key_id=?1", params![id])?;
-        tx.commit()?;
-        Ok(())
-    }
-
-    fn put_aws_credential(&self, cred: &AwsCredential) -> StoreResult<()> {
-        put_aws_credential_inner(&self.lock_conn(), cred)
-    }
-
-    fn put_key_with_aws_credential(
-        &self,
-        key: &VirtualKey,
-        cred: &AwsCredential,
-    ) -> StoreResult<()> {
-        // ATOMIC mint: the bearer-key INSERT and its AWS-credential INSERT commit together or not at
-        // all. Under autocommit a failure of the second statement would orphan the just-written key row
-        // (inert: no resolvable AccessKeyId). Wrap both in one transaction — same pattern as
-        // `delete_key`. The connection Mutex already serializes us against any other writer, so the
-        // transaction cannot deadlock against a concurrent busbar caller.
-        let mut conn = self.lock_conn();
-        let tx = conn.transaction()?;
-        // `&tx` coerces to `&Connection` via `Transaction`'s Deref, so both writes share the exact same
-        // SQL bodies as the autocommit `put_key`/`put_aws_credential` — they can never drift.
-        put_key_inner(&tx, key)?;
-        put_aws_credential_inner(&tx, cred)?;
-        tx.commit()?;
-        Ok(())
-    }
-
-    fn list_aws_credentials(&self) -> StoreResult<Vec<AwsCredential>> {
-        let conn = self.lock_conn();
-        let mut stmt =
-            conn.prepare("SELECT access_key_id, key_id, secret_access_key FROM aws_credentials")?;
-        let rows = stmt.query_map([], |r| {
-            Ok(AwsCredential {
-                access_key_id: r.get(0)?,
-                key_id: r.get(1)?,
-                secret_access_key: r.get(2)?,
-            })
-        })?;
-        let mut out = Vec::new();
-        for r in rows {
-            out.push(r?);
-        }
-        Ok(out)
-    }
-
-    fn add_usage(
-        &self,
-        key_id: &str,
-        window_start: u64,
-        spend_cents: i64,
-        tokens: u64,
-        count_request: bool,
-    ) -> StoreResult<()> {
-        Self::add_usage_inner(
-            &self.conn,
-            key_id,
-            window_start,
-            spend_cents,
-            tokens,
-            count_request,
-        )
-    }
-
-    fn add_metering(&self, delta: &MeteringDelta) -> StoreResult<()> {
-        Self::add_metering_inner(&self.conn, delta)
-    }
-
-    fn list_metering(&self, bucket: u64) -> StoreResult<Vec<MeteringRow>> {
-        Self::list_metering_inner(&self.conn, bucket)
-    }
-
-    fn charge_within_budget(
-        &self,
-        key_id: &str,
-        window_start: u64,
-        cost_cents: i64,
-        max_cents: Option<i64>,
-    ) -> StoreResult<bool> {
-        Self::charge_within_budget_inner(&self.conn, key_id, window_start, cost_cents, max_cents)
-    }
-
-    fn refund_request(&self, key_id: &str, window_start: u64, cost_cents: i64) -> StoreResult<()> {
-        Self::refund_request_inner(&self.conn, key_id, window_start, cost_cents)
-    }
-
-    fn get_usage(&self, key_id: &str, window_start: u64) -> StoreResult<Usage> {
-        Self::get_usage_inner(&self.conn, key_id, window_start)
-    }
-
-    // ── ASYNC flavor overrides — the per-request offload, now OWNED BY THIS BACKEND ──────────────
-    // Each offloads the synchronous `*_inner` SQL onto the Tokio blocking pool (`spawn_blocking`) so
-    // a slow rusqlite call — fsync / WAL checkpoint / lock contention — never stalls a Tokio worker.
-    // This is where the per-request offload now LIVES (relocated out of `GovState`'s hand-rolled
-    // `spawn_blocking`s). Args are owned into the `'static` closure; the connection handle is a cheap
-    // `Arc` clone of the SAME mutex the sync path locks (so sync and async serialize on one DB). A
-    // panic inside the blocking closure is re-raised faithfully via `resume_unwind`; a non-panic join
-    // failure (the blocking pool shut down mid-flight) maps to the crate's `StoreError` convention.
-
-    async fn charge_within_budget_async(
-        &self,
-        key_id: &str,
-        window_start: u64,
-        cost_cents: i64,
-        max_cents: Option<i64>,
-    ) -> StoreResult<bool> {
-        // No runtime (unit tests calling the accounting methods directly): run the SQL inline so
-        // behaviour is observable synchronously — `spawn_blocking` requires a Tokio reactor.
-        if tokio::runtime::Handle::try_current().is_err() {
-            return Self::charge_within_budget_inner(
-                &self.conn,
-                key_id,
-                window_start,
-                cost_cents,
-                max_cents,
-            );
-        }
-        let conn = self.conn.clone();
-        let key_id = key_id.to_owned();
-        join_offload(tokio::task::spawn_blocking(move || {
-            Self::charge_within_budget_inner(&conn, &key_id, window_start, cost_cents, max_cents)
-        }))
-        .await
-    }
-
-    #[cfg(test)]
-    async fn get_usage_async(&self, key_id: &str, window_start: u64) -> StoreResult<Usage> {
-        if tokio::runtime::Handle::try_current().is_err() {
-            return Self::get_usage_inner(&self.conn, key_id, window_start);
-        }
-        let conn = self.conn.clone();
-        let key_id = key_id.to_owned();
-        join_offload(tokio::task::spawn_blocking(move || {
-            Self::get_usage_inner(&conn, &key_id, window_start)
-        }))
-        .await
-    }
-}
-
-/// Await a `spawn_blocking` handle wrapping a `StoreResult`, flattening the `JoinError`.
-///
-/// On a PANIC inside the blocking closure, re-raise it faithfully (`resume_unwind`) so a bug in the
-/// SQL body surfaces identically to a direct call rather than being silently swallowed into a generic
-/// store error. A NON-panic join failure (the blocking pool was shut down mid-flight, e.g. on
-/// runtime teardown) is mapped to the crate's `StoreError` convention so the caller's fail-open /
-/// fail-closed knob applies, exactly as the old `GovState` offload did.
-async fn join_offload<T>(handle: tokio::task::JoinHandle<StoreResult<T>>) -> StoreResult<T> {
-    match handle.await {
-        Ok(res) => res,
-        Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
-        Err(e) => Err(StoreError(format!("store offload task failed: {e}"))),
-    }
-}
-
-fn row_to_key(r: &rusqlite::Row) -> rusqlite::Result<VirtualKey> {
-    Ok(VirtualKey {
-        id: r.get(0)?,
-        key_hash: r.get(1)?,
-        name: r.get(2)?,
-        allowed_pools: pools_from_storage(&r.get::<_, String>(3)?),
-        max_budget_cents: r.get(4)?,
-        budget_period: r.get(5)?,
-        // DI-2: a direct-DB value above u32::MAX would silently wrap to a WRONG (lower) cap with
-        // `as u32`. Saturate instead — the admin API already bounds these on the write path; this
-        // closes the direct-DB hole.
-        rpm_limit: r
-            .get::<_, Option<i64>>(6)?
-            .map(|v| u32::try_from(v).unwrap_or(u32::MAX)),
-        tpm_limit: r
-            .get::<_, Option<i64>>(7)?
-            .map(|v| u32::try_from(v).unwrap_or(u32::MAX)),
-        enabled: r.get::<_, i64>(8)? != 0,
-        created_at: r.get::<_, i64>(9)? as u64,
     })
 }
 
 #[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/limits_tests.rs"]
+mod limits_tests;
+
+#[cfg(test)]
+mod budget_cell_tests {
+    use super::*;
+
+    /// AUDIT: the sweep's `prune_dead_models` bounds the per-cell `models` Vec so a
+    /// never-rolled cell cannot accumulate a dead entry per model name ever seen. A model with live
+    /// tokens (or an unacked flush delta) is KEPT (enforcement/write-behind truth); a zero-token,
+    /// fully-flushed entry is DROPPED; a re-appearing model is simply re-interned by `accrue`.
+    #[test]
+    fn prune_dead_models_drops_only_zero_token_fully_flushed_entries() {
+        let tok = |n: u64| busbar_api::TierTokens {
+            input: n,
+            output: 0,
+            cache_read: 0,
+            cache_write: 0,
+        };
+        let mut cell = BudgetCell::fresh(0); // the all-time cell that the sweep never ages out
+        cell.accrue("live-model", &tok(10)); // real tokens → must be KEPT
+        cell.accrue("dead-model", &tok(0)); // interned with zero tokens → dead, must be DROPPED
+                                            // An entry that was charged then FLUSHED (cur == flushed, both non-zero) still carries the
+                                            // window's enforcement total, so it must be KEPT.
+        cell.accrue("flushed-model", &tok(5));
+        if let Some(m) = cell
+            .models
+            .iter_mut()
+            .find(|m| &*m.model == "flushed-model")
+        {
+            m.flushed = m.cur;
+        }
+        assert_eq!(cell.models.len(), 3, "all three interned before the prune");
+
+        cell.prune_dead_models();
+
+        let names: Vec<&str> = cell.models.iter().map(|m| &*m.model).collect();
+        assert!(names.contains(&"live-model"), "live tokens kept: {names:?}");
+        assert!(
+            names.contains(&"flushed-model"),
+            "flushed-but-nonzero kept: {names:?}"
+        );
+        assert!(
+            !names.contains(&"dead-model"),
+            "zero-token dead entry pruned: {names:?}"
+        );
+        assert_eq!(cell.models.len(), 2);
+
+        // A re-appearing model is re-interned on the next accrue (prune is not permanent).
+        cell.accrue("dead-model", &tok(3));
+        assert!(cell.models.iter().any(|m| &*m.model == "dead-model"));
+    }
+}

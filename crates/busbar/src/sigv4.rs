@@ -97,29 +97,6 @@ pub(crate) fn uri_encode_path(path: &str) -> String {
     out
 }
 
-/// AWS URI-encode a query-string component (key or value). IDENTICAL to [`uri_encode_path`] EXCEPT
-/// that `/` is ALSO percent-encoded (to `%2F`): in the query string `/` is not a path separator and
-/// AWS encodes it. Unreserved chars (A-Za-z0-9-_.~) pass through; everything else (including `/`)
-/// becomes %XX uppercase. Used by the inbound verifier to canonicalize the request query string the
-/// same way a signer does.
-pub(crate) fn uri_encode_query(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for &b in s.as_bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
-            }
-            _ => {
-                const HEX: &[u8; 16] = b"0123456789ABCDEF";
-                out.push('%');
-                out.push(HEX[(b >> 4) as usize] as char);
-                out.push(HEX[(b & 0x0f) as usize] as char);
-            }
-        }
-    }
-    out
-}
-
 /// Convert a Unix epoch (seconds) to (amzdate `YYYYMMDDTHHMMSSZ`, datestamp `YYYYMMDD`). Pure UTC,
 /// no external date crate (a public-domain civil-from-days algorithm).
 pub(crate) fn format_amz_time(epoch_secs: u64) -> (String, String) {
@@ -129,6 +106,13 @@ pub(crate) fn format_amz_time(epoch_secs: u64) -> (String, String) {
 
     // civil_from_days: days since 1970-01-01 → (year, month, day)
     let z = days + 719_468;
+    // The `z < 0` branch is UNREACHABLE for any real `u64 epoch_secs`: `days` (u64::MAX /
+    // SECS_PER_DAY, cast to i64) tops out around 2.1e14, far short of i64::MAX (~9.2e18), so `days`
+    // can never overflow negative on the cast and `z = days + 719_468` is always positive. A
+    // cargo-mutants mutation of the `z - 146_096` expression in this branch (`+`/`/` instead of
+    // `-`) is a genuine equivalent mutant here — dead code no `u64`-typed test input can reach —
+    // unlike `governance::civil_from_days`, which takes a general `i64` and DOES exercise this
+    // branch for pre-1970 dates (see that function's own test table).
     let era = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
     let doe = z - era * 146_097; // [0, 146096]
     let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
@@ -521,6 +505,44 @@ mod tests {
         assert_eq!(date, "20150830");
     }
 
+    /// Table-driven boundary coverage for the inline civil-from-days arithmetic (mirrors
+    /// `governance::civil_from_days`'s own table-driven test): each mutated `+`/`-`/`*`/`/` in the
+    /// era/doe/yoe/doy/day/month derivation changes the computed date, so a handful of known
+    /// epoch<->date pairs spanning the epoch itself, a leap-century Feb 29 (2000, divisible by
+    /// 400), a non-leap-century Jan 1 (2100, divisible by 100 but not 400), and end-of-day/
+    /// end-of-year boundaries kills every arithmetic mutant in the block. Expected values are
+    /// cross-checked against `date -u -r <epoch>`, not hand-derived, to avoid trusting the same
+    /// arithmetic the test is meant to catch bugs in.
+    #[test]
+    fn test_format_amz_time_known_dates_table() {
+        let cases: &[(u64, &str, &str)] = &[
+            (0, "19700101T000000Z", "19700101"),
+            (86_399, "19700101T235959Z", "19700101"),
+            (951_782_400, "20000229T000000Z", "20000229"),
+            (1_609_459_199, "20201231T235959Z", "20201231"),
+            (1_717_200_000, "20240601T000000Z", "20240601"),
+            (4_102_444_800, "21000101T000000Z", "21000101"),
+            (1_078_012_800, "20040229T000000Z", "20040229"),
+            // A real, previously-LIVE mutant: `doe / 1460 + doe / 36_524` (the era-boundary
+            // correction terms) mutated `+` -> `-` shifts `yoe` by `2 * (doe / 36_524)`, which is
+            // exactly 0 for every date from 2000-03-01 to 2100-02-28 — so all 7 cases above
+            // (chosen mostly from that exact window) coincide under the mutation and miss it. This
+            // one doesn't: 1970-03-01 falls before the window, `doe / 36_524 == 0` there too but
+            // the correction still isn't degenerate at this boundary (verified by brute-forcing
+            // all cargo-mutants-shaped single-operator mutations of the block against this table
+            // and confirming this is the unique remaining killer). A March date one full year
+            // after the epoch was deliberately avoided as "obviously distinguishing" — this is the
+            // FIRST date after 1970-01-01 whose month/day computation actually exercises the
+            // correction terms at all.
+            (5_097_600, "19700301T000000Z", "19700301"),
+        ];
+        for (epoch, expected_amz, expected_date) in cases {
+            let (amz, date) = format_amz_time(*epoch);
+            assert_eq!(amz, *expected_amz, "epoch {epoch}");
+            assert_eq!(date, *expected_date, "epoch {epoch}");
+        }
+    }
+
     #[test]
     fn test_uri_encode_path_bedrock_model() {
         // Bedrock model IDs contain ':' and '.' — must encode ':' as %3A, keep '.' and '/'.
@@ -755,6 +777,111 @@ mod tests {
         assert_eq!(parse_amz_date(""), None);
     }
 
+    /// Table-driven EXACT-EPOCH coverage for `parse_amz_date`'s inline `days_from_civil` arithmetic
+    /// (`year`/`era`/`yoe`/`doy`/`doe`/`days`, lines just above `epoch < 0`) — the inverse of
+    /// `format_amz_time`'s own `civil_from_days` table, reusing the SAME known-correct (epoch, ymd)
+    /// pairs (cross-checked against `date -u -r <epoch>` there) so both directions are pinned by
+    /// the same ground truth. `test_parse_amz_date_componentwise_boundaries` below only asserts
+    /// `is_some()`/`is_none()` on the FIELD-RANGE guard — it never asserts the computed epoch VALUE
+    /// and so cannot catch a mutated arithmetic operator inside `days_from_civil` itself (found by
+    /// adversarial review: 8 real mutants, e.g. `month <= 2` -> `>=`, `year - 1` -> `year + 1`,
+    /// `yoe / 4 - yoe / 100` -> `+`, `if epoch < 0` -> `<= 0`, all survived until this test). A
+    /// month<=2 date (year-1 branch) and a month>2 date (year branch) are both required to exercise
+    /// the `let y = if month <= 2 {...}` split at all; the leap-century/non-leap-century pairs
+    /// exercise the era/yoe correction terms the same way the format-side table does.
+    #[test]
+    fn test_parse_amz_date_known_epochs_table() {
+        let cases: &[(u64, &str)] = &[
+            (0, "19700101T000000Z"),
+            (86_399, "19700101T235959Z"),
+            (5_097_600, "19700301T000000Z"),
+            (951_782_400, "20000229T000000Z"),
+            (1_609_459_199, "20201231T235959Z"),
+            (1_717_200_000, "20240601T000000Z"),
+            (4_102_444_800, "21000101T000000Z"),
+            (1_078_012_800, "20040229T000000Z"),
+        ];
+        for (epoch, amzdate) in cases {
+            assert_eq!(parse_amz_date(amzdate), Some(*epoch), "amzdate {amzdate}");
+        }
+    }
+
+    /// Exact componentwise boundaries of `!(1..=12).contains(&month) || !(1..=31).contains(&day)
+    /// || hour > 23 || min > 59 || sec > 60`. Each case below flips EXACTLY ONE field to its
+    /// first-invalid value while holding every other field at a valid value — this is what catches
+    /// a single `||` mutated to `&&` at any one junction (only one sub-condition is true, so a
+    /// mutated `&&` there would fail to reject) as well as each `>`/`>=`/`==` boundary mutation
+    /// (the boundary itself, one past it, both checked).
+    #[test]
+    fn test_parse_amz_date_componentwise_boundaries() {
+        // Valid at the boundary: hour=23, min=59, sec=60 (a real leap second) must all parse.
+        assert!(
+            parse_amz_date("20150830T235960Z").is_some(),
+            "hour 23 must be valid"
+        );
+        assert!(
+            parse_amz_date("20150830T005960Z").is_some(),
+            "min 59 must be valid"
+        );
+        assert!(
+            parse_amz_date("20150830T000060Z").is_some(),
+            "sec 60 (leap second) must be valid"
+        );
+        assert!(
+            parse_amz_date("20150801T000000Z").is_some(),
+            "day 1 must be valid"
+        );
+        assert!(
+            parse_amz_date("20150831T000000Z").is_some(),
+            "day 31 must be valid"
+        );
+        assert!(
+            parse_amz_date("20150101T000000Z").is_some(),
+            "month 1 must be valid"
+        );
+        assert!(
+            parse_amz_date("20151201T000000Z").is_some(),
+            "month 12 must be valid"
+        );
+
+        // One past the boundary, every other field valid: each must independently reject.
+        assert_eq!(
+            parse_amz_date("20150830T240000Z"),
+            None,
+            "hour 24 must be rejected"
+        );
+        assert_eq!(
+            parse_amz_date("20150830T006000Z"),
+            None,
+            "min 60 must be rejected"
+        );
+        assert_eq!(
+            parse_amz_date("20150830T000061Z"),
+            None,
+            "sec 61 must be rejected"
+        );
+        assert_eq!(
+            parse_amz_date("20150800T000000Z"),
+            None,
+            "day 0 must be rejected"
+        );
+        assert_eq!(
+            parse_amz_date("20150832T000000Z"),
+            None,
+            "day 32 must be rejected"
+        );
+        assert_eq!(
+            parse_amz_date("20150001T000000Z"),
+            None,
+            "month 0 must be rejected"
+        );
+        assert_eq!(
+            parse_amz_date("20151300T000000Z"),
+            None,
+            "month 13 must be rejected"
+        );
+    }
+
     #[test]
     fn test_verify_inbound_sigv4_roundtrip_accepts() {
         // The headline: a request signed with a secret VERIFIES against that same secret.
@@ -933,14 +1060,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_uri_encode_query_encodes_slash() {
-        // Query encoding differs from path encoding: '/' is percent-encoded in the query.
-        assert_eq!(uri_encode_query("a/b"), "a%2Fb");
-        assert_eq!(uri_encode_query("k-v_1.~"), "k-v_1.~"); // unreserved pass through
-        assert_eq!(uri_encode_query(" "), "%20");
-    }
-
     /// AWS published worked example — GET iam ListUsers, 2015-08-30. If our canonical-request →
     /// string-to-sign → signature chain reproduces AWS's documented signature, the algorithm is
     /// correct. (https://docs.aws.amazon.com/general/latest/gr/sigv4-signed-request-examples.html)
@@ -1009,7 +1128,7 @@ mod tests {
 
     #[test]
     fn test_parse_authorization_header_skips_unknown_sections() {
-        // F3: an UNKNOWN section (AWS clients may emit extras) is SKIPPED, not rejected — as long as
+        // An UNKNOWN section (AWS clients may emit extras) is SKIPPED, not rejected — as long as
         // the three mandatory sections are present and well-formed.
         let v = "AWS4-HMAC-SHA256 Credential=AKID/20150830/us-east-1/bedrock/aws4_request, \
                  SignedHeaders=host;x-amz-date, Signature=abc123, X-Future-Extension=whatever";
@@ -1026,6 +1145,23 @@ mod tests {
             parse_authorization_header(missing_sig),
             Err(VerifyError::MalformedAuthorization),
             "an unknown section does not satisfy the mandatory Signature requirement"
+        );
+    }
+
+    #[test]
+    fn test_parse_authorization_header_rejects_five_part_credential_with_wrong_termination() {
+        // `parts.len() != 5 || parts[4] != SIGV4_TERMINATION` — a mutated `&&` here would only
+        // reject when BOTH sub-conditions hold; a credential with the CORRECT part count (5) but
+        // the WRONG final segment (anything other than "aws4_request") would then be silently
+        // accepted, since `parts.len() != 5` is false and short-circuits the `&&`. This is
+        // distinct from the existing "scope not aws4_request (4 parts)" rejection case, which
+        // only exercises the `parts.len() != 5` half.
+        let v = "AWS4-HMAC-SHA256 Credential=AKID/20150830/us-east-1/bedrock/aws4_bogus, \
+                 SignedHeaders=host, Signature=x";
+        assert_eq!(
+            parse_authorization_header(v),
+            Err(VerifyError::MalformedAuthorization),
+            "a 5-part credential with the wrong termination segment must still be rejected"
         );
     }
 
@@ -1070,7 +1206,7 @@ mod tests {
 
     #[test]
     fn test_verify_inbound_sigv4_exact_skew_boundary_accepted() {
-        // M4: the clock-skew check is `skew > CLOCK_SKEW_SECS` (strict >), so a skew EXACTLY equal to
+        // The clock-skew check is `skew > CLOCK_SKEW_SECS` (strict >), so a skew EXACTLY equal to
         // the bound must be ACCEPTED (only strictly-greater is Expired). Pins the boundary.
         let secret = "the-real-secret";
         let amzdate = "20150830T123600Z";
@@ -1098,7 +1234,7 @@ mod tests {
 
     #[test]
     fn test_verify_inbound_sigv4_missing_date_rejected() {
-        // M4: a request whose x-amz-date is not a parseable amz timestamp fails with MissingDate,
+        // A request whose x-amz-date is not a parseable amz timestamp fails with MissingDate,
         // surfaced through verify_inbound_sigv4 itself (not just parse_amz_date in isolation).
         let secret = "the-real-secret";
         let amzdate = "20150830T123600Z";

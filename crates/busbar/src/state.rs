@@ -16,6 +16,12 @@ pub(crate) struct Lane {
     pub(crate) model: String,
     pub(crate) provider: String,
     pub(crate) base_url: String,
+    /// The SigV4 signed-`host` header value, derived ONCE at boot from `base_url` (scheme + userinfo
+    /// stripped, authority only — see `proxy::host_from_base`). Precomputed so the request path borrows
+    /// it into `SigningContext` instead of re-running the parse + `String` allocation on every
+    /// forwarded request (it is a pure function of the immutable `base_url`). Only the Bedrock SigV4
+    /// writer reads it; other protocols ignore `SigningContext::host`.
+    pub(crate) signing_host: String,
     pub(crate) api_key: String,
     pub(crate) protocol: Arc<Protocol>,
     /// Outbound credential — how this lane presents Busbar's identity to the upstream. Resolved once
@@ -124,6 +130,57 @@ pub(crate) struct PoolRuntime {
     pub(crate) rewrite_hooks: Vec<(std::time::Duration, Arc<dyn crate::hooks::RoutingPolicy>)>,
 }
 
+/// The upstream HTTP client, SHARDED: N identical `reqwest::Client`s, each owning its own
+/// connection pool, one selected per thread. ONE shared client meant one pool mutex that every
+/// request crossed twice (connection checkout + checkin) across every worker — a lock convoy
+/// that grows with core count (measured: throughput fell ~36% from concurrency 64 → 1024 on a
+/// 4-core pin, and inverted busbar's standing against per-worker-sharded gateways on 32-thread
+/// x86). Each worker thread is assigned one shard on first use and keeps it: warm connections
+/// and TLS sessions stay worker-local, and each shard's pool lock is contended by ~1/Nth of the
+/// threads. NOT configurable — the shard count derives from the machine (`min(cores, 16)`,
+/// power of two) and the per-host idle budget is divided across shards so the TOTAL kept-alive
+/// sockets toward any upstream are unchanged.
+#[derive(Clone)]
+pub(crate) struct UpstreamClients {
+    shards: Arc<[Client]>,
+}
+
+impl UpstreamClients {
+    /// The shard count for this machine: `min(available cores, 16)` rounded up to a power of two
+    /// (so shard selection is a mask, not a modulo). 16 caps the idle-socket multiplication on
+    /// very wide boxes; beyond ~16 shards the residual per-shard contention is negligible.
+    pub(crate) fn shard_count() -> usize {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+            .next_power_of_two()
+            .min(16)
+    }
+
+    /// Build N shards from a builder factory (each shard is an IDENTICAL client; reqwest clients
+    /// cannot be cloned into independent pools, so the builder runs once per shard).
+    pub(crate) fn build(count: usize, mut make: impl FnMut() -> Client) -> Self {
+        let shards: Arc<[Client]> = (0..count.max(1)).map(|_| make()).collect();
+        UpstreamClients { shards }
+    }
+
+    /// This thread's client. Threads are assigned shards round-robin on FIRST use and keep the
+    /// assignment for their lifetime (a tokio worker's requests always reuse its own shard's
+    /// warm connections). The assignment counter is the only shared write, paid once per thread
+    /// per process lifetime — never per request.
+    pub(crate) fn get(&self) -> &Client {
+        static NEXT_THREAD: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        thread_local! {
+            static SHARD: std::cell::OnceCell<usize> = const { std::cell::OnceCell::new() };
+        }
+        let idx = SHARD.with(|s| {
+            *s.get_or_init(|| NEXT_THREAD.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+        });
+        // Mask, not modulo: the count is a power of two by construction (and >= 1).
+        &self.shards[idx & (self.shards.len() - 1)]
+    }
+}
+
 /// `Clone` is the config-apply enabler: cloning an `App` shares the live-state `Arc`s (store, auth,
 /// governance, client — the things that must SURVIVE a config change) and deep-copies the
 /// config-derived collections (lanes, pools, hooks, …). So `apply` builds the next snapshot as
@@ -131,12 +188,22 @@ pub(crate) struct PoolRuntime {
 /// while in-flight requests keep serving on the old snapshot and the SAME breaker/latency state.
 #[derive(Clone)]
 pub(crate) struct App {
+    /// TELEMETRY BANK slots for THIS config generation (see `telemetry.rs`): every hot-path metric
+    /// site resolves its pre-registered per-thread slot through this table instead of building a
+    /// recorder key per emission. Rebuilt whenever a new snapshot changes the pool/lane label space
+    /// (`build_app` / config apply); identical label sets re-intern to the same process-lifetime
+    /// slots, so counts accumulate monotonically across generations. Observation only — THE RULE:
+    /// enforcement counts never go through the bank.
+    pub(crate) tslots: Arc<crate::telemetry::AppSlots>,
     pub(crate) lanes: Vec<Lane>,
     pub(crate) store: Arc<dyn StateStore>,
+    /// The health-probe schedule, shared by every clone-derived snapshot of this lineage so a swap
+    /// does not reset the probe phase. See [`crate::health::ProbeSchedule`].
+    pub(crate) probe_schedule: Arc<crate::health::ProbeSchedule>,
     pub(crate) by_model: HashMap<String, usize>,
     /// Pool members, each carrying a lane index and its configured weight.
     pub(crate) pools: HashMap<String, Vec<WeightedLane>>,
-    pub(crate) client: Client,
+    pub(crate) client: UpstreamClients,
     pub(crate) auth: Arc<crate::auth::AuthMiddleware>,
     /// GLOBAL rewrite hooks — the `prompt: rw` gates named in `global_hooks`, resolved to their
     /// transports and sorted by ascending `priority` (the transform-chain order). Fired before
@@ -191,6 +258,12 @@ pub(crate) struct App {
     /// from the RESOLVED transports in `rewrite_hooks`/`tap_hooks` (which the request path fires). Empty
     /// when no hooks are configured. Read-only after construction; the config-plane mutation surface
     /// swaps a new `App` snapshot rather than mutating this in place.
+    /// The plugin-resolution environment for hooks: the validated plugin registry + the shared
+    /// projectors. Threaded to the admin control-plane reads/writes (configure/status/schema) and the
+    /// Prometheus scrape so they open a hook's `kind: hook` plugin the same way the request path's
+    /// resolved transports did. Cheap to clone (Arc-backed). Replaces the retired webhook client the
+    /// out-of-process transport needed.
+    pub(crate) hook_env: crate::hooks::HookEnv,
     pub(crate) hook_registry: HashMap<String, crate::config::HookCfg>,
     /// The `global_hooks:` list — names fired on every request (plus any hook with inline `global:
     /// true`). Carried for the hooks read surface so a definition can report whether it is globally
@@ -200,7 +273,21 @@ pub(crate) struct App {
     /// base hook is a 409 (edit the file, don't shadow it); API-registered (overlay) hooks replace
     /// freely. Immutable after boot.
     pub(crate) base_hook_names: std::collections::HashSet<String>,
-    /// Per-principal ADMIN MUTATION rate limiter (§6.6). Arc-shared across apply snapshots so the
+    /// The raw `groups:` registry (name → definition) as the EFFECTIVE config resolves it (base +
+    /// overlay), for the Admin API v1 groups READ + MUTATION surface (`GET/POST/PUT/DELETE
+    /// /api/v1/admin/groups`). This is the source-of-truth `GroupCfg` map — distinct from the LOSSY
+    /// projection in `cost.groups()` (which buckets limits per window and drops `child_default`).
+    /// A group mutation swaps a new `App` snapshot (clone → mutate this map → re-validate → rebuild
+    /// `cost` via `CostModel::with_groups`), never mutating in place. Empty when none configured.
+    pub(crate) groups_registry: std::collections::BTreeMap<String, crate::config::GroupCfg>,
+    /// Group names defined in the BASE config file (pre-overlay). A `PUT`/`DELETE` on a base group is
+    /// a 409 (edit config.yaml — the API cannot silently shadow or subtract operator file config, and
+    /// the additive overlay can't durably remove a base group); API-created (overlay) groups mutate
+    /// freely. Immutable after boot — mirrors `base_hook_names`.
+    // Read by the Phase 1 groups-CRUD PUT/DELETE base-shadow guard (task #100); carried here first.
+    #[allow(dead_code)]
+    pub(crate) base_group_names: std::collections::HashSet<String>,
+    /// Per-principal ADMIN MUTATION rate limiter. Arc-shared across apply snapshots so the
     /// windows survive every swap.
     pub(crate) mutation_limiter: Arc<crate::admin::rate::MutationLimiter>,
     /// Idempotency-Key replay cache for key minting (bounded, ~10min TTL): a retried POST with the
@@ -220,15 +307,16 @@ pub(crate) struct App {
     /// The ADMIN auth chain (`admin_auth:` module names, default `[admin-tokens]`) — executed by
     /// the auth middleware for `/admin` paths. Empty = the explicit OPEN admin posture (dev).
     pub(crate) admin_chain: Vec<String>,
-    /// The credential cache (design-hooks-v2 §2.5) — Arc-shared ACROSS config swaps (like the
+    /// The credential cache — Arc-shared ACROSS config swaps (like the
     /// mutation limiter): an apply/reload must not silently re-open every cached-allow window.
     pub(crate) credential_cache: Arc<crate::auth_cache::CredentialCache>,
-    /// Per-module trust-boundary caps (`auth.modules:`) — consulted by BOTH chains at Identify
-    /// time (allowed_groups intersection) and at admin scope resolution (max_admin_scope ceiling).
-    pub(crate) auth_modules: std::collections::HashMap<String, crate::config::AuthModuleCfg>,
-    /// `group_map:` — principal groups → operator policy (admin scope today). Read by the admin
-    /// authorization resolution; unmapped groups grant nothing (fail closed).
-    pub(crate) group_map: HashMap<String, crate::config::GroupMapEntry>,
+    /// Per-module `max_admin_scope:` ceilings (from the auth chain entries) - consulted at admin
+    /// scope resolution.
+    pub(crate) auth_scope_caps: std::collections::HashMap<String, String>,
+    /// `auth.role_bindings:` - module -> role -> operator policy (S4: nested by module). Read by
+    /// the admin authorization resolution and the governance re-key; an unbound role grants
+    /// nothing (fail closed).
+    pub(crate) role_bindings: crate::config::RoleBindings,
     /// The config.yaml path busbar booted from — `POST /api/v1/admin/config/reload` re-runs the boot
     /// disk-load pipeline against it. `None` (tests / ephemeral) ⇒ reload is `invalid_request`.
     pub(crate) config_path: Option<std::path::PathBuf>,
@@ -244,6 +332,17 @@ pub(crate) struct App {
     /// tooling can tell whether the running config changed since a prior read. Process-local (resets on
     /// restart); durable version history + rollback is a follow-up.
     pub(crate) config_version: u64,
+    /// Anti-sprawl cap on keys BOUND TO ONE GROUP.
+    /// Because a `user:<sub>` leaf IS the principal, this is effectively "max keys per principal".
+    /// `0` = unlimited (default). Enforced at `POST /keys`; carried on the snapshot so a config apply
+    /// can change it (survives `App::clone`).
+    pub(crate) max_keys_per_principal: usize,
+    /// Anti-sprawl cap on the NUMBER of groups a mint may AUTO-PROVISION
+    /// (`limits.max_auto_provisioned_groups`). The key cap bounds a group's contents; this bounds
+    /// the tree's SHAPE, which a `mint`-scope credential could otherwise grow without bound
+    /// (round-5 #20). `0` = unlimited (default). Carried on the snapshot for the same reason as
+    /// `max_keys_per_principal`.
+    pub(crate) max_auto_provisioned_groups: usize,
     /// Default failover config (deadline_s and max_failover cap) when a pool has no override.
     pub(crate) failover_cfg: Option<crate::config::FailoverCfg>,
     /// Per-pool runtime config (failover/exclusions today; breaker/affinity as they're wired).
@@ -254,6 +353,25 @@ pub(crate) struct App {
     pub(crate) on_exhausted_cfgs: std::collections::HashMap<String, crate::config::OnExhausted>,
     /// governance runtime (virtual keys + budgets/limits store). `None` = disabled.
     pub(crate) governance: Option<std::sync::Arc<crate::governance::GovState>>,
+    /// The SECRET RESOLVER seam (P2): resolves a config [`crate::config::SecretRef`] to bytes via
+    /// the built-in `env`/`file` modules or a loaded `kind: secret` plugin. Held so the TLS listener
+    /// (built after `build_app` returns) resolves cert/key/CA references through the same seam that
+    /// resolved provider keys and the admin token at build time.
+    pub(crate) secret_resolver: std::sync::Arc<crate::config::secret::SecretResolver>,
+    /// The resolved COST MODEL (rate card + budget groups + flat fee), rebuilt with the config on
+    /// every apply/reload while `governance` (the token ledger) survives the swap - which is what
+    /// makes a rate-card correction reprice every past and future derived figure on the next read.
+    pub(crate) cost: std::sync::Arc<crate::cost::CostModel>,
+    /// The directory the signed plugin tarballs live in (`plugins.dir`, default `plugins`). Carried
+    /// on the snapshot so the Admin API plugin catalog (`GET /api/v1/admin/plugins?type=store`) and
+    /// the install/remove/reload endpoints operate on the SAME directory the boot store-load
+    /// resolves against — one source of truth, and it survives config swaps (`App::clone` copies it).
+    pub(crate) plugins_dir: std::path::PathBuf,
+    /// The whole `plugins.*` block (master switch + trust + floors) — re-used at admin-install to
+    /// RE-VERIFY an uploaded plugin server-side (the client is never trusted) and to project each
+    /// catalog entry's trust verdict. Carried on the snapshot (not a global) so it is testable and
+    /// survives swaps.
+    pub(crate) plugins_cfg: crate::config::PluginsCfg,
     /// Global fallback for the translation-injected `max_tokens` (`limits.default_max_tokens`), used
     /// at the cross-protocol seam when a lane has no per-lane `default_max_tokens`. Defaults to
     /// `proto::DEFAULT_MAX_TOKENS` (4096). Read by `IrReq::prepare_for_egress` at the cross-protocol seam.
@@ -307,7 +425,7 @@ impl AppHandle {
 
     /// Atomically replace the current snapshot (the admin config-mutation seam: reload, apply, and every
     /// hook/auth mutation). Re-spawns the health probers against `next`: probers hold a `Weak<App>` and
-    /// exit once the App they were spawned against drops (audit H2), so EVERY swap must re-attach them —
+    /// exit once the App they were spawned against drops, so EVERY swap must re-attach them —
     /// otherwise the first admin mutation replaces the boot App, the boot App drops as in-flight requests
     /// drain, its probers exit, and active/dead health probing silently STOPS even though lanes/health are
     /// unchanged (audit 1.4.0: only reload/apply re-spawned; the six hook/auth-mutation swaps did not).
@@ -315,6 +433,29 @@ impl AppHandle {
     pub(crate) fn swap(&self, next: Arc<App>) {
         *self.current.write().unwrap_or_else(|e| e.into_inner()) = next.clone();
         crate::health::spawn_probers(&next);
+    }
+
+    /// Commit a live-config mutation as PERSIST-then-SWAP, FAIL-CLOSED — the ONE sanctioned way to
+    /// apply a mutation that must survive a restart. `persist` writes the DESIRED overlay to disk; only
+    /// if it succeeds do we `swap` the live engine to `next`. On a persist error nothing swaps and the
+    /// error is returned (the caller records `OUTCOME_REJECTED` and returns a 4xx/5xx) — the running
+    /// engine is left exactly as it was.
+    ///
+    /// Why this direction is the safe one, in ONE place so reset and rollback cannot diverge: a crash
+    /// between persist and swap restarts ALREADY-APPLIED (disk carries the operator's change), the
+    /// direction they asked for. The old swap-then-persist sites had the opposite failure window — a
+    /// persist failure (or a crash before it) left the live engine AHEAD of disk, so a restart silently
+    /// REVERTED the operator's applied change. `plugin.rollback` already used this discipline
+    /// (persist-then-swap, fail-closed) because its rebuild re-reads the overlay; routing every mutation
+    /// through here makes that discipline uniform rather than a rollback-only special case.
+    pub(crate) fn commit_and_swap(
+        &self,
+        next: Arc<App>,
+        persist: impl FnOnce() -> Result<(), String>,
+    ) -> Result<(), String> {
+        persist()?; // fail-closed: if disk didn't take it, do not swap.
+        self.swap(next); // only after the desired state is durable.
+        Ok(())
     }
 }
 

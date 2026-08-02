@@ -1,6 +1,6 @@
 # Testing strategy
 
-How busbar is tested, and how to add a test. Companion to
+How Busbar is tested, and how to add a test. Companion to
 [development.md](development.md) (build/lint commands) and
 [internals.md](internals.md) (the systems under test). The disposition taxonomy
 is [ADR-0002](adr/0002-circuit-breaker.md).
@@ -11,12 +11,13 @@ All tests are **in-crate** and run under `cargo test`. There is no `tests/`
 directory of integration binaries. Two patterns:
 
 - **Per-module `#[cfg(test)] mod tests`**: unit tests next to the code they cover
-  (`store.rs` breaker FSM, `breaker.rs` classification, `sigv4.rs` against AWS's
-  published worked example, `governance.rs` key/budget/rate, `config.rs` parsing,
-  `ingress/mod.rs` affinity, `proto/*.rs` translation round-trips, etc.).
-- **The `test_support.rs` harness**: a shared `#[cfg(test)] mod test_support`
-  with the `MockServer` mock-upstream and the bulk of the end-to-end forwarding
-  tests.
+  (`store/` breaker FSM, `breaker.rs` classification, `sigv4.rs` against AWS's
+  published worked example, `governance/` key/budget/rate, `config/` parsing,
+  `ingress/` affinity, `proto/` translation round-trips, etc.). Most modules keep
+  their tests in a `tests/` submodule (e.g. `store/tests/`, `governance/tests/`).
+- **The `test_support/` harness**: a shared `#[cfg(test)] mod test_support`
+  with the `MockServer` mock-upstream and the `TestApp` / `LaneSpec` builders used
+  by the end-to-end forwarding tests.
 
 ## The MockServer harness (`crates/busbar/src/test_support/mod.rs`)
 
@@ -63,9 +64,9 @@ server.shutdown().await;                          // aborts the task
 ## Injecting time into the breaker FSM
 
 Breaker/cooldown tests must not depend on wall-clock. The breaker reads time via
-`store::now()` (the public crate function at `crates/busbar/src/store/mod.rs:61`), which under
-`#[cfg(test)]` is shadowed inside `InMemoryStore` by a private `now_secs()` that
-delegates to `now_for_test()`:
+`store::now()` (the crate function in `crates/busbar/src/store/mod.rs`), which under
+`#[cfg(test)]` is shadowed inside `InMemoryStore` (`store/in_memory.rs`) to delegate
+to a thread-local `now_for_test()`:
 
 - `set_now_for_test(t)` pins the test clock to `t` (epoch seconds).
 - `now_for_test()` returns the pinned value (falling back to real `now()` if
@@ -92,18 +93,29 @@ context-length must **not** move the breaker (assert `streak`/`err` unchanged vi
 
 ## Governance tests
 
-`governance.rs` tests use `SqliteStore::open_in_memory()` (no temp files):
-key CRUD round-trips, `budget_window` period math (total/daily/monthly),
-`is_over_budget` + `record_request` accumulation, `check_rate` RPM windows, and
-token-cost accrual via `record_tokens`. These run against the `Store` trait /
-`GovState` directly, not through HTTP.
+`governance/tests/` runs against `GovState` and a `Store` backend directly, not
+through HTTP. The backend is the compiled-in `MemoryStore` (`busbar-store-memory`),
+built with `Arc::new(MemoryStore::new())` and wrapped in `GovState::new(store, None)`
+(no durable file). Tests cover key CRUD via `create_key`, budget-window period math,
+atomic charge-and-cap through `try_charge_request_within_budget` plus `refund_request`
+(and the concurrent-overshoot guard on the store's `charge_within_budget`), the derived
+token cost model (`gov.rate_card` / `budget_groups` / `price_per_request_cents` against a
+`CostModel`), and metering accrual via `record_metering`. (`busbar-store-sqlite`'s own
+`SqliteStore::open_in_memory()` round-trips live in that plugin crate's tests, not here.)
 
 ## Writing a new forwarding integration test
 
-Drive `forward_with_pool` (or the thin `forward` wrapper) against a `MockServer`.
-The skeleton (adapted from `test_support.rs`'s `test_non_stream_json_relay`):
+Drive `forward_with_pool` (or one of its `_keyed` / `_parsed` variants) against a
+`MockServer`. Don't hand-write an `App` literal: the struct carries many hook/gate
+fields and grows over releases, so build it with the `TestApp` builder in
+`test_support/mod.rs`, which fills the rest from defaults. A lane is described by a
+`LaneSpec` (model, protocol, upstream base URL, plus optional overrides). The empty
+auth chain is the default when you set no `.auth(...)` (there is no `AuthMode`; the
+old `mode: none`/`passthrough` distinction is now `.upstream_creds(...)`).
 
 ```rust
+use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
+
 #[tokio::test]
 async fn my_forwarding_test() {
     crate::metrics::init();                       // so the forward path's counters record
@@ -115,50 +127,42 @@ async fn my_forwarding_test() {
     });
     let server = MockServer::new(state.clone()).await;
 
-    // 1. a LaneData (lane-global state) and a Lane (runtime) pointing at the mock
-    let lane_data = LaneData { model: "m".into(), provider: "p".into(), max: 10,
-        sem: Arc::new(tokio::sync::Semaphore::new(10)), limited: false, budget: -1,
-        cooldown_until: 0, streak: 0, dead: false, dead_reason: String::new(),
-        ok: 0, err: 0, client_fault: 0 };
-    let lane = Lane { model: "m".into(), provider: "p".into(),
-        base_url: server.base_url(), api_key: "k".into(),
-        protocol: Arc::new(crate::proto::Protocol::anthropic()), max: 10,
-        error_map: Arc::new(HashMap::new()), context_max: None,
-        path: None, auth: None, health: None, default_max_tokens: None };
+    // Build the App: one lane pointing at the mock, one pool over lane 0. Auth
+    // defaults to the empty chain; governance/cost default to off.
+    let app = TestApp::new()
+        .lane(LaneSpec::new(
+            "m",
+            crate::proto::Protocol::anthropic(),
+            &server.base_url(),
+        ))
+        .pool("default", &[(0, 1)])               // (lane_index, weight)
+        .build();
 
-    // 2. assemble App (store from the lane_data, governance/observability off)
-    let app = Arc::new(App {
-        lanes: vec![lane],
-        store: Arc::new(InMemoryStore::new(vec![lane_data])),
-        by_model: HashMap::from([("m".into(), 0)]),
-        pools: HashMap::from([("default".into(), vec![WeightedLane { idx: 0, weight: 1 }])]),
-        client: Client::builder().timeout(Duration::from_secs(30)).build().unwrap(),
-        auth: Arc::new(AuthMiddleware::new(&AuthCfg::default_none())),
-        auth_mode: crate::auth::AuthMode::None,
-        failover_cfg: None, pool_runtime: HashMap::new(),
-        fallback_pools: HashMap::new(), on_exhausted_cfgs: HashMap::new(),
-        governance: None,
-    });
-
-    // 3. drive it
     let body = serde_json::to_vec(&json!({
         "model": "m", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100
     })).unwrap();
     let resp = forward_with_pool(
         app.clone(),
-        vec![WeightedLane { idx: 0, weight: 1 }],
+        vec![crate::state::WeightedLane { reasoning: None, idx: 0, weight: 1, attempt_timeout_ms: None }],
         body.into(),
-        None,            // caller_token (passthrough only)
-        "default",       // pool name -> picks the per-pool breaker cell
-        None,            // affinity key
-        "anthropic",     // ingress protocol
-        None,            // usage sink (governance off)
-    ).await;
+        None,                    // caller_token (passthrough only)
+        "default",               // pool name -> picks the per-pool breaker cell
+        None,                    // affinity key
+        "anthropic",             // ingress protocol
+        crate::handlers::CHAT,   // the operation (Op)
+        None,                    // usage sink (governance off)
+    )
+    .await;
 
     assert_eq!(resp.status().as_u16(), 200);
     server.shutdown().await;
 }
 ```
+
+`TestApp` exposes builder methods for the other seams: `.governance(...)`, `.cost(...)`,
+`.failover(...)`, `.fallback_pool(...)`, `.on_exhausted(...)`, `.upstream_creds(...)`,
+and `.hook(...)` / `.global_hook(...)`. See `crates/busbar/src/proxy/tests/` (e.g.
+`forward_once_pool_cell_tests.rs`) for complete worked tests using exactly this shape.
 
 Patterns this enables:
 
@@ -187,7 +191,7 @@ Patterns this enables:
   that override is now optional (any path resolves to the same handler), since the
   same-protocol relay keys off the upstream Content-Type, not the URL. See
   `test_bedrock_same_protocol_stream_passthrough_forwards_upstream_request_id`
-  in `crates/busbar/src/ingress/mod.rs` for the full pattern.
+  in `crates/busbar/src/ingress/tests/tests.rs` for the full pattern.
 - **on_exhausted**: populate `on_exhausted_cfgs` with `LeastBad` /
   `FallbackPool(..)` and pre-trip all members; assert the configured behavior
   (and loop-guarding for fallback chains).
@@ -197,3 +201,135 @@ Patterns this enables:
 > Reminder: collect response bodies and assert metrics via
 > `crate::metrics::render()`; call `crate::metrics::init()` once at the top of any
 > test that exercises the forward path or its counters won't be installed.
+
+---
+
+# The remediation contract
+
+This is the part of the strategy that decides **what a fix looks like**. It is
+enforced by `scripts/structure-lint.sh` (the choke-point registry), not by
+review discipline alone.
+
+## The three rules
+
+1. **A finding with a sibling is not a bug — it is a missing choke point.**
+   If the same mistake is possible at a second call site, the defect is not the
+   instance you found; it is that there are N places where the class can be got
+   wrong. The unit of remediation is the choke point, not the instance.
+2. **The fix is the choke point + ONE class-level test.** You introduce (or
+   confirm) the single point every sibling passes through, route all of them
+   through it, and attach exactly one test *there*. You do **not** patch N
+   instances with N tests — that is N new places for the next round to find.
+3. **A later-round sibling is a PROCESS failure, not a new bug.** If a
+   subsequent audit finds another member of an already-remediated family, the
+   previous remediation patched an instance instead of the class. File it
+   against the process and build retroactively the choke point that should have
+   been built the first time.
+
+## The choke-point registry
+
+`scripts/structure-lint.sh` carries a declarative `CHOKE_POINTS` table — one row
+per choke point, with the owner, the class-level test, the patterns that bypass
+it, and the allowed exceptions. **The table is the complete map**: if a hazard
+class has a single point of truth in this tree, it is a row. Adding the next one
+is a one-row addition — no new scanner, no new loop.
+
+| Choke point | Owner (the correct implementation) | Enforced by | The ONE class-level test |
+|---|---|---|---|
+| **A — persistence** | `crates/busbar/src/durable.rs` (`durable::write` / `write_with`; `AppHandle::commit_and_swap` for persist-then-swap) | registry row `A-persistence`: a hand-rolled `std::fs::rename(` or `.sync_all(` outside `durable.rs` is `DURABLE-BYPASS` | `durable.rs::fault_matrix_returns_err_untouched_target_no_temp_leak` — every fallible step × injected errno, asserting the target is untouched and no temp leaks |
+| **B — plugin FFI/ABI** | `crates/plugin-sdk/src/boundary.rs`, reached only via `export_*_plugin!` | registry row `B-plugin-export`: a hand-written `#[no_mangle]` outside the SDK macro is `EXPORT-BYPASS` (plus the duplicate-symbol link error a second `busbar_*` export triggers) | `plugin-sdk/tests/boundary_class.rs::null_out_pointer_never_leaks` (with the panic / unsupported / drop cases beside it) |
+| **C — admin config mutation** | `crates/busbar/src/admin/v1/json/txn.rs` (`config_transaction`) | registry row `C-config-mutation`: naming `CONFIG_MUTATION_LOCK`, or calling `handle.swap(` / `.commit_and_swap(` outside `txn.rs` (`state.rs` defines them), is `MUTATION-BYPASS`. Backed by `scripts/txn-fence.sh` (compile fence) and `scripts/loom.sh` | `admin/v1/json/tests/txn_tests.rs::concurrent_transactions_never_lose_a_swap` |
+| **D — OpenAPI error taxonomy** | `crates/busbar/src/admin/v1/contract/taxonomy.rs` (`declared_errors` — `openapi.json` is a *projection* of it) | **differently enforced**: there is no pattern to ban. The v1 router's recording layer **panics** on an under-claim at the moment of emission; the class test fails on the over-claim. The registry row still lists it (`rules = -`) so the table stays a complete map | `admin/tests/tests.rs::declared_error_set_is_exactly_what_the_handlers_emit` — registry == declaration, so under- **and** over-claim both fail |
+
+The lint asserts the class test still exists for **every** row, including D. A
+choke point whose one test was deleted or renamed is a choke point nothing
+proves, so `MISSING-CLASS-TEST` fails the build.
+
+### Adding a choke point
+
+Append one row to `CHOKE_POINTS` in `scripts/structure-lint.sh`:
+
+```
+'<id>|<TAG>|<owner file (what)>|<path>::<class test fn>|<remedy line>|<ere>>><what it is>>><allowed,paths>;<more rules>|<one-line rationale>'
+```
+
+Use `-` for the rules field when the choke point is enforced by the compiler or
+at runtime rather than by grep (row D). Then plant a violation, confirm the lint
+fails with your `TAG`, and remove it — a rule nobody has seen fire is a rule
+that may not work.
+
+## Checker rigor — R1 / R2 / R3
+
+A self-check that cannot fail is worse than no check: it reports green while
+asserting nothing. Three rules govern how tests and checkers are built.
+
+### R1 — Independent re-derivation (the RAW-source oracle)
+
+The **expected** side of any cross-surface assertion must be re-derived from the
+**raw source of record**, through a code path **disjoint** from the code under
+test. Never compute both sides via the same accessor.
+
+*Mechanical disjointness test:* if you can textually substitute the expected
+expression into the actual expression and the assertion becomes `x == x`, it is
+tautological, and that is a failure **of the checker**, not a passing test.
+
+Raw sources of record in this tree:
+
+- **persistence** → the bytes actually on disk after the swap (re-read the
+  file), not the in-memory value that was written.
+- **admin / OpenAPI taxonomy** → the frozen wire table in
+  `admin/v1/contract/tests/tests.rs` plus the committed `openapi.json`, not the
+  Rust enum re-serialized by the same code that serves it.
+- **circuit breaker** → the store's observable state (`cell_open` / the probe
+  holder), not a re-call of the transition function.
+
+*Same-formatter corollary:* when the assertion is over rendered output, format
+the oracle with the surface's own formatter. Derivation must be disjoint;
+formatting must be shared. Comparing a differently-formatted oracle tests the
+formatter, not the value.
+
+### R2 — Coverage assertion: inert branches are banned
+
+Every check-branch must be exercised by at least one fixture in the same run. A
+branch reached by zero fixtures asserts nothing while reporting green, and is
+itself a hard failure. In Rust the analogue is per-branch coverage over the
+choke-point modules plus an "every enum variant has a behavioral test" census —
+an exhaustive `match` (e.g. the `StatusClass → Disposition` taxonomy of
+[ADR-0002](adr/0002-circuit-breaker.md)) makes the compiler the existence guard,
+so only the behavioral arm needs asserting.
+
+### R3 — A defect test must not encode the defect
+
+A code-vs-test comparison cannot catch a test that agrees with a broken
+implementation — the test *is* the spec in that framing. (The archetype: the
+`secrets:` tests once asserted that a `vault` module was **rejected**, locking
+in a regression that broke a shipped feature. Green test, broken product.)
+
+**A defect-fixing test is not accepted unless it satisfies at least one of:**
+
+1. **Contract-derived** — expected values read out of the committed contract
+   artifact (the frozen wire table, `openapi.json`, `declared_errors`), not
+   restated inline. Encoding a wrong behavior would then also have to corrupt
+   the contract, which is one reviewable diff instead of a silent per-test lie.
+2. **RED-demonstrated** — shown failing on the pre-fix commit and passing after,
+   recorded in the changeset as `RED at <sha>: <failure line>`. A test that was
+   never RED against the bug it claims to guard may be encoding it.
+3. **Independent-oracle cross-checked** — asserted against a second,
+   independently-authored surface computing the same fact (the `openapi-schema`
+   feature's emitted doc versus the served error responses), so neither side can
+   silently encode the bug without the other disagreeing.
+
+A hand-written `assert_eq!(actual, <inline constant>)` that merely restates what
+the code does satisfies none of the three and is a **self-agreeing test**.
+
+## Changeset discipline
+
+Every defect-fixing changeset records three things:
+
+- the **choke point** it attaches to (an id from the registry, or the new row it
+  adds),
+- the **one class-level test**, and
+- the **RED-before note**: `RED at <sha>: <failure line>`.
+
+A changeset that adds a per-instance test without naming a choke point is a
+latent process failure and is rejected in review.

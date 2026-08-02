@@ -1,9 +1,9 @@
 [package]
 name = "busbar-hooks-ranking"
-version = "1.4.0"
+version = "1.5.0"
 publish = false            # internal workspace crate; never goes to crates.io
 edition = "2021"
-rust-version = "1.87"
+rust-version = "1.97"
 description = "The built-in ranking hooks for busbar: cheapest / fastest / least_busy / usage order-gates over the routing-policy contract."
 license = "Apache-2.0"
 

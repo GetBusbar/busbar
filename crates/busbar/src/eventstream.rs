@@ -86,46 +86,55 @@ pub(crate) fn drain_frames_checked(
 ) -> (Vec<(String, Vec<u8>)>, DrainStatus, usize) {
     let mut out = Vec::new();
     let mut status = DrainStatus::Ok;
-    // Bytes consumed as COMPLETE, VALID frames from the FRONT. On a MalformedPrelude the buffer is
-    // cleared, but this counts ONLY the valid frames drained before it — so a same-proto verbatim
-    // re-emit can forward exactly those bytes and never the cleared malformed remainder.
-    let mut valid_consumed = 0usize;
+    // Index into `buf` marking how much of the FRONT has been consumed as complete, valid frames.
+    // ONE buffer edit for the whole pass, not one per frame: `Vec::drain` from the front memmoves
+    // the entire remaining tail, so draining per frame cost O(frames × bytes) on a chunk carrying
+    // many small deltas. Nothing else observes `buf` mid-loop (this function holds the only `&mut`),
+    // so tracking a position and applying ONE `drain`/`clear` at the end is behavior-identical.
+    let mut pos = 0usize;
     loop {
-        if buf.len() < PRELUDE_LEN {
+        let rem = &buf[pos..];
+        if rem.len() < PRELUDE_LEN {
             break; // need the full prelude
         }
-        let total_len = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
-        let headers_len = u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]) as usize;
+        let total_len = u32::from_be_bytes([rem[0], rem[1], rem[2], rem[3]]) as usize;
+        let headers_len = u32::from_be_bytes([rem[4], rem[5], rem[6], rem[7]]) as usize;
         // `total_len` is attacker/upstream-controlled (up to ~4 GiB). Reject any frame larger than
-        // MAX_FRAME_BYTES BEFORE waiting for `buf.len() >= total_len`, otherwise a crafted prelude
+        // MAX_FRAME_BYTES BEFORE waiting for `rem.len() >= total_len`, otherwise a crafted prelude
         // declaring an enormous internally-consistent length would force the caller to buffer
         // unbounded bytes toward a frame that never arrives (memory-exhaustion DoS). An oversized
         // length is treated like any other malformed prelude: abandon the (unrecoverable) stream.
         if !(MIN_FRAME_BYTES..=MAX_FRAME_BYTES).contains(&total_len)
             || headers_len > total_len - MIN_FRAME_BYTES
         {
-            buf.clear(); // malformed — abandon the stream rather than spin
             status = DrainStatus::MalformedPrelude; // distinct propagated signal, not length-inferred
             break;
         }
-        if buf.len() < total_len {
+        if rem.len() < total_len {
             break; // partial frame — wait for more bytes
         }
-        // Read the frame in place via slices into `buf` (one payload copy), then advance past it with
-        // a single `drain` — rather than `drain(..total_len).collect()` into a throwaway per-frame
-        // Vec (which was a SECOND heap allocation per frame on the hot streaming-decode path).
-        let headers = &buf[PRELUDE_LEN..PRELUDE_LEN + headers_len];
+        // Read the frame in place via slices into `rem` (one payload copy) and advance `pos` —
+        // rather than `drain(..total_len).collect()` into a throwaway per-frame Vec (which was a
+        // SECOND heap allocation per frame on the hot streaming-decode path).
+        let headers = &rem[PRELUDE_LEN..PRELUDE_LEN + headers_len];
         let event_type = event_type_for_frame(headers);
-        let payload = buf[PRELUDE_LEN + headers_len..total_len - CRC_BYTES].to_vec();
+        let payload = rem[PRELUDE_LEN + headers_len..total_len - CRC_BYTES].to_vec();
         out.push((event_type, payload));
-        // Capture the frame's verbatim bytes for the same-proto re-emit BEFORE draining them.
+        // Capture the frame's verbatim bytes for the same-proto re-emit.
         if let Some(sink) = consumed_sink.as_deref_mut() {
-            sink.extend_from_slice(&buf[..total_len]);
+            sink.extend_from_slice(&rem[..total_len]);
         }
-        buf.drain(..total_len);
-        valid_consumed += total_len;
+        pos += total_len;
     }
-    (out, status, valid_consumed)
+    // Malformed: the stream is unrecoverable, so the valid prefix AND the remainder both go —
+    // `valid_consumed` still reports only the prefix, exactly as before.
+    match status {
+        DrainStatus::Ok => {
+            buf.drain(..pos);
+        }
+        DrainStatus::MalformedPrelude => buf.clear(),
+    }
+    (out, status, pos)
 }
 
 /// Drain every COMPLETE frame from `buf`, returning `(event_type, payload_bytes)` per frame and
@@ -648,7 +657,7 @@ mod tests {
         assert_eq!(event_type_for_frame(&h), "");
     }
 
-    /// REGRESSION (HIGH/conformance, eventstream.rs): an AWS modeled-exception frame carries
+    /// An AWS modeled-exception frame carries
     /// `:message-type: exception` + `:exception-type: <Name>` and NO `:event-type`. `drain_frames`
     /// must surface the exception name (normalized to the Smithy union-member token the reader
     /// matches) rather than the old empty string that fell into the no-op arm and silently dropped
@@ -671,7 +680,7 @@ mod tests {
         assert_eq!(event_type_for_frame(&h2), "throttlingException");
     }
 
-    /// REGRESSION (LOW/conformance, eventstream.rs): AWS may qualify the `:exception-type`
+    /// AWS may qualify the `:exception-type`
     /// header with a Smithy namespace / shape-ARN prefix (e.g. `com.amazon.coral.service#ThrottlingException`).
     /// The prefix must be stripped before lowercasing — mirroring `extract_error`'s
     /// `rsplit(['#', '/'])` in proto/bedrock.rs — so the bare normalized name still matches the
@@ -709,7 +718,7 @@ mod tests {
         assert_eq!(event_type_for_frame(&h3), "modelStreamErrorException");
     }
 
-    /// REGRESSION (LOW #14, eventstream.rs `event_type_for_frame`): an `:exception-type` value
+    /// An `:exception-type` value
     /// that ENDS with a Smithy/ARN delimiter (`ThrottlingException#`, `aws.bedrock/`) made
     /// `rsplit(['#', '/']).next()` return the empty LEADING token, dropping the classification to
     /// `""` — re-sinking the mid-stream error into the no-op arm the namespace fix was meant to
@@ -754,7 +763,7 @@ mod tests {
         );
     }
 
-    /// REGRESSION (MEDIUM/test-coverage, eventstream.rs): an exception-typed frame
+    /// An exception-typed frame
     /// (`:message-type: exception`) that carries NO `:exception-type` header must fall through to the
     /// empty string — never panic and never misreport. This guards the `None` arm of the
     /// `:exception-type` lookup, which a future refactor adding an assertion/panic there would break.
@@ -934,7 +943,7 @@ mod tests {
         assert!(hs.contains("event")); // golden wire-contract literal (kept bare on purpose)
     }
 
-    /// REGRESSION (MEDIUM/test-coverage, eventstream.rs): the SMALLEST valid frame —
+    /// The SMALLEST valid frame —
     /// `total_len == 16` (12-byte prelude + 0-byte headers + 0-byte payload + 4-byte message CRC) —
     /// must decode cleanly. This is the lower boundary of the `(16..=MAX_FRAME_BYTES)` guard at line
     /// 61: a frame this small carries an empty header block and an empty payload (e.g. a
@@ -970,7 +979,7 @@ mod tests {
         assert!(buf.is_empty(), "minimum frame is fully consumed");
     }
 
-    /// REGRESSION (LOW/perf, eventstream.rs / frame_open+frame_close): the single-buffer
+    /// The single-buffer
     /// encoder must be BYTE-FOR-BYTE identical to the prior two-Vec (`headers` + `frame`) encoding.
     /// We independently rebuild the exact wire bytes from the documented layout — placeholder-free,
     /// in one pass — and assert equality, so a future refactor of the buffer plumbing that perturbs
@@ -1010,41 +1019,9 @@ mod tests {
         );
     }
 
-    /// A `tracing::Layer` that records the messages of WARN-level events it sees, so a test can
-    /// assert a particular `tracing::warn!` fired.
-    #[derive(Clone, Default)]
-    struct WarnCapture(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+    use crate::test_support::warn_capture::WarnCapture;
 
-    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for WarnCapture {
-        fn on_event(
-            &self,
-            event: &tracing::Event<'_>,
-            _ctx: tracing_subscriber::layer::Context<'_, S>,
-        ) {
-            if *event.metadata().level() != tracing::Level::WARN {
-                return;
-            }
-            struct Vis(String);
-            impl tracing::field::Visit for Vis {
-                fn record_debug(
-                    &mut self,
-                    field: &tracing::field::Field,
-                    value: &dyn std::fmt::Debug,
-                ) {
-                    if field.name() == "message" {
-                        self.0 = format!("{value:?}");
-                    }
-                }
-            }
-            let mut vis = Vis(String::new());
-            event.record(&mut vis);
-            if let Ok(mut msgs) = self.0.lock() {
-                msgs.push(vis.0);
-            }
-        }
-    }
-
-    /// REGRESSION (LOW/quality, eventstream.rs): when an oversized `:event-type` makes
+    /// When an oversized `:event-type` makes
     /// `push_string_header` reject the header, `encode_frame` drops the frame — but that drop MUST be
     /// observable via a `tracing::warn!`, not a silent empty `Vec`. This test captures WARN events:
     /// against the old (silent) code it FAILS (no warning), and passes once the warn! is emitted.
@@ -1057,21 +1034,28 @@ mod tests {
 
         let huge_event_type = "e".repeat(u16::MAX as usize + 1);
         let frame = tracing::subscriber::with_default(subscriber, || {
-            encode_frame(&huge_event_type, br#"{"x":1}"#)
+            // Emit twice: tracing caches per-callsite interest globally, and a concurrent test
+            // installing/dropping another dispatcher can race the cache rebuild so the FIRST
+            // emission through this scoped subscriber is occasionally invisible (seen as a CI-only
+            // flake). The second emission always follows the rebuilt interest, making the capture
+            // deterministic; the returned frame is from the first call (identical inputs).
+            let f = encode_frame(&huge_event_type, br#"{"x":1}"#);
+            let _ = encode_frame(&huge_event_type, br#"{"x":1}"#);
+            f
         });
 
         assert!(
             frame.is_empty(),
             "oversized :event-type still drops the frame"
         );
-        let msgs = cap.0.lock().unwrap();
+        let msgs = cap.messages();
         assert!(
             msgs.iter().any(|m| m.contains(":event-type")), // golden wire-contract literal (kept bare on purpose)
             "dropping an oversized :event-type frame must emit an observable warn!, got: {msgs:?}"
         );
     }
 
-    /// REGRESSION (LOW/quality, eventstream.rs): the same observability guarantee for
+    /// The same observability guarantee for
     /// `encode_exception_frame` — an oversized `:exception-type` drops the frame but must warn, so a
     /// swallowed mid-stream error-signal frame is not silent.
     #[test]
@@ -1089,14 +1073,14 @@ mod tests {
             frame.is_empty(),
             "oversized :exception-type still drops the frame"
         );
-        let msgs = cap.0.lock().unwrap();
+        let msgs = cap.messages();
         assert!(
             msgs.iter().any(|m| m.contains(":exception-type")), // golden wire-contract literal (kept bare on purpose)
             "dropping an oversized :exception-type frame must emit an observable warn!, got: {msgs:?}"
         );
     }
 
-    /// REGRESSION (LOW #18, eventstream.rs `drain_frames_checked`): a malformed prelude must abandon
+    /// A malformed prelude must abandon
     /// the stream via a DISTINCT propagated status (`DrainStatus::MalformedPrelude`), not be inferred
     /// from the buffer being emptied. The key discriminator this test pins: a NORMAL full drain that
     /// also leaves the buffer empty returns `DrainStatus::Ok`, so the abort signal is unambiguous —
@@ -1176,7 +1160,7 @@ mod tests {
         assert_eq!(only_frames[0].0, "messageStart");
     }
 
-    /// REGRESSION (MEDIUM/test-coverage, eventstream.rs): the smallest frame with a NON-empty
+    /// The smallest frame with a NON-empty
     /// payload that carries no headers — `total_len == 18` (12 prelude + 0 headers + 2 payload + 4
     /// CRC). Sits one above the empty-payload minimum and guards the `12 + headers_len .. total_len
     /// - 4` payload slice arithmetic at its lower edge.
@@ -1201,5 +1185,139 @@ mod tests {
         assert_eq!(frames[0].0, "", "no :event-type header → empty event type");
         assert_eq!(frames[0].1, payload, "two-byte payload round-trips");
         assert!(buf.is_empty());
+    }
+
+    /// Regression proof (byte-identical behavior before and after the O(frames²)→O(bytes) rewrite
+    /// of `drain_frames_checked`'s per-frame buffer advance): many frames, a trailing partial, a
+    /// `consumed_sink` populated in order, exact `valid_consumed`.
+    #[test]
+    fn drain_frames_checked_is_byte_identical_after_the_index_rewrite() {
+        let mut buf = Vec::new();
+        let mut expected: Vec<(String, Vec<u8>)> = Vec::new();
+        for i in 0..50 {
+            let payload = format!("{{\"i\":{i}}}");
+            let frame = encode_frame("contentBlockDelta", payload.as_bytes());
+            buf.extend_from_slice(&frame);
+            expected.push(("contentBlockDelta".to_string(), payload.into_bytes()));
+        }
+        // Trailing partial frame.
+        let partial_full = encode_frame("messageStop", br#"{"stopReason":"end_turn"}"#);
+        let partial = &partial_full[..partial_full.len() - 3];
+        buf.extend_from_slice(partial);
+
+        let mut sink = Vec::new();
+        let (frames, status, valid_consumed) = drain_frames_checked(&mut buf, Some(&mut sink));
+        assert_eq!(status, DrainStatus::Ok);
+        assert_eq!(frames, expected);
+        assert_eq!(
+            valid_consumed,
+            sink.len(),
+            "valid_consumed must equal the verbatim bytes captured in the sink"
+        );
+        assert_eq!(
+            buf, partial,
+            "the trailing partial frame remains buffered, byte-identical"
+        );
+        // The sink holds exactly the 50 valid frames' verbatim bytes, in order.
+        let mut expected_sink = Vec::new();
+        for i in 0..50 {
+            let payload = format!("{{\"i\":{i}}}");
+            expected_sink.extend_from_slice(&encode_frame("contentBlockDelta", payload.as_bytes()));
+        }
+        assert_eq!(sink, expected_sink);
+    }
+
+    /// Extends `test_drain_frames_checked_signals_malformed_prelude_distinctly` with valid frames
+    /// BEFORE the malformed one — the case the index-tracking rewrite is most likely to break,
+    /// since it is the first test to exercise `pos` advancing across multiple frames before hitting
+    /// the `buf.clear()` / status-abort arm.
+    #[test]
+    fn a_malformed_prelude_after_valid_frames_still_clears_and_reports_the_prefix() {
+        let mut buf = Vec::new();
+        let mut prefix_len = 0usize;
+        for i in 0..5 {
+            let payload = format!("{{\"i\":{i}}}");
+            let frame = encode_frame("contentBlockDelta", payload.as_bytes());
+            prefix_len += frame.len();
+            buf.extend_from_slice(&frame);
+        }
+        // Malformed prelude appended after 5 valid frames.
+        buf.extend_from_slice(&u32::MAX.to_be_bytes());
+        buf.extend_from_slice(&0u32.to_be_bytes());
+        buf.extend_from_slice(&[0, 0, 0, 0]);
+        buf.extend_from_slice(b"trailing junk");
+
+        let (frames, status, valid_consumed) = drain_frames_checked(&mut buf, None);
+        assert_eq!(
+            frames.len(),
+            5,
+            "the 5 valid frames before the malformed one are returned"
+        );
+        assert_eq!(
+            valid_consumed, prefix_len,
+            "valid_consumed counts only the valid prefix, not the cleared malformed remainder"
+        );
+        assert_eq!(status, DrainStatus::MalformedPrelude);
+        assert!(buf.is_empty(), "the WHOLE buffer clears, prefix included");
+    }
+
+    /// Complexity regression: `drain_frames_checked` used `Vec::drain(..total_len)` PER FRAME, which
+    /// memmoves the entire remaining tail on every call — O(frames × bytes) for a buffer of many
+    /// small frames. The index-tracking rewrite does ONE buffer edit for the whole pass, O(bytes).
+    /// A ratio test (not an absolute wall-clock threshold) so it stays machine-independent: quadratic
+    /// predicts ~16× for a 4× frame-count increase; linear predicts ~4×.
+    ///
+    /// WEAKEST TEST IN THIS FILE, labeled as such per the design doc: if `t(1000)` is too fast to be
+    /// above timer-granularity noise, the ratio is meaningless. The assertion checks that floor first
+    /// and panics with a clear message rather than silently passing on noise.
+    ///
+    /// MIN-OF-`TRIALS`, not a single sample: contention from other tests running concurrently in the
+    /// same `cargo test --workspace` invocation can only ever ADD delay to one `Instant::now()` /
+    /// `elapsed()` pair — a scheduler preemption, a cache eviction from a neighboring thread, GC-style
+    /// jemalloc housekeeping — never subtract below the true uncontended cost of the drain. So the
+    /// MINIMUM across several independent trials converges toward that true cost regardless of how
+    /// loaded the machine is, while a single sample has no such guarantee and can land on an
+    /// arbitrarily contended instant for `t(8000)`, `t(32000)`, or both, skewing the ratio in either
+    /// direction. This is a structural hardening of the MEASUREMENT, not a widened tolerance: the
+    /// asserted ratio, its rationale, and the floor check are all unchanged.
+    #[test]
+    fn drain_frames_checked_scales_linearly_in_frame_count() {
+        /// Independent trials per data point; the reported duration is the minimum observed.
+        const TRIALS: u32 = 7;
+
+        fn bench(n: usize) -> std::time::Duration {
+            let mut best: Option<std::time::Duration> = None;
+            for _ in 0..TRIALS {
+                let mut buf = Vec::new();
+                for i in 0..n {
+                    let payload = format!("{{\"i\":{i}}}");
+                    buf.extend_from_slice(&encode_frame("contentBlockDelta", payload.as_bytes()));
+                }
+                let start = std::time::Instant::now();
+                let (_, status, _) = drain_frames_checked(&mut buf, None);
+                assert_eq!(status, DrainStatus::Ok);
+                let elapsed = start.elapsed();
+                best = Some(match best {
+                    Some(b) if b <= elapsed => b,
+                    _ => elapsed,
+                });
+            }
+            best.expect("TRIALS is a nonzero constant, so the loop runs at least once")
+        }
+        let t1000 = bench(8000);
+        assert!(
+            t1000 >= std::time::Duration::from_millis(1),
+            "min-of-{TRIALS} t(8000) = {t1000:?} is too fast to be above timer-granularity noise; \
+             the ratio below would be meaningless — WITHDRAWN rather than tuned, per the design \
+             doc's own guidance"
+        );
+        let t4000 = bench(32000);
+        assert!(
+            t4000 < t1000 * 6,
+            "drain_frames_checked scaled worse than linear: min-of-{TRIALS} t(8000)={t1000:?} \
+             min-of-{TRIALS} t(32000)={t4000:?} (ratio {:.1}x, quadratic predicts ~16x, linear \
+             predicts ~4x)",
+            t4000.as_secs_f64() / t1000.as_secs_f64()
+        );
     }
 }

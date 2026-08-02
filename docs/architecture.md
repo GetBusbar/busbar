@@ -1,7 +1,7 @@
 # Architecture
 
 This document traces a request end-to-end and explains the two seams that make
-busbar's thesis, *protocols, not providers*, work: the **superset IR** with its
+Busbar's thesis, *protocols, not providers*, work: the **superset IR** with its
 `ProtocolReader` / `ProtocolWriter` traits, and the **two-stage failure-disposition
 pipeline**.
 
@@ -17,9 +17,9 @@ pipeline**.
   <g stroke="#94a3b8" stroke-width="2" marker-end="url(#rl-arw)">
     <line x1="350" y1="42"   x2="350" y2="62"/>
     <line x1="350" y1="150"  x2="350" y2="170"/>
-    <line x1="350" y1="258"  x2="350" y2="298"/>
-    <line x1="350" y1="386"  x2="350" y2="426"/>
-    <line x1="350" y1="514"  x2="350" y2="554"/>
+    <line x1="350" y1="268"  x2="350" y2="288"/>
+    <line x1="350" y1="396"  x2="350" y2="416"/>
+    <line x1="350" y1="524"  x2="350" y2="544"/>
     <line x1="350" y1="722"  x2="350" y2="742"/>
     <line x1="350" y1="870"  x2="350" y2="890"/>
     <line x1="350" y1="998"  x2="350" y2="1018"/>
@@ -142,33 +142,52 @@ Management/observability routes (`/stats`, `/healthz`, `/metrics`,
 - `/healthz` is always open (liveness probes must not require a token).
 - `/metrics` is **not** exempted, Prometheus telemetry (lane/pool topology,
   per-protocol counters, error rates) is an information-disclosure surface, so it
-  goes through the same auth check as any other route. It requires a valid client
-  token in `token` mode (or a virtual key under governance), and is admitted
-  unconditionally only in `none`/`passthrough` mode. Restrict at the network layer
-  if you need unauthenticated scraping.
-- `/admin/*` requires the governance **admin token** (as `Authorization: Bearer` or
-  `X-Admin-Token`); disabled (401) if no admin token is configured.
-- With **governance enabled**, the caller's bearer token must resolve to an enabled
-  virtual key, which is attached to the request for downstream ACL/budget checks.
-- With governance disabled, the static `AuthMode` applies (`token` allowlist,
-  `passthrough`, or `none`). The caller's bearer token is threaded through for
-  passthrough forwarding.
-- **Bedrock ingress** has two modes depending on governance:
-  - *Without governance* (`passthrough` or `none`): `extract_client_token` reads only bearer-style carriers and ignores the SigV4 header, which is forwarded upstream (passthrough) or ignored (none).
-  - *With governance* (`token` mode + `governance.enabled: true`): `crates/busbar/src/auth/mod.rs` `verify_bedrock_sigv4` intercepts requests that carry `Authorization: AWS4-HMAC-SHA256`, verifies the full SigV4 signature plus body-hash integrity (`x-amz-content-sha256`), and, on success, attaches the resolved virtual key's `GovCtx` so all governance checks apply. The AWS credential pair (`aws_access_key_id` + `aws_secret_access_key`) is minted via `POST /api/v1/admin/keys` with `"issue_aws_credential": true`. Note: `crates/busbar/src/sigv4.rs` provides signing primitives; the inbound verifier lives in `crates/busbar/src/auth/mod.rs`.
+  goes through the same auth check as any other route. It is gated by the data-plane
+  auth chain (`auth.chain`): a request must satisfy some module in the chain (the
+  built-in `keys` signed-token verifier, or an IdP auth module). With an empty chain
+  (`chain: []`) the check admits unconditionally and `/metrics` is effectively open, so
+  restrict it at the network layer if you need unauthenticated scraping.
+- The admin API (`/api/v1/admin/*`) does not run on the data plane at all. It is served
+  on a **physically separate listener**, `admin_listen` (default `127.0.0.1:8081`, loopback),
+  and gated by its own chain, `admin_auth` (default `[admin-tokens]`). An admin token
+  arrives as `Authorization: Bearer` or `X-Admin-Token`; no valid admin credential means
+  a 401. Because the socket is separate, a caller on the data port can never reach the
+  control plane. Exposing `admin_listen` off loopback is a boot error unless you set
+  `admin_tls.client_ca` (mTLS on the admin listener) or the explicit `admin_insecure`
+  waiver (for operators fronting admin with their own mesh).
+- On the data plane, the caller's bearer token is threaded through the request. Whether
+  Busbar signs the upstream call with its own lane key or forwards the caller's credential
+  is a separate config knob, `upstream_credentials:` (`Own`, the default, vs `Passthrough`),
+  independent of which auth module ran at the front door. Under governance the resolved
+  virtual key is attached for downstream ACL and budget checks.
+- **Bedrock ingress** takes one of two paths. When the data-plane chain does not verify a
+  caller (an empty chain, passthrough egress), `extract_client_token` reads only bearer-style
+  carriers and ignores the SigV4 header, which is forwarded upstream (passthrough) or dropped.
+  When governance is active, `crates/busbar/src/auth/mod.rs` `verify_bedrock_sigv4` intercepts
+  requests carrying `Authorization: AWS4-HMAC-SHA256`, verifies the full SigV4 signature plus
+  body-hash integrity (`x-amz-content-sha256`), and on success attaches the resolved virtual
+  key's `GovCtx` so all governance checks apply. The AWS credential pair (`aws_access_key_id`
+  + `aws_secret_access_key`) is minted via `POST /api/v1/admin/keys` with
+  `"issue_aws_credential": true`. `crates/busbar/src/sigv4.rs` provides signing primitives;
+  the inbound verifier lives in `crates/busbar/src/auth/mod.rs`.
 
 ### 3. Governance checks
 
 When a virtual key is resolved, the route handler enforces, in order:
 allowed-pools (`403`), budget (`429`, or `400` for Bedrock ingress), and rate
-limits (`429` + `Retry-After`) *before* forwarding. Budget exhaustion does **not**
+limits (`429` + `Retry-After`) *before* forwarding. The budget check walks the
+key's whole chain (the key's own bucket, then its `budget_group`, then that
+group's parent, up to the root) and admits only if every bucket is under cap; the
+429 names which bucket blocked. Budget exhaustion does **not**
 emit `402`: no upstream vendor returns `402` for an over-quota condition, so a
 `402` would be a router-side tell. Instead each ingress writer maps to its native
 quota shape: `429` (`insufficient_quota`) for OpenAI / Responses / Anthropic /
 Gemini / Cohere, and `400` (`ServiceQuotaExceededException`) for Bedrock. The flat
-per-request fee is charged at request completion;
-token-based spend is charged when the response stream completes (token-accurate
-accounting). See [operations.md](operations.md).
+per-request fee is charged at admission; the token counts land on the ledger when
+the response stream completes. Spend itself is never stored: it is derived at read
+time from the accumulated per-model tokens times the current top-level `rate_card`,
+so a rate correction re-prices past and present windows on the next read. See
+[operations.md](operations.md).
 
 ### 4. Pool / lane selection
 
@@ -190,7 +209,7 @@ weight 1.
 
 ### 5. Cross-protocol translation (the IR seam)
 
-If the ingress protocol differs from the selected lane's protocol, busbar
+If the ingress protocol differs from the selected lane's protocol, Busbar
 translates the **request** through the superset IR:
 
 ```
@@ -202,8 +221,12 @@ system blocks, messages with text / thinking (+signature) / tool-use / tool-resu
 / image blocks, tools (name + description + JSON schema), `max_tokens`,
 `temperature` (held as `f64` so a caller's value never silently mutates), a `stream`
 flag, and an `extra` passthrough map for fields outside the modeled subset
-(`top_p`, etc.). Same-protocol requests skip the IR entirely and pass through
-byte-for-byte.
+(provider-specific sampling knobs with no first-class IR field, etc.). Same-protocol REQUESTS skip the IR entirely and pass through
+byte-for-byte, but only when the client named the lane's exact wire model — a pool-alias route
+(e.g. `model: "fast"` resolving to a specific lane) rewrites the model and re-serializes instead.
+Same-protocol RESPONSES pass through byte-for-byte on the wire but still decode each frame through
+the IR as a usage side-channel (see `docs/protocols.md`'s "Same-protocol passthrough"); only the
+re-encode is skipped, not the IR round-trip.
 
 `ProtocolReader` and `ProtocolWriter` (`crates/busbar/src/proto/mod.rs`) are the per-protocol
 edges:

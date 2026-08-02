@@ -82,7 +82,7 @@ pub(crate) fn maybe_attach_route_policy(
 /// The CANONICAL per-protocol error-response builder. Every forward-layer error returned to the
 /// caller goes through here so the body is the INGRESS protocol's native error envelope
 /// (`application/json`) rather than `text/plain`, which an official SDK cannot decode (it raises a
-/// generic JSON-decode error — a deterministic proxy tell, design §8.1). The status code is
+/// generic JSON-decode error — a deterministic proxy tell, design). The status code is
 /// preserved exactly; only the body shape changes. `kind` is the protocol-agnostic error category
 /// (e.g. `"invalid_request_error"`, `"overloaded"`, `"authentication_error"`); `msg` is the
 /// human-readable detail. When `ingress` does not resolve to a known protocol, falls back to the
@@ -124,6 +124,32 @@ pub(crate) fn ingress_error(ingress: &str, status: StatusCode, kind: &str, msg: 
     resp
 }
 
+/// Project an [`crate::handlers::IngressReject`] into the caller-dialect error response
+/// (`ingress_error`). The one place that decides what each reject arm renders as, so the two
+/// `read_request`/`read_request_value` call sites (the opaque-body branch and the JSON branch)
+/// cannot drift on shape: `BadRequest` is today's generic 400; `UnsupportedSubOp` is the m3 second
+/// 404 (`ImageIr.op` unsupported for `model`), distinct from the no-handler 404 and naming both the
+/// operation and the model so the caller knows what to stop asking for.
+pub(crate) fn ingress_reject_response(
+    ingress_protocol: &str,
+    reject: &crate::handlers::IngressReject,
+) -> Response {
+    match reject {
+        crate::handlers::IngressReject::BadRequest(_) => ingress_error(
+            ingress_protocol,
+            StatusCode::BAD_REQUEST,
+            KIND_INVALID_REQUEST,
+            "We could not process the content of your request.",
+        ),
+        crate::handlers::IngressReject::UnsupportedSubOp { op, model } => ingress_error(
+            ingress_protocol,
+            StatusCode::NOT_FOUND,
+            KIND_NOT_FOUND,
+            &format!("{op:?} is not supported for model \"{model}\"."),
+        ),
+    }
+}
+
 /// CANONICAL mapping from an upstream HTTP status to the protocol-agnostic error `kind`, for shaping
 /// a CROSS-PROTOCOL non-2xx upstream response into the ingress protocol's native error envelope.
 /// Shared by BOTH the main forward loop (`forward_with_pool`) and the degraded last-resort path
@@ -160,7 +186,7 @@ pub(crate) fn cross_protocol_error_kind(status: StatusCode) -> &'static str {
 /// and `forward_once`. Lifts the upstream's human message where present, maps the status to the
 /// canonical ingress `kind` (`cross_protocol_error_kind`), and reshapes into the ingress protocol's
 /// native error envelope via `ingress_error`. Relaying the EGRESS provider's native error body to a
-/// different-protocol client is a foreign-format leak (§8.2) the SDK cannot decode into its typed
+/// different-protocol client is a foreign-format leak the SDK cannot decode into its typed
 /// exception — an immediate proxy tell — so a crossed boundary NEVER relays verbatim.
 pub(crate) fn shape_cross_protocol_error(
     ingress_protocol: &str,
@@ -299,8 +325,10 @@ pub(crate) fn translate_request_cross_protocol(
     // same-protocol passthrough where no same-proto-reachable mutation fired (the request short-
     // circuit, Change B step 1), these exact bytes are re-emitted verbatim instead of re-serializing
     // the `Value` — keeping the upstream payload byte-identical and skipping the serialize hot spot.
-    hop_bytes: &[u8],
-) -> Result<Vec<u8>, Box<Response>> {
+    // `&Bytes` (not `&[u8]`) so the short-circuit re-emit is a REFCOUNT BUMP (`Bytes::clone`), never
+    // an O(body) `to_vec` memcpy — the return type is `Bytes` for the same reason.
+    hop_bytes: &Bytes,
+) -> Result<Bytes, Box<Response>> {
     let egress_name = app.lanes[i].protocol.name();
     // OPAQUE ingress body (multipart/binary — `None`): translate at the BYTE level through the
     // operation codecs (cross-protocol) or relay the pristine bytes verbatim (same-protocol) —
@@ -321,13 +349,8 @@ pub(crate) fn translate_request_cross_protocol(
             };
             let mut ir_req = match ih.read_request(hop_bytes, req_content_type) {
                 Ok(ir) => ir,
-                Err(_) => {
-                    return Err(Box::new(ingress_error(
-                        ingress_protocol,
-                        StatusCode::BAD_REQUEST,
-                        KIND_INVALID_REQUEST,
-                        "We could not process the content of your request.",
-                    )))
+                Err(reject) => {
+                    return Err(Box::new(ingress_reject_response(ingress_protocol, &reject)))
                 }
             };
             ir_req.prepare_for_egress(&crate::ir::variant::EgressPrep {
@@ -341,11 +364,22 @@ pub(crate) fn translate_request_cross_protocol(
                 // model-gated (Bedrock) must assert `prompt_caching` to receive breakpoints.
                 prompt_caching_allowed: app.lanes[i].prompt_caching
                     || !app.lanes[i].protocol.writer().cache_markers_model_gated(),
+                cache_control_cap: app.lanes[i]
+                    .protocol
+                    .writer()
+                    .max_cache_control_breakpoints(),
+                // Gemini 3 thoughtSignature sentinel fill — Gemini AI-Studio egress only, NEVER
+                // Vertex (`path_base.is_some()` marks a Vertex-style URL-model lane; Vertex is not
+                // confirmed to honor the sentinel bypass and has real reports of rejecting it).
+                // Mirrors the `path_base` check used for the Claude-on-Vertex body shape below.
+                thought_signature_fill: app.lanes[i].protocol.name() == crate::proto::PROTO_GEMINI
+                    && app.lanes[i].path_base.is_none(),
             });
             ir_req.set_model(app.lanes[i].wire_model());
-            return Ok(eh.write_request(&ir_req).to_vec());
+            return Ok(eh.write_request(&ir_req));
         }
-        return Ok(hop_bytes.to_vec());
+        // Same-protocol opaque relay: the retained bytes go upstream verbatim — refcount bump only.
+        return Ok(hop_bytes.clone());
     };
     // Request short-circuit pristine-tracking (Change B). Starts true; flips false the moment ANY
     // same-protocol-reachable mutation actually changes the body. The cross-protocol branch below
@@ -355,13 +389,9 @@ pub(crate) fn translate_request_cross_protocol(
     // reports whether it truly changed the body.
     let mut pristine = true;
     if ingress_protocol != egress_name {
-        // one cross-protocol translation hop for this request.
-        metrics::counter!(
-            crate::metrics::TRANSLATIONS_TOTAL,
-            "from" => ingress_protocol.to_string(),
-            "to" => egress_name.to_string()
-        )
-        .increment(1);
+        // one cross-protocol translation hop for this request (telemetry bank: per-thread cell,
+        // fixed protocol×protocol slot table — no label allocation on the hop).
+        crate::telemetry::translation(ingress_protocol, egress_name);
         // Cross-protocol: translate the request body through the superset IR.
         let Some(_ingress_proto) = crate::proto::protocol_for(ingress_protocol) else {
             return Err(Box::new(ingress_error(
@@ -373,7 +403,7 @@ pub(crate) fn translate_request_cross_protocol(
         };
         // OPERATION-BLIND translate: the INGRESS operation handler parses its dialect into the
         // neutral IR; the IR applies its own cross-protocol semantics (`prepare_for_egress` — chat's
-        // max-tokens default, tool-id decode, and the §8.2 extra-key leak guard live INSIDE the IR,
+        // max-tokens default, tool-id decode, and the extra-key leak guard live INSIDE the IR,
         // not here); the EGRESS handler writes its dialect. The engine names no operation.
         // Codec roles resolve from PROTOCOL IDENTITY, not from the threaded handle: the ingress
         // dialect is (ingress_protocol, operation)'s handler; the egress dialect is the lane's.
@@ -405,6 +435,15 @@ pub(crate) fn translate_request_cross_protocol(
                     reasoning_budgets: app.reasoning_effort_budgets,
                     prompt_caching_allowed: app.lanes[i].prompt_caching
                         || !app.lanes[i].protocol.writer().cache_markers_model_gated(),
+                    cache_control_cap: app.lanes[i]
+                        .protocol
+                        .writer()
+                        .max_cache_control_breakpoints(),
+                    // Gemini 3 thoughtSignature sentinel fill — Gemini AI-Studio egress only, NEVER
+                    // Vertex. See the sibling `EgressPrep` construction above for the full rationale.
+                    thought_signature_fill: app.lanes[i].protocol.name()
+                        == crate::proto::PROTO_GEMINI
+                        && app.lanes[i].path_base.is_none(),
                 });
                 let Some(eh) = egress_handler else {
                     return Err(Box::new(ingress_error(
@@ -421,7 +460,7 @@ pub(crate) fn translate_request_cross_protocol(
                         // resolved model in-band, and the JSON-only post-shaping below (shim strips,
                         // model rewrite) does not apply — emit the handler's bytes directly.
                         ir_req.set_model(app.lanes[i].wire_model());
-                        return Ok(eh.write_request(&ir_req).to_vec());
+                        return Ok(eh.write_request(&ir_req));
                     }
                 }
                 // The body was fully rebuilt from the IR (read_request → write_request), so it bears
@@ -429,13 +468,8 @@ pub(crate) fn translate_request_cross_protocol(
                 // must serialize the rewritten `Value`, never short-circuit to the original bytes.
                 pristine = false;
             }
-            Err(_) => {
-                return Err(Box::new(ingress_error(
-                    ingress_protocol,
-                    StatusCode::BAD_REQUEST,
-                    KIND_INVALID_REQUEST,
-                    "We could not process the content of your request.",
-                )));
+            Err(reject) => {
+                return Err(Box::new(ingress_reject_response(ingress_protocol, &reject)));
             }
         }
     }
@@ -481,12 +515,13 @@ pub(crate) fn translate_request_cross_protocol(
     // those exact bytes verbatim — byte-identical to the old re-serialize path, minus the serialize
     // cost (and minus any key-ordering / float-formatting drift a round-trip could introduce). Cross-
     // protocol hops set `pristine = false` above and always fall through to the serialize arm.
+    // `Bytes::clone` is a refcount bump — the pristine passthrough copies ZERO body bytes.
     if ingress_protocol == egress_name && pristine {
-        return Ok(hop_bytes.to_vec());
+        return Ok(hop_bytes.clone());
     }
     // sonic-rs: SIMD serialize of the (large, string-heavy) upstream body — the request-path hot spot.
     match crate::json::to_vec(&body) {
-        Ok(p) => Ok(p),
+        Ok(p) => Ok(Bytes::from(p)),
         // Re-serializing a Value parsed from valid JSON and rewritten only with serde_json values is
         // effectively infallible; return a shaped 500 rather than panic a worker on the request path
         // (the layer's no-unwrap/expect rule).

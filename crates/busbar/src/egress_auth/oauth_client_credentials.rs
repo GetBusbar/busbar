@@ -40,7 +40,7 @@ pub(crate) fn build(
         client_secret: client_secret.to_string(),
         token_url: token_url.to_string(),
         scope: scope.to_string(),
-        http: super::minter_client(),
+        http: super::minter_client()?,
     });
     let minter: Minter = Arc::new(move || {
         let creds = creds.clone();
@@ -124,12 +124,16 @@ impl ClientCreds {
             ])
             .send()
             .await
-            .map_err(|e| format!("token endpoint request failed: {e}"))?;
+            // `without_url()`: a reqwest error carries the token-endpoint URL (with any operator-
+            // embedded user:pass@ userinfo) in its Display; this string is surfaced in retry warns, so
+            // strip the URL from the error before formatting it.
+            .map_err(|e| format!("token endpoint request failed: {}", e.without_url()))?;
         let status = resp.status();
-        let body = resp
-            .text()
-            .await
-            .map_err(|e| format!("reading token response failed: {e}"))?;
+        // The token endpoint is not fully trusted (its `expires_in` below is already treated as
+        // attacker-influenced), so read the body under the shared capped-read helper rather than
+        // `resp.text()`'s unbounded read — see `super::read_capped_token_response` for the cap
+        // rationale and the truncated/transport-error distinction.
+        let body = super::read_capped_token_response(resp).await?;
         if !status.is_success() {
             // Never echo the request (carries the client_secret); status + a short snippet only.
             return Err(format!(
@@ -139,12 +143,12 @@ impl ClientCreds {
         }
         let tok: TokenResponse =
             serde_json::from_str(&body).map_err(|e| format!("token response JSON invalid: {e}"))?;
-        Ok(CachedToken {
-            token: tok.access_token,
+        Ok(CachedToken::new(
+            tok.access_token,
             // saturating_add: `expires_in` is attacker-influenced (comes off the token endpoint), so a
             // huge value must clamp to u64::MAX rather than wrap/panic (1.4.0 audit, egress-auth).
-            expires_at: now.saturating_add(tok.expires_in),
-        })
+            now.saturating_add(tok.expires_in),
+        ))
     }
 }
 
@@ -176,6 +180,17 @@ mod tests {
         assert!(build("no-colon-here", "https://t", "s", &deny()).is_err());
         assert!(build(":secret-only", "https://t", "s", &deny()).is_err());
         assert!(build("id-only:", "https://t", "s", &deny()).is_err());
+    }
+
+    // `validate_credential` is the standalone `--validate` dry-run entry point (unlike `build`, it
+    // never constructs a provider or touches the network) - it must apply the SAME parse checks as
+    // `build`'s `split_credential` call, not just always succeed.
+    #[test]
+    fn validate_credential_rejects_malformed_and_accepts_well_formed() {
+        assert!(validate_credential("no-colon-here").is_err());
+        assert!(validate_credential(":secret-only").is_err());
+        assert!(validate_credential("id-only:").is_err());
+        assert!(validate_credential("id:secret").is_ok());
     }
 
     // 1.4.0 audit (egress-auth): build() re-validates token_url for SSRF/https as defense-in-depth
@@ -245,5 +260,45 @@ mod tests {
         let decimal_str: TokenResponse =
             serde_json::from_str(r#"{"access_token":"a","expires_in":"3600.9"}"#).unwrap();
         assert_eq!(decimal_str.expires_in, 3600);
+    }
+
+    /// The token endpoint is an untrusted network peer (its `expires_in` is already treated as
+    /// attacker-influenced above), so `mint()` must read the response body under a size cap rather
+    /// than `resp.text()`'s unbounded read: a hijacked/misbehaving token endpoint returning a body
+    /// past the `upstream_error_body_max_bytes()` cap must surface a clear error, never silently
+    /// buffer the whole thing or attempt a partial JSON parse of a truncated fragment.
+    #[tokio::test]
+    async fn mint_rejects_a_response_body_over_the_cap() {
+        let state = std::sync::Arc::new(crate::test_support::MockServerState::new());
+        // A single oversized field pushes the serialized body past the 256 KiB default cap; the
+        // fixture only needs to be a legal JSON document once truncated is irrelevant, since the
+        // cap must trip and short-circuit BEFORE any JSON parsing happens.
+        let oversized_token = "a".repeat(300 * 1024);
+        state.push(crate::test_support::MockResponse::Ok {
+            status: axum::http::StatusCode::OK,
+            body: serde_json::json!({ "access_token": oversized_token, "expires_in": 3600 }),
+        });
+        let server = crate::test_support::MockServer::new(state).await;
+
+        let creds = ClientCreds {
+            client_id: "id".to_string(),
+            client_secret: "secret".to_string(),
+            token_url: server.base_url(),
+            scope: "s".to_string(),
+            http: super::super::minter_client().unwrap(),
+        };
+        let result = creds.mint().await;
+        server.shutdown().await;
+
+        let err = match result {
+            Ok(_) => {
+                panic!("an over-cap token response must be a clear error, not a buffered success")
+            }
+            Err(e) => e,
+        };
+        assert!(
+            err.contains("cap") || err.contains("truncat"),
+            "expected an error naming the size cap / truncation, got: {err}"
+        );
     }
 }

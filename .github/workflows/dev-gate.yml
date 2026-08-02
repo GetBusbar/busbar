@@ -1,0 +1,137 @@
+# dev-gate — the automated inverse of each plugin's own CI.
+#
+# Each first-party plugin repo runs its OWN lightweight CI on every push, proving "this plugin
+# works" against a real backend where one applies (see e.g. GetBusbar/store-postgres's real
+# postgres: service container). This workflow is the other direction: on every push to `dev`
+# (the permanent, standing bleeding-edge integration branch — see the branch-model note in
+# scripts/release-check.sh's header) or any `*-dev` version-scoped branch, it runs the real
+# end-to-end release gate, proving "busbar works against ALL its plugins together" at this exact
+# commit. Neither direction substitutes for the other.
+#
+# This intentionally does NOT run on `main` or on PRs — `scripts/release-check.sh` documents
+# itself as a pre-tag gate, not a per-commit one (it can take up to ~2 hours). `dev`/`*-dev` is
+# where that cost belongs: proving the moving integration branch stays real before it ever reaches
+# `main`/a release tag.
+name: dev-gate
+
+on:
+  push:
+    branches:
+      - dev
+      - '*-dev'
+  workflow_dispatch: {}
+
+# release-check.sh documents up to ~2h; give real headroom before GitHub's own job timeout bites.
+concurrency:
+  group: dev-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release-check:
+    name: release-check.sh (full plugin gate)
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout busbar
+        uses: actions/checkout@v7
+        with:
+          path: busbarAI
+
+      # Same first-party hook plugin sources release.yml/docker.yml already check out as siblings,
+      # so release-check.sh's Phase 5 (headroom/webrequest --validate) runs for real here instead
+      # of skipping — see .github/workflows/docker.yml's HEADROOM_HOOK_REF comment for the pin
+      # rationale; kept in sync with that same pin.
+      - name: Checkout headroom-hook (first-party plugin source, pinned)
+        uses: actions/checkout@v7
+        with:
+          repository: GetBusbar/headroom-hook
+          # `dev` (not `main`) carries the sibling-relative-path dependency fix this build actually
+          # needs — mirrors busbar's own main/dev split: main stays release-only, ongoing work lands
+          # on dev. An earlier pin here (a61e7f8, an abbreviated SHA) only ever existed in a local
+          # checkout and was never pushed at all, which surfaced as a cargo "manifest path does not
+          # exist" failure rather than a checkout error.
+          ref: dev
+          path: headroom-hook
+        continue-on-error: true
+
+      - name: Checkout webrequest-hook (first-party plugin source, pinned)
+        uses: actions/checkout@v7
+        with:
+          repository: GetBusbar/webrequest-hook
+          path: webrequest-hook
+        continue-on-error: true
+
+      # store-postgres, store-redis, and auth-oidc are release-check.sh's Phase 2/3/4 — Postgres is
+      # a REQUIRED phase there (it hard-fails the whole gate if `../store-postgres` isn't present;
+      # Redis/OIDC degrade to a loud SKIP instead). Without these checkouts dev-gate never actually
+      # ran Phase 2 onward — every push to `dev` failed at "../store-postgres is not checked out as
+      # a sibling" before this fix, so `main` was never getting proven against its own required
+      # plugins on the branch this workflow exists to protect.
+      - name: Checkout store-postgres (first-party plugin source, REQUIRED by release-check.sh)
+        uses: actions/checkout@v7
+        with:
+          repository: GetBusbar/store-postgres
+          path: store-postgres
+        continue-on-error: true
+
+      - name: Checkout store-redis (first-party plugin source)
+        uses: actions/checkout@v7
+        with:
+          repository: GetBusbar/store-redis
+          path: store-redis
+        continue-on-error: true
+
+      - name: Checkout auth-oidc (first-party plugin source)
+        uses: actions/checkout@v7
+        with:
+          repository: GetBusbar/auth-oidc
+          path: auth-oidc
+        continue-on-error: true
+
+      # store-sqlite now lives entirely in its own repo (fully extracted, same-repo 2-crate
+      # workspace) — this checkout is what `crates/plugin-loader`'s loader-mechanism tests
+      # (TOCTOU-safe loading, hot-swap, staged-file lifecycle, denylist-fallback classification)
+      # build a REAL cdylib from, since there is no in-tree kind:store plugin left to test the
+      # loader's generic mechanics against. See store_fixture_plugin_path()'s doc comment.
+      - name: Checkout store-sqlite (first-party plugin source)
+        uses: actions/checkout@v7
+        with:
+          repository: GetBusbar/store-sqlite
+          path: store-sqlite
+        continue-on-error: true
+
+      - name: Build the store-sqlite-plugin cdylib from the sibling checkout
+        run: cargo build --release -p busbar-store-sqlite-plugin
+        working-directory: store-sqlite
+        continue-on-error: true
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: busbarAI
+
+      - name: Confirm Docker is available (Postgres/Redis phases need it)
+        run: docker ps
+        working-directory: busbarAI
+
+      - name: Run the real end-to-end release gate
+        run: ./scripts/release-check.sh
+        working-directory: busbarAI
+
+      # hook-test-plugin and secret-example-plugin are hermetic in-tree dev-fixture cdylibs
+      # plugin-loader's own tests dlopen (hook_plugin_path()/secret_example_plugin_path()) — but
+      # neither is a declared Cargo dependency of busbar-plugin-loader (they're only ever loaded at
+      # runtime via dlopen from inside a test), so the SCOPED `cargo test -p busbar-plugin-loader`
+      # step below never builds them on its own, no matter what profile-dir path that step's own
+      # cdylib-discovery helpers check. Build them explicitly first; both crates hard-panic (via
+      # their own path-discovery helpers) under CI if this step is ever skipped or reordered, so a
+      # future regression here fails loud rather than silently losing this coverage again.
+      - name: Build the in-tree hook-test-plugin and secret-example-plugin cdylibs
+        run: cargo build --release -p busbar-hook-test-plugin -p busbar-secret-example-plugin
+        working-directory: busbarAI
+
+      - name: Run the loader-mechanism tests against the real sibling-built store-sqlite-plugin
+        env:
+          DEV_GATE: "1"
+        run: cargo test --release -p busbar-plugin-loader
+        working-directory: busbarAI

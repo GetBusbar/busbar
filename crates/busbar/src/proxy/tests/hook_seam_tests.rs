@@ -328,7 +328,7 @@ fn pool_runtime_with(
     }
 }
 
-/// REGRESSION (audit c1r13, compliance): a `Restrict` gate on the primary pool must persist onto
+/// A `Restrict` gate on the primary pool must persist onto
 /// a `fallback_pool` hop, re-applied against the FALLBACK pool's own member tags. A required
 /// (`on_empty: reject`) restrict fails CLOSED when no fallback lane carries the tag; a `weighted`
 /// restrict is an advisory escape (skip).
@@ -420,7 +420,7 @@ fn enforce_restricts_reapplies_compliance_tags_across_pools() {
     );
 }
 
-/// REGRESSION (audit c1r14), END-TO-END: a BASE routing-policy (`route:` hook) `Restrict` must
+/// END-TO-END: a BASE routing-policy (`route:` hook) `Restrict` must
 /// persist across a `fallback_pool` spill exactly like a gate restrict. Primary pool's only
 /// baa-eligible lane is dead → the request exhausts and spills to a fallback pool whose lane is
 /// NOT baa-tagged; the compliance restrict must FAIL CLOSED there, not serve the ineligible lane.
@@ -551,43 +551,53 @@ async fn body_model(resp: Response) -> String {
         .to_string()
 }
 
-/// Build a webhook TAP transport pointed at a mock server, as the App stage-tap triple.
+/// An in-process TAP capture: a `RoutingPolicy` whose fire-and-forget `notify` records the delivered
+/// projection bytes. The tap seam is transport-agnostic — the retired webhook was just one delivery
+/// path — so capturing the `notify` projection directly exercises the SAME seam (the proxy builds the
+/// stage projection and spawns `notify`) without an HTTP server or a live plugin.
+struct CaptureTap {
+    last: std::sync::Mutex<Option<Vec<u8>>>,
+}
+
+#[async_trait::async_trait]
+impl crate::hooks::RoutingPolicy for CaptureTap {
+    async fn decide(
+        &self,
+        _req: &crate::hooks::RoutingRequest<'_>,
+        _cands: &[crate::hooks::Candidate<'_>],
+        _ctx: &crate::hooks::RoutingContext<'_>,
+        _budget: std::time::Duration,
+    ) -> crate::hooks::PolicyResult {
+        Ok(crate::hooks::RoutingDecision::Abstain)
+    }
+    fn name(&self) -> &'static str {
+        "capture-tap"
+    }
+    async fn notify(&self, projection: &[u8], _budget: std::time::Duration) {
+        *self.last.lock().unwrap() = Some(projection.to_vec());
+    }
+}
+
+/// Build an in-process TAP capture as the App stage-tap triple.
 async fn webhook_tap() -> (
-    crate::test_support::MockServer,
-    Arc<crate::test_support::MockServerState>,
+    Arc<CaptureTap>,
     (
         std::time::Duration,
         bool,
         Arc<dyn crate::hooks::RoutingPolicy>,
     ),
 ) {
-    let state = Arc::new(crate::test_support::MockServerState::new());
-    for _ in 0..4 {
-        state.push(crate::test_support::MockResponse::Ok {
-            status: StatusCode::OK,
-            body: serde_json::json!({}),
-        });
-    }
-    let server = crate::test_support::MockServer::new(state.clone()).await;
-    let url = crate::observability::validate_routing_webhook_url(Some(&format!(
-        "{}/tap",
-        server.base_url()
-    )))
-    .expect("loopback tap url");
-    let policy: Arc<dyn crate::hooks::RoutingPolicy> = Arc::new(
-        crate::hooks::webhook::WebhookPolicy::new(url, reqwest::Client::new()),
-    );
-    (
-        server,
-        state,
-        (std::time::Duration::from_millis(500), false, policy),
-    )
+    let cap = Arc::new(CaptureTap {
+        last: std::sync::Mutex::new(None),
+    });
+    let policy: Arc<dyn crate::hooks::RoutingPolicy> = cap.clone();
+    (cap, (std::time::Duration::from_millis(500), false, policy))
 }
 
-/// Poll the mock tap server until it records a request body (taps are detached tasks).
-async fn wait_for_tap_body(state: &crate::test_support::MockServerState) -> serde_json::Value {
+/// Poll the in-process tap capture until `notify` records a projection (taps are detached tasks).
+async fn wait_for_tap_body(cap: &CaptureTap) -> serde_json::Value {
     for _ in 0..200 {
-        if let Some(body) = state.get_last_request_body() {
+        if let Some(body) = cap.last.lock().unwrap().clone() {
             return serde_json::from_slice(&body).expect("tap payload is JSON");
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -596,13 +606,12 @@ async fn wait_for_tap_body(state: &crate::test_support::MockServerState) -> serd
 }
 
 /// STAGE TAPS: an UNAUTHENTICATED request fires the synthetic `rejected_by_auth` completion
-/// (through the real auth middleware) — audit taps see auth denials too. Requires the tokens
-/// module (featureless builds have no data-plane auth to reject with).
-#[cfg(feature = "auth-tokens")]
+/// (through the real auth middleware) - audit taps see auth denials too. Uses the test-only
+/// data-plane module (a non-empty chain with no matching credential denies fail-closed).
 #[tokio::test]
 async fn completion_tap_fires_synthetic_rejected_by_auth() {
     crate::metrics::init();
-    let (server, state, tap) = webhook_tap().await;
+    let (cap, tap) = webhook_tap().await;
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
@@ -610,11 +619,9 @@ async fn completion_tap_fires_synthetic_rejected_by_auth() {
             "http://127.0.0.1:1/",
         ))
         .pool("p", &[(0, 1)])
-        .auth(Arc::new(crate::auth::AuthMiddleware::new(
-            &serde_yaml::from_str::<crate::config::AuthCfg>(
-                "chain: [tokens]\nclient_tokens: [good-token]\n",
-            )
-            .unwrap(),
+        .auth(Arc::new(crate::auth::AuthMiddleware::new_builtin(
+            &serde_yaml::from_str::<crate::config::AuthCfg>("chain: [test-groups-module]\n")
+                .unwrap(),
         )))
         .build();
     Arc::get_mut(&mut app)
@@ -633,29 +640,24 @@ async fn completion_tap_fires_synthetic_rejected_by_auth() {
         .await
         .unwrap();
     assert_eq!(resp.status().as_u16(), 401);
-    let payload = wait_for_tap_body(&state).await;
+    let payload = wait_for_tap_body(&cap).await;
     assert_eq!(payload["stage"]["at"], "completion");
     assert_eq!(payload["stage"]["outcome"], "rejected_by_auth");
     assert_eq!(payload["stage"]["status"], 401);
     serve.abort();
-    server.shutdown().await;
 }
 
-/// REGRESSION (audit c1r6): the completion-tap `status` must be the PROTOCOL-NATIVE auth-failure
+/// The completion-tap `status` must be the PROTOCOL-NATIVE auth-failure
 /// status the client actually receives — not a hardcoded 401. A Gemini ingress bad-key denial is
 /// HTTP 400 (INVALID_ARGUMENT), so a tap watching it must see 400, matching the served response.
-/// Gated on the tokens module (featureless builds have no data-plane auth to reject with).
-#[cfg(feature = "auth-tokens")]
 #[tokio::test]
 async fn completion_tap_status_is_protocol_native_gemini_400() {
     crate::metrics::init();
-    let (server, state, tap) = webhook_tap().await;
+    let (cap, tap) = webhook_tap().await;
     let mut app = TestApp::new()
-        .auth(Arc::new(crate::auth::AuthMiddleware::new(
-            &serde_yaml::from_str::<crate::config::AuthCfg>(
-                "chain: [tokens]\nclient_tokens: [good-token]\n",
-            )
-            .unwrap(),
+        .auth(Arc::new(crate::auth::AuthMiddleware::new_builtin(
+            &serde_yaml::from_str::<crate::config::AuthCfg>("chain: [test-groups-module]\n")
+                .unwrap(),
         )))
         .build();
     Arc::get_mut(&mut app)
@@ -677,21 +679,20 @@ async fn completion_tap_status_is_protocol_native_gemini_400() {
         .await
         .unwrap();
     assert_eq!(resp.status().as_u16(), 400, "gemini bad-key is native 400");
-    let payload = wait_for_tap_body(&state).await;
+    let payload = wait_for_tap_body(&cap).await;
     assert_eq!(payload["stage"]["outcome"], "rejected_by_auth");
     assert_eq!(
         payload["stage"]["status"], 400,
         "the tap status must match the client-visible native status, not a hardcoded 401"
     );
     serve.abort();
-    server.shutdown().await;
 }
 
 /// STAGE TAPS: a completion tap fires with the SYNTHETIC `rejected_by_gate` outcome when a
 /// decision gate rejects — audit taps see denials, not just served requests.
 #[tokio::test]
 async fn completion_tap_fires_synthetic_rejected_by_gate() {
-    let (server, state, tap) = webhook_tap().await;
+    let (cap, tap) = webhook_tap().await;
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
             "m0",
@@ -707,17 +708,16 @@ async fn completion_tap_fires_synthetic_rejected_by_gate() {
     }
     let resp = fire(app, 1).await;
     assert_eq!(resp.status().as_u16(), 451);
-    let payload = wait_for_tap_body(&state).await;
+    let payload = wait_for_tap_body(&cap).await;
     assert_eq!(payload["stage"]["at"], "completion");
     assert_eq!(payload["stage"]["outcome"], "rejected_by_gate");
     assert_eq!(payload["stage"]["status"], 451);
-    server.shutdown().await;
 }
 
 /// STAGE TAPS: a completion tap reports `ok` + the status for a served request.
 #[tokio::test]
 async fn completion_tap_reports_ok_outcome() {
-    let (server, state, tap) = webhook_tap().await;
+    let (cap, tap) = webhook_tap().await;
     let lane = mock_lane("served").await;
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
@@ -732,18 +732,17 @@ async fn completion_tap_reports_ok_outcome() {
         .tap_hooks_completion = vec![tap];
     let resp = fire(app, 1).await;
     assert_eq!(resp.status().as_u16(), 200);
-    let payload = wait_for_tap_body(&state).await;
+    let payload = wait_for_tap_body(&cap).await;
     assert_eq!(payload["stage"]["at"], "completion");
     assert_eq!(payload["stage"]["outcome"], "ok");
     assert_eq!(payload["stage"]["status"], 200);
-    server.shutdown().await;
     lane.shutdown().await;
 }
 
 /// STAGE TAPS: an attempt tap carries the failover story — attempt number + dispatched target.
 #[tokio::test]
 async fn attempt_tap_carries_attempt_story() {
-    let (server, state, tap) = webhook_tap().await;
+    let (cap, tap) = webhook_tap().await;
     let lane = mock_lane("served").await;
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
@@ -758,7 +757,7 @@ async fn attempt_tap_carries_attempt_story() {
         .tap_hooks_attempt = vec![tap];
     let resp = fire(app, 1).await;
     assert_eq!(resp.status().as_u16(), 200);
-    let payload = wait_for_tap_body(&state).await;
+    let payload = wait_for_tap_body(&cap).await;
     assert_eq!(payload["stage"]["at"], "attempt");
     assert_eq!(payload["stage"]["attempt_number"], 1);
     // Renamed target -> model (wire audit L10: one name for one concept — the same string
@@ -768,14 +767,13 @@ async fn attempt_tap_carries_attempt_story() {
         payload["stage"].get("previous_failure").is_none(),
         "no failure precedes the first attempt"
     );
-    server.shutdown().await;
     lane.shutdown().await;
 }
 
 /// STAGE TAPS: a route tap observes the post-reconcile candidate-set size.
 #[tokio::test]
 async fn route_tap_reports_surviving_candidates() {
-    let (server, state, tap) = webhook_tap().await;
+    let (cap, tap) = webhook_tap().await;
     let lane = mock_lane("served").await;
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
@@ -788,10 +786,9 @@ async fn route_tap_reports_surviving_candidates() {
     Arc::get_mut(&mut app).expect("sole owner").tap_hooks_route = vec![tap];
     let resp = fire(app, 1).await;
     assert_eq!(resp.status().as_u16(), 200);
-    let payload = wait_for_tap_body(&state).await;
+    let payload = wait_for_tap_body(&cap).await;
     assert_eq!(payload["stage"]["at"], "route");
     assert_eq!(payload["stage"]["remaining_candidates"], 1);
-    server.shutdown().await;
     lane.shutdown().await;
 }
 
@@ -824,7 +821,7 @@ impl RoutingPolicy for RewritingGate {
     }
 }
 
-/// REGRESSION (Headroom e2e finding): a committed GLOBAL REWRITE must reach the upstream on a
+/// A committed GLOBAL REWRITE must reach the upstream on a
 /// SAME-PROTOCOL passthrough. The pristine-bytes short-circuit re-emits the retained request
 /// bytes verbatim; before the fix those were the PRE-rewrite bytes, so a global compressor's
 /// output was silently discarded exactly on the fast path.
@@ -864,10 +861,9 @@ async fn same_protocol_passthrough_carries_global_rewrite() {
         v["messages"][0]["content"], "COMPRESSED",
         "the upstream must see the REWRITTEN body on the same-protocol fast path"
     );
-    server.shutdown().await;
 }
 
-/// REGRESSION (Headroom e2e finding): a POOL-scoped `prompt: rw` gate joins the phase-1
+/// A POOL-scoped `prompt: rw` gate joins the phase-1
 /// transform pass — its rewrite reaches the upstream (before the fix it fired as a decision
 /// gate, its rewrite reply normalized to Abstain, and the request paid its deadline for
 /// nothing).
@@ -909,7 +905,6 @@ async fn pool_scoped_rw_gate_rewrites_the_body() {
         v["messages"][0]["content"], "POOL-COMPRESSED",
         "a pool-scoped rw gate must rewrite the dispatched body"
     );
-    server.shutdown().await;
 }
 
 /// A test policy whose decide always errors — the on_error-chain tests' failing primary.
@@ -1003,6 +998,76 @@ async fn on_error_chain_exhausted_applies_terminal() {
         resp.status().as_u16(),
         503,
         "an exhausted chain must land on the fail-closed reject terminal"
+    );
+}
+
+/// ON_ERROR TERMINAL REJECT MUST ACTUALLY SHORT-CIRCUIT (cargo-mutants gap, proxy engine
+/// `forward_with_pool_parsed_inner`'s `PolicyOutcome::Reject` match arm): the test above
+/// (`on_error_chain_exhausted_applies_terminal`) uses a dead lane (`127.0.0.1:1`), so its 503 is
+/// ambiguous — a deleted `PolicyOutcome::Reject` arm would silently fall through to `_ => {}` and
+/// let the request proceed to dispatch, which would ALSO 503 there (dead lane), for an unrelated
+/// reason, masking the mutation entirely (confirmed by hand: deleting that match arm did not fail
+/// that test). This test uses a LIVE lane that actually serves 200, so a fail-open bug is
+/// unambiguously a 200 where a 503 is required.
+#[tokio::test]
+async fn on_error_reject_terminal_short_circuits_before_a_live_lane_ever_dispatches() {
+    let server = mock_lane("live-lane").await;
+    let mut app = TestApp::new()
+        .lane(LaneSpec::new(
+            "m0",
+            crate::proto::Protocol::anthropic(),
+            &server.base_url(),
+        ))
+        .pool("p", &[(0, 1)])
+        .build();
+    let gate = ResolvedPolicy::Policy {
+        policy: Arc::new(ErroringPolicy),
+        on_error: crate::config::PolicyOnError::Reject,
+        on_error_chain: vec![],
+        timeout: std::time::Duration::from_millis(50),
+        send_prompt: false,
+        send_user: false,
+        on_empty: crate::config::PolicyOnError::Reject,
+    };
+    Arc::get_mut(&mut app).expect("sole owner").global_gates = vec![(0u16, gate)];
+    let resp = fire(app, 1).await;
+    assert_eq!(
+        resp.status().as_u16(),
+        503,
+        "an errored gate terminating in `on_error: reject` must fail closed BEFORE dispatch — a \
+             live, healthy lane must never actually serve this request"
+    );
+}
+
+/// GLOBAL REQUEST-STAGE TAP FIRES (cargo-mutants gap, proxy engine `fire_global_taps`): every
+/// other `app.tap_hooks_*` category (route/attempt/completion) has its own firing test in this
+/// file, but the base `app.tap_hooks` (`at: request`, fired by `fire_global_taps` — see its call
+/// site's own "GLOBAL TAP (observe) FIRE" comment in engine/mod.rs) had none. A mutant replacing
+/// `fire_global_taps` with `()` would silently stop delivering request-stage taps forever with
+/// zero test failures elsewhere.
+#[tokio::test]
+async fn global_request_stage_tap_fires_on_a_real_dispatched_request() {
+    let (cap, tap) = webhook_tap().await;
+    let server = mock_lane("live-lane").await;
+    let mut app = TestApp::new()
+        .lane(LaneSpec::new(
+            "m0",
+            crate::proto::Protocol::anthropic(),
+            &server.base_url(),
+        ))
+        .pool("p", &[(0, 1)])
+        .build();
+    Arc::get_mut(&mut app).expect("sole owner").tap_hooks = vec![tap];
+    let resp = fire(app, 1).await;
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "the request must still dispatch normally"
+    );
+    let payload = wait_for_tap_body(&cap).await;
+    assert_eq!(
+        payload["op"], "notify",
+        "the global request-stage tap must receive the real notify wire envelope: {payload}"
     );
 }
 
@@ -1222,6 +1287,60 @@ async fn order_last_in_chain_wins() {
     beta.shutdown().await;
 }
 
+/// RECONCILE: the LAST (highest-priority) ordering gate filters to empty against the
+/// post-restrict surviving set ⇒ abstain to the pool's BASE ordering (`mod.rs:715-717`'s own
+/// comment), never a fall-through to a LOWER-priority gate's order. Three lanes: `base`/`low`
+/// survive a restrict, `excluded` does not. The low-priority gate orders `[low]`; the
+/// high-priority gate orders `[excluded]`, which filters to empty post-restrict. Before the
+/// missing-`else` fix, `gate_order` is left holding the low-priority gate's stale value from the
+/// prior loop iteration and `low` serves; after the fix it is cleared and the pool's base
+/// ordering (first healthy candidate, `base`) serves.
+#[tokio::test]
+async fn last_order_gate_filtered_to_empty_abstains_to_base_not_to_a_lower_gate() {
+    let base = mock_lane("base").await;
+    let low = mock_lane("low").await;
+    let mut app = TestApp::new()
+        .lane(LaneSpec::new(
+            "base-lane",
+            crate::proto::Protocol::anthropic(),
+            &base.base_url(),
+        ))
+        .lane(LaneSpec::new(
+            "low-lane",
+            crate::proto::Protocol::anthropic(),
+            &low.base_url(),
+        ))
+        .lane(LaneSpec::new(
+            "excluded-lane",
+            crate::proto::Protocol::anthropic(),
+            "http://127.0.0.1:1/", // dead: never actually reachable, only named by the stale order
+        ))
+        .pool("p", &[(0, 1), (1, 1), (2, 1)])
+        .pool_runtime(
+            "p",
+            pool_runtime_with(&[(0, &["keep"]), (1, &["keep"]), (2, &[])], Vec::new()),
+        )
+        .build();
+    Arc::get_mut(&mut app).expect("sole owner").global_gates = vec![
+        (
+            0u16,
+            canned_gate(Canned::Restrict(vec!["keep".to_string()]), "restrictor"),
+        ),
+        (10u16, canned_gate(Canned::Order(vec![1]), "low-orderer")),
+        (20u16, canned_gate(Canned::Order(vec![2]), "high-orderer")),
+    ];
+    let resp = fire(app, 3).await;
+    assert_eq!(resp.status().as_u16(), 200);
+    assert_eq!(
+        body_model(resp).await,
+        "base",
+        "a filtered-to-empty highest-priority order must abstain to the pool's base ordering, \
+         not fall through to a lower-priority gate's stale order"
+    );
+    base.shutdown().await;
+    low.shutdown().await;
+}
+
 /// RECONCILE: a global gate ORDER is now honored (the previously-deferred arm): a single global
 /// ordering gate reorders dispatch away from config order.
 #[tokio::test]
@@ -1330,22 +1449,27 @@ async fn max_tokens_saturates_not_wraps() {
 /// the projection.
 #[tokio::test]
 async fn send_user_projects_governance_key_identity() {
-    use crate::governance::{GovState, NewKeySpec, SqliteStore};
-    let store = std::sync::Arc::new(SqliteStore::open_in_memory().expect("in-memory store"));
-    let gov = std::sync::Arc::new(GovState::new(store, 0, 0, None).expect("gov state"));
+    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+    let store = std::sync::Arc::new(MemoryStore::new());
+    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+        &[7u8; 32],
+        crate::governance::signing::DEFAULT_KID,
+    );
+    let gov = std::sync::Arc::new(
+        GovState::new_with_signer(store, None, Some(signer)).expect("gov state"),
+    );
     let (key, secret) = gov
-        .create_key(
+        .mint_signed(
             NewKeySpec {
                 name: "sales-team".to_string(),
-                allowed_pools: vec![],
-                max_budget_cents: None,
-                budget_period: "monthly".to_string(),
-                rpm_limit: None,
-                tpm_limit: None,
+                allowed_pools: None,
+                group: None,
+                labels: Default::default(),
             },
-            1,
+            2_000_000_000,
+            1_000_000_000,
         )
-        .expect("create key");
+        .expect("mint signed key");
 
     let app = TestApp::new()
         .lane(LaneSpec::new(
@@ -1400,7 +1524,7 @@ async fn send_user_projects_governance_key_identity() {
     assert_ne!(key_name.as_deref(), Some(secret.as_str()));
 }
 
-/// REGRESSION (audit c1r10): a GROUP/SSO principal's token is not a virtual-key secret, so the
+/// A GROUP/SSO principal's token is not a virtual-key secret, so the
 /// `decide_policy_order` token `lookup` MISSES — but the auth layer already synthesized a key
 /// for it (`GovCtx.key`, threaded as `resolved_gov_key`). The identity projection must fall back
 /// to that synthesized key so `send_user` policies see the caller, instead of silently `None`.
@@ -1434,19 +1558,20 @@ async fn send_user_falls_back_to_synthesized_group_key_identity() {
         attempt_timeout_ms: None,
     }];
     // A synthesized principal key exactly as the auth layer builds one for a group/SSO caller:
-    // id/name carry the principal, key_hash is a non-secret marker never inserted into by_hash.
-    let synth = crate::governance::VirtualKey {
+    // id/name carry the principal, generation_hash is a non-secret marker never inserted into by_hash.
+    let synth = std::sync::Arc::new(crate::governance::VirtualKey {
         id: "eng-oncall".to_string(),
-        key_hash: "principal:eng-oncall".to_string(),
+        generation_hash: "principal:eng-oncall".to_string(),
         name: "eng-oncall".to_string(),
-        allowed_pools: vec![],
-        max_budget_cents: None,
-        budget_period: "total".to_string(),
-        rpm_limit: None,
-        tpm_limit: None,
+        allowed_scopes: None,
         enabled: true,
         created_at: 0,
-    };
+        group: None,
+        labels: Default::default(),
+        expires_at: None,
+        deleted_at: None,
+        revision: 1,
+    });
     let rc = RequestCtx::new(60);
     let v = body();
     // caller_token is the RAW SSO bearer — NOT a virtual-key secret, so lookup would miss.
@@ -1473,7 +1598,107 @@ async fn send_user_falls_back_to_synthesized_group_key_identity() {
     assert_eq!(key_name.as_deref(), Some("eng-oncall"));
 }
 
-/// REGRESSION (audit c1r11): the named / ad-hoc anthropic routes go through `forward_with_pool`,
+/// class-11 D3 (correctness, not a work reduction): auth's admission decision is authoritative.
+/// `auth/mod.rs` installs `GovCtx.key` from a legacy hashed-secret `lookup` only under
+/// `Some(key) if key.enabled`; a DISABLED key is rejected there and auth falls through to a
+/// SYNTHESIZED principal key instead (carried here as `resolved_gov_key`). `decide_policy_order`'s
+/// own raw `g.lookup(tok)` applies no `enabled`/`is_revoked` filter, so if it were tried FIRST it
+/// would resolve `identity`/`rate_headroom` against the disabled key auth already rejected — a
+/// caller admitted under the synthesized identity would be policy-ranked under the wrong one.
+/// This seeds `by_hash` with a DISABLED key for the token (so the two orders can disagree — an
+/// EMPTY `by_hash` cannot discriminate them, since `lookup` would miss either way) and asserts the
+/// resolved identity is the synthesized key's, matching what auth actually authorized.
+#[tokio::test]
+async fn send_user_prefers_resolved_key_over_disabled_legacy_lookup() {
+    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+    let store = std::sync::Arc::new(MemoryStore::new());
+    let gov = std::sync::Arc::new(GovState::new(store, None).expect("gov state"));
+    let (disabled_key, secret) = gov
+        .create_key(
+            NewKeySpec {
+                name: "legacy-disabled".to_string(),
+                allowed_pools: None,
+                group: None,
+                labels: Default::default(),
+            },
+            1,
+        )
+        .expect("create key");
+    gov.update_key(&disabled_key.id, Some(false), None)
+        .expect("disable key")
+        .expect("key exists");
+
+    let app = TestApp::new()
+        .lane(LaneSpec::new(
+            "m0",
+            crate::proto::Protocol::anthropic(),
+            "http://localhost",
+        ))
+        .pool("p", &[(0, 1)])
+        .governance(gov)
+        .build();
+    let seen = Arc::new(StdMutex::new(None));
+    let resolved = ResolvedPolicy::Policy {
+        policy: Arc::new(CapturingPolicy {
+            seen: seen.clone(),
+            reject: None,
+        }),
+        on_error: crate::config::PolicyOnError::default(),
+        on_error_chain: Vec::new(),
+        timeout: std::time::Duration::from_millis(500),
+        send_prompt: false,
+        send_user: true,
+        on_empty: crate::config::PolicyOnError::Reject,
+    };
+    let cands = vec![WeightedLane {
+        reasoning: None,
+        idx: 0,
+        weight: 1,
+        attempt_timeout_ms: None,
+    }];
+    // The key auth ACTUALLY installed for this request: NOT the disabled `by_hash` hit, a
+    // different synthesized principal key (exactly what a fallthrough from `Some(key) if
+    // key.enabled` produces for a disabled-key caller re-admitted via a group binding).
+    let synth = std::sync::Arc::new(crate::governance::VirtualKey {
+        id: "synthesized-principal".to_string(),
+        generation_hash: "principal:synthesized-principal".to_string(),
+        name: "synthesized-principal".to_string(),
+        allowed_scopes: None,
+        enabled: true,
+        created_at: 0,
+        group: None,
+        labels: Default::default(),
+        expires_at: None,
+        deleted_at: None,
+        revision: 1,
+    });
+    let rc = RequestCtx::new(60);
+    let v = body();
+    decide_policy_order(
+        &app,
+        &resolved,
+        &cands,
+        &rc,
+        &v,
+        "p",
+        "anthropic",
+        false,
+        Some(&secret), // the RAW token, which DOES hash-match the disabled key in `by_hash`
+        Some(&synth),
+    )
+    .await;
+    let captured = seen.lock().unwrap().clone().expect("policy called");
+    let (key_id, key_name, _user) = captured.identity.expect("identity present");
+    assert_eq!(
+        key_id.as_deref(),
+        Some("synthesized-principal"),
+        "must resolve to the key auth actually authorized (the synthesized key), \
+         not the disabled legacy key a raw `lookup` would hit"
+    );
+    assert_eq!(key_name.as_deref(), Some("synthesized-principal"));
+}
+
+/// The named / ad-hoc anthropic routes go through `forward_with_pool`,
 /// which carries NO resolved key — so the c1r10 fallback never fired there and a group principal
 /// on `/{pool}/v1/messages` was still routing-signal-blind. `forward_with_pool_keyed` threads
 /// `GovCtx.key` down; this exercises that path end-to-end via a pool's `send_user` policy.
@@ -1503,18 +1728,19 @@ async fn forward_with_pool_keyed_threads_group_key_to_pool_policy() {
         .pool("p", &[(0, 1)])
         .pool_runtime("p", rt)
         .build();
-    let synth = crate::governance::VirtualKey {
+    let synth = std::sync::Arc::new(crate::governance::VirtualKey {
         id: "eng-oncall".to_string(),
-        key_hash: "principal:eng-oncall".to_string(),
+        generation_hash: "principal:eng-oncall".to_string(),
         name: "eng-oncall".to_string(),
-        allowed_pools: vec![],
-        max_budget_cents: None,
-        budget_period: "total".to_string(),
-        rpm_limit: None,
-        tpm_limit: None,
+        allowed_scopes: None,
         enabled: true,
         created_at: 0,
-    };
+        group: None,
+        labels: Default::default(),
+        expires_at: None,
+        deleted_at: None,
+        revision: 1,
+    });
     let body = Bytes::from(serde_json::to_vec(&body()).unwrap());
     let cands = vec![WeightedLane {
         reasoning: None,

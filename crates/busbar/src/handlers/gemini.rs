@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Gemini `RequestHandler` + cells (design §6/§7). Embeddings via `models/{id}:embedContent`.
-#![allow(dead_code)]
+//! Gemini `RequestHandler` + cells. Embeddings via `models/{id}:embedContent`.
 
 use crate::handlers::{
     CodecError, EgressCtx, IngressReject, OperationHandler, RequestHandler, WireBody,
@@ -78,8 +77,23 @@ impl RequestHandler for GeminiRequestHandler {
         if !(path.contains(":generateContent") || path.contains(":streamGenerateContent")) {
             return None;
         }
-        let has = |n: &[u8]| body.windows(n.len()).any(|w| w == n);
-        if has(b"responseModalities") || has(b"inline_data") || has(b"inlineData") {
+        // Single pass over the body for all three markers instead of three independent
+        // `.windows().any()` scans (each a full traversal on its own): the old code, for
+        // `false || false || false` (the common plain-chat case, where none of the markers are
+        // present), always paid for three full scans before concluding "chat" — `||` cannot
+        // short-circuit when every operand is false. Only the disjunction is ever consulted
+        // downstream, so one pass that stops at the FIRST marker found (of any of the three) is
+        // both a correct drop-in (same presence/absence result as the old `has(a) || has(b) ||
+        // has(c)`) and strictly cheaper on every input: chat still degrades to one full scan
+        // (not three), and any input that does carry a marker returns as soon as it's seen
+        // instead of scanning per-pattern first.
+        let hit = (0..body.len()).any(|i| {
+            let rest = &body[i..];
+            rest.starts_with(b"responseModalities")
+                || rest.starts_with(b"inline_data")
+                || rest.starts_with(b"inlineData")
+        });
+        if hit {
             if let Ok(v) = serde_json::from_slice::<Value>(body) {
                 let audio_out = v
                     .pointer("/generationConfig/responseModalities")
@@ -179,13 +193,12 @@ impl OperationHandler for GeminiTranscription {
                 let d = match &blob.payload {
                     MediaPayload::B64(s) => s.clone(),
                     MediaPayload::Bytes(b) => base64_encode(b),
-                    MediaPayload::Uri(_) => String::new(),
                 };
                 (blob.mime_type.clone(), d)
             }
             None => (String::new(), String::new()),
         };
-        // `target_language` set ⇒ translate (folds /audio/translations, §1b); else transcribe.
+        // `target_language` set ⇒ translate (folds /audio/translations); else transcribe.
         let instruction = if r.target_language.is_some() {
             "Translate the following audio to text."
         } else {
@@ -367,7 +380,6 @@ impl OperationHandler for GeminiSpeech {
                 let d = match &blob.payload {
                     MediaPayload::B64(s) => s.clone(),
                     MediaPayload::Bytes(b) => base64_encode(b),
-                    MediaPayload::Uri(_) => String::new(),
                 };
                 (d, blob.mime_type.clone())
             }
@@ -548,7 +560,14 @@ impl OperationHandler for GeminiEmbeddings {
                 }
                 v.first().cloned().unwrap_or_default()
             }
-            _ => String::new(),
+            other => {
+                tracing::warn!(
+                    dropped = 1,
+                    "Gemini :embedContent takes text input only; dropping a non-text embeddings \
+                     input ({other:?} kind) with no analog"
+                );
+                String::new()
+            }
         };
         // Carry the retrieval/shape controls the reader captures — Gemini `:embedContent` supports
         // them natively. Dropping `outputDimensionality` returned full-width vectors instead of the
@@ -619,6 +638,30 @@ impl OperationHandler for GeminiEmbeddings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn protocol_name_is_gemini() {
+        assert_eq!(GeminiRequestHandler.protocol_name(), "gemini");
+    }
+
+    #[test]
+    fn path_model_extracts_the_segment_before_the_last_colon() {
+        let h = GeminiRequestHandler;
+        assert_eq!(
+            h.path_model("/v1beta/models/gemini-2.0-flash:generateContent"),
+            Some("gemini-2.0-flash".to_string())
+        );
+        assert_eq!(
+            h.path_model("/v1beta/models/gemini-1.5-pro:streamGenerateContent"),
+            Some("gemini-1.5-pro".to_string())
+        );
+        // No `/models/` segment at all -> None.
+        assert_eq!(h.path_model("/v1beta/foo:bar"), None);
+        // No trailing `:action` -> None (rsplit_once finds no colon).
+        assert_eq!(h.path_model("/v1beta/models/gemini-2.0-flash"), None);
+        // Empty model segment (colon right after `/models/`) -> None, not Some("").
+        assert_eq!(h.path_model("/v1beta/models/:generateContent"), None);
+    }
 
     #[test]
     fn path_base_reshapes_the_gemini_url_for_vertex() {
@@ -698,6 +741,28 @@ mod tests {
     }
 
     #[test]
+    fn transcription_read_response_captures_input_and_output_token_counts() {
+        // input and output must map from DIFFERENT usageMetadata fields (promptTokenCount vs
+        // candidatesTokenCount) - a dropped `output:` field would silently read back as 0
+        // regardless of the real candidatesTokenCount.
+        let wire = serde_json::to_vec(&json!({
+            "candidates": [{ "content": { "parts": [{ "text": "hello" }] } }],
+            "usageMetadata": { "promptTokenCount": 11, "candidatesTokenCount": 7 },
+        }))
+        .unwrap();
+        let ir = TRANSCRIPTION.read_response(&wire).expect("valid response");
+        let IrResp::Transcription(r) = ir else {
+            panic!("expected IrResp::Transcription");
+        };
+        assert_eq!(r.text, "hello");
+        let Some(crate::billing::Billing::Tokens(usage)) = r.usage else {
+            panic!("expected token usage");
+        };
+        assert_eq!(usage.input, 11);
+        assert_eq!(usage.output, 7);
+    }
+
+    #[test]
     fn transcription_read_request_without_inline_data_is_bad_request() {
         // No inline_data audio part → the specific "requires an inline_data audio part" 400.
         let body = serde_json::to_vec(&json!({
@@ -743,6 +808,43 @@ mod tests {
         assert_eq!(
             h.resolve_operation("/v1beta/models/gemini-x:generateContent", &body),
             Some(Operation::Transcription),
+        );
+    }
+
+    #[test]
+    fn resolve_operation_multiple_markers_prefers_speech_over_transcription() {
+        // A body carrying BOTH responseModalities:AUDIO and an inline_data audio part exercises
+        // the single-pass pre-filter's "any marker present" gate with more than one marker
+        // actually present, then leaves the existing JSON-pointer logic (unchanged by this fix)
+        // to disambiguate — which checks audio_out (Speech) before audio_in (Transcription), so
+        // Speech wins. Locks in that the combined-scan pre-filter doesn't change which branch the
+        // downstream classifier picks when multiple markers co-occur.
+        let body = serde_json::to_vec(&json!({
+            "contents": [{ "role": "user", "parts": [
+                { "inline_data": { "mime_type": "audio/wav", "data": "AAAA" } },
+            ]}],
+            "generationConfig": { "responseModalities": ["AUDIO"] },
+        }))
+        .unwrap();
+        let h = GeminiRequestHandler;
+        assert_eq!(
+            h.resolve_operation("/v1beta/models/gemini-x:generateContent", &body),
+            Some(Operation::Speech),
+        );
+    }
+
+    #[test]
+    fn resolve_operation_no_markers_at_all_is_chat() {
+        // An empty-ish body with none of the three markers must fall through to Chat without
+        // attempting a JSON parse of a body that isn't even valid JSON — this is the pre-filter's
+        // "false || false || false" common case the single-pass scan exists to speed up.
+        let h = GeminiRequestHandler;
+        assert_eq!(
+            h.resolve_operation(
+                "/v1beta/models/gemini-x:generateContent",
+                b"not json at all"
+            ),
+            Some(Operation::Chat),
         );
     }
 
@@ -805,6 +907,37 @@ mod tests {
     }
 
     #[test]
+    fn image_read_request_captures_aspect_ratio() {
+        let body = serde_json::to_vec(&json!({
+            "instances": [{ "prompt": "a fox" }],
+            "parameters": { "aspectRatio": "16:9" },
+        }))
+        .unwrap();
+        let ir = IMG
+            .read_request(&body, "application/json")
+            .expect("valid predict body");
+        let IrReq::Image(r) = ir else {
+            panic!("expected IrReq::Image");
+        };
+        assert_eq!(r.aspect_ratio.as_deref(), Some("16:9"));
+    }
+
+    #[test]
+    fn image_read_response_captures_base64_image_bytes() {
+        let wire = serde_json::to_vec(&json!({
+            "predictions": [{ "bytesBase64Encoded": "cHJldGVuZC1pbWFnZQ==", "mimeType": "image/png" }],
+        }))
+        .unwrap();
+        let ir = IMG.read_response(&wire).expect("valid predictions body");
+        let IrResp::Image(r) = ir else {
+            panic!("expected IrResp::Image");
+        };
+        assert_eq!(r.images.len(), 1);
+        assert_eq!(r.images[0].b64.as_deref(), Some("cHJldGVuZC1pbWFnZQ=="));
+        assert_eq!(r.images[0].mime_type.as_deref(), Some("image/png"));
+    }
+
+    #[test]
     fn image_write_read_roundtrip_preserves_prompt() {
         // write_request emits instances[].prompt + parameters.sampleCount; read_request recovers.
         let req = IrReq::Image(crate::ir::image::ImageReq {
@@ -839,6 +972,87 @@ mod tests {
         assert_eq!(v["outputDimensionality"], 256);
         assert_eq!(v["taskType"], "RETRIEVAL_DOCUMENT");
         assert_eq!(v["title"], "doc");
+    }
+
+    #[test]
+    fn embeddings_taps_usage_is_true() {
+        // Token-metered same-protocol path: extract_usage must actually read this response's
+        // usage object to bill the virtual key.
+        assert!(EMB.taps_usage());
+    }
+
+    #[test]
+    fn embeddings_read_request_captures_task_type() {
+        let body = serde_json::to_vec(&json!({
+            "content": { "parts": [{ "text": "hi" }] },
+            "taskType": "RETRIEVAL_QUERY",
+        }))
+        .unwrap();
+        let ir = EMB
+            .read_request(&body, "application/json")
+            .expect("valid embedContent body");
+        let IrReq::Embeddings(r) = ir else {
+            panic!("expected IrReq::Embeddings");
+        };
+        assert_eq!(r.task_type.as_deref(), Some("RETRIEVAL_QUERY"));
+    }
+
+    #[test]
+    fn embeddings_read_response_captures_vector_and_usage() {
+        let wire = serde_json::to_vec(&json!({
+            "embedding": { "values": [0.1, 0.2, 0.3] },
+            "usageMetadata": { "promptTokenCount": 5 },
+        }))
+        .unwrap();
+        let ir = EMB
+            .read_response(&wire)
+            .expect("valid embedContent response");
+        let IrResp::Embeddings(r) = ir else {
+            panic!("expected IrResp::Embeddings");
+        };
+        assert_eq!(r.embeddings.len(), 1);
+        match r.embeddings[0].vectors.get(&EncFmt::Float) {
+            Some(VectorData::Float(v)) => assert_eq!(v, &[0.1_f32, 0.2, 0.3]),
+            other => panic!("expected a Float vector, got {other:?}"),
+        }
+        assert_eq!(r.usage.expect("usage present").input, 5);
+    }
+
+    #[test]
+    fn embeddings_write_response_emits_the_float_vector() {
+        let mut item = EmbeddingItem::default();
+        item.vectors
+            .insert(EncFmt::Float, VectorData::Float(vec![1.0, 2.0, 3.0]));
+        let ir = IrResp::Embeddings(EmbeddingsResp {
+            embeddings: vec![item],
+            ..Default::default()
+        });
+        let out = EMB.write_response(&ir);
+        let v: Value = serde_json::from_slice(&out.bytes).unwrap();
+        assert_eq!(v["embedding"]["values"], json!([1.0, 2.0, 3.0]));
+    }
+
+    #[test]
+    fn embeddings_write_request_warns_on_dropped_non_text_input() {
+        use crate::test_support::warn_capture::WarnCapture;
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        let ir = IrReq::Embeddings(crate::ir::embeddings::EmbeddingsReq {
+            input: EmbInput::Images(vec!["data:image/png;base64,AA==".into()]),
+            ..Default::default()
+        });
+        let cap = WarnCapture::default();
+        let subscriber = tracing_subscriber::registry().with(cap.clone());
+        let out = tracing::subscriber::with_default(subscriber, || EMB.write_request(&ir));
+
+        let v: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["content"]["parts"][0]["text"], json!(""));
+
+        assert!(
+            cap.contains("dropping a non-text embeddings input"),
+            "a dropped non-text embeddings input must warn: {:?}",
+            cap.messages()
+        );
     }
 
     #[test]

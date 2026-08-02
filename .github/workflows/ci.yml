@@ -10,9 +10,65 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
+  # LAYOUT GATE — its OWN job, deliberately. It used to be the first step of `check`, ahead of
+  # clippy/build/test, which made it a MASK: any layout violation aborted the job before a single
+  # test ran, and the `Test` step is the only place BUSBAR_TEST_POSTGRES_URL / REDIS_URL are set
+  # against the service containers, so the two 1.5.0 store backends' live-DB coverage — the coverage
+  # the comment on `services:` calls out as load-bearing, hardened to HARD-FAIL rather than skip —
+  # silently stopped executing on every push and PR. A layout debt and a broken test are independent
+  # facts about a commit; ordering them in one job means the second is unobservable until the first
+  # is paid off. Both jobs are required checks, and neither can now hide the other.
+  structure-lint:
+    name: structure lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # The lint's `#[cfg(test)]` scope scanner decides which lines are EXEMPT from every
+      # choke-point bypass rule, so a scanner that can be lied to reports "no bypass" while the
+      # bypass sits in production. Its self-test runs FIRST: never trust the lint's verdict before
+      # proving the lint still works.
+      - name: Structure lint self-test
+        run: scripts/structure-lint.sh --selftest
+      - name: Structure lint
+        run: scripts/structure-lint.sh
+
   check:
     name: fmt · clippy · build · test
     runs-on: ubuntu-latest
+    # Live-DB service containers for the store-postgres / store-redis roundtrip tests. Without these
+    # the roundtrip tests skip (their URLs are unset) and the two 1.5.0 store backends ship with ZERO
+    # CI coverage of the delete_key cascade + credential cleanup. The tests read BUSBAR_TEST_POSTGRES_URL
+    # / REDIS_URL (set on the Test step below) and, because `CI` is set in Actions, HARD-FAIL rather
+    # than silently skip if a service is misconfigured - so this coverage cannot vanish unnoticed.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: busbar
+          POSTGRES_PASSWORD: busbar
+          POSTGRES_DB: busbar_test
+        ports:
+          - 5432:5432
+        # Wait until the DB accepts connections before the job's steps run.
+        options: >-
+          --health-cmd "pg_isready -U busbar"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      # NOTE: there used to be a `vault:` service here for busbar-secret-vault /
+      # busbar-secret-vault-plugin's live-Vault tests. That coverage moved with the crates to
+      # GetBusbar/hashicorp-vault (its own ci.yml boots the same real hashicorp/vault dev-mode
+      # container) — see docs/plugins.md and scripts/release-check.sh's Vault phase for how the
+      # monorepo now gates on that repo's own test suite via a sibling checkout instead.
     steps:
       - uses: actions/checkout@v7
 
@@ -27,9 +83,6 @@ jobs:
       - name: Format check
         run: cargo fmt --all -- --check
 
-      - name: Structure lint
-        run: scripts/structure-lint.sh
-
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
@@ -37,6 +90,11 @@ jobs:
         run: cargo build --workspace --locked --verbose
 
       - name: Test
+        # Point the store-postgres / store-redis roundtrip tests at the service containers above so
+        # they RUN (not skip) in CI. The services publish on localhost via the mapped ports.
+        env:
+          BUSBAR_TEST_POSTGRES_URL: postgres://busbar:busbar@localhost:5432/busbar_test
+          REDIS_URL: redis://localhost:6379
         run: cargo test --workspace --locked --verbose
 
   # OpenAPI schema gate (CI-ONLY `openapi-schema` feature). `openapi_doc()` derives typed response
@@ -82,6 +140,23 @@ jobs:
         run: cargo build --no-default-features --locked --verbose
       - name: Test (no-default-features)
         run: cargo test --no-default-features --locked --verbose
+
+  # CONCURRENCY GATES for the config-mutation transaction (choke point C). Neither of these can run
+  # inside `cargo test --workspace`: the compile fence must FAIL to build (it is a negative test
+  # behind the `txn-fence-red` feature) and the loom model explores interleavings exhaustively behind
+  # `loom-model`, far too slowly for the default suite. A gate nothing runs is not a gate, so they
+  # get their own job — otherwise the transaction guard could be dismantled with the tree still green.
+  txn-guards:
+    name: txn compile fence · loom model
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Transaction compile fence (must fail to compile)
+        run: scripts/txn-fence.sh
+      - name: Loom model of the swap invariant
+        run: scripts/loom.sh
 
   # TIMING GATE: the ignored hot-path latency test, in release mode. Its bounds are deliberately
   # generous (25ms p50 / 250ms p99 through the full in-process router+mock round trip) so runner

@@ -1,0 +1,192 @@
+{
+  "delete_governance_off": {
+    "body": "{\"error\":{\"code\":\"conflict\",\"message\":\"governance is not enabled on this server; enable `governance:` in config.yaml to manage virtual keys\"}}",
+    "content_type": "application/json",
+    "status": 409
+  },
+  "delete_malformed_if_match": {
+    "body": "{\"error\":{\"code\":\"invalid_request\",\"message\":\"malformed If-Match: expected the key's ETag (16 hex chars, quoted) or *\"}}",
+    "content_type": "application/json",
+    "status": 400
+  },
+  "delete_overlong_id": {
+    "body": "{\"error\":{\"code\":\"invalid_request\",\"message\":\"id must be <= 64 characters\"}}",
+    "content_type": "application/json",
+    "status": 400
+  },
+  "delete_stale_etag": {
+    "body": "{\"error\":{\"code\":\"version_conflict\",\"message\":\"If-Match ETag is stale: the key changed since you read it (re-read and retry)\"}}",
+    "content_type": "application/json",
+    "status": 409
+  },
+  "delete_unknown": {
+    "body": "{\"error\":{\"code\":\"not_found\",\"message\":\"key not found\"}}",
+    "content_type": "application/json",
+    "status": 404
+  },
+  "list_bad_cursor": {
+    "body": "{\"error\":{\"code\":\"invalid_request\",\"message\":\"invalid or foreign pagination cursor\"}}",
+    "content_type": "application/json",
+    "status": 400
+  },
+  "list_bad_enabled": {
+    "body": "{\"error\":{\"code\":\"invalid_request\",\"message\":\"invalid `enabled` filter: expected true|false\"}}",
+    "content_type": "application/json",
+    "status": 400
+  },
+  "list_bad_limit": {
+    "body": "{\"error\":{\"code\":\"invalid_request\",\"message\":\"invalid `limit`: expected an integer (max 1000)\"}}",
+    "content_type": "application/json",
+    "status": 400
+  },
+  "mint_bad_duration": {
+    "body": "{\"error\":{\"code\":\"invalid_request\",\"message\":\"invalid duration unit 'x': use s|m|h|d\"}}",
+    "content_type": "application/json",
+    "status": 400
+  },
+  "mint_bad_json": {
+    "body": "{\"error\":{\"code\":\"invalid_request\",\"message\":\"invalid JSON\"}}",
+    "content_type": "application/json",
+    "status": 400
+  },
+  "mint_both_expiry_fields": {
+    "body": "{\"error\":{\"code\":\"invalid_request\",\"message\":\"expires_in and expires_at are mutually exclusive; set at most one\"}}",
+    "content_type": "application/json",
+    "status": 400
+  },
+  "mint_expires_in_the_past": {
+    "body": "{\"error\":{\"code\":\"invalid_request\",\"message\":\"expires_at is in the past\"}}",
+    "content_type": "application/json",
+    "status": 400
+  },
+  "mint_governance_off": {
+    "body": "{\"error\":{\"code\":\"conflict\",\"message\":\"governance is not enabled on this server; enable `governance:` in config.yaml to manage virtual keys\"}}",
+    "content_type": "application/json",
+    "status": 409
+  },
+  "mint_no_signing_key": {
+    "body": "{\"error\":{\"code\":\"conflict\",\"message\":\"signed-token minting is unavailable: no signing key is configured (set auth.signing_key, or let busbar generate one on first boot)\"}}",
+    "content_type": "application/json",
+    "status": 409
+  },
+  "mint_parent_without_group": {
+    "body": "{\"error\":{\"code\":\"invalid_request\",\"message\":\"`parent` was given without `group`; `parent` names the group to auto-provision `group` under, so `group` is required with it\"}}",
+    "content_type": "application/json",
+    "status": 400
+  },
+  "mint_reserved_label": {
+    "body": "{\"error\":{\"code\":\"invalid_request\",\"message\":\"label name 'key' is reserved (busbar attaches it to metric series); reserved names are [\\\"key\\\", \\\"bucket\\\", \\\"model\\\", \\\"tier\\\"]\"}}",
+    "content_type": "application/json",
+    "status": 400
+  },
+  "mint_unknown_group_no_parent": {
+    "body": "{\"error\":{\"code\":\"invalid_request\",\"message\":\"group 'nope' does not exist in the top-level groups block; either configure it first, or pass `parent: <existing-group>` to auto-provision it as a leaf (e.g. `parent: team-payments` creates nope under team-payments and binds the key)\"}}",
+    "content_type": "application/json",
+    "status": 400
+  },
+  "mint_unknown_parent": {
+    "body": "{\"error\":{\"code\":\"invalid_request\",\"message\":\"cannot auto-provision `leaf`: its `parent: nope` does not exist in the top-level groups block; name an existing team/org group\"}}",
+    "content_type": "application/json",
+    "status": 400
+  },
+  "patch_bad_json": {
+    "body": "{\"error\":{\"code\":\"invalid_request\",\"message\":\"invalid JSON\"}}",
+    "content_type": "application/json",
+    "status": 400
+  },
+  "patch_governance_off": {
+    "body": "{\"error\":{\"code\":\"conflict\",\"message\":\"governance is not enabled on this server; enable `governance:` in config.yaml to manage virtual keys\"}}",
+    "content_type": "application/json",
+    "status": 409
+  },
+  "patch_malformed_if_match": {
+    "body": "{\"error\":{\"code\":\"invalid_request\",\"message\":\"malformed If-Match: expected the key's ETag (16 hex chars, quoted) or *\"}}",
+    "content_type": "application/json",
+    "status": 400
+  },
+  "patch_overlong_id": {
+    "body": "{\"error\":{\"code\":\"invalid_request\",\"message\":\"id must be <= 64 characters\"}}",
+    "content_type": "application/json",
+    "status": 400
+  },
+  "patch_rebind_target_missing": {
+    "body": "{\"error\":{\"code\":\"invalid_request\",\"message\":\"group 'nope' does not exist in the top-level groups block; configure it first (e.g. nope: { limits: [ { budget: 0, per: month } ] })\"}}",
+    "content_type": "application/json",
+    "status": 400
+  },
+  "patch_stale_etag": {
+    "body": "{\"error\":{\"code\":\"version_conflict\",\"message\":\"If-Match ETag is stale: the key changed since you read it (re-read and retry)\"}}",
+    "content_type": "application/json",
+    "status": 409
+  },
+  "patch_unknown": {
+    "body": "{\"error\":{\"code\":\"not_found\",\"message\":\"key not found\"}}",
+    "content_type": "application/json",
+    "status": 404
+  },
+  "read_governance_off": {
+    "body": "{\"error\":{\"code\":\"not_found\",\"message\":\"key not found (governance is not enabled on this server)\"}}",
+    "content_type": "application/json",
+    "status": 404
+  },
+  "read_overlong_id": {
+    "body": "{\"error\":{\"code\":\"invalid_request\",\"message\":\"id must be <= 64 characters\"}}",
+    "content_type": "application/json",
+    "status": 400
+  },
+  "read_unknown": {
+    "body": "{\"error\":{\"code\":\"not_found\",\"message\":\"key not found\"}}",
+    "content_type": "application/json",
+    "status": 404
+  },
+  "revoke_governance_off": {
+    "body": "{\"error\":{\"code\":\"conflict\",\"message\":\"governance is not enabled on this server; enable `governance:` in config.yaml to manage virtual keys\"}}",
+    "content_type": "application/json",
+    "status": 409
+  },
+  "revoke_overlong_id": {
+    "body": "{\"error\":{\"code\":\"invalid_request\",\"message\":\"id must be <= 64 characters\"}}",
+    "content_type": "application/json",
+    "status": 400
+  },
+  "revoke_unknown": {
+    "body": "{\"error\":{\"code\":\"not_found\",\"message\":\"key not found\"}}",
+    "content_type": "application/json",
+    "status": 404
+  },
+  "rotate_governance_off": {
+    "body": "{\"error\":{\"code\":\"conflict\",\"message\":\"governance is not enabled on this server; enable `governance:` in config.yaml to manage virtual keys\"}}",
+    "content_type": "application/json",
+    "status": 409
+  },
+  "rotate_unknown": {
+    "body": "{\"error\":{\"code\":\"not_found\",\"message\":\"key not found\"}}",
+    "content_type": "application/json",
+    "status": 404
+  },
+  "signing_rotate_governance_off": {
+    "body": "{\"error\":{\"code\":\"conflict\",\"message\":\"governance is not enabled on this server; enable `governance:` in config.yaml to manage virtual keys\"}}",
+    "content_type": "application/json",
+    "status": 409
+  },
+  "signing_rotate_no_key": {
+    "body": "{\"error\":{\"code\":\"conflict\",\"message\":\"no signing key is configured; nothing to rotate\"}}",
+    "content_type": "application/json",
+    "status": 409
+  },
+  "usage_governance_off": {
+    "body": "{\"error\":{\"code\":\"not_found\",\"message\":\"key not found (governance is not enabled on this server)\"}}",
+    "content_type": "application/json",
+    "status": 404
+  },
+  "usage_overlong_id": {
+    "body": "{\"error\":{\"code\":\"invalid_request\",\"message\":\"id must be <= 64 characters\"}}",
+    "content_type": "application/json",
+    "status": 400
+  },
+  "usage_unknown": {
+    "body": "{\"error\":{\"code\":\"not_found\",\"message\":\"key not found\"}}",
+    "content_type": "application/json",
+    "status": 404
+  }
+}

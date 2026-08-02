@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
@@ -20,7 +19,8 @@ use serde_json::Value;
 use crate::breaker::{classify as classify_disposition, normalize_raw_error, Disposition};
 use crate::config::OnExhausted;
 use crate::proto::{
-    convert_headers, openai_family, StatusClass, PROTO_BEDROCK, PROTO_GEMINI, PROTO_RESPONSES,
+    convert_headers, openai_family, StatusClass, PROTO_ANTHROPIC, PROTO_BEDROCK, PROTO_COHERE,
+    PROTO_GEMINI, PROTO_OPENAI, PROTO_RESPONSES,
 };
 use crate::state::{App, WeightedLane};
 use crate::store::{now, Permit};
@@ -68,19 +68,19 @@ pub(crate) const KIND_REQUEST_TOO_LARGE: &str = openai_family::ERR_TYPE_REQUEST_
 /// Network-transient `err_type` values passed to `record_transient_in`.  These are distinct from
 /// the error-KIND tokens above: they label the *category* of network failure recorded in the
 /// breaker store, not the protocol-level error kind surfaced to the caller.
-const ERR_NET_CONNECT: &str = "connect";
-const ERR_NET_TIMEOUT: &str = "timeout";
+pub(crate) const ERR_NET_CONNECT: &str = "connect";
+pub(crate) const ERR_NET_TIMEOUT: &str = "timeout";
 const ERR_NET_TRANSPORT: &str = "transport";
 /// `err_type` recorded when a HalfOpen probe's degraded forward returns a non-2xx (bumps cooldown).
 const ERR_DEGRADED_NON2XX: &str = "degraded-non2xx";
 
 /// Metric-label values for the `disposition` dimension on `UPSTREAM_FAILURES_TOTAL` and the
 /// `reason` dimension on `FAILOVERS_TOTAL`.
-const DISPOSITION_TRANSIENT: &str = "transient_upstream";
+pub(crate) const DISPOSITION_TRANSIENT: &str = "transient_upstream";
 /// A single attempt's budget-clamped transport timeout fired (retryable within the request).
-const DISPOSITION_ATTEMPT_TIMEOUT: &str = "attempt_timeout";
-const DISPOSITION_HARD_DOWN: &str = "hard_down";
-const DISPOSITION_CONTEXT_LENGTH: &str = "context_length";
+pub(crate) const DISPOSITION_ATTEMPT_TIMEOUT: &str = "attempt_timeout";
+pub(crate) const DISPOSITION_HARD_DOWN: &str = "hard_down";
+pub(crate) const DISPOSITION_CONTEXT_LENGTH: &str = "context_length";
 
 /// Bounded `pool` metric-label sentinel used for every pre-routing failure (malformed body,
 /// unresolved model, governance rejection) so the label space stays finite (metrics.rs).
@@ -104,13 +104,15 @@ tokio::task_local! {
 mod egress;
 mod engine;
 mod hooks;
+mod lazy_body;
 mod response_body;
 mod select;
-mod usage;
+pub(crate) mod usage;
 mod wire;
 pub(crate) use egress::*;
 pub(crate) use engine::*;
 pub(crate) use hooks::*;
+pub(crate) use lazy_body::*;
 pub(crate) use response_body::*;
 pub(crate) use select::*;
 pub(crate) use usage::*;
@@ -192,9 +194,17 @@ mod ordered_walk_tests;
 mod probe_guard_tests;
 
 #[cfg(test)]
+#[path = "tests/m6_probe_release_owner_tests.rs"]
+mod m6_probe_release_owner_tests;
+
+#[cfg(test)]
 #[path = "tests/hook_opt_in_projection_tests.rs"]
 mod hook_opt_in_projection_tests;
 
 #[cfg(test)]
 #[path = "tests/hook_seam_tests.rs"]
 mod hook_seam_tests;
+
+#[cfg(test)]
+#[path = "tests/ingress_reject_response_tests.rs"]
+mod ingress_reject_response_tests;

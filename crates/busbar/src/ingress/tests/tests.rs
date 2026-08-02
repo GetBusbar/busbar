@@ -21,12 +21,18 @@ fn test_query_has_alt_sse() {
 /// Minimal governance-off App for exercising `finish` in isolation.
 fn minimal_app() -> Arc<App> {
     Arc::new(App {
+        probe_schedule: Arc::new(crate::health::ProbeSchedule::new(0)),
+        tslots: Arc::new(crate::telemetry::AppSlots::build(
+            &[],
+            &std::collections::HashMap::new(),
+            &std::collections::HashMap::new(),
+        )),
         lanes: vec![],
         store: Arc::new(crate::store::InMemoryStore::new(vec![])),
         by_model: std::collections::HashMap::new(),
         pools: std::collections::HashMap::new(),
-        client: reqwest::Client::new(),
-        auth: Arc::new(crate::auth::AuthMiddleware::new(
+        client: crate::state::UpstreamClients::build(1, reqwest::Client::new),
+        auth: Arc::new(crate::auth::AuthMiddleware::new_builtin(
             &crate::config::AuthCfg::default_none(),
         )),
         rewrite_hooks: Vec::new(),
@@ -35,25 +41,37 @@ fn minimal_app() -> Arc<App> {
         tap_hooks_attempt: Vec::new(),
         tap_hooks_completion: Vec::new(),
         global_gates: Vec::new(),
+        hook_env: crate::hooks::HookEnv::new(
+            std::sync::Arc::new(busbar_plugin_loader::PluginRegistry::empty()),
+            std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
+        ),
         hook_registry: std::collections::HashMap::new(),
         global_hooks: Vec::new(),
+        groups_registry: std::collections::BTreeMap::new(),
+        base_group_names: std::collections::HashSet::new(),
         versions: Arc::new(crate::admin::versions::VersionLog::new()),
         mutation_limiter: Arc::new(crate::admin::rate::MutationLimiter::new()),
         idempotency_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         base_hook_names: std::collections::HashSet::new(),
         admin_chain: vec!["admin-tokens".to_string()],
         credential_cache: StdArc::new(crate::auth_cache::CredentialCache::new()),
-        auth_modules: std::collections::HashMap::new(),
-        group_map: std::collections::HashMap::new(),
+        auth_scope_caps: std::collections::HashMap::new(),
+        role_bindings: crate::config::RoleBindings::new(),
         config_path: None,
         providers_path: None,
         overlay_path: None,
         config_version: 0,
+        max_keys_per_principal: 0,
+        max_auto_provisioned_groups: 0,
         failover_cfg: None,
         pool_runtime: std::collections::HashMap::new(),
         fallback_pools: std::collections::HashMap::new(),
         on_exhausted_cfgs: std::collections::HashMap::new(),
         governance: None,
+        secret_resolver: std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
+        cost: std::sync::Arc::new(crate::cost::CostModel::flat(1)),
+        plugins_dir: std::path::PathBuf::from("plugins"),
+        plugins_cfg: crate::config::PluginsCfg::default(),
         default_max_tokens: crate::config::DEFAULT_DEFAULT_MAX_TOKENS,
         reasoning_effort_budgets: [1024, 4096, 8192, 16384],
     })
@@ -151,25 +169,25 @@ fn test_affinity_header_session_mode_without_name_uses_default() {
 /// Build a governance-enabled App with a single budgeted key, plus return the key so the test
 /// can pass a matching GovCtx to `finish`. Just assembles the App + key; it performs no charge.
 fn governed_app_with_key() -> (Arc<App>, crate::governance::VirtualKey) {
-    use crate::governance::{GovState, NewKeySpec, SqliteStore};
-    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
-    // 30 cents flat per request, no per-token fee.
-    let gov = Arc::new(GovState::new(store, 30, 0, None).unwrap());
+    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+    let store = Arc::new(MemoryStore::new());
+    // 30 cents flat per request, no per-token fee (the fee now lives on the CostModel).
+    let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
                 name: "k".to_string(),
-                allowed_pools: vec![],
-                max_budget_cents: Some(100_000),
-                budget_period: "total".to_string(),
-                rpm_limit: None,
-                tpm_limit: None,
+                allowed_pools: None,
+                group: None,
+                labels: Default::default(),
             },
             1_700_000_000,
         )
         .unwrap();
     let mut app = minimal_app();
-    Arc::get_mut(&mut app).expect("sole owner").governance = Some(gov);
+    let inner = Arc::get_mut(&mut app).expect("sole owner");
+    inner.governance = Some(gov);
+    inner.cost = std::sync::Arc::new(crate::cost::CostModel::flat(30));
     (app, key)
 }
 
@@ -177,7 +195,7 @@ fn key_spend(app: &Arc<App>, key_id: &str) -> i64 {
     app.governance
         .as_ref()
         .unwrap()
-        .usage_for(key_id, 1_700_000_000)
+        .usage_for(&app.cost, key_id, 1_700_000_000)
         .unwrap()
         .map(|u| u.spend_cents)
         .unwrap_or(0)
@@ -187,29 +205,28 @@ fn key_spend(app: &Arc<App>, key_id: &str) -> i64 {
 /// outcome (so the net effect remains "bill 2xx only"). A 2xx `finish` keeps the charge; each
 /// non-2xx `finish` (503 / 5xx / 4xx) refunds exactly one flat fee. `finish_rejected` (governance
 /// rejection, never charged) refunds nothing.
-// No-runtime `#[test]` so the offloaded refund (`offload_store_write`) runs INLINE and is
-// observable synchronously — the atomic charge is seeded via the SYNC store path for the same
-// reason. `at` is the fixed budget window `key_spend` reads.
+// No-runtime `#[test]`: `refund_request` now decrements the AUTHORITATIVE in-memory cell (no store
+// offload), so it is observable synchronously. The admission charge is seeded via the REAL
+// admission charge (`try_charge_request_within_budget`) so the charge, the refund, and the
+// `usage_for` read all target the SAME authoritative cell. `at` is the fixed budget window
+// `key_spend` reads.
 #[test]
 fn test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx() {
-    use crate::governance::Store;
     crate::metrics::init();
     let (app, key) = governed_app_with_key();
     let gov = crate::governance::GovCtx {
-        key: Some(key.clone()),
+        key: Some(std::sync::Arc::new(key.clone())),
     };
-    let store = app.governance.as_ref().unwrap().store();
+    let govstate = app.governance.as_ref().unwrap().clone();
     let at = 1_700_000_000u64;
-    // governed_app_with_key uses the "total" period → window 0; key_spend reads the same window.
-    let window = crate::governance::budget_window("total", at);
 
-    // Seed the admission charge synchronously (30c flat fee), like budget_check's atomic UPSERT.
-    let charge = |store: &std::sync::Arc<dyn Store>| {
-        assert!(store
-            .charge_within_budget(&key.id, window, 30, Some(100_000))
-            .unwrap());
+    // Seed the admission charge in memory (30c flat fee) via the real admission charge.
+    let charge = || {
+        govstate
+            .try_admit(&app.cost, &key, "", at)
+            .expect("an uncapped chain admits");
     };
-    charge(&store);
+    charge();
     assert_eq!(
         key_spend(&app, &key.id),
         30,
@@ -231,7 +248,7 @@ fn test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx() {
         StatusCode::INTERNAL_SERVER_ERROR,
         StatusCode::BAD_REQUEST,
     ] {
-        charge(&store);
+        charge();
         assert_eq!(
             key_spend(&app, &key.id),
             60,
@@ -262,23 +279,24 @@ fn test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx() {
 /// blind `UPDATE` decremented the spend/requests of a PRIOR, legitimately-charged request in the
 /// same window — eroding the hard budget cap (repeatable → unbounded overspend). This drives the
 /// REAL ingress path end-to-end (not just the `finish_rejected` unit).
-// No-runtime `#[test]`: any (buggy) refund via `offload_store_write` runs INLINE here, so a
-// regression is observable synchronously. The `"total"` period ⇒ window 0 regardless of the
+// The budget charge/refund path is synchronous in-memory accounting (no offload of any kind), so
+// a regression is observable synchronously here. The `"total"` period ⇒ window 0 regardless of the
 // internal `charged_at = store::now()`, so the prior charge and any spurious refund hit one row.
 #[test]
 fn test_pre_routing_failure_does_not_refund_prior_charge() {
     crate::metrics::init();
     let (app, key) = governed_app_with_key();
     let gov = crate::governance::GovCtx {
-        key: Some(key.clone()),
+        key: Some(std::sync::Arc::new(key.clone())),
     };
-    let store = app.governance.as_ref().unwrap().store();
-    let window = crate::governance::budget_window("total", 1_700_000_000);
+    let govstate = app.governance.as_ref().unwrap().clone();
 
-    // A prior, legitimately-charged request: seed one flat fee (30c) of spend in the window.
-    assert!(store
-        .charge_within_budget(&key.id, window, 30, Some(100_000))
-        .unwrap());
+    // A prior, legitimately-charged request: seed one flat fee (30c) of spend in the (in-memory,
+    // authoritative) window via the real admission charge. `key_spend`/`usage_for` and any (buggy)
+    // `refund_request` all target this same cell.
+    govstate
+        .try_admit(&app.cost, &key, "", 1_700_000_000)
+        .expect("an uncapped chain admits");
     assert_eq!(key_spend(&app, &key.id), 30, "prior charge seeded");
 
     // A malformed-JSON request on the SAME key fails pre-routing (model never resolved) → 400.
@@ -335,31 +353,35 @@ fn test_finish_outcome_mapping_503_is_exhausted() {
 // ever leaks into today's window. (Token-fee side: `proxy::usage_tap_tests::
 // test_nonstream_token_fee_uses_charged_at_window_not_clock`.)
 // No-runtime `#[test]`: the offloaded refund in `finish` runs INLINE and is observable. The
-// admission charge is seeded via the SYNC store path into the charged_at window.
+// admission charge is seeded via the real admission charge into the charged_at window.
 #[test]
 fn test_flat_fee_charge_and_refund_use_charged_at_window() {
-    use crate::governance::{GovState, NewKeySpec, SqliteStore, Store, SECS_PER_DAY};
+    use crate::governance::{GovState, MemoryStore, NewKeySpec, SECS_PER_DAY};
     crate::metrics::init();
 
-    let store = std::sync::Arc::new(SqliteStore::open_in_memory().unwrap());
-    let gov = std::sync::Arc::new(GovState::new(store.clone(), 30, 0, None).unwrap()); // 30c/request
+    let store = std::sync::Arc::new(MemoryStore::new());
+    let gov =
+        std::sync::Arc::new(GovState::new(store.clone(), Some("admintok".to_string())).unwrap());
+    let cost = std::sync::Arc::new(crate::cost::CostModel::flat(30)); // 30c/request
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
                 name: "k".to_string(),
-                allowed_pools: vec![],
-                max_budget_cents: Some(1_000_000),
-                budget_period: "daily".to_string(),
-                rpm_limit: None,
-                tpm_limit: None,
+                allowed_pools: None,
+                group: None,
+                labels: Default::default(),
             },
             1_700_000_000,
         )
         .unwrap();
     let mut app = minimal_app();
-    Arc::get_mut(&mut app).expect("sole owner").governance = Some(gov.clone());
+    {
+        let inner = Arc::get_mut(&mut app).expect("sole owner");
+        inner.governance = Some(gov.clone());
+        inner.cost = cost.clone();
+    }
     let govctx = crate::governance::GovCtx {
-        key: Some(key.clone()),
+        key: Some(std::sync::Arc::new(key.clone())),
     };
 
     let charged_at: u64 = 1_700_000_000; // a fixed past day
@@ -370,12 +392,12 @@ fn test_flat_fee_charge_and_refund_use_charged_at_window() {
         "test precondition: charged_at must be a different day than now"
     );
 
-    // Admission charge into the charged_at day window (sync store path = budget_check's UPSERT).
-    assert!(store
-        .charge_within_budget(&key.id, day_window, 30, Some(1_000_000))
-        .unwrap());
+    // Admission charge into the charged_at day window via the real admission charge (it lands the
+    // flat fee into `budget_window("daily", charged_at)` = day_window).
+    gov.try_admit(&cost, &key, "", charged_at)
+        .expect("an uncapped chain admits");
     assert_eq!(
-        gov.usage_for(&key.id, charged_at)
+        gov.usage_for(&cost, &key.id, charged_at)
             .unwrap()
             .map(|u| u.spend_cents)
             .unwrap_or(0),
@@ -395,7 +417,7 @@ fn test_flat_fee_charge_and_refund_use_charged_at_window() {
         resp,
     );
     assert_eq!(
-        gov.usage_for(&key.id, charged_at)
+        gov.usage_for(&cost, &key.id, charged_at)
             .unwrap()
             .map(|u| u.spend_cents)
             .unwrap_or(0),
@@ -403,7 +425,7 @@ fn test_flat_fee_charge_and_refund_use_charged_at_window() {
         "non-2xx refund must land in the charged_at window (net 0)"
     );
     let in_today = gov
-        .usage_for(&key.id, crate::store::now())
+        .usage_for(&cost, &key.id, crate::store::now())
         .unwrap()
         .map(|u| u.spend_cents)
         .unwrap_or(0);
@@ -413,20 +435,21 @@ fn test_flat_fee_charge_and_refund_use_charged_at_window() {
     );
 }
 
-/// Regression for #29 (admission-gate side): `budget_check` must evaluate the over-budget
+/// Regression for #29 (admission-gate side): `admit_check` must evaluate the over-budget
 /// condition against the SAME window the request will be charged in — the pinned `charged_at`
 /// (header-arrival) epoch — NOT a fresh `store::now()`. Otherwise the admission gate and the
 /// charge can land in different windows when a request straddles a window boundary: the old
-/// code (`is_over_budget_async(key, store::now())`) admitted against an empty current-day
-/// window while the spend that exhausts the budget lives in the `charged_at` day.
+/// code admitted against an empty current-day window while the spend that exhausts the budget
+/// lives in the `charged_at` day.
 ///
-/// Setup: a `daily`-period key with a 30c cap whose spend (30c) was already charged into a PAST
-/// day window. Probing that past window (`charged_at` on that day) must reject (spend ≥ cap);
-/// probing today's empty window (`store::now()`) must admit. The pre-fix code used the latter
-/// unconditionally and so would have admitted a request that the charge then overshot the cap.
+/// Setup: a key bound to a GROUP with a 30c/day budget whose spend (30c) was already charged
+/// into a PAST day window. Probing that past window (`charged_at` on that day) must reject
+/// (spend ≥ cap); probing today's empty window (`store::now()`) must admit. The pre-fix code
+/// used the latter unconditionally and so would have admitted a request that the charge then
+/// overshot the cap.
 #[tokio::test]
-async fn test_budget_check_uses_charged_at_window_not_clock() {
-    use crate::governance::{GovState, NewKeySpec, SqliteStore, Store, SECS_PER_DAY};
+async fn test_admit_check_uses_charged_at_window_not_clock() {
+    use crate::governance::{GovState, MemoryStore, NewKeySpec, SECS_PER_DAY};
     crate::metrics::init();
 
     let past_day: u64 = 1_700_000_000; // a fixed past day
@@ -437,48 +460,68 @@ async fn test_budget_check_uses_charged_at_window_not_clock() {
         "test precondition: charged_at must be a different day than now"
     );
 
-    // Seed 30c of spend directly into the PAST day window BEFORE wrapping the store in GovState,
-    // so the precondition is deterministic — `charge_within_budget_async` offloads its write to the blocking
-    // pool under a Tokio runtime (fire-and-forget, not awaited), which would race this test.
-    let store = std::sync::Arc::new(SqliteStore::open_in_memory().unwrap());
-    let gov = std::sync::Arc::new(GovState::new(store.clone(), 30, 0, None).unwrap()); // 30c/req
+    // Seed 30c of spend into the PAST day window through the AUTHORITATIVE in-memory path
+    // (the real admission charge lands the flat fee into the group's day bucket for
+    // `budget_window("day", past_day)` = past_window), so the deterministic precondition matches
+    // what the in-memory admission gate reads. (Enforcement is in-memory: seeding via the store
+    // alone would be invisible to `admit_check`.)
+    let store = std::sync::Arc::new(MemoryStore::new());
+    let gov =
+        std::sync::Arc::new(GovState::new(store.clone(), Some("admintok".to_string())).unwrap());
+    let groups = std::collections::BTreeMap::from([(
+        "daycap".to_string(),
+        crate::config::GroupCfg {
+            parent: None,
+            enabled: true,
+            limits: vec![crate::config::groups::LimitCfg {
+                metric: crate::config::groups::LimitMetric::Budget,
+                amount: 30,
+                per: Some(crate::config::groups::LimitWindow::Day),
+                scope: None,
+                on_exhaust: None,
+                downgrade_to: None,
+            }],
+            ..Default::default()
+        },
+    )]);
+    let cost = std::sync::Arc::new(crate::cost::CostModel::resolve_parts(None, 30, &groups));
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
                 name: "k".to_string(),
-                allowed_pools: vec![],
-                max_budget_cents: Some(30), // exhausted by a single 30c request
-                budget_period: "daily".to_string(),
-                rpm_limit: None,
-                tpm_limit: None,
+                allowed_pools: None,
+                group: Some("daycap".to_string()),
+                labels: Default::default(),
             },
             1_700_000_000,
         )
         .unwrap();
-    store
-        .add_usage(&key.id, past_window, 30, 0, true)
-        .expect("seed spend into the past day window");
+    gov.try_admit(&cost, &key, "", past_day)
+        .expect("first request fits the cap exactly");
 
     let mut app = minimal_app();
-    Arc::get_mut(&mut app).expect("sole owner").governance = Some(gov.clone());
+    {
+        let inner = Arc::get_mut(&mut app).expect("sole owner");
+        inner.governance = Some(gov.clone());
+        inner.cost = cost.clone();
+    }
     let govctx = crate::governance::GovCtx {
-        key: Some(key.clone()),
+        key: Some(std::sync::Arc::new(key.clone())),
     };
 
     assert_eq!(
-        gov.usage_for(&key.id, past_day)
+        gov.derived_bucket_usage(&cost, "group:daycap@day", "day", true, past_day)
             .unwrap()
-            .map(|u| u.spend_cents)
-            .unwrap_or(0),
+            .spend_cents,
         30,
         "test precondition: the past day window is at the cap"
     );
 
     // Gate keyed off the (past) `charged_at` window sees spend ≥ cap → reject.
-    let rejected = budget_check(&app, &govctx, "openai", past_day).await;
+    let rejected = admit_check(&app, &govctx, "openai", "", past_day);
     assert!(
         rejected.is_err(),
-        "budget_check must reject against the charged_at window where the spend lives (#29)"
+        "admit_check must reject against the charged_at window where the spend lives (#29)"
     );
     assert_eq!(
         rejected.unwrap_err().status(),
@@ -488,146 +531,21 @@ async fn test_budget_check_uses_charged_at_window_not_clock() {
 
     // Sanity: today's window is empty, so a gate keyed off the wall clock (the OLD behaviour)
     // would have WRONGLY admitted. This proves the bug was real and the pin fixes it.
-    let admitted_today = budget_check(&app, &govctx, "openai", crate::store::now()).await;
+    let admitted_today = admit_check(&app, &govctx, "openai", "", crate::store::now());
     assert!(
         admitted_today.is_ok(),
         "today's window is empty; the old clock-based gate would have admitted here"
     );
 }
 
-/// A `Store` whose atomic budget charge always ERRORS, to exercise the fix-2b fail-mode knob.
-struct ErrChargeStore(crate::governance::SqliteStore);
-impl crate::governance::Store for ErrChargeStore {
-    fn put_key(&self, k: &crate::governance::VirtualKey) -> crate::governance::StoreResult<()> {
-        self.0.put_key(k)
-    }
-    fn get_key(
-        &self,
-        id: &str,
-    ) -> crate::governance::StoreResult<Option<crate::governance::VirtualKey>> {
-        self.0.get_key(id)
-    }
-    fn get_key_by_hash(
-        &self,
-        h: &str,
-    ) -> crate::governance::StoreResult<Option<crate::governance::VirtualKey>> {
-        self.0.get_key_by_hash(h)
-    }
-    fn list_keys(&self) -> crate::governance::StoreResult<Vec<crate::governance::VirtualKey>> {
-        self.0.list_keys()
-    }
-    fn delete_key(&self, id: &str) -> crate::governance::StoreResult<()> {
-        self.0.delete_key(id)
-    }
-    fn add_usage(
-        &self,
-        k: &str,
-        w: u64,
-        s: i64,
-        t: u64,
-        c: bool,
-    ) -> crate::governance::StoreResult<()> {
-        self.0.add_usage(k, w, s, t, c)
-    }
-    fn get_usage(
-        &self,
-        k: &str,
-        w: u64,
-    ) -> crate::governance::StoreResult<crate::governance::Usage> {
-        self.0.get_usage(k, w)
-    }
-    fn add_metering(
-        &self,
-        d: &crate::governance::MeteringDelta,
-    ) -> crate::governance::StoreResult<()> {
-        self.0.add_metering(d)
-    }
-    fn list_metering(
-        &self,
-        b: u64,
-    ) -> crate::governance::StoreResult<Vec<crate::governance::MeteringRow>> {
-        self.0.list_metering(b)
-    }
-    fn charge_within_budget(
-        &self,
-        _k: &str,
-        _w: u64,
-        _c: i64,
-        _m: Option<i64>,
-    ) -> crate::governance::StoreResult<bool> {
-        Err(crate::governance::StoreError(
-            "injected charge error".into(),
-        ))
-    }
-    fn refund_request(&self, k: &str, w: u64, c: i64) -> crate::governance::StoreResult<()> {
-        self.0.refund_request(k, w, c)
-    }
-}
-
-fn govctx_for(gov: &Arc<crate::governance::GovState>) -> (Arc<App>, crate::governance::GovCtx) {
-    use crate::governance::NewKeySpec;
-    let (key, _s) = gov
-        .create_key(
-            NewKeySpec {
-                name: "k".to_string(),
-                allowed_pools: vec![],
-                max_budget_cents: Some(1000),
-                budget_period: "total".to_string(),
-                rpm_limit: None,
-                tpm_limit: None,
-            },
-            1_700_000_000,
-        )
-        .unwrap();
-    let mut app = minimal_app();
-    Arc::get_mut(&mut app).expect("sole owner").governance = Some(gov.clone());
-    (app, crate::governance::GovCtx { key: Some(key) })
-}
-
-/// fix 2b: on a budget-store ERROR, the `allow` (default) fail-mode PROCEEDS (availability) and
-/// `deny` REJECTS (hard guarantee). Same injected error, opposite outcome by config.
-#[tokio::test]
-async fn test_budget_store_error_respects_fail_mode_knob() {
-    use crate::config::BudgetOnStoreError;
-    use crate::governance::{GovState, SqliteStore};
-    crate::metrics::init();
-
-    // allow (default): store error → PROCEED, but reporting `Ok(false)` = admitted WITHOUT a
-    // charge, so a later non-2xx must NOT refund (the c2r1 fix; a blind refund would erode
-    // another request's spend).
-    let store = Arc::new(ErrChargeStore(SqliteStore::open_in_memory().unwrap()));
-    let gov = Arc::new(
-        GovState::new(store, 1, 0, None)
-            .unwrap()
-            .with_budget_on_store_error(BudgetOnStoreError::Allow),
-    );
-    let (app, govctx) = govctx_for(&gov);
-    assert!(
-        matches!(
-            budget_check(&app, &govctx, "openai", 1_700_000_000).await,
-            Ok(false)
-        ),
-        "allow fail-mode must PROCEED WITHOUT charge (Ok(false)) on a store error"
-    );
-
-    // deny: same store error → reject (429 on openai).
-    let store = Arc::new(ErrChargeStore(SqliteStore::open_in_memory().unwrap()));
-    let gov = Arc::new(
-        GovState::new(store, 1, 0, None)
-            .unwrap()
-            .with_budget_on_store_error(BudgetOnStoreError::Deny),
-    );
-    let (app, govctx) = govctx_for(&gov);
-    let rejected = budget_check(&app, &govctx, "openai", 1_700_000_000).await;
-    assert!(
-        rejected.is_err(),
-        "deny fail-mode must REJECT on a store error"
-    );
-    assert_eq!(
-        rejected.unwrap_err().status(),
-        StatusCode::TOO_MANY_REQUESTS
-    );
-}
+// REMOVED: `test_budget_store_error_respects_fail_mode_knob` (and its `ErrChargeStore` double).
+// The admission path (`try_charge_request_within_budget` → `charge_budget_mem`) is now an
+// infallible IN-MEMORY hard-cap check-and-charge: budget enforcement no longer round-trips the
+// store, so there is no admission-time store error for a fail-mode to consult. The whole
+// `budget_on_store_error` knob was therefore REMOVED (config field + enum + GovState plumbing) — its
+// guarantee ("hard cap even if the store errors") is now unconditional by construction, so the
+// behavior this test verified no longer exists. The write-behind flusher's own store-error handling
+// (re-mark dirty + retry) is covered by the governance flush tests.
 
 // ---- universal-ingress routing tests (cohere/responses/gemini/bedrock) ----
 //
@@ -857,7 +775,7 @@ async fn test_gemini_path_resolves_model_and_stream() {
 }
 
 /// Direct unit test of the injected body for the path-model core: the parsed gemini body must
-/// gain `model` (from the path) and `stream` (from the action). This is the §3 "body shim".
+/// gain `model` (from the path) and `stream` (from the action). This is the "body shim".
 #[test]
 fn test_path_model_injects_model_and_stream_into_body() {
     // Mirror the injection ingress_path_model performs (kept here as a focused assertion on the
@@ -1792,7 +1710,7 @@ async fn test_gemini_stream_generate_content_alt_sse_is_event_stream() {
     server.shutdown().await;
 }
 
-/// Round-13 HIGH/test-coverage: a MID-STREAM transport failure on a gemini
+/// A MID-STREAM transport failure on a gemini
 /// `:streamGenerateContent?alt=sse` request (the SSE framer, `json_array=false`) must terminate
 /// the body with a NATIVE Gemini SSE error frame — `text/event-stream`, a trailing `data:`
 /// payload carrying a `google.rpc.Status`-shaped envelope (`error.status`), with NO `event:`
@@ -1878,7 +1796,7 @@ async fn test_gemini_alt_sse_mid_stream_transport_error_appends_native_sse_frame
     server.shutdown().await;
 }
 
-/// Round-13 MEDIUM/security: an UNRESOLVED model on a body-model ingress (openai) must NOT stamp
+/// An UNRESOLVED model on a body-model ingress (openai) must NOT stamp
 /// the raw client-supplied model string as the Prometheus `pool` label — the bounded-cardinality
 /// contract (metrics.rs) requires the fixed sentinel `"unresolved"`. A regression that
 /// passed the raw model through `finish` would let a single credential mint unbounded time
@@ -1950,7 +1868,7 @@ fn requests_total_for(scrape: &str, pool: &str, outcome: &str) -> u64 {
         .sum()
 }
 
-/// MED #4 (re-audit, completeness): a JSON-parse failure on a BODY-MODEL ingress (openai) is a
+/// a JSON-parse failure on a BODY-MODEL ingress (openai) is a
 /// PRE-ROUTING error — the model is never resolved. It must still flow through `finish` so it is
 /// counted in `REQUESTS_TOTAL` (and the duration histogram + request-log webhook), with the
 /// bounded `pool="unresolved"` label. The old code early-returned `ingress_error` directly,
@@ -1989,6 +1907,55 @@ async fn test_body_model_parse_error_is_observable() {
     assert!(
         after > before,
         "a parse-error pre-routing failure must increment REQUESTS_TOTAL \
+             (pool=unresolved,outcome=client_error): before={before} after={after}"
+    );
+    handle.abort();
+}
+
+/// `bedrock_invoke` (the `POST /model/{id}/invoke` InvokeModel ingress) returns a bare
+/// `ingress_error` when the body matches none of the recognized InvokeModel shapes
+/// (`inputText` / `textToImageParams` / the Cohere `{query,documents}` pair) — a pre-routing
+/// reject that, like the JSON-parse case above, must still flow through `finish_rejected` so it
+/// is counted. This asserts the SAME strict-increase discriminator as
+/// `test_body_model_parse_error_is_observable`, on the sibling early-return the class-9 audit
+/// found unrouted.
+#[tokio::test]
+async fn test_bedrock_invoke_unresolvable_body_is_observable() {
+    crate::metrics::init();
+    let app = TestApp::new()
+        .lane(
+            LaneSpec::new(
+                "foo",
+                crate::proto::Protocol::openai(),
+                "http://127.0.0.1:1",
+            )
+            .provider("zai"),
+        )
+        .pool("foo", &[(0, 1)])
+        .build();
+    let (addr, handle) = serve(app).await;
+
+    let before = requests_total_for(&crate::metrics::render(), "unresolved", "client_error"); // golden wire-contract literal (kept bare on purpose)
+
+    let resp = reqwest::Client::new()
+        .post(format!(
+            "http://{addr}/model/amazon.titan-embed-text-v1/invoke"
+        ))
+        .bearer_auth("t")
+        .body(json!({"nonsense": 1}).to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status().as_u16(),
+        400,
+        "an InvokeModel body matching no recognized shape is a 400"
+    );
+
+    let after = requests_total_for(&crate::metrics::render(), "unresolved", "client_error"); // golden wire-contract literal (kept bare on purpose)
+    assert!(
+        after > before,
+        "an unresolvable InvokeModel body must increment REQUESTS_TOTAL \
              (pool=unresolved,outcome=client_error): before={before} after={after}"
     );
     handle.abort();
@@ -2066,14 +2033,15 @@ async fn test_served_request_increments_hot_path_metrics() {
     server.shutdown().await;
 }
 
-/// THE GOVERNANCE RE-KEY end-to-end (§2.3): with governance ON and an external data-plane
-/// module in the chain, a group-mapped principal gets a SYNTHESIZED key — its group's pool ACL
-/// admits/denies (403), its rpm cap 429s with Retry-After, and an unmapped group is rejected
-/// outright (fail closed) — all keyed by the principal id through the same machinery a virtual
-/// key uses.
+/// THE GOVERNANCE RE-KEY end-to-end: with governance ON and an external data-plane
+/// module in the chain, a role-bound principal gets a SYNTHESIZED key - its binding's pool ACL
+/// admits/denies (403), an omitted `allowed_pools` grants ALL pools (C6), an explicit `[]`
+/// grants nothing, and an unbound role is rejected outright (fail closed) - all keyed by the
+/// principal id through the same machinery a virtual key uses. (Rate/budget caps no longer ride
+/// the synthesized key: limits live on `groups:`, keys are pure auth.)
 #[tokio::test]
-async fn test_group_mapped_principal_governed_like_a_virtual_key() {
-    use crate::governance::{GovState, SqliteStore};
+async fn test_role_bound_principal_governed_like_a_virtual_key() {
+    use crate::governance::{GovState, MemoryStore};
     crate::metrics::init();
     let state = StdArc::new(MockServerState::new());
     for _ in 0..3 {
@@ -2083,13 +2051,11 @@ async fn test_group_mapped_principal_governed_like_a_virtual_key() {
         });
     }
     let server = MockServer::new(state.clone()).await;
-    let store = StdArc::new(SqliteStore::open_in_memory().unwrap());
-    let gov = StdArc::new(GovState::new(store, 0, 0, None).unwrap());
+    let store = StdArc::new(MemoryStore::new());
+    let gov = StdArc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
     let auth_cfg = crate::config::AuthCfg {
-        chain: vec!["test-groups-module".to_string()],
-        upstream_credentials: crate::auth::UpstreamCreds::Own,
-        client_tokens: vec![],
-        modules: std::collections::HashMap::new(),
+        chain: vec![crate::config::AuthChainEntry::bare("test-groups-module")],
+        ..crate::config::AuthCfg::default_none()
     };
     let mut app = TestApp::new()
         .lane(
@@ -2102,26 +2068,39 @@ async fn test_group_mapped_principal_governed_like_a_virtual_key() {
         )
         .pool("gpool-a", &[(0, 1)])
         .pool("gpool-b", &[(0, 1)])
-        .auth(StdArc::new(crate::auth::AuthMiddleware::new(&auth_cfg)))
+        .auth(StdArc::new(crate::auth::AuthMiddleware::new_builtin(
+            &auth_cfg,
+        )))
         .governance(gov)
+        // The old GovState carried fee 0; keep the no-charge semantics under the CostModel.
+        .cost(crate::cost::CostModel::flat(0))
         .build();
     {
         let inner = StdArc::get_mut(&mut app).expect("sole owner");
-        inner.group_map.insert(
+        let mut table = std::collections::BTreeMap::new();
+        table.insert(
             "llm-users".to_string(),
-            crate::config::GroupMapEntry {
+            crate::config::RoleBindingCfg {
                 allowed_pools: Some(vec!["gpool-a".to_string()]),
                 ..Default::default()
             },
         );
-        inner.group_map.insert(
+        // OMITTED allowed_pools = ALL pools (C6).
+        table.insert(
             "batch".to_string(),
-            crate::config::GroupMapEntry {
-                allowed_pools: Some(vec!["gpool-a".to_string()]),
-                rpm_limit: Some(1),
+            crate::config::RoleBindingCfg::default(),
+        );
+        // Explicit [] = NO pools (the empty set, fail closed).
+        table.insert(
+            "locked".to_string(),
+            crate::config::RoleBindingCfg {
+                allowed_pools: Some(vec![]),
                 ..Default::default()
             },
         );
+        inner
+            .role_bindings
+            .insert("test-groups-module".to_string(), table);
     }
     let (addr, handle) = serve(app).await;
     let client = reqwest::Client::new();
@@ -2137,26 +2116,25 @@ async fn test_group_mapped_principal_governed_like_a_virtual_key() {
             .send()
     };
 
-    // Pool ACL from the group grant: gpool-a serves, gpool-b is denied.
+    // Pool ACL from the role binding: gpool-a serves, gpool-b is denied.
     let r = send("grp:llm-users", "gpool-a").await.unwrap();
     assert_eq!(r.status().as_u16(), 200, "granted pool serves");
     let r = send("grp:llm-users", "gpool-b").await.unwrap();
     assert_eq!(r.status().as_u16(), 403, "ungranted pool is denied");
 
-    // The rpm cap rides the synthesized key: second request in the window is a 429 with
-    // Retry-After, exactly like a capped virtual key.
+    // OMITTED allowed_pools grants every pool (C6).
     let r = send("grp:batch", "gpool-a").await.unwrap();
-    assert_eq!(r.status().as_u16(), 200);
-    let r = send("grp:batch", "gpool-a").await.unwrap();
-    assert_eq!(r.status().as_u16(), 429, "the group rpm cap enforces");
-    assert!(
-        r.headers().get("retry-after").is_some(),
-        "429 carries Retry-After"
-    );
+    assert_eq!(r.status().as_u16(), 200, "omitted allowed_pools grants all");
+    let r = send("grp:batch", "gpool-b").await.unwrap();
+    assert_eq!(r.status().as_u16(), 200, "omitted allowed_pools grants all");
 
-    // Fail closed: an identified principal whose groups earn no grant is rejected.
+    // Explicit [] grants the EMPTY SET: no data-plane access at all.
+    let r = send("grp:locked", "gpool-a").await.unwrap();
+    assert_eq!(r.status().as_u16(), 401, "allowed_pools [] grants nothing");
+
+    // Fail closed: an identified principal whose roles earn no binding is rejected.
     let r = send("grp:strangers", "gpool-a").await.unwrap();
-    assert_eq!(r.status().as_u16(), 401, "unmapped groups grant nothing");
+    assert_eq!(r.status().as_u16(), 401, "unbound roles grant nothing");
 
     handle.abort();
     server.shutdown().await;
@@ -2166,8 +2144,9 @@ async fn test_group_mapped_principal_governed_like_a_virtual_key() {
 /// plus a measured batch through the REAL router against an instant in-process mock upstream
 /// and gates the measured p50/p99 full-request latency under DELIBERATELY GENEROUS bounds —
 /// busbar's real added overhead is microseconds, so these only trip on a GROSS hot-path
-/// regression (accidental sync I/O, a stray sleep, an O(n²) body walk), never on runner noise.
-/// Fine-grained overhead numbers stay the latency bench's job (bench/latency/).
+/// Body walk), never on runner noise.
+/// Fine-grained overhead numbers stay the latency bench's job (the external
+/// GetBusbar/benchmarking harness).
 #[tokio::test]
 #[ignore = "timing gate — run explicitly (CI: cargo test --release -- --ignored timing_gate)"]
 async fn timing_gate_hot_path_p50_p99() {
@@ -2241,7 +2220,7 @@ async fn timing_gate_hot_path_p50_p99() {
     server.shutdown().await;
 }
 
-/// MED #4 (re-audit, completeness): a MISSING `model` field on a body-model ingress is likewise a
+/// a MISSING `model` field on a body-model ingress is likewise a
 /// pre-routing failure and must flow through `finish` (bounded `pool="unresolved"`), not a silent
 /// early-return. Asserts a strict counter increase, so it fails against the old early-return.
 #[tokio::test]
@@ -2281,7 +2260,7 @@ async fn test_body_model_missing_model_is_observable() {
     handle.abort();
 }
 
-/// MED #4 (re-audit, completeness): a NON-OBJECT body on a PATH-MODEL ingress (bedrock) is a
+/// a NON-OBJECT body on a PATH-MODEL ingress (bedrock) is a
 /// pre-routing failure (`v.as_object_mut()` is `None`) and must flow through `finish` with the
 /// bounded `pool="unresolved"` label. Asserts a strict counter increase; fails against the old
 /// early-return that bypassed `finish`.
@@ -2322,7 +2301,7 @@ async fn test_path_model_non_object_body_is_observable() {
     handle.abort();
 }
 
-/// MED #4 (re-audit, completeness — sibling sweep): an UNSUPPORTED gemini action (e.g.
+/// an UNSUPPORTED gemini action (e.g.
 /// `:countTokens`) rejected in `gemini_ingress` BEFORE `ingress_path_model` runs is the same
 /// pre-routing observability blind spot. It must now flow through `finish` (bounded
 /// `pool="unresolved"`, gemini protocol). Asserts a strict counter increase; fails against the
@@ -2369,7 +2348,7 @@ async fn test_gemini_unsupported_action_is_observable() {
     handle.abort();
 }
 
-/// Round-13 MEDIUM/security (unit test for `pool_label`): the bounded-label mapper returns a
+/// The bounded-label mapper returns a
 /// model verbatim ONLY when it names a configured pool or by-model lane, and the fixed sentinel
 /// `"unresolved"` for anything else.
 #[test]
@@ -2465,7 +2444,7 @@ async fn test_gemini_stream_generate_content_no_alt_sse_is_json_array() {
     server.shutdown().await;
 }
 
-/// Round-4 HIGH/correctness: a MID-STREAM transport failure on a gemini `:streamGenerateContent`
+/// A MID-STREAM transport failure on a gemini `:streamGenerateContent`
 /// request WITHOUT `?alt=sse` (the JSON-array framer is engaged) must terminate the body as a
 /// VALID JSON array — a trailing gemini-shaped error element + closing `]` — NOT raw SSE
 /// `event:`/`data:` text spliced into the array (the bug: `mid_stream_error_bytes` bypassed the
@@ -2532,7 +2511,7 @@ async fn test_gemini_json_array_mid_stream_error_closes_array_no_sse() {
     server.shutdown().await;
 }
 
-/// Round-4 HIGH/conformance (UPDATED R9): the router-internal `__busbar_gemini_json_array` shim
+/// The router-internal `__busbar_gemini_json_array` shim
 /// must NEVER reach a CROSS-protocol backend. Routes gemini `:streamGenerateContent` (no
 /// `?alt=sse`) → an OpenAI backend and asserts the upstream-received body carries no array shim
 /// key (the bug: the gemini reader swept it into IR `extra` and the egress writer re-emitted the
@@ -2597,7 +2576,7 @@ async fn test_gemini_json_array_shim_not_leaked_cross_protocol() {
     server.shutdown().await;
 }
 
-/// Round-4 HIGH/conformance: a CROSS-protocol stream to an Anthropic-SDK client must emit a FULL
+/// A CROSS-protocol stream to an Anthropic-SDK client must emit a FULL
 /// `message_start` skeleton — `id` (msg_-prefixed), `type:"message"`, `content:[]`,
 /// `stop_reason`/`stop_sequence` (null) — not the degenerate `{role,usage}` the
 /// `has_identity`-gated writer produced once `StreamTranslate` stripped the foreign id/model.
@@ -2668,7 +2647,7 @@ async fn test_anthropic_cross_protocol_message_start_full_skeleton() {
     server.shutdown().await;
 }
 
-/// Round-4 HIGH/conformance: a CROSS-protocol passthrough 401 must be RESHAPED into the ingress
+/// A CROSS-protocol passthrough 401 must be RESHAPED into the ingress
 /// protocol's native error envelope, not relayed verbatim from the egress provider. Anthropic
 /// ingress → OpenAI backend that 401s in Passthrough mode: the client must see the Anthropic error
 /// shape (`{"type":"error","error":{"type":...}}`), not the OpenAI `{"error":{...}}` shape.
@@ -2964,6 +2943,66 @@ async fn test_gemini_v1_no_action_returns_openai_shaped_404() {
         "v1beta no-colon path stays Gemini-shaped (status: NOT_FOUND); got {body_beta}"
     );
 
+    // (d) A colon with an EMPTY model or EMPTY action either side must NOT be accepted as a valid
+    // model:action split — both sides must be non-empty (`!m.is_empty() && !a.is_empty()`). A
+    // mutated `&&` -> `||` would wrongly accept a colon with only ONE non-empty side (e.g.
+    // `:generateContent` as model="" action="generateContent", or `gemini-flash:` as
+    // model="gemini-flash" action=""), routing an empty model/action into the proxy instead of
+    // falling through to the same not-found handling case (c) already proves.
+    let resp_empty_model = reqwest::Client::new()
+        .post(format!("http://{addr}/v1beta/models/:generateContent"))
+        .bearer_auth("t")
+        .body(json!({"contents": []}).to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp_empty_model.status().as_u16(),
+        404,
+        "empty model before the colon must fall through to not-found, not proceed with model=''"
+    );
+    let body_empty_model: serde_json::Value = resp_empty_model.json().await.unwrap();
+    // The status/status-field alone can't distinguish the two code paths here (an empty model
+    // routed downstream ALSO eventually 404s as an unknown model, same status+field) — the
+    // MESSAGE TEXT is the real signal: the correct pre-routing fallback names the raw path
+    // ("Invalid resource path: ..."), while a wrongly-accepted empty-model split instead
+    // interpolates the (empty) model into a "models/ is not found" message — confirmed by hand
+    // (manually applying the `&&` -> `||` mutation reproduces exactly that wrong wording).
+    let msg_empty_model = body_empty_model
+        .get("error")
+        .and_then(|e| e.get("message"))
+        .and_then(|m| m.as_str())
+        .unwrap_or_default();
+    assert!(
+        msg_empty_model.contains("Invalid resource path"),
+        "empty-model colon path must fall through to the pre-routing 'Invalid resource path' \
+         fallback, not a downstream unknown-model lookup; got {body_empty_model}"
+    );
+
+    let resp_empty_action = reqwest::Client::new()
+        .post(format!("http://{addr}/v1beta/models/gemini-flash:"))
+        .bearer_auth("t")
+        .body(json!({"contents": []}).to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp_empty_action.status().as_u16(),
+        404,
+        "empty action after the colon must fall through to not-found, not proceed with action=''"
+    );
+    let body_empty_action: serde_json::Value = resp_empty_action.json().await.unwrap();
+    let msg_empty_action = body_empty_action
+        .get("error")
+        .and_then(|e| e.get("message"))
+        .and_then(|m| m.as_str())
+        .unwrap_or_default();
+    assert!(
+        msg_empty_action.contains("Invalid resource path"),
+        "empty-action colon path must fall through to the pre-routing 'Invalid resource path' \
+         fallback, not a downstream unknown-model lookup; got {body_empty_action}"
+    );
+
     handle.abort();
 }
 
@@ -3108,24 +3147,25 @@ async fn test_unknown_model_404_uses_canonical_openai_type() {
 /// Build a governance-enabled App whose only key is allowed ONLY on pool `allowed-only` (so a
 /// request to any other pool is pool-rejected with 403). Returns the key for the GovCtx.
 fn governed_app_pool_restricted() -> (Arc<App>, crate::governance::VirtualKey) {
-    use crate::governance::{GovState, NewKeySpec, SqliteStore};
-    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
-    let gov = Arc::new(GovState::new(store, 30, 0, None).unwrap());
+    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+    let store = Arc::new(MemoryStore::new());
+    let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
                 name: "restricted".to_string(),
-                allowed_pools: vec!["allowed-only".to_string()],
-                max_budget_cents: Some(100_000),
-                budget_period: "total".to_string(),
-                rpm_limit: None,
-                tpm_limit: None,
+                allowed_pools: Some(vec!["allowed-only".to_string()]),
+                group: None,
+                labels: Default::default(),
             },
             1_700_000_000,
         )
         .unwrap();
     let mut app = minimal_app();
-    Arc::get_mut(&mut app).expect("sole owner").governance = Some(gov);
+    let inner = Arc::get_mut(&mut app).expect("sole owner");
+    inner.governance = Some(gov);
+    // The 30c flat fee lives on the CostModel now.
+    inner.cost = std::sync::Arc::new(crate::cost::CostModel::flat(30));
     (app, key)
 }
 
@@ -3138,7 +3178,7 @@ async fn test_governance_rejection_is_counted_via_finish() {
     crate::metrics::init();
     let (app, key) = governed_app_pool_restricted();
     let gov = crate::governance::GovCtx {
-        key: Some(key.clone()),
+        key: Some(std::sync::Arc::new(key.clone())),
     };
 
     // Request a pool the key is NOT allowed on → 403, and the guard returns Err(response).
@@ -3150,7 +3190,6 @@ async fn test_governance_rejection_is_counted_via_finish() {
         Instant::now(),
         crate::store::now(),
     )
-    .await
     .expect_err("a disallowed pool must be rejected by the governance guard");
     assert_eq!(
         rejected.status(),
@@ -3188,7 +3227,7 @@ async fn test_governance_guard_passes_when_allowed() {
     crate::metrics::init();
     let (app, key) = governed_app_pool_restricted();
     let gov = crate::governance::GovCtx {
-        key: Some(key.clone()),
+        key: Some(std::sync::Arc::new(key.clone())),
     };
     let passed = governance_guard(
         &app,
@@ -3197,15 +3236,14 @@ async fn test_governance_guard_passes_when_allowed() {
         "allowed-only",
         Instant::now(),
         crate::store::now(),
-    )
-    .await;
+    );
     assert!(
-        matches!(passed, Ok(true)),
-        "an allowed, in-budget, in-rate request is admitted AND charged (Ok(true))"
+        matches!(passed, Ok((Some(_), _))),
+        "an allowed, in-limits request is admitted AND charged (Ok(Some(grant)))"
     );
 }
 
-/// REGRESSION (audit c2r1): a request ADMITTED WITHOUT a charge (store-error fail-open) that then
+/// A request ADMITTED WITHOUT a charge (store-error fail-open) that then
 /// gets a non-2xx must NOT refund — `refund_request` is a blind decrement that would erode a
 /// DIFFERENT, legitimately-charged request's spend/count in the same window. `finish_admitted`
 /// gates the refund on the `charged` flag from `governance_guard`.
@@ -3214,15 +3252,12 @@ async fn finish_admitted_does_not_refund_an_uncharged_admit() {
     crate::metrics::init();
     let (app, key) = governed_app_pool_restricted();
     let gov = crate::governance::GovCtx {
-        key: Some(key.clone()),
+        key: Some(std::sync::Arc::new(key.clone())),
     };
     let at = 1_700_000_000;
     // A PRIOR legitimate request charges the flat fee (price=30) into this window.
     let g = app.governance.as_ref().unwrap();
-    assert!(matches!(
-        g.try_charge_request_within_budget(&key, at).await,
-        Ok(true)
-    ));
+    assert!(g.try_admit(&app.cost, &key, "", at).is_ok());
     let charged_spend = key_spend(&app, &key.id);
     assert_eq!(charged_spend, 30, "prior request charged the flat fee");
 
@@ -3268,7 +3303,7 @@ async fn test_governance_rejection_bodies_leak_no_internal_vocab() {
     // --- 403: pool not allowed ---
     let (app, key) = governed_app_pool_restricted();
     let gov = crate::governance::GovCtx {
-        key: Some(key.clone()),
+        key: Some(std::sync::Arc::new(key.clone())),
     };
     let resp =
         pool_authorized(&gov, "denied-pool", "openai").expect("disallowed pool ⇒ 403 response");
@@ -3281,26 +3316,24 @@ async fn test_governance_rejection_bodies_leak_no_internal_vocab() {
     // vendor returns 402 here. ---
     let (app2, key2) = governed_app_over_budget();
     let gov2 = crate::governance::GovCtx {
-        key: Some(key2.clone()),
+        key: Some(std::sync::Arc::new(key2.clone())),
     };
-    let resp = budget_check(&app2, &gov2, "openai", crate::store::now())
-        .await
-        .expect_err("zero-budget key ⇒ over-budget response");
+    let resp = admit_check(&app2, &gov2, "openai", "", crate::store::now())
+        .expect_err("a zero-budget group ⇒ over-budget response");
     assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
-    let body = body_string(resp).await;
+    let body = body_string(*resp).await;
     assert_leak_free(&body, &key2.id, "any-pool");
 
     // Bedrock ingress maps the same over-budget condition to a 400-class
     // ServiceQuotaExceededException (the native AWS shape), NOT 429.
     let (app2b, key2b) = governed_app_over_budget();
     let gov2b = crate::governance::GovCtx {
-        key: Some(key2b.clone()),
+        key: Some(std::sync::Arc::new(key2b.clone())),
     };
-    let resp = budget_check(&app2b, &gov2b, "bedrock", crate::store::now())
-        .await
-        .expect_err("zero-budget key ⇒ over-budget response (bedrock)");
+    let resp = admit_check(&app2b, &gov2b, "bedrock", "", crate::store::now())
+        .expect_err("a zero-budget group ⇒ over-budget response (bedrock)");
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    let body = body_string(resp).await;
+    let body = body_string(*resp).await;
     assert!(
         body.contains("ServiceQuotaExceededException"),
         "bedrock over-budget body carries native quota exception: {body}"
@@ -3308,13 +3341,14 @@ async fn test_governance_rejection_bodies_leak_no_internal_vocab() {
     assert_leak_free(&body, &key2b.id, "any-pool");
     let _ = &app2b;
 
-    // --- 429: rate limited. A key with rpm_limit=0 is rate-limited on the first request. ---
+    // --- 429: rate limited. A group with `requests: 0, per: minute` blocks the first request. ---
     let (app3, key3) = governed_app_rate_limited();
     let gov3 = crate::governance::GovCtx {
-        key: Some(key3.clone()),
+        key: Some(std::sync::Arc::new(key3.clone())),
     };
-    let resp =
-        rate_check(&app3, &gov3, "openai", crate::store::now()).expect("rpm=0 key ⇒ 429 response");
+    let resp = admit_check(&app3, &gov3, "openai", "", crate::store::now())
+        .expect_err("requests=0 group ⇒ 429 response");
+    let resp = *resp;
     assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
     // The Retry-After header must still be present (regression: copy change must not drop it).
     assert!(
@@ -3353,47 +3387,81 @@ fn assert_leak_free(body: &str, key_id: &str, pool: &str) {
 
 /// Governance-enabled App whose only key has a zero budget cap, so it is immediately over budget.
 fn governed_app_over_budget() -> (Arc<App>, crate::governance::VirtualKey) {
-    use crate::governance::{GovState, NewKeySpec, SqliteStore};
-    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
-    let gov = Arc::new(GovState::new(store, 30, 0, None).unwrap());
+    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+    let store = Arc::new(MemoryStore::new());
+    let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
                 name: "broke".to_string(),
-                allowed_pools: vec![],
-                max_budget_cents: Some(0),
-                budget_period: "total".to_string(),
-                rpm_limit: None,
-                tpm_limit: None,
+                allowed_pools: None,
+                group: Some("empty".to_string()),
+                labels: Default::default(),
             },
             1_700_000_000,
         )
         .unwrap();
     let mut app = minimal_app();
-    Arc::get_mut(&mut app).expect("sole owner").governance = Some(gov);
+    let inner = Arc::get_mut(&mut app).expect("sole owner");
+    inner.governance = Some(gov);
+    // A ZERO-cap GROUP budget: the very first request is over budget (keys carry no caps).
+    let groups = std::collections::BTreeMap::from([(
+        "empty".to_string(),
+        crate::config::GroupCfg {
+            parent: None,
+            enabled: true,
+            limits: vec![crate::config::groups::LimitCfg {
+                metric: crate::config::groups::LimitMetric::Budget,
+                amount: 0,
+                per: Some(crate::config::groups::LimitWindow::Total),
+                scope: None,
+                on_exhaust: None,
+                downgrade_to: None,
+            }],
+            ..Default::default()
+        },
+    )]);
+    inner.cost = std::sync::Arc::new(crate::cost::CostModel::resolve_parts(None, 30, &groups));
     (app, key)
 }
 
-/// Governance-enabled App whose only key has `rpm_limit = 0`, so the first request is rate-limited.
+/// Governance-enabled App whose key binds to a group with `{ requests: 0, per: minute }`, so the
+/// first request is rate-limited (keys carry no caps; the group is the limiter).
 fn governed_app_rate_limited() -> (Arc<App>, crate::governance::VirtualKey) {
-    use crate::governance::{GovState, NewKeySpec, SqliteStore};
-    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
-    let gov = Arc::new(GovState::new(store, 30, 0, None).unwrap());
+    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+    let store = Arc::new(MemoryStore::new());
+    let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
                 name: "throttled".to_string(),
-                allowed_pools: vec![],
-                max_budget_cents: Some(100_000),
-                budget_period: "total".to_string(),
-                rpm_limit: Some(0),
-                tpm_limit: None,
+                allowed_pools: None,
+                group: Some("closed".to_string()),
+                labels: Default::default(),
             },
             1_700_000_000,
         )
         .unwrap();
     let mut app = minimal_app();
-    Arc::get_mut(&mut app).expect("sole owner").governance = Some(gov);
+    let inner = Arc::get_mut(&mut app).expect("sole owner");
+    inner.governance = Some(gov);
+    let groups = std::collections::BTreeMap::from([(
+        "closed".to_string(),
+        crate::config::GroupCfg {
+            parent: None,
+            enabled: true,
+            limits: vec![crate::config::groups::LimitCfg {
+                metric: crate::config::groups::LimitMetric::Requests,
+                amount: 0,
+                per: Some(crate::config::groups::LimitWindow::Minute),
+                scope: None,
+                on_exhaust: None,
+                downgrade_to: None,
+            }],
+            ..Default::default()
+        },
+    )]);
+    inner.cost = std::sync::Arc::new(crate::cost::CostModel::resolve_parts(None, 30, &groups));
     (app, key)
 }
 
@@ -4465,6 +4533,223 @@ async fn test_responses_ingress_mid_stream_transport_error_appends_response_fail
     server.shutdown().await;
 }
 
+// ---- HIGH/test-coverage: real end-to-end failover through the ACTUAL retry loop -----------------
+//
+// Every prior breaker/failover-adjacent test either pre-trips a pool cell via `force_open_in(...)`
+// before dispatch (so the failing lane is never actually selected/attempted by
+// `forward_with_pool_parsed_inner`'s dispatch loop) or unit-tests `pick_among` in isolation with a
+// synthetic policy order. Neither drives a REAL live-upstream failure through the real retry loop
+// and proves the SECOND pool member serves the client. These two tests close that gap: a genuine
+// 2-member pool, dispatched through the real router (`build_router`, the same public entry point
+// every other integration-style test in this file uses), where member 1 is a REAL `MockServer`
+// that fails and member 2 is a REAL `MockServer` that succeeds.
+//
+// Determinism note: SWRR's `current_weight` starts at 0 for a fresh pool cell, and the very first
+// pick adds each candidate's own weight then returns the max — so giving the failing member a much
+// higher weight than the healthy member makes the FIRST attempt land on the failing member on every
+// run, with no dependence on wall-clock timing or hash luck.
+
+/// Non-streaming failover: member 1 answers with a genuine HTTP 500 from a real `MockServer`;
+/// member 2 answers with a genuine 2xx carrying distinctive content. Drives a real request through
+/// the real router and asserts (a) the CLIENT receives member 2's actual content — not an error —
+/// and (b) member 1's breaker cell recorded the failure (the lane-global error counter, which
+/// `record_failure_for` bumps for BOTH the named-pool cell and `LaneState.err` on a named-pool
+/// dispatch).
+#[tokio::test]
+async fn test_real_failover_serves_second_member_after_first_5xx() {
+    crate::metrics::init();
+    const POOL: &str = "failover-e2e-pool";
+    const MODEL_BAD: &str = "failover-e2e-bad";
+    const MODEL_GOOD: &str = "failover-e2e-good";
+
+    // Member 1: a real upstream that genuinely answers 500.
+    let bad_state = StdArc::new(MockServerState::new());
+    bad_state.push(MockResponse::ServerError {
+        status: StatusCode::INTERNAL_SERVER_ERROR,
+        body: json!({ "error": { "message": "boom", "type": "server_error" } }),
+    });
+    let bad_server = MockServer::new(bad_state.clone()).await;
+
+    // Member 2: a real upstream that genuinely succeeds, with content only IT would ever return.
+    let good_state = StdArc::new(MockServerState::new());
+    good_state.push(MockResponse::Ok {
+        status: StatusCode::OK,
+        body: json!({
+            "id": "chatcmpl-good",
+            "object": "chat.completion",
+            "model": MODEL_GOOD,
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "MEMBER-2-GENUINELY-SERVED-THIS"},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 3}
+        }),
+    });
+    let good_server = MockServer::new(good_state.clone()).await;
+
+    let app = TestApp::new()
+        .lane(LaneSpec::new(
+            MODEL_BAD,
+            crate::proto::Protocol::openai(),
+            &bad_server.base_url(),
+        ))
+        .lane(LaneSpec::new(
+            MODEL_GOOD,
+            crate::proto::Protocol::openai(),
+            &good_server.base_url(),
+        ))
+        // Weight 100 vs 1: the failing member is guaranteed to be tried FIRST (see determinism
+        // note above), so a served 2xx can only have come from the real retry loop failing over.
+        .pool(POOL, &[(0, 100), (1, 1)])
+        .build();
+    let (addr, handle) = serve(app.clone()).await;
+
+    let err_before = app.store.snapshot(0, crate::store::now()).err;
+
+    let resp = reqwest::Client::new()
+        .post(format!("http://{addr}/v1/chat/completions"))
+        .bearer_auth("t")
+        .header("content-type", "application/json")
+        .body(json!({"model": POOL, "messages": [{"role": "user", "content": "hi"}]}).to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "the real retry loop must fail over to member 2 and serve its 2xx"
+    );
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(
+        body["choices"][0]["message"]["content"].as_str(),
+        Some("MEMBER-2-GENUINELY-SERVED-THIS"),
+        "the client must receive member 2's genuine content (proving member 2 was actually \
+         dispatched by the real retry loop, not a mock/short-circuit); got {body}"
+    );
+
+    let err_after = app.store.snapshot(0, crate::store::now()).err;
+    assert_eq!(
+        err_after,
+        err_before + 1,
+        "member 1's breaker cell must record exactly one failure for the attempted (and failed) \
+         dispatch"
+    );
+
+    handle.abort();
+    bad_server.shutdown().await;
+    good_server.shutdown().await;
+}
+
+/// Mid-stream boundary: member 1 streams a real first SSE frame, then the mock connection dies
+/// (a TRUE transport-level abort via `MockResponse::SseTransportError`, not a clean SSE `event:
+/// error` text frame). Member 2 is a real, independently-reachable upstream that WOULD serve a
+/// distinguishable stream if dispatched. Proves the documented "no failover after first byte, an
+/// in-band error frame instead" boundary holds end-to-end: the client must see member 1's real
+/// first frame (proving member 1 served this request) followed by an in-band OpenAI error frame,
+/// and must NEVER see member 2's marker (proving member 2 was never dispatched) — plus member 1's
+/// breaker must have recorded the mid-stream failure.
+#[tokio::test]
+async fn test_real_mid_stream_failure_does_not_fail_over_to_second_member() {
+    crate::metrics::init();
+    const POOL: &str = "mid-stream-e2e-pool";
+    const MODEL_BAD: &str = "mid-stream-e2e-primary";
+    const MODEL_GOOD: &str = "mid-stream-e2e-secondary";
+
+    let bad_state = StdArc::new(MockServerState::new());
+    bad_state.push(MockResponse::SseTransportError {
+        ok_events: vec![
+            r#"{"choices":[{"delta":{"content":"MEMBER-1-REAL-FIRST-FRAME"}}]}"#.to_string(),
+        ],
+    });
+    let bad_server = MockServer::new(bad_state.clone()).await;
+
+    // Member 2 would serve a complete, distinguishable stream IF it were ever dispatched.
+    let good_state = StdArc::new(MockServerState::new());
+    good_state.push(MockResponse::Sse {
+        events: vec![
+            r#"{"choices":[{"delta":{"content":"MEMBER-2-MUST-NEVER-APPEAR"}}]}"#.to_string(),
+        ],
+        abort_at_index: None,
+    });
+    let good_server = MockServer::new(good_state.clone()).await;
+
+    let app = TestApp::new()
+        .lane(LaneSpec::new(
+            MODEL_BAD,
+            crate::proto::Protocol::openai(),
+            &bad_server.base_url(),
+        ))
+        .lane(LaneSpec::new(
+            MODEL_GOOD,
+            crate::proto::Protocol::openai(),
+            &good_server.base_url(),
+        ))
+        // Same determinism trick: member 1 (the one that fails mid-stream) is guaranteed first.
+        .pool(POOL, &[(0, 100), (1, 1)])
+        .build();
+    let (addr, handle) = serve(app.clone()).await;
+
+    let err_before = app.store.snapshot(0, crate::store::now()).err;
+
+    let resp = reqwest::Client::new()
+        .post(format!("http://{addr}/v1/chat/completions"))
+        .bearer_auth("t")
+        .header("content-type", "application/json")
+        .body(
+            json!({"model": POOL, "stream": true, "messages": [{"role": "user", "content": "hi"}]})
+                .to_string(),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "the stream starts 2xx (member 1's real first byte)"
+    );
+    let body = resp.bytes().await.unwrap();
+    let text = String::from_utf8_lossy(&body);
+
+    assert!(
+        text.contains("MEMBER-1-REAL-FIRST-FRAME"),
+        "member 1's genuine first frame must reach the client (proves member 1 served this \
+         request, not a short-circuit); got:\n{text}"
+    );
+    assert!(
+        !text.contains("MEMBER-2-MUST-NEVER-APPEAR"),
+        "member 2 must NEVER be dispatched after member 1's first byte crossed the failover \
+         boundary — the contract is an in-band error frame, not a fresh attempt on the next \
+         member; got:\n{text}"
+    );
+    // The trailing frame is the in-band OpenAI native error (bare `data:`, no `event:` line) —
+    // mirrors `test_openai_ingress_mid_stream_transport_error_appends_native_sse`'s shape check.
+    let frames: Vec<&str> = text
+        .split("\n\n")
+        .filter(|f| !f.trim().is_empty())
+        .collect();
+    let last_data = frames
+        .last()
+        .and_then(|f| f.lines().find_map(|l| l.strip_prefix("data: ")))
+        .expect("a trailing data: error frame");
+    let v: Value = serde_json::from_str(last_data).expect("native OpenAI JSON envelope");
+    assert!(
+        v.get("error").is_some(),
+        "the in-band terminal frame must be OpenAI's native error envelope; got {v}"
+    );
+
+    let err_after = app.store.snapshot(0, crate::store::now()).err;
+    assert_eq!(
+        err_after,
+        err_before + 1,
+        "member 1's breaker cell must record exactly one mid-stream failure"
+    );
+
+    handle.abort();
+    bad_server.shutdown().await;
+    good_server.shutdown().await;
+}
+
 // ---- HIGH/conformance: no client-facing error message carries the wire-visible `router:` tell --
 
 /// CLASS regression for the `router:` prefix leak. Drives the REAL router on EVERY ingress
@@ -4582,39 +4867,38 @@ async fn governed_pool_acl_router(
     model: &str,
     protocol: crate::proto::Protocol,
     provider: &str,
-) -> (
-    std::net::SocketAddr,
-    tokio::task::JoinHandle<()>,
-    &'static str,
-) {
-    use crate::governance::{GovState, SqliteStore, Store, VirtualKey};
+) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>, String) {
+    use crate::governance::{GovState, MemoryStore};
     // The lane needs a base_url, but the pool-ACL 403 short-circuits before any forward, so an
     // unreachable upstream is fine.
-    const SECRET: &str = "sk-vk-acl-denied";
-    let store = StdArc::new(SqliteStore::open_in_memory().unwrap());
-    store
-        .put_key(&VirtualKey {
-            id: "kacl".to_string(),
-            key_hash: crate::sigv4::sha256_hex(SECRET.as_bytes()),
-            name: "acl".to_string(),
-            // Allowed ONLY on a pool the requests never use → every request is pool-rejected 403.
-            allowed_pools: vec!["other-pool".to_string()],
-            max_budget_cents: None,
-            budget_period: "total".to_string(),
-            rpm_limit: None,
-            tpm_limit: None,
-            enabled: true,
-            created_at: 0,
-        })
+    let store = StdArc::new(MemoryStore::new());
+    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+        &[7u8; 32],
+        crate::governance::signing::DEFAULT_KID,
+    );
+    let gov = StdArc::new(
+        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
+    );
+    let (_key, secret) = gov
+        .mint_signed(
+            crate::governance::NewKeySpec {
+                name: "acl".to_string(),
+                // Allowed ONLY on a pool the requests never use → every request is pool-rejected 403.
+                allowed_pools: Some(vec!["other-pool".to_string()]),
+                group: None,
+                labels: Default::default(),
+            },
+            2_000_000_000,
+            1_000_000_000,
+        )
         .unwrap();
-    let gov = StdArc::new(GovState::new(store, 1, 0, None).unwrap());
     let app = TestApp::new()
         .governance(gov)
         .lane(LaneSpec::new(model, protocol, "http://127.0.0.1:1").provider(provider))
         .pool(model, &[(0, 1)])
         .build();
     let (addr, handle) = serve(app).await;
-    (addr, handle, SECRET)
+    (addr, handle, secret)
 }
 
 /// Cohere `/v2/chat` governance pool-ACL 403 must carry the Cohere-native error envelope
@@ -4827,7 +5111,7 @@ async fn test_governance_pool_acl_403_bedrock_native_envelope() {
 // the fallback chain reachable from the requested pool and re-runs the SAME `pool_authorized`
 // 403 gate against every fallback pool name BEFORE any dispatch.
 
-/// REGRESSION (SECURITY MED #3): a key restricted to pool A must be DENIED (403, the same
+/// A key restricted to pool A must be DENIED (403, the same
 /// protocol-native permission envelope as the initial-pool denial) when A is configured to fail
 /// over to a fallback pool B the key is NOT allowed on — even though the key passes A's own ACL
 /// and A's backend would itself answer 200. Against the pre-fix code this request reached A and
@@ -4835,7 +5119,7 @@ async fn test_governance_pool_acl_403_bedrock_native_envelope() {
 /// is reachable from A on exhaustion and the key may not use B.
 #[tokio::test]
 async fn test_fallback_pool_acl_denies_key_not_allowed_on_fallback_target() {
-    use crate::governance::{GovState, SqliteStore, Store, VirtualKey};
+    use crate::governance::{GovState, MemoryStore};
     crate::metrics::init();
 
     // Pool A's backend would succeed (200) if the request ever reached it — proving the 403 is
@@ -4848,24 +5132,27 @@ async fn test_fallback_pool_acl_denies_key_not_allowed_on_fallback_target() {
     let server = MockServer::new(state).await;
     let a_url = server.base_url();
 
-    const SECRET: &str = "sk-vk-fallback-acl";
-    let store = StdArc::new(SqliteStore::open_in_memory().unwrap());
-    store
-        .put_key(&VirtualKey {
-            id: "kfb".to_string(),
-            key_hash: crate::sigv4::sha256_hex(SECRET.as_bytes()),
-            name: "fb".to_string(),
-            // Allowed ONLY on pool A. Pool B (the fallback target) is NOT in the list.
-            allowed_pools: vec!["A".to_string()],
-            max_budget_cents: None,
-            budget_period: "total".to_string(),
-            rpm_limit: None,
-            tpm_limit: None,
-            enabled: true,
-            created_at: 0,
-        })
+    let store = StdArc::new(MemoryStore::new());
+    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+        &[7u8; 32],
+        crate::governance::signing::DEFAULT_KID,
+    );
+    let gov = StdArc::new(
+        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
+    );
+    let (_key, secret) = gov
+        .mint_signed(
+            crate::governance::NewKeySpec {
+                name: "fb".to_string(),
+                // Allowed ONLY on pool A. Pool B (the fallback target) is NOT in the list.
+                allowed_pools: Some(vec!["A".to_string()]),
+                group: None,
+                labels: Default::default(),
+            },
+            2_000_000_000,
+            1_000_000_000,
+        )
         .unwrap();
-    let gov = StdArc::new(GovState::new(store, 0, 0, None).unwrap());
 
     // Lane 0 → pool A (reachable mock). Lane 1 → pool B (the disallowed fallback target).
     let app = TestApp::new()
@@ -4894,7 +5181,7 @@ async fn test_fallback_pool_acl_denies_key_not_allowed_on_fallback_target() {
     // is configured and the key is not allowed on B, so the request must be rejected upfront.
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/A/v1/messages"))
-        .bearer_auth(SECRET)
+        .bearer_auth(secret)
         .body(json!({"model": "A", "messages": [{"role": "user", "content": "hi"}]}).to_string())
         .send()
         .await
@@ -4923,7 +5210,7 @@ async fn test_fallback_pool_acl_denies_key_not_allowed_on_fallback_target() {
 /// fix over-rejecting legitimate fallback configurations.
 #[tokio::test]
 async fn test_fallback_pool_acl_allows_key_permitted_on_both_pools() {
-    use crate::governance::{GovState, SqliteStore, Store, VirtualKey};
+    use crate::governance::{GovState, MemoryStore};
     crate::metrics::init();
 
     let state = StdArc::new(MockServerState::new());
@@ -4934,24 +5221,27 @@ async fn test_fallback_pool_acl_allows_key_permitted_on_both_pools() {
     let server = MockServer::new(state).await;
     let a_url = server.base_url();
 
-    const SECRET: &str = "sk-vk-fallback-ok";
-    let store = StdArc::new(SqliteStore::open_in_memory().unwrap());
-    store
-        .put_key(&VirtualKey {
-            id: "kfb2".to_string(),
-            key_hash: crate::sigv4::sha256_hex(SECRET.as_bytes()),
-            name: "fb2".to_string(),
-            // Allowed on BOTH A and the fallback target B → no ACL rejection on either.
-            allowed_pools: vec!["A".to_string(), "B".to_string()],
-            max_budget_cents: None,
-            budget_period: "total".to_string(),
-            rpm_limit: None,
-            tpm_limit: None,
-            enabled: true,
-            created_at: 0,
-        })
+    let store = StdArc::new(MemoryStore::new());
+    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+        &[7u8; 32],
+        crate::governance::signing::DEFAULT_KID,
+    );
+    let gov = StdArc::new(
+        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
+    );
+    let (_key, secret) = gov
+        .mint_signed(
+            crate::governance::NewKeySpec {
+                name: "fb2".to_string(),
+                // Allowed on BOTH A and the fallback target B → no ACL rejection on either.
+                allowed_pools: Some(vec!["A".to_string(), "B".to_string()]),
+                group: None,
+                labels: Default::default(),
+            },
+            2_000_000_000,
+            1_000_000_000,
+        )
         .unwrap();
-    let gov = StdArc::new(GovState::new(store, 0, 0, None).unwrap());
 
     let app = TestApp::new()
         .governance(gov)
@@ -4976,7 +5266,7 @@ async fn test_fallback_pool_acl_allows_key_permitted_on_both_pools() {
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/A/v1/messages"))
-        .bearer_auth(SECRET)
+        .bearer_auth(&secret)
         .body(json!({"model": "A", "messages": [{"role": "user", "content": "hi"}]}).to_string())
         .send()
         .await
@@ -5103,25 +5393,28 @@ async fn test_adhoc_provider_mismatch_400_anthropic_envelope_via_router() {
 /// which passes a default no-key GovCtx).
 #[tokio::test]
 async fn test_adhoc_governance_pool_acl_403_via_router() {
-    use crate::governance::{GovState, SqliteStore, Store, VirtualKey};
+    use crate::governance::{GovState, MemoryStore};
     crate::metrics::init();
-    const SECRET: &str = "sk-vk-adhoc-acl";
-    let store = StdArc::new(SqliteStore::open_in_memory().unwrap());
-    store
-        .put_key(&VirtualKey {
-            id: "kadhoc".to_string(),
-            key_hash: crate::sigv4::sha256_hex(SECRET.as_bytes()),
-            name: "adhoc-acl".to_string(),
-            allowed_pools: vec!["other-pool".to_string()],
-            max_budget_cents: None,
-            budget_period: "total".to_string(),
-            rpm_limit: None,
-            tpm_limit: None,
-            enabled: true,
-            created_at: 0,
-        })
+    let store = StdArc::new(MemoryStore::new());
+    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+        &[7u8; 32],
+        crate::governance::signing::DEFAULT_KID,
+    );
+    let gov = StdArc::new(
+        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
+    );
+    let (_key, secret) = gov
+        .mint_signed(
+            crate::governance::NewKeySpec {
+                name: "adhoc-acl".to_string(),
+                allowed_pools: Some(vec!["other-pool".to_string()]),
+                group: None,
+                labels: Default::default(),
+            },
+            2_000_000_000,
+            1_000_000_000,
+        )
         .unwrap();
-    let gov = StdArc::new(GovState::new(store, 1, 0, None).unwrap());
     let app = TestApp::new()
         .governance(gov)
         .lane(
@@ -5137,7 +5430,7 @@ async fn test_adhoc_governance_pool_acl_403_via_router() {
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/anthropic/claude-x/v1/messages"))
-        .bearer_auth(SECRET)
+        .bearer_auth(&secret)
         .body(json!({"model": "claude-x", "messages": [], "max_tokens": 16}).to_string())
         .send()
         .await
@@ -5409,39 +5702,71 @@ async fn test_gemini_v1_stable_stream_generate_content_no_alt_sse() {
 // The rejection fires in `governance_guard` BEFORE model resolution, so no lane/pool/backend is
 // needed — only a parseable body carrying `model` where the body-model protocols expect it.
 
-/// Build a governance-enabled router whose single virtual key is over its limit, selected by
-/// `rpm` (`Some(0)` ⇒ rate-limited on the first request) and/or `max_budget_cents` (`Some(0)` ⇒
-/// over budget on the first request). `allowed_pools: vec![]` admits every pool so the ACL never
-/// short-circuits the gate under test. Returns `(addr, handle, secret)`.
+/// Build a governance-enabled router whose single virtual key binds to a GROUP that is over its
+/// limit from the first request, selected by `over`: `"requests"` (a `{ requests: 0, per: minute }`
+/// limit ⇒ rate-limited) or `"budget"` (a `{ budget: 0, per: total }` limit ⇒ over quota). Keys
+/// are pure auth, so the tripping limit lives on the bound group. An omitted `allowed_pools`
+/// admits every pool so the ACL never short-circuits the gate under test. Returns
+/// `(addr, handle, secret)`.
 async fn governed_limit_router(
-    rpm: Option<u32>,
-    max_budget_cents: Option<i64>,
-) -> (
-    std::net::SocketAddr,
-    tokio::task::JoinHandle<()>,
-    &'static str,
-) {
-    use crate::governance::{GovState, SqliteStore, Store, VirtualKey};
-    const SECRET: &str = "sk-vk-limit-route";
-    let store = StdArc::new(SqliteStore::open_in_memory().unwrap());
-    store
-        .put_key(&VirtualKey {
-            id: "klimit".to_string(),
-            key_hash: crate::sigv4::sha256_hex(SECRET.as_bytes()),
-            name: "limit".to_string(),
-            allowed_pools: vec![], // all pools — ACL never short-circuits
-            max_budget_cents,
-            budget_period: "total".to_string(),
-            rpm_limit: rpm,
-            tpm_limit: None,
-            enabled: true,
-            created_at: 0,
-        })
+    over: &'static str,
+) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>, String) {
+    use crate::config::groups::{LimitCfg, LimitMetric, LimitWindow};
+    use crate::governance::{GovState, MemoryStore};
+    let store = StdArc::new(MemoryStore::new());
+    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+        &[7u8; 32],
+        crate::governance::signing::DEFAULT_KID,
+    );
+    let gov = StdArc::new(
+        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
+    );
+    let (_key, secret) = gov
+        .mint_signed(
+            crate::governance::NewKeySpec {
+                name: "limit".to_string(),
+                allowed_pools: None, // all pools; ACL never short-circuits
+                group: Some("tripped".to_string()),
+                labels: Default::default(),
+            },
+            2_000_000_000,
+            1_000_000_000,
+        )
         .unwrap();
-    let gov = StdArc::new(GovState::new(store, 1, 0, None).unwrap());
-    let app = TestApp::new().governance(gov).build();
+    let tripping = if over == "requests" {
+        LimitCfg {
+            metric: LimitMetric::Requests,
+            amount: 0,
+            per: Some(LimitWindow::Minute),
+            scope: None,
+            on_exhaust: None,
+            downgrade_to: None,
+        }
+    } else {
+        LimitCfg {
+            metric: LimitMetric::Budget,
+            amount: 0,
+            per: Some(LimitWindow::Total),
+            scope: None,
+            on_exhaust: None,
+            downgrade_to: None,
+        }
+    };
+    let groups = std::collections::BTreeMap::from([(
+        "tripped".to_string(),
+        crate::config::GroupCfg {
+            parent: None,
+            enabled: true,
+            limits: vec![tripping],
+            ..Default::default()
+        },
+    )]);
+    let app = TestApp::new()
+        .governance(gov)
+        .cost(crate::cost::CostModel::resolve_parts(None, 0, &groups))
+        .build();
     let (addr, handle) = serve(app).await;
-    (addr, handle, SECRET)
+    (addr, handle, secret)
 }
 
 /// Each first-class ingress route: an over-RPM virtual key is rejected with a PROTOCOL-NATIVE
@@ -5461,7 +5786,7 @@ async fn test_governance_rate_limit_429_native_envelope_all_ingress() {
         ("/v1/responses", json!({"model": "m", "input": "hi"})),
         ("/v2/chat", json!({"model": "m", "messages": []})),
     ] {
-        let (addr, handle, secret) = governed_limit_router(Some(0), None).await;
+        let (addr, handle, secret) = governed_limit_router("requests").await;
         let resp = reqwest::Client::new()
             .post(format!("http://{addr}{path}"))
             .bearer_auth(secret)
@@ -5479,7 +5804,7 @@ async fn test_governance_rate_limit_429_native_envelope_all_ingress() {
 
     // gemini path-model route: native quota envelope is error.code 429 + RESOURCE_EXHAUSTED.
     {
-        let (addr, handle, secret) = governed_limit_router(Some(0), None).await;
+        let (addr, handle, secret) = governed_limit_router("requests").await;
         let resp = reqwest::Client::new()
             .post(format!("http://{addr}/v1beta/models/m:generateContent"))
             .bearer_auth(secret)
@@ -5501,7 +5826,7 @@ async fn test_governance_rate_limit_429_native_envelope_all_ingress() {
 
     // bedrock path-model route: native 429 carries the ThrottlingException envelope + headers.
     {
-        let (addr, handle, secret) = governed_limit_router(Some(0), None).await;
+        let (addr, handle, secret) = governed_limit_router("requests").await;
         let resp = reqwest::Client::new()
             .post(format!("http://{addr}/model/m/converse"))
             .bearer_auth(secret)
@@ -5541,7 +5866,7 @@ async fn test_governance_over_budget_native_envelope_all_ingress() {
         ("/v2/chat", json!({"model": "m", "messages": []})),
         ("/v1beta/models/m:generateContent", json!({"contents": []})),
     ] {
-        let (addr, handle, secret) = governed_limit_router(None, Some(0)).await;
+        let (addr, handle, secret) = governed_limit_router("budget").await;
         let resp = reqwest::Client::new()
             .post(format!("http://{addr}{path}"))
             .bearer_auth(secret)
@@ -5555,7 +5880,7 @@ async fn test_governance_over_budget_native_envelope_all_ingress() {
 
     // bedrock: native ServiceQuotaExceededException is a 400-class error, not 429.
     {
-        let (addr, handle, secret) = governed_limit_router(None, Some(0)).await;
+        let (addr, handle, secret) = governed_limit_router("budget").await;
         let resp = reqwest::Client::new()
             .post(format!("http://{addr}/model/m/converse"))
             .bearer_auth(secret)
@@ -5634,15 +5959,15 @@ async fn test_named_by_model_fallback_round_trip_via_router() {
     server.shutdown().await;
 }
 
-// ---- LOW #4 (re-audit, completeness): breaker op_handler-key consistency for by_model routes ----
+// ---- breaker op_handler-key consistency for by_model routes ----
 //
 // A single-model lane (no pool) can be reached two ways:
-//   1. the universal body-model ingress (`/v1/chat/completions` etc.) → `forward_resolved`'s
-//      `by_model` arm, which calls `forward_with_pool` directly with the ingress protocol so a
-//      cross-protocol backend is translated both ways; and
-//   2. the Anthropic `/<model>/v1/messages` (`named`) / `/<provider>/<model>/v1/messages`
-//      (`adhoc`) routes → `crate::proxy::forward_with_pool`, which passes `""` (the lane-default breaker
-//      CELL shared by every direct/single-model route — proxy engine design intent).
+// 1. the universal body-model ingress (`/v1/chat/completions` etc.) → `forward_resolved`'s
+// `by_model` arm, which calls `forward_with_pool` directly with the ingress protocol so a
+// cross-protocol backend is translated both ways; and
+// 2. the Anthropic `/<model>/v1/messages` (`named`) / `/<provider>/<model>/v1/messages`
+// (`adhoc`) routes → `crate::proxy::forward_with_pool`, which passes `""` (the lane-default breaker
+// CELL shared by every direct/single-model route — proxy engine design intent).
 //
 // proxy engine records every breaker outcome against the CELL keyed by the `pool_name` argument
 // (`record_transient_in(pool_name, …)`). If `forward_resolved`'s by_model arm passes the MODEL
@@ -5729,4 +6054,376 @@ async fn test_forward_resolved_by_model_uses_lane_default_breaker_cell() {
 
     handle.abort();
     server.shutdown().await;
+}
+
+// ─── Budget-group chain rejections at the ingress boundary (1.5.0 cost model) ────────────────────
+
+/// Governance-enabled App whose key binds to a ZERO-cap budget group ("finance") while the key
+/// itself is uncapped - the CHAIN is what blocks. The 429 body must NAME the exhausted group.
+#[allow(clippy::field_reassign_with_default)]
+fn governed_app_group_blocked() -> (Arc<App>, crate::governance::VirtualKey) {
+    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+    let store = Arc::new(MemoryStore::new());
+    let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
+    let groups = std::collections::BTreeMap::from([(
+        "finance".to_string(),
+        crate::config::GroupCfg {
+            parent: None,
+            enabled: true,
+            limits: vec![crate::config::groups::LimitCfg {
+                metric: crate::config::groups::LimitMetric::Budget,
+                amount: 0,
+                per: Some(crate::config::groups::LimitWindow::Total),
+                scope: None,
+                on_exhaust: None,
+                downgrade_to: None,
+            }],
+            ..Default::default()
+        },
+    )]);
+    let cost = crate::cost::CostModel::resolve_parts(None, 30, &groups);
+    let (key, _secret) = gov
+        .create_key(
+            NewKeySpec {
+                name: "grouped".to_string(),
+                allowed_pools: None,
+                group: Some("finance".to_string()),
+                labels: Default::default(),
+            },
+            1_700_000_000,
+        )
+        .unwrap();
+    let mut app = minimal_app();
+    let inner = Arc::get_mut(&mut app).expect("sole owner");
+    inner.governance = Some(gov);
+    inner.cost = std::sync::Arc::new(cost);
+    (app, key)
+}
+
+/// A GROUP-blocked admission is a 429 `insufficient_quota` whose body NAMES the exhausted budget
+/// group (cost-model spec: the 429 says WHICH bucket blocked) - while still never leaking the key
+/// id or the internal governance vocabulary. Nothing is charged on the rejected attempt.
+#[tokio::test]
+async fn test_group_blocked_429_names_the_budget_group() {
+    crate::metrics::init();
+    let (app, key) = governed_app_group_blocked();
+    let gov = crate::governance::GovCtx {
+        key: Some(std::sync::Arc::new(key.clone())),
+    };
+    let at = crate::store::now();
+    let resp = admit_check(&app, &gov, "openai", "", at)
+        .expect_err("a zero-cap group blocks the whole chain");
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    let body = body_string(*resp).await;
+    assert!(
+        body.contains("insufficient_quota"),
+        "canonical quota error type: {body}"
+    );
+    assert!(
+        body.contains("group 'finance' budget per total exhausted"),
+        "the 429 must NAME the blocking bucket (group + metric + window): {body}"
+    );
+    assert!(!body.contains(&key.id), "never the key id: {body}");
+    // All-or-nothing: the rejected attempt charged nothing anywhere in the chain.
+    let g = app.governance.as_ref().unwrap();
+    assert_eq!(
+        g.usage_for(&app.cost, &key.id, at)
+            .unwrap()
+            .unwrap()
+            .requests,
+        0
+    );
+}
+
+/// A key naming a budget_group MISSING from this node's config FAILS CLOSED at admission (429,
+/// bucket named as unconfigured) - never a silent uncapped admit.
+#[tokio::test]
+async fn test_missing_group_fails_closed_at_ingress() {
+    crate::metrics::init();
+    let (app, key) = governed_app_group_blocked();
+    let mut orphan = key.clone();
+    orphan.group = Some("ghost".to_string());
+    let gov = crate::governance::GovCtx {
+        key: Some(std::sync::Arc::new(orphan)),
+    };
+    let resp = admit_check(&app, &gov, "openai", "", crate::store::now())
+        .expect_err("a missing group must fail closed");
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    let body = body_string(*resp).await;
+    assert!(
+        body.contains("group 'ghost' is not configured"),
+        "the missing bucket is named for the operator-facing fix: {body}"
+    );
+}
+
+/// ALL-OR-NOTHING pricing at the ingress: with a rate card PRESENT, a governed request for an
+/// arbitrary passthrough model (no configured pool / by-model lane, no rate entry) is rejected
+/// pre-forward with a clear "no configured rate" error; configured lanes are unaffected.
+#[tokio::test]
+#[allow(clippy::field_reassign_with_default)]
+async fn test_unpriced_passthrough_model_rejected_when_rate_card_present() {
+    crate::metrics::init();
+    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+    let store = Arc::new(MemoryStore::new());
+    let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
+    let (key, _secret) = gov
+        .create_key(
+            NewKeySpec {
+                name: "k".to_string(),
+                allowed_pools: None,
+                group: None,
+                labels: Default::default(),
+            },
+            1_700_000_000,
+        )
+        .unwrap();
+    let rate_card = std::collections::BTreeMap::from([(
+        "m".to_string(),
+        crate::config::RateEntryCfg::default(),
+    )]);
+    let cost = crate::cost::CostModel::resolve_parts(
+        Some(&rate_card),
+        0,
+        &std::collections::BTreeMap::new(),
+    );
+    let mut app = minimal_app();
+    {
+        let inner = Arc::get_mut(&mut app).expect("sole owner");
+        inner.governance = Some(gov);
+        inner.cost = std::sync::Arc::new(cost);
+    }
+    let gov_ctx = crate::governance::GovCtx {
+        key: Some(std::sync::Arc::new(key.clone())),
+    };
+    // An arbitrary passthrough model string (not a pool, not a by-model lane, not priced).
+    let resp = governance_guard(
+        &app,
+        &gov_ctx,
+        "openai",
+        "mystery-model",
+        std::time::Instant::now(),
+        crate::store::now(),
+    )
+    .expect_err("an unpriced passthrough model must be rejected pre-forward");
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = body_string(*resp).await;
+    assert!(
+        body.contains("no configured rate for model 'mystery-model'"),
+        "the rejection names the unpriced model: {body}"
+    );
+    // The configured by-model lane ("m" in minimal_app) still passes the pricing guard (it is
+    // priced by the card), so the guard admits and charges it.
+    let ok = governance_guard(
+        &app,
+        &gov_ctx,
+        "openai",
+        "m",
+        std::time::Instant::now(),
+        crate::store::now(),
+    );
+    assert!(ok.is_ok(), "a priced configured lane admits");
+}
+
+// ─── Budget downgrade at the ingress boundary ────────────────────────
+
+/// Governance-enabled App with pools `frontier` + `value` and a group whose frontier budget
+/// (25c/day at a 10c flat fee) declares `on_exhaust: downgrade, downgrade_to: value`.
+#[allow(clippy::field_reassign_with_default)]
+fn governed_app_downgrade(
+    allowed_pools: Option<Vec<String>>,
+) -> (Arc<App>, crate::governance::VirtualKey) {
+    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+    let store = Arc::new(MemoryStore::new());
+    let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
+    let groups = std::collections::BTreeMap::from([(
+        "team".to_string(),
+        crate::config::GroupCfg {
+            parent: None,
+            enabled: true,
+            limits: vec![crate::config::groups::LimitCfg {
+                metric: crate::config::groups::LimitMetric::Budget,
+                amount: 25,
+                per: Some(crate::config::groups::LimitWindow::Day),
+                scope: Some(busbar_api::ScopeRef::pool("frontier")),
+                on_exhaust: Some(crate::config::groups::OnExhaust::Downgrade),
+                downgrade_to: Some(busbar_api::ScopeRef::pool("value")),
+            }],
+            ..Default::default()
+        },
+    )]);
+    let cost = crate::cost::CostModel::resolve_parts(None, 10, &groups);
+    let (key, _secret) = gov
+        .create_key(
+            NewKeySpec {
+                name: "dev".to_string(),
+                allowed_pools,
+                group: Some("team".to_string()),
+                labels: Default::default(),
+            },
+            1_700_000_000,
+        )
+        .unwrap();
+    let mut app = minimal_app();
+    let inner = Arc::get_mut(&mut app).expect("sole owner");
+    inner.governance = Some(gov);
+    inner.cost = std::sync::Arc::new(cost);
+    inner.pools.insert("frontier".to_string(), vec![]);
+    inner.pools.insert("value".to_string(), vec![]);
+    (app, key)
+}
+
+/// Exhausting the frontier budget DOWNGRADES instead of rejecting: the admission lands on the
+/// `value` pool (returned as the effective pool so dispatch follows), and the charge lands on
+/// value's participation set - the caller keeps working, on the cheaper tier.
+#[tokio::test]
+async fn test_budget_exhaustion_downgrades_pool() {
+    let (app, key) = governed_app_downgrade(None);
+    let gov = crate::governance::GovCtx {
+        key: Some(std::sync::Arc::new(key.clone())),
+    };
+    let at = crate::store::now();
+    // fee=10, cap=25: two frontier admissions spend 20; the 3rd would reach 30 > 25.
+    for i in 0..2 {
+        let (grant, effective) = admit_check(&app, &gov, "openai", "frontier", at)
+            .unwrap_or_else(|_| panic!("admission {i} under the frontier cap"));
+        assert!(grant.is_some());
+        assert_eq!(effective, None, "no downgrade while under the cap");
+    }
+    let (grant, effective) =
+        admit_check(&app, &gov, "openai", "frontier", at).expect("downgraded, not rejected");
+    assert!(grant.is_some(), "the downgraded admission still charges");
+    assert_eq!(
+        effective.as_deref(),
+        Some("value"),
+        "dispatch must follow the charge to the downgrade pool"
+    );
+}
+
+/// A 3-pool downgrade CYCLE (`a` -> `b` -> `c` -> `b`, `b` revisited) must terminate via the
+/// `visited` revisit guard rather than looping or re-charging `b`'s bucket a second time. Proves
+/// the guard is `!visited.contains(&to)`, not its inverse: with the mutant `== -> !=` applied
+/// (`!visited.iter().any(|v| v != &to)`), the SECOND hop (`b` -> `c`, `visited == [b]`) would
+/// itself be wrongly rejected — `b != c` is true, so `.any()` is true, so the negated guard is
+/// false — even though `c` was never visited. `test_budget_exhaustion_downgrades_pool` above only
+/// ever exercises a single hop (`visited` still empty when the guard runs), so it can't
+/// distinguish `==` from `!=` at all; this test is the one that actually needs 2+ hops.
+#[tokio::test]
+async fn test_downgrade_cycle_terminates_via_the_revisit_guard() {
+    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+    let store = Arc::new(MemoryStore::new());
+    let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
+    let groups = std::collections::BTreeMap::from([(
+        "team".to_string(),
+        crate::config::GroupCfg {
+            parent: None,
+            enabled: true,
+            limits: vec![
+                // a: 1 request budget (10c cap, 10c fee) -> downgrades to b on exhaustion.
+                crate::config::groups::LimitCfg {
+                    metric: crate::config::groups::LimitMetric::Budget,
+                    amount: 10,
+                    per: Some(crate::config::groups::LimitWindow::Day),
+                    scope: Some(busbar_api::ScopeRef::pool("a")),
+                    on_exhaust: Some(crate::config::groups::OnExhaust::Downgrade),
+                    downgrade_to: Some(busbar_api::ScopeRef::pool("b")),
+                },
+                // b: budget is ALREADY exhausted (cap 0) -> downgrades to c.
+                crate::config::groups::LimitCfg {
+                    metric: crate::config::groups::LimitMetric::Budget,
+                    amount: 0,
+                    per: Some(crate::config::groups::LimitWindow::Day),
+                    scope: Some(busbar_api::ScopeRef::pool("b")),
+                    on_exhaust: Some(crate::config::groups::OnExhaust::Downgrade),
+                    downgrade_to: Some(busbar_api::ScopeRef::pool("c")),
+                },
+                // c: budget is ALSO already exhausted -> downgrades back to b, the CYCLE.
+                crate::config::groups::LimitCfg {
+                    metric: crate::config::groups::LimitMetric::Budget,
+                    amount: 0,
+                    per: Some(crate::config::groups::LimitWindow::Day),
+                    scope: Some(busbar_api::ScopeRef::pool("c")),
+                    on_exhaust: Some(crate::config::groups::OnExhaust::Downgrade),
+                    downgrade_to: Some(busbar_api::ScopeRef::pool("b")),
+                },
+            ],
+            ..Default::default()
+        },
+    )]);
+    let cost = crate::cost::CostModel::resolve_parts(None, 10, &groups);
+    let (key, _secret) = gov
+        .create_key(
+            NewKeySpec {
+                name: "dev".to_string(),
+                allowed_pools: None,
+                group: Some("team".to_string()),
+                labels: Default::default(),
+            },
+            1_700_000_000,
+        )
+        .unwrap();
+    let mut app = minimal_app();
+    let inner = Arc::get_mut(&mut app).expect("sole owner");
+    inner.governance = Some(gov);
+    inner.cost = std::sync::Arc::new(cost);
+    inner.pools.insert("a".to_string(), vec![]);
+    inner.pools.insert("b".to_string(), vec![]);
+    inner.pools.insert("c".to_string(), vec![]);
+
+    let gov = crate::governance::GovCtx {
+        key: Some(std::sync::Arc::new(key.clone())),
+    };
+    let at = crate::store::now();
+    // a's single-request budget admits once (no downgrade needed yet).
+    let (grant, effective) =
+        admit_check(&app, &gov, "openai", "a", at).expect("first admission under a's cap");
+    assert!(grant.is_some());
+    assert_eq!(effective, None);
+    // The 2nd request on `a` exhausts it -> downgrade a->b->c->b(revisit) -> the cycle must
+    // terminate with the PLAIN rejection (the guard breaks it), never an infinite loop, a panic,
+    // or a wrongly-admitted grant.
+    let resp = admit_check(&app, &gov, "openai", "a", at)
+        .expect_err("a cyclic downgrade chain must terminate in rejection, not admission");
+    assert_eq!(
+        resp.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "the caller sees the plain quota rejection once the cycle is detected"
+    );
+    // WHICH bucket the rejection names is the real distinguishing signal (status code alone is
+    // the same either way): the guard must let the chain walk all the way a -> b -> c BEFORE the
+    // revisit-to-b is refused, so the terminal rejection is c's bucket, not b's. Under the `==` ->
+    // `!=` mutant, the guard wrongly refuses the SECOND hop (b -> c) instead, terminating one hop
+    // early at b's bucket.
+    let body = String::from_utf8(
+        axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(
+        body.contains("pool 'c'"),
+        "the chain must walk a -> b -> c before the revisit-to-b guard breaks it, so the \
+         terminal rejection names pool 'c' (a mutated revisit guard breaks one hop early, at \
+         pool 'b'): {body}"
+    );
+}
+
+/// The downgrade re-runs the key's pool ACL: a key restricted to `frontier` can NEVER be routed
+/// into `value` by exhaustion - the request falls back to the plain budget rejection.
+#[tokio::test]
+async fn test_downgrade_never_bypasses_pool_acl() {
+    let (app, key) = governed_app_downgrade(Some(vec!["frontier".to_string()]));
+    let gov = crate::governance::GovCtx {
+        key: Some(std::sync::Arc::new(key.clone())),
+    };
+    let at = crate::store::now();
+    assert!(admit_check(&app, &gov, "openai", "frontier", at).is_ok());
+    assert!(admit_check(&app, &gov, "openai", "frontier", at).is_ok());
+    let resp = admit_check(&app, &gov, "openai", "frontier", at)
+        .expect_err("ACL-blocked downgrade must fall back to the budget rejection");
+    assert_eq!(
+        resp.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "the caller sees the plain quota rejection, not a leaked pool"
+    );
 }

@@ -16,27 +16,26 @@ and the two common extension tasks.
 
 | Module | Owns |
 |---|---|
-| `main.rs` | Startup. Loads `providers.yaml` + `config.yaml` (with `${ENV}` interpolation), `resolve()`s them, validates, builds lanes/pools/`InMemoryStore`/`App`, wires governance + observability, spawns health probers, builds the axum router (`build_router`). |
-| `config.rs` | The deploy/provider/pool schema (`DeployCfg`, `ProviderDef`, `ProviderDeploy`, `ModelCfg`, `PoolCfg`, `PoolMember`, `FailoverCfg`, `AffinityCfg`, `BreakerCfg`, `HealthCfg`, `GovernanceCfg`, `ObservabilityCfg`, `OnExhausted`), `interpolate_env`, and `resolve()` (merge catalog def + deployment override). |
-| `config_validate.rs` | Post-resolve config validation (fail-loud diagnostics before lanes are built). |
-| `state.rs` | Runtime types: `Lane`, `WeightedLane`, `PoolRuntime`, and the `App` shared state. |
-| `ingress/mod.rs` | Axum handlers, one per ingress protocol: `openai_ingress` (`/v1/chat/completions`), `cohere_ingress` (`/v2/chat`), `responses_ingress` (`/v1/responses`), `gemini_ingress` (`/v1/models/{*rest}` and `/v1beta/models/{*rest}`, both the stable `v1` and the `v1beta` path prefixes route to the same handler), `bedrock_converse` / `bedrock_converse_stream` (`/model/{model_id}/converse[-stream]`), `named` (`/{name}/v1/messages`), `adhoc` (`/{provider}/{model}/v1/messages`); governance pre-checks (allowed-pools/budget/rate); affinity-header resolution; `UsageSink` construction. |
-| `auth.rs` | `AuthMode` (none/token/passthrough), `AuthMiddleware`, the `auth_middleware` layer (open `/healthz` only, `/metrics` is auth-gated like other routes; admin-token guard for `/admin/*`, virtual-key resolution, passthrough token threading), constant-time token compare. |
-| `proxy/engine/mod.rs` | The forwarding engine: `forward` / `forward_with_pool` (selection → translate → sign → POST → classify → stream/failover), `RequestCtx` (deadline + exclusions + visited-pools), `FirstByteBody` (streaming body with the before-first-byte failover boundary + cross-protocol `StreamTranslate` wiring), `UsageSink`, `lane_auth_headers` (the `api-key` auth-adapter seam), and the `on_exhausted` handlers (`Status503`/`FallbackPool`/`LeastBad`). |
+| `main.rs` | Startup. Loads `providers.yaml` + `config.yaml` (with `${ENV}` interpolation), `resolve()`s them, validates, builds lanes/pools/`App`, wires governance + observability + plugins, spawns health probers, and builds both listeners (the data-plane axum router and the separate admin router). |
+| `config/mod.rs` | The deploy/provider/pool schema (`DeployCfg`, `ProviderDef`, `ProviderDeploy`, `ModelCfg`, `PoolCfg`, `PoolMember`, `FailoverCfg`, `AffinityCfg`, `BreakerCfg`, `HealthCfg`, `GovernanceCfg`, `ObservabilityCfg`, `PluginsCfg`, `OnExhausted`), `${ENV}` interpolation, and `resolve()` (merge catalog def + deployment override). `config/overlay.rs` handles the live config-apply overlay. |
+| `config_validate/` | Post-resolve config validation (fail-loud diagnostics before lanes are built), including the SSRF host guard shared with the webhook path. |
+| `state.rs` | Runtime types: `Lane`, `WeightedLane`, `PoolRuntime`, and the `App` shared state. Re-exports `StateStore` from `store/`. |
+| `ingress/mod.rs` | `named` (`POST /{name}/v1/messages`) and `adhoc` (`POST /{provider}/{model}/v1/messages`) are the only two protocol-specific axum handlers still registered directly; every other protocol (openai chat, cohere, responses, gemini, bedrock converse) is served by the single fallback route `ingress::protocol_dispatch`, which identifies the protocol (`proto::detect::protocol_id`, mostly path-based with a small header-first exception, see `docs/protocols.md`) and hands off to `ingress::dispatch::operation_ingress` for the actual body/path-model resolution, governance pre-checks, and affinity-header resolution. `ingress/dispatch.rs` carries both `protocol_dispatch` and `operation_ingress`. |
+| `auth/mod.rs` | `AuthMiddleware` and the `auth_middleware` layer: it runs the data-plane `auth.chain` (an ordered list of `AuthModule`s; an empty chain is the open front door), opens `/healthz`, gates `/metrics` like any other route, resolves virtual keys, and threads the caller token. `UpstreamCreds` (`Own` / `Passthrough`) is the separate egress-credential mode. The old `AuthMode` enum is gone. Constant-time token compare lives in the `busbar-api` auth contract. |
+| `proxy/engine/mod.rs` | The forwarding engine: `forward` / `forward_with_pool` (selection → translate → sign → POST → classify → stream/failover), `RequestCtx` (deadline + exclusions + visited-pools), the before-first-byte failover boundary + cross-protocol stream wiring, `lane_auth_headers` (the `api-key` auth-adapter seam), and the `on_exhausted` handlers (`Status503`/`FallbackPool`/`LeastBad`). `proxy/select.rs`, `proxy/egress.rs`, `proxy/hooks.rs`, and `proxy/usage.rs` split out selection, egress, the hook seam, and usage metering. |
 | `breaker.rs` | The protocol-agnostic Stage 1b/2 classifier: `StatusClass`, `Disposition`, `RawUpstreamError`, `CanonicalSignal`, `normalize_raw_error`, `classify` (exhaustive). |
-| `store.rs` | The breaker FSM + lane state: `StateStore` trait, `InMemoryStore`, `LaneState`, `BreakerCell` / `BreakerCellAccess`, `OutcomeWindow`, SWRR `select_weighted`, the lane-default vs `_in(pool, …)` method split, `BreakerCfg`/`TripConfig`, test time injection (`set_now_for_test`/`now_for_test`). |
-| `ir.rs` | The superset IR (ADR-0005): `IrRequest`, `IrResponse`, `IrMessage`, `IrBlock`, `IrTool`, `IrUsage`, `IrStreamEvent`, `IrDelta`, `StreamDecodeState`. |
-| `proto/mod.rs` | The protocol seam: `ProtocolReader` / `ProtocolWriter` traits, `Protocol`, `ProtocolRegistry`, `SigningContext`, `StreamTranslate` (cross-protocol stream translator), SSE frame parse/reframe, `probe_body` default. |
-| `proto/{anthropic,openai_chat,openai_responses,openai_family,gemini,bedrock,cohere}.rs` | Each protocol's Reader (wire→IR + error extraction) and Writer (IR→wire + auth + paths). Bedrock's writer overrides `sign_request` for SigV4. |
+| `store/mod.rs` | The breaker FSM + lane state: `StateStore` trait, `LaneState`, `BreakerCell` / `BreakerCellAccess`, `OutcomeWindow`, SWRR `select_weighted`, the lane-default vs `_in(pool, …)` method split, `BreakerCfg`/`TripConfig`, test time injection. The concrete `InMemoryStore` is in `store/in_memory.rs`. (This is the runtime breaker store, distinct from the governance `Store` trait below.) |
+| `ir/mod.rs` | The superset IR (ADR-0005): `IrRequest`, `IrResponse`, `IrMessage`, `IrBlock`, `IrTool`, `IrUsage`, `IrStreamEvent`, `IrDelta`, `StreamDecodeState`. Modality-specific IR (audio, image, embeddings, moderation, rerank) sits in sibling files under `ir/`. |
+| `proto/mod.rs` | The protocol seam: `ProtocolReader` / `ProtocolWriter` traits, `Protocol`, `ProtocolRegistry`, `SigningContext`, `probe_body` default. `proto/detect.rs` sniffs the ingress protocol; `proto/openai_family.rs` holds the shared OpenAI-family bits; `proto/stream.rs` is the cross-protocol stream translator and SSE reframing. |
+| `proto/{anthropic,openai_chat,openai_responses,gemini,bedrock,cohere}/` | One folder-module per protocol: each holds the Reader (wire→IR + error extraction) and Writer (IR→wire + auth + paths). Bedrock's writer overrides `sign_request` for SigV4. |
 | `sigv4.rs` | Hand-rolled AWS SigV4 (RustCrypto sha2 + hmac, no AWS SDK): `sign_v4`, `signing_key`, `uri_encode_path`, `format_amz_time`, `sha256_hex`. |
-| `governance.rs` | Virtual keys + budgets + rate limits (ADR-0009): `GovState`, `VirtualKey`, the `Store` trait + `SqliteStore`, budget/rate windows, key hashing. |
-| `admin.rs` | The `/api/v1/admin/keys` management handlers (create/list/delete/usage). |
-| `handlers.rs` | `/stats` and `/healthz` handlers. |
-| `health.rs` | Active health probing: `spawn_probers`, `probe_lane` (uses each protocol's `probe_body`). |
+| `governance/mod.rs` | Signed virtual keys + the generic group limit engine: `GovState`, `VirtualKey`, `try_admit` over the per-(group, window) buckets, the revocation denylist, and the token-ledger cost model. The governance `Store` trait itself lives in the `busbar-api` crate (`crates/api/src/store.rs`); concrete backends are separate crates (`busbar-store-memory` compiled in by default, `busbar-store-sqlite` / `-postgres` / `-redis` as static or dynamically-loaded plugins chosen by `store.module`). |
+| `admin/` | The admin API: `admin/mod.rs` mounts the `/api/v1/admin/*` handlers (keys, usage, config, hooks, plugins) on the separate admin listener, `admin/v1/` is the frozen JSON contract, and `admin/rate.rs` / `admin/audit.rs` carry admin rate-limiting and the hash-chained audit log. |
+| `health.rs` | Active health probing (`spawn_probers`, `probe_lane` using each protocol's `probe_body`) and the `/stats` + `/healthz` handlers. |
 | `metrics.rs` | Prometheus recorder init + the `busbar_*` metric name constants. |
-| `observability.rs` | Optional OTLP tracer init + the fire-and-forget request-log webhook. |
+| `observability.rs` | Optional OTLP tracer init + the fire-and-forget request-log webhook (with its own SSRF guard). |
 | `eventstream.rs` | Codec for Bedrock's binary `application/vnd.amazon.eventstream` frames: `drain_frames` decodes ConverseStream responses; `encode_frame`/`encode_exception_frame` re-encode CRC32-valid frames for Bedrock-ingress streaming. |
-| `test_support.rs` | `#[cfg(test)]` in-crate mock-upstream harness (`MockServer`, `MockServerState`, `MockResponse`) and the bulk of the integration tests. See [testing.md](testing.md). |
+| `test_support/` | `#[cfg(test)]` in-crate mock-upstream harness (`MockServer`, `MockServerState`, `MockResponse`). Each module also carries its own `#[cfg(test)] mod tests`. See [testing.md](testing.md). |
 
 ---
 
@@ -70,7 +69,7 @@ Busbar reads two YAML files, located via env vars:
 
 Both files support `${VAR}` interpolation expanded at load time; an unset
 referenced variable is a hard startup failure. Provider keys are supplied via the
-env vars named by each provider's `api_key_env`, never written into the files.
+env vars (or files/secret plugins) named by each provider's `api_key` secret reference, never written into the files.
 
 ```bash
 export BUSBAR_CLIENT_TOKEN=dev-token
@@ -86,7 +85,7 @@ Full field reference: [configuration.md](configuration.md).
 
 ## Adding a new protocol
 
-A protocol is the unit of busbar's scope (the count to grow is **6**, not the
+A protocol is the unit of Busbar's scope (the count to grow is **6**, not the
 provider count). To add one:
 
 1. **Implement `ProtocolReader`** (`crates/busbar/src/proto/mod.rs` defines the trait):
@@ -120,10 +119,10 @@ provider count). To add one:
    kind the IR can't represent, extend the `IrBlock` / event enums: and then every
    other writer must handle the new variant (the exhaustive matches will tell you).
 5. **Test it** through the `MockServer` harness and the cross-protocol round-trip
-   tests in `crates/busbar/src/proto/mod.rs` (`test_probe_body_valid_for_all_protocols` already
+   tests in `crates/busbar/src/proto/tests/tests.rs` (`test_probe_body_valid_for_all_protocols` already
    asserts every protocol produces a valid probe body).
 
-The `Reader`/`Writer` files (`crates/busbar/src/proto/<name>.rs`) are the only per-protocol code;
+The `Reader`/`Writer` files (`crates/busbar/src/proto/<name>/`) are the only per-protocol code;
 the registry + IR + forward path are protocol-agnostic.
 
 ---
@@ -152,7 +151,7 @@ key) and point a model at it:
 ```yaml
 providers:
   my-provider:
-    api_key_env: MY_PROVIDER_KEY
+    api_key: { env: MY_PROVIDER_KEY }
 models:
   my-model:
     provider: my-provider
@@ -188,12 +187,13 @@ error.
 These are conventions visible in the code; treat the [CONTRIBUTING.md](../CONTRIBUTING.md)
 checklist as authoritative.
 
-- **SPDX header.** Every `src/*.rs` and `crates/busbar/src/proto/*.rs` file starts with
+- **SPDX header.** Every `src/**/*.rs` file (including each `proto/<name>/` module) starts with
   `// SPDX-License-Identifier: Apache-2.0` + `// Copyright (C) 2026 Busbar Inc and contributors`.
 - **No `_ =>` catch-all in the disposition/breaker matches.** The exhaustive match
   on `StatusClass`/`Disposition` is how the compiler enforces that every failure
   mode is handled; the arms even use `unreachable!()` for classes that cannot
-  reach a given arm. This is a stated project invariant (CONTRIBUTING.md §5).
+  reach a given arm. This is a stated project invariant (CONTRIBUTING.md, "Fixing a defect: the
+  remediation contract").
 - **`error_map` is data, not code.** Provider quirks belong in YAML, not in a
   match arm.
 - **Test time is injectable, not real.** Breaker/FSM logic reads time via

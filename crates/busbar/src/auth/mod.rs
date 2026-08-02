@@ -88,120 +88,160 @@ pub(crate) use busbar_api::{AuthModule, AuthOutcome, Principal};
 /// middleware can attach the principal (or its absence) to the request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ChainVerdict {
-    Identified(Principal),
+    /// Admitted with identity: the MODULE that identified (role_bindings are NESTED BY MODULE, so
+    /// policy resolution needs both halves) + the principal.
+    Identified {
+        module: String,
+        principal: Principal,
+    },
     Open,
     Denied,
 }
 
-// The built-in `tokens` auth module IMPLEMENTATION lives in its own WORKSPACE CRATE
-// (`auth/tokens/`), NOT in the engine core — the engine holds only the `AuthModule` contract
-// (re-exported above from `busbar-api`). `grep token` in the engine is clean; the plugin is
-// default-included and REMOVABLE (the `auth-tokens` feature; a `--no-default-features` build
-// contains no token auth code at all).
-#[cfg(feature = "auth-tokens")]
-use busbar_auth_tokens::TokensModule;
+// 1.5.0 (S8): the static-token allowlist module is GONE. Data-plane auth is the built-in `keys`
+// signed-token verifier (engine-handled on the governance path) plus IdP auth modules; the engine
+// holds only the `AuthModule` contract (re-exported above from `busbar-api`).
 
-/// AuthMiddleware holds the resolved auth chain, the upstream-credential mode, and the token allowlist.
+/// AuthMiddleware holds the resolved auth chain and the upstream-credential mode.
 pub(crate) struct AuthMiddleware {
     /// The upstream-credential mode (`upstream_credentials:`) — whether the egress path signs with
     /// busbar's key (`Own`) or forwards the caller's (`Passthrough`). Read by the egress signing path.
     pub(crate) upstream_creds: UpstreamCreds,
-    pub(crate) client_tokens: Vec<String>,
-    /// Per-module `allowed_groups:` caps (`auth.modules:`), applied to a module's Identify verdict
-    /// before anything downstream reads the groups. (The admin chain applies the same caps from
-    /// `App.auth_modules`; this copy serves the data-plane chain, which runs before `App` routing.)
-    module_caps: std::collections::HashMap<String, crate::config::AuthModuleCfg>,
+    /// Whether the config chain names the built-in `keys` signed-key verifier. In P1 the actual
+    /// verification rides the governance virtual-key path (the signed-token verifier lands with
+    /// P3); this flag records the operator's intent for validation and reporting.
+    pub(crate) keys_in_chain: bool,
     /// The AUTH CHAIN — the ordered `auth.chain` modules. `validate_token` runs it: the first module
     /// to `Identify` admits, a `Reject` denies, and if every module `Pass`es (no usable credential
     /// matched) a NON-EMPTY chain denies (fail-closed). An EMPTY chain admits unconditionally — the
     /// open front door (`chain: []`, the old none/passthrough). No `AuthMode` — the front-door policy
     /// is the chain shape, the egress policy is `upstream_creds`.
     chain: Vec<Box<dyn AuthModule>>,
+    /// Whether ANY chain module is a loaded PLUGIN — i.e. whether running this chain can perform
+    /// blocking work (an FFI/IPC `transport_call`, and behind it whatever the module does: an HTTPS
+    /// JWKS fetch, a token-introspection round-trip, a directory lookup). Decided once at build
+    /// time because it decides how the request path calls the chain: see
+    /// [`AuthMiddleware::run_chain_on_request_path`]. In-process modules are microsecond compares
+    /// and are called inline; a plugin chain is offloaded off the reactor.
+    has_plugin_module: bool,
 }
 
-// MANUAL Debug that REDACTS the allowlist. A derived `Debug` would print every entry of
-// `client_tokens` in PLAINTEXT — a latent credential leak if an `AuthMiddleware` (or any struct that
-// holds one, e.g. `App`) is ever debug-logged. Print only the COUNT of configured tokens, never the
-// values (and never any prefix/suffix, which would be a partial-secret oracle).
+/// The bound on CONCURRENT offloaded auth-chain calls. `spawn_blocking` on its own is not a fix: a
+/// wedged auth plugin would accumulate one parked thread per in-flight request until the process's
+/// shared 512-thread blocking pool is exhausted, at which point every other `spawn_blocking` in the
+/// engine (the write-behind budget flush, audit appends, config transactions) stalls behind it. This
+/// caps auth's share of that pool; requests past the cap wait ASYNCHRONOUSLY (no thread, and the
+/// reactor keeps running) rather than adding threads.
+const AUTH_OFFLOAD_MAX_INFLIGHT: usize = 64;
+
+/// How long a request will wait for an offload permit before giving up. A chain that cannot even be
+/// STARTED within this is a chain that is not verifying anyone, so the request is answered rather
+/// than left hanging. Fail-closed: the answer is a denial, the same posture as every other
+/// "could not verify" outcome in this file.
+const AUTH_OFFLOAD_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The permit pool for [`AUTH_OFFLOAD_MAX_INFLIGHT`]. Process-wide (not per-`AuthMiddleware`) on
+/// purpose: the resource being bounded is the process's one shared blocking pool, and a config
+/// reload swaps the `AuthMiddleware` while in-flight offloads from the previous one are still
+/// running.
+static AUTH_OFFLOAD_PERMITS: std::sync::LazyLock<tokio::sync::Semaphore> =
+    std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(AUTH_OFFLOAD_MAX_INFLIGHT));
+
 impl fmt::Debug for AuthMiddleware {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AuthMiddleware")
             .field("upstream_creds", &self.upstream_creds)
+            .field("keys_in_chain", &self.keys_in_chain)
             .field("chain_len", &self.chain.len())
-            .field(
-                "client_tokens",
-                &format_args!("<redacted; {} configured>", self.client_tokens.len()),
-            )
             .finish()
     }
 }
 
 impl AuthMiddleware {
-    pub(crate) fn new(cfg: &AuthCfg) -> Self {
-        // client_tokens are already env-interpolated: `interpolate_env` runs over the WHOLE
-        // config.yaml text once at load (main.rs), before deserialization. A second per-token pass
-        // here would double-interpolate — a token that legitimately contains the literal `${...}`
-        // (legal in opaque API keys) would be re-expanded or abort startup via `.expect`. Interpolate
-        // exactly once; just clone the resolved values.
-        let tokens: Vec<String> = cfg.client_tokens.clone();
-
-        // Build the auth chain by RESOLVING the configured module names. `tokens` -> the built-in
-        // tokens module (owns the pre-hashed allowlist). An unknown name is skipped here with a loud
-        // log; config_validate rejects it at boot, so a running server never has a silently-dropped
-        // module. An EMPTY chain is the open front door (the old none/passthrough).
-        let chain: Vec<Box<dyn AuthModule>> = cfg
-            .chain
-            .iter()
-            .filter_map(|name| -> Option<Box<dyn AuthModule>> {
-                match name.as_str() {
-                    // The built-in tokens module — present only in an `auth-tokens` build. When
-                    // compiled OUT, `chain: [tokens]` is a config_validate BOOT ERROR (never a
-                    // silently-dropped module -> never a silent open relay), so this arm's absence is
-                    // safe.
-                    #[cfg(feature = "auth-tokens")]
-                    "tokens" => Some(Box::new(TokensModule::new(&tokens))),
-                    // TEST-ONLY external-module stand-in for the DATA-PLANE chain (the admin
-                    // chain has its own): `grp:<group>` identifies as a principal carrying that
-                    // group, so the governance re-key is e2e-testable. Compiled out of release
-                    // binaries entirely.
-                    #[cfg(test)]
-                    "test-groups-module" => Some(Box::new(TestGroupsModule)),
-                    other => {
-                        tracing::error!(
-                            module = other,
-                            "auth.chain names an unknown/uncompiled module; skipping \
-                             (config_validate rejects this at boot)"
-                        );
-                        None
-                    }
+    /// Build the auth chain by RESOLVING the configured module entries against the plugin
+    /// `registry`. The built-in `keys` (signed-key verifier) is engine-handled: virtual keys
+    /// authenticate on the governance path, not through a boxed module, so its entry sets a flag
+    /// rather than a module. Any OTHER name is resolved as a `kind: auth` PLUGIN via
+    /// [`PluginRegistry::open_auth`] (the exact trust/load pipeline store & secret plugins use) and
+    /// boxed into the chain. FAIL-CLOSED: a configured auth module that cannot be loaded (missing
+    /// tarball, wrong kind, untrusted under the running policy, or a `dlopen`/ABI failure) is a
+    /// HARD boot error — never a silently-dropped module that would leave the front door open.
+    /// `--validate`/`plugins_preflight` catches most of these manifest-only, so this is the
+    /// belt-and-suspenders load-time gate. An EMPTY chain is the open front door (none/passthrough).
+    ///
+    /// The plugin's config JSON is its chain entry's opaque `settings:` map (verbatim, exactly like
+    /// a store/secret plugin's `settings:`). The chain module's RUNTIME identity is `module.name()`
+    /// (the name the loaded plugin reports over the ABI), which is what `role_bindings.<module>` and
+    /// `auth.modules.<module>` caps key off — not the config alias.
+    pub(crate) fn new(
+        cfg: &AuthCfg,
+        registry: &busbar_plugin_loader::PluginRegistry,
+        secret_resolver: &crate::config::secret::SecretResolver,
+    ) -> Result<Self, String> {
+        let mut keys_in_chain = false;
+        let mut has_plugin_module = false;
+        let mut chain: Vec<Box<dyn AuthModule>> = Vec::new();
+        for entry in &cfg.chain {
+            match entry.module.as_str() {
+                crate::config::KEYS_MODULE => {
+                    keys_in_chain = true;
                 }
-            })
-            .collect();
-
-        if chain.is_empty() {
-            if tokens.is_empty() {
-                tracing::warn!(
-                    "auth.chain is empty (open relay) — only acceptable for dev; reject in production"
-                );
-            } else {
-                // An empty chain admits every request, so a configured `client_tokens` allowlist has
-                // ZERO enforcement effect. Warn loudly that the listed tokens are inert (mirrored at
-                // boot in `config_validate::validate`).
-                tracing::warn!(
-                    "auth.chain is empty but client_tokens ({} listed) are configured: an empty \
-                     chain is an open relay and admits every request regardless of token. The \
-                     allowlist has no effect — add `tokens` to auth.chain to enforce it.",
-                    tokens.len()
-                );
+                // TEST-ONLY external-module stand-in for the DATA-PLANE chain (the admin chain has
+                // its own): `grp:<role>` identifies as a principal carrying that role, so the
+                // governance re-key is e2e-testable. Compiled out of release binaries entirely.
+                #[cfg(test)]
+                "test-groups-module" => chain.push(Box::new(TestGroupsModule)),
+                other => {
+                    // A `kind: auth` PLUGIN: resolve + open over the signed hybrid ABI (same trust
+                    // posture, same loader as store/secret). The `settings:` map is the plugin's
+                    // opaque config, pushed verbatim. FAIL-CLOSED — surface the load error so boot
+                    // (or an apply/reload) aborts rather than silently dropping the module.
+                    // Resolve any SecretRef-typed setting (e.g. a `licenseKey`) against the secret
+                    // store BEFORE the settings cross the ABI (ADR-0010). FAIL-CLOSED: an
+                    // unresolvable ref aborts the chain build rather than handing the plugin a
+                    // dangling reference.
+                    let resolved =
+                        crate::config::secret::resolve_settings(&entry.settings, secret_resolver)
+                            .map_err(|e| format!("auth.chain module '{other}' settings: {e}"))?;
+                    let cfg_json = serde_json::Value::Object(resolved).to_string();
+                    let module = registry.open_auth(other, &cfg_json).map_err(|e| {
+                        format!(
+                            "auth.chain module '{other}' could not be loaded as a `kind: auth` \
+                             plugin: {e}"
+                        )
+                    })?;
+                    chain.push(module);
+                    has_plugin_module = true;
+                }
             }
         }
 
-        Self {
-            upstream_creds: cfg.upstream_credentials,
-            client_tokens: tokens,
-            chain,
-            module_caps: cfg.modules.clone(),
+        if chain.is_empty() && !keys_in_chain {
+            tracing::warn!(
+                "auth.chain is empty (open relay) - only acceptable for dev; reject in production"
+            );
         }
+
+        Ok(Self {
+            upstream_creds: cfg.upstream_credentials,
+            keys_in_chain,
+            chain,
+            has_plugin_module,
+        })
+    }
+
+    /// TEST-ONLY convenience: build the chain against an EMPTY plugin registry (only builtins +
+    /// the compiled-in `test-groups-module` resolve). Panics on a plugin-name entry — a test that
+    /// needs a real `kind: auth` plugin builds a registry and calls [`new`] directly. Keeps the
+    /// dozens of builtin-only test call sites from threading a registry + `.unwrap()` each.
+    #[cfg(test)]
+    pub(crate) fn new_builtin(cfg: &AuthCfg) -> Self {
+        Self::new(
+            cfg,
+            &busbar_plugin_loader::PluginRegistry::empty(),
+            &crate::config::secret::SecretResolver::builtins_only(),
+        )
+        .expect("builtin-only auth chain never fails to construct")
     }
 
     /// The ordered names of the auth chain's modules (`module.name()` for each). For the Admin API
@@ -226,8 +266,8 @@ impl AuthMiddleware {
         self.run_chain_cached(candidate, None)
     }
 
-    /// [`run_chain`] with the CREDENTIAL CACHE consulted around each `cacheable()` module
-    /// (design-hooks-v2 §2.5). The cache stores the module's RAW verdict; the `allowed_groups:`
+    /// [`run_chain`] with the CREDENTIAL CACHE consulted around each `cacheable()` module.
+    /// The cache stores the module's RAW verdict; the `allowed_groups:`
     /// intersection is applied AFTER retrieval, so a config change to the caps takes effect
     /// immediately even for cached identities. In-process modules report `cacheable() == false`
     /// and never touch the cache (caching a microsecond compare only widens revocation).
@@ -240,40 +280,120 @@ impl AuthMiddleware {
             return ChainVerdict::Open;
         }
         let now = crate::store::now();
+        // `Pass` puts are BUFFERED, not admitted, until the chain identifies. An all-`Pass` chain
+        // ends `Denied` (below), so admitting them eagerly let an unauthenticated caller fill the
+        // cache with entries that then evict real `Identify` rows under the oldest-inserted
+        // eviction rule (`auth_cache.rs:106-119`). Committing only on the `Identified` return means
+        // unauthenticated traffic causes no admissions at all. A cache HIT is never re-`put`: doing
+        // so would refresh its TTL and quietly extend the revocation window.
+        let mut pending_pass: Vec<&str> = Vec::new();
         for module in &self.chain {
             let cache_here = match (cache, candidate) {
                 (Some(c), Some(cred)) if module.cacheable() => Some((c, cred)),
                 _ => None,
             };
-            let outcome = cache_here
-                .and_then(|(c, cred)| c.get(module.name(), cred, now))
-                .unwrap_or_else(|| {
+            let outcome = match cache_here.and_then(|(c, cred)| c.get(module.name(), cred, now)) {
+                Some(hit) => hit,
+                None => {
                     let o = module.authenticate(candidate);
-                    if let Some((c, cred)) = cache_here {
-                        c.put(module.name(), cred, &o, now);
+                    if cache_here.is_some() && matches!(o, AuthOutcome::Pass) {
+                        pending_pass.push(module.name());
                     }
                     o
-                });
+                }
+            };
             match outcome {
-                AuthOutcome::Identify(mut principal) => {
-                    // `allowed_groups:` intersection (design-hooks-v2 §2.4), BEFORE group_map — a
-                    // module cannot assert a group the operator did not pre-authorize for it.
-                    if !principal.groups.is_empty() {
-                        if let Some(allowed) = self
-                            .module_caps
-                            .get(module.name())
-                            .and_then(|c| c.allowed_groups.as_ref())
-                        {
-                            principal.groups.retain(|g| allowed.contains(g));
+                AuthOutcome::Identify(principal) => {
+                    if let (Some(c), Some(cred)) = (cache, candidate) {
+                        for name in &pending_pass {
+                            c.put(name, cred, &AuthOutcome::Pass, now);
+                        }
+                        if cache_here.is_some() {
+                            c.put(
+                                module.name(),
+                                cred,
+                                &AuthOutcome::Identify(principal.clone()),
+                                now,
+                            );
                         }
                     }
-                    return ChainVerdict::Identified(principal);
+                    // No per-module role filter: the NESTED role_bindings table IS the allowlist
+                    // (S4) - a role this module asserts grants nothing unless
+                    // `role_bindings.<this module>.<role>` binds it.
+                    return ChainVerdict::Identified {
+                        module: module.name().to_string(),
+                        principal,
+                    };
                 }
                 AuthOutcome::Reject => return ChainVerdict::Denied,
                 AuthOutcome::Pass => {}
             }
         }
         ChainVerdict::Denied
+    }
+
+    /// THE REQUEST-PATH ENTRY POINT for the data-plane auth chain — the one place `auth_middleware`
+    /// calls it, and the reason it is not just `run_chain_cached`.
+    ///
+    /// A chain module can be a loaded PLUGIN, and a plugin's `authenticate` is a synchronous FFI
+    /// call that may do real I/O — the shipped OIDC module fetches JWKS over blocking HTTPS with a
+    /// 10s timeout, and any introspection/directory module is a network round-trip. Called inline,
+    /// that runs on a Tokio worker thread inside an `async fn`: a slow IdP parks a worker per
+    /// in-flight request, and once every worker is parked NOTHING in the process is polled — not
+    /// other requests, not the admin plane, not `/healthz` (which is exempt from this chain but
+    /// still needs a worker to run at all). The node then fails its liveness probe and is killed, on
+    /// account of an identity provider that most of the stalled traffic never even used.
+    ///
+    /// So a plugin chain is OFFLOADED to the blocking pool, and BOUNDED there
+    /// ([`AUTH_OFFLOAD_MAX_INFLIGHT`]) so a wedged plugin cannot drain the pool the rest of the
+    /// engine shares. An all-in-process chain (or an empty one) is called inline: those modules are
+    /// microsecond constant-time compares, and paying a `spawn_blocking` hop per request to protect
+    /// against work that cannot block would be a pure regression.
+    ///
+    /// FAIL-CLOSED at every failure: a panicking plugin (join error) and an offload that cannot be
+    /// started are both `Denied`, never an admit.
+    pub(crate) async fn run_chain_on_request_path(
+        auth: &std::sync::Arc<AuthMiddleware>,
+        cache: &std::sync::Arc<crate::auth_cache::CredentialCache>,
+        candidate: Option<String>,
+    ) -> ChainVerdict {
+        if auth.chain.is_empty() {
+            return ChainVerdict::Open;
+        }
+        if !auth.has_plugin_module {
+            return auth.run_chain_cached(candidate.as_deref(), Some(cache));
+        }
+        let permit =
+            match tokio::time::timeout(AUTH_OFFLOAD_WAIT, AUTH_OFFLOAD_PERMITS.acquire()).await {
+                Ok(Ok(p)) => p,
+                // Timed out waiting, or the semaphore was closed. Either way the chain never ran, so
+                // the credential is unverified — deny.
+                _ => {
+                    tracing::warn!(
+                        "auth chain offload could not be started within {AUTH_OFFLOAD_WAIT:?} \
+                     ({AUTH_OFFLOAD_MAX_INFLIGHT} already in flight); an auth plugin is not \
+                     returning. Denying (fail-closed) rather than admitting unverified."
+                    );
+                    return ChainVerdict::Denied;
+                }
+            };
+        let (auth, cache) = (auth.clone(), cache.clone());
+        let joined = tokio::task::spawn_blocking(move || {
+            let verdict = auth.run_chain_cached(candidate.as_deref(), Some(&cache));
+            // The permit is released when the blocking work is DONE, not when the awaiting future
+            // is dropped — a cancelled request must not hand its slot to another request while the
+            // plugin thread it started is still wedged.
+            drop(permit);
+            verdict
+        })
+        .await;
+        match joined {
+            Ok(verdict) => verdict,
+            Err(e) => {
+                tracing::warn!(error = %e, "auth chain panicked; denying (fail-closed)");
+                ChainVerdict::Denied
+            }
+        }
     }
 
     /// Constant-time string comparison — the single timing-safe primitive, now provided by the
@@ -380,23 +500,23 @@ fn vendor_auth_failure_message(proto: &str) -> &'static str {
 /// inferred ingress protocol. The pair is chosen to MATCH what the genuine vendor returns for a
 /// bad API key, because the status code and the writer-mapped `error.type`/`error.status` are both
 /// deterministic protocol tells a native SDK keys its typed exception off:
-///   - bedrock → HTTP 403 + "auth": a real SigV4 rejection is 403 AccessDenied (NOT 401).
-///   - gemini  → HTTP 400 + "invalid_request_error": the Generative Language API does NOT return
-///     401/UNAUTHENTICATED for a bad API key; it returns HTTP 400 with `error.status:
-///     "INVALID_ARGUMENT"` (google.rpc.Code; the gemini writer maps `invalid_request_error` →
-///     INVALID_ARGUMENT and echoes `code: 400`). A 401/UNAUTHENTICATED body would be a tell the
-///     google-genai SDK never sees from real Google on the bad-key path.
-///   - openai / responses → HTTP 401 + "authentication_error": the genuine OpenAI/Responses bad-key
-///     401 body carries `error.code: "invalid_api_key"`, and the official SDKs surface that value as
-///     `AuthenticationError.code`. Emitting `code: null` is a deterministic proxy tell a native SDK
-///     keys its typed-exception comparison off. The openai/responses writers pair
-///     `code: "invalid_api_key"` ONLY with `error.type: "authentication_error"` (see
-///     `proto::openai_family::bearer_error_code`); the alternate `invalid_request_error` type maps
-///     to `code: null`. We therefore pass `authentication_error` here so the wire body carries the
-///     real `code: "invalid_api_key"` pairing — matching the modern OpenAI bad-key shape the writers
-///     document — rather than the `code: null` tell.
-///   - anthropic / cohere / unknown → HTTP 401 + "authentication_error": the standard
-///     bad-credential shape for those vendors.
+/// - bedrock → HTTP 403 + "auth": a real SigV4 rejection is 403 AccessDenied (NOT 401).
+/// - gemini  → HTTP 400 + "invalid_request_error": the Generative Language API does NOT return
+///   401/UNAUTHENTICATED for a bad API key; it returns HTTP 400 with `error.status:
+/// "INVALID_ARGUMENT"` (google.rpc.Code; the gemini writer maps `invalid_request_error` →
+///   INVALID_ARGUMENT and echoes `code: 400`). A 401/UNAUTHENTICATED body would be a tell the
+///   google-genai SDK never sees from real Google on the bad-key path.
+/// - openai / responses → HTTP 401 + "authentication_error": the genuine OpenAI/Responses bad-key
+///   401 body carries `error.code: "invalid_api_key"`, and the official SDKs surface that value as
+///   `AuthenticationError.code`. Emitting `code: null` is a deterministic proxy tell a native SDK
+///   keys its typed-exception comparison off. The openai/responses writers pair
+///   `code: "invalid_api_key"` ONLY with `error.type: "authentication_error"` (see
+///   `proto::openai_family::bearer_error_code`); the alternate `invalid_request_error` type maps
+///   to `code: null`. We therefore pass `authentication_error` here so the wire body carries the
+///   real `code: "invalid_api_key"` pairing — matching the modern OpenAI bad-key shape the writers
+///   document — rather than the `code: null` tell.
+/// - anthropic / cohere / unknown → HTTP 401 + "authentication_error": the standard
+///   bad-credential shape for those vendors.
 ///
 /// Not a disposition/breaker match, so an unknown future proto falls back to the Anthropic-family
 /// 401 authentication_error, keeping the request path panic-free.
@@ -472,13 +592,14 @@ fn extract_admin_header_token(req: &Request<Body>) -> Option<String> {
 #[derive(Debug, Clone)]
 pub(crate) struct AuthPrincipal(pub(crate) Option<Principal>);
 
-/// The EFFECTIVE admin scope resolved by the admin middleware (group_map + module ceiling), attached
-/// to admin-path requests so mutation handlers can apply body-derived authorization refinements the
-/// route-level `required_scope` matrix cannot (design-admin-api-v1 §6.3). `None` = no admin grant
-/// (the request would have been 403'd) OR the explicit open posture; a handler treats non-`Full` as
-/// "restricted automation".
+/// The EFFECTIVE admin scope resolved by the admin middleware (role_bindings + module ceiling),
+/// attached to admin-path requests so mutation handlers can apply body-derived authorization
+/// refinements the route-level `required_scope` matrix cannot. A `Grants`, not a single `Scope`,
+/// because a principal can hold two INCOMPARABLE grants (a hooks-register role and a mint role) at
+/// once. Empty = no admin grant — unreachable in a handler, since the middleware 403s before any
+/// handler runs; a handler treats non-`Full` as "restricted automation".
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct AdminScope(pub(crate) Option<crate::admin::v1::contract::Scope>);
+pub(crate) struct AdminScope(pub(crate) crate::admin::v1::contract::Grants);
 
 impl AuthPrincipal {
     /// The attribution handle for audit records: the principal id, or `anonymous` for the
@@ -505,7 +626,7 @@ impl AuthModule for TestGroupsModule {
         match candidate.and_then(|t| t.strip_prefix("grp:")) {
             Some(group) => {
                 let mut p = Principal::from_id(format!("test:{group}"));
-                p.groups = vec![group.to_string()];
+                p.roles = vec![group.to_string()];
                 AuthOutcome::Identify(p)
             }
             None => AuthOutcome::Pass,
@@ -544,10 +665,15 @@ fn run_admin_chain(
         if let Some(cred) = composite.as_deref().filter(|_| cacheable) {
             if let Some(outcome) = app.credential_cache.get(name, cred, now) {
                 match outcome {
-                    AuthOutcome::Identify(mut principal) => {
-                        intersect_allowed_groups(app, name, &mut principal);
+                    AuthOutcome::Identify(principal) => {
                         let cap = module_admin_scope_cap(app, name);
-                        return (ChainVerdict::Identified(principal), cap);
+                        return (
+                            ChainVerdict::Identified {
+                                module: name.clone(),
+                                principal,
+                            },
+                            cap,
+                        );
                     }
                     AuthOutcome::Reject => return (ChainVerdict::Denied, None),
                     AuthOutcome::Pass => continue,
@@ -557,7 +683,10 @@ fn run_admin_chain(
         let outcome = match name.as_str() {
             #[cfg(feature = "auth-admin-tokens")]
             "admin-tokens" => busbar_auth_admin_tokens::authenticate_admin_tokens(
-                app.governance.as_ref().and_then(|g| g.admin_token_hash()),
+                app.governance
+                    .as_ref()
+                    .and_then(|g| g.admin_token_hash())
+                    .as_deref(),
                 bearer,
                 header,
             ),
@@ -569,7 +698,7 @@ fn run_admin_chain(
             "test-scope-module" => match bearer.or(header).and_then(|t| t.strip_prefix("grp:")) {
                 Some(group) => {
                     let mut p = Principal::from_id(format!("test:{group}"));
-                    p.groups = vec![group.to_string()];
+                    p.roles = vec![group.to_string()];
                     AuthOutcome::Identify(p)
                 }
                 // Not my credential shape — defer to the next module (the PAM contract).
@@ -588,46 +717,24 @@ fn run_admin_chain(
             app.credential_cache.put(name, cred, &outcome, now);
         }
         match outcome {
-            AuthOutcome::Identify(mut principal) => {
-                // TRUST-BOUNDARY CAPS (design-hooks-v2 §2.4), applied at the moment of identity:
-                // intersect the module's asserted groups with its operator-owned `allowed_groups:`
-                // allowlist BEFORE group_map resolution — a module cannot claim a group the
-                // operator did not pre-authorize for it — and carry the module's admin-scope
-                // ceiling out for the authorization step.
-                intersect_allowed_groups(app, name, &mut principal);
+            AuthOutcome::Identify(principal) => {
+                // Carry the identifying MODULE out (role_bindings are nested by module) plus the
+                // module's admin-scope ceiling for the authorization step. There is no per-module
+                // role filter: the nested bindings table IS the allowlist (S4).
                 let cap = module_admin_scope_cap(app, name);
-                return (ChainVerdict::Identified(principal), cap);
+                return (
+                    ChainVerdict::Identified {
+                        module: name.clone(),
+                        principal,
+                    },
+                    cap,
+                );
             }
             AuthOutcome::Reject => return (ChainVerdict::Denied, None),
             AuthOutcome::Pass => {}
         }
     }
     (ChainVerdict::Denied, None)
-}
-
-/// Intersect an identifying module's asserted `groups` with its configured `allowed_groups:`
-/// allowlist (no cap configured = every group passes). Runs BEFORE `group_map:` — the ORDER is the
-/// security property: a filtered-out group never reaches governance/scope resolution at all.
-fn intersect_allowed_groups(app: &crate::state::App, module: &str, principal: &mut Principal) {
-    if principal.groups.is_empty() {
-        return;
-    }
-    if let Some(allowed) = app
-        .auth_modules
-        .get(module)
-        .and_then(|c| c.allowed_groups.as_ref())
-    {
-        let before = principal.groups.len();
-        principal.groups.retain(|g| allowed.contains(g));
-        if principal.groups.len() < before {
-            tracing::warn!(
-                module,
-                principal = %principal.id,
-                dropped = before - principal.groups.len(),
-                "auth module asserted groups outside its allowed_groups cap; dropped"
-            );
-        }
-    }
 }
 
 /// The ADMIN-SCOPE CEILING for an identifying module (`max_admin_scope:`): the built-in
@@ -643,71 +750,79 @@ fn module_admin_scope_cap(
         return None;
     }
     Some(
-        app.auth_modules
+        app.auth_scope_caps
             .get(module)
-            .and_then(|c| c.max_admin_scope.as_deref())
+            .map(String::as_str)
             .and_then(Scope::parse)
             .unwrap_or(Scope::ReadOnly),
     )
 }
 
 /// D4 DRY-RUN: evaluate what EFFECTIVE admin scope the presented carriers would earn under
-/// `app`'s admin chain (chain verdict → group_map resolution → module ceiling), without serving
-/// anything. `None` = denied / no grant. `PUT /api/v1/admin/auth` runs the CALLER through the
-/// CANDIDATE chain with this before committing — a chain that would lock the caller out is
+/// `app`'s admin chain (chain verdict → role_bindings resolution → module ceiling), without serving
+/// anything. Empty `Grants` = denied / no grant. `PUT /api/v1/admin/auth` runs the CALLER through
+/// the CANDIDATE chain with this before committing — a chain that would lock the caller out is
 /// rejected instead of applied (D4 ruling; restart remains the backstop).
 pub(crate) fn dry_run_admin_scope(
     app: &crate::state::App,
     bearer: Option<&str>,
     header: Option<&str>,
-) -> Option<crate::admin::v1::contract::Scope> {
+) -> crate::admin::v1::contract::Grants {
     let (verdict, cap) = run_admin_chain(app, bearer, header);
-    let principal = match verdict {
-        ChainVerdict::Identified(p) => Some(p),
-        ChainVerdict::Open => None,
-        ChainVerdict::Denied => return None,
+    let (module, principal) = match verdict {
+        ChainVerdict::Identified { module, principal } => (Some(module), Some(principal)),
+        ChainVerdict::Open => (None, None),
+        ChainVerdict::Denied => return crate::admin::v1::contract::Grants::default(),
     };
-    let scope = admin_scope_for(principal.as_ref(), &app.group_map);
-    match (scope, cap) {
-        (Some(s), Some(c)) => Some(std::cmp::min(s, c)),
-        (s, _) => s,
+    let grants = admin_scope_for(module.as_deref(), principal.as_ref(), &app.role_bindings);
+    match cap {
+        Some(c) => grants.capped_by(c),
+        None => grants,
     }
 }
 
 /// Resolve a principal's ADMIN SCOPE — the authorization half, operator-owned by construction:
 /// the built-in operator token (the `admin-tokens` principal) is FULL by definition (it is the
-/// root credential); any other principal gets the most permissive `admin_scope` its groups map to
-/// in `group_map:` (unmapped groups grant nothing — fail closed). `None` principal = the explicit
-/// open admin posture (empty `admin_auth:`) — full, dev-only.
+/// root credential); any other principal gets the UNION of what its bound roles grant in
+/// `role_bindings.<identifying module>` (S4: bindings are NESTED BY MODULE - a role asserted by
+/// module A never rides module B's binding; an unbound role grants nothing - fail closed). A
+/// principal can hold two roles bound to INCOMPARABLE scopes at once (a hooks-register role and a
+/// mint role) — `Grants` keeps both rather than collapsing to one (in-tree precedent:
+/// `allowed_pools` already unions across a principal's granting roles). No principal = the explicit
+/// open admin posture (empty `admin_auth:`) - full, dev-only.
 fn admin_scope_for(
+    module: Option<&str>,
     principal: Option<&Principal>,
-    group_map: &std::collections::HashMap<String, crate::config::GroupMapEntry>,
-) -> Option<crate::admin::v1::contract::Scope> {
-    use crate::admin::v1::contract::Scope;
+    role_bindings: &crate::config::RoleBindings,
+) -> crate::admin::v1::contract::Grants {
+    use crate::admin::v1::contract::{Grants, Scope};
     let Some(p) = principal else {
-        return Some(Scope::Full);
+        return Grants::of(Scope::Full);
     };
     // The operator credential. Scope is MODULE-intrinsic, keyed off the fixed principal id the
     // admin-tokens module mints — an external module returning `id: "admin"` cannot reach here
-    // with it, because group-carrying principals resolve THROUGH group_map below only when they
-    // carry groups; a groupless external "admin" id would land Some(Full) — so the id is reserved:
-    // config_validate forbids `group_map` entries that could shadow it, and external modules are
-    // capped by `allowed_groups`/`max_admin_scope` when they land. Until external ADMIN modules
-    // exist (none are compiled today), the only producer of a groupless principal on this path is
-    // admin-tokens itself.
-    if p.groups.is_empty() {
+    // with it, because role-carrying principals resolve THROUGH role_bindings below only when they
+    // carry roles; a roleless external "admin" id would land Grants::of(Full) - so the id is
+    // reserved: config_validate forbids bindings that could shadow it, and external modules are
+    // capped by `max_admin_scope` when they land. Until external ADMIN modules exist (none are
+    // compiled today), the only producer of a roleless principal on this path is admin-tokens
+    // itself.
+    if p.roles.is_empty() {
         #[cfg(feature = "auth-admin-tokens")]
         if p.id == busbar_auth_admin_tokens::ADMIN_TOKENS_PRINCIPAL_ID {
-            return Some(Scope::Full);
+            return Grants::of(Scope::Full);
         }
-        return None;
+        return Grants::default();
     }
-    p.groups
+    let Some(table) = module.and_then(|m| role_bindings.get(m)) else {
+        return Grants::default();
+    };
+    p.roles
         .iter()
-        .filter_map(|g| group_map.get(g))
-        .filter_map(|e| e.admin_scope.as_deref())
+        .filter_map(|role| table.get(role))
+        .filter_map(|b| b.admin_scope.as_deref())
         .filter_map(Scope::parse)
-        .max()
+        .fold(Grants::default(), Grants::with)
 }
 
 /// A 403 in the frozen admin error envelope (`{"error":{"code":"forbidden","message":…}}`),
@@ -766,12 +881,12 @@ fn rate_limited_response() -> Response {
 }
 
 /// Fire the synthetic `rejected_by_auth` completion taps (fire-and-forget) and return the auth
-/// denial — so audit taps see auth denials, not just served traffic (design-hooks-v2 §3.2). The
+/// denial — so audit taps see auth denials, not just served traffic. The
 /// request body is unparsed at the auth stage, so the shape is the zeroed default bucket with the
 /// path-inferred protocol. The tap's `status` MUST be the client-visible HTTP status, which is
 /// PROTOCOL-NATIVE for an auth failure — 401 for anthropic/openai/responses/cohere, 403 for Bedrock
 /// (SigV4 → AccessDenied), 400 for Gemini (INVALID_ARGUMENT). Hardcoding 401 made a tap watching a
-/// gemini/bedrock ingress denial contradict the response the client actually got (found: audit c1r6).
+/// gemini/bedrock ingress denial contradict the response the client actually got.
 fn unauthorized_with_completion_taps(app: &crate::state::App, path: &str) -> Response {
     let proto = proto_for_path(path);
     if !app.tap_hooks_completion.is_empty() {
@@ -806,8 +921,12 @@ pub(crate) async fn auth_middleware(
     // other route. Operators scraping from a localhost sidecar use a configured token (or run under
     // `none`/`passthrough` mode, where `validate_token` admits unconditionally). Clone the path so
     // no immutable borrow of `req` is held while we later mutate its extensions.
+    // Stage timer for the middleware's OWN work; taken (recording) before every `next.run` below so
+    // downstream handler time is never attributed to auth. No-op unless `BUSBAR_PROFILE` is set.
+    let mut _mw = crate::profile::start(crate::profile::Stage::MwAuth);
     let path = req.uri().path().to_owned();
     if path == HEALTHZ_PATH {
+        drop(_mw.take());
         return Ok(next.run(req).await);
     }
 
@@ -827,9 +946,14 @@ pub(crate) async fn auth_middleware(
     // check and the governance virtual-key lookup, so every scheme is validated identically and in
     // constant time. Replaces the previous Bearer-only `bearer_token`.
     let client_token: Option<String> = AuthMiddleware::extract_client_token(&req);
-    let chain_verdict = app
-        .auth
-        .run_chain_cached(client_token.as_deref(), Some(&app.credential_cache));
+    // NOT `run_chain_cached` directly: a plugin chain does blocking I/O and this is a Tokio worker.
+    // See `run_chain_on_request_path`.
+    let chain_verdict = AuthMiddleware::run_chain_on_request_path(
+        &app.auth,
+        &app.credential_cache,
+        client_token.clone(),
+    )
+    .await;
     let token_valid = !matches!(chain_verdict, ChainVerdict::Denied);
 
     // Thread the caller's token into request extensions for passthrough forwarding, using the same
@@ -844,7 +968,7 @@ pub(crate) async fn auth_middleware(
     // `[admin-tokens]` — the single operator token, Bearer or X-Admin-Token) — NOT a virtual key,
     // and NOT the vendor-SDK carriers (admin is a busbar operator surface, not a native SDK
     // ingress). The chain authenticates (WHO); the principal's admin SCOPE then authorizes against
-    // the endpoint's required scope (WHAT) — the §1 matrix, checked here at the one chokepoint
+    // the endpoint's required scope (WHAT) — the matrix, checked here at the one chokepoint
     // every /admin path crosses. Extract the admin Bearer separately so the multi-scheme
     // client-token carriers can't present an operator token via `x-api-key`/`x-goog-api-key`.
     if is_admin {
@@ -855,11 +979,11 @@ pub(crate) async fn auth_middleware(
             .and_then(AuthMiddleware::extract_bearer_token);
         let (verdict, scope_cap) =
             run_admin_chain(&app, admin_bearer.as_deref(), admin_header_token.as_deref());
-        let principal = match verdict {
-            ChainVerdict::Identified(p) => Some(p),
+        let (id_module, principal) = match verdict {
+            ChainVerdict::Identified { module, principal } => (Some(module), Some(principal)),
             // The explicit `admin_auth: []` OPEN posture (dev): anonymous, full authority —
             // symmetric with the data plane's empty chain. The default config never lands here.
-            ChainVerdict::Open => None,
+            ChainVerdict::Open => (None, None),
             // The ADMIN plane 401 speaks the frozen v1 envelope ({error:{code:"unauthorized"}}) —
             // the most frequent error a tooling consumer hits (setup/rotation) must branch on the
             // SAME `code` seam as every other admin error, never a protocol-shaped body (the
@@ -867,34 +991,48 @@ pub(crate) async fn auth_middleware(
             ChainVerdict::Denied => return Err(admin_unauthorized_response()),
         };
         // AUTHORIZATION: resolve the principal's admin scope (module-intrinsic for the operator
-        // token; `group_map:` for group-carrying principals — most permissive wins, unmapped
-        // groups grant nothing), CAPPED by the identifying module's `max_admin_scope:` ceiling,
-        // and check it against the endpoint's required scope. An identified principal with NO
-        // grant is 403, never 401 — authenticated but not authorized.
-        let scope = admin_scope_for(principal.as_ref(), &app.group_map);
-        let scope = match (scope, scope_cap) {
-            (Some(s), Some(cap)) => Some(std::cmp::min(s, cap)),
-            (s, _) => s,
+        // token; `role_bindings:` for group-carrying principals: the UNION of what its bound roles
+        // grant, unmapped groups grant nothing), CAPPED by the identifying module's
+        // `max_admin_scope:` ceiling, and check it against the endpoint's required scope. An
+        // identified principal with NO grant is 403, never 401 — authenticated but not authorized.
+        let scope = admin_scope_for(id_module.as_deref(), principal.as_ref(), &app.role_bindings);
+        let scope = match scope_cap {
+            Some(cap) => scope.capped_by(cap),
+            None => scope,
         };
         let required = crate::admin::v1::contract::required_scope(req.method(), &path);
-        match scope {
-            Some(s) if s.allows(required) => {}
-            _ => {
-                // Denied authorization is AUDITED (§6.7: failures leave a trail — a credential
-                // probing beyond its scope is exactly what an operator wants to see).
+        if !scope.allows(required) {
+            // Denied authorization is AUDITED (a credential probing beyond its scope is exactly what
+            // an operator wants to see) — but at most once per (principal, window). The durable
+            // write-through is a blocking store round-trip under a process-global lock, and this path
+            // returns BEFORE the mutation limiter runs (and a GET never reaches it at all), so an
+            // unbounded audit here is an unmetered I/O amplifier on the reactor. Same bound, same
+            // reason, as the rate-limited audit below.
+            let actor = principal
+                .as_ref()
+                .map(|p| p.id.as_str())
+                .unwrap_or("anonymous");
+            if let crate::admin::rate::RateCheck::Denied {
+                first_in_window: true,
+            } = app.mutation_limiter.check(
+                actor,
+                crate::admin::rate::MutationClass::Forbidden,
+                crate::store::now(),
+            ) {
                 crate::admin::audit::AUDIT.record_by(
                     "admin.forbidden",
                     &path,
                     crate::admin::audit::OUTCOME_REJECTED,
-                    principal
-                        .as_ref()
-                        .map(|p| p.id.as_str())
-                        .unwrap_or("anonymous"),
+                    actor,
                 );
-                return Err(forbidden_response(required));
+            } else {
+                // Suppressed records still leave a per-request signal, at zero I/O cost.
+                tracing::warn!(principal = %actor, path = %path, required = %required.as_str(),
+                    "admin request forbidden (audit suppressed: already recorded this window)");
             }
+            return Err(forbidden_response(required));
         }
-        // MUTATION RATE LIMITS (§6.6): per-principal fixed windows, spent BEFORE the handler so
+        // MUTATION RATE LIMITS: per-principal fixed windows, spent BEFORE the handler so
         // FAILED attempts count too (anti-enumeration). Config-plane mutations (apply/rollback)
         // are the tight class; every other mutation is the CRUD class. Reads are unmetered.
         let method = req.method();
@@ -904,44 +1042,42 @@ pub(crate) async fn auth_middleware(
             || method == axum::http::Method::DELETE;
         if is_mutation {
             // The CONFIG class (10/min) is the blast-radius set: whole-config mutations AND the
-            // admin auth chain itself (`PUT /admin-auth` — the L3 remount moved it off `/auth`).
-            // Everything else that mutates (hooks, keys, cache flush) is the CRUD class (60/min).
-            // Matched RELATIVE to the one contract prefix so this gate can never drift from the
-            // mount grammar.
+            // admin auth chain itself. Everything else that mutates (hooks, keys, cache flush) is
+            // the CRUD class (60/min). Matched RELATIVE to the one contract prefix so this gate
+            // can never drift from the mount grammar. Classification itself lives in
+            // `admin::rate::classify_mutation`, driven by a const table rather than an inline
+            // predicate, so it can be enumerated and cross-checked against
+            // `docs/admin-api.md`'s rate-limit table (see that table's doc comment).
             let rel = path
                 .strip_prefix(crate::admin::v1::contract::ADMIN_PREFIX)
                 .unwrap_or(&path);
-            // `/config/validate` is a stateless dry-run (read-only scope, no blast radius) — it
-            // meters in the roomy CRUD class so a CI pipeline linting configs never contends with
-            // the 10/min budget that guards real config mutations (re-audit M3).
-            let class = if (rel.starts_with("/config/")
-                && rel != crate::admin::v1::contract::PATH_CONFIG_VALIDATE)
-                || rel == crate::admin::v1::contract::PATH_ADMIN_AUTH
-            {
-                crate::admin::rate::MutationClass::Config
-            } else {
-                crate::admin::rate::MutationClass::Crud
-            };
+            let class = crate::admin::rate::classify_mutation(rel);
             let actor = principal
                 .as_ref()
                 .map(|p| p.id.as_str())
                 .unwrap_or("anonymous");
-            if !app
+            if let crate::admin::rate::RateCheck::Denied { first_in_window } = app
                 .mutation_limiter
                 .check(actor, class, crate::store::now())
             {
-                crate::admin::audit::AUDIT.record_by(
-                    "admin.rate_limited",
-                    &format!("{}:{path}", class.label()),
-                    crate::admin::audit::OUTCOME_REJECTED,
-                    actor,
-                );
+                // Audit the first denial of the window only. The durable audit write-through is a
+                // blocking store round-trip, and this is the SHED path — auditing every rejected
+                // attempt would let a client that ignores its 429s drive unbounded blocking work
+                // through the limiter whose entire purpose is to stop doing work.
+                if first_in_window {
+                    crate::admin::audit::AUDIT.record_by(
+                        "admin.rate_limited",
+                        &format!("{}:{path}", class.label()),
+                        crate::admin::audit::OUTCOME_REJECTED,
+                        actor,
+                    );
+                }
                 return Err(rate_limited_response());
             }
         }
         req.extensions_mut().insert(AuthPrincipal(principal));
         // The EFFECTIVE admin scope (resolved + capped) is attached so mutation handlers can apply
-        // the §6.3 body-derived refinements the route-level `required_scope` matrix cannot express —
+        // the body-derived refinements the route-level `required_scope` matrix cannot express —
         // e.g. a `hooks-register` principal may create a hook DEFINITION but must not register one
         // wired into a security-critical path (a `prompt: ro|rw` gate, or an inline `global: true`).
         req.extensions_mut().insert(AdminScope(scope));
@@ -957,15 +1093,32 @@ pub(crate) async fn auth_middleware(
         // through to the governance resolution below and is fully governed.
         req.extensions_mut()
             .insert(crate::governance::GovCtx::default());
+        drop(_mw.take());
         return Ok(next.run(req).await);
     }
 
-    // when governance is enabled, the caller's token MUST resolve to an enabled virtual key; the
+    // when governance is ACTIVE, the caller's token MUST resolve to an enabled virtual key; the
     // resolved key is attached for downstream allowed-pools enforcement. This supersedes the static
     // Auth-chain token check. The token may arrive via any supported carrier (Bearer / x-api-key /
     // x-goog-api-key) — `client_token` already encodes that precedence. When governance is
-    // disabled, the configured auth chain (empty = open, [tokens] = validated) applies unchanged.
-    if let Some(gov) = &app.governance {
+    // inert (or absent), the configured auth chain (empty = open, [tokens] = validated) applies
+    // unchanged.
+    //
+    // BACK-COMPAT: the governance engine is ALWAYS constructed (RAM store by default), but it is
+    // INERT until an admin token is configured — virtual keys can ONLY be minted through the
+    // admin API, which is itself gated by the admin token (see `validate_governance`), so a deploy
+    // with no admin token can never have a key for a request to resolve to. Enforcing the
+    // vkey-resolution branch in that state would reject every inference request and silently
+    // supersede the operator's static `auth.chain` / open-relay configuration — a behaviour
+    // inversion for legacy deploys that never opted into governance. Gate the branch on
+    // `admin_token_hash().is_some()` so an inert engine is treated EXACTLY as `governance: None`:
+    // the static auth chain (`else` below) applies verbatim. Once an admin token IS set, every
+    // existing enforcement path is preserved unchanged.
+    if let Some(gov) = app
+        .governance
+        .as_ref()
+        .filter(|g| g.admin_token_hash().is_some())
+    {
         // governance enabled + `upstream_credentials: passthrough` is a self-contradictory deployment: the
         // governance branch below requires every request to present a valid enabled busbar virtual
         // key (superseding passthrough's "accept any caller credential and forward it upstream"
@@ -1002,27 +1155,6 @@ pub(crate) async fn auth_middleware(
                 );
             });
         }
-        // Same class of silent override for `auth.chain: [tokens]` WITH a non-empty static client_tokens
-        // allowlist: the governance branch resolves every request against the virtual-key store, so
-        // the static allowlist is NEVER consulted — its configured entries have ZERO enforcement
-        // effect (governance supersedes them, exactly as it supersedes passthrough/none above). An
-        // operator who set `auth.chain: [tokens]` + `client_tokens: [...]` AND enabled governance in the
-        // belief the static list still gates access is running a config that reads as doubly-secured
-        // but whose static tokens are inert. `validate_governance` accepts the pairing (governance
-        // simply wins), so there is no boot-time error; mirror the passthrough/none advisories with a
-        // parallel one-shot warning at the first request that exercises it, rather than leaving the
-        // inert allowlist undiagnosed.
-        if !app.auth.is_open() && !app.auth.client_tokens.is_empty() {
-            static WARN_ONCE: std::sync::Once = std::sync::Once::new();
-            WARN_ONCE.call_once(|| {
-                tracing::warn!(
-                    "auth.chain with governance enabled: governance supersedes the static \
-                     client_tokens allowlist — every request is resolved against the virtual-key \
-                     store and the configured client_tokens entries have NO enforcement effect. \
-                     Remove them, or disable governance, to avoid a misleading config."
-                );
-            });
-        }
         // BEDROCK INGRESS via inbound AWS SigV4 (the MinIO/S3-compatible model). A Bedrock-SDK client
         // does NOT present a bearer-style token — it signs the request with an AWS-style
         // access-key-id + secret access key busbar issued (tied to a virtual key). When the request
@@ -1039,6 +1171,28 @@ pub(crate) async fn auth_middleware(
             .map(|p| p.reader().uses_sigv4_ingress_auth())
             .unwrap_or(false);
         if ingress_uses_sigv4 && has_sigv4_authorization(&req) {
+            // STRUCTURAL GATE, before buffering: require the Authorization header to actually parse
+            // as SigV4 (`has_sigv4_authorization` only checked the algorithm-token prefix) and the
+            // `x-amz-content-sha256`/`x-amz-date` headers to be present. This is a HOIST of work
+            // `verify_bedrock_sigv4` already does below (its own parse, and its own presence checks
+            // on these same two headers) — a reordering, not a new check — so it removes the trivial
+            // `AWS4-HMAC-SHA256 x` attacker (who reaches the buffer today) before a single body byte
+            // is read. All three conditions are STRUCTURAL and attacker-known (the attacker can
+            // trivially satisfy all three), so this is not an oracle: it never depends on whether an
+            // AccessKeyId is valid — gating on that would leak validity through a read/no-read signal
+            // and reintroduce the enumeration oracle `verify_bedrock_sigv4` spends a dummy secret to
+            // avoid.
+            let auth_value = req
+                .headers()
+                .get(AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            let structurally_valid = crate::sigv4::parse_authorization_header(auth_value).is_ok()
+                && req.headers().contains_key(X_AMZ_CONTENT_SHA256)
+                && req.headers().contains_key(X_AMZ_DATE);
+            if !structurally_valid {
+                return Err(unauthorized_response(&path));
+            }
             // BODY INTEGRITY: a SigV4 signature only binds the payload if we re-hash the actual bytes
             // and confirm they match the signed `x-amz-content-sha256` (which the signature covers).
             // Verifying the signature alone leaves a MitM free to tamper the body in transit while the
@@ -1064,8 +1218,10 @@ pub(crate) async fn auth_middleware(
             let mut req = Request::from_parts(parts, Body::from(body_bytes.clone()));
             return match verify_bedrock_sigv4(gov, &req, &body_bytes) {
                 Ok(key) => {
-                    req.extensions_mut()
-                        .insert(crate::governance::GovCtx { key: Some(key) });
+                    req.extensions_mut().insert(crate::governance::GovCtx {
+                        key: Some(std::sync::Arc::new(key)),
+                    });
+                    drop(_mw.take());
                     Ok(next.run(req).await)
                 }
                 // EVERY failure (missing/malformed header, unknown AccessKeyId, expired date,
@@ -1077,42 +1233,48 @@ pub(crate) async fn auth_middleware(
         }
 
         // Reject a missing / empty token BEFORE the governance lookup, mirroring the
-        // `validate_token` guard that the static-token path applies. Without this, an
-        // unauthenticated request would call `gov.lookup(sha256(""))` — admitting the caller if any
-        // virtual key in the store ever hashed an empty secret (reachable via direct DB writes or a
-        // future seeding path that bypasses `generate_secret`). Making the empty-token reject
-        // explicit removes that latent hash-collision dependency rather than relying on the absence
-        // of a `sha256("")` entry in the key store.
+        // `validate_token` guard that the static-token path applies.
         let Some(client_token) = client_token.as_deref().filter(|t| !t.is_empty()) else {
             return Err(unauthorized_with_completion_taps(&app, &path));
         };
-        match gov.lookup(client_token) {
+        // 1.5.0 SIGNED-TOKEN KEYS (S1): a busbar-minted key is a signed token verified statelessly
+        // (signature + expiry + revocation-denylist), then policy is resolved by `sub`. This is the
+        // ONLY bearer-credential shape in 1.5.0 — the legacy hashed-secret verify path was retired
+        // (`docs/migration-1.5.md`: "1.4.x keys no longer authenticate"). A tampered/expired/revoked
+        // token, or one for a deleted key, is `None` = 401.
+        let resolved_key = gov.verify_token(client_token, crate::store::now());
+        match resolved_key {
             Some(key) if key.enabled => {
                 // The governance principal: id = the virtual-key id (stable), name = its label.
                 req.extensions_mut().insert(AuthPrincipal(Some(Principal {
                     id: key.id.clone(),
                     name: Some(key.name.clone()),
-                    groups: Vec::new(),
+                    roles: Vec::new(),
                     ttl_secs: None,
                 })));
                 req.extensions_mut()
                     .insert(crate::governance::GovCtx { key: Some(key) });
             }
-            // Not a virtual key (or disabled). THE GOVERNANCE RE-KEY (§2.3): if the auth chain
+            // Not a virtual key (or disabled). THE GOVERNANCE RE-KEY: if the auth chain
             // identified a GROUP-carrying principal whose groups earn a data-plane grant in
-            // `group_map:`, admit it with a SYNTHESIZED key — governance enforcement (pool ACL,
+            // `role_bindings:`, admit it with a SYNTHESIZED key: governance enforcement (pool ACL,
             // RPM/TPM, budget, usage) keyed by the principal id, identical to a virtual key.
             // Groups that map to nothing grant nothing (fail closed): reject as before.
             Some(_) | None => {
                 let synth = match &chain_verdict {
-                    ChainVerdict::Identified(p) if !p.groups.is_empty() => {
-                        crate::governance::synthesize_principal_key(p, &app.group_map)
+                    ChainVerdict::Identified { module, principal }
+                        if !principal.roles.is_empty() =>
+                    {
+                        crate::governance::synthesize_principal_key(
+                            principal,
+                            app.role_bindings.get(module),
+                        )
                     }
                     _ => None,
                 };
                 match (synth, chain_verdict) {
-                    (Some(key), ChainVerdict::Identified(p)) => {
-                        req.extensions_mut().insert(AuthPrincipal(Some(p)));
+                    (Some(key), ChainVerdict::Identified { principal, .. }) => {
+                        req.extensions_mut().insert(AuthPrincipal(Some(principal)));
                         req.extensions_mut()
                             .insert(crate::governance::GovCtx { key: Some(key) });
                     }
@@ -1126,23 +1288,29 @@ pub(crate) async fn auth_middleware(
             return Err(unauthorized_with_completion_taps(&app, &path));
         }
         // Attach WHO was identified: the chain's principal, or `None` for the empty-chain
-        // anonymous front door. A GROUP principal additionally carries its `group_map:` grants as
+        // anonymous front door. A GROUP principal additionally carries its `role_bindings:` grants as
         // a synthesized key even with governance off — the pool ACL still applies; the rate/budget
         // axes need the governance store and stay off with it. A group principal whose groups earn
         // no grant keeps `key: None` (the chain admitted it; group_map only ADDS enforcement here).
-        let principal = match chain_verdict {
-            ChainVerdict::Identified(p) => Some(p),
-            ChainVerdict::Open | ChainVerdict::Denied => None,
+        let (id_module, principal) = match chain_verdict {
+            ChainVerdict::Identified { module, principal } => (Some(module), Some(principal)),
+            ChainVerdict::Open | ChainVerdict::Denied => (None, None),
         };
         let synth = principal
             .as_ref()
-            .filter(|p| !p.groups.is_empty())
-            .and_then(|p| crate::governance::synthesize_principal_key(p, &app.group_map));
+            .filter(|p| !p.roles.is_empty())
+            .and_then(|p| {
+                crate::governance::synthesize_principal_key(
+                    p,
+                    id_module.as_deref().and_then(|m| app.role_bindings.get(m)),
+                )
+            });
         req.extensions_mut().insert(AuthPrincipal(principal));
         req.extensions_mut()
             .insert(crate::governance::GovCtx { key: synth });
     }
 
+    drop(_mw.take());
     Ok(next.run(req).await)
 }
 
@@ -1158,25 +1326,31 @@ fn has_sigv4_authorization(req: &Request<Body>) -> bool {
         .unwrap_or(false)
 }
 
-/// Canonicalize the request query string for SigV4: split into key=value pairs, URI-encode each key
-/// and value (RFC 3986 unreserved pass through), sort by encoded key (then encoded value), and join
-/// with `&`. An empty/absent query yields `""`. A bare key (`?foo`) canonicalizes to `foo=` (AWS
-/// signs a missing value as empty). This must match what the client's signer produced. Bedrock
-/// Converse requests normally carry no query, but canonicalizing correctly keeps the verifier general.
+/// Canonicalize the request query string for SigV4: split into key=value pairs, sort by (encoded)
+/// key then (encoded) value, and join with `&`. An empty/absent query yields `""`. A bare key
+/// (`?foo`) canonicalizes to `foo=` (AWS signs a missing value as empty).
+///
+/// Deliberately does NOT run each key/value through an AWS URI-encoder. `query` here is the RAW
+/// wire query string — i.e. already percent-encoded exactly once by whatever HTTP client/SDK sent
+/// the request, since a compliant SigV4 client uses the SAME single URI-encoding pass to build both
+/// the CanonicalQueryString it signs AND the query string it puts on the wire (AWS "Create a
+/// canonical request for Signature Version 4": CanonicalQueryString is built by URI-encoding each
+/// parameter name/value ONCE — unlike CanonicalURI, which for non-S3 services is deliberately
+/// double-encoded; see `uri_encode_path`'s caller in `proxy/egress.rs` and its mirror at the
+/// `canonical_uri` line above for that asymmetric, INTENTIONAL case). Running the already
+/// once-encoded wire text through an AWS URI-encoder again would double-encode it (e.g. a client's
+/// correct `a%2Fb` becomes `a%252Fb`), producing a CanonicalQueryString that diverges from the one
+/// the client actually signed — every request with a query parameter needing escaping would fail
+/// verification. Sorting is done on the RAW (already-encoded) bytes, which is equivalent to sorting
+/// on the encoded key/value per the AWS spec, since the wire bytes ARE the encoded form.
 fn canonical_query_string(query: Option<&str>) -> String {
     let Some(q) = query.filter(|q| !q.is_empty()) else {
         return String::new();
     };
-    let mut pairs: Vec<(String, String)> = q
+    let mut pairs: Vec<(&str, &str)> = q
         .split('&')
         .filter(|p| !p.is_empty())
-        .map(|pair| {
-            let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
-            (
-                crate::sigv4::uri_encode_query(k),
-                crate::sigv4::uri_encode_query(v),
-            )
-        })
+        .map(|pair| pair.split_once('=').unwrap_or((pair, "")))
         .collect();
     pairs.sort();
     pairs
@@ -1306,26 +1480,57 @@ fn verify_bedrock_sigv4(
         amzdate: &amzdate,
     };
 
-    // Resolve the AccessKeyId to (key, secret). On an UNKNOWN AccessKeyId, verify against a fixed dummy
-    // secret so the work — and the timing/response — is indistinguishable from a wrong-signature
-    // rejection (no AccessKeyId-enumeration oracle). The dummy is a constant, never a real secret.
+    // Resolve (kind="sigv4", AccessKeyId) to (key, credential). On an UNKNOWN AccessKeyId, verify
+    // against a fixed dummy secret so the work — and the timing/response — is indistinguishable
+    // from a wrong-signature rejection (no AccessKeyId-enumeration oracle). The dummy is a
+    // constant, never a real secret.
     let now = crate::store::now();
-    let (secret, resolved): (String, Option<crate::governance::VirtualKey>) =
-        match gov.lookup_by_access_key_id(&parsed.access_key_id) {
-            Some(entry) => (entry.secret_access_key, Some(entry.key)),
+    let (secret, resolved): (String, Option<(crate::governance::VirtualKey, bool)>) =
+        match gov.lookup_credential("sigv4", &parsed.access_key_id) {
+            Some((key, cred)) => {
+                let live = cred.meta.is_live(now);
+                // `plaintext()` strips the "v1:plain:" envelope — HMAC verification needs the exact
+                // raw bytes the client signed with, never the versioned-envelope string itself. An
+                // unrecognized scheme (e.g. a future at-rest-encrypted form reached through the wrong
+                // path) falls back to the dummy secret, same treatment as an unknown AccessKeyId — it
+                // must never surface as a distinguishable rejection reason.
+                let secret = cred
+                    .plaintext()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| DUMMY_SECRET.to_string());
+                (secret, Some(((*key).clone(), live)))
+            }
             None => (DUMMY_SECRET.to_string(), None),
         };
 
     let verify = verify_inbound_sigv4(&parsed, &inbound, &secret, now);
 
-    // Decide admission. The signature must verify; the resolved key must exist AND be enabled. All
-    // three conditions are evaluated, and only the combined success admits — a failure in any one
-    // rejects with the same opaque `Err(())`. An unknown AccessKeyId has `resolved == None`, so even a
-    // (cryptographically impossible) signature match against the dummy secret cannot admit.
+    // Decide admission. The signature must verify; the resolved key must exist AND be enabled; the
+    // resolved CREDENTIAL itself must be live (not revoked, not expired — independent of the key,
+    // per CredentialMeta::is_live: this is what lets a leaked SigV4 secret be killed via
+    // revoke_credential without touching the key's bearer token or re-minting anything); AND the
+    // subject not on the KEY-level revocation denylist. All conditions are evaluated, and only the
+    // combined success admits — a failure in any one rejects with the same opaque `Err(())`. An
+    // unknown AccessKeyId has `resolved == None`, so even a (cryptographically impossible)
+    // signature match against the dummy secret cannot admit.
+    //
+    // The denylist clause mirrors the signed-token path (`verify_token`), which consults
+    // `denylist.contains(&claims.sub)` before resolving. A dual-credential key (signed token +
+    // SigV4) is bound to ONE subject id; `revoke` denylists that id but deliberately preserves
+    // `enabled` for history — so WITHOUT this check the SigV4 credential of a revoked key would keep
+    // authenticating even though its signed token is rejected. Gating here closes that bypass.
     match (verify, resolved) {
-        (Ok(()), Some(key)) if key.enabled => Ok(key),
-        (Ok(()), Some(_key)) => {
+        (Ok(()), Some((key, true))) if key.enabled && !gov.is_revoked(&key.id) => Ok(key),
+        (Ok(()), Some((key, true))) if key.enabled => {
+            tracing::debug!(id = %key.id, "inbound SigV4 rejected: subject is revoked");
+            Err(())
+        }
+        (Ok(()), Some((_key, true))) => {
             tracing::debug!("inbound SigV4 rejected: virtual key disabled");
+            Err(())
+        }
+        (Ok(()), Some((key, false))) => {
+            tracing::debug!(id = %key.id, "inbound SigV4 rejected: this credential is revoked or expired");
             Err(())
         }
         (Ok(()), None) => {
@@ -1343,5 +1548,28 @@ fn verify_bedrock_sigv4(
 }
 
 #[cfg(test)]
+impl AuthMiddleware {
+    /// Build an `AuthMiddleware` directly over a chain, declaring whether it should be treated as
+    /// containing a PLUGIN module. Tests need this because the real constructor only sets
+    /// `has_plugin_module` by actually `dlopen`ing a signed cdylib, and the property under test
+    /// (that a blocking module does not run on the reactor) is about ANY blocking module.
+    pub(crate) fn from_chain_for_test(
+        chain: Vec<Box<dyn AuthModule>>,
+        has_plugin_module: bool,
+    ) -> Self {
+        Self {
+            upstream_creds: UpstreamCreds::Own,
+            keys_in_chain: false,
+            chain,
+            has_plugin_module,
+        }
+    }
+}
+
+#[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/plugin_chain_tests.rs"]
+mod plugin_chain_tests;

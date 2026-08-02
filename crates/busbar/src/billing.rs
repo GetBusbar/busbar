@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Polymorphic billable-item data model (design-operations-oop.md §0b/§5b).
+//! Polymorphic billable-item data model.
 //!
 //! The billable UNIT is (operation, model)-dependent: chat/embeddings bill tokens, `whisper-1` bills
 //! audio DURATION, `tts-1` bills CHARACTERS, dall-e bills per IMAGE. A single fixed struct cannot
@@ -12,9 +12,9 @@
 //! so adding a unit is a compile error at every price site.
 //!
 //! Foundation types for the 1.2 operations rebuild; wired into the IR as
-//! `IrResp::usage() -> Option<Billing>` (see `ir/variant.rs`). `dead_code` is allowed for units the
-//! 1.3 pricing engine has not yet wired.
-#![allow(dead_code)]
+//! `IrResp::usage() -> Option<Billing>` (see `ir/variant.rs`). The shipped 1.5.0 pricing path
+//! constructs and prices `Billing::Tokens`; `Billing::Characters` (tts-1) is modelled by the IR but
+//! not yet priced.
 
 /// Token usage — the SUPERSET of chat's cache-aware accounting AND the new ops' modality breakdown.
 ///
@@ -36,28 +36,6 @@ pub(crate) struct TokenUsage {
     pub(crate) input_image: Option<u64>,
 }
 
-impl TokenUsage {
-    /// Total billable tokens under the normalized additive-cache convention (was
-    /// `IrUsage::billable_tokens`): uncached `input` + cache reads + cache creation + `output`. All
-    /// adds saturate — operands are UPSTREAM-controlled, so an unchecked `+` could wrap in release.
-    pub(crate) fn billable_tokens(&self) -> u64 {
-        self.input
-            .saturating_add(self.cache_read.unwrap_or(0))
-            .saturating_add(self.cache_creation.unwrap_or(0))
-            .saturating_add(self.output)
-    }
-
-    /// True when the per-modality breakdown is internally consistent with `input` (Billing invariant
-    /// m2). A provider that reports only a subset leaves the rest `None`; this checks only the fully
-    /// specified case, so a partial report is accepted (not silently trusted as a total).
-    pub(crate) fn modality_consistent(&self) -> bool {
-        match (self.input_text, self.input_audio, self.input_image) {
-            (Some(t), Some(a), Some(i)) => t.saturating_add(a).saturating_add(i) == self.input,
-            _ => true,
-        }
-    }
-}
-
 /// The billable item produced for one response. Priced by the 1.3 engine via an exhaustive match.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Billing {
@@ -66,6 +44,9 @@ pub(crate) enum Billing {
     /// Audio duration in seconds (`whisper-1` transcription: `usage.type == "duration"`).
     Duration { seconds: f64 },
     /// Character count (`tts-1`/`-hd` speech — no usage in the binary body; counted from `input`).
+    /// Modelled by the IR (constructed by the tts-1 speech-billing path) but not yet priced; the
+    /// shipped 1.5.0 pricing path only prices `Billing::Tokens`.
+    #[cfg_attr(not(test), allow(dead_code))]
     Characters { count: u64 },
     /// Per-image, tiered by size/quality (dall-e, Imagen, Titan, SDXL — no usage object in the body).
     Images {
@@ -80,59 +61,6 @@ pub(crate) enum Billing {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn billable_tokens_sums_uncached_input_cache_and_output() {
-        let u = TokenUsage {
-            input: 10,
-            output: 5,
-            cache_read: Some(3),
-            cache_creation: Some(2),
-            ..Default::default()
-        };
-        assert_eq!(u.billable_tokens(), 20);
-    }
-
-    #[test]
-    fn billable_tokens_saturates_on_upstream_overflow() {
-        let u = TokenUsage {
-            input: u64::MAX,
-            output: 1,
-            ..Default::default()
-        };
-        assert_eq!(u.billable_tokens(), u64::MAX);
-    }
-
-    #[test]
-    fn modality_breakdown_partitions_input_when_fully_specified() {
-        let ok = TokenUsage {
-            input: 12,
-            input_text: Some(4),
-            input_audio: Some(8),
-            input_image: Some(0),
-            ..Default::default()
-        };
-        assert!(ok.modality_consistent());
-        let bad = TokenUsage {
-            input: 12,
-            input_text: Some(4),
-            input_audio: Some(4),
-            input_image: Some(0),
-            ..Default::default()
-        };
-        assert!(!bad.modality_consistent());
-    }
-
-    #[test]
-    fn partial_modality_report_is_accepted() {
-        // whisper-family reports no modality split — must not be treated as inconsistent.
-        let u = TokenUsage {
-            input: 100,
-            input_audio: Some(100),
-            ..Default::default()
-        };
-        assert!(u.modality_consistent());
-    }
 
     #[test]
     fn billing_variants_are_distinct() {

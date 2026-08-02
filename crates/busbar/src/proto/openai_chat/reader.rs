@@ -255,6 +255,7 @@ impl ProtocolReader for OpenAiReader {
                                         name,
                                         input,
                                         cache_control: None,
+                                        thought_signature: None,
                                     });
                                 }
                             }
@@ -368,11 +369,30 @@ impl ProtocolReader for OpenAiReader {
 
         // The reasoning ASK in chat-completions spelling: a top-level `reasoning_effort` word.
         // Promoted so it carries to Anthropic/Gemini thinking budgets via the effort table.
-        let reasoning = obj
-            .get("reasoning_effort")
-            .and_then(|v| v.as_str())
+        let reasoning_effort_raw = obj.get("reasoning_effort").and_then(|v| v.as_str());
+        let reasoning = reasoning_effort_raw
             .and_then(crate::ir::IrReasoningEffort::parse)
             .map(crate::ir::IrReasoningAsk::Effort);
+        // `reasoning_effort` is a MODELED key (in `modeled_request_keys()` below), so it is
+        // excluded from the generic `extra` sweep — an unrecognised value (e.g. a `gpt-5`-family
+        // spelling this build's `IrReasoningEffort::parse` doesn't know, like "none"/"xhigh")
+        // would otherwise be stripped and LOST entirely, even OpenAI->OpenAI same-lane. The
+        // `OnceLock<HashSet>` behind `modeled_request_keys()` cannot be varied per request, so
+        // re-inserting here — the reader's own escape hatch — is the only implementable rescue.
+        if let Some(raw) = reasoning_effort_raw {
+            if reasoning.is_none() {
+                tracing::warn!(
+                    reasoning_effort = raw,
+                    "unrecognised reasoning_effort value; preserving it verbatim in extra so a \
+                     same-protocol OpenAI egress still carries it, though it carries no thinking \
+                     budget on a cross-protocol hop"
+                );
+                extra.insert(
+                    "reasoning_effort".to_string(),
+                    serde_json::Value::String(raw.to_string()),
+                );
+            }
+        }
 
         // Logprobs ask, carried first-class so it reaches a Gemini backend as
         // `generationConfig.responseLogprobs`/`logprobs` (and back).
@@ -476,42 +496,52 @@ impl ProtocolReader for OpenAiReader {
             }
         }
 
-        // Index offset: a thinking block (when present) owns index 0, so text/tools shift up by one.
-        let offset = usize::from(state.reasoning_seen);
-        // Where text lands. Two arrival orders must both stay collision-free and stable:
-        //   - text-FIRST (no tools open yet): `offset + 0` == `offset` — index 0 (or 1 behind a
-        //     thinking block), exactly as before, so existing text-first tests are unchanged.
-        //   - tool-FIRST (tools already open): text cannot reuse a slot a tool already claimed, so it
-        //     lands just PAST the open tools (`offset + open_tools.len()`).
-        // Once the text block has actually opened, `state.text_index` is `Some` and pins the slot for
-        // the rest of the stream (via `unwrap_or`), so the finish-path `BlockStop{index: text_index}`
-        // still pairs with the open-time `BlockStart` even though more tools may open afterward.
-        let text_index = state.text_index.unwrap_or(offset + state.open_tools.len());
-
         // 3. Text content → close any open thinking block first, then open the text block + a
-        //    TextDelta. Text owns index `offset` (0 normally, 1 when a thinking block precedes it).
+        //    TextDelta. Text claims its index from the monotone counter (`claim_ir_index`), which
+        //    reserves index 0 for a thinking block via `reasoning_seen` — see its own docs.
+        // `delta.refusal` carries a structured-outputs / safety refusal in the SAME incremental
+        // string shape as `delta.content`, and the two are mutually exclusive on a chunk. Route it
+        // through the same text block: Anthropic/Bedrock/Gemini have no distinct refusal part, so a
+        // refusal is plain assistant text there. Reading only `content` produced a stream with no
+        // text at all and an end_turn finish — an empty 200 the client could not tell from a model
+        // that said nothing. `refusal_seen` promotes the stop reason on the terminal frame.
+        let refusal_delta = delta
+            .and_then(|d| d.get("refusal"))
+            .and_then(|c| c.as_str())
+            .filter(|s| !s.is_empty());
+        if refusal_delta.is_some() {
+            state.refusal_seen = true;
+        }
         if let Some(content) = delta
             .and_then(|d| d.get("content"))
             .and_then(|c| c.as_str())
+            .or(refusal_delta)
         {
             if state.thinking_block_open {
                 state.thinking_block_open = false;
                 out.push(IrStreamEvent::BlockStop { index: 0 });
             }
+            let ti = match state.text_index {
+                Some(i) => i,
+                None => {
+                    // Claim the next free IR index BY ORDER OF FIRST APPEARANCE, not a recomputed
+                    // base — a tool that arrived before this text chunk already claimed its own
+                    // slot from the SAME counter, so text can never land on it regardless of the
+                    // upstream tool_calls[].index values (see the MONOTONE counter's own docs).
+                    let i = state.claim_ir_index();
+                    state.text_index = Some(i);
+                    i
+                }
+            };
             if !state.text_block_open {
                 state.text_block_open = true;
-                // Persist that a text block now occupies `text_index` (the slot just past any
-                // thinking block). Tool-call indices key off `state.text_index.is_some()` so they
-                // reserve a slot for text ONLY when text actually appears — see the `text_base`
-                // derivation below.
-                state.text_index = Some(text_index);
                 out.push(IrStreamEvent::BlockStart {
-                    index: text_index,
+                    index: ti,
                     block: crate::ir::IrBlockMeta::Text,
                 });
             }
             out.push(IrStreamEvent::BlockDelta {
-                index: text_index,
+                index: ti,
                 delta: crate::ir::IrDelta::TextDelta(content.to_string()),
             });
         }
@@ -533,57 +563,52 @@ impl ProtocolReader for OpenAiReader {
                     out.push(IrStreamEvent::BlockStop { index: 0 });
                 }
                 state.text_block_open = true;
-                state.text_index = Some(text_index);
+                let ti = state.text_index.unwrap_or_else(|| {
+                    let i = state.claim_ir_index();
+                    state.text_index = Some(i);
+                    i
+                });
                 out.push(IrStreamEvent::BlockStart {
-                    index: text_index,
+                    index: ti,
                     block: crate::ir::IrBlockMeta::Text,
                 });
             }
             out.push(IrStreamEvent::BlockDelta {
-                index: state.text_index.unwrap_or(text_index),
+                index: state
+                    .text_index
+                    .expect("text_index set above when block opens"),
                 delta: crate::ir::IrDelta::LogprobsDelta(lp_entries),
             });
         }
 
-        // 4. Tool calls → IR block index = oai_idx + text_base + offset. `offset` (0/1) is the
-        //    thinking slot; `text_base` (0/1) reserves index for the text block ONLY when text has
-        //    actually appeared. Mirrors the Gemini reader: a tool-only stream (no text) yields
-        //    0-based tool indices instead of the prior unconditional +1, which left tool indices
-        //    1-based and broke cross-protocol tool-call ordering (Anthropic/OpenAI writers key on
-        //    index). BlockStart on first sight (id+name present), InputJsonDelta for streamed
-        //    arguments.
+        // 4. Tool calls → IR block index claimed from the MONOTONE counter, by order of first
+        //    appearance, exactly like the text block above. `oai_idx` (the upstream `tool_calls[].
+        //    index`) is a JOIN KEY that pairs this tool's id/name chunk with its later `arguments`
+        //    chunks — NOT an index space we may project into: a backend that streams
+        //    `tool_calls[{index:1}]` with no index 0 (vLLM / Azure / OpenRouter re-index) would
+        //    otherwise collide with, or leave a gap before, the text block. BlockStart on first
+        //    sight (id+name present), InputJsonDelta for streamed arguments.
         if let Some(tcs) = delta
             .and_then(|d| d.get("tool_calls"))
             .and_then(|t| t.as_array())
         {
-            // 0 when no text block has opened, 1 once one has (then the text block owns the slot
-            // just below the tools).
-            let text_base = usize::from(state.text_index.is_some());
             // A tool call means the answer phase has begun; close any still-open thinking block.
             if state.thinking_block_open {
                 state.thinking_block_open = false;
                 out.push(IrStreamEvent::BlockStop { index: 0 });
             }
             for tc in tcs {
-                // Bound the upstream-supplied tool-call index before it touches our index
-                // arithmetic. A crafted/proxied chunk can carry `"index": u64::MAX`; casting that
-                // raw to `usize` and computing `oai_idx + text_base + offset` overflows — panicking on the
-                // request path in debug builds and silently wrapping to a near-zero index in release
-                // (corrupting the IR block sequence delivered downstream). OpenAI documents at most
-                // 128 parallel tool calls, so any larger index is malformed; clamp to MAX_TOOL_INDEX
-                // and compute the IR index with checked arithmetic, skipping the chunk if it still
-                // would not fit (never reachable at this cap, but keeps the path panic-free).
+                // Bound the upstream-supplied tool-call index before it touches `open_tools` /
+                // `tool_ir_index` as a key. A crafted/proxied chunk can carry `"index": u64::MAX`;
+                // OpenAI documents at most 128 parallel tool calls, so any larger index is
+                // malformed. `claim_ir_index()` increments by 1 from 0 and is bounded by the
+                // number of blocks the stream actually opens, so `oai_idx` no longer enters index
+                // arithmetic and the old overflow hazard is structurally gone — this clamp now
+                // exists solely to bound `oai_idx` as a map/set key.
                 let oai_idx = tc
                     .get("index")
                     .and_then(|i| i.as_u64())
                     .map_or(0, |v| v.min(MAX_TOOL_INDEX) as usize);
-                let ir_idx = match oai_idx
-                    .checked_add(text_base)
-                    .and_then(|n| n.checked_add(offset))
-                {
-                    Some(idx) => idx,
-                    None => continue,
-                };
                 let func = tc.get("function");
                 if let Some(name) = func.and_then(|f| f.get("name")).and_then(|n| n.as_str()) {
                     // Cap the number of DISTINCT open tool calls per stream. Without this, a
@@ -600,12 +625,12 @@ impl ProtocolReader for OpenAiReader {
                             .and_then(|i| i.as_str())
                             .unwrap_or("")
                             .to_string();
+                        let ir_idx = state.claim_ir_index();
                         state.open_tools.insert(oai_idx);
-                        // Record the IR index this tool's BlockStart was emitted with so the
-                        // finish-path BlockStop replays it VERBATIM. `text_base` is derived from
-                        // `state.text_index.is_some()` at open time and can change once text arrives
-                        // after this tool; recomputing the base at close would diverge. Persisting the
-                        // exact emitted index keeps every BlockStop paired with its BlockStart.
+                        // Record the IR index this tool's BlockStart was emitted with so every
+                        // later reference (arg deltas, the finish-path BlockStop) replays THIS
+                        // index verbatim — the monotone counter never revisits a claimed slot, so
+                        // there is nothing to recompute at close time.
                         state.tool_ir_index.insert(oai_idx, ir_idx);
                         out.push(IrStreamEvent::BlockStart {
                             index: ir_idx,
@@ -620,23 +645,18 @@ impl ProtocolReader for OpenAiReader {
                     .and_then(|f| f.get("arguments"))
                     .and_then(|a| a.as_str())
                 {
-                    // Only route argument deltas to indices we actually opened a BlockStart for;
-                    // otherwise an over-cap index would emit a delta against a block that was never
-                    // started, corrupting the downstream stream.
-                    if state.open_tools.contains(&oai_idx) {
-                        // C3: emit the arg delta at the IR index this tool's BlockStart was recorded
-                        // with (`tool_ir_index`), NOT the freshly recomputed `ir_idx`. The OpenAI flat
-                        // stream lets text arrive AFTER a tool opens; once text is present the tool's
-                        // recomputed base shifts by one, so emitting at `ir_idx` here would point the
-                        // arg JSON delta at the WRONG block (corrupting tool-call JSON cross-protocol).
-                        // Replaying the recorded BlockStart index keeps every delta paired with its
-                        // block. Falls back to `ir_idx` only if (impossibly) no index was recorded.
-                        let index = state.tool_ir_index.get(&oai_idx).copied().unwrap_or(ir_idx);
-                        out.push(IrStreamEvent::BlockDelta {
-                            index,
-                            delta: crate::ir::IrDelta::InputJsonDelta(args.to_string()),
-                        });
-                    }
+                    // Only route argument deltas to an index we actually opened a BlockStart for.
+                    // `open_tools.contains(&oai_idx)` implies a recorded `tool_ir_index` entry
+                    // (both inserted together above under one guard; the over-cap path inserts
+                    // neither), so a missing entry means there was no BlockStart and the correct
+                    // action is to emit nothing.
+                    let Some(&index) = state.tool_ir_index.get(&oai_idx) else {
+                        continue;
+                    };
+                    out.push(IrStreamEvent::BlockDelta {
+                        index,
+                        delta: crate::ir::IrDelta::InputJsonDelta(args.to_string()),
+                    });
                 }
             }
         }
@@ -687,25 +707,33 @@ impl ProtocolReader for OpenAiReader {
             }
             if state.text_block_open {
                 state.text_block_open = false;
-                out.push(IrStreamEvent::BlockStop { index: text_index });
+                // `text_block_open == true` implies `text_index.is_some()` (both are set together
+                // at the two open sites above), so no index is ever fabricated here.
+                if let Some(ti) = state.text_index {
+                    out.push(IrStreamEvent::BlockStop { index: ti });
+                }
             }
             // Replay each tool's BlockStop at the EXACT IR index its BlockStart was emitted with,
-            // read back from `tool_ir_index`. Recomputing the index here (as the prior code did, from
-            // a `text_index.is_some()` base) diverged whenever text arrived AFTER a tool opened: the
-            // tool's BlockStart used the base captured at open time (text absent → 0), but the close
-            // base would then read 1 (text now present), so BlockStop pointed at the wrong index.
-            // The recorded map is keyed by `oai_idx` exactly like `open_tools`; fall back to the
-            // open-time arithmetic only for the impossible case of an open tool with no recorded
-            // index (keeps the path total without a catch-all panic).
+            // read back from `tool_ir_index`. Under monotone allocation the index was claimed ONCE
+            // at open time and never recomputed, so there is no divergent "close-time base" to
+            // reconcile — unlike the old `text_index.is_some()`-derived base, which changed value
+            // once text arrived after a tool had already opened. `open_tools`/`tool_ir_index` are
+            // taken (not just read) here — `next_ir_index` is the only monotone state carried
+            // forward, so a post-finish chunk claims a genuinely fresh slot (see its own docs).
             let tool_ir_index = std::mem::take(&mut state.tool_ir_index);
             for oai_idx in std::mem::take(&mut state.open_tools) {
-                let index = tool_ir_index.get(&oai_idx).copied().unwrap_or_else(|| {
-                    let text_base = usize::from(state.text_index.is_some());
-                    oai_idx.saturating_add(text_base).saturating_add(offset)
-                });
-                out.push(IrStreamEvent::BlockStop { index });
+                if let Some(&index) = tool_ir_index.get(&oai_idx) {
+                    out.push(IrStreamEvent::BlockStop { index });
+                }
             }
-            let stop_reason = Some(read_openai_stop_reason(fr));
+            let stop_reason = match read_openai_stop_reason(fr) {
+                // A refusal reports `finish_reason: "stop"`. Only EndTurn is overridden — a refusal
+                // that also hit the length cap keeps MaxTokens.
+                crate::ir::IrStopReason::EndTurn if state.refusal_seen => {
+                    Some(crate::ir::IrStopReason::Refusal)
+                }
+                other => Some(other),
+            };
             let usage = chunk_usage.unwrap_or(IrUsage {
                 input_tokens: 0,
                 output_tokens: 0,
@@ -813,10 +841,17 @@ impl ProtocolReader for OpenAiReader {
         if let Some(content_val) = message_val.get("content") {
             if let Some(text) = content_val.as_str() {
                 if !text.is_empty() {
+                    // `annotations` is a sibling of `content` on the `message` object (not nested
+                    // per content-part, since `content` is a plain string here). See
+                    // `read_url_annotations` for why offsets are deliberately not carried.
+                    let citations = message_val
+                        .get("annotations")
+                        .map(super::read_url_annotations)
+                        .unwrap_or_default();
                     content.push(crate::ir::IrBlock::Text {
                         text: text.to_string(),
                         cache_control: None,
-                        citations: Vec::new(),
+                        citations,
                     });
                 }
             } else if let Some(arr) = content_val.as_array() {
@@ -827,6 +862,25 @@ impl ProtocolReader for OpenAiReader {
                         content.push(block);
                     }
                 }
+            }
+        }
+
+        // A structured-outputs / safety refusal arrives as `content: null` plus a `refusal` string,
+        // with `finish_reason: "stop"` — so neither the content nor the stop reason carries the
+        // signal. Reading only `content` produced an empty IR response, which the cross-protocol
+        // writers emit as a 200 with `content: []`: indistinguishable from a model that returned
+        // nothing, and an index error for any SDK consumer reading `content[0]`. Carry the text as
+        // assistant Text (Anthropic/Bedrock/Gemini have no distinct refusal part) and promote the
+        // stop reason below, matching what the sibling Responses reader already does.
+        let mut saw_refusal = false;
+        if let Some(text) = message_val.get("refusal").and_then(|v| v.as_str()) {
+            if !text.is_empty() {
+                saw_refusal = true;
+                content.push(crate::ir::IrBlock::Text {
+                    text: text.to_string(),
+                    cache_control: None,
+                    citations: Vec::new(),
+                });
             }
         }
 
@@ -861,6 +915,7 @@ impl ProtocolReader for OpenAiReader {
                         name,
                         input,
                         cache_control: None,
+                        thought_signature: None,
                     });
                 }
             }
@@ -871,11 +926,16 @@ impl ProtocolReader for OpenAiReader {
             .get("finish_reason")
             .and_then(|r| r.as_str())
             .unwrap_or("");
-        let stop_reason = if finish_reason.is_empty() {
+        let mut stop_reason = if finish_reason.is_empty() {
             None
         } else {
             Some(read_openai_stop_reason(finish_reason))
         };
+        // A refusal reports `finish_reason: "stop"`, so the signal only survives if it is promoted
+        // here. Only EndTurn is overridden — a refusal that also hit the length cap keeps MaxTokens.
+        if saw_refusal && stop_reason == Some(crate::ir::IrStopReason::EndTurn) {
+            stop_reason = Some(crate::ir::IrStopReason::Refusal);
+        }
 
         // Parse usage. Treat an absent `usage` object leniently — fall back to zero counts rather
         // than hard-erroring. A missing `usage` is an upstream response-format quirk (a

@@ -75,11 +75,11 @@ jobs:
         # typed one; it equals the committed `openapi.json` the runtime serves (drift-locked by the
         # `openapi_json_matches_committed_file` test in ci.yml).
         env:
-          BUSBAR_EMIT_OPENAPI: busbar-openapi-${{ github.ref_name }}.json
+          BUSBAR_EMIT_OPENAPI: ${{ github.workspace }}/busbar-openapi-${{ github.ref_name }}.json
         run: cargo test -p busbar --bin busbar --features openapi-schema emit_openapi_artifact -- --nocapture
       - name: Validate it is a well-formed OpenAPI 3.1 document
         run: |
-          doc="busbar-openapi-${GITHUB_REF_NAME}.json"
+          doc="${GITHUB_WORKSPACE}/busbar-openapi-${GITHUB_REF_NAME}.json"
           test -s "$doc" || { echo "OpenAPI doc is empty"; exit 1; }
           jq -e '.openapi | startswith("3.1")' "$doc" > /dev/null \
             || { echo "not an OpenAPI 3.1 document"; exit 1; }
@@ -87,7 +87,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload "${GITHUB_REF_NAME}" "busbar-openapi-${GITHUB_REF_NAME}.json" \
+          gh release upload "${GITHUB_REF_NAME}" "${GITHUB_WORKSPACE}/busbar-openapi-${GITHUB_REF_NAME}.json" \
             --repo "${GITHUB_REPOSITORY}" --clobber
 
   upload-assets:
@@ -97,24 +97,103 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # `pgo: true` routes a HOST-NATIVE target through scripts/pgo-build.sh (PGO is MANDATORY for
+        # release: the same fail-closed build docker.yml ships). PGO needs the instrumented binary
+        # to run ON THE RUNNER to train, so only the targets whose arch matches the runner's are
+        # PGO'd: x86_64-linux on the x86_64 ubuntu runner, and aarch64-darwin on the arm64 macos
+        # runner. The cross targets (aarch64-linux built on an x86_64 host, x86_64-darwin on an arm64
+        # host) and windows cannot self-train, so they keep the plain --release build.
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
+            pgo: true
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
           - target: x86_64-apple-darwin
             os: macos-latest
           - target: aarch64-apple-darwin
             os: macos-latest
+            pgo: true
           - target: x86_64-pc-windows-msvc
             os: windows-latest
     steps:
       - uses: actions/checkout@v7
 
+      # ── PGO path (host-native targets): the release binaries users download ARE PGO-optimized ──
+      # scripts/pgo-build.sh runs the three-phase PGO build (instrumented -> on-host training ->
+      # optimized) exactly as docker.yml does, FAIL-CLOSED: if any PGO phase fails the script exits
+      # non-zero and the job FAILS (it never falls back to a plain build). This closes the
+      # "PGO mandatory for release" drift where the GitHub-Release binaries were plain --release.
+      - name: Build busbar (PGO, required/fail-closed)
+        if: ${{ matrix.pgo }}
+        env:
+          BUSBAR_RELEASE_PUBKEY: ${{ vars.BUSBAR_RELEASE_PUBKEY }}
+          PGO_TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          scripts/pgo-build.sh
+          file "target/pgo/${{ matrix.target }}/release/busbar"
+
+      # POSITIVE PGO GATE: pgo-build.sh writes this marker ONLY after a non-empty merged profile fed
+      # a successful -Cprofile-use build. Asserting it here (not just the script exit code) means a
+      # release cannot ship a non-PGO host binary and still pass. (Mirrors docker.yml's gate.)
+      - name: Verify PGO was applied (marker gate)
+        if: ${{ matrix.pgo }}
+        run: |
+          set -euo pipefail
+          marker="target/pgo/${{ matrix.target }}/release/busbar.pgo-verified"
+          if [ ! -s "$marker" ]; then
+            echo "::error::PGO proof marker missing or empty at $marker - refusing to ship a non-PGO binary" >&2
+            exit 1
+          fi
+          echo "--- PGO proof marker ---"
+          cat "$marker"
+          grep -q '^pgo-verified=1$' "$marker" || { echo "::error::marker not marked verified" >&2; exit 1; }
+          bytes="$(grep '^profile_bytes=' "$marker" | cut -d= -f2)"
+          raw="$(grep '^profraw_count=' "$marker" | cut -d= -f2)"
+          if [ -z "$bytes" ] || [ "$bytes" -le 0 ] 2>/dev/null; then
+            echo "::error::merged profile was empty (profile_bytes=$bytes) - build was not PGO-optimized" >&2
+            exit 1
+          fi
+          if [ -z "$raw" ] || [ "$raw" -le 0 ] 2>/dev/null; then
+            echo "::error::no .profraw files fed the profile (profraw_count=$raw) - build was not PGO-optimized" >&2
+            exit 1
+          fi
+          echo "PGO verified: ${bytes} bytes of merged profile from ${raw} .profraw file(s)."
+
+      # Archive the PGO binary into the SAME `busbar-<target>.tar.gz` name the plain path produces and
+      # upload it to the Release, so the attestation glob below covers it identically.
+      - name: Package and upload busbar (PGO)
+        if: ${{ matrix.pgo }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          bin="target/pgo/${{ matrix.target }}/release/busbar"
+          archive="busbar-${{ matrix.target }}.tar.gz"
+          tar -czf "$archive" -C "$(dirname "$bin")" busbar
+          gh release upload "${GITHUB_REF_NAME}" "$archive" \
+            --repo "${GITHUB_REPOSITORY}" --clobber
+
+      # ── Plain path (cross / windows targets that cannot self-train for PGO) ──
       # Builds --release for the target (installing the toolchain + cross-linker as
       # needed), tarballs the `busbar` binary, and uploads it to the Release for this tag.
+      #
+      # BUSBAR_RELEASE_PUBKEY (repository VARIABLE, not a secret — it is the PUBLIC half) is
+      # embedded into the binary at build time (plugin-sign's option_env!): busbar-signed
+      # plugins then verify as first-party with zero configuration. The matching PRIVATE half
+      # is the BUSBAR_SIGN_KEY secret used by the hook-plugins job below (and, independently, by
+      # each standalone plugin repo's own release workflow — see the "Store/auth plugin releases
+      # moved out" note above hook-plugins for why store/auth plugins are no longer packed here).
+      # TODO(release-keys): the release orchestrator generates the real keypair separately
+      # (`busbar-plugin-pack keygen`) and provisions BOTH: the variable (public) + the secret
+      # (private). Until provisioned, release binaries embed no key and first-party plugin
+      # verification is unavailable (plugins still load via the third-party/unsigned paths).
       - name: Build and upload busbar
+        if: ${{ !matrix.pgo }}
         uses: taiki-e/upload-rust-binary-action@v1
+        env:
+          BUSBAR_RELEASE_PUBKEY: ${{ vars.BUSBAR_RELEASE_PUBKEY }}
         with:
           bin: busbar
           target: ${{ matrix.target }}
@@ -131,3 +210,84 @@ jobs:
         uses: actions/attest-build-provenance@v4
         with:
           subject-path: "busbar-${{ matrix.target }}.*"
+
+  # ── Every plugin releases from its own repo — no plugin upload jobs live here at all ─────────────
+  # Through 1.5.0 this file built and published every first-party plugin itself: `store-plugins`
+  # (sqlite/postgres/redis) and `auth-plugins` (oidc) from the in-tree `crates/store-*-plugin` /
+  # `crates/auth-oidc-plugin` crates, and `hook-plugins` (headroom/webrequest) from external sibling
+  # checkouts — headroom was ALSO baked pre-installed into the official Docker image. All of that
+  # special-casing is gone: a plugin is a plugin, full stop. Every first-party plugin — store, auth,
+  # AND hook alike — is a standalone repo (GetBusbar/store-sqlite, store-postgres, store-redis,
+  # auth-oidc, headroom-hook, webrequest-hook) with its own CI, its own `main`/`dev` branches, and
+  # its own release workflow that builds+signs+publishes ITS OWN tarball to ITS OWN GitHub Release
+  # on a version tag, independently versioned from busbar itself. busbar's own release publishes
+  # ONLY the core binary — no plugin tarball, signed or otherwise, is uploaded from this workflow.
+  # The Docker image (docker.yml) ships with zero plugins pre-installed, same as the binary.
+  #
+  #   - No trust argument favors bundling. First-party verification comes from the BUSBAR_SIGN_KEY
+  #     signature + the embedded BUSBAR_RELEASE_PUBKEY, not from which repo's Release page hosts the
+  #     file — a tarball signed by the same key and published from a plugin's own repo verifies
+  #     exactly as first-party as one uploaded here would.
+  #   - Publishing the SAME plugin from two different repos' Releases is a real provenance/trust
+  #     hazard with no offsetting benefit: which one is canonical, which one do docs point at, which
+  #     one gets the CVE fix first. One release pipeline per plugin removes the ambiguity.
+  #
+  # Every first-party store/auth/secret plugin crate has now been EXTRACTED out of this monorepo
+  # entirely: `crates/auth-oidc` + `crates/auth-oidc-plugin`, `crates/secret-vault` +
+  # `crates/secret-vault-plugin`, `crates/store-redis` + `crates/store-redis-plugin`,
+  # `crates/store-postgres` + `crates/store-postgres-plugin`, and `crates/store-sqlite` +
+  # `crates/store-sqlite-plugin` all now live in their own repos (GetBusbar/auth-oidc,
+  # GetBusbar/hashicorp-vault, GetBusbar/store-redis, GetBusbar/store-postgres,
+  # GetBusbar/store-sqlite) — same-repo 2-crate Cargo workspaces bringing the real logic crate
+  # in-repo, the reference restructure GetBusbar/auth-oidc's "Restructure as a same-repo 2-crate
+  # workspace" commit established. None of their coverage comes from an in-tree crate any more;
+  # scripts/release-check.sh's sibling-checkout phases run each repo's own test suite (real dlopen
+  # ABI + a real backing service container, where applicable) instead — see that script's
+  # Phase 1/Phase 2/Phase 3/Phase 4/Phase 4.5. "Every plugin, including its logic crate, lives in
+  # its own repo" is no longer an aspiration — it's the current state.
+  # See docs/plugins.md's "Signing and packaging" section for the corrected, current release-source
+  # story per plugin kind.
+
+
+  # ── Fan out an instant "a real release just happened" signal to every downstream repo that
+  #    self-heals off busbar's releases (Homebrew tap, Helm chart, and whatever else gets added to
+  #    .github/release-notify-targets.txt). Each target already has its OWN daily-poll workflow as
+  #    the durable fallback (so a missed/failed dispatch here is never a silent miss, just a same-day
+  #    catch-up) — this job only makes the common case instant instead of up-to-24h-later. Adding a
+  #    new downstream consumer to the fan-out is a one-line addition to that text file, no workflow
+  #    changes needed here or in this job.
+  notify-downstream:
+    needs: [sbom, openapi, upload-assets]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Dispatch upstream-release to every listed downstream repo
+        env:
+          # A fine-grained PAT (or GitHub App installation token) with Contents:read + Actions:write
+          # on every repo listed in release-notify-targets.txt. NOT the default GITHUB_TOKEN — that
+          # token cannot dispatch to OTHER repos, only this one. TODO(release-dispatch): provision
+          # this secret (org-level, so every downstream repo's own workflow can also use it if
+          # needed) before this job can do anything; until then it fails loudly rather than
+          # silently no-op'ing, so a missing token can't masquerade as "nothing to notify."
+          # GH_TOKEN is what `gh api` itself reads; DISPATCH_TOKEN is the same value under a
+          # separate name purely so the emptiness check below reads clearly.
+          GH_TOKEN: ${{ secrets.RELEASE_DISPATCH_TOKEN }}
+          DISPATCH_TOKEN: ${{ secrets.RELEASE_DISPATCH_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${DISPATCH_TOKEN:-}" ]; then
+            echo "::error::RELEASE_DISPATCH_TOKEN is not provisioned — cannot fan out the release" \
+                 "notification. Every downstream repo's own daily poll will still pick this release" \
+                 "up within 24h (self-healing fallback intact), but the instant path is unavailable." >&2
+            exit 1
+          fi
+          while IFS= read -r repo; do
+            # Skip blank lines and comments.
+            case "$repo" in ''|'#'*) continue ;; esac
+            echo "Dispatching upstream-release to ${repo}..."
+            gh api "repos/${repo}/dispatches" \
+              -f event_type=upstream-release \
+              -f "client_payload[tag]=${GITHUB_REF_NAME}" \
+              -f "client_payload[repo]=${GITHUB_REPOSITORY}"
+          done < .github/release-notify-targets.txt

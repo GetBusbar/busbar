@@ -204,15 +204,28 @@ impl ProtocolReader for AnthropicReader {
         // `role:"system"` (which upstream rejects with a 400). System blocks are appended in order,
         // preserving their position relative to any top-level `system` field already read above.
         let mut messages: Vec<crate::ir::IrMessage> = Vec::new();
+        // Positions (post system-filter, matching `write_request`'s indexing) of any raw content
+        // block whose type `read_block` cannot model (e.g. `document`) — parked here so an
+        // Anthropic-to-Anthropic hop that goes through the IR (not the byte-verbatim same-protocol
+        // passthrough) can splice the ORIGINAL block back rather than losing it to the degrade-to-
+        // empty-Text placeholder `read_block` already applies for shape-preservation.
+        let mut unmodeled_blocks: Vec<serde_json::Value> = Vec::new();
         if let Some(messages_val) = obj.get("messages") {
             for msg_val in messages_val.as_array().unwrap_or(&Vec::new()) {
                 let msg = read_message(msg_val)?;
                 if msg.role == crate::ir::IrRole::System {
                     system_blocks.extend(msg.content);
                 } else {
+                    stash_unmodeled_blocks(msg_val, messages.len(), &mut unmodeled_blocks);
                     messages.push(msg);
                 }
             }
+        }
+        if !unmodeled_blocks.is_empty() {
+            extra.insert(
+                ANTHROPIC_UNMODELED_BLOCKS_SENTINEL.to_string(),
+                serde_json::Value::Array(unmodeled_blocks),
+            );
         }
 
         // Handle tools array
@@ -548,7 +561,6 @@ impl ProtocolReader for AnthropicReader {
         // for redacted reasoning — a `Thinking` BlockStart plus a `RedactedReasoningDelta` carrying
         // the opaque bytes — from this one start event (the natural `content_block_stop` that follows
         // produces the BlockStop). Mirrors the Bedrock streaming reader + the non-stream `read_block`.
-        // (found: audit c2r2.)
         if event_type == EVT_CONTENT_BLOCK_START {
             if let Some(block) = data.get("content_block") {
                 if block.get("type").and_then(|t| t.as_str()) == Some(BLOCK_TYPE_REDACTED_THINKING)

@@ -11,6 +11,11 @@ pub(crate) fn find_soonest_cooldown(
     let mut soonest_remaining = u64::MAX;
 
     for wl in cands {
+        // A dead or budget-exhausted lane reports a cooldown of 0 (deadness lives outside the cell
+        // FSM), so without this it sorts FIRST and beats a lane that genuinely recovers in seconds.
+        if !store.lane_admissible(wl.idx) {
+            continue;
+        }
         let remaining = store.cooldown_remaining_in(pool, wl.idx, now);
         if remaining < soonest_remaining {
             soonest_remaining = remaining;
@@ -152,7 +157,7 @@ pub(crate) async fn forward_once(
     // The selected pool member's `reasoning` override (`WeightedLane.reasoning`), resolved by the
     // caller from its candidate slice. `None` = no member override → fall back to the lane flag. The
     // degraded path has no `cands` in scope, so the caller passes the already-resolved override here
-    // (mirrors the hot path's `effective_reasoning`). (found: audit c2r3.)
+    // (mirrors the hot path's `effective_reasoning`).
     reasoning_override: Option<bool>,
 ) -> Result<Response, ()> {
     // Re-parse body for per-lane model rewriting. An OPAQUE (non-JSON) body — multipart/binary
@@ -207,12 +212,7 @@ pub(crate) async fn forward_once(
     // cell against its own thresholds, not a one-size default. Wrapped in an `Arc` so the streaming
     // `FirstByteBody` guard can record mid-stream failures with the SAME thresholds the synchronous
     // path used (mirrors `forward_with_pool`).
-    let forward_once_cfg: std::sync::Arc<crate::store::BreakerCfg> = std::sync::Arc::new(
-        app.pool_runtime
-            .get(pool)
-            .and_then(|r| r.breaker.clone())
-            .unwrap_or_default(),
-    );
+    let forward_once_cfg: std::sync::Arc<crate::store::BreakerCfg> = resolve_breaker_cfg(app, pool);
 
     // Cross-protocol request shaping through the SINGLE shared seam (read→clear-extra→write, shim-key
     // strip, model rewrite, serialize) — the SAME function the hot `forward_with_pool` path uses, so
@@ -229,7 +229,7 @@ pub(crate) async fn forward_once(
         v,
         req_content_type,
         // Honor the pool member's `reasoning` override (as the hot path does via
-        // `effective_reasoning`), falling back to the lane-level flag. (found: audit c2r3.)
+        // `effective_reasoning`), falling back to the lane-level flag.
         reasoning_override.unwrap_or(app.lanes[i].reasoning),
         body,
     ) {
@@ -280,7 +280,7 @@ pub(crate) async fn forward_once(
     // degraded path no longer re-splits and allocates a second String for the canonical URI.
     let (wire_path, canonical_uri) = sign_and_wire_path_parts(&url_path);
     let signing_ctx = crate::proto::SigningContext {
-        host: host_from_base(base),
+        host: &app.lanes[i].signing_host,
         canonical_uri,
         body: &payload,
         timestamp_epoch: now(),
@@ -304,6 +304,7 @@ pub(crate) async fn forward_once(
     };
     let mut req = app
         .client
+        .get()
         .post(format!("{base}{wire_path}"))
         .headers(convert_headers(auth))
         .header(CONTENT_TYPE, egress_ct)
@@ -353,21 +354,10 @@ pub(crate) async fn forward_once(
                         emit_breaker_trip(app, pool, i);
                     }
                     app.store.release_probe_in(pool, i);
-                    metrics::counter!(
-                        crate::metrics::UPSTREAM_FAILURES_TOTAL,
-                        "pool" => pool.to_string(),
-                        "lane" => app.lanes[i].model.clone(),
-                        "disposition" => DISPOSITION_ATTEMPT_TIMEOUT
-                    )
-                    .increment(1);
+                    crate::telemetry::upstream_failure(app, pool, i, DISPOSITION_ATTEMPT_TIMEOUT);
                     // Parity with the organic path: a degraded-path attempt-timeout is a failover
                     // (the caller tries the next candidate), so count it under FAILOVERS_TOTAL too.
-                    metrics::counter!(
-                        crate::metrics::FAILOVERS_TOTAL,
-                        "pool" => pool.to_string(),
-                        "reason" => DISPOSITION_ATTEMPT_TIMEOUT
-                    )
-                    .increment(1);
+                    crate::telemetry::failover(app, pool, DISPOSITION_ATTEMPT_TIMEOUT);
                     return Err(());
                 }
             }
@@ -406,7 +396,7 @@ pub(crate) async fn forward_once(
             if !status.is_success() {
                 let bytes = read_capped_body(r).await;
                 // Cross-protocol: relaying the EGRESS provider's native error body+Content-Type to a
-                // different-protocol client is a foreign-format leak (§8.2). Reshape to the ingress
+                // different-protocol client is a foreign-format leak. Reshape to the ingress
                 // protocol's native error envelope, lifting the upstream's human message where
                 // present. Same-protocol passthrough relays verbatim (already the client's shape).
                 if cross_protocol {
@@ -513,6 +503,15 @@ pub(crate) async fn forward_once(
             // actually decremented. `budget_spent` is `true` for an unlimited lane (spend is a no-op
             // success there), so an unlimited lane never refunds (refund_budget is also a no-op there).
             let budget_spent = app.store.spend_budget(i);
+            // Guards the buffered path's spend→`read_capped(...).await` window (#21): armed now,
+            // disarmed at every exit below that must KEEP the charge. Disarmed (without refunding)
+            // just before the streaming builder, which hands `budget_spent` to `FirstByteBody` for
+            // its own cancellation-safe refund. See `engine::mod::BudgetSpendGuard`.
+            let mut budget_guard = super::BudgetSpendGuard {
+                store: app.store.as_ref(),
+                lane: i,
+                armed: budget_spent,
+            };
 
             // SUCCESS: stream the response body incrementally (permit held for stream life).
             let is_sse = ct
@@ -524,250 +523,29 @@ pub(crate) async fn forward_once(
             // the main forward_with_pool path so this degraded route does not leak the egress wire
             // format to a different-protocol client.
             if cross_protocol && !is_sse {
-                // COMPLETION cap (not the tight error-body cap): a legitimate 2xx can far exceed
-                // 256 KiB and must be buffered whole to translate; `truncated` lets us return a
-                // clear error instead of mis-reporting a too-large success as untranslatable.
-                let (bytes, read_end) = read_capped(r, max_translated_body_bytes()).await;
-                // Re-record the upstream RTT through full-body receipt (see the main forward path):
-                // on the buffered cross-protocol path the body-download is upstream cost, not Busbar's,
-                // so the `Server-Timing` figure must exclude it.
-                record_upstream_rtt(upstream_started.elapsed());
-                drop(permit); // a buffered (non-streamed) response holds no permit
-                if read_end == ReadEnd::TransportError {
-                    // Body failed mid-transfer after an optimistic success/budget recording on the
-                    // 2xx headers (see the main forward path): don't charge tokens for a corrupt
-                    // fragment, record a compensating transient failure against the ROUTING POOL cell
-                    // (so the pool cell — not the default `""` cell — sees the failed transfer), refund
-                    // the request budget unit spent on the headers (no usable response was delivered,
-                    // so a failed body transfer must not permanently drain the lane's `max_requests`
-                    // budget), and return an ingress-native error. Refund ONLY if the spend actually
-                    // decremented (#21) — `refund_budget` is an unconditional fetch_add, so refunding a
-                    // no-op spend would push the budget above its cap.
-                    tracing::warn!(
-                        ingress = %ingress_protocol,
-                        egress = %egress_name,
-                        "cross-protocol non-stream upstream body failed mid-transfer; \
-                         not recording success/usage, refunding budget, returning ingress-native error"
-                    );
-                    let tripped = app.store.record_transient_in(
-                        pool,
-                        i,
-                        ERR_NET_TRANSPORT,
-                        forward_once_cfg.as_ref(),
-                        None,
-                    );
-                    // A threshold-based Closed→Open trip here is a breaker trip too (#29); emit the
-                    // metric, mirroring the main forward path — otherwise BREAKER_TRIPS_TOTAL
-                    // undercounts trips on this degraded (FallbackPool/LeastBad) path.
-                    if tripped {
-                        emit_breaker_trip(app, pool, i);
-                    }
-                    if budget_spent {
-                        app.store.refund_budget(i);
-                    }
-                    return Ok(ingress_error(
-                        ingress_protocol,
-                        StatusCode::BAD_GATEWAY,
-                        KIND_API_ERROR,
-                        GENERIC_RESPONSE_ERROR_DETAIL,
-                    ));
-                }
-                if read_end == ReadEnd::Truncated {
-                    // Upstream body exceeded OUR translation cap → client gets a 500 with no
-                    // completion, so tokens are NOT charged here (accounting lives after this guard),
-                    // matching the TransportError branch and the main forward path. This is our own
-                    // size limit, not an upstream fault, so the optimistic breaker success stands and
-                    // the budget unit is NOT refunded.
-                    tracing::warn!(
-                        ingress = %ingress_protocol,
-                        egress = %egress_name,
-                        cap = max_translated_body_bytes(),
-                        "cross-protocol non-stream success body exceeded the translation cap; \
-                         cannot translate, not charging tokens, returning ingress-native error"
-                    );
-                    return Ok(ingress_error(
-                        ingress_protocol,
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        KIND_API_ERROR,
-                        GENERIC_RESPONSE_ERROR_DETAIL,
-                    ));
-                }
-                // Token accounting deferred to the delivery seam below (#2), mirroring the main
-                // forward path: a 2xx whose usage parses but whose content shape is unmodeled (or
-                // whose ingress protocol fails `protocol_for`) falls through to the ingress-native
-                // 500 below with NO completion delivered, so charging before translation is proven
-                // would bill the key for a body the client never receives.
-                let egress_op = crate::handlers::request_handler(app.lanes[i].protocol.name())
-                    .and_then(|rh| rh.operation_handler(op.operation));
-                // Parse the body ONCE, then branch on JSON vs opaque (binary) — mirrors the main
-                // forward path. Without the binary arm, a cross-protocol speech/transcription response
-                // (raw audio bytes) failed the JSON parse and fell straight through to the generic 500
-                // below, so every binary-body cross-protocol op on a fallback/least-bad lane 500'd
-                // even though the main path serves it correctly.
-                let body_json = crate::json::parse::<Value>(&bytes);
-                if body_json.is_err() {
-                    let decoded = egress_op.map(|h| h.read_response(&bytes));
-                    if let Some(Err(ref e)) = decoded {
-                        tracing::warn!(
-                            ingress = %ingress_protocol,
-                            egress = %egress_name,
-                            error = ?e,
-                            "cross-protocol binary response failed the egress codec (read_response, degraded path); returning ingress-native 500",
-                        );
-                    }
-                    if let Some(Ok(mut ir)) = decoded {
-                        record_resp_usage(
-                            &ir,
-                            &usage_sink,
-                            Some((&app.lanes[i].model, &app.lanes[i].provider)),
-                        );
-                        ir.prepare_for_ingress(ingress_protocol, now());
-                        if let Some(wire) = crate::handlers::request_handler(ingress_protocol)
-                            .and_then(|rh| rh.operation_handler(op.operation))
-                            .map(|h| h.write_response(&ir))
-                        {
-                            let rb = Response::builder()
-                                .status(status)
-                                .header(CONTENT_TYPE, wire.content_type);
-                            let rb = maybe_attach_response_request_id(rb, ingress_protocol, None);
-                            return Ok(rb
-                                .body(Body::from(wire.bytes))
-                                .unwrap_or_else(|_| status.into_response()));
-                        }
-                    }
-                }
-                if let Ok(rv) = &body_json {
-                    let decoded = egress_op.map(|h| h.read_response_value(rv));
-                    if let Some(Err(ref e)) = decoded {
-                        // Degraded/fallback path: same swallowed-CodecError gap as the main forward
-                        // path — log the codec error before the generic 500 so repeated failures on a
-                        // fallback lane have a visible root cause.
-                        tracing::warn!(
-                            ingress = %ingress_protocol,
-                            egress = %app.lanes[i].protocol.name(),
-                            error = ?e,
-                            "cross-protocol JSON response failed the egress codec (read_response_value, degraded path); returning ingress-native 500",
-                        );
-                    }
-                    if let Some(Ok(mut ir)) = decoded {
-                        if let Some(ingress_proto) = crate::proto::protocol_for(ingress_protocol) {
-                            // Token accounting: committed to translating and delivering this body
-                            // (every exit below is a delivered response). No FirstByteBody on this
-                            // buffered path, so bill from the IR usage just decoded (Change A,
-                            // mirrors the main path).
-                            record_resp_usage(
-                                &ir,
-                                &usage_sink,
-                                Some((&app.lanes[i].model, &app.lanes[i].provider)),
-                            );
-                            // OPERATION-BLIND ingress preparation (identity strip, `created`
-                            // boundary signal, tool-id remap) — the SAME seam transform the main
-                            // path applies; relocated verbatim into `IrResp::prepare_for_ingress`.
-                            ir.prepare_for_ingress(ingress_protocol, now());
-                            // Bedrock ConverseStream request answered by a buffered (non-SSE) 2xx:
-                            // emit the native binary eventstream frame sequence, not an
-                            // `application/json` Converse body the SDK's stream decoder cannot parse
-                            // (mirrors the main forward path; dispatches through writer vtable).
-                            if wants_stream {
-                                let elapsed_ms =
-                                    u64::try_from(upstream_started.elapsed().as_millis()).ok();
-                                if let Some(frames) =
-                                    ir.wrap_buffered_as_stream(ingress_proto.writer(), elapsed_ms)
-                                {
-                                    let rb = Response::builder().status(status).header(
-                                        CONTENT_TYPE,
-                                        ingress_proto.writer().streaming_content_type(),
-                                    );
-                                    let rb = maybe_attach_response_request_id(
-                                        rb,
-                                        ingress_protocol,
-                                        None,
-                                    );
-                                    return Ok(rb
-                                        .body(Body::from(frames))
-                                        .unwrap_or_else(|_| status.into_response()));
-                                }
-                            }
-                            let ingress_op = crate::handlers::request_handler(ingress_protocol)
-                                .and_then(|rh| rh.operation_handler(op.operation));
-                            let Some(ingress_op) = ingress_op else {
-                                return Ok(ingress_error(
-                                    ingress_protocol,
-                                    StatusCode::NOT_FOUND,
-                                    KIND_NOT_FOUND,
-                                    DETAIL_ENDPOINT_UNSUPPORTED_OPERATION,
-                                ));
-                            };
-                            let mut translated = match ingress_op.write_response_value(&ir) {
-                                Some(t) => t,
-                                None => {
-                                    // Binary ingress dialect: relay the WireBody verbatim.
-                                    let wire = ingress_op.write_response(&ir);
-                                    let rb = Response::builder()
-                                        .status(status)
-                                        .header(CONTENT_TYPE, wire.content_type);
-                                    let rb = maybe_attach_response_request_id(
-                                        rb,
-                                        ingress_protocol,
-                                        None,
-                                    );
-                                    return Ok(rb
-                                        .body(Body::from(wire.bytes))
-                                        .unwrap_or_else(|_| status.into_response()));
-                                }
-                            };
-                            // Inject `metrics.latencyMs` for a bedrock-ingress non-stream Converse — a
-                            // native AWS Converse always populates it, so its absence is a proxy tell
-                            // (mirrors the streaming path and the buffered cross-protocol path above).
-                            // OMIT rather than fabricate `0` if timing is unavailable.
-                            ingress_proto.writer().inject_response_metrics(
-                                &mut translated,
-                                u64::try_from(upstream_started.elapsed().as_millis()).ok(),
-                            );
-                            // Gemini JSON-array streaming answered by a buffered non-SSE 2xx: wrap the
-                            // single translated object in a one-element JSON array, matching the native
-                            // non-`alt=sse` `streamGenerateContent` array framing (see the main path).
-                            if gemini_json_array && wants_stream {
-                                let arr = Value::Array(vec![translated]);
-                                return Ok(Response::builder()
-                                    .status(status)
-                                    .header(CONTENT_TYPE, APPLICATION_JSON)
-                                    .body(Body::from(
-                                        crate::json::to_vec(&arr)
-                                            .unwrap_or_else(|_| arr.to_string().into_bytes()),
-                                    ))
-                                    .unwrap_or_else(|_| status.into_response()));
-                            }
-                            // The ingress writer's vtable attaches its native response request-id
-                            // header (bedrock `x-amzn-RequestId`, anthropic `request-id`). Cross-protocol
-                            // degraded translate (ingress != egress): no upstream id to forward, so
-                            // `None` synthesizes one. ONE call per protocol — a second would APPEND a
-                            // duplicate header.
-                            let rb = Response::builder()
-                                .status(status)
-                                .header(CONTENT_TYPE, APPLICATION_JSON);
-                            let rb = maybe_attach_response_request_id(rb, ingress_protocol, None);
-                            let body_bytes = crate::json::to_vec(&translated)
-                                .unwrap_or_else(|_| translated.to_string().into_bytes());
-                            return Ok(rb
-                                .body(Body::from(body_bytes))
-                                .unwrap_or_else(|_| status.into_response()));
-                        }
-                    }
-                }
-                // Untranslatable across a protocol boundary: return an ingress-native error rather
-                // than leaking the upstream body verbatim.
-                tracing::warn!(
-                    ingress = %ingress_protocol,
-                    egress = %egress_name,
-                    "degraded cross-protocol response not translatable; returning ingress-native error"
-                );
-                return Ok(ingress_error(
+                return Ok(super::translate_response_cross_protocol(
+                    app,
+                    i,
                     ingress_protocol,
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    KIND_API_ERROR,
-                    GENERIC_RESPONSE_ERROR_DETAIL,
-                ));
+                    op,
+                    pool,
+                    forward_once_cfg.as_ref(),
+                    r,
+                    permit,
+                    &mut budget_guard,
+                    usage_sink,
+                    status,
+                    wants_stream,
+                    gemini_json_array,
+                    upstream_started,
+                    // The degraded (FallbackPool/LeastBad) path has no `chosen_policy_name` in scope —
+                    // there is no routing-policy decision on this hop — and `maybe_attach_route_policy`
+                    // is already a no-op on `None`, so this reproduces the prior behavior (no
+                    // `x-busbar-route-*` headers on this path) exactly.
+                    None,
+                    true, // degraded path: selects the "degraded"-labeled warn strings
+                )
+                .await);
             }
 
             // Streaming (or same-protocol non-stream): stream with first-byte boundary tracking. On a
@@ -792,6 +570,9 @@ pub(crate) async fn forward_once(
                         .and_then(|p| p.writer().make_array_stream_framer())
                 })
                 .flatten();
+            // Handing the budget-refund decision to `FirstByteBody` (via `budget_spent` below) —
+            // disarm the local guard so it does not ALSO refund when this frame unwinds.
+            budget_guard.disarm();
             let upstream_stream = r.bytes_stream();
             let guarded_body = FirstByteBody::new(
                 upstream_stream,
@@ -909,7 +690,7 @@ pub(crate) async fn handle_fallback_pool(
     // Re-apply any compliance restrict from the primary pool against THIS fallback pool's own member
     // tags — the fallback pool is an independent membership, so without this the "restrictions hold
     // across failover" guarantee would break at the pool boundary. Fail closed (503) if a required
-    // restrict leaves no eligible fallback lane. (found: audit c1r13.)
+    // restrict leaves no eligible fallback lane.
     let fallback_cands = match request_ctx.enforce_restricts(&app, pool_name, fallback_cands) {
         Ok(c) => c,
         Err(name) => {
@@ -928,6 +709,24 @@ pub(crate) async fn handle_fallback_pool(
         }
     };
 
+    // Apply the FALLBACK pool's OWN `failover.exclusions`. Exclusions are a per-pool member
+    // blocklist, and the fallback pool is an independent membership — the primary pool's blocklist
+    // says nothing about it, and its own was never consulted, so a member the operator blocklisted
+    // here could still be reached by spilling into this pool.
+    let fallback_cands = match app
+        .pool_runtime
+        .get(pool_name)
+        .and_then(|r| r.failover.as_ref())
+        .or(app.failover_cfg.as_ref())
+        .and_then(|f| f.exclusions.as_ref())
+    {
+        Some(excl) => fallback_cands
+            .into_iter()
+            .filter(|wl| !excl.iter().any(|m| m == &app.lanes[wl.idx].model))
+            .collect(),
+        None => fallback_cands,
+    };
+
     // Mark before re-entering so a cycle back to this pool is detected.
     request_ctx.mark_pool_visited(pool_name);
 
@@ -942,11 +741,15 @@ pub(crate) async fn handle_fallback_pool(
             );
         }
 
-        let Some((i, permit)) =
+        let Some((i, permit, _probe_epoch)) =
             // Fallback-pool selection uses plain SWRR by design: routing POLICY applies to the PRIMARY
             // pool (where it shapes the normal-path lane choice); the fallback pool is the
             // already-degraded overflow path, so it deliberately selects with the unchanged inline SWRR
             // (`policy_order == None`) rather than re-running a policy over the spillover candidates.
+            // The epoch is unused here: this function delegates to `forward_once` (a separate
+            // single-attempt call), whose own `release_probe_in` sites are unowned by design — each
+            // is preceded by an unowned `record_transient_in` that already transitions the cell, so
+            // switching those to owned would change nothing observable (see M6's audit notes).
             pick_among(&app, &fallback_cands, request_ctx, None, pool_name, None).await
         else {
             // Fallback pool itself exhausted — consult ITS on_exhausted config (multi-level

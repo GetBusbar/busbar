@@ -21,6 +21,11 @@ impl ProtocolWriter for AnthropicWriter {
         true
     }
 
+    fn max_cache_control_breakpoints(&self) -> Option<usize> {
+        // Anthropic: "A maximum of 4 blocks with cache_control may be provided".
+        Some(4)
+    }
+
     fn write_error(&self, status: u16, kind: &str, message: &str) -> serde_json::Value {
         // Native Anthropic error envelope: `{"type":"error","error":{"type":<kind>,"message":<msg>}}`
         // (see the Anthropic SDK / API error shape — the `anthropic.APIStatusError` family decodes
@@ -130,11 +135,24 @@ impl ProtocolWriter for AnthropicWriter {
             let system_array: Vec<_> = system_blocks.into_iter().map(write_block).collect();
             out.insert("system".to_string(), serde_json::Value::Array(system_array));
         }
+        // Splice back any raw native blocks `read_request` parked because the IR cannot model them
+        // (e.g. `document`) — an Anthropic-sourced IR that goes through this writer (not the
+        // byte-verbatim same-protocol passthrough) must still carry them, per the parking contract
+        // at `ANTHROPIC_UNMODELED_BLOCKS_SENTINEL`. Empty slice when absent (the overwhelmingly
+        // common case, and always true for a genuinely cross-protocol IR — `prepare_for_egress`
+        // clears `extra` wholesale, so no other protocol's IR can carry this key).
+        let unmodeled_sentinel: &[serde_json::Value] = req
+            .extra
+            .get(ANTHROPIC_UNMODELED_BLOCKS_SENTINEL)
+            .and_then(|v| v.as_array())
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
         let messages_array: Vec<_> = req
             .messages
             .iter()
             .filter(|msg| msg.role != crate::ir::IrRole::System)
-            .map(write_message)
+            .enumerate()
+            .map(|(m, msg)| write_message(msg, m, unmodeled_sentinel))
             .collect();
         out.insert(
             "messages".to_string(),
@@ -149,16 +167,31 @@ impl ProtocolWriter for AnthropicWriter {
         // The parallelism carry (OpenAI `parallel_tool_calls`) rides the same object as Anthropic's
         // inverted `disable_parallel_tool_use` — valid on auto/any/tool, not on `none`.
         if let Some(tc) = &req.tool_choice {
-            let mut tc_val = write_anthropic_tool_choice(tc);
-            if let (Some(parallel), Some(map)) = (req.parallel_tool_calls, tc_val.as_object_mut()) {
-                if map.get("type").and_then(|t| t.as_str()) != Some("none") {
-                    map.insert(
-                        "disable_parallel_tool_use".to_string(),
-                        serde_json::json!(!parallel),
-                    );
+            // Anthropic 400s on a `tool_choice` with no `tools` array. Reachable cross-protocol:
+            // `prepare_for_egress` strips hosted tools (`ir/variant.rs`), so a Responses
+            // `{tools:[{type:"web_search"}], tool_choice:"required"}` can arrive here with
+            // `tools == []` and `tool_choice` still set. Drop with a warn rather than a guaranteed
+            // 400 — this is the SAME guard the parallelism carry just below already applies.
+            if req.tools.is_empty() {
+                tracing::warn!(
+                    "dropping tool_choice on Anthropic egress: Anthropic rejects a tool_choice with \
+                     no tools array (likely because the hosted tools that carried it were stripped \
+                     on the cross-protocol seam)"
+                );
+            } else {
+                let mut tc_val = write_anthropic_tool_choice(tc);
+                if let (Some(parallel), Some(map)) =
+                    (req.parallel_tool_calls, tc_val.as_object_mut())
+                {
+                    if map.get("type").and_then(|t| t.as_str()) != Some("none") {
+                        map.insert(
+                            "disable_parallel_tool_use".to_string(),
+                            serde_json::json!(!parallel),
+                        );
+                    }
                 }
+                out.insert("tool_choice".to_string(), tc_val);
             }
-            out.insert("tool_choice".to_string(), tc_val);
         } else if let Some(parallel) = req.parallel_tool_calls {
             // No directive but the caller did set parallelism: Anthropic can only express it inside
             // a tool_choice object, so synthesize the neutral `auto` carrier — only when tools are
@@ -415,14 +448,21 @@ impl ProtocolWriter for AnthropicWriter {
             }
             IrStreamEvent::BlockStart { index, block } => {
                 let content_block = match block {
+                    // Anthropic's native `content_block_start` carries the block's SEED value so an
+                    // SDK accumulator initializes the field before any delta arrives: a text block
+                    // start ships `text:""`, a tool_use start ships `input:{}`, and a thinking start
+                    // ships `thinking:""` + `signature:""`. Omitting the seed leaves the SDK's
+                    // accumulator field `undefined`, so the first `..._delta` concatenates onto
+                    // `undefined` (`"undefined" + chunk` / a `KeyError`) and streaming accumulation
+                    // breaks on the client. Emit the seeds to match native.
                     IrBlockMeta::Text => {
-                        serde_json::json!({ "type": "text" })
+                        serde_json::json!({ "type": "text", "text": "" })
                     }
                     IrBlockMeta::Thinking => {
-                        serde_json::json!({ "type": "thinking" })
+                        serde_json::json!({ "type": "thinking", "thinking": "", "signature": "" })
                     }
                     IrBlockMeta::ToolUse { id, name } => {
-                        serde_json::json!({ "type": STOP_TOOL_USE, "id": id, "name": name })
+                        serde_json::json!({ "type": STOP_TOOL_USE, "id": id, "name": name, "input": {} })
                     }
                     IrBlockMeta::Image => {
                         serde_json::json!({ "type": "image" })

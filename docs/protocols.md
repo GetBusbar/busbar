@@ -89,14 +89,14 @@ Client 1 makes an **OpenAI** request to `fast`; client 2 makes a **Bedrock** req
 
 Every major LLM provider ships (or is compatible with) a client SDK. Those SDKs are tightly coupled to a specific base URL and a specific wire protocol: the OpenAI Python SDK always speaks the OpenAI Chat Completions protocol; the Anthropic SDK always speaks the Anthropic Messages protocol; the Google Gen AI SDK always speaks the Gemini protocol.
 
-Busbar registers one ingress route per protocol. Because the protocol is fixed by the URL path: not by sniffing the body or headers, you configure your existing SDK to talk to Busbar by changing exactly two things:
+Every registered SDK talks to Busbar by changing exactly two things:
 
 - **`base_url`**: point it at Busbar instead of the vendor.
 - **API key**: give it a Busbar client token (or your vendor key in `passthrough` mode) instead of the vendor key.
 
-Nothing else changes in your application code. The SDK still calls the same method (`chat.completions.create`, `messages.create`, whatever). The body it constructs is valid for its native protocol. Busbar accepts it on the matching ingress route, resolves the model/pool, and forwards: translating to the lane's protocol if necessary.
+Nothing else changes in your application code. The SDK still calls the same method (`chat.completions.create`, `messages.create`, whatever). The body it constructs is valid for its native protocol. Busbar accepts it, resolves the model/pool, and forwards: translating to the lane's protocol if necessary.
 
-The key architectural guarantee: **Busbar's ingress is statically determined by the URL path**. Each protocol lives at its own routes. No heuristics, no body-sniffing, no content negotiation. (When nothing matches a registered route, Busbar's fallback handler defaults to the OpenAI error envelope for the 404: but live ingress is always path-determined.)
+**How ingress protocol identification actually works** (`proto::detect::protocol_id`): mostly path-determined, with a small, deliberate header-first exception for auth-carrier ambiguity. The URL path is authoritative for every route this doc lists below — but a request carrying one of a few protocol-specific auth headers (`anthropic-version`/`anthropic-beta`, `x-goog-api-key`, or bare `x-api-key`, or an AWS SigV4 `Authorization` header) is routed by that header FIRST, before the path is even consulted. This exists specifically so a curl user who copies Anthropic's docs (which often omit `anthropic-version` in the simplest examples) still lands on the right protocol via `x-api-key` alone. It also means: **`x-api-key`, `x-goog-api-key`, `anthropic-version`/`anthropic-beta`, and an AWS SigV4 `Authorization` header are NOT interchangeable "any carrier reaches any protocol" tokens** — sending one of these headers on a request whose BODY and PATH are for a *different* protocol routes to the header's protocol, not the path's, and typically 404s once that protocol's own operation resolver doesn't recognize the path. Stick to each protocol's own native auth carrier (or a bearer token, which never forces a specific protocol) and this never comes up in practice. No body-sniffing and no true content-negotiation either way: identification only ever looks at the path and this small, fixed set of headers.
 
 ---
 
@@ -249,9 +249,9 @@ POST /v1beta/models/{model}:generateContent
 POST /v1beta/models/{model}:streamGenerateContent
 ```
 
-Both the stable `/v1/` and the beta `/v1beta/` path prefixes are accepted by the same handler (registered as `/v1/models/{*rest}` and `/v1beta/models/{*rest}`). The Google `google-generativeai` and `google-genai` SDKs use either surface depending on the version and the method called; Busbar accepts both so you do not need to know which one your SDK version issues.
+Both the stable `/v1/` and the beta `/v1beta/` path prefixes are accepted, served through the same fallback dispatch as every other body-model/path-model protocol (see the note on ingress identification above) — anything under `/v1/models/` or `/v1beta/models/` other than a bare `GET` (which lists models) resolves to Gemini. The Google `google-generativeai` and `google-genai` SDKs use either surface depending on the version and the method called; Busbar accepts both so you do not need to know which one your SDK version issues.
 
-**Auth carrier (ingress):** `x-goog-api-key: <token>` (the header the Gemini SDK sends). Busbar also accepts `Authorization: Bearer` on this route (any of Busbar's carriers validate the same token). Under `token` or governance mode, the value is matched against your Busbar client tokens: not forwarded to Google.
+**Auth carrier (ingress):** `x-goog-api-key: <token>` (the header the Gemini SDK sends). Busbar also accepts `Authorization: Bearer` on this route (any of Busbar's carriers validate the same token). With a non-empty `auth.chain`, the value is verified as a Busbar key: not forwarded to Google.
 
 **Auth header (egress to Gemini backend):** `x-goog-api-key: <key>`.
 
@@ -288,13 +288,13 @@ POST /model/{model_id}/converse
 POST /model/{model_id}/converse-stream
 ```
 
-**Auth carrier (ingress):** AWS SDKs sign requests with SigV4 (`Authorization: AWS4-HMAC-SHA256 ...`). Busbar supports two tracks for Bedrock ingress depending on whether governance is enabled.
+**Auth carrier (ingress):** AWS SDKs sign requests with SigV4 (`Authorization: AWS4-HMAC-SHA256 ...`). Busbar supports two tracks for Bedrock ingress depending on the auth chain.
 
-**Track A: Without governance (`auth.chain: []`, with `upstream_credentials: passthrough` or without):** Busbar does not verify the inbound SigV4 signature. Bearer-style carriers (`Authorization: Bearer`, `x-api-key`, `x-goog-api-key`) are the only tokens Busbar's auth middleware reads in these modes. The SigV4 header is forwarded upstream to the Bedrock backend (`upstream_credentials: passthrough`) or ignored entirely (plain `chain: []`). Use this when you want AWS SDK clients to target Busbar as a transparent Bedrock proxy with pooling and failover but without per-key governance controls.
+**Track A: Open/passthrough (`auth.chain: []`, with `upstream_credentials: passthrough` or without):** Busbar does not verify the inbound SigV4 signature. Bearer-style carriers (`Authorization: Bearer`, `x-api-key`, `x-goog-api-key`) are the only tokens Busbar's auth middleware reads in these modes. The SigV4 header is forwarded upstream to the Bedrock backend (`upstream_credentials: passthrough`) or ignored entirely (plain `chain: []`). Use this when you want AWS SDK clients to target Busbar as a transparent Bedrock proxy with pooling and failover but without per-key governance controls.
 
-**Track B: With governance (`auth.chain: [tokens]` + `governance.enabled: true`):** Busbar verifies the inbound SigV4 signature natively (`crates/busbar/src/auth/mod.rs` `verify_bedrock_sigv4`). An operator mints a virtual key with `"issue_aws_credential": true` via `POST /api/v1/admin/keys`; the response returns an `aws_access_key_id` + `aws_secret_access_key` alongside the usual bearer `secret` (both shown once, never again). The Bedrock SDK authenticates with that credential pair, Busbar verifies the signature and body integrity (`x-amz-content-sha256`), then attaches the same `GovCtx` a bearer request would, so budget / RPM / TPM / allowed-pools all apply. No passthrough is required; governance and Bedrock-ingress coexist.
+**Track B: With keys (`auth.chain: [keys]`):** Busbar verifies the inbound SigV4 signature natively (`crates/busbar/src/auth/mod.rs` `verify_bedrock_sigv4`). An operator mints a virtual key with `"issue_aws_credential": true` via `POST /api/v1/admin/keys`; the response returns an `aws_access_key_id` + `aws_secret_access_key` alongside the signed token (both shown once, never again). The Bedrock SDK authenticates with that credential pair, Busbar verifies the signature and body integrity (`x-amz-content-sha256`), then attaches the same `GovCtx` a bearer request would, so the key's group limits and pool ACL all apply. No passthrough is required.
 
-**Auth header (egress to Bedrock backend):** Per-request AWS SigV4, computed by Busbar using the key from the lane's `api_key_env` environment variable. The key format is `ACCESS_KEY_ID:SECRET_ACCESS_KEY` (or `ACCESS_KEY_ID:SECRET_ACCESS_KEY:SESSION_TOKEN` for temporary credentials): Busbar splits on up to three colon-separated parts. The region is parsed from the Bedrock `base_url` hostname.
+**Auth header (egress to Bedrock backend):** Per-request AWS SigV4, computed by Busbar using the credential the lane's `api_key` reference resolves to. The key format is `ACCESS_KEY_ID:SECRET_ACCESS_KEY` (or `ACCESS_KEY_ID:SECRET_ACCESS_KEY:SESSION_TOKEN` for temporary credentials): Busbar splits on up to three colon-separated parts. The region is parsed from the Bedrock `base_url` hostname.
 
 **Upstream paths:** `POST /model/{model}/converse` (non-stream) and `POST /model/{model}/converse-stream` (stream).
 
@@ -355,6 +355,14 @@ Each protocol keeps its own real wire surface for each operation, exactly as its
 
 The dots in the matrix are real gaps: some backends do not implement some operations. Calling one anyway (image generation against an Anthropic lane, for example) returns a clean, well-formed 404 in the caller's own protocol dialect. It never crashes, never leaks an upstream error shape, and never affects the lane's health for other traffic. In a pool, a backend without the operation is simply not a candidate for that request.
 
+### Image edits and variations are a supported operation, unsupported sub-op
+
+`/v1/images/edits` and `/v1/images/variations` route as `Operation::Image`, same as
+`/v1/images/generations` — but every egress writer in this release emits only
+`/v1/images/generations`. A request naming an `image` to edit or vary (an edit/variation body, not a
+plain generation) returns a 404 naming the operation and the model, distinct from the no-backend 404
+above: the operation IS supported, this particular sub-op is not.
+
 ## Body-model vs path-model ingress
 
 The six protocols split into two groups based on where the target model (or pool name) lives in the request:
@@ -363,7 +371,7 @@ The six protocols split into two groups based on where the target model (or pool
 
 The `"model"` field is in the JSON body. Busbar reads it, resolves it, and begins the forwarding pipeline. The `"stream"` intent is also in the body (`"stream": true`).
 
-These three protocols share one ingress implementation (`route::ingress_body_model`). The only difference between them is the protocol name and the shape of their native error envelopes.
+These three protocols share one ingress implementation (`ingress::dispatch::operation_ingress`, reached via the single axum fallback route `ingress::protocol_dispatch` — see the note on static routing above). The only difference between them is the protocol name and the shape of their native error envelopes.
 
 ### Path-model protocols: `gemini`, `bedrock`
 
@@ -376,7 +384,7 @@ Because the body does not carry `"model"` or `"stream"`, Busbar injects them int
 
 ### `anthropic`, routed by path, handled separately
 
-Anthropic ingress takes its pool-or-model name from the URL (`{name}` in `/{name}/v1/messages`), so like the path-model protocols the model field in the Anthropic body does not drive routing. But it is handled by its own handlers rather than the shared body/path-model code: `route::named` for `/{name}/v1/messages` and `route::adhoc` for the two-segment ad-hoc form (`/{provider}/{model}/v1/messages`).
+Anthropic ingress takes its pool-or-model name from the URL (`{name}` in `/{name}/v1/messages`), so like the path-model protocols the model field in the Anthropic body does not drive routing. But it is handled by its own handlers rather than the shared body/path-model code: `ingress::named` for `/{name}/v1/messages` and `ingress::adhoc` for the two-segment ad-hoc form (`/{provider}/{model}/v1/messages`).
 
 ---
 
@@ -424,7 +432,7 @@ Busbar reassembles frames that arrive split across TCP chunks, threads per-reque
 
 ### Same-protocol passthrough
 
-When ingress and egress protocols match, the IR round-trip is still used, but `StreamTranslate::new_same_proto` runs a byte-exact passthrough: the translator re-emits the original frame bytes verbatim instead of re-serializing from IR. This keeps same-protocol traffic lossless and just as cheap as native passthrough while using the same code path as cross-protocol traffic.
+When ingress and egress protocols match, the IR round-trip is still used — `StreamTranslate::new_same_proto` decodes each response frame through the reader into IR purely as a usage side-channel — but the translator re-emits the ORIGINAL frame bytes verbatim instead of re-serializing from IR. The bytes the client receives are the upstream's bytes; busbar never re-encodes them, and every field, annotation and vendor extension survives on the wire. That is not the same claim as "as cheap as native passthrough": each frame still pays a JSON decode to extract usage (the two token counts), and the decoded value is otherwise discarded. On the Anthropic same-protocol path this decode is elided for every frame except `message_start`/`message_delta`/`error`; every other same-protocol pair still decodes every frame. The request side is byte-for-byte only when the client named the lane's exact wire model — a pool-alias route rewrites the model and re-serializes (see the `claude-sonnet` example below).
 
 A `busbar_translations_total{from, to}` Prometheus counter is incremented per cross-protocol hop and is not touched for same-protocol requests.
 
@@ -458,7 +466,7 @@ These fields survive a cross-protocol hop because they are first-class in the IR
 | `system` prompt | `IrRequest.system` |
 | Messages (user / assistant / tool turns) | `IrRequest.messages: Vec<IrMessage>` |
 | Text blocks | `IrBlock::Text { text, cache_control, citations }` |
-| Thinking / extended-thinking blocks | `IrBlock::Thinking { text, signature, cache_control }` |
+| Thinking / extended-thinking blocks | `IrBlock::Thinking { text, signature, redacted, cache_control }` — `redacted: true` means `text` holds opaque provider-encrypted bytes, not plaintext |
 | Tool definitions | `IrRequest.tools`: `IrTool { name, description, input_schema }` |
 | Tool-use and tool-result blocks | `IrBlock::ToolUse`, `IrBlock::ToolResult` |
 | Image blocks | `IrBlock::Image { source: IrImageSource, cache_control }` (media type and data live in `IrImageSource::Base64 { media_type, data }`) |
@@ -524,7 +532,7 @@ Fields that the ingress reader encounters but does not model as first-class IR f
 
 ### Same-protocol note
 
-On same-protocol routes, none of the above applies. The request body is forwarded byte-for-byte; the response body is streamed byte-for-byte. Every field, every annotation, every vendor extension survives because nothing is parsed.
+On same-protocol routes, none of the above applies. The request body is forwarded byte-for-byte when the client named the lane's exact wire model (a pool-alias route rewrites the model and re-serializes instead); the response body is streamed byte-for-byte in every case. Every field, every annotation, every vendor extension survives on the wire, because busbar never re-encodes them — but the response side still decodes each frame into IR as a usage side-channel and discards the result; "byte-for-byte" describes what reaches the client, not how much work busbar does to get there. See "Same-protocol passthrough" above.
 
 ---
 
@@ -539,12 +547,13 @@ On same-protocol routes, none of the above applies. The request body is forwarde
 listen: "0.0.0.0:8080"
 
 auth:
-  chain: [tokens]
-  client_tokens: ["${BUSBAR_TOKEN}"]
+  chain: [keys]        # callers present minted signed keys
+  admin_auth:
+    - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }
 
 providers:
   anthropic:
-    api_key_env: ANTHROPIC_KEY
+    api_key: { env: ANTHROPIC_KEY }
 
 models:
   claude-sonnet:
@@ -555,23 +564,29 @@ models:
 pools:
   fast:
     members:
-      - target: claude-sonnet
+      - model: claude-sonnet
         weight: 1
 ```
 
 ```bash
-export BUSBAR_TOKEN=my-local-token
+export BUSBAR_ADMIN_TOKEN=my-admin-token
 export ANTHROPIC_KEY=sk-ant-...
 BUSBAR_PROVIDERS=./providers.yaml BUSBAR_CONFIG=./config.yaml ./busbar
+
+# Mint a caller key (the signed token is shown once):
+BUSBAR_TOKEN=$(curl -s -X POST http://127.0.0.1:8081/api/v1/admin/keys \
+  -H "Authorization: Bearer $BUSBAR_ADMIN_TOKEN" -H "Content-Type: application/json" \
+  -d '{"name":"local-dev"}' | jq -r .token)
 ```
 
 ### 2. Call it with the OpenAI SDK
 
 ```python
+import os
 from openai import OpenAI
 
 client = OpenAI(
-    api_key="my-local-token",   # your busbar token, not an OpenAI key
+    api_key=os.environ["BUSBAR_TOKEN"],   # your minted busbar key, not an OpenAI key
     base_url="http://localhost:8080",
 )
 
@@ -596,9 +611,9 @@ print(response.choices[0].message.content)
    }
    ```
 
-2. Busbar's auth middleware reads `Authorization: Bearer my-local-token`, matches it against `client_tokens`, and admits the request.
+2. Busbar's auth middleware reads `Authorization: Bearer <token>`, verifies the signed key (signature + expiry + denylist), and admits the request.
 
-3. The route handler (`route::openai_ingress`) reads `"model": "fast"` from the body, resolves `fast` against the pool table, and picks `claude-sonnet` via SWRR.
+3. The ingress dispatcher (`ingress::dispatch::operation_ingress`, reached via the single fallback route) reads `"model": "fast"` from the body, resolves `fast` against the pool table, and picks `claude-sonnet` via SWRR.
 
 4. `claude-sonnet` maps to the `anthropic` provider (egress protocol `anthropic`). Ingress protocol is `openai`. They differ: translation runs.
 
@@ -664,9 +679,9 @@ print(response.choices[0].message.content)
 ```yaml
 providers:
   anthropic:
-    api_key_env: ANTHROPIC_KEY
+    api_key: { env: ANTHROPIC_KEY }
   gemini:
-    api_key_env: GEMINI_KEY
+    api_key: { env: GEMINI_KEY }
 
 models:
   claude-sonnet:
@@ -681,9 +696,9 @@ models:
 pools:
   smart:
     members:
-      - target: claude-sonnet
+      - model: claude-sonnet
         weight: 3
-      - target: gemini-flash
+      - model: gemini-flash
         weight: 1
 ```
 
@@ -713,7 +728,7 @@ When SWRR selects the `gemini-flash` lane (roughly a quarter of the time at thes
 - Busbar constructs the upstream URL `POST <gemini base_url>/v1beta/models/<lane model>:generateContent` with `x-goog-api-key: <GEMINI_KEY>`.
 - Gemini responds in its own format; the Gemini reader parses it; the Anthropic writer produces an Anthropic Messages response. The Anthropic SDK receives it and sees a valid `Message` object. `message.content[0].text` holds the response.
 
-When SWRR selects the `claude-sonnet` lane (the rest of the time), the ingress and egress protocols are both `anthropic`, no translation; the body passes through byte-for-byte, with the model field rewritten and the `x-api-key` header injected.
+When SWRR selects the `claude-sonnet` lane (the rest of the time), the ingress and egress protocols are both `anthropic`, no translation — but this specific example passes `model="ignored"`, so busbar must rewrite the model field to the lane's wire model; that rewrite is exactly what takes the request OFF the byte-for-byte fast path, so the body is materialized and re-serialized with the model corrected and the `x-api-key` header injected. A request that already names the lane's exact wire model stays byte-for-byte.
 
 The application code is identical in both cases.
 
@@ -732,7 +747,7 @@ The IR is a superset every reader maps into and every writer maps out of, and th
 | `responses` | translated | translated | translated | translated | passthrough | translated |
 | `cohere` | translated | translated | translated | translated | translated | passthrough |
 
-"Passthrough" means the request and response bodies are forwarded byte-for-byte with no IR round-trip. "Translated" means the request and each response frame passes through the IR. Both paths produce valid wire output in the ingress protocol.
+"Passthrough" means the request and response bodies are forwarded byte-for-byte on the wire — nothing is re-encoded before it reaches the client. It does NOT mean no IR round-trip: as "Same-protocol passthrough" above describes, the response side still decodes each frame through the IR as a usage side-channel; only the re-encode is skipped. "Translated" means the request and each response frame passes through the IR AND is re-serialized from it. Both paths produce valid wire output in the ingress protocol.
 
 A heterogeneous pool (members spanning more than one egress protocol) emits a warning at startup. The warning is informational, the pool works, but tells you that some requests through it will translate and some will not, depending on which lane SWRR picks.
 
@@ -747,4 +762,4 @@ A heterogeneous pool (members spanning more than one egress protocol) emits a wa
 | `responses` | `POST /v1/responses` | `http://busbar:8080` | `Authorization: Bearer` |
 | `cohere` | `POST /v2/chat` | `http://busbar:8080` | `Authorization: Bearer` |
 | `gemini` | `POST /v1[beta]/models/{model}:generateContent[Stream]` | `http://busbar:8080` (via `api_endpoint`) | `x-goog-api-key` |
-| `bedrock` | `POST /model/{model_id}/converse[-stream]` | `http://busbar:8080` (via `endpoint_url`) | SigV4, with governance: minted `aws_access_key_id`/`aws_secret_access_key` (verified by Busbar); without governance: `auth.chain: []` (+ `upstream_credentials: passthrough` to forward creds) |
+| `bedrock` | `POST /model/{model_id}/converse[-stream]` | `http://busbar:8080` (via `endpoint_url`) | SigV4, with keys: minted `aws_access_key_id`/`aws_secret_access_key` (verified by Busbar); open mode: `auth.chain: []` (+ `upstream_credentials: passthrough` to forward creds) |

@@ -70,6 +70,7 @@ fn buffered_tool_use_wraps_into_converse_stream_tool_frames() {
         logprobs: Vec::new(),
         role: IrRole::Assistant,
         content: vec![IrBlock::ToolUse {
+            thought_signature: None,
             id: "toolu_abc123".to_string(),
             name: "get_weather".to_string(),
             input: serde_json::json!({"city": "Paris"}),
@@ -124,7 +125,7 @@ fn buffered_tool_use_wraps_into_converse_stream_tool_frames() {
     );
 }
 
-/// REGRESSION (R15 MEDIUM, test-coverage): a MULTI-block buffered cross-protocol completion (the
+/// A MULTI-block buffered cross-protocol completion (the
 /// canonical 'assistant says something then calls a tool') must emit a DISTINCT, monotonically
 /// increasing `contentBlockIndex` per block — 0 for block 0, 1 for block 1, 2 for block 2. A real
 /// AWS Bedrock ConverseStream keys its per-block streaming reassembly off that index; a collision
@@ -143,6 +144,7 @@ fn buffered_multi_block_assigns_distinct_monotonic_content_block_indices() {
                 citations: Vec::new(),
             },
             IrBlock::ToolUse {
+                thought_signature: None,
                 id: "toolu_abc123".to_string(),
                 name: "get_weather".to_string(),
                 input: serde_json::json!({"city": "Paris"}),
@@ -235,7 +237,7 @@ fn buffered_multi_block_assigns_distinct_monotonic_content_block_indices() {
     );
 }
 
-/// REGRESSION (R16 MEDIUM, conformance): a buffered cross-protocol completion whose IR carried a
+/// A buffered cross-protocol completion whose IR carried a
 /// ToolUse block but NO explicit `stop_reason` must synthesize `messageStop.stopReason ==
 /// "tool_use"`, not the old unconditional `end_turn`. A native Bedrock Converse reports `tool_use`
 /// for a tool-call turn, and an AWS SDK consumer keys agentic control flow off it — defaulting to
@@ -246,6 +248,7 @@ fn buffered_tool_use_with_absent_stop_reason_defaults_to_tool_use() {
         logprobs: Vec::new(),
         role: IrRole::Assistant,
         content: vec![IrBlock::ToolUse {
+            thought_signature: None,
             id: "toolu_xyz".to_string(),
             name: "get_weather".to_string(),
             input: serde_json::json!({"city": "Paris"}),
@@ -278,7 +281,7 @@ fn buffered_tool_use_with_absent_stop_reason_defaults_to_tool_use() {
     );
 }
 
-/// REGRESSION (R16 MEDIUM, conformance): the companion to the test above — a TEXT-only completion
+/// The companion to the test above — a TEXT-only completion
 /// with an absent `stop_reason` must STILL default to `end_turn` (no tool call → no tool_use). This
 /// guards against an over-broad fix that would mislabel a plain text completion as `tool_use`.
 #[test]
@@ -317,7 +320,7 @@ fn buffered_text_only_with_absent_stop_reason_defaults_to_end_turn() {
     );
 }
 
-/// REGRESSION (R16 MEDIUM, conformance): an EXPLICIT `stop_reason` always wins over the
+/// An EXPLICIT `stop_reason` always wins over the
 /// content-derived default — a ToolUse block alongside an explicit `end_turn` keeps `end_turn`.
 #[test]
 fn buffered_explicit_stop_reason_overrides_content_default() {
@@ -325,6 +328,7 @@ fn buffered_explicit_stop_reason_overrides_content_default() {
         logprobs: Vec::new(),
         role: IrRole::Assistant,
         content: vec![IrBlock::ToolUse {
+            thought_signature: None,
             id: "toolu_xyz".to_string(),
             name: "get_weather".to_string(),
             input: serde_json::json!({"city": "Paris"}),

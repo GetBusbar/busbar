@@ -1,0 +1,638 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! The SECRET REFERENCE type (CLEAN-CONFIG rule C2): every secret/external value in the config is
+//! `{ module: <secret-module>, settings: {…} }` - a reference to a SECRET MODULE (`kind: secret`
+//! plugin), never the secret itself. The built-in modules are `env` (settings.key names an
+//! environment variable) and `file` (settings.path names a file whose contents are the secret);
+//! third-party modules (vault, cloud secret managers, …) load through the plugin system.
+//!
+//! Two ergonomic SUGAR spellings desugar to the built-ins so the common cases stay one-liners:
+//!
+//! ```yaml
+//! api_key: { env: ANTHROPIC_API_KEY }          # ⇒ { module: env,  settings: { key: ANTHROPIC_API_KEY } }
+//! cert:    { file: /run/secrets/tls-cert.pem } # ⇒ { module: file, settings: { path: /run/secrets/tls-cert.pem } }
+//! ```
+//!
+//! A `SecretRef` holds NO secret material - only the module name and its opaque settings - so it is
+//! safe to derive `Debug`/`Clone` on it and on every struct embedding it. Resolution (turning the
+//! ref into bytes) happens at boot/first-use through the secret-resolver seam and is FAIL-CLOSED:
+//! an unknown module or a failed resolution is a hard error, never an empty secret.
+
+/// `SecretRef` (the `{module, settings}` + `env`/`file` sugar type) and its `Deserialize` impl now
+/// live in the standalone `busbar-secret-ref` crate (plugin-settings-schema-SPEC.md checklist,
+/// shared-crate extraction) — it used to be defined here `pub(crate)`, unreachable from
+/// `busbar-plugin-pack` or any future schema-generation tooling. Re-exported so every call site in
+/// this crate is unchanged; `busbar` still owns `SecretResolver`/`resolve_settings`/the built-in
+/// `env`/`file` resolution, which are genuinely engine-specific (I/O, plugin dispatch) rather than
+/// part of the reference SHAPE.
+pub(crate) use busbar_secret_ref::{SecretRef, SECRET_MODULE_ENV, SECRET_MODULE_FILE};
+
+/// The reserved wrapper key that OPTS A PLUGIN SETTING OUT of secret-reference interpretation:
+/// `{ literal: <value> }` delivers `<value>` to the plugin verbatim. The escape hatch for the
+/// genuinely ambiguous case where a plugin's own config happens to be shaped like a reference (a
+/// `{ file: … }` path, an `{ env: … }` variable name the plugin reads itself) — see
+/// [`resolve_settings`]. NOT part of `SecretRef` (see `busbar_secret_ref`'s crate docs): this key is
+/// interpreted one layer above `SecretRef` parsing, here, not inside the shared type.
+pub(crate) const SETTING_LITERAL_KEY: &str = "literal";
+
+/// The engine-facing SECRET RESOLVER seam (P2): the engine holds a `SecretResolver` and asks it to
+/// turn a [`SecretRef`] into bytes, never touching a secret module's implementation. The built-in
+/// `env` / `file` modules resolve inline (no plugin needed, so a zero-plugin deployment still has
+/// secrets); any OTHER module name is delegated to a `kind: secret` plugin loaded through the
+/// normal trust pipeline. FAIL-CLOSED at every branch: an unknown module or a resolution failure
+/// is a hard error, never an empty secret.
+///
+/// The plugin lookup is a boxed closure so `config`/`tls` stay free of a `plugin-loader`
+/// dependency (the engine wires the registry in at `build_app`); `None` = no plugin subsystem, so
+/// only the built-ins resolve.
+pub(crate) struct SecretResolver {
+    /// Resolve one non-built-in reference through a loaded `kind: secret` plugin: given the module
+    /// name + its settings JSON, return the secret bytes (or a fail-closed error). `None` when no
+    /// plugin registry is available (built-ins only).
+    plugin: Option<PluginResolveFn>,
+}
+
+/// The boxed closure a [`SecretResolver`] delegates a non-built-in module to: `(module, settings
+/// JSON) -> secret bytes` (fail-closed on error). Boxed so `config` stays free of a `plugin-loader`
+/// dependency (the engine wires the registry in at `build_app`).
+pub(crate) type PluginResolveFn = Box<dyn Fn(&str, &str) -> Result<Vec<u8>, String> + Send + Sync>;
+
+impl SecretResolver {
+    /// A built-ins-only resolver (no plugin subsystem): `env` / `file` resolve, everything else is
+    /// fail-closed. The zero-plugin resolver used by tests and any path with no registry.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn builtins_only() -> Self {
+        Self { plugin: None }
+    }
+
+    /// A resolver whose non-built-in modules resolve through `plugin` (a `kind: secret` plugin
+    /// loader). Built-ins still short-circuit to the inline `env` / `file` path.
+    pub(crate) fn with_plugin(plugin: PluginResolveFn) -> Self {
+        Self {
+            plugin: Some(plugin),
+        }
+    }
+
+    /// Resolve a reference to raw bytes. `env` / `file` are built in; any other module delegates to
+    /// the plugin resolver (fail-closed if none is wired or it fails).
+    pub(crate) fn resolve(&self, secret: &SecretRef) -> Result<Vec<u8>, String> {
+        match secret.module.as_str() {
+            SECRET_MODULE_ENV | SECRET_MODULE_FILE => resolve_builtin(secret),
+            module => match &self.plugin {
+                Some(f) => {
+                    let settings = serde_json::Value::Object(secret.settings.clone()).to_string();
+                    let bytes = f(module, &settings).map_err(|e| {
+                        format!(
+                            "secret module '{module}' (a kind: secret plugin) failed to resolve \
+                             {}: {e}",
+                            secret.describe()
+                        )
+                    })?;
+                    if bytes.is_empty() {
+                        return Err(format!(
+                            "secret module '{module}' resolved {} to an EMPTY value; a secret must \
+                             be non-empty (fail-closed)",
+                            secret.describe()
+                        ));
+                    }
+                    Ok(bytes)
+                }
+                None => Err(format!(
+                    "secret module '{module}' is not a built-in (`env` / `file`) and the plugin \
+                     subsystem is not enabled, so no secret plugin can resolve {}; a secret that \
+                     cannot resolve is a hard error (fail-closed)",
+                    secret.describe()
+                )),
+            },
+        }
+    }
+
+    /// Resolve to a UTF-8 STRING (trailing newline trimmed; fail-closed on non-UTF-8 or empty).
+    /// The string-secret convenience twin of [`Self::resolve`], mirroring [`resolve_builtin_string`].
+    pub(crate) fn resolve_string(&self, secret: &SecretRef) -> Result<String, String> {
+        let bytes = self.resolve(secret)?;
+        let s = String::from_utf8(bytes).map_err(|_| {
+            format!(
+                "secret {} resolved to non-UTF-8 bytes where a text secret is required",
+                secret.describe()
+            )
+        })?;
+        let trimmed = s.trim_end_matches(['\r', '\n']);
+        if trimmed.is_empty() {
+            return Err(format!(
+                "secret {} resolved to an empty value after trimming trailing newlines \
+                 (fail-closed)",
+                secret.describe()
+            ));
+        }
+        Ok(trimmed.to_string())
+    }
+}
+
+/// The well-known plugin-settings keys carrying a LICENSE credential (1.5.0 plugin-licensing
+/// convention, ADR-0010). The core does NOT enforce licensing - a plugin validates its OWN license.
+/// These names exist only so operators have a documented, first-class spelling; like any other
+/// setting they MAY be a [`SecretRef`], which [`resolve_settings`] resolves to the raw key before it
+/// crosses the ABI, so a license key never has to sit in plaintext config.
+pub(crate) const PLUGIN_LICENSE_KEYS: &[&str] = &["license", "licenseKey"];
+
+/// Walk a plugin's opaque `settings:` map and RESOLVE any [`SecretRef`]-shaped value in place,
+/// substituting the resolved UTF-8 secret string, so the plugin receives the real value (e.g. its
+/// `licenseKey`) and never a reference it cannot dereference. Non-ref values (strings, numbers,
+/// nested config the plugin documents) pass through VERBATIM - a value only resolves if it parses as
+/// a full secret reference (`{ env: … }` / `{ file: … }` / `{ module: …, settings: … }`); an
+/// ordinary settings object like `{ db_path: … }` is not a ref (its keys aren't a ref's keys) and is
+/// left untouched.
+///
+/// Runs CORE-SIDE at every `open` (boot, config apply/reload, AND hot plugin reload) BEFORE the
+/// settings JSON crosses the ABI - it does not touch the wire ABI or the manifest signature. The
+/// input `settings` (kept in the overlay/config) still holds the `SecretRef`, never the resolved
+/// bytes; only the returned map carries the secret, and only long enough to hand it to the plugin.
+///
+/// FAIL-CLOSED: an unresolvable ref (unknown module, unset env, missing/empty file, plugin error) is
+/// a hard `Err` that must fail the plugin load/reload - the plugin is NEVER handed an unresolved ref
+/// or a silently-empty value. `field` names the settings key in the error (never the secret value).
+pub(crate) fn resolve_settings(
+    settings: &serde_json::Map<String, serde_json::Value>,
+    resolver: &SecretResolver,
+) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    let mut out = serde_json::Map::with_capacity(settings.len());
+    for (field, value) in settings {
+        // A ref is always a JSON object; skip scalars/arrays without an allocating round-trip.
+        if let serde_json::Value::Object(obj) = value {
+            // THE LITERAL ESCAPE HATCH. Ref-shape is a HEURISTIC: a plugin whose
+            // own settings legitimately contain `{ file: /var/lib/db }` or `{ env: HOME }` — a path
+            // or a variable NAME the plugin means to read itself — was silently swapped for the
+            // CONTENTS of that file / the value of that variable, with no diagnostic anywhere. The
+            // shapes are genuinely ambiguous and always will be, so give the operator a way to say
+            // "this object is data, not a reference": `{ literal: <anything> }` passes the inner
+            // value through verbatim, untouched and un-resolved.
+            if obj.len() == 1 {
+                if let Some(inner) = obj.get(SETTING_LITERAL_KEY) {
+                    out.insert(field.clone(), inner.clone());
+                    continue;
+                }
+            }
+            if let Ok(secret) = serde_json::from_value::<SecretRef>(value.clone()) {
+                // NEVER silent: say which setting was interpreted as a reference and where it
+                // points (never its value), so a coercion the operator did not intend is visible in
+                // the boot log instead of surfacing as a corrupt setting inside the plugin.
+                tracing::info!(
+                    setting = field.as_str(),
+                    reference = %secret.describe(),
+                    "plugin setting resolved as a SECRET REFERENCE; if this object was meant as \
+                     literal plugin config, wrap it as `{{ literal: … }}` to pass it through verbatim"
+                );
+                let resolved = resolver.resolve_string(&secret).map_err(|e| {
+                    format!(
+                        "plugin setting '{field}' is a secret reference that did not resolve: {e}"
+                    )
+                })?;
+                out.insert(field.clone(), serde_json::Value::String(resolved));
+                continue;
+            }
+        }
+        out.insert(field.clone(), value.clone());
+    }
+    // License-agnostic ergonomic breadcrumb: if the settings carry a well-known license key, note at
+    // INFO that a license credential is being DELIVERED to the plugin (which validates it itself; the
+    // core enforces nothing). NEVER logs the value - only that the key is present and whether it was a
+    // resolved secret reference. Lets an operator confirm the license wiring without exposing the key.
+    for key in PLUGIN_LICENSE_KEYS {
+        if out.contains_key(*key) {
+            let via_secret_ref = settings.get(*key).map(|v| v.is_object()).unwrap_or(false);
+            tracing::info!(
+                license_key = key,
+                via_secret_ref,
+                "delivering a plugin license credential to the plugin (the plugin validates its own \
+                 license; the core enforces nothing)"
+            );
+        }
+    }
+    Ok(out)
+}
+
+/// P1-internal BUILT-IN resolution of a secret reference to its raw bytes: `env` reads the
+/// environment variable; `file` reads the file. Any other module name is FAIL-CLOSED here - the
+/// full secret-plugin resolver (third-party `kind: secret` modules through the plugin trust
+/// pipeline) is layered on top of this by [`SecretResolver`], which falls back to these built-ins
+/// by these exact names.
+pub(crate) fn resolve_builtin(secret: &SecretRef) -> Result<Vec<u8>, String> {
+    if let Some(var) = self_env_var_checked(secret)? {
+        return match std::env::var(&var) {
+            Ok(v) if !v.is_empty() => Ok(v.into_bytes()),
+            Ok(_) => Err(format!(
+                "secret env:{var} resolved to an EMPTY value; a secret must be non-empty \
+                 (fail-closed)"
+            )),
+            Err(_) => Err(format!(
+                "secret env:{var} cannot resolve: environment variable '{var}' is unset"
+            )),
+        };
+    }
+    if let Some(path) = self_file_path_checked(secret)? {
+        return match std::fs::read(&path) {
+            Ok(bytes) if !bytes.is_empty() => Ok(bytes),
+            Ok(_) => Err(format!(
+                "secret file:{path} resolved to an EMPTY file; a secret must be non-empty \
+                 (fail-closed)"
+            )),
+            Err(e) => Err(format!("secret file:{path} cannot resolve: {e}")),
+        };
+    }
+    Err(format!(
+        "secret module '{}' is not a built-in (`env` / `file`) and no secret plugin provides it; \
+         a secret that cannot resolve is a hard error (fail-closed)",
+        secret.module
+    ))
+}
+
+/// The `env` module's variable name, validating the settings shape (a malformed built-in ref must
+/// fail loudly, not fall through to "unknown module").
+fn self_env_var_checked(secret: &SecretRef) -> Result<Option<String>, String> {
+    if secret.module != SECRET_MODULE_ENV {
+        return Ok(None);
+    }
+    match secret.env_var() {
+        Some(v) if !v.trim().is_empty() => Ok(Some(v.to_string())),
+        _ => Err(
+            "secret module 'env' requires settings.key naming the environment variable \
+             (e.g. `{ env: MY_VAR }` or `{ module: env, settings: { key: MY_VAR } }`)"
+                .to_string(),
+        ),
+    }
+}
+
+/// The `file` module's path, validating the settings shape.
+fn self_file_path_checked(secret: &SecretRef) -> Result<Option<String>, String> {
+    if secret.module != SECRET_MODULE_FILE {
+        return Ok(None);
+    }
+    match secret.file_path() {
+        Some(p) if !p.trim().is_empty() => Ok(Some(p.to_string())),
+        _ => Err(
+            "secret module 'file' requires settings.path naming the file \
+             (e.g. `{ file: /run/secrets/x }` or `{ module: file, settings: { path: /run/secrets/x } }`)"
+                .to_string(),
+        ),
+    }
+}
+
+/// Resolve a secret reference to a UTF-8 STRING (trailing newline trimmed - the universal
+/// file-delivered-secret convention). Fail-closed on non-UTF-8.
+pub(crate) fn resolve_builtin_string(secret: &SecretRef) -> Result<String, String> {
+    let bytes = resolve_builtin(secret)?;
+    let s = String::from_utf8(bytes).map_err(|_| {
+        format!(
+            "secret {} resolved to non-UTF-8 bytes where a text secret is required",
+            secret.describe()
+        )
+    })?;
+    let trimmed = s.trim_end_matches(['\r', '\n']);
+    if trimmed.is_empty() {
+        return Err(format!(
+            "secret {} resolved to an empty value after trimming trailing newlines (fail-closed)",
+            secret.describe()
+        ));
+    }
+    Ok(trimmed.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The env built-in resolves a set variable, trims trailing newlines in the string form, and
+    /// fails closed on unset / empty values.
+    #[test]
+    fn env_module_resolves_and_fails_closed() {
+        let var = format!("BUSBAR_SECRET_TEST_{}", std::process::id());
+        std::env::set_var(&var, "s3cret\n");
+        let r = SecretRef::env(&var);
+        assert_eq!(resolve_builtin(&r).unwrap(), b"s3cret\n");
+        assert_eq!(resolve_builtin_string(&r).unwrap(), "s3cret");
+        std::env::remove_var(&var);
+        let err = resolve_builtin(&r).unwrap_err();
+        assert!(err.contains("unset"), "unset env is fail-closed: {err}");
+        std::env::set_var(&var, "");
+        let err = resolve_builtin(&r).unwrap_err();
+        assert!(err.contains("EMPTY"), "empty env is fail-closed: {err}");
+        std::env::remove_var(&var);
+    }
+
+    /// The file built-in resolves file bytes and fails closed on a missing or empty file.
+    #[test]
+    fn file_module_resolves_and_fails_closed() {
+        let path = std::env::temp_dir().join(format!("busbar-secret-{}.txt", std::process::id()));
+        std::fs::write(&path, b"file-secret\n").unwrap();
+        let r = SecretRef::file(path.to_string_lossy().into_owned());
+        assert_eq!(resolve_builtin(&r).unwrap(), b"file-secret\n");
+        assert_eq!(resolve_builtin_string(&r).unwrap(), "file-secret");
+        std::fs::write(&path, b"").unwrap();
+        let err = resolve_builtin(&r).unwrap_err();
+        assert!(err.contains("EMPTY"), "empty file is fail-closed: {err}");
+        let _ = std::fs::remove_file(&path);
+        let err = resolve_builtin(&r).unwrap_err();
+        assert!(err.contains("cannot resolve"), "missing file fails: {err}");
+    }
+
+    /// A whitespace-only (or empty) `env:` NAME — not value — must be rejected at the settings-shape
+    /// layer (`self_env_var_checked`), never silently treated as "no name given, fall through" or
+    /// "look up an env var literally named '   '". Distinct from `env_module_resolves_and_fails_closed`
+    /// above, which covers the RESOLVED VALUE being empty, not the configured variable name itself.
+    #[test]
+    fn env_whitespace_only_name_is_rejected() {
+        for bad in ["", "   ", "\t\n"] {
+            let r = SecretRef::env(bad);
+            let err = resolve_builtin(&r).expect_err(&format!(
+                "whitespace-only env name {bad:?} must be rejected"
+            ));
+            assert!(
+                err.contains("requires settings.key"),
+                "whitespace-only env name {bad:?} must fail the settings-shape check, got: {err}"
+            );
+        }
+    }
+
+    /// Same guard, `file:` PATH side.
+    #[test]
+    fn file_whitespace_only_path_is_rejected() {
+        for bad in ["", "   ", "\t\n"] {
+            let r = SecretRef::file(bad);
+            let err = resolve_builtin(&r).expect_err(&format!(
+                "whitespace-only file path {bad:?} must be rejected"
+            ));
+            assert!(
+                err.contains("requires settings.path"),
+                "whitespace-only file path {bad:?} must fail the settings-shape check, got: {err}"
+            );
+        }
+    }
+
+    /// An unknown secret module is FAIL-CLOSED at the built-in resolver (the plugin-backed
+    /// resolver layers on top; anything it cannot resolve lands here and refuses).
+    #[test]
+    fn unknown_module_fails_closed() {
+        let r = SecretRef {
+            module: "vault".to_string(),
+            settings: serde_json::Map::new(),
+        };
+        let err = resolve_builtin(&r).unwrap_err();
+        assert!(
+            err.contains("fail-closed") && err.contains("vault"),
+            "unknown module refuses: {err}"
+        );
+    }
+
+    /// Malformed built-in refs (env without key, file without path) error precisely, never fall
+    /// through to "unknown module".
+    #[test]
+    fn malformed_builtin_refs_error_precisely() {
+        let r = SecretRef {
+            module: SECRET_MODULE_ENV.to_string(),
+            settings: serde_json::Map::new(),
+        };
+        assert!(resolve_builtin(&r).unwrap_err().contains("settings.key"));
+        let r = SecretRef {
+            module: SECRET_MODULE_FILE.to_string(),
+            settings: serde_json::Map::new(),
+        };
+        assert!(resolve_builtin(&r).unwrap_err().contains("settings.path"));
+    }
+
+    /// Deserialize: the `{env}` / `{file}` sugar desugars to the canonical module + settings; the
+    /// canonical form parses; mixed / unknown / empty forms are rejected.
+    #[test]
+    fn deserialize_accepts_canonical_and_sugar_rejects_malformed() {
+        let r: SecretRef = serde_yaml::from_str("{ env: MY_VAR }").unwrap();
+        assert_eq!(r, SecretRef::env("MY_VAR"));
+        assert_eq!(r.env_var(), Some("MY_VAR"));
+        let r: SecretRef = serde_yaml::from_str("{ file: /run/secrets/x }").unwrap();
+        assert_eq!(r, SecretRef::file("/run/secrets/x"));
+        assert_eq!(r.file_path(), Some("/run/secrets/x"));
+        let r: SecretRef =
+            serde_yaml::from_str("{ module: vault, settings: { path: kv/data/x } }").unwrap();
+        assert_eq!(r.module, "vault");
+        assert_eq!(
+            r.settings.get("path").and_then(|v| v.as_str()),
+            Some("kv/data/x")
+        );
+
+        for bad in [
+            "{ env: A, file: B }",
+            "{ module: vault, env: A }",
+            "{ env: A, settings: {} }",
+            "{ unknown_key: A }",
+            "{}",
+            "{ env: \"\" }",
+            "{ module: \"\" }",
+            "plain-string",
+        ] {
+            assert!(
+                serde_yaml::from_str::<SecretRef>(bad).is_err(),
+                "must reject: {bad}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod resolver_tests {
+    use super::*;
+
+    /// The resolver's built-in arm resolves env/file inline WITHOUT any plugin.
+    #[test]
+    fn resolver_builtins_resolve_without_plugin() {
+        let r = SecretResolver::builtins_only();
+        let var = format!("BUSBAR_RESOLVER_TEST_{}", std::process::id());
+        std::env::set_var(&var, "abc\n");
+        assert_eq!(r.resolve(&SecretRef::env(&var)).unwrap(), b"abc\n");
+        assert_eq!(r.resolve_string(&SecretRef::env(&var)).unwrap(), "abc");
+        std::env::remove_var(&var);
+    }
+
+    /// A non-built-in module with NO plugin subsystem is FAIL-CLOSED, naming the module.
+    #[test]
+    fn resolver_unknown_module_without_plugin_fails_closed() {
+        let r = SecretResolver::builtins_only();
+        let s = SecretRef {
+            module: "vault".to_string(),
+            settings: serde_json::Map::new(),
+        };
+        let err = r.resolve(&s).unwrap_err();
+        assert!(
+            err.contains("vault") && err.contains("fail-closed"),
+            "unknown module with no plugin refuses: {err}"
+        );
+    }
+
+    /// A non-built-in module DELEGATES to the plugin resolver; a plugin error and an empty result
+    /// are both fail-closed.
+    #[test]
+    fn resolver_delegates_to_plugin_and_fails_closed_on_empty_or_error() {
+        // Plugin that returns bytes for `vault` and errors for anything else.
+        let r = SecretResolver::with_plugin(Box::new(|module: &str, settings: &str| {
+            if module == "vault" {
+                let v: serde_json::Value = serde_json::from_str(settings).unwrap();
+                match v.get("path").and_then(|p| p.as_str()) {
+                    Some("kv/ok") => Ok(b"plugin-secret".to_vec()),
+                    Some("kv/empty") => Ok(Vec::new()),
+                    _ => Err("no such path".to_string()),
+                }
+            } else {
+                Err("unknown module".to_string())
+            }
+        }));
+        let mk = |path: &str| {
+            let mut settings = serde_json::Map::new();
+            settings.insert(
+                "path".to_string(),
+                serde_json::Value::String(path.to_string()),
+            );
+            SecretRef {
+                module: "vault".to_string(),
+                settings,
+            }
+        };
+        assert_eq!(r.resolve(&mk("kv/ok")).unwrap(), b"plugin-secret");
+        // Empty plugin result is rejected (fail-closed), never an empty secret.
+        assert!(r.resolve(&mk("kv/empty")).unwrap_err().contains("EMPTY"));
+        // Plugin error is surfaced fail-closed.
+        assert!(r
+            .resolve(&mk("kv/missing"))
+            .unwrap_err()
+            .contains("failed to resolve"));
+        // Built-ins still short-circuit past the plugin.
+        let var = format!("BUSBAR_RESOLVER_PLUGIN_TEST_{}", std::process::id());
+        std::env::set_var(&var, "envval");
+        assert_eq!(r.resolve_string(&SecretRef::env(&var)).unwrap(), "envval");
+        std::env::remove_var(&var);
+    }
+}
+
+#[cfg(test)]
+mod settings_resolution_tests {
+    use super::*;
+
+    fn obj(pairs: &[(&str, serde_json::Value)]) -> serde_json::Map<String, serde_json::Value> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect()
+    }
+
+    /// A SecretRef-shaped setting (the `{ env: … }` sugar for a `licenseKey`) is RESOLVED to its
+    /// value before delivery, while a plain sibling setting passes through verbatim.
+    #[test]
+    fn resolves_secret_ref_settings_and_passes_plain_through() {
+        let var = format!("BUSBAR_PLUGIN_LICENSE_TEST_{}", std::process::id());
+        std::env::set_var(&var, "LIC-123\n");
+        let resolver = SecretResolver::builtins_only();
+        let settings = obj(&[
+            ("licenseKey", serde_json::json!({ "env": var })),
+            ("endpoint", serde_json::json!("https://example.test")),
+            ("retries", serde_json::json!(3)),
+        ]);
+        let out = resolve_settings(&settings, &resolver).unwrap();
+        // The ref resolved to the raw secret (trailing newline trimmed) — a plain STRING now.
+        assert_eq!(
+            out.get("licenseKey").unwrap(),
+            &serde_json::json!("LIC-123")
+        );
+        // Non-ref settings are untouched.
+        assert_eq!(
+            out.get("endpoint").unwrap(),
+            &serde_json::json!("https://example.test")
+        );
+        assert_eq!(out.get("retries").unwrap(), &serde_json::json!(3));
+        std::env::remove_var(&var);
+    }
+
+    /// An ordinary settings OBJECT that is not a secret reference (its keys aren't a ref's keys) is
+    /// left untouched — resolution only fires on a genuine ref shape.
+    #[test]
+    fn leaves_non_ref_object_settings_untouched() {
+        let resolver = SecretResolver::builtins_only();
+        let settings = obj(&[("db", serde_json::json!({ "path": ":memory:", "wal": true }))]);
+        let out = resolve_settings(&settings, &resolver).unwrap();
+        assert_eq!(
+            out.get("db").unwrap(),
+            &serde_json::json!({ "path": ":memory:", "wal": true })
+        );
+    }
+
+    /// FAIL-CLOSED: a SecretRef setting that cannot resolve (unset env) is a hard error naming the
+    /// FIELD — never a silently-empty or dangling value handed to the plugin. The error text does not
+    /// echo any secret value.
+    #[test]
+    fn unresolvable_secret_ref_setting_fails_closed_naming_field() {
+        let var = format!("BUSBAR_PLUGIN_LICENSE_MISSING_{}", std::process::id());
+        std::env::remove_var(&var);
+        let resolver = SecretResolver::builtins_only();
+        let settings = obj(&[("license", serde_json::json!({ "env": var }))]);
+        let err = resolve_settings(&settings, &resolver).unwrap_err();
+        assert!(err.contains("license"), "names the field: {err}");
+        assert!(err.contains("did not resolve"), "fail-closed: {err}");
+    }
+
+    /// An unknown secret module in a plugin setting is FAIL-CLOSED when no secret plugin can resolve
+    /// it (built-ins-only resolver), never handed through.
+    #[test]
+    fn unknown_secret_module_in_setting_fails_closed() {
+        let resolver = SecretResolver::builtins_only();
+        let settings = obj(&[(
+            "licenseKey",
+            serde_json::json!({ "module": "vault", "settings": { "path": "kv/license" } }),
+        )]);
+        let err = resolve_settings(&settings, &resolver).unwrap_err();
+        assert!(
+            err.contains("licenseKey") && err.contains("fail-closed"),
+            "unknown module fails closed: {err}"
+        );
+    }
+
+    /// #40: a plugin setting shaped like a reference is AMBIGUOUS by nature, and the coercion used
+    /// to be silent — a plugin whose own config is `{ file: /var/lib/db }` (a PATH it opens) or
+    /// `{ env: HOME }` (a variable NAME it reads) had the value swapped for the file's contents /
+    /// the variable's value, with no diagnostic. `{ literal: … }` is the escape hatch: the inner
+    /// value is delivered verbatim and never resolved.
+    #[test]
+    fn literal_wrapper_opts_a_setting_out_of_secret_coercion() {
+        let path = std::env::temp_dir().join(format!("busbar-lit-{}.txt", std::process::id()));
+        std::fs::write(&path, b"THE-SECRET").unwrap();
+        let resolver = SecretResolver::builtins_only();
+
+        // Un-wrapped, the ref shape IS coerced (the documented ADR-0010 behaviour).
+        let mut settings = serde_json::Map::new();
+        settings.insert(
+            "licenseKey".to_string(),
+            serde_json::json!({ "file": path.to_string_lossy() }),
+        );
+        let out = resolve_settings(&settings, &resolver).expect("resolves");
+        assert_eq!(out["licenseKey"], serde_json::json!("THE-SECRET"));
+
+        // WRAPPED, the very same object is delivered verbatim — the plugin sees its own config.
+        let mut settings = serde_json::Map::new();
+        settings.insert(
+            "db".to_string(),
+            serde_json::json!({ "literal": { "file": path.to_string_lossy() } }),
+        );
+        let out = resolve_settings(&settings, &resolver).expect("resolves");
+        assert_eq!(
+            out["db"],
+            serde_json::json!({ "file": path.to_string_lossy() }),
+            "a `literal:`-wrapped object is passed through untouched, never dereferenced"
+        );
+
+        // The wrapper is not limited to ref-shaped objects, and it is exactly one level deep.
+        let mut settings = serde_json::Map::new();
+        settings.insert("n".to_string(), serde_json::json!({ "literal": 42 }));
+        settings.insert("plain".to_string(), serde_json::json!({ "db_path": "x" }));
+        let out = resolve_settings(&settings, &resolver).expect("resolves");
+        assert_eq!(out["n"], serde_json::json!(42));
+        assert_eq!(out["plain"], serde_json::json!({ "db_path": "x" }));
+
+        let _ = std::fs::remove_file(&path);
+    }
+}

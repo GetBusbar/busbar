@@ -13,7 +13,7 @@ pub(crate) fn sigv4_sign_headers(
         (Some(a), Some(s), tok) if !a.is_empty() && !s.is_empty() => (a, s, tok),
         _ => return vec![],
     };
-    let region = match derive_sigv4_region(&ctx.host) {
+    let region = match derive_sigv4_region(ctx.host) {
         Some(r) => r,
         None => {
             tracing::warn!(host = %ctx.host, "could not derive AWS region from Bedrock endpoint host; defaulting SigV4 scope to us-east-1 (set a bedrock-runtime[-fips].<region>.amazonaws.com host)");
@@ -38,7 +38,7 @@ pub(crate) fn sigv4_sign_headers(
             "content-type".to_string(),
             crate::proxy::APPLICATION_JSON.to_string(),
         ),
-        ("host".to_string(), ctx.host.clone()),
+        ("host".to_string(), ctx.host.to_string()),
         (
             crate::sigv4::X_AMZ_CONTENT_SHA256.to_string(),
             payload_hash.clone(),
@@ -176,6 +176,18 @@ impl ProtocolWriter for BedrockWriter {
             .and_then(|gc| gc.get("messages"))
             .and_then(|v| v.as_array());
 
+        // The captured native top-level `document` / `video` markers (see `DOC_VIDEO_SENTINEL`);
+        // same positional stash shape as the guardContent markers and spliced back via the same
+        // shared helper. Consumed here and SKIPPED by the trailing extra-merge so the sentinel never
+        // reaches the wire. Only messages carry document/video (no `system` sub-array).
+        let doc_video = req
+            .extra
+            .get(DOC_VIDEO_SENTINEL)
+            .and_then(|v| v.as_object());
+        let message_doc_video = doc_video
+            .and_then(|dv| dv.get("messages"))
+            .and_then(|v| v.as_array());
+
         // When the positional cachePoint stash is present (same-protocol Bedrock passthrough) it is
         // the authority for cachePoint placement (spliced below at the recorded indices for a
         // byte-identical round-trip), so the inline `cache_control`-driven emission is SUPPRESSED to
@@ -194,7 +206,7 @@ impl ProtocolWriter for BedrockWriter {
                 } = block
                 {
                     text_arr.push(serde_json::json!({ "text": text }));
-                    // H3: emit a Bedrock `cachePoint` AFTER the block that carries the IR
+                    // Emit a Bedrock `cachePoint` AFTER the block that carries the IR
                     // `cache_control` boundary (the position Bedrock expects — the breakpoint closes
                     // the prefix before it). Suppressed when the positional stash owns placement.
                     if emit_inline_system_cache && cache_control.is_some() {
@@ -242,7 +254,7 @@ impl ProtocolWriter for BedrockWriter {
 
             let mut content_arr: Vec<serde_json::Value> = Vec::new();
             for block in &msg.content {
-                // H3: the prompt-cache boundary carried on this block, if any. Emitted as a
+                // The prompt-cache boundary carried on this block, if any. Emitted as a
                 // `cachePoint` block IMMEDIATELY AFTER the block below (the position Bedrock expects).
                 // Suppressed when the positional stash owns placement (same-protocol passthrough).
                 let block_cache_control = match block {
@@ -352,7 +364,7 @@ impl ProtocolWriter for BedrockWriter {
                         // top-level message-content shape, so omit it from a message turn.
                     }
                 }
-                // H3: emit the prompt-cache boundary as a `cachePoint` block right after the block it
+                // Emit the prompt-cache boundary as a `cachePoint` block right after the block it
                 // applies to. Only Text/ToolUse/ToolResult carry `cache_control` (see
                 // `block_cache_control`); a block whose write produced nothing (e.g. a dropped Image)
                 // still emits no cachePoint here because such kinds carry no `cache_control` field.
@@ -362,18 +374,20 @@ impl ProtocolWriter for BedrockWriter {
                 }
             }
 
-            // Re-emit any captured `cachePoint` / `guardContent` markers for THIS message at their
-            // original positions so prompt caching and inline guardrails survive a same-protocol
-            // round-trip. Spliced BEFORE the empty-content placeholder below so a message whose only
-            // block was a `cachePoint`/`guardContent` re-emits the marker rather than a bare `""`
-            // placeholder. `msg_idx` matches the reader's recorded message index on the Bedrock
-            // passthrough path (the Bedrock reader only emits User/Assistant turns, so no System-role
-            // `continue` desyncs the count). BOTH classes are collected for this message and spliced
-            // as ONE sorted batch (see `merge_marker_entries`) so cachePoint insertions cannot shift
-            // guardContent's recorded indices.
+            // Re-emit any captured `cachePoint` / `guardContent` / `document` / `video` markers for
+            // THIS message at their original positions so prompt caching, inline guardrails and
+            // document/video attachments survive a same-protocol round-trip. Spliced BEFORE the
+            // empty-content placeholder below so a message whose only block was one of these re-emits
+            // the marker rather than a bare `""` placeholder. `msg_idx` matches the reader's recorded
+            // message index on the Bedrock passthrough path (the Bedrock reader only emits
+            // User/Assistant turns, so no System-role `continue` desyncs the count). ALL classes are
+            // collected for this message and spliced as ONE sorted batch (they recorded indices
+            // against the SAME original content array) so one class's insertions cannot shift
+            // another's recorded indices.
             let for_this_msg: Vec<serde_json::Value> = message_cache_points
                 .into_iter()
                 .chain(message_guard_content)
+                .chain(message_doc_video)
                 .flatten()
                 .filter(|e| e.get("m").and_then(|v| v.as_u64()) == Some(msg_idx as u64))
                 .cloned()
@@ -382,7 +396,7 @@ impl ProtocolWriter for BedrockWriter {
                 splice_cache_points(&mut content_arr, &for_this_msg);
             }
 
-            // F4: Bedrock Converse requires strictly ALTERNATING user/assistant turns — two
+            // Bedrock Converse requires strictly ALTERNATING user/assistant turns — two
             // consecutive messages of the same role are a 400 ValidationException. After the
             // Tool→"user" role mapping above, common IR shapes produce consecutive "user" turns: a
             // Tool-result turn followed by a real user turn, or several tool results that arrived as
@@ -532,7 +546,7 @@ impl ProtocolWriter for BedrockWriter {
                 tool_obj.insert("toolSpec".to_string(), serde_json::Value::Object(tool_spec));
                 tools_arr.push(serde_json::Value::Object(tool_obj));
 
-                // H3: a tool-definition prompt-cache boundary is emitted as a `cachePoint` element in
+                // A tool-definition prompt-cache boundary is emitted as a `cachePoint` element in
                 // the `toolConfig.tools` array right after the tool it closes (the prefix of tool
                 // schemas up to here is cached). Unlike the system/message arrays there is no
                 // positional tools-cachePoint stash, so the typed `cache_control` field is the SOLE
@@ -564,7 +578,7 @@ impl ProtocolWriter for BedrockWriter {
                     Some(v) => {
                         tool_config.insert("toolChoice".to_string(), v);
                     }
-                    // L4: `IrToolChoice::None` ("do NOT call a tool") has no native Converse directive,
+                    // `IrToolChoice::None` ("do NOT call a tool") has no native Converse directive,
                     // so it degrades to omitting `toolChoice` (the backend applies its own default,
                     // which may still call a tool). Previously SILENT; warn so it is observable.
                     None => {
@@ -588,6 +602,14 @@ impl ProtocolWriter for BedrockWriter {
             out.insert(
                 "toolConfig".to_string(),
                 serde_json::Value::Object(tool_config),
+            );
+        }
+        // class-6 6c1 egress: Bedrock Converse models no parallelism control. `is_some()` gates this
+        // to requests that actually carried the flag (owner decision 4: no per-request noise).
+        if req.parallel_tool_calls.is_some() {
+            tracing::warn!(
+                "dropping parallel_tool_calls on Bedrock egress: Converse has no parallelism \
+                 control, so the backend's default parallelism applies"
             );
         }
 
@@ -650,6 +672,11 @@ impl ProtocolWriter for BedrockWriter {
             if key == GUARD_CONTENT_SENTINEL {
                 continue;
             }
+            // The document/video stash is likewise a busbar-internal sentinel, already consumed above
+            // (spliced back into `messages`). Skip it so it never leaks onto the wire.
+            if key == DOC_VIDEO_SENTINEL {
+                continue;
+            }
             // The top_k source-spelling hint is a busbar-internal sentinel, already consumed above
             // (it selected the `topK`/`top_k` key emitted into `additionalModelRequestFields`). Skip
             // it so it never leaks onto the wire (an invalid body and a proxy tell).
@@ -675,30 +702,39 @@ impl ProtocolWriter for BedrockWriter {
                 // this event to initialize its per-block streaming decoder; omitting it for text
                 // blocks leaves the following `contentBlockDelta`s orphaned (no preceding start),
                 // which strict SDK parsers discard or reject — and is a detectable proxy tell.
-                crate::ir::IrBlockMeta::Text => Some((
-                    ET_CONTENT_BLOCK_START.to_string(),
-                    serde_json::json!({ "contentBlockIndex": index, "start": {} }),
-                )),
-                crate::ir::IrBlockMeta::ToolUse { id, name } => Some((
-                    ET_CONTENT_BLOCK_START.to_string(),
-                    serde_json::json!({
-                        "contentBlockIndex": index,
-                        "start": { "toolUse": { "toolUseId": id, "name": name } }
-                    }),
-                )),
+                crate::ir::IrBlockMeta::Text => {
+                    self.mark_block_open(*index);
+                    Some((
+                        ET_CONTENT_BLOCK_START.to_string(),
+                        serde_json::json!({ "contentBlockIndex": index, "start": {} }),
+                    ))
+                }
+                crate::ir::IrBlockMeta::ToolUse { id, name } => {
+                    self.mark_block_open(*index);
+                    Some((
+                        ET_CONTENT_BLOCK_START.to_string(),
+                        serde_json::json!({
+                            "contentBlockIndex": index,
+                            "start": { "toolUse": { "toolUseId": id, "name": name } }
+                        }),
+                    ))
+                }
                 // A reasoning (extended-thinking) block opens with a `contentBlockStart` whose
                 // `start` carries an (empty) `reasoningContent` object — the inverse of the reader's
                 // lazy-open. Without this the streamed reasoning deltas were orphaned and the block
                 // dropped on Bedrock egress; mirror the buffered `write_response` reasoningContent
                 // re-emit on the streaming path. (Image has no streaming-start projection on Bedrock
                 // — image blocks are not streamed as `contentBlock*` frames — so it stays None.)
-                crate::ir::IrBlockMeta::Thinking => Some((
-                    ET_CONTENT_BLOCK_START.to_string(),
-                    serde_json::json!({
-                        "contentBlockIndex": index,
-                        "start": { "reasoningContent": {} }
-                    }),
-                )),
+                crate::ir::IrBlockMeta::Thinking => {
+                    self.mark_block_open(*index);
+                    Some((
+                        ET_CONTENT_BLOCK_START.to_string(),
+                        serde_json::json!({
+                            "contentBlockIndex": index,
+                            "start": { "reasoningContent": {} }
+                        }),
+                    ))
+                }
                 crate::ir::IrBlockMeta::Image => None,
             },
 
@@ -757,10 +793,18 @@ impl ProtocolWriter for BedrockWriter {
                 crate::ir::IrDelta::LogprobsDelta(_) => None,
             },
 
-            IrStreamEvent::BlockStop { index } => Some((
-                ET_CONTENT_BLOCK_STOP.to_string(),
-                serde_json::json!({ "contentBlockIndex": index }),
-            )),
+            // An untracked index is a block whose start had no Bedrock projection (Image); closing
+            // it would orphan a `contentBlockStop` a real client never saw a start for (finding 7.2).
+            IrStreamEvent::BlockStop { index } => {
+                if self.take_block_open(*index) {
+                    Some((
+                        ET_CONTENT_BLOCK_STOP.to_string(),
+                        serde_json::json!({ "contentBlockIndex": index }),
+                    ))
+                } else {
+                    None
+                }
+            }
 
             // The native Bedrock ConverseStream wire carries `stopReason` in a `messageStop` frame
             // and token `usage` in a SEPARATE `metadata` frame that FOLLOWS it. The IR, however,

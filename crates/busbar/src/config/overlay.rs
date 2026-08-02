@@ -12,70 +12,420 @@
 //! corrupt overlay yields `None` and boot proceeds on base config alone — a bad overlay never bricks
 //! startup).
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use super::{DeployCfg, HookCfg};
+use super::{DeployCfg, GroupCfg, HookCfg, RateEntryCfg, RootCfg, StoreCfg, TlsCfg};
+
+/// Current overlay schema version. Stamped on every write; a missing field (a pre-versioning overlay)
+/// reads as `1`, the additive baseline (hooks + the newly-added groups section, both backward
+/// compatible). Bump only on a BREAKING overlay-format change, and add a migration at `read` time.
+pub(crate) const OVERLAY_VERSION: u32 = 1;
+fn default_overlay_version() -> u32 {
+    1
+}
 
 /// Persist the current hook state to the overlay at `path`, IF persistence is enabled (`Some`), and
 /// update the TOMBSTONE set for this change: `deleted_add` (a just-deleted hook) is tombstoned so the
 /// additive boot-merge REMOVES it even if it was defined in base `config.yaml`; `deleted_remove` (a
 /// just-registered hook) clears any prior tombstone (a re-add). Read-modify-write so tombstones
 /// accumulate across applies. The path is opt-in via `BUSBAR_CONFIG_OVERLAY` and carried on `App`, so
-/// the default behavior + config schema are unchanged. Best-effort: the live config already swapped, so
-/// the overlay is durability (not correctness) — a write failure is logged, never fatal, never blocks
-/// the request. `None` is a no-op (persistence disabled, the default).
+/// the default behavior + config schema are unchanged. FAIL-CLOSED: returns `Err` on an unreadable
+/// overlay (refuse-to-clobber) or a write failure, so its caller — `AppHandle::commit_and_swap` — does
+/// NOT swap a mutation it could not durably record (a live-applied-but-unpersisted config that a
+/// restart would silently revert). `None` path is a no-op success (persistence disabled, the default).
 pub(crate) fn persist(
     path: Option<&Path>,
     hooks: &HashMap<String, HookCfg>,
     global_hooks: &[String],
     deleted_add: Option<&str>,
     deleted_remove: Option<&str>,
-) {
-    if let Some(p) = path {
-        // Read-modify-WRITE, not the fail-soft boot read. `read()` collapses absent/unreadable/corrupt
-        // to None; starting empty then overwriting would PERMANENTLY drop accumulated deletions and
-        // silently resurrect an API-deleted hook on restart. Distinguish: absent -> start fresh;
-        // present-but-unreadable -> REFUSE to overwrite, preserving the existing overlay.
-        let mut deleted = match read_state(p) {
-            OverlayReadState::Absent => Vec::new(),
-            OverlayReadState::Loaded(d) => d.deleted,
-            OverlayReadState::Unreadable => {
-                tracing::error!(
-                    path = %p.display(),
-                    "config overlay exists but is unreadable/corrupt; REFUSING to overwrite it (would \
-                     drop hook-deletion tombstones and could resurrect a deleted hook). This apply is \
-                     NOT persisted — fix or remove the overlay file to restore durability."
-                );
-                return;
-            }
-        };
-        if let Some(name) = deleted_add {
-            if !deleted.iter().any(|n| n == name) {
-                deleted.push(name.to_string());
-            }
-        }
-        if let Some(name) = deleted_remove {
-            deleted.retain(|n| n != name);
-        }
-        // INVARIANT: a hook present in the registry being persisted can never ALSO be tombstoned —
-        // the boot-merge would insert it then subtract it, silently dropping a live hook. The
-        // explicit `deleted_remove` above covers the register-a-name case; this reconciliation also
-        // covers the WHOLESALE-registry writes (config ROLLBACK, which passes both args `None`):
-        // rollback restores a registry that may contain a name still tombstoned from an earlier
-        // API delete, and without this the rollback would not survive a restart (found: audit c1r5).
-        deleted.retain(|name| !hooks.contains_key(name));
-        let doc = OverlayDoc {
-            hooks: hooks.clone(),
-            global_hooks: global_hooks.to_vec(),
-            deleted,
-        };
-        if let Err(e) = write(p, &doc) {
-            tracing::warn!(error = %e, path = %p.display(), "failed to persist config overlay");
+    base_hook_names: &std::collections::HashSet<String>,
+) -> Result<(), String> {
+    let Some(p) = path else {
+        return Ok(()); // persistence disabled (the default) — a no-op success.
+    };
+    // Read-modify-WRITE the WHOLE overlay so a hook write preserves the groups section verbatim
+    // (and vice-versa in `persist_groups`). `load_for_rmw` refuses on an unreadable overlay —
+    // starting empty then overwriting would PERMANENTLY drop accumulated tombstones from BOTH
+    // sections and silently resurrect an API-deleted hook/group on restart. That REFUSE is now an
+    // `Err` (fail-closed): the caller must NOT swap a mutation it could not durably record.
+    let Some(mut doc) = load_for_rmw(p) else {
+        return Err(format!(
+            "could not read the overlay at '{}' to persist hooks (refusing to overwrite a corrupt \
+             overlay, which would drop deletion tombstones)",
+            p.display()
+        ));
+    };
+    if let Some(name) = deleted_add {
+        if !doc.deleted.iter().any(|n| n == name) {
+            doc.deleted.push(name.to_string());
         }
     }
+    if let Some(name) = deleted_remove {
+        doc.deleted.retain(|n| n != name);
+    }
+    doc.hooks = hooks.clone();
+    doc.global_hooks = global_hooks.to_vec();
+    // INVARIANT: a hook present in the registry being persisted can never ALSO be tombstoned —
+    // the boot-merge would insert it then subtract it, silently dropping a live hook. The
+    // explicit `deleted_remove` above covers the register-a-name case; this reconciliation also
+    // covers the WHOLESALE-registry writes (config ROLLBACK, which passes both args `None`):
+    // rollback restores a registry that may contain a name still tombstoned from an earlier
+    // API delete, and without this the rollback would not survive a restart.
+    //
+    // ALSO prune any tombstone whose name is not (or no longer) in BASE `config.yaml`
+    // (`base_hook_names`): such a tombstone can never be reconciled by the "name comes back" rule
+    // above, since nothing at boot ever re-inserts a non-base name into `hooks` on its own — it is
+    // permanently inert dead weight that would otherwise grow the overlay file forever. A tombstone
+    // for a name still present in base config is kept: it is still actively shadowing that entry.
+    doc.deleted
+        .retain(|name| !hooks.contains_key(name) && base_hook_names.contains(name));
+    doc.version = OVERLAY_VERSION;
+    write(p, &doc).map_err(|e| format!("overlay write to '{}' failed: {e}", p.display()))
+}
+
+/// Load the existing overlay for a read-modify-WRITE, or `None` to signal REFUSE-to-overwrite.
+/// `Absent` -> a fresh default doc (safe to start clean); `Loaded` -> the existing doc (all sections
+/// carried forward so a write to one section never clobbers another); `Unreadable` -> `None`, and the
+/// caller aborts the write, because overwriting a corrupt overlay would drop the deletion tombstones
+/// of EVERY section. `version` is stamped by the caller just before `write`.
+fn load_for_rmw(p: &Path) -> Option<OverlayDoc> {
+    match read_state(p) {
+        OverlayReadState::Absent => Some(OverlayDoc::default()),
+        OverlayReadState::Loaded(doc) => Some(*doc),
+        OverlayReadState::Unreadable => {
+            tracing::error!(
+                path = %p.display(),
+                "config overlay exists but is unreadable/corrupt; REFUSING to overwrite it (would \
+                 drop hook AND group deletion tombstones and could resurrect a deleted item). This \
+                 apply is NOT persisted — fix or remove the overlay file to restore durability."
+            );
+            None
+        }
+        OverlayReadState::VersionTooNew(v) => {
+            tracing::error!(
+                path = %p.display(), overlay_version = v, understood = OVERLAY_VERSION,
+                "config overlay was written by a NEWER busbar; REFUSING to overwrite it — this \
+                 binary cannot represent everything it holds, so a write would silently discard \
+                 whatever it does not understand. This apply is NOT persisted."
+            );
+            None
+        }
+    }
+}
+
+/// Persist the current GROUPS state to the overlay, mirroring `persist` for the `groups:` section:
+/// the API-mutable group registry + its tombstones (`deleted_groups`), read-modify-written so the
+/// HOOKS section and its tombstones are preserved untouched. FAIL-CLOSED (matches `persist`): returns
+/// `Err` on an unreadable overlay or a write failure so `commit_and_swap` does not swap an
+/// unpersistable mutation. `None` path is a no-op success. `deleted_add`/`deleted_remove`
+/// tombstone/untombstone a group name; a wholesale write (both `None`, e.g. rollback) reconciles away
+/// any tombstone for a name the restored registry contains.
+pub(crate) fn persist_groups(
+    path: Option<&Path>,
+    groups: &BTreeMap<String, GroupCfg>,
+    deleted_add: Option<&str>,
+    deleted_remove: Option<&str>,
+    base_group_names: &std::collections::HashSet<String>,
+) -> Result<(), String> {
+    let Some(p) = path else {
+        return Ok(());
+    };
+    let Some(mut doc) = load_for_rmw(p) else {
+        return Err(format!(
+            "could not read the overlay at '{}' to persist groups (refusing to overwrite a corrupt \
+             overlay)",
+            p.display()
+        ));
+    };
+    if let Some(name) = deleted_add {
+        if !doc.deleted_groups.iter().any(|n| n == name) {
+            doc.deleted_groups.push(name.to_string());
+        }
+    }
+    if let Some(name) = deleted_remove {
+        doc.deleted_groups.retain(|n| n != name);
+    }
+    doc.groups = groups.clone();
+    // Prune on "name comes back" (as above) AND on "name is absent from base config.yaml" (a
+    // tombstone that can never be reconciled the first way, since nothing at boot re-adds a
+    // non-base name — see `persist`'s matching comment).
+    doc.deleted_groups
+        .retain(|name| !groups.contains_key(name) && base_group_names.contains(name));
+    doc.version = OVERLAY_VERSION;
+    write(p, &doc).map_err(|e| format!("overlay write to '{}' failed: {e}", p.display()))
+}
+
+/// The `root` overlay section (1.5.0 full-config coverage): the API-settable SINGLE-VALUE config
+/// sections that are NOT name-keyed maps (so they carry no tombstones — a field is either PRESENT in
+/// the overlay, and WINS over base `config.yaml`, or ABSENT, and base stands). It mirrors the
+/// uncovered `DeployCfg` surface: the process-level binds (`listen`/`tls`/`admin_listen`/`admin_tls`/
+/// `admin_insecure`), the cost inputs (`rate_card`/`per_request_fee`), the durable `store`, the
+/// `security` SSRF controls, and the operational-limit blocks (`limits`/`observability`/`advanced`/
+/// `metrics`/`health`/`routing`). Every field is `Option`: a `PUT /config/settings` overwrites only
+/// the fields it names (a partial edit), and the merge (`apply_to_deploy`) splices exactly those onto
+/// the resolved base `DeployCfg` BEFORE `resolve` — so the limits projection + admin-mTLS boot-guard
+/// re-run over the merged shape exactly as for a hand-written config. `deny_unknown_fields` so a
+/// typo'd key is a loud reject, never a silent no-op.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RootSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) listen: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) tls: Option<TlsCfg>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) admin_listen: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) admin_tls: Option<TlsCfg>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) admin_insecure: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) rate_card: Option<BTreeMap<String, RateEntryCfg>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) per_request_fee: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) store: Option<StoreCfg>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) security: Option<crate::config::patch::SecurityPatch>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) limits: Option<crate::config::patch::LimitsPatch>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) observability: Option<crate::config::patch::ObservabilityPatch>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) advanced: Option<crate::config::patch::AdvancedPatch>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) metrics: Option<crate::config::patch::MetricsPatch>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) health: Option<crate::config::patch::HealthPatch>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) routing: Option<crate::config::patch::RoutingPatch>,
+}
+
+impl RootSettings {
+    /// Whether NO root override is set (every field `None`) — drives the section-empty predicate and
+    /// the idempotent-reset short-circuit. Checked field-by-field (not via `PartialEq`) so the nested
+    /// config structs need no `PartialEq` derive.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.listen.is_none()
+            && self.tls.is_none()
+            && self.admin_listen.is_none()
+            && self.admin_tls.is_none()
+            && self.admin_insecure.is_none()
+            && self.rate_card.is_none()
+            && self.per_request_fee.is_none()
+            && self.store.is_none()
+            && self.security.is_none()
+            && self.limits.is_none()
+            && self.observability.is_none()
+            && self.advanced.is_none()
+            && self.metrics.is_none()
+            && self.health.is_none()
+            && self.routing.is_none()
+    }
+
+    /// Splice the present overrides onto a base `DeployCfg`, IN PLACE. Applied BEFORE `resolve` so the
+    /// limits projection + the exposed-admin-mTLS boot-guard re-derive over the merged shape exactly
+    /// as for a hand-written config. Only `Some` fields overwrite; a `None` field leaves base config
+    /// untouched. `admin_insecure`/`per_request_fee` are non-optional on `DeployCfg`, so an unset
+    /// overlay override simply preserves the base value.
+    pub(crate) fn apply_to_deploy(&self, deploy: &mut DeployCfg) {
+        if let Some(v) = &self.listen {
+            deploy.listen = v.clone();
+        }
+        if self.tls.is_some() {
+            deploy.tls = self.tls.clone();
+        }
+        if let Some(v) = &self.admin_listen {
+            deploy.admin_listen = v.clone();
+        }
+        if self.admin_tls.is_some() {
+            deploy.admin_tls = self.admin_tls.clone();
+        }
+        if let Some(v) = self.admin_insecure {
+            deploy.admin_insecure = v;
+        }
+        if self.rate_card.is_some() {
+            deploy.rate_card = self.rate_card.clone();
+        }
+        if let Some(v) = self.per_request_fee {
+            deploy.per_request_fee = v;
+        }
+        if self.store.is_some() {
+            deploy.store = self.store.clone();
+        }
+        // PER-FIELD from here down. Assigning the whole section instead meant a partial `PUT`
+        // deserialized into a full struct of compiled defaults, so every field the operator did not
+        // name silently reverted — `config.yaml` values included.
+        if let Some(v) = &self.security {
+            v.apply(deploy.security.get_or_insert_with(Default::default));
+        }
+        if let Some(v) = &self.limits {
+            v.apply(&mut deploy.limits);
+        }
+        if let Some(v) = &self.observability {
+            v.apply(deploy.observability.get_or_insert_with(Default::default));
+        }
+        if let Some(v) = &self.advanced {
+            v.apply(&mut deploy.advanced);
+        }
+        if let Some(v) = &self.metrics {
+            // `metrics:` is the opt-in switch as well as its own settings, so an overlay naming the
+            // block turns metrics ON. `buffer_seconds` is REQUIRED and has no default, so a patch
+            // that omits it can only refine an existing block, never create one — turning metrics on
+            // with an unspecified retention window is exactly the inert-collector state the config
+            // layer refuses at boot.
+            match (&mut deploy.metrics, v.buffer_seconds) {
+                (Some(base), _) => v.apply(base),
+                (slot @ None, Some(buffer_seconds)) => {
+                    let mut base = crate::config::MetricsCfg {
+                        buffer_seconds,
+                        key_gauge_limit: crate::config::default_key_gauge_limit(),
+                    };
+                    v.apply(&mut base);
+                    *slot = Some(base);
+                }
+                (None, None) => {}
+            }
+        }
+        if let Some(v) = &self.health {
+            v.apply(&mut deploy.health);
+        }
+        if let Some(v) = &self.routing {
+            v.apply(&mut deploy.routing);
+        }
+    }
+}
+
+/// Persist the `root` overlay section (1.5.0 full-config coverage), IF persistence is enabled. Same
+/// read-modify-WRITE durability contract as `persist`/`persist_groups`: the hooks + groups sections
+/// (and their tombstones) are carried forward verbatim, and an unreadable overlay is REFUSED (never
+/// clobbered). `None` path is a no-op. `settings` is the full desired root state (the merge of the
+/// prior overlay root + this request's fields is computed by the caller, so a `PUT /config/settings`
+/// passes the already-merged desired state here — this fn just stores it).
+pub(crate) fn persist_root(path: Option<&Path>, settings: &RootSettings) -> Result<(), String> {
+    let Some(p) = path else {
+        // A no-op persist is the DEFAULT deployment (BUSBAR_CONFIG_OVERLAY unset), not an error —
+        // but the silent `Ok` is what let callers report durable storage that never happened. One
+        // line so the in-memory-only outcome is on the record even when the caller ignores the
+        // response.
+        tracing::warn!(
+            "config overlay is not configured (BUSBAR_CONFIG_OVERLAY unset); root settings were \
+             applied in memory only and will not survive a restart"
+        );
+        return Ok(());
+    };
+    let Some(mut doc) = load_for_rmw(p) else {
+        return Err(format!(
+            "could not read the overlay at '{}' to persist root settings (refusing to overwrite a \
+             corrupt overlay)",
+            p.display()
+        ));
+    };
+    doc.root = if settings.is_empty() {
+        None
+    } else {
+        Some(settings.clone())
+    };
+    doc.version = OVERLAY_VERSION;
+    write(p, &doc).map_err(|e| format!("overlay write to '{}' failed: {e}", p.display()))
+}
+
+/// Persist the `plugin_versions` overlay section — the durable half of an explicit plugin ROLLBACK
+/// (1.5.0). Same read-modify-WRITE durability contract as `persist_root`: the hooks/groups/root
+/// sections (and their tombstones) are carried forward verbatim, and an unreadable overlay is REFUSED
+/// (never clobbered). `pins` is the FULL desired pin map (the caller computed the merge of the prior
+/// pins + this rollback), so an empty map clears the section (every pin lifted). `None` path is a
+/// no-op (persistence disabled). Best-effort: the live policy already swapped, so this is durability
+/// (a restart re-derives the same lowered floor from the persisted pin), never correctness.
+/// Persist the plugin version-pin section (read-modify-WRITE; siblings preserved). Returns whether the
+/// write landed: the rollback path (both the forward persist and the compensating revert after a failed
+/// rebuild) must FAIL CLOSED on a persist error — a silently-swallowed failure would leave disk out of
+/// sync with the running engine (a stale pin a restart would honor, contradicting the live policy), so
+/// every caller propagates the error rather than warning-and-continuing.
+pub(crate) fn try_persist_plugin_versions(
+    path: Option<&Path>,
+    pins: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    let Some(p) = path else {
+        return Ok(());
+    };
+    let Some(mut doc) = load_for_rmw(p) else {
+        return Err(format!(
+            "could not read the overlay at '{}' to update plugin_versions",
+            p.display()
+        ));
+    };
+    doc.plugin_versions = pins.clone();
+    doc.version = OVERLAY_VERSION;
+    write(p, &doc).map_err(|e| format!("overlay write to '{}' failed: {e}", p.display()))
+}
+
+/// One MUTABLE overlay SECTION — the unit a per-section reset (`DELETE /api/v1/admin/overlay/{section}`)
+/// discards. Each section is an independent `base + overlay` layer with its own entries + tombstones;
+/// clearing one reverts exactly that slice of the effective config to base `config.yaml` while the
+/// other section's overlay mutations survive untouched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OverlaySection {
+    Hooks,
+    Groups,
+    /// The single-value config sections (`RootSettings`) — the 1.5.0 full-config coverage slice.
+    Root,
+    /// The per-plugin ROLLBACK version pins (1.5.0). Clearing it drops every explicit rollback pin,
+    /// restoring the base-config `plugins.min_versions` floors — the plugins then upgrade back to their
+    /// current artifacts on the next (re)load.
+    PluginVersions,
+}
+
+impl OverlaySection {
+    /// Parse a URL path segment into a section, or `None` for an unknown name (the caller 400s). The
+    /// ONE place the valid section names live, so the route + the doc + the tests share one source.
+    pub(crate) fn parse(s: &str) -> Option<Self> {
+        match s {
+            "hooks" => Some(OverlaySection::Hooks),
+            "groups" => Some(OverlaySection::Groups),
+            "root" => Some(OverlaySection::Root),
+            "plugin_versions" => Some(OverlaySection::PluginVersions),
+            _ => None,
+        }
+    }
+
+    /// The section's wire/label name (the path segment).
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            OverlaySection::Hooks => "hooks",
+            OverlaySection::Groups => "groups",
+            OverlaySection::Root => "root",
+            OverlaySection::PluginVersions => "plugin_versions",
+        }
+    }
+}
+
+/// Clear ONE section's entries + tombstones from the persisted overlay, IF persistence is enabled —
+/// the durable half of a per-section reset (`DELETE /api/v1/admin/overlay/{section}`). Read-modify-write
+/// so the OTHER section (its API-applied entries and tombstones) is carried forward verbatim: a
+/// `groups` reset must not resurrect an API-deleted hook, and vice-versa. FAIL-CLOSED (matches
+/// `persist`/`persist_groups`): returns `Err` on an unreadable overlay (REFUSED — clearing it would
+/// silently drop the other section's tombstones) or a write failure, so `commit_and_swap` does not
+/// swap a reset it could not durably record. `None` path is a no-op success.
+pub(crate) fn clear_section(path: Option<&Path>, section: OverlaySection) -> Result<(), String> {
+    let Some(p) = path else {
+        return Ok(());
+    };
+    let Some(mut doc) = load_for_rmw(p) else {
+        return Err(format!(
+            "could not read the overlay at '{}' to reset the '{}' section (refusing to overwrite a \
+             corrupt overlay)",
+            p.display(),
+            section.as_str()
+        ));
+    };
+    doc.clear_section(section);
+    doc.version = OVERLAY_VERSION;
+    write(p, &doc).map_err(|e| format!("overlay write to '{}' failed: {e}", p.display()))
 }
 
 /// The persisted overlay document: the API-applied hook registry + global-hook wiring, plus TOMBSTONES
@@ -84,20 +434,117 @@ pub(crate) fn persist(
 /// remove a base-defined hook).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct OverlayDoc {
+    /// Overlay schema version (see `OVERLAY_VERSION`). Absent in a pre-versioning overlay -> `1`.
+    #[serde(default = "default_overlay_version")]
+    pub(crate) version: u32,
     #[serde(default)]
     pub(crate) hooks: HashMap<String, HookCfg>,
     #[serde(default)]
     pub(crate) global_hooks: Vec<String>,
     #[serde(default)]
     pub(crate) deleted: Vec<String>,
+    /// API-applied `groups:` entries (the second section on the spine). An overlay group with a base
+    /// group's name WINS at merge (last-applied definition), matching hook semantics.
+    #[serde(default)]
+    pub(crate) groups: BTreeMap<String, GroupCfg>,
+    /// Group tombstones — groups deleted via the API, subtracted from base config at boot.
+    #[serde(default)]
+    pub(crate) deleted_groups: Vec<String>,
+    /// The `root` section (1.5.0 full-config coverage): API-set single-value config overrides
+    /// (`listen`/`tls`/`rate_card`/`store`/`security`/`limits`/…). `None` = no root override (base
+    /// `config.yaml` stands). Applied at the `DeployCfg` level BEFORE `resolve` — see
+    /// `RootSettings::apply_to_deploy`. No tombstones: a single-value field is present-or-absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) root: Option<RootSettings>,
+    /// The `plugin_versions` section (1.5.0 rollback-friendly versioning): per-plugin VERSION PINS an
+    /// operator set via an EXPLICIT, authenticated, audited rollback (`POST
+    /// /api/v1/admin/plugins/rollback`). Maps a plugin's manifest `name` -> the version the operator
+    /// deliberately pinned it to. This is DISTINCT from `plugins.min_versions` (the base-config
+    /// anti-downgrade FLOOR): a pin LOWERS the effective floor for THAT plugin to the pinned version so
+    /// the prior artifact re-loads, and it does so ONLY because a human took an explicit, audited
+    /// action — an automatic/silent replay of an old artifact never consults this map and still faces
+    /// the full floor. See `PluginsCfg::to_policy_with_pins`. Empty (`{}`, the default) = no pins, the
+    /// base floors stand unchanged. No tombstones: a pin is present-or-absent.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) plugin_versions: BTreeMap<String, String>,
+}
+
+impl OverlayDoc {
+    /// Wipe ONE section's entries + tombstones in place (the pure core of a per-section reset). The
+    /// remaining section is untouched, so merging this doc onto a freshly-resolved base config reverts
+    /// exactly the cleared section to `config.yaml` truth while the other section's overlay stays live.
+    pub(crate) fn clear_section(&mut self, section: OverlaySection) {
+        match section {
+            OverlaySection::Hooks => {
+                self.hooks.clear();
+                self.global_hooks.clear();
+                self.deleted.clear();
+            }
+            OverlaySection::Groups => {
+                self.groups.clear();
+                self.deleted_groups.clear();
+            }
+            OverlaySection::Root => {
+                self.root = None;
+            }
+            OverlaySection::PluginVersions => {
+                self.plugin_versions.clear();
+            }
+        }
+    }
+
+    /// Whether a section carries NO overlay state (no API-applied entries AND no tombstones) — so a
+    /// reset of it is a clean no-op (the effective config already equals base for that section). Drives
+    /// the idempotent-success short-circuit: resetting an untouched section changes nothing and must
+    /// not bump the config version or re-run the boot pipeline.
+    pub(crate) fn section_is_empty(&self, section: OverlaySection) -> bool {
+        match section {
+            OverlaySection::Hooks => {
+                self.hooks.is_empty() && self.global_hooks.is_empty() && self.deleted.is_empty()
+            }
+            OverlaySection::Groups => self.groups.is_empty() && self.deleted_groups.is_empty(),
+            OverlaySection::Root => self.root.as_ref().is_none_or(RootSettings::is_empty),
+            OverlaySection::PluginVersions => self.plugin_versions.is_empty(),
+        }
+    }
 }
 
 /// Read the overlay at `path`, or `None` if it is absent, unreadable, or malformed. Fail-soft: a
 /// corrupt overlay must NEVER brick boot — busbar starts on base config alone and the operator can
-/// re-apply. (A future durable store surfaces a boot warning; the in-file MVP stays silent-soft.)
+/// re-apply. Unlike the old silent-soft read, a present-but-corrupt overlay is now logged LOUD at
+/// boot: silently starting on base config alone drops every API-applied hook AND group with no signal,
+/// which is exactly the failure that hides overlay corruption.
 pub(crate) fn read(path: &Path) -> Option<OverlayDoc> {
-    let bytes = std::fs::read(path).ok()?;
-    serde_json::from_slice(&bytes).ok()
+    match read_state(path) {
+        OverlayReadState::Absent => None,
+        OverlayReadState::Loaded(doc) => Some(*doc),
+        OverlayReadState::Unreadable => {
+            // ADMISSION-CONTROL SIGNAL (audit LOW): a torn overlay drops every API-registered hook,
+            // which includes SECURITY GATES — so admission control silently reverts to base config. Warn
+            // LOUD and name gates explicitly, aligning with the fail-closed hook discipline: an operator
+            // who registered a gate via the API must not silently lose it to a corrupt overlay without a
+            // diagnostic. (We still fail-soft on boot — a corrupt overlay must never brick startup — but
+            // never silently.)
+            tracing::warn!(
+                path = %path.display(),
+                "config overlay is present but unreadable/corrupt; starting on base config.yaml ALONE \
+                 — API-applied hooks (INCLUDING security GATES that enforce admission control), groups, \
+                 and plugin version pins are NOT restored. Any gate registered only via the admin API \
+                 is now ABSENT until re-applied. Fix or remove the overlay file to restore durability."
+            );
+            None
+        }
+        OverlayReadState::VersionTooNew(v) => {
+            // NOT the corrupt path: this overlay is intact and meaningful. Ignoring it would run
+            // without hooks and groups the operator believes are persisted — security gates
+            // included — so the boot caller refuses to start rather than silently disarming them.
+            tracing::error!(
+                path = %path.display(), overlay_version = v, understood = OVERLAY_VERSION,
+                "config overlay was written by a NEWER busbar than this one"
+            );
+            None
+        }
+    }
 }
 
 /// Classified overlay read for the read-modify-WRITE path (`persist`), which — unlike the fail-soft
@@ -105,28 +552,64 @@ pub(crate) fn read(path: &Path) -> Option<OverlayDoc> {
 /// (must NOT overwrite, or accumulated tombstones are lost).
 pub(crate) enum OverlayReadState {
     Absent,
-    Loaded(OverlayDoc),
+    // Boxed: `OverlayDoc` grew a large `root` section (1.5.0 full-config coverage), so an inline
+    // variant would make the whole enum ~1 KiB regardless of the `Absent`/`Unreadable` common case
+    // (clippy `large_enum_variant`). The box keeps the enum pointer-sized.
+    Loaded(Box<OverlayDoc>),
     Unreadable,
+    /// Written by a NEWER busbar than this one. Distinct from `Unreadable` on purpose: a corrupt
+    /// overlay has lost its bytes and there is nothing to honour, but this one is intact and
+    /// meaningful — silently ignoring it would run without hooks and groups the operator believes
+    /// are persisted, security gates included.
+    VersionTooNew(u32),
 }
 
 pub(crate) fn read_state(path: &Path) -> OverlayReadState {
     match std::fs::read(path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => OverlayReadState::Absent,
         Err(_) => OverlayReadState::Unreadable,
-        Ok(bytes) => match serde_json::from_slice(&bytes) {
+        Ok(bytes) => match serde_json::from_slice::<Box<OverlayDoc>>(&bytes) {
+            // A newer overlay may have added a section this binary drops, or changed how an existing
+            // one is represented — neither is visible as a parse error, so the version is the only
+            // signal. 1.5.0 is the first release that can refuse one; a binary without this check
+            // never can, whatever number is stamped.
+            Ok(doc) if doc.version > OVERLAY_VERSION => {
+                OverlayReadState::VersionTooNew(doc.version)
+            }
             Ok(doc) => OverlayReadState::Loaded(doc),
             Err(_) => OverlayReadState::Unreadable,
         },
     }
 }
 
-/// Atomically write the overlay: serialize to a sibling `.tmp` then rename over `path`, so a reader
-/// (or a crash) never observes a half-written file.
+/// Atomically + durably write the overlay via the crate's ONE durable-write choke point
+/// ([`crate::durable::write_with`]): serialize to a sibling temp, fsync its CONTENTS, rename over
+/// `path`, then fsync the parent DIRECTORY — so a reader (or a crash) never observes a half-written
+/// file AND a power loss cannot surface a torn/zero-length overlay after the rename (L3). This is the
+/// former reference implementation of the dance; it is now SUBSUMED (behavior identical: same temp-in-
+/// same-dir, same fsync order, same empty-parent→"." resolution, same tmp cleanup on error) so a
+/// future facet fix lands once, in the primitive, for every durable write.
+///
+/// `mode: Some(0o600)` — the overlay can carry operator-supplied credential material verbatim (e.g. a
+/// postgres `store.settings.url` of the form `postgres://user:pass@host:5432/busbar`), the same class
+/// of secret the signing key gets 0600 treatment for; the temp (and therefore the published overlay)
+/// is created 0600 AT OPEN, so it is never briefly world-readable between write and a later chmod (no
+/// TOCTOU window). `exclusive` is left at its default (`false`), unlike the signing key: the signing
+/// key's `exclusive: true` guards a first-boot, predictable-path secret MINTING moment (anti-pre-plant
+/// so a decoy left at that exact path is never adopted). The overlay is instead written repeatedly
+/// during normal operation, and `write_with` already gives every call a per-call-unique
+/// `.<name>.<pid>-<seq>.tmp` temp name, so there is no fixed, guessable temp name for a pre-planted
+/// decoy to occupy in the first place — the anti-pre-plant posture would add no protection here.
 pub(crate) fn write(path: &Path, doc: &OverlayDoc) -> std::io::Result<()> {
     let json = serde_json::to_vec_pretty(doc).map_err(std::io::Error::other)?;
-    let tmp = path.with_extension("overlay.tmp");
-    std::fs::write(&tmp, json)?;
-    std::fs::rename(&tmp, path)
+    crate::durable::write_with(
+        path,
+        &json,
+        crate::durable::DurableOpts {
+            mode: Some(0o600),
+            ..Default::default()
+        },
+    )
 }
 
 /// Build an overlay from a hook state (registry + global-hook names), no tombstones — a test helper
@@ -137,28 +620,136 @@ pub(crate) fn from_state(hooks: &HashMap<String, HookCfg>, global_hooks: &[Strin
         hooks: hooks.clone(),
         global_hooks: global_hooks.to_vec(),
         deleted: Vec::new(),
+        ..Default::default()
     }
 }
 
-/// Merge an overlay into a deploy config BEFORE resolve (the boot-merge). Overlay hooks are inserted
-/// into the registry (an overlay hook with a base hook's name WINS — the last-applied definition, which
-/// matches the live-apply semantics), overlay global names are unioned into `global_hooks`, and finally
-/// TOMBSTONES (`deleted`) are subtracted — so a hook the API deleted stays gone across a restart even if
-/// it was defined in base `config.yaml`. Tombstones are applied LAST so a delete always wins over a
-/// stale add.
-pub(crate) fn merge_into(deploy: &mut DeployCfg, doc: OverlayDoc) {
-    for (name, cfg) in doc.hooks {
-        deploy.hooks.insert(name, cfg);
+/// Apply the overlay's `root` section (the single-value config overrides) to a base `DeployCfg`
+/// BEFORE `resolve` — the pre-resolve half of the boot-merge. The hooks + groups sections merge
+/// POST-resolve (`merge_into`, the runtime registry is synthesized in `resolve`); the root section is
+/// DeployCfg-level input, so the limits projection + the exposed-admin-mTLS boot-guard re-run over
+/// the merged shape. A no-op when the overlay carries no root override. Kept a free fn (not folded
+/// into `merge_into`) precisely because it operates on a DIFFERENT input (DeployCfg, not RootCfg) at
+/// a DIFFERENT pipeline stage.
+pub(crate) fn apply_root_to_deploy(deploy: &mut DeployCfg, doc: &OverlayDoc) {
+    if let Some(root) = &doc.root {
+        root.apply_to_deploy(deploy);
+    }
+    apply_plugin_versions_to_deploy(deploy, doc);
+}
+
+/// Apply the overlay's `plugin_versions` pins onto `deploy.plugins.min_versions` (1.5.0
+/// rollback-friendly versioning). Each pin OVERRIDES the base-config floor for THAT plugin name to the
+/// operator's explicitly-pinned version — so on the next (re)load the pinned (older) third-party
+/// artifact clears its (now-lowered) floor and re-loads, and no floor is silently RAISED. A pin only
+/// ever exists because a human took an explicit, authenticated, audited rollback action; the automatic
+/// boot/reload path merely honors the persisted decision. A pin for a plugin the base config never
+/// floored simply adds a (low) floor entry — harmless, since a floor at/below the artifact's version
+/// is a no-op.
+///
+/// M1 FIX: the FIRST-PARTY floor override is now PER-PLUGIN, not a single global floor. Each pin adds
+/// BOTH a `min_versions` entry (the third-party floor path) AND a `first_party_floors[name]` entry (the
+/// first-party floor path in `busbar_plugin_sign::evaluate`). `evaluate` applies the per-name
+/// first-party floor ONLY to a plugin whose manifest is actually first-party, so pinning a third-party
+/// name is a harmless no-op on the first-party path (its `min_versions` entry does the work). The
+/// earlier single global `first_party_floor` set to the LOWEST pin across all pins lowered the floor for
+/// EVERY first-party plugin — so a rollback of plugin A could silently admit an unpinned old first-party
+/// plugin B. Scoping the override to the pinned name closes that.
+pub(crate) fn apply_plugin_versions_to_deploy(deploy: &mut DeployCfg, doc: &OverlayDoc) {
+    for (name, pinned) in &doc.plugin_versions {
+        deploy
+            .plugins
+            .min_versions
+            .insert(name.clone(), pinned.clone());
+        // Scope the first-party floor override to THIS name alone (M1). Harmless for a third-party
+        // pin: `evaluate` only consults `first_party_floors` for a verified first-party manifest.
+        deploy
+            .plugins
+            .first_party_floors
+            .insert(name.clone(), pinned.clone());
+    }
+}
+
+/// Merge an overlay into the RESOLVED config (the boot-merge, run AFTER `config::resolve` - the
+/// runtime hook registry is synthesized there from the inline refs, so the overlay layers on top
+/// of it). Overlay hooks are inserted into the registry (an overlay hook with a base hook's name
+/// WINS - the last-applied definition, which matches the live-apply semantics), overlay global
+/// names are unioned into `global_hooks`, and finally TOMBSTONES (`deleted`) are subtracted - so a
+/// hook the API deleted stays gone across a restart even if it was defined in base `config.yaml`.
+/// Tombstones are applied LAST so a delete always wins over a stale add.
+pub(crate) fn merge_into(cfg: &mut RootCfg, doc: OverlayDoc) {
+    for (name, hook) in doc.hooks {
+        cfg.hooks.insert(name, hook);
     }
     for g in doc.global_hooks {
-        if !deploy.global_hooks.contains(&g) {
-            deploy.global_hooks.push(g);
+        if !cfg.global_hooks.contains(&g) {
+            cfg.global_hooks.push(g);
         }
     }
-    // Tombstones LAST: an API deletion removes the hook from the effective config even if base defined it.
+    // Groups section: same semantics as hooks — an overlay group with a base group's name wins, then
+    // group tombstones are subtracted LAST so an API deletion survives a restart even if base defined
+    // the group. The parent-chain validity (parents exist, acyclic, depth) is re-checked by
+    // `validate_groups` after the merge, exactly as for a hand-written config.
+    for (name, group) in doc.groups {
+        cfg.groups.insert(name, group);
+    }
+    // Tombstones LAST: an API deletion removes the hook/group from the effective config even if base
+    // defined it.
     for name in &doc.deleted {
-        deploy.hooks.remove(name);
-        deploy.global_hooks.retain(|g| g != name);
+        cfg.hooks.remove(name);
+        cfg.global_hooks.retain(|g| g != name);
+    }
+    for name in &doc.deleted_groups {
+        cfg.groups.remove(name);
+    }
+}
+
+#[cfg(test)]
+mod version_gate_tests {
+    use super::*;
+
+    /// An overlay from a NEWER busbar is refused, both for reading and for writing. It is intact and
+    /// meaningful — unlike a corrupt one — so ignoring it would run with the operator's
+    /// API-registered hooks and groups silently absent, security gates included. 1.5.0 is the first
+    /// release that can refuse one at all: a binary without this check never will, whatever version
+    /// a future overlay stamps.
+    #[test]
+    fn an_overlay_from_a_newer_busbar_is_refused_not_ignored() {
+        let dir = std::env::temp_dir().join(format!("busbar-overlay-vgate-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("overlay.json");
+        std::fs::write(
+            &path,
+            serde_json::json!({
+                "version": OVERLAY_VERSION + 1,
+                "hooks": { "gate": { "kind": "gate", "plugin": "x" } }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert!(
+            matches!(read_state(&path), OverlayReadState::VersionTooNew(v) if v == OVERLAY_VERSION + 1),
+            "a newer overlay is classified distinctly from corrupt"
+        );
+        assert!(
+            read(&path).is_none(),
+            "and is not merged onto the resolved config"
+        );
+        assert!(
+            load_for_rmw(&path).is_none(),
+            "and is never overwritten — a write would discard what this binary cannot represent"
+        );
+
+        // The current version still loads, so the gate is a ceiling and not a wall.
+        std::fs::write(
+            &path,
+            serde_json::json!({ "version": OVERLAY_VERSION, "hooks": {} }).to_string(),
+        )
+        .unwrap();
+        assert!(read(&path).is_some(), "the understood version still loads");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
@@ -168,7 +759,7 @@ mod tests {
 
     fn gate() -> HookCfg {
         serde_json::from_value(serde_json::json!({
-            "kind": "gate", "webhook": "http://127.0.0.1:8900/", "prompt": "rw", "global": true
+            "kind": "gate", "plugin": "test-hook", "prompt": "rw", "global": true
         }))
         .unwrap()
     }
@@ -186,6 +777,52 @@ mod tests {
         let read_back = read(&path).expect("read back");
         assert!(read_back.hooks.contains_key("compress"));
         assert_eq!(read_back.global_hooks, vec!["compress".to_string()]);
+        // No durable temp for THIS target (`.<file-name>.<pid>-<seq>.tmp`, the primitive's unique
+        // naming) must linger after a successful write — the rename consumed it, and the RAII guard
+        // leaves nothing to accumulate. (Scan by our unique file-name prefix; the temp_dir is shared.)
+        let file_name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let no_durable_temp = || {
+            let prefix = format!(".{file_name}.");
+            !std::fs::read_dir(&dir).unwrap().any(|e| {
+                let n = e.unwrap().file_name();
+                let n = n.to_string_lossy();
+                n.starts_with(&prefix) && n.ends_with(".tmp")
+            })
+        };
+        assert!(no_durable_temp(), "no durable temp should remain");
+        // A pre-existing stale temp from a prior crashed run (a foreign name under the primitive's
+        // per-call-unique naming) must NOT wedge the next write — it is simply ignored.
+        std::fs::write(path.with_extension("overlay.tmp"), b"stale").unwrap();
+        write(&path, &doc).expect("write despite a pre-existing stale temp");
+        assert!(no_durable_temp(), "no durable temp should remain");
+        let _ = std::fs::remove_file(path.with_extension("overlay.tmp"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The overlay can carry operator-supplied credential material verbatim (e.g. a postgres
+    /// `store.settings.url` of `postgres://user:pass@host:5432/busbar`), so `write` must publish it
+    /// 0600 (owner read/write only) rather than at OS/umask-default permissions (typically 0644,
+    /// world-readable) — the same posture the signing key gets, and for the same reason.
+    #[test]
+    #[cfg(unix)]
+    fn write_is_0600() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "busbar-overlay-perm-test-{}.json",
+            std::process::id()
+        ));
+        let doc = from_state(
+            &HashMap::from([("compress".to_string(), gate())]),
+            &["compress".to_string()],
+        );
+        write(&path, &doc).expect("atomic write");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "overlay file must be 0600 (credential-bearing), got {mode:#o}"
+        );
         let _ = std::fs::remove_file(&path);
     }
 
@@ -206,14 +843,19 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// merge_into adds overlay hooks to the deploy registry + unions global names; an overlay hook with
-    /// a base hook's name wins.
+    /// A minimal RESOLVED config to merge overlays into (providers/models empty; registry empty).
+    fn minimal_cfg() -> RootCfg {
+        let deploy: super::super::DeployCfg =
+            serde_json::from_value(serde_json::json!({"providers": {}, "models": {}})).unwrap();
+        super::super::resolve(&deploy, &HashMap::new()).expect("minimal config resolves")
+    }
+
+    /// merge_into adds overlay hooks to the resolved registry + unions global names; an overlay
+    /// hook with a base hook's name wins.
     #[test]
     fn merge_into_deploy() {
-        // A minimal deploy config (providers/models required; the rest default).
-        let mut deploy: DeployCfg =
-            serde_json::from_value(serde_json::json!({"providers": {}, "models": {}})).unwrap();
-        deploy.hooks.insert("base_hook".to_string(), gate());
+        let mut cfg = minimal_cfg();
+        cfg.hooks.insert("base_hook".to_string(), gate());
         let doc = from_state(
             &HashMap::from([
                 ("base_hook".to_string(), gate()), // same name as a base hook → overlay wins
@@ -221,42 +863,41 @@ mod tests {
             ]),
             &["api_hook".to_string(), "base_hook".to_string()],
         );
-        deploy.global_hooks.push("base_hook".to_string());
-        merge_into(&mut deploy, doc);
-        assert!(deploy.hooks.contains_key("api_hook"));
-        assert!(deploy.hooks.contains_key("base_hook"));
+        cfg.global_hooks.push("base_hook".to_string());
+        merge_into(&mut cfg, doc);
+        assert!(cfg.hooks.contains_key("api_hook"));
+        assert!(cfg.hooks.contains_key("base_hook"));
         // global_hooks unioned, no duplicate of base_hook.
         assert_eq!(
-            deploy
-                .global_hooks
+            cfg.global_hooks
                 .iter()
                 .filter(|g| *g == "base_hook")
                 .count(),
             1,
             "global union does not duplicate"
         );
-        assert!(deploy.global_hooks.iter().any(|g| g == "api_hook"));
+        assert!(cfg.global_hooks.iter().any(|g| g == "api_hook"));
     }
 
     /// TOMBSTONE: a hook the API deleted (recorded in `deleted`) is removed from the effective config at
     /// boot even if it was defined in base config.yaml — so an API deletion survives a restart.
     #[test]
     fn merge_into_applies_tombstones() {
-        let mut deploy: DeployCfg =
-            serde_json::from_value(serde_json::json!({"providers": {}, "models": {}})).unwrap();
-        deploy.hooks.insert("base_hook".to_string(), gate());
-        deploy.global_hooks.push("base_hook".to_string());
+        let mut cfg = minimal_cfg();
+        cfg.hooks.insert("base_hook".to_string(), gate());
+        cfg.global_hooks.push("base_hook".to_string());
         let doc = OverlayDoc {
             hooks: HashMap::new(),
             global_hooks: Vec::new(),
             deleted: vec!["base_hook".to_string()],
+            ..Default::default()
         };
-        merge_into(&mut deploy, doc);
+        merge_into(&mut cfg, doc);
         assert!(
-            !deploy.hooks.contains_key("base_hook"),
+            !cfg.hooks.contains_key("base_hook"),
             "a tombstoned base hook is removed from the effective config"
         );
-        assert!(!deploy.global_hooks.iter().any(|g| g == "base_hook"));
+        assert!(!cfg.global_hooks.iter().any(|g| g == "base_hook"));
     }
 
     /// REGRESSION: `persist` must NOT overwrite a present-but-unreadable/corrupt overlay — that would
@@ -270,12 +911,17 @@ mod tests {
         ));
         let corrupt = b"{ this is not valid json and may hide tombstones";
         std::fs::write(&path, corrupt).unwrap();
-        persist(
+        let err = persist(
             Some(&path),
             &HashMap::from([("newhook".to_string(), gate())]),
             &["newhook".to_string()],
             Some("deleteme"),
             None,
+            &std::collections::HashSet::new(),
+        );
+        assert!(
+            err.is_err(),
+            "persisting onto a corrupt overlay must FAIL CLOSED (refuse), not silently proceed"
         );
         let raw = std::fs::read(&path).expect("file still present");
         assert_eq!(
@@ -285,7 +931,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// REGRESSION (audit c1r5): a WHOLESALE registry write (config rollback passes both tombstone
+    /// A WHOLESALE registry write (config rollback passes both tombstone
     /// args `None`) must reconcile away any tombstone for a name that the restored registry
     /// contains — otherwise the boot-merge inserts the hook then subtracts it, and the rollback
     /// silently vanishes on the next restart. `persist` retains only tombstones whose name is
@@ -301,6 +947,7 @@ mod tests {
                 hooks: HashMap::new(),
                 global_hooks: Vec::new(),
                 deleted: vec!["x".to_string()],
+                ..Default::default()
             },
         )
         .unwrap();
@@ -311,20 +958,630 @@ mod tests {
             &["x".to_string()],
             None,
             None,
-        );
+            &std::collections::HashSet::new(),
+        )
+        .expect("persist");
         let doc = read(&path).expect("read back");
         assert!(
             !doc.deleted.iter().any(|n| n == "x"),
             "a restored hook must not remain tombstoned, or it vanishes on restart"
         );
         // And it survives the boot merge (inserted, not subtracted).
-        let mut deploy: DeployCfg =
-            serde_json::from_value(serde_json::json!({"providers": {}, "models": {}})).unwrap();
-        merge_into(&mut deploy, doc);
+        let mut cfg = minimal_cfg();
+        merge_into(&mut cfg, doc);
         assert!(
-            deploy.hooks.contains_key("x"),
+            cfg.hooks.contains_key("x"),
             "rollback is durable across restart"
         );
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// REGRESSION: a tombstone for a name that is ABSENT from base `config.yaml` (never defined there,
+    /// or since removed from it) can never be reconciled by the "name comes back" rule — nothing will
+    /// ever re-add it as a HOOK, since the boot-merge only inserts base-config names. Such a tombstone
+    /// is permanently inert dead weight and must be pruned at persist time. A tombstone whose name IS
+    /// still in base config is kept (it is still actively shadowing that base entry).
+    #[test]
+    fn persist_prunes_tombstone_for_a_name_absent_from_base_config() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("busbar-ovl-prune-hook-{}.json", std::process::id()));
+        write(
+            &path,
+            &OverlayDoc {
+                hooks: HashMap::new(),
+                global_hooks: Vec::new(),
+                deleted: vec!["ghost".to_string(), "shadowed_base".to_string()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let base_hook_names: std::collections::HashSet<String> =
+            ["shadowed_base".to_string()].into_iter().collect();
+        persist(
+            Some(&path),
+            &HashMap::from([("newhook".to_string(), gate())]),
+            &["newhook".to_string()],
+            None,
+            None,
+            &base_hook_names,
+        )
+        .expect("persist");
+        let doc = read(&path).expect("read back");
+        assert!(
+            !doc.deleted.iter().any(|n| n == "ghost"),
+            "a tombstone for a name absent from base config.yaml is permanently inert and must be \
+             pruned: {:?}",
+            doc.deleted
+        );
+        assert!(
+            doc.deleted.iter().any(|n| n == "shadowed_base"),
+            "a tombstone for a name STILL in base config must be kept (it still shadows it): {:?}",
+            doc.deleted
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    fn group_with_budget() -> GroupCfg {
+        serde_json::from_value(serde_json::json!({
+            "limits": [ { "budget": 1000, "per": "month" } ]
+        }))
+        .unwrap()
+    }
+
+    /// merge_into inserts overlay groups (an overlay group with a base group's name wins) and applies
+    /// group tombstones LAST — an API-deleted group stays gone even if base config.yaml defined it.
+    #[test]
+    fn merge_into_groups_and_group_tombstones() {
+        let mut cfg = minimal_cfg();
+        cfg.groups.insert("team".to_string(), group_with_budget());
+        cfg.groups.insert("doomed".to_string(), group_with_budget());
+        let doc = OverlayDoc {
+            groups: BTreeMap::from([("user:alice".to_string(), group_with_budget())]),
+            deleted_groups: vec!["doomed".to_string()],
+            ..Default::default()
+        };
+        merge_into(&mut cfg, doc);
+        assert!(cfg.groups.contains_key("user:alice"), "overlay group added");
+        assert!(cfg.groups.contains_key("team"), "base group untouched");
+        assert!(
+            !cfg.groups.contains_key("doomed"),
+            "tombstoned group removed even though base defined it"
+        );
+    }
+
+    /// REGRESSION: a HOOK write must PRESERVE the groups section + its tombstones — the read-modify-write
+    /// loads the whole doc and mutates only the hook section. Guards against "persist rebuilds the doc
+    /// inline and silently drops groups".
+    #[test]
+    fn persist_hook_preserves_groups_section() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("busbar-ovl-preserve-{}.json", std::process::id()));
+        write(
+            &path,
+            &OverlayDoc {
+                groups: BTreeMap::from([("user:bob".to_string(), group_with_budget())]),
+                deleted_groups: vec!["oldteam".to_string()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        persist(
+            Some(&path),
+            &HashMap::from([("h".to_string(), gate())]),
+            &["h".to_string()],
+            None,
+            None,
+            &std::collections::HashSet::new(),
+        )
+        .expect("persist");
+        let doc = read(&path).expect("read back");
+        assert!(doc.hooks.contains_key("h"), "hook written");
+        assert!(
+            doc.groups.contains_key("user:bob"),
+            "groups section preserved across a hook write"
+        );
+        assert!(
+            doc.deleted_groups.iter().any(|n| n == "oldteam"),
+            "group tombstones preserved across a hook write"
+        );
+        assert_eq!(
+            doc.version, OVERLAY_VERSION,
+            "schema version stamped on write"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Symmetric: a GROUP write preserves the hooks section, and reconciles away a group tombstone for a
+    /// name the written registry contains (wholesale-rollback safety, mirroring the hook path's c1r5 fix).
+    #[test]
+    fn persist_groups_preserves_hooks_and_reconciles_tombstone() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("busbar-ovl-gpreserve-{}.json", std::process::id()));
+        write(
+            &path,
+            &OverlayDoc {
+                hooks: HashMap::from([("keepme".to_string(), gate())]),
+                deleted_groups: vec!["x".to_string()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // Persist a group registry that CONTAINS "x" (a rollback), both tombstone args None.
+        persist_groups(
+            Some(&path),
+            &BTreeMap::from([("x".to_string(), group_with_budget())]),
+            None,
+            None,
+            &std::collections::HashSet::new(),
+        )
+        .expect("persist groups");
+        let doc = read(&path).expect("read back");
+        assert!(
+            doc.hooks.contains_key("keepme"),
+            "hooks section preserved across a group write"
+        );
+        assert!(doc.groups.contains_key("x"), "group written");
+        assert!(
+            !doc.deleted_groups.iter().any(|n| n == "x"),
+            "tombstone reconciled away for a restored group, else it vanishes on restart"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// REGRESSION (groups half of the hook test above): a group tombstone for a name absent from base
+    /// `config.yaml` can never come back via the "name comes back" reconciliation (nothing re-adds a
+    /// non-base name at boot), so it is permanently inert and must be pruned at persist time. A
+    /// tombstone for a name still in base config is kept.
+    #[test]
+    fn persist_groups_prunes_tombstone_for_a_name_absent_from_base_config() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "busbar-ovl-prune-group-{}.json",
+            std::process::id()
+        ));
+        write(
+            &path,
+            &OverlayDoc {
+                deleted_groups: vec!["ghost_group".to_string(), "shadowed_base_group".to_string()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let base_group_names: std::collections::HashSet<String> =
+            ["shadowed_base_group".to_string()].into_iter().collect();
+        persist_groups(
+            Some(&path),
+            &BTreeMap::from([("newgroup".to_string(), group_with_budget())]),
+            None,
+            None,
+            &base_group_names,
+        )
+        .expect("persist groups");
+        let doc = read(&path).expect("read back");
+        assert!(
+            !doc.deleted_groups.iter().any(|n| n == "ghost_group"),
+            "a group tombstone for a name absent from base config.yaml is permanently inert and \
+             must be pruned: {:?}",
+            doc.deleted_groups
+        );
+        assert!(
+            doc.deleted_groups
+                .iter()
+                .any(|n| n == "shadowed_base_group"),
+            "a group tombstone for a name STILL in base config must be kept: {:?}",
+            doc.deleted_groups
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// `OverlaySection::parse` is the ONE valid-name gate: `groups`/`hooks` round-trip, everything
+    /// else is `None` (the reset endpoint 400s on it).
+    #[test]
+    fn overlay_section_parse_round_trips_and_rejects() {
+        assert_eq!(
+            OverlaySection::parse("groups"),
+            Some(OverlaySection::Groups)
+        );
+        assert_eq!(OverlaySection::parse("hooks"), Some(OverlaySection::Hooks));
+        assert_eq!(OverlaySection::parse("root"), Some(OverlaySection::Root));
+        assert_eq!(OverlaySection::Groups.as_str(), "groups");
+        assert_eq!(OverlaySection::Hooks.as_str(), "hooks");
+        assert_eq!(OverlaySection::Root.as_str(), "root");
+        for bad in ["", "Groups", "hook", "auth", "plugins", "groups/", "Root"] {
+            assert!(
+                OverlaySection::parse(bad).is_none(),
+                "`{bad}` is not a section"
+            );
+        }
+    }
+
+    /// `clear_section(Groups)` wipes the groups entries + tombstones and leaves the hooks section
+    /// (and its tombstones) untouched — the per-section reset invariant.
+    #[test]
+    fn clear_section_wipes_one_section_only() {
+        let mut doc = OverlayDoc {
+            hooks: HashMap::from([("h".to_string(), gate())]),
+            global_hooks: vec!["h".to_string()],
+            deleted: vec!["gonehook".to_string()],
+            groups: BTreeMap::from([("user:alice".to_string(), group_with_budget())]),
+            deleted_groups: vec!["gonegroup".to_string()],
+            ..Default::default()
+        };
+        doc.clear_section(OverlaySection::Groups);
+        assert!(doc.groups.is_empty(), "groups entries cleared");
+        assert!(doc.deleted_groups.is_empty(), "group tombstones cleared");
+        assert!(doc.hooks.contains_key("h"), "hooks section preserved");
+        assert_eq!(
+            doc.global_hooks,
+            vec!["h".to_string()],
+            "global wiring preserved"
+        );
+        assert_eq!(
+            doc.deleted,
+            vec!["gonehook".to_string()],
+            "hook tombstones preserved"
+        );
+        // And the symmetric case.
+        doc.clear_section(OverlaySection::Hooks);
+        assert!(doc.hooks.is_empty() && doc.global_hooks.is_empty() && doc.deleted.is_empty());
+    }
+
+    /// `section_is_empty` is true only when a section carries neither entries nor tombstones — the
+    /// idempotent-no-op predicate the reset handler short-circuits on.
+    #[test]
+    fn section_is_empty_tracks_entries_and_tombstones() {
+        let empty = OverlayDoc::default();
+        assert!(empty.section_is_empty(OverlaySection::Groups));
+        assert!(empty.section_is_empty(OverlaySection::Hooks));
+        // A lone tombstone (no live entry) still counts as non-empty (a base deletion to revert).
+        let tombstoned = OverlayDoc {
+            deleted_groups: vec!["x".to_string()],
+            deleted: vec!["y".to_string()],
+            ..Default::default()
+        };
+        assert!(!tombstoned.section_is_empty(OverlaySection::Groups));
+        assert!(!tombstoned.section_is_empty(OverlaySection::Hooks));
+    }
+
+    /// The DURABLE half of a reset: `clear_section` on disk wipes one section + preserves the other,
+    /// exactly like the read-modify-write persist paths. Guards "reset drops the sibling section".
+    #[test]
+    fn clear_section_persist_preserves_sibling() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("busbar-ovl-clearsect-{}.json", std::process::id()));
+        write(
+            &path,
+            &OverlayDoc {
+                hooks: HashMap::from([("keepme".to_string(), gate())]),
+                deleted: vec!["keephook_tomb".to_string()],
+                groups: BTreeMap::from([("user:zap".to_string(), group_with_budget())]),
+                deleted_groups: vec!["zap_tomb".to_string()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        clear_section(Some(&path), OverlaySection::Groups).expect("clear groups section");
+        let doc = read(&path).expect("read back");
+        assert!(
+            doc.groups.is_empty() && doc.deleted_groups.is_empty(),
+            "groups reset on disk"
+        );
+        assert!(
+            doc.hooks.contains_key("keepme"),
+            "hooks entries survive the groups reset"
+        );
+        assert_eq!(
+            doc.deleted,
+            vec!["keephook_tomb".to_string()],
+            "hook tombstones survive"
+        );
+        assert_eq!(doc.version, OVERLAY_VERSION, "schema version stamped");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A section reset must REFUSE to overwrite a present-but-corrupt overlay (clearing it would drop
+    /// the sibling section's tombstones), mirroring the persist paths' fail-closed posture.
+    #[test]
+    fn clear_section_refuses_to_overwrite_corrupt_overlay() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "busbar-ovl-clearcorrupt-{}.json",
+            std::process::id()
+        ));
+        let corrupt = b"{ not valid json hiding tombstones";
+        std::fs::write(&path, corrupt).unwrap();
+        assert!(
+            clear_section(Some(&path), OverlaySection::Groups).is_err(),
+            "clearing a section on a corrupt overlay must FAIL CLOSED (refuse), not clobber it"
+        );
+        let raw = std::fs::read(&path).expect("still present");
+        assert_eq!(
+            raw, corrupt,
+            "a corrupt overlay is preserved verbatim, never clobbered"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ── ROOT section (1.5.0 full-config coverage) ─────────────────────────────────────────────
+
+    /// A minimal base `DeployCfg` (all uncovered sections at their defaults) to apply root overrides
+    /// onto. Uses the real YAML parse path so the defaults match production exactly.
+    fn minimal_deploy() -> DeployCfg {
+        serde_yaml::from_str("providers: {}\nmodels: {}\n").expect("minimal deploy parses")
+    }
+
+    /// A `RootSettings` naming a couple of overrides, parsed from JSON exactly as the API body would.
+    fn sample_root() -> RootSettings {
+        serde_json::from_value(serde_json::json!({
+            "listen": "0.0.0.0:9000",
+            "per_request_fee": 7,
+            "rate_card": { "m0": { "input_utok": 1.5, "output_utok": 2.0 } },
+            "limits": { "max_inbound_concurrent": 512 }
+        }))
+        .expect("root settings parse")
+    }
+
+    /// `apply_to_deploy` overwrites ONLY the named fields; unset fields keep base values.
+    #[test]
+    fn root_apply_overwrites_only_named_fields() {
+        let mut deploy = minimal_deploy();
+        let base_admin_listen = deploy.admin_listen.clone();
+        // NON-DEFAULT base values, or this test cannot see the defect it guards: with an
+        // all-defaults base a whole-section clobber is indistinguishable from a per-field merge,
+        // which is why it passed for as long as the bug existed.
+        deploy.limits.upstream_request_timeout_secs = 30;
+        deploy.limits.request_body_max_bytes = 1_048_576;
+        sample_root().apply_to_deploy(&mut deploy);
+        assert_eq!(
+            deploy.limits.upstream_request_timeout_secs, 30,
+            "a limits field the overlay never names keeps the operator's value"
+        );
+        assert_eq!(
+            deploy.limits.request_body_max_bytes, 1_048_576,
+            "including a deliberately tightened body cap"
+        );
+        assert_eq!(deploy.listen, "0.0.0.0:9000", "listen overridden");
+        assert_eq!(deploy.per_request_fee, 7, "fee overridden");
+        assert_eq!(
+            deploy.limits.max_inbound_concurrent, 512,
+            "a limits field overridden"
+        );
+        assert!(
+            deploy
+                .rate_card
+                .as_ref()
+                .is_some_and(|rc| rc.contains_key("m0")),
+            "rate_card overridden"
+        );
+        assert_eq!(
+            deploy.admin_listen, base_admin_listen,
+            "an unset field keeps its base value"
+        );
+    }
+
+    /// `is_empty` / `section_is_empty(Root)` track whether any override is set.
+    #[test]
+    fn root_is_empty_tracks_overrides() {
+        assert!(RootSettings::default().is_empty());
+        assert!(OverlayDoc::default().section_is_empty(OverlaySection::Root));
+        let doc = OverlayDoc {
+            root: Some(sample_root()),
+            ..Default::default()
+        };
+        assert!(!doc.section_is_empty(OverlaySection::Root));
+        // A root override does not make hooks/groups non-empty (independent sections).
+        assert!(doc.section_is_empty(OverlaySection::Hooks));
+        assert!(doc.section_is_empty(OverlaySection::Groups));
+    }
+
+    /// `persist_root` round-trips the root section AND preserves the hooks + groups sections; storing
+    /// an empty `RootSettings` clears the section back to `None`.
+    #[test]
+    fn persist_root_round_trips_and_preserves_siblings() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("busbar-ovl-root-{}.json", std::process::id()));
+        write(
+            &path,
+            &OverlayDoc {
+                hooks: HashMap::from([("keepme".to_string(), gate())]),
+                groups: BTreeMap::from([("user:z".to_string(), group_with_budget())]),
+                deleted_groups: vec!["oldteam".to_string()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        persist_root(Some(&path), &sample_root()).expect("persist root");
+        let doc = read(&path).expect("read back");
+        assert!(
+            doc.root
+                .as_ref()
+                .is_some_and(|r| r.per_request_fee == Some(7)),
+            "root section written"
+        );
+        assert!(doc.hooks.contains_key("keepme"), "hooks preserved");
+        assert!(doc.groups.contains_key("user:z"), "groups preserved");
+        assert_eq!(
+            doc.deleted_groups,
+            vec!["oldteam".to_string()],
+            "group tombstones preserved"
+        );
+        // Storing an empty root clears the section.
+        persist_root(Some(&path), &RootSettings::default()).expect("persist empty root");
+        let doc = read(&path).expect("read back after clear");
+        assert!(doc.root.is_none(), "empty root clears the section");
+        assert!(doc.hooks.contains_key("keepme"), "hooks still preserved");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// `clear_section(Root)` wipes only the root override; the hooks/groups sections survive. And the
+    /// on-disk `clear_section` refuses a corrupt overlay (fail-closed, like the sibling sections).
+    #[test]
+    fn clear_root_section_only() {
+        let mut doc = OverlayDoc {
+            hooks: HashMap::from([("h".to_string(), gate())]),
+            root: Some(sample_root()),
+            ..Default::default()
+        };
+        doc.clear_section(OverlaySection::Root);
+        assert!(doc.root.is_none(), "root cleared");
+        assert!(doc.hooks.contains_key("h"), "hooks preserved");
+    }
+
+    /// `apply_root_to_deploy` is a no-op when the overlay has no root override, and applies it when
+    /// present — the pre-resolve boot-merge half.
+    #[test]
+    fn apply_root_to_deploy_noop_and_active() {
+        let mut deploy = minimal_deploy();
+        apply_root_to_deploy(&mut deploy, &OverlayDoc::default());
+        assert_eq!(
+            deploy.per_request_fee, 0,
+            "no root override → base unchanged"
+        );
+        let doc = OverlayDoc {
+            root: Some(sample_root()),
+            ..Default::default()
+        };
+        apply_root_to_deploy(&mut deploy, &doc);
+        assert_eq!(deploy.per_request_fee, 7, "root override applied");
+    }
+
+    /// An unknown key in a root-settings body is a loud reject (`deny_unknown_fields`), never a silent
+    /// no-op — the same fail-closed posture as the DeployCfg surface.
+    #[test]
+    fn root_settings_rejects_unknown_field() {
+        let r: Result<RootSettings, _> =
+            serde_json::from_value(serde_json::json!({ "lissten": "0.0.0.0:9000" }));
+        assert!(r.is_err(), "a typo'd root field is rejected");
+    }
+
+    /// PLUGIN VERSION PINS (1.5.0 rollback-friendly versioning): a `plugin_versions` pin lowers BOTH
+    /// the per-name `min_versions` floor (third-party path) AND a PER-NAME `first_party_floors` entry
+    /// (first-party path) when applied to a base `DeployCfg` (M1). Each pin scopes its first-party
+    /// override to its own name — there is no single global floor lowered for every first-party plugin.
+    #[test]
+    fn plugin_versions_pins_lower_the_floors() {
+        let mut deploy = minimal_deploy();
+        // Base has a higher floor and no first-party floor override (the automatic default).
+        deploy
+            .plugins
+            .min_versions
+            .insert("acme-store-x".to_string(), "2.0.0".to_string());
+        assert!(deploy.plugins.first_party_floors.is_empty());
+
+        let doc = OverlayDoc {
+            plugin_versions: BTreeMap::from([
+                ("acme-store-x".to_string(), "1.4.0".to_string()),
+                ("busbar-store-redis".to_string(), "1.5.0".to_string()),
+            ]),
+            ..Default::default()
+        };
+        apply_plugin_versions_to_deploy(&mut deploy, &doc);
+
+        assert_eq!(
+            deploy
+                .plugins
+                .min_versions
+                .get("acme-store-x")
+                .map(String::as_str),
+            Some("1.4.0"),
+            "the third-party floor is LOWERED to the pinned version"
+        );
+        // PER-NAME first-party floor overrides: each pinned name gets exactly its pinned version;
+        // there is no global floor, so an unpinned first-party plugin is unaffected (M1).
+        assert_eq!(
+            deploy
+                .plugins
+                .first_party_floors
+                .get("acme-store-x")
+                .map(String::as_str),
+            Some("1.4.0"),
+        );
+        assert_eq!(
+            deploy
+                .plugins
+                .first_party_floors
+                .get("busbar-store-redis")
+                .map(String::as_str),
+            Some("1.5.0"),
+        );
+    }
+
+    /// No pins ⇒ no per-name floor overrides (the automatic posture is untouched): `apply_root_to_deploy`
+    /// (which also applies pins) leaves `first_party_floors` EMPTY when the overlay carries no pins, so
+    /// every first-party plugin keeps the binary's own version as its floor.
+    #[test]
+    fn no_pins_leaves_first_party_floor_none() {
+        let mut deploy = minimal_deploy();
+        apply_root_to_deploy(&mut deploy, &OverlayDoc::default());
+        assert!(
+            deploy.plugins.first_party_floors.is_empty(),
+            "with no pins the automatic first-party floor stands"
+        );
+    }
+
+    /// `try_persist_plugin_versions` round-trips the pin map AND preserves the hooks/groups/root
+    /// sections; storing an empty map clears the section (every pin lifted → the base floors return).
+    #[test]
+    fn persist_plugin_versions_round_trips_and_preserves_siblings() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("busbar-ovl-pins-{}.json", std::process::id()));
+        write(
+            &path,
+            &OverlayDoc {
+                hooks: HashMap::from([("keepme".to_string(), gate())]),
+                root: Some(sample_root()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let pins = BTreeMap::from([("acme-store-x".to_string(), "1.4.0".to_string())]);
+        try_persist_plugin_versions(Some(&path), &pins).unwrap();
+        let doc = read(&path).expect("read back");
+        assert_eq!(
+            doc.plugin_versions.get("acme-store-x").map(String::as_str),
+            Some("1.4.0"),
+            "pin persisted"
+        );
+        assert!(doc.hooks.contains_key("keepme"), "hooks preserved");
+        assert!(doc.root.is_some(), "root preserved");
+        assert!(
+            !doc.section_is_empty(OverlaySection::PluginVersions),
+            "the pin section is non-empty"
+        );
+
+        // Clearing the pins restores the base floors and preserves siblings.
+        try_persist_plugin_versions(Some(&path), &BTreeMap::new()).unwrap();
+        let doc = read(&path).expect("read back after clear");
+        assert!(doc.plugin_versions.is_empty(), "pins cleared");
+        assert!(doc.hooks.contains_key("keepme"), "hooks still preserved");
+        assert!(
+            doc.section_is_empty(OverlaySection::PluginVersions),
+            "the pin section is empty after clear"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// `clear_section(PluginVersions)` wipes only the pins; the other sections survive — the durable
+    /// half of `DELETE /api/v1/admin/overlay/plugin_versions` (lift every rollback pin).
+    #[test]
+    fn clear_plugin_versions_section_only() {
+        let mut doc = OverlayDoc {
+            hooks: HashMap::from([("h".to_string(), gate())]),
+            plugin_versions: BTreeMap::from([("p".to_string(), "1.0.0".to_string())]),
+            ..Default::default()
+        };
+        doc.clear_section(OverlaySection::PluginVersions);
+        assert!(doc.plugin_versions.is_empty(), "pins cleared");
+        assert!(doc.hooks.contains_key("h"), "hooks preserved");
+    }
+
+    /// The `plugin_versions` path segment parses to the section and round-trips its label.
+    #[test]
+    fn plugin_versions_section_parses() {
+        assert_eq!(
+            OverlaySection::parse("plugin_versions"),
+            Some(OverlaySection::PluginVersions)
+        );
+        assert_eq!(OverlaySection::PluginVersions.as_str(), "plugin_versions");
     }
 }

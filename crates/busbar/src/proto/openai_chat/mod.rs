@@ -411,6 +411,138 @@ pub(crate) struct OpenAiReader;
 /// such a `Value::String` via `crate::json::to_string` would JSON-encode the string a second time —
 /// emitting an escaped, quoted blob on the wire (double-encoding). Emit a `Value::String` verbatim
 /// so the original argument text round-trips unchanged; any other `Value` is serialized normally.
+/// Build an OpenAI `annotations` array from the IR citations that annotate a span of assistant
+/// text. Shared by the Chat and Responses writers, which use the same `url_citation` shape.
+///
+/// `text` is the ONE block the citations annotate, and `base` is where that block starts inside the
+/// message's full content string — Chat joins every text block into one string, while Responses
+/// keeps one part per block and so always passes `0`. Both the carried offsets and the ones
+/// recovered from a quote are block-relative, so `base` applies uniformly to either.
+///
+/// The wire shape is `url_citation`, which requires `url`, `title`, `start_index` and `end_index`.
+/// The IR's sources do not all carry those: an Anthropic `web_search_result_location` has a url and
+/// a title but NO character offsets, and a Gemini `citationSources[]` entry has offsets but no
+/// title. So a faithful mapping has to choose what to do about the gaps, and the choice here is
+/// deliberate: **never invent a fact.**
+///
+/// - `url` is required outright. A citation without one is a document reference, which is a
+///   different wire shape (`file_citation`) keyed by a `file_id` the IR does not carry — so it is
+///   omitted rather than mis-shaped.
+/// - Offsets are taken from the citation when present, and otherwise RECOVERED by locating the
+///   quoted `cited_text` in the assembled text. A quote that does not appear, or appears more than
+///   once, is ambiguous — omitted rather than guessed.
+/// - `title` falls back to the url. That is the same datum re-presented, not a fabricated one, and
+///   it is what a client renders anyway when a source has no title.
+///
+/// The alternative — emitting `start_index: 0, end_index: 0` or a placeholder title — trades a
+/// silent drop for silent fabrication, which is worse for a translation layer whose claim is
+/// fidelity. What is dropped here is dropped because the source genuinely lacks it.
+pub(crate) fn url_annotations(
+    text: &str,
+    base: usize,
+    citations: &[crate::ir::IrCitation],
+) -> Vec<serde_json::Value> {
+    let mut out = Vec::new();
+    for c in citations {
+        let Some(url) = c.url.as_deref().filter(|u| !u.is_empty()) else {
+            continue;
+        };
+        let span = match (c.start_index, c.end_index) {
+            // `saturating_add` (not `+`): `s`/`e` are upstream-controlled `i64` (only sign-checked
+            // above), so `i64::MAX + base` would panic in debug / wrap in release — an
+            // upstream-triggered crash on the response path. Same cure `billable_tokens` already
+            // establishes for upstream-controlled counts (`ir/mod.rs`).
+            (Some(s), Some(e)) if s >= 0 && e >= s => {
+                Some((s.saturating_add(base as i64), e.saturating_add(base as i64)))
+            }
+            // Recover the span from the quote when the source carried no offsets, but only when it
+            // occurs exactly once — two matches make the anchor ambiguous.
+            _ => c
+                .cited_text
+                .as_deref()
+                .filter(|q| !q.is_empty())
+                .and_then(|q| {
+                    // `str::find` and `q.len()` are BYTE offsets/lengths; the IR contract is
+                    // CHARACTERS, not bytes (see `IrCitation::start_index`). `find` always returns
+                    // a char boundary, so the byte slice below stays valid — only the emitted span
+                    // needs converting.
+                    let first = text.find(q)?;
+                    if text[first + q.len()..].contains(q) {
+                        return None;
+                    }
+                    let start_ch = text[..first].chars().count();
+                    let len_ch = q.chars().count();
+                    Some(((base + start_ch) as i64, (base + start_ch + len_ch) as i64))
+                }),
+        };
+        let Some((start, end)) = span else {
+            continue;
+        };
+        out.push(serde_json::json!({
+            "type": "url_citation",
+            "url": url,
+            "title": c.title.as_deref().filter(|t| !t.is_empty()).unwrap_or(url),
+            "start_index": start,
+            "end_index": end,
+        }));
+    }
+    out
+}
+
+/// Read an OpenAI-family `annotations` array (`url_citation` entries) into IR citations. Shared by
+/// the Chat and Responses readers, mirroring `url_annotations` above in the write direction.
+///
+/// KNOWN LIMITATION — offsets are deliberately NOT carried. `IrCitation::start_index`/`end_index`
+/// are CHARACTER offsets by contract (`ir/mod.rs`), and OpenAI does not document whether its
+/// `start_index`/`end_index` count bytes or characters. Copying them across unconverted would
+/// silently assert one of the two, and on non-ASCII text that is a wrong span — the same class of
+/// defect the Gemini byte/char conversion (`gemini/mod.rs`) exists to prevent. Dropping an offset
+/// we cannot interpret is a gap; asserting a unit we cannot verify is a lie. Until the unit is
+/// established (one upstream response with a multi-byte character ahead of the cited span settles
+/// it), the url and title — which need no unit — are preserved and the span is left `None`, which
+/// every writer already treats as optional.
+pub(crate) fn read_url_annotations(annotations: &serde_json::Value) -> Vec<crate::ir::IrCitation> {
+    let mut out = Vec::new();
+    let Some(arr) = annotations.as_array() else {
+        return out;
+    };
+    for entry in arr {
+        if entry.get("type").and_then(|t| t.as_str()) != Some("url_citation") {
+            continue;
+        }
+        let Some(citation) = entry.get("url_citation") else {
+            continue;
+        };
+        // Never invent a fact: an entry with no usable url is skipped, symmetric with
+        // `url_annotations`' own rule in the write direction (a citation with no url is not
+        // emitted there either).
+        let Some(url) = citation
+            .get("url")
+            .and_then(|u| u.as_str())
+            .filter(|u| !u.is_empty())
+        else {
+            continue;
+        };
+        let title = citation
+            .get("title")
+            .and_then(|t| t.as_str())
+            .filter(|t| !t.is_empty())
+            .map(String::from);
+        out.push(crate::ir::IrCitation {
+            kind: Some("web_search_result_location".to_string()),
+            cited_text: None,
+            title,
+            url: Some(url.to_string()),
+            document_index: None,
+            start_index: None,
+            end_index: None,
+            encrypted_index: None,
+            raw: None,
+        });
+    }
+    out
+}
+
 pub(crate) fn tool_arguments_to_string(input: &serde_json::Value) -> String {
     match input {
         serde_json::Value::String(s) => s.clone(),
@@ -452,6 +584,21 @@ fn read_openai_block(block_val: &serde_json::Value) -> Result<crate::ir::IrBlock
             // url>`, which the Anthropic writer then emitted as a base64 source whose data was a
             // URL — an invalid Anthropic request. For a `data:<mime>;base64,<payload>` URI we now
             // split out the real MIME type and payload so the cross-protocol image is valid.
+            // class-6 6c4: `image_url.detail` (`low`/`high`/`auto`) is a cost/latency knob ONE
+            // vendor models — `IrBlock::Image` has no field for it (owner decision: an IR field is
+            // added only when at least TWO protocols model a knob; `detail` is OpenAI-family-only),
+            // and it is nested inside `"messages"`, a MODELED key, so it cannot ride `extra` either
+            // the way an unmodeled top-level field can. Warn so the loss is diagnosable rather than
+            // silent, even OpenAI->OpenAI same-lane.
+            if let Some(detail) = image_obj.get("detail").and_then(|v| v.as_str()) {
+                if detail != "auto" {
+                    tracing::warn!(
+                        detail,
+                        "dropping image_url.detail: no cross-protocol carrier exists for this \
+                         cost/latency hint (not even on a same-protocol OpenAI round-trip)"
+                    );
+                }
+            }
             Ok(crate::ir::IrBlock::Image {
                 source: super::parse_image_url(url),
                 cache_control: None,
@@ -523,6 +670,7 @@ fn read_openai_tool(tool_val: &serde_json::Value) -> Result<crate::ir::IrTool, I
         description,
         input_schema,
         cache_control: None,
+        hosted: None,
     })
 }
 
@@ -578,26 +726,165 @@ struct OpenAiStreamFraming {
     /// The stream-start identity, latched from the first `chat.completion.chunk` that carries an `id`
     /// (the opening role chunk) and replayed onto every later chunk. `None` until that first chunk.
     chunk_identity: Option<OpenAiChunkIdentity>,
+    /// Raw IR-block-index → 0-based tool-call ordinal map (Finding 1). The writer stamps the CANONICAL
+    /// IR block index onto `tool_calls[].index`, but a source stream can open a tool_use at a non-zero
+    /// block index (e.g. an Anthropic stream with text at block 0 and the first tool_use at block 1).
+    /// OpenAI's streaming contract requires `tool_calls[].index` to ENUMERATE the tool calls starting
+    /// at 0 and incrementing per tool call — SDK argument accumulators (openai-python/openai-node) key
+    /// their per-call buffers on that index, so a first tool call arriving at index 1 lands in a
+    /// never-flushed slot and the call is dropped. This map assigns each distinct raw index the next
+    /// 0-based ordinal on first sight and replays it for that call's argument-fragment chunks. Keeps
+    /// PARALLEL tool calls distinct (each raw index → its own ordinal) while guaranteeing the first
+    /// call is index 0. Populated lazily; empty on a tool-less stream.
+    tool_call_index: std::collections::BTreeMap<u64, u64>,
+    /// Did the ORIGINAL client request carry `stream_options.include_usage == true`? (Findings 2+3.)
+    /// Busbar always injects `include_usage` UPSTREAM so it can bill streaming calls, which makes the
+    /// upstream emit token usage; but a native OpenAI stream only surfaces a trailing usage-only chunk
+    /// to the CLIENT when the client opted in. When this is `false`, `on_egress_chunk` STRIPS the
+    /// folded usage instead of un-folding it, so a client that did not opt in never receives an
+    /// unsolicited `{choices:[], usage}` chunk (which would `choices[0]` IndexError). Default `false`
+    /// (opt-in, matching native OpenAI); the engine sets it from the client body via
+    /// `set_client_include_usage`.
+    client_include_usage: bool,
 }
 
 impl super::StreamFraming for OpenAiStreamFraming {
     fn on_egress_chunk(&mut self, chunk: &mut serde_json::Value) -> Option<serde_json::Value> {
-        // (a) Identity replay, then (b) the include_usage un-fold — in this order, because the trailing
-        // chunk's identity is read off `chunk` AFTER the identity has been populated onto it, so both
-        // frames share ONE stream identity. The `[DONE]` sentinel is a separate `finish()` literal and
-        // never routed here.
+        // (a) Identity replay, then (b) the 0-based tool-call index remap, then (c) the include_usage
+        // handling — in this order, because the trailing chunk's identity is read off `chunk` AFTER the
+        // identity has been populated onto it, so both frames share ONE stream identity. The `[DONE]`
+        // sentinel is a separate `finish()` literal and never routed here.
         self.apply_chunk_identity(chunk);
-        split_openai_trailing_usage(chunk)
+        self.remap_tool_call_index(chunk);
+        if self.client_include_usage {
+            // Client opted in: un-fold the folded usage into a native separate trailing usage-only
+            // chunk, exactly as real OpenAI does under `stream_options.include_usage:true`.
+            split_openai_trailing_usage(chunk)
+        } else {
+            // Client did NOT opt in: STRIP the folded usage entirely so the finish chunk stays
+            // usage-free and NO trailing usage-only chunk is emitted — matching a native OpenAI stream
+            // without include_usage. Billing is unaffected (it reads the IR-side `last_usage` A-tap,
+            // captured before this seam). This closes Finding 2: an opted-out client never receives the
+            // unsolicited `{choices:[], usage}` chunk that trips `choices[0]`.
+            strip_folded_usage(chunk);
+            None
+        }
     }
 
-    // OpenAI ingress UN-folds: the client expects the separate trailing usage chunk (re-emitted via
-    // on_egress_chunk), so the translator must NOT defer/fold the terminal usage.
+    // OpenAI ingress UN-folds (or strips) usage in `on_egress_chunk`, so the translator must NOT
+    // defer/fold the terminal usage itself.
     fn folds_terminal_usage(&self) -> bool {
         false
+    }
+
+    fn set_client_include_usage(&mut self, include: bool) {
+        self.client_include_usage = include;
+    }
+
+    /// SAME-PROTOCOL verbatim strip (R3-A-b). On OpenAI->OpenAI the translator re-emits upstream
+    /// frames byte-for-byte and never calls `on_egress_chunk`, so the opted-out `include_usage` strip
+    /// above cannot fire. Busbar forces `include_usage` UPSTREAM (to bill), so the OpenAI upstream
+    /// emits a NATIVE trailing usage-only chunk - `object == "chat.completion.chunk"`, a real top-level
+    /// `usage` OBJECT, and an EMPTY `choices` array. When the CLIENT did not opt in, suppress exactly
+    /// that frame from the verbatim client bytes so a strict SDK never `choices[0]`-IndexErrors; the
+    /// A-tap already captured its usage for billing. A normal content/finish chunk (non-empty
+    /// `choices`) is never suppressed, and the opted-in case re-emits it verbatim.
+    fn suppress_same_proto_frame(&self, data: &serde_json::Value) -> bool {
+        if self.client_include_usage {
+            return false;
+        }
+        let Some(obj) = data.as_object() else {
+            return false;
+        };
+        if obj.get("object").and_then(|v| v.as_str()) != Some(OBJ_CHUNK) {
+            return false;
+        }
+        let has_usage_obj = obj.get("usage").is_some_and(|u| u.is_object());
+        let choices_empty = obj
+            .get("choices")
+            .and_then(|c| c.as_array())
+            .is_some_and(|arr| arr.is_empty());
+        has_usage_obj && choices_empty
+    }
+
+    /// SAME-PROTOCOL intermediate `usage:null` strip (indistinguishability fix). On OpenAI->OpenAI the
+    /// translator re-emits frames byte-for-byte, so the opted-out `strip_folded_usage` in
+    /// `on_egress_chunk` never runs. Busbar forces `include_usage` UPSTREAM (to bill), so the OpenAI
+    /// upstream stamps `"usage":null` on EVERY intermediate content chunk (and the finish chunk) - a key
+    /// a native opted-out OpenAI stream never carries, hence a wire-shape tell. When the CLIENT did not
+    /// opt in, request a byte-level strip of the top-level `usage` member from any content/finish chunk
+    /// that carries a `usage` FIELD alongside a NON-EMPTY `choices` array.
+    ///
+    /// The predicate deliberately does NOT require `object == "chat.completion.chunk"`. An
+    /// OpenAI-COMPATIBLE upstream may omit the `object` field (or use a variant) on its content chunks
+    /// while still stamping the forced-`include_usage` `"usage":null` tell; requiring the exact `object`
+    /// value would let that tell leak to an opted-out client. A frame with a NON-EMPTY `choices` array
+    /// and a top-level `usage` key is a content/finish chunk regardless of `object`, so that pairing is
+    /// sufficient. The trailing usage-ONLY chunk (EMPTY `choices`, a usage OBJECT) is dropped whole by
+    /// `suppress_same_proto_frame` instead, so it is deliberately NOT matched here (the non-empty
+    /// `choices` gate excludes it). The opted-in case returns `false` (the client asked for usage;
+    /// re-emit verbatim), so a usage the client legitimately requested is never stripped. The A-tap
+    /// already captured usage for billing before this seam.
+    fn strip_same_proto_usage(&self, data: &serde_json::Value) -> bool {
+        if self.client_include_usage {
+            return false;
+        }
+        let Some(obj) = data.as_object() else {
+            return false;
+        };
+        // A content/finish chunk carries a NON-EMPTY `choices` array. This gate (not `object`) is what
+        // distinguishes a content/finish chunk from the empty-choices usage-only trailer, and it works
+        // for compatible upstreams that omit or vary `object`.
+        let choices_non_empty = obj
+            .get("choices")
+            .and_then(|c| c.as_array())
+            .is_some_and(|arr| !arr.is_empty());
+        // Only act when a top-level `usage` key is actually present (the forced-include_usage tell).
+        obj.contains_key("usage") && choices_non_empty
     }
 }
 
 impl OpenAiStreamFraming {
+    /// Remap every `choices[].delta.tool_calls[].index` on a `chat.completion.chunk` from the writer's
+    /// CANONICAL raw IR-block index to a 0-based per-tool-call ordinal (Finding 1). The FIRST distinct
+    /// raw index seen becomes ordinal 0, the next distinct raw index becomes 1, and so on; a raw index
+    /// seen again (the tool call's argument-fragment chunks) replays its assigned ordinal. This makes
+    /// the first tool call arrive at `index: 0` even when the source stream opened it at a non-zero
+    /// block index (e.g. text at block 0, first tool_use at block 1), which is what the OpenAI SDKs
+    /// require to route streamed `function.arguments` fragments into the right accumulator. A chunk
+    /// with no tool_calls is a no-op.
+    fn remap_tool_call_index(&mut self, chunk: &mut serde_json::Value) {
+        let Some(obj) = chunk.as_object_mut() else {
+            return;
+        };
+        if obj.get("object").and_then(|v| v.as_str()) != Some(OBJ_CHUNK) {
+            return;
+        }
+        let Some(choices) = obj.get_mut("choices").and_then(|c| c.as_array_mut()) else {
+            return;
+        };
+        for choice in choices {
+            let Some(tool_calls) = choice
+                .get_mut("delta")
+                .and_then(|d| d.get_mut("tool_calls"))
+                .and_then(|tc| tc.as_array_mut())
+            else {
+                continue;
+            };
+            for tc in tool_calls {
+                let Some(raw) = tc.get("index").and_then(|i| i.as_u64()) else {
+                    continue;
+                };
+                // Assign the next ordinal on first sight of this raw index; replay it thereafter.
+                let next = self.tool_call_index.len() as u64;
+                let ordinal = *self.tool_call_index.entry(raw).or_insert(next);
+                if let Some(tc_obj) = tc.as_object_mut() {
+                    tc_obj.insert("index".to_string(), serde_json::json!(ordinal));
+                }
+            }
+        }
+    }
+
     /// Capture-or-replay the OpenAI stream identity on a `chat.completion.chunk` body. On the first
     /// chunk that carries an `id` (the opening role chunk), latch `id`/`created`/`model`; on every
     /// subsequent chunk (which the writer emits WITHOUT them), inject the latched values.
@@ -694,6 +981,35 @@ fn split_openai_trailing_usage(chunk: &mut serde_json::Value) -> Option<serde_js
     trailing.insert("choices".to_string(), serde_json::Value::Array(Vec::new()));
     trailing.insert("usage".to_string(), usage);
     Some(serde_json::Value::Object(trailing))
+}
+
+/// Remove a folded top-level `usage` object from a `chat.completion.chunk` in place, WITHOUT emitting
+/// any replacement trailing chunk (Finding 2). This is the opt-OUT twin of `split_openai_trailing_usage`:
+/// a client that did not send `stream_options.include_usage` must see a stream that carries NO usage at
+/// all, exactly like a native OpenAI stream without include_usage. Only strips when both a folded `usage`
+/// and a terminal `finish_reason` are present (the shape the writer folds onto), so a non-finish chunk is
+/// never touched. The removed usage was only ever a client-facing echo — billing sources the IR-side
+/// `last_usage` A-tap, which is captured upstream of this seam and is unaffected.
+fn strip_folded_usage(chunk: &mut serde_json::Value) {
+    let Some(obj) = chunk.as_object_mut() else {
+        return;
+    };
+    if obj.get("object").and_then(|v| v.as_str()) != Some(OBJ_CHUNK) {
+        return;
+    }
+    if !obj.contains_key("usage") {
+        return;
+    }
+    let has_finish = obj
+        .get("choices")
+        .and_then(|c| c.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|c0| c0.get("finish_reason"))
+        .map(|fr| !fr.is_null())
+        .unwrap_or(false);
+    if has_finish {
+        obj.remove("usage");
+    }
 }
 
 /// OpenAI writer implementation.

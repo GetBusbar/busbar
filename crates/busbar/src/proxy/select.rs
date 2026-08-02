@@ -44,7 +44,7 @@ impl RequestCtx {
     /// full membership, so without re-applying here a compliance (e.g. BAA-only) restrict would be
     /// silently dropped at the pool boundary. Mirrors Reconcile-2 exactly: a `Weighted` on_empty is an
     /// advisory escape (skip this restrict on this hop); the fail-closed default returns `Err(name)`
-    /// so the caller REJECTS rather than spilling to an ineligible lane. (found: audit c1r13.)
+    /// so the caller REJECTS rather than spilling to an ineligible lane.
     pub(crate) fn enforce_restricts(
         &self,
         app: &App,
@@ -127,41 +127,60 @@ pub(crate) struct ProbeGuard<'a> {
     pub(crate) pool: &'a str,
     pub(crate) lane: usize,
     pub(crate) armed: bool,
+    /// The probe-epoch (owner token) captured when this guard won the probe. Because a guard can be
+    /// dropped LATE - after parking on the permit-wait await while the cell moved on - the drop uses
+    /// the OWNER-CHECKED `release_probe_owned_in` so a stale release cannot revert a NEWER probe (P2
+    /// #4). It is a strict no-op unless the cell's epoch still matches this captured value.
+    pub(crate) probe_epoch: u64,
 }
 
 impl Drop for ProbeGuard<'_> {
     fn drop(&mut self) {
         if self.armed {
-            self.store.release_probe_in(self.pool, self.lane);
+            self.store
+                .release_probe_owned_in(self.pool, self.lane, self.probe_epoch);
         }
     }
 }
 
 /// Pick a lane from `cands` using session affinity (if any) then weighted selection (SWRR) over
-/// the healthy subset, returning the chosen lane index and its acquired concurrency permit.
+/// the healthy subset, returning the chosen lane index, its acquired concurrency permit, and the
+/// probe-epoch owner token captured at the moment of the win (mirroring `ProbeGuard`'s own capture,
+/// same field, same reasoning: a caller that must abandon dispatch AFTER an `.await` — a yield
+/// point where a successor could win a NEWER probe on the same cell — releases via the
+/// owner-checked `release_probe_owned_in(pool, lane, epoch)` instead of the unowned
+/// `release_probe_in`, which would revert whichever probe is live at release time regardless of
+/// which one this call actually won. Safe to use even when this pick's `acquire_for_dispatch_in`
+/// did not win a NEW probe (a normal Closed-cell dispatch): the epoch is simply whatever the cell's
+/// current value is, and `cell_release_probe_owned`'s CAS is a no-op on a non-HalfOpen cell either
+/// way.
 /// `cands` is a `&[WeightedLane]` slice where each lane carries its configured weight.
 /// `request_ctx` provides accumulated exclusions to avoid retrying failed lanes.
-/// `affinity_key` enables sticky routing as a preference (not a hard constraint).
+/// `affinity_key_hash` enables sticky routing as a preference (not a hard constraint). It is the
+/// PRE-COMPUTED [`stable_hash`] of the session key (header value or the body-derived `system` string),
+/// hashed once at the ingress boundary from BORROWED bytes — so the sticky preference costs no
+/// per-request `String` allocation here (the hash is the only thing this function ever needed from the
+/// key). `None` = no sticky preference (pure SWRR).
 pub(crate) async fn pick_among(
     app: &Arc<App>,
     cands: &[WeightedLane],
     request_ctx: &mut RequestCtx,
-    affinity_key: Option<&str>,
+    affinity_key_hash: Option<u64>,
     pool_name: &str,
     // The routing policy's ranked preference for this request, resolved ONCE before the failover loop
     // (see the ROUTING-POLICY SEAM in `forward_with_pool`). `None` is the ZERO-COST default: pure
     // SWRR, byte-identical to pre-feature behavior. `Some(order)` makes selection walk the ranked
     // lanes through the unchanged breaker filter instead of the blind SWRR pick (see SELECTION below).
     policy_order: Option<&[usize]>,
-) -> Option<(usize, Permit)> {
+) -> Option<(usize, Permit, u64)> {
     let t = now();
 
     // Session affinity preference - try sticky lane first if usable (in this pool's breaker view).
-    // Uses a stable hash (NOT DefaultHasher, whose seed is randomized per process) so a session
-    // pins to the same lane across restarts.
-    if let Some(k) = affinity_key {
+    // The hash was taken with `stable_hash` (NOT DefaultHasher, whose seed is randomized per process)
+    // at the ingress boundary, so a session pins to the same lane across restarts.
+    if let Some(h) = affinity_key_hash {
         if !cands.is_empty() {
-            let pos = (stable_hash(k) as usize) % cands.len();
+            let pos = (h as usize) % cands.len();
             let sticky = cands[pos].idx;
 
             // DRAIN (`weight: 0`): an operator weights a member to 0 to bleed it off before
@@ -183,8 +202,17 @@ pub(crate) async fn pick_among(
                 // wedged HalfOpen + probe_in_flight, benching it until the slow out-of-band prober
                 // resets it — the SAME leak the main loop guards below. So: keep the probe only on the
                 // dispatch (try_acquire success); release it on every other exit before falling through.
+                //
+                // Capture the owner token NOW, synchronously right after `usable_in` (the only place
+                // on this path that could have won a probe), before any await — same discipline as
+                // `ProbeGuard`'s own capture — so a caller releasing after a later yield point can use
+                // the owner-checked release. No `.await` occurs anywhere on this sticky span itself
+                // (`release_probe_in` at the `else` below is safe unowned exactly because of that), but
+                // the returned epoch still needs to be correct for the CALLER's later, post-await
+                // release sites.
+                let epoch = app.store.probe_epoch_in(pool_name, sticky);
                 if let Some(p) = app.store.try_acquire(sticky) {
-                    return Some((sticky, p));
+                    return Some((sticky, p, epoch));
                 } else {
                     app.store.release_probe_in(pool_name, sticky);
                 }
@@ -319,13 +347,18 @@ pub(crate) async fn pick_among(
             pool: pool_name,
             lane: picked_lane_idx,
             armed: true,
+            // Capture the owner token NOW - synchronously right after winning, before any await, so the
+            // read sees exactly the probe we won (the cell is HalfOpen, single-flight; no peer can win a
+            // new one in between). A late guard-drop then only reverts THIS probe, never a successor.
+            probe_epoch: app.store.probe_epoch_in(pool_name, picked_lane_idx),
         };
 
         // Try to acquire the concurrency permit immediately.
         if let Some(p) = app.store.try_acquire(picked_lane_idx) {
             // Live permit → dispatched request owns the probe; disarm so Drop is a no-op.
+            let epoch = probe_guard.probe_epoch;
             probe_guard.armed = false;
-            return Some((picked_lane_idx, p));
+            return Some((picked_lane_idx, p, epoch));
         }
 
         // Permits saturated: park (not busy-spin) until a slot frees OR the deadline passes. A
@@ -347,10 +380,16 @@ pub(crate) async fn pick_among(
         .await
         {
             // Got a permit before the deadline — a genuine dispatch; disarm the guard (the request
-            // itself will record the success/failure that releases the probe).
+            // itself will record the success/failure that releases the probe). Only BOUNDED lanes
+            // ever park here: an unbounded lane's `try_acquire` above always succeeds.
             Ok(Ok(permit)) => {
+                let epoch = probe_guard.probe_epoch;
                 probe_guard.armed = false;
-                return Some((picked_lane_idx, permit));
+                return Some((
+                    picked_lane_idx,
+                    crate::store::Permit::Bounded(permit),
+                    epoch,
+                ));
             }
             // Semaphore closed (shutdown) — no request dispatched; `probe_guard` drops and releases.
             Ok(Err(_)) => return None,
