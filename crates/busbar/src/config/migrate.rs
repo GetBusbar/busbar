@@ -573,6 +573,17 @@ fn migrate_auth(
                  signed key (POST /api/v1/admin/keys) - 1.x bearer tokens stop working"
                     .into(),
             );
+            // The `keys` verifier REQUIRES a signing key (1.5.1: no auto-generation), so a config
+            // that migrated tokens -> keys will not `--validate` until the operator provides one.
+            if !auth.contains_key(Value::from("signing_key")) {
+                todos.push(
+                    "auth.signing_key: required now that the chain uses `keys` (busbar no longer \
+                     auto-generates one); run `busbar --generate-signing-key` and set \
+                     auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, \
+                     shared across a fleet)"
+                        .into(),
+                );
+            }
         }
     }
 
