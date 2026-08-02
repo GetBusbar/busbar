@@ -774,6 +774,33 @@ pub(crate) fn validate_with_unset(
                 }
             }
         }
+        // Rule 7c: `on_exhausted: { queue: { max_ms } }` bounds the queue wait. A `max_ms` of 0 is a
+        // no-wait queue (degenerates to reject with extra machinery), and a `max_ms` LONGER than the
+        // whole failover budget can never be reached — the wait is already clamped to the remaining
+        // budget at runtime (`min(max_ms, budget_remaining)`), so a value above it is a silent
+        // dead-letter the operator meant as a real bound. Validate against the RESOLVED per-pool
+        // timeout (the pool's own `failover.timeout_secs`, else the global default) — the same value
+        // the runtime clamps against — so `--validate` catches both foot-guns with an actionable
+        // message rather than shipping a queue that never waits or never reaches its ceiling.
+        if let Some(crate::config::OnExhaustedCfg::Queue { max_ms }) = &pool_cfg.on_exhausted {
+            let resolved_timeout_secs = pool_cfg
+                .failover
+                .as_ref()
+                .map(|f| f.timeout_secs)
+                .unwrap_or(crate::config::DEFAULT_FAILOVER_DEADLINE_SECS);
+            let budget_ms = resolved_timeout_secs.saturating_mul(1000);
+            if *max_ms == 0 {
+                errors.push(format!(
+                    "pool '{}' on_exhausted.queue.max_ms must be > 0; a 0 wait never queues (it is just `reject` with extra machinery)",
+                    pool_name
+                ));
+            } else if *max_ms > budget_ms {
+                errors.push(format!(
+                    "pool '{}' on_exhausted.queue.max_ms ({} ms) exceeds the resolved failover budget ({} s = {} ms); a queue longer than the whole failover budget is clamped to it at runtime and never reaches its ceiling. Lower max_ms to <= {} ms or raise failover.timeout_secs",
+                    pool_name, max_ms, resolved_timeout_secs, budget_ms, budget_ms
+                ));
+            }
+        }
         // Any other well-formed action (reject / least_bad) needs no dangling-target check.
 
         // Rule 8: `affinity.mode` is now an `AffinityMode` enum (`session` is the only variant), so an

@@ -275,3 +275,85 @@ async fn ordered_walk_all_weight_zero_selects_none() {
         picked.map(|(i, _, _)| i)
     );
 }
+
+/// The single exclusion arm records WHY each lane was excluded into `RequestCtx::excluded_reasons`
+/// in the shared `Unavailable` taxonomy (design §2, item 5) — fed to `on_exhausted` dispatch. A
+/// one-lane pool at capacity yields no pick, with an `AtCapacity` reason recorded.
+#[tokio::test]
+async fn excluded_reasons_records_at_capacity() {
+    use crate::store::Unavailable;
+    let app = TestApp::new()
+        .lane(
+            LaneSpec::new(
+                "m0",
+                crate::proto::Protocol::anthropic(),
+                "http://localhost",
+            )
+            .max(1),
+        )
+        .pool("p", &[(0, 1)])
+        .build();
+    // Occupy the lane's only permit so admission fails at capacity.
+    let _held = app.store.try_acquire(0).expect("occupy the only permit");
+    let one = vec![WeightedLane {
+        reasoning: None,
+        idx: 0,
+        weight: 1,
+        attempt_timeout_ms: None,
+    }];
+    let mut rc = RequestCtx::new(60);
+    let picked = pick_among(&app, &one, &mut rc, None, "p", None).await;
+    assert!(picked.is_none(), "a fully at-capacity pool yields no pick");
+    assert!(
+        rc.excluded_reasons
+            .iter()
+            .any(|(i, r)| *i == 0 && matches!(r, Unavailable::AtCapacity { .. })),
+        "the exclusion arm records the real AtCapacity reason, got {:?}",
+        rc.excluded_reasons
+    );
+}
+
+/// R6: the sticky-affinity fast path uses `try_admit` and records its `Unavailable` reason on
+/// fall-through instead of silently dropping it. A sticky-keyed request onto an at-capacity lane
+/// records `AtCapacity` (rather than falling through with no trace).
+#[tokio::test]
+async fn sticky_fall_through_records_reason() {
+    use crate::store::Unavailable;
+    let app = TestApp::new()
+        .lane(
+            LaneSpec::new(
+                "m0",
+                crate::proto::Protocol::anthropic(),
+                "http://localhost",
+            )
+            .max(1),
+        )
+        .pool("p", &[(0, 1)])
+        .build();
+    let _held = app.store.try_acquire(0).expect("occupy the only permit");
+    let one = vec![WeightedLane {
+        reasoning: None,
+        idx: 0,
+        weight: 1,
+        attempt_timeout_ms: None,
+    }];
+    let mut rc = RequestCtx::new(60);
+    // Single candidate ⇒ the affinity hash lands on lane 0, exercising the sticky path on it.
+    let picked = pick_among(
+        &app,
+        &one,
+        &mut rc,
+        Some(crate::proxy::stable_hash("session-k")),
+        "p",
+        None,
+    )
+    .await;
+    assert!(picked.is_none(), "at-capacity sticky lane yields no pick");
+    assert!(
+        rc.excluded_reasons
+            .iter()
+            .any(|(i, r)| *i == 0 && matches!(r, Unavailable::AtCapacity { .. })),
+        "the sticky fall-through records its Unavailable reason, got {:?}",
+        rc.excluded_reasons
+    );
+}

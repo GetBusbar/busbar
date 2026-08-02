@@ -181,6 +181,54 @@ impl UpstreamClients {
     }
 }
 
+/// Live per-pool depth of requests currently PARKED in an `on_exhausted: queue` wait — the real
+/// source behind the `busbar_pool_queued{pool}` gauge (Phase 2 defined the gauge reading a literal 0;
+/// Phase 3 makes it read this). A parked request calls [`park`](QueuedDepth::park) on entry and holds
+/// the returned RAII guard for the whole wait; the guard decrements on EVERY exit (dispatch, deadline
+/// shed, or a dropped future on client disconnect), so the depth can never leak. Arc-shared across
+/// config swaps (`App::clone` clones the Arc) so an in-flight parked request on an old `App` snapshot
+/// and a `/metrics` scrape on a new one agree on the count. The map lock is taken only at park
+/// enter/exit and at scrape time — the already-slow queue path, never hot dispatch.
+#[derive(Default)]
+pub(crate) struct QueuedDepth {
+    counts: std::sync::Mutex<HashMap<String, Arc<std::sync::atomic::AtomicU64>>>,
+}
+
+impl QueuedDepth {
+    /// Register a request parking in `pool`'s queue wait; returns a guard that decrements on drop. The
+    /// per-pool counter is created on first use.
+    pub(crate) fn park(&self, pool: &str) -> QueueDepthGuard {
+        let counter = {
+            let mut m = self.counts.lock().unwrap_or_else(|e| e.into_inner());
+            m.entry(pool.to_string())
+                .or_insert_with(|| Arc::new(std::sync::atomic::AtomicU64::new(0)))
+                .clone()
+        };
+        counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        QueueDepthGuard { counter }
+    }
+
+    /// Current parked depth for `pool` (0 if nothing has ever queued there).
+    pub(crate) fn depth(&self, pool: &str) -> u64 {
+        let m = self.counts.lock().unwrap_or_else(|e| e.into_inner());
+        m.get(pool)
+            .map(|c| c.load(std::sync::atomic::Ordering::Relaxed))
+            .unwrap_or(0)
+    }
+}
+
+/// RAII decrement for a parked queue request — see [`QueuedDepth::park`].
+pub(crate) struct QueueDepthGuard {
+    counter: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl Drop for QueueDepthGuard {
+    fn drop(&mut self) {
+        self.counter
+            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 /// `Clone` is the config-apply enabler: cloning an `App` shares the live-state `Arc`s (store, auth,
 /// governance, client — the things that must SURVIVE a config change) and deep-copies the
 /// config-derived collections (lanes, pools, hooks, …). So `apply` builds the next snapshot as
@@ -351,6 +399,10 @@ pub(crate) struct App {
     pub(crate) fallback_pools: HashMap<String, Vec<WeightedLane>>,
     /// OnExhausted config per pool name.
     pub(crate) on_exhausted_cfgs: std::collections::HashMap<String, crate::config::OnExhausted>,
+    /// Live per-pool `on_exhausted: queue` park depth — the source behind `busbar_pool_queued`.
+    /// Arc-shared across config swaps so an in-flight parked request and a scrape agree (see
+    /// [`QueuedDepth`]).
+    pub(crate) queued_depth: Arc<QueuedDepth>,
     /// governance runtime (virtual keys + budgets/limits store). `None` = disabled.
     pub(crate) governance: Option<std::sync::Arc<crate::governance::GovState>>,
     /// The SECRET RESOLVER seam (P2): resolves a config [`crate::config::SecretRef`] to bytes via

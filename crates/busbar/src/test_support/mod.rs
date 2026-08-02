@@ -959,6 +959,7 @@ impl TestApp {
             pool_runtime: self.pool_runtime,
             fallback_pools: self.fallback_pools,
             on_exhausted_cfgs: self.on_exhausted_cfgs,
+            queued_depth: std::sync::Arc::new(crate::state::QueuedDepth::default()),
             governance: self.governance,
             secret_resolver: std::sync::Arc::new(
                 crate::config::secret::SecretResolver::builtins_only(),
