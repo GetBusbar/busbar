@@ -3702,6 +3702,113 @@ fn test_classify_emits_each_reason() {
     );
 }
 
+/// Phase 2: the lane-GLOBAL `classify_lane` (the `/stats` renderer source) speaks the SAME taxonomy
+/// as the per-(pool, lane) `classify`, aggregated across the routed cells, and `lane_breaker_state`
+/// exposes the breaker axis independently.
+#[test]
+fn test_classify_lane_emits_each_reason() {
+    let now = 1000u64;
+
+    // Healthy lane, free permit → available (Ok) and breaker Closed.
+    let healthy = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    assert_eq!(healthy.classify_lane(0, now), Ok(()));
+    assert!(matches!(
+        healthy.lane_breaker_state(0, now),
+        BreakerState::Closed
+    ));
+
+    // Dead → Dead (distinct from budget), breaker reported Open{MAX}.
+    let dead = Arc::new(InMemoryStore::new(vec![LaneData {
+        dead: true,
+        ..make_lane_data(0, 10)
+    }]));
+    assert_eq!(dead.classify_lane(0, now), Err(Unavailable::Dead));
+    assert!(matches!(
+        dead.lane_breaker_state(0, now),
+        BreakerState::Open { .. }
+    ));
+
+    // Budget exhausted → BudgetExhausted.
+    let broke = Arc::new(InMemoryStore::new(vec![make_limited_lane(0, 10, 0)]));
+    assert_eq!(
+        broke.classify_lane(0, now),
+        Err(Unavailable::BudgetExhausted)
+    );
+
+    // Unexpired Open pool cell → BreakerOpen (aggregated across the lane's routed cell).
+    let open = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 10)]));
+    open.force_open_in("p", 0, now + 300);
+    assert_eq!(
+        open.classify_lane(0, now),
+        Err(Unavailable::BreakerOpen { until: now + 300 })
+    );
+    assert!(matches!(
+        open.lane_breaker_state(0, now),
+        BreakerState::Open { until } if until == now + 300
+    ));
+
+    // Breaker healthy, all permits held → AtCapacity, breaker still Closed (read-only).
+    let full = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 1)]));
+    let _held = full.try_acquire(0).expect("occupy the only permit");
+    assert_eq!(
+        full.classify_lane(0, now),
+        Err(Unavailable::AtCapacity {
+            drain_hint_ms: None
+        })
+    );
+    assert!(matches!(
+        full.lane_breaker_state(0, now),
+        BreakerState::Closed
+    ));
+}
+
+/// R9 (the core reason Phase 2 keeps the axes separate): a lane that is BOTH breaker-Open AND at
+/// capacity must surface each fact independently. `classify_lane` is breaker-first (BreakerOpen), but
+/// `lane_breaker_state` reads Open AND the snapshot's `at_capacity` reads true — so the operator can
+/// see the Open lane is also saturated (its recovery probe needs a dispatch it can never win).
+#[test]
+fn test_classify_lane_open_and_at_capacity_both_visible() {
+    let now = 1000u64;
+
+    // Unexpired Open + saturated: breaker-first collapse → BreakerOpen; both axes still legible.
+    let wedged = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 1)]));
+    wedged.force_open_in("p", 0, now + 60);
+    let _held = wedged.try_acquire(0).expect("hold the only permit");
+    assert_eq!(
+        wedged.classify_lane(0, now),
+        Err(Unavailable::BreakerOpen { until: now + 60 })
+    );
+    assert!(matches!(
+        wedged.lane_breaker_state(0, now),
+        BreakerState::Open { .. }
+    ));
+    assert!(
+        wedged.snapshot(0, now).at_capacity,
+        "the capacity axis stays independently true for an Open+saturated lane"
+    );
+
+    // The pure wedge: EXPIRED-Open (probe-winnable) + saturated. The cell would win a probe, so
+    // `classify_lane` reports AtCapacity — yet `lane_breaker_state` still reads Open, exposing the
+    // stuck breaker whose recovery probe can never get the permit it needs.
+    let expired = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 1)]));
+    expired.force_open_in("p", 0, now); // cooldown already elapsed
+    let _held2 = expired.try_acquire(0).expect("hold the only permit");
+    assert_eq!(
+        expired.classify_lane(0, now),
+        Err(Unavailable::AtCapacity {
+            drain_hint_ms: None
+        })
+    );
+    assert!(
+        matches!(
+            expired.lane_breaker_state(0, now),
+            BreakerState::Open { .. }
+        ),
+        "an expired-Open cell is still FSM-Open in /stats even though it would win a probe"
+    );
+    assert!(expired.snapshot(0, now).at_capacity);
+}
+
 /// `try_admit` happy path: a healthy lane returns `Ok(Admit)` holding a real permit, and the probe
 /// epoch is surfaced for the caller's later owner-checked release.
 #[test]

@@ -187,11 +187,8 @@ pub(crate) enum Unavailable {
 impl Unavailable {
     /// Single definition of "when could this lane plausibly be usable again", in ms from `now`. This
     /// is what `Retry-After`, least_bad ranking, and queue budgeting ALL consume — one function, so
-    /// those consumers can never disagree about recovery timing.
-    //
-    // Consumed by the Retry-After/least_bad/observability re-point in a later phase; exercised now by
-    // the taxonomy unit tests, so silence the release-build dead-code lint (codebase convention).
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// those consumers can never disagree about recovery timing. As of Phase 2 it is ALSO the source
+    /// of the `/stats` `recovery_hint_ms` field and the `busbar_lane_recovery_hint_ms` gauge.
     pub(crate) fn recovery_hint_ms(&self, now: u64) -> Option<u64> {
         match self {
             Unavailable::Dead | Unavailable::BudgetExhausted => None, // no self-recovery
@@ -204,6 +201,21 @@ impl Unavailable {
                 Some(drain_hint_ms.unwrap_or(AT_CAPACITY_RECOVERY_FLOOR_MS))
             }
             Unavailable::Shedding => Some(SHED_RETRY_FLOOR_MS),
+        }
+    }
+
+    /// The stable, snake_case name of this variant — the SINGLE rendering used by both `/stats`
+    /// (`availability` field) and any operator-facing surface, so the string an operator reads is
+    /// derived from the same taxonomy routing dispatches on (design §8). The `Ok` side of a
+    /// classification renders as the sentinel `"available"`, owned by the caller.
+    pub(crate) fn variant_name(&self) -> &'static str {
+        match self {
+            Unavailable::Dead => "dead",
+            Unavailable::BudgetExhausted => "budget_exhausted",
+            Unavailable::BreakerOpen { .. } => "breaker_open",
+            Unavailable::ProbeInFlight => "probe_in_flight",
+            Unavailable::AtCapacity { .. } => "at_capacity",
+            Unavailable::Shedding => "shedding",
         }
     }
 }
@@ -248,8 +260,24 @@ pub(crate) struct LaneSnapshot {
     pub(crate) available: Option<usize>,
     /// True iff this lane is BOUNDED and has zero available permits — i.e. at its `max_concurrent`
     /// limit. Post the at-capacity-exhaustion fix, such a lane sheds/spills rather than queueing, so
-    /// this flag is the external signal that a pool is oversubscribed (not merely slow).
+    /// this flag is the external signal that a pool is oversubscribed (not merely slow). This is the
+    /// CAPACITY axis, deliberately kept INDEPENDENT of `availability`/`breaker_state` (R9): a lane can
+    /// be both breaker-Open AND at-capacity, and an operator must see both facts to understand why an
+    /// Open lane's breaker never recovers (its recovery probe needs a dispatch it can never win).
     pub(crate) at_capacity: bool,
+    /// Lane-GLOBAL availability over the shared [`Unavailable`] taxonomy (Phase 2): the SAME
+    /// classification `classify`/routing speaks, aggregated across the cells production routes through.
+    /// `Ok(())` = the lane would admit; `Err(_)` carries the reason (and its `recovery_hint_ms`). This
+    /// is the ONE source `/stats` and (per-pool) `/metrics` render from, so observability cannot drift
+    /// from behaviour. Breaker-first: an Open-and-at-capacity lane classifies `BreakerOpen`, while the
+    /// orthogonal `at_capacity`/`breaker_state` fields still expose each axis independently (R9).
+    pub(crate) availability: Result<(), Unavailable>,
+    /// Lane-GLOBAL aggregate breaker FSM state (best-case across the routed cells, matching `usable`),
+    /// surfaced as its own field so the BREAKER axis is legible independently of `availability` and
+    /// `at_capacity` (R9). An expired-Open cell still reports `Open` here even though it would win a
+    /// recovery probe (so `availability` may read `at_capacity` while this reads `open`) — that pairing
+    /// is exactly the Open+AtCapacity operators need to see.
+    pub(crate) breaker_state: BreakerState,
     pub(crate) ok: u64,
     pub(crate) err: u64,
     pub(crate) client_fault: u64,
@@ -398,8 +426,8 @@ pub(crate) trait StateStore: Send + Sync + 'static {
     /// and reads `dead`/`budget` SEPARATELY (R3 — NOT the bool-collapsing `lane_admissible`) so it can
     /// distinguish `Dead` from `BudgetExhausted`. Returns `Ok(())` if the lane WOULD admit right now
     /// (best-effort; racy by nature — advisory). For observability, least_bad reads, and the queue
-    /// pre-check. Exercised by the taxonomy unit tests now; production consumers land in later phases.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// pre-check. As of Phase 2 the `/metrics` scrape renders the per-(pool, lane) availability
+    /// gauges directly from this (production-live); least_bad/queue consumers land in later phases.
     fn classify(&self, pool: &str, lane: usize, now: u64) -> Result<(), Unavailable>;
 
     /// MUTATING admission attempt — a thin COMPOSITION (R1) over the SAME `breaker_verdict` decoder
