@@ -11506,9 +11506,10 @@ async fn drive_admin_error_surface() {
         // this function's caller takes its `observed::snapshot()`, so relying on it alone is a real
         // race, not just a theoretical one -- these 3 rows close it. `can_restart()` is backed by a
         // `OnceLock` never populated in a test binary, so `confirm: true` deterministically reaches
-        // the NotRestartable gate regardless of environment; NoSupervisor requires no supervisor
-        // marker env var present, matching what that sibling test's own runtime check already
-        // assumes (confirmed true on this repo's CI runners).
+        // the NotRestartable gate regardless of environment; `restart_no_supervisor` forces the
+        // unsupervised environment deterministically (see `restart::with_forced_unsupervised`'s doc
+        // comment) rather than assuming the real env lacks the supervisor markers -- CI runners were
+        // found to genuinely set INVOCATION_ID themselves, which broke that original assumption.
         (
             "restart_malformed_body",
             "POST",
@@ -11757,7 +11758,17 @@ async fn drive_admin_error_surface() {
             if let Some(b) = body {
                 req = req.header("content-type", "application/json").body(*b);
             }
-            let resp = req.send().await.unwrap();
+            // `restart_no_supervisor` needs a deterministically-unsupervised environment to reach
+            // the real NoSupervisor 409 through the real handler -- CI runners were found to
+            // genuinely set INVOCATION_ID themselves, so the env alone can't be trusted. See
+            // `restart::with_forced_unsupervised`'s doc comment for why this is thread-local, not
+            // an env var.
+            let resp = if *label == "restart_no_supervisor" {
+                crate::admin::restart::with_forced_unsupervised(|| req.send()).await
+            } else {
+                req.send().await
+            }
+            .unwrap();
             let status = resp.status().as_u16();
             let parsed: serde_json::Value = resp.json().await.unwrap();
             assert_eq!(
@@ -12319,25 +12330,27 @@ async fn test_admin_v1_restart_refuses_when_it_cannot_restart() {
     );
 
     // No supervisor detected and no confirmation: refuse rather than risk leaving busbar down.
-    let unsupervised = std::env::var_os("INVOCATION_ID").is_none()
-        && std::env::var_os("KUBERNETES_SERVICE_HOST").is_none();
-    if unsupervised {
-        let resp = admin(client.post(&url)).send().await.unwrap();
-        assert_eq!(
-            resp.status().as_u16(),
-            409,
-            "an unsupervised restart must be refused unless confirmed"
-        );
-        let body: serde_json::Value = resp.json().await.unwrap();
-        assert_eq!(body["error"]["code"], "conflict");
-        assert!(
-            body["error"]["message"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("confirm"),
-            "the refusal must tell the operator how to proceed: {body}"
-        );
-    }
+    // Forced deterministically unsupervised (see `restart::with_forced_unsupervised`'s doc comment)
+    // rather than gated on an env-var guess -- CI runners were found to genuinely set INVOCATION_ID
+    // themselves, which silently skipped this whole assertion block under the old `if unsupervised`
+    // env check.
+    let resp = crate::admin::restart::with_forced_unsupervised(|| admin(client.post(&url)).send())
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status().as_u16(),
+        409,
+        "an unsupervised restart must be refused unless confirmed"
+    );
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "conflict");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("confirm"),
+        "the refusal must tell the operator how to proceed: {body}"
+    );
 
     // Confirmed, so the supervisor check passes — but a test binary published no shutdown channel,
     // so the process genuinely cannot restart itself and says so. There are TWO distinct 409 exits
