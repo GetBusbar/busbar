@@ -1,0 +1,74 @@
+# tag-on-main — the release trigger. Pushing/merging to `main` cuts the release.
+#
+# BRANCH MODEL: prepare-release.yml bumps the version on `dev` → promote dev→`qa`
+# (qa-gate.yml runs the ~2h full-plugin gate) → promote qa→`main`. Landing on main runs THIS
+# workflow, which reads crates/busbar/Cargo.toml's version and, if the matching `vX.Y.Z` tag does
+# not already exist, creates and pushes it. That tag push is what triggers release.yml (binaries,
+# SBOM, OpenAPI asset, provenance, and the 19-repo downstream `upstream-release` dispatch) and
+# docker.yml (Docker Hub + GHCR + cosign). One push to main = the whole BOOM.
+#
+# IDEMPOTENT BY DESIGN: if the tag for the current Cargo.toml version already exists, this is a
+# safe no-op — so re-pushing main, or landing docs/hotfixes to main WITHOUT bumping the version,
+# never re-releases. To cut a release you bump the version (via prepare-release.yml on dev) and let
+# that bumped commit reach main.
+#
+# WHY A PAT (RELEASE_DISPATCH_TOKEN), NOT GITHUB_TOKEN: a tag pushed with the default GITHUB_TOKEN
+# does NOT trigger other workflows (GitHub blocks recursive workflow triggering), so release.yml
+# and docker.yml would never fire. The org fine-grained PAT already provisioned for the downstream
+# fan-out (release.yml's notify-downstream) pushes the tag as a real actor, so the tag-triggered
+# workflows run. That PAT must have Contents:write on THIS repo (to push the tag) in addition to
+# the downstream Contents:read + Actions:write it already carries.
+name: tag-on-main
+
+on:
+  push:
+    branches: [main]
+
+# Serialize: a burst of main pushes must not race two taggers onto the same version.
+concurrency:
+  group: tag-on-main
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # fetch-depth: 0 so `git rev-parse v$V` can see every existing tag (the idempotency
+          # guard). token: the PAT so the tag push below triggers release.yml + docker.yml.
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_DISPATCH_TOKEN }}
+
+      - name: Tag the Cargo.toml version if it isn't tagged yet (→ cuts the release)
+        env:
+          # Fail loud if the PAT is missing rather than pushing a tag with the checkout's default
+          # token (which would silently NOT trigger release.yml/docker.yml — a release that looks
+          # cut but ships nothing).
+          RELEASE_DISPATCH_TOKEN: ${{ secrets.RELEASE_DISPATCH_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${RELEASE_DISPATCH_TOKEN:-}" ]; then
+            echo "::error::RELEASE_DISPATCH_TOKEN is not provisioned — cannot cut the release from" \
+                 "main. A tag pushed with the default GITHUB_TOKEN would not trigger release.yml/" \
+                 "docker.yml, so refusing to push a dud tag. Provision the org PAT (Contents:write" \
+                 "on this repo) and re-run." >&2
+            exit 1
+          fi
+          # Robust version read from the package table (tomllib; ubuntu-latest ships Python ≥3.11).
+          V="$(python3 -c "import tomllib; print(tomllib.load(open('crates/busbar/Cargo.toml','rb'))['package']['version'])")"
+          echo "$V" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "::error::crates/busbar/Cargo.toml version '$V' is not X.Y.Z"; exit 1; }
+          if git rev-parse "v$V" >/dev/null 2>&1; then
+            echo "::notice::tag v$V already exists — nothing to cut (safe no-op). Bump the version on" \
+                 "dev via prepare-release.yml to cut a new release."
+            exit 0
+          fi
+          git config user.name "Matthew Jackson"
+          git config user.email "matthew@pq.io"
+          git tag -a "v$V" -m "v$V"
+          git push origin "v$V"
+          echo "::notice::Tagged v$V on main — release.yml + docker.yml + the downstream cascade are now firing."

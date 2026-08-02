@@ -1,24 +1,30 @@
-name: Cut release
+name: Prepare release (on dev)
 
-# ONE-CLICK RELEASE. Dispatch this with a version (e.g. 1.4.2) and it does every chore
-# that used to be manual + error-prone, then tags — which triggers release.yml (binaries,
-# SBOM, OpenAPI asset, attestation) and docker.yml (Docker Hub + GHCR + cosign).
+# RELEASE PREP — the version-bump chores, run on `dev`, that make a commit ready to promote.
+# Dispatch this (from `dev`) with a version (e.g. 1.5.1) and it does every chore that used to be
+# manual + error-prone, commits the result to `dev`, and STOPS. It does NOT tag.
+#
+# The tag — and therefore the actual release (binaries, SBOM, OpenAPI asset, attestation, Docker,
+# and the downstream cascade) — is cut automatically by tag-on-main.yml when this bumped version
+# reaches `main`. Branch model: prepare here on dev → promote dev→qa (qa-gate.yml full ~2h gate) →
+# promote qa→main (tag-on-main.yml auto-tags crates/busbar/Cargo.toml's version → release.yml +
+# docker.yml + 19-repo dispatch).
 #
 # What it automates (each of these bit us at least once):
 #   1. Bump crates/busbar/Cargo.toml + Cargo.lock.
 #   2. Regenerate the committed OpenAPI schema (UPDATE_OPENAPI=1) — the CI drift gate that
 #      failed the 1.4.1 release when done by hand.
 #   3. Promote CHANGELOG [Unreleased] -> [version] with today's date.
-#   4. Commit, tag vX.Y.Z, push both.
+#   4. Commit + push to `dev` (NO tag — the tag is main's job).
 #
 # You still write release notes under CHANGELOG's [Unreleased] before dispatching (that's the
-# one human step); everything downstream is automatic. Cutting the tag is your sign-off.
+# one human step). Your sign-off is promoting the bumped commit through qa to main.
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "New version, e.g. 1.4.2 (no leading v)"
+        description: "New version, e.g. 1.5.1 (no leading v)"
         required: true
 
 permissions:
@@ -62,13 +68,12 @@ jobs:
           cargo build -p busbar --quiet
           cargo test -p busbar --features openapi-schema openapi_json_matches_committed_file --quiet
 
-      - name: Commit, tag, push
+      - name: Commit + push to dev (NO tag — tag-on-main.yml cuts the release when this reaches main)
         run: |
           git config user.name "Matthew Jackson"
           git config user.email "matthew@pq.io"
           git add -A
-          git commit -m "$V: release"
-          git tag -a "v$V" -m "v$V"
+          git commit -m "$V: prepare release"
           git push origin HEAD
-          git push origin "v$V"
-          echo "::notice::Tagged v$V — release.yml + docker.yml are now building the artifacts."
+          echo "::notice::Prepared v$V on dev (Cargo bumped, OpenAPI regenerated, CHANGELOG rolled)." \
+               "Promote dev→qa (full gate) then qa→main — tag-on-main.yml will auto-tag v$V and cut the release."
