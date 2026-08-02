@@ -2552,12 +2552,11 @@ fn test_resolve_projects_admin_auth_names() {
     assert_eq!(cfg.admin_auth, [ADMIN_TOKENS_MODULE]);
 }
 
-/// AUTOMATIC vs EXPLICIT anti-downgrade (1.5.0 rollback-friendly versioning): the SAME validly-signed
-/// OLD first-party artifact is REFUSED under the automatic policy (`to_policy`, floored at the running
-/// binary version) but ACCEPTED under an explicit rollback policy (`to_policy_with_floor` lowered to
-/// the artifact's own version). This is the whole distinction, made without touching the frozen
-/// `evaluate`/`Manifest`: it is WHICH floor the engine feeds the policy that differs, and the lowered
-/// floor is only ever reached via an authenticated, audited rollback.
+/// PER-NAME anti-downgrade through `to_policy` (floors-only semantics): a validly-signed
+/// first-party artifact on its own independent version line LOADS under the default policy (no
+/// automatic binary-version floor — plugins ship 1.0.x/2.x under a 1.5.0 engine), while an
+/// explicit per-name floor (the persisted rollback-pin seam) binds exactly at its pinned version:
+/// at the pin loads, below the pin refuses.
 #[test]
 fn to_policy_floor_distinguishes_automatic_from_explicit_downgrade() {
     use busbar_plugin_sign::{evaluate, sign, Manifest, SigningKey, Verdict};
@@ -2595,16 +2594,25 @@ fn to_policy_floor_distinguishes_automatic_from_explicit_downgrade() {
     };
     let mut automatic = cfg.to_policy().expect("automatic policy");
     automatic.first_party_key = Some(release.verifying_key());
-    // AUTOMATIC: floored at the running binary version — the old artifact is a hard anti-downgrade
-    // reject that no opt-in can relax.
-    let err = evaluate(artifact, &old, &automatic).unwrap_err();
+    // DEFAULT policy: no per-name floor pins this artifact, so its 0.9.0 version line is its own
+    // business — a verified first-party plugin loads regardless of the binary's version.
     assert!(
-        err.reason.contains("anti-downgrade"),
-        "automatic policy must refuse the old first-party artifact, got {err:?}"
+        matches!(
+            evaluate(artifact, &old, &automatic).unwrap(),
+            Verdict::Trusted {
+                first_party: true,
+                ..
+            }
+        ),
+        "default policy must load a verified first-party artifact on its own version line"
     );
 
-    // EXPLICIT rollback: the floor is lowered to the artifact's OWN version, so it now loads.
-    let mut explicit = cfg.to_policy_with_floor("0.9.0").expect("explicit policy");
+    // EXPLICIT per-name floor (the rollback-pin seam): pinned exactly at the artifact's version,
+    // it loads; the pin binds and nothing older passes (asserted below).
+    let mut explicit = cfg.to_policy().expect("explicit policy");
+    explicit
+        .first_party_floors
+        .insert("busbar-store-redis".to_string(), "0.9.0".to_string());
     explicit.first_party_key = Some(release.verifying_key());
     assert!(
         matches!(
