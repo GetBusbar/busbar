@@ -1196,6 +1196,22 @@
         ],
         "type": "object"
       },
+      "InspectPluginReq": {
+        "description": "`POST /api/v1/admin/plugins/inspect` request body. SAME shape as [`InstallPluginReq`] (question\n#7 — \"same request body shape as `POST /plugins`\") — `file` is accepted for shape parity with\nthe install flow a UI composes around the same upload, but is otherwise UNUSED here: inspect\nnever writes anything to disk, so there is no filename to bind an install would need.",
+        "properties": {
+          "file": {
+            "type": "string"
+          },
+          "tarball_b64": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "file",
+          "tarball_b64"
+        ],
+        "type": "object"
+      },
       "InstallPluginReq": {
         "description": "The `POST /api/v1/admin/plugins` request body: install a SIGNED plugin tarball. The tarball\nbytes ride as base64 (`tarball_b64`) — a plugin artifact is opaque binary, so base64 keeps it a\nclean JSON field. The engine RE-VERIFIES the contained signed manifest server-side against the\nrunning `plugins.*` trust posture (the client is never trusted). `file` is the bare `.tar.gz`\nfilename to store it under (storage only — identity comes from the signed manifest inside).",
         "properties": {
@@ -6709,6 +6725,93 @@
         ],
         "summary": "Install a dynamic-library store plugin: upload the library (base64) + optional signed manifest; the engine RE-VERIFIES against the running trust posture, validates the store ABI, and writes it atomically into the plugins directory. Takes effect on the next store (re)load",
         "x-busbar-required-scope": "full"
+      }
+    },
+    "/api/v1/admin/plugins/inspect": {
+      "post": {
+        "operationId": "PostPluginsInspect",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InspectPluginReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PluginSchemaView"
+                }
+              }
+            },
+            "description": "`{name, version, kind, schema, schema_error, trust, source, restart_required_default}` — the same shape `GET /plugins/{file}/schema` carries, plus `name`/`version`/`kind`; an untrusted/rejected candidate is reported (`trust`), never refused"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`invalid_request`: malformed body / unknown field"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Stateless read-only preview of a candidate plugin tarball — verify its signature, parse its manifest, and report its settings schema WITHOUT installing anything",
+        "x-busbar-required-scope": "read-only"
       }
     },
     "/api/v1/admin/plugins/reload": {
