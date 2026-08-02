@@ -1207,6 +1207,107 @@ async fn queue_dropped_dispatch_future_releases_probe() {
     server.shutdown().await;
 }
 
+/// Concurrency HIGH (peer-probe revert): `handle_least_bad` OWNS NO PROBE — it dispatches via
+/// `try_acquire` and wins nothing. So if a least_bad dispatch's `forward_once` future is DROPPED
+/// mid-upstream-await (client disconnect), it must NEVER revert a single-flight probe a CONCURRENT PEER
+/// legitimately won on the SAME cell. Round-1 passed the cell's CURRENT epoch to an ARMED `ProbeGuard`
+/// on this path; because `release_probe_owned_in` matches by epoch EQUALITY (not "did THIS dispatch win
+/// it"), a HalfOpen cell whose live probe belongs to peer A would be REVERTED (HalfOpen→Open, probe
+/// cleared) on B's drop — letting a THIRD request win a SECOND concurrent probe, breaking single-flight.
+/// The fix makes `forward_once`'s `probe_epoch` an `Option<u64>` and has least_bad pass `None`, so NO
+/// guard is built on this path and a dropped least_bad future can revert nothing.
+///
+/// RED-before-GREEN: flip the least_bad `forward_once` arg from `None` back to
+/// `Some(app.store.probe_epoch_in(pool, soonest_idx))` (an armed guard capturing peer A's live epoch)
+/// and B's drop reverts A's probe → the cell goes Open + a fresh `try_admit` wins a NEW probe → every
+/// assertion below fails. With `None` the cell is untouched and all pass.
+#[tokio::test]
+async fn least_bad_dropped_dispatch_never_reverts_a_peers_probe() {
+    crate::metrics::init();
+    // A gated non-2xx body: least_bad's `forward_once` parks reading it (BEFORE recording any breaker
+    // outcome) — the exact mid-dispatch await a dropped future must not turn into a peer-probe revert.
+    let state = Arc::new(MockServerState::new());
+    let started = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    state.push(MockResponse::Gated {
+        status: axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+        body: json!({"error": {"message": "boom"}}),
+        started: started.clone(),
+        release: release.clone(),
+    });
+    let server = MockServer::new(state.clone()).await;
+
+    // One lane, capacity 2: peer A holds one permit + the probe, least_bad's request B needs the other.
+    let app = TestApp::new()
+        .lane(
+            LaneSpec::new(
+                "svc",
+                crate::proto::Protocol::anthropic(),
+                &server.base_url(),
+            )
+            .provider("p")
+            .max(2),
+        )
+        .pool("p", &[(0, 1)])
+        .failover(long_failover())
+        .on_exhausted("p", crate::config::OnExhausted::LeastBad)
+        .build();
+
+    // Make lane 0 EXPIRED-Open so a single-flight recovery probe can be won on its pool cell.
+    app.store.force_open_in("p", 0, 0);
+
+    // PEER A wins the recovery probe (cell → HalfOpen, probe_in_flight=true, epoch E1) and is "in
+    // flight": keep the `Admit` alive so A still owns the probe (and one permit) for the whole test.
+    let admit_a = app
+        .store
+        .try_admit("p", 0, now())
+        .unwrap_or_else(|_| panic!("peer A must win the recovery probe"));
+    let e1 = admit_a.probe_epoch;
+    assert!(
+        matches!(app.store.breaker_state_in("p", 0), BreakerState::HalfOpen),
+        "precondition: peer A won the probe (cell HalfOpen)"
+    );
+
+    // Request B: lane 0 is HalfOpen + probe_in_flight, so `pick_among` excludes it (ProbeInFlight) and
+    // the pool EXHAUSTS → `handle_least_bad` fires and dispatches B onto the same Open member (it sorts
+    // first: cooldown 0). B parks in the gated upstream body read BEFORE recording any outcome.
+    let b = spawn_request(app.clone());
+    tokio::time::timeout(Duration::from_secs(5), started.notified())
+        .await
+        .expect("least_bad must dispatch B to the upstream body read");
+
+    // DROP B mid-await (client disconnect): abort the task and let cancellation run its Drop chain.
+    b.abort();
+    let _ = b.await;
+    // Give B's Drop chain a moment to settle before observing the cell.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // THE INVARIANT: B owned NO probe, so its dropped future must have left peer A's LIVE probe intact.
+    assert!(
+        matches!(app.store.breaker_state_in("p", 0), BreakerState::HalfOpen),
+        "peer A's probe was REVERTED by B's dropped least_bad future — the cell must still be HalfOpen"
+    );
+    assert_eq!(
+        app.store.probe_epoch_in("p", 0),
+        e1,
+        "peer A's probe epoch must be unchanged (never reverted by B's dropped future)"
+    );
+    // Single-flight preserved: A's probe is still live, so NO third caller can win a SECOND concurrent
+    // probe. On the buggy (armed-guard) path B's drop reverted A's probe → the cell went Open → this
+    // `try_admit` would WIN a fresh probe (Ok), breaking single-flight.
+    assert!(
+        matches!(
+            app.store.try_admit("p", 0, now()),
+            Err(crate::store::Unavailable::ProbeInFlight)
+        ),
+        "a third caller must NOT win a second concurrent probe — peer A's probe is still in flight"
+    );
+
+    drop(admit_a);
+    release.notify_waiters();
+    server.shutdown().await;
+}
+
 /// The design's claimed no-thundering-herd property: with 2+ requests parked on a 1-permit saturated
 /// lane, freeing ONE permit lets EXACTLY ONE waiter dispatch — the survivor stays parked (the single
 /// tokio permit can never be handed to two dispatchers, so max_concurrent is never exceeded). Made

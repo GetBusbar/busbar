@@ -183,9 +183,13 @@ impl RequestCtx {
 /// DISARMS the guard (sets `armed = false`) first, because that request now owns the probe.
 ///
 /// Where it is used: the on_exhausted degraded dispatch, `engine::walk::forward_once`, constructs one
-/// covering its whole dispatch window — armed across every early-return error path (each records a
-/// transient first, which already transitions the cell, so the guard's release is a safe owner-checked
-/// no-op) and disarmed the moment the request records a legitimate SUCCESS (`record_success_in`). Its
+/// covering its whole dispatch window — but ONLY when that dispatch actually WON a probe (its
+/// `probe_epoch` arg is `Some`: the `pick_among`/`try_admit_breaker` paths). The least-bad path bypasses
+/// the breaker and owns no probe, so it passes `None` and NO guard is built — it can therefore never
+/// release/revert a probe (in particular, never a probe a concurrent peer won on the same cell). When
+/// built, the guard is armed across every early-return error path (each records a transient first, which
+/// already transitions the cell, so the guard's release is a safe owner-checked no-op) and disarmed the
+/// moment the request records a legitimate SUCCESS (`record_success_in`). Its
 /// only OTHER exerciser is `probe_guard_tests`, the canonical statement of the release/disarm/
 /// owner-check semantics. (The pre-refactor `pick_among` parking loop that once constructed this guard
 /// is gone — `try_admit` is now a single non-async admission that releases a won-but-undispatched probe
