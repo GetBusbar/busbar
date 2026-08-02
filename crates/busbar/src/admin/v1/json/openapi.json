@@ -1837,8 +1837,22 @@
       "PluginSchemaView": {
         "description": "`GET /plugins/{name}/schema` — the generalized, all-kinds sibling of [`HookSchemaView`]\n(plugin-settings-schema-SPEC.md). Carries `trust`/`source`/`schema_error` on top of\n`{name, schema}` so busbar-ui never has to infer trust state or the describe/manifest\nprecedence rule from context — the server always picks exactly one source and reports which.",
         "properties": {
+          "kind": {
+            "description": "The plugin's `kind` (`hook` | `secret` | …) from its manifest. Both `GET /plugins/{file}/schema`\nand `POST /plugins/inspect` emit it (`null` only when the plugin cannot be resolved to a\nmanifest). Declared so codegen'd clients keep it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "name": {
             "type": "string"
+          },
+          "restart_required_default": {
+            "description": "The kind-derived restart-scoping default (`busbar_plugin_sign::kind_restart_default`), so\nbusbar-ui need not hardcode the kind→default table. Emitted by both schema endpoints (`null`\nonly when the plugin has no resolvable manifest/kind). Declared so codegen'd clients keep it.",
+            "type": [
+              "boolean",
+              "null"
+            ]
           },
           "schema": {
             "description": "The plugin's settings JSON Schema verbatim, or `null` — either because the manifest never\nset `settings_schema`, or (distinctly, see `schema_error`) because it did but the value\nfailed to parse."
@@ -1857,6 +1871,13 @@
           "trust": {
             "description": "`\"trusted\" | \"unverified\" | \"rejected\"` — the same vocabulary the plugin catalog already\nuses (never `\"verified\"`; question #8, round-4 correction).",
             "type": "string"
+          },
+          "version": {
+            "description": "The plugin's semantic version from its manifest. Present on `POST /plugins/inspect` (which\npreviews an on-disk candidate's manifest); `null`/absent on `GET /plugins/{file}/schema`, which\ndoes not surface the version. Declared here so a codegen'd client keeps the field the inspect\nhandler always sends, rather than silently dropping it.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
