@@ -856,6 +856,14 @@ fn refresh_scrape_gauges(app: &App) {
     //   dead || (!usable && cooldown > 0) → 2 (hard-down or all cells Open)
     //   usable && cooldown > 0            → 1 (some cells admit but aggregate cooling down)
     //   usable && cooldown == 0           → 0 (healthy / all cells Closed)
+    //
+    // `snapshot()` is LANE-GLOBAL (indexed by lane, not scoped to a pool) and `now` is fixed for the
+    // whole scrape, so a lane shared across K pools would otherwise recompute the identical (now-2x)
+    // breaker-cell fold K times. Memoize it per lane_idx here and reuse across every pool that shares
+    // the lane (and across the by_model loop below). Per-POOL facts (`classify(pool, …)`,
+    // `cooldown_remaining_in(pool, …)`) stay per-iteration — only the lane-global snapshot is cached.
+    let mut snap_cache: std::collections::HashMap<usize, crate::store::LaneSnapshot> =
+        std::collections::HashMap::new();
     for (pool_name, weighted_lanes) in &app.pools {
         // Phase 3: render the LIVE per-pool `on_exhausted: queue` park depth. `queued_depth` is the
         // RAII-maintained source incremented while a request waits on a candidate lane's semaphore
@@ -864,7 +872,9 @@ fn refresh_scrape_gauges(app: &App) {
             .set(app.queued_depth.depth(pool_name) as f64);
         for wl in weighted_lanes {
             let lane_idx = wl.idx;
-            let snap = app.store.snapshot(lane_idx, now);
+            let snap = snap_cache
+                .entry(lane_idx)
+                .or_insert_with(|| app.store.snapshot(lane_idx, now));
             // Per-pool cooldown check: use `cooldown_remaining_in` for this specific (pool, lane)
             // cell, not the lane-wide aggregate from the snapshot (which may reflect a different
             // pool's cell). This gives per-pool accuracy without touching the FSM.
@@ -889,7 +899,7 @@ fn refresh_scrape_gauges(app: &App) {
             // Phase 2: render the lane's availability from the SAME per-(pool, lane) `classify`
             // routing dispatches on — this IS the pool cell the pool routes through.
             let avail = app.store.classify(pool_name, lane_idx, now);
-            emit_lane_gauges(pool_name, &lane_label, &snap, &avail, now);
+            emit_lane_gauges(pool_name, &lane_label, snap, &avail, now);
         }
     }
 
@@ -902,7 +912,11 @@ fn refresh_scrape_gauges(app: &App) {
     // 2026-07-09). The breaker cell is the lane-default `""` cell, matching model-routed
     // fault attribution.
     for (model, &lane_idx) in &app.by_model {
-        let snap = app.store.snapshot(lane_idx, now);
+        // Reuse the lane-global snapshot cached in the pool loop above (or compute+cache on miss for a
+        // pool-less lane) — same lane_idx, same fixed `now`.
+        let snap = snap_cache
+            .entry(lane_idx)
+            .or_insert_with(|| app.store.snapshot(lane_idx, now));
         let cooldown = app.store.cooldown_remaining_in("", lane_idx, now);
         let state_val: f64 = if snap.dead || (cooldown > 0 && !snap.usable) {
             2.0
@@ -920,13 +934,7 @@ fn refresh_scrape_gauges(app: &App) {
         // Direct-model lane: classify against the lane-default (`""`) cell, matching model-routed
         // fault attribution (the same cell `LANE_STATE` reads via `cooldown_remaining_in("", ...)`).
         let avail = app.store.classify("", lane_idx, now);
-        emit_lane_gauges(
-            model,
-            &app.lanes[lane_idx].model.clone(),
-            &snap,
-            &avail,
-            now,
-        );
+        emit_lane_gauges(model, &app.lanes[lane_idx].model.clone(), snap, &avail, now);
     }
 }
 
@@ -946,27 +954,27 @@ fn emit_lane_gauges(
     avail: &Result<(), crate::store::Unavailable>,
     now: u64,
 ) {
-    let labels = || {
-        (
-            metrics::Label::new("pool", pool_label.to_string()),
-            metrics::Label::new("lane", lane_label.to_string()),
-        )
-    };
-    let (p, l) = labels();
-    metrics::gauge!(LANE_AVAILABLE, vec![p, l]).set(if avail.is_ok() { 1.0 } else { 0.0 });
+    // Build the `pool`/`lane` labels ONCE per lane (the two `to_string()` allocations) and clone the
+    // pair per gauge, instead of re-allocating both Strings on each of the 3-4 gauge emits (was a
+    // closure called every time). The two label values are identical across every gauge here.
+    let pool_l = metrics::Label::new("pool", pool_label.to_string());
+    let lane_l = metrics::Label::new("lane", lane_label.to_string());
+    metrics::gauge!(LANE_AVAILABLE, vec![pool_l.clone(), lane_l.clone()]).set(if avail.is_ok() {
+        1.0
+    } else {
+        0.0
+    });
     // Honest recovery hint: 0 when available (Ok) or the reason has no self-recovery basis (None).
     let hint_ms = avail
         .as_ref()
         .err()
         .and_then(|u| u.recovery_hint_ms(now))
         .unwrap_or(0);
-    let (p, l) = labels();
-    metrics::gauge!(LANE_RECOVERY_HINT_MS, vec![p, l]).set(hint_ms as f64);
-    let (p, l) = labels();
-    metrics::gauge!(LANE_INFLIGHT, vec![p, l]).set(snap.inflight as f64);
+    metrics::gauge!(LANE_RECOVERY_HINT_MS, vec![pool_l.clone(), lane_l.clone()])
+        .set(hint_ms as f64);
+    metrics::gauge!(LANE_INFLIGHT, vec![pool_l.clone(), lane_l.clone()]).set(snap.inflight as f64);
     if let Some(available) = snap.available {
-        let (p, l) = labels();
-        metrics::gauge!(LANE_AVAILABLE_PERMITS, vec![p, l]).set(available as f64);
+        metrics::gauge!(LANE_AVAILABLE_PERMITS, vec![pool_l, lane_l]).set(available as f64);
     }
 }
 
@@ -1469,6 +1477,39 @@ mod tests {
             gauge_value(&out, LANE_RECOVERY_HINT_MS, "cap-pool"),
             Some(2000.0),
             "an at-capacity lane's recovery hint floors at 2000ms; got:\n{out}"
+        );
+    }
+
+    /// The doc contract: an UNBOUNDED lane (no `max_concurrent`) emits NO `busbar_lane_available_permits`
+    /// sample (rather than a misleading infinite/zero one), so PromQL rules can treat the gauge's mere
+    /// PRESENCE as "this lane is bounded". The lane is still scraped (`busbar_lane_available` is present),
+    /// but the permits gauge must be absent for it.
+    #[test]
+    fn test_scrape_gauges_unbounded_lane_omits_available_permits() {
+        init();
+
+        // `max >= Semaphore::MAX_PERMITS` is the store's unbounded sentinel (no `max_concurrent`).
+        let app = TestApp::new()
+            .lane(
+                LaneSpec::new("unb-model", crate::proto::Protocol::openai(), "http://u")
+                    .max(tokio::sync::Semaphore::MAX_PERMITS),
+            )
+            .pool("unb-pool", &[(0, 1)])
+            .build();
+
+        refresh_scrape_gauges(&app);
+        let out = render();
+        // The lane IS scraped (availability present)…
+        assert_eq!(
+            gauge_value(&out, LANE_AVAILABLE, "unb-pool"),
+            Some(1.0),
+            "an unbounded lane is still scraped and reports available=1; got:\n{out}"
+        );
+        // …but its available-permits gauge must be ABSENT (no meaningful count for an unbounded lane).
+        assert_eq!(
+            gauge_value(&out, LANE_AVAILABLE_PERMITS, "unb-pool"),
+            None,
+            "an unbounded lane must emit NO busbar_lane_available_permits sample; got:\n{out}"
         );
     }
 
