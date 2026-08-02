@@ -77,6 +77,44 @@ pub(crate) fn detect_legacy_markers(doc: &Value) -> Vec<String> {
         if get(&auth, "client_tokens").is_some() {
             markers.push("`auth.client_tokens:` (static tokens removed; mint signed keys)".into());
         }
+        if get(&auth, "modules").is_some() {
+            markers.push(
+                "`auth.modules:` (per-module trust caps removed; max_admin_scope moves onto the \
+                 chain entry, allowed_groups is gone)"
+                    .into(),
+            );
+        }
+        if get(&auth, "group_map").is_some() {
+            markers.push(
+                "`auth.group_map:` (replaced by auth.role_bindings, NESTED BY MODULE)".into(),
+            );
+        }
+        if get(&auth, "chain")
+            .and_then(|v| v.as_sequence().cloned())
+            .is_some_and(|seq| {
+                seq.iter()
+                    .any(|e| matches!(e.as_str(), Some("tokens") | Some("static-tokens")))
+            })
+        {
+            markers.push(
+                "`auth.chain: [tokens]` (the static-token module was removed; the 1.5.0 signed-key \
+                 verifier is `keys`)"
+                    .into(),
+            );
+        }
+    }
+    // The 1.4.x `DeployCfg` carried these at the TOP LEVEL; 1.5.0 relocated them (group_map ->
+    // auth.role_bindings, admin_auth -> auth.admin_auth), so their presence at the root is a 1.x
+    // marker in its own right (a real 1.4.x config that used them would otherwise pass straight
+    // through to a `deny_unknown_fields` rejection).
+    if get(root, "group_map").is_some() {
+        markers.push(
+            "top-level `group_map:` (moved under auth as auth.role_bindings, nested by module)"
+                .into(),
+        );
+    }
+    if get(root, "admin_auth").is_some() {
+        markers.push("top-level `admin_auth:` (moved under auth as auth.admin_auth)".into());
     }
     if get(root, "hooks").is_some() {
         markers.push(
@@ -114,6 +152,20 @@ pub(crate) fn detect_legacy_markers(doc: &Value) -> Vec<String> {
                     name.as_str().unwrap_or("?")
                 ));
             }
+            // 1.4.x `on_exhausted: { action: … }` -> 1.5.0 bare keyword / `{ fallback_pool }`. The
+            // `action:` wrapper is the exact user-reported silent pass-through (`deny_unknown_fields`
+            // rejects `action`), so it must be a named marker too.
+            if p.as_mapping()
+                .and_then(|m| get(m, "on_exhausted"))
+                .and_then(|v| v.as_mapping().cloned())
+                .is_some_and(|m| m.contains_key(Value::from("action")))
+            {
+                markers.push(format!(
+                    "`pools.{}.on_exhausted.action:` (the action wrapper is gone; use a bare \
+                     `reject`/`least_bad` or `{{ fallback_pool: <pool> }}`)",
+                    name.as_str().unwrap_or("?")
+                ));
+            }
         }
     }
     markers
@@ -143,6 +195,10 @@ pub(crate) fn migrate_config(raw: &str) -> Result<MigrateOutput, String> {
 
     migrate_governance(&mut root, &mut changes, &mut todos);
     migrate_auth(&mut root, &mut changes, &mut todos, &mut warnings);
+    // Runs AFTER migrate_governance/migrate_auth: both may have populated `auth.admin_auth` (the
+    // governance.admin_token secret ref), and this folds the 1.4.x TOP-LEVEL `admin_auth:` list in
+    // on top, letting the token-bearing entry win over a bare duplicate.
+    migrate_admin_auth(&mut root, &mut changes);
     migrate_providers(&mut root, &mut changes);
     migrate_hooks_block(&mut root, &mut changes, &mut todos);
     migrate_pools(&mut root, &mut changes, &mut todos);
@@ -180,6 +236,81 @@ fn as_map(v: Value) -> Mapping {
         Value::Mapping(m) => m,
         _ => Mapping::new(),
     }
+}
+
+/// The module name an `auth.chain` / `auth.admin_auth` entry answers to: a bare string entry IS the
+/// module name; a `{ <module>: {…} }` map entry's single key is. Used to dedup + locate entries
+/// when folding the 1.4.x TOP-LEVEL `admin_auth:` list and `auth.modules` caps into the 1.5.0
+/// `auth.admin_auth` / chain entries.
+fn entry_module_name(v: &Value) -> Option<String> {
+    match v {
+        Value::String(s) => Some(s.clone()),
+        Value::Mapping(m) => m.keys().next().and_then(|k| k.as_str().map(str::to_string)),
+        _ => None,
+    }
+}
+
+/// Set `max_admin_scope` on the chain entry for `module`, converting a bare `- <module>` string
+/// entry into its `{ <module>: { max_admin_scope } }` map form (or merging into an existing map
+/// entry). Returns whether an entry for `module` was found + updated.
+fn set_max_admin_scope(seq: &mut [Value], module: &str, scope: Value) -> bool {
+    for e in seq.iter_mut() {
+        if entry_module_name(e).as_deref() != Some(module) {
+            continue;
+        }
+        if !matches!(e, Value::Mapping(_)) {
+            let mut outer = Mapping::new();
+            outer.insert(Value::from(module), Value::Mapping(Mapping::new()));
+            *e = Value::Mapping(outer);
+        }
+        if let Value::Mapping(m) = e {
+            if let Some(Value::Mapping(body)) = m.get_mut(Value::from(module)) {
+                body.insert("max_admin_scope".into(), scope);
+            }
+        }
+        return true;
+    }
+    false
+}
+
+/// Fold a 1.4.x TOP-LEVEL `admin_auth: [<module>, …]` (a `Vec<String>` of module names) into the
+/// 1.5.0 `auth.admin_auth` (nested under `auth`, a `Vec<AuthChainEntry>`). 1.5.0's `DeployCfg`
+/// carries NO top-level `admin_auth`, so a real 1.4.x list passed straight through and tripped
+/// `deny_unknown_fields`. Bare names carry over as bare entries; when `migrate_governance` already
+/// produced an `admin-tokens` entry (bearing the `governance.admin_token` secret ref), the
+/// token-bearing entry WINS and the bare duplicate is skipped.
+fn migrate_admin_auth(root: &mut Mapping, changes: &mut Vec<String>) {
+    let Some(top) = take(root, "admin_auth") else {
+        return;
+    };
+    let names: Vec<Value> = match top {
+        Value::Sequence(s) => s,
+        other => vec![other],
+    };
+    let Value::Mapping(auth) = root
+        .entry("auth".into())
+        .or_insert_with(|| Value::Mapping(Mapping::new()))
+    else {
+        return;
+    };
+    let mut list = take(auth, "admin_auth")
+        .and_then(|v| v.as_sequence().cloned())
+        .unwrap_or_default();
+    let mut present: std::collections::BTreeSet<String> =
+        list.iter().filter_map(entry_module_name).collect();
+    for name in names {
+        match entry_module_name(&name) {
+            Some(m) if present.insert(m.clone()) => list.push(name),
+            Some(_) => {} // already present (e.g. the token-bearing admin-tokens entry) - skip dup
+            None => list.push(name),
+        }
+    }
+    if !list.is_empty() {
+        auth.insert("admin_auth".into(), Value::Sequence(list));
+    }
+    changes.push(
+        "top-level admin_auth -> auth.admin_auth (1.5.0 nests the admin chain under auth)".into(),
+    );
 }
 
 /// Map a 1.4.x `budget_period` word to the 1.5.0 C8 window noun.
@@ -387,9 +518,110 @@ fn migrate_auth(
     todos: &mut Vec<String>,
     warnings: &mut Vec<String>,
 ) {
-    let Some(Value::Mapping(auth)) = root.get_mut(Value::from("auth")) else {
+    // `group_map:` lived TOP-LEVEL in the shipped 1.4.x `DeployCfg` (NOT under `auth:`). Pull it
+    // from the top level first, then fall back to the nested `auth.group_map` an earlier
+    // transitional shape used. Sourced up front, before the `auth` mutable borrow, so both
+    // locations are reachable. A real 1.4.x config that only carried a top-level group_map used to
+    // pass it straight through -> 1.5.0 `deny_unknown_fields` rejected the unknown `group_map` key.
+    let mut group_map = take(root, "group_map");
+
+    // Nothing auth-shaped to migrate and no group_map to home: leave the document untouched.
+    if !matches!(root.get(Value::from("auth")), Some(Value::Mapping(_))) && group_map.is_none() {
+        return;
+    }
+    let Value::Mapping(auth) = root
+        .entry("auth".into())
+        .or_insert_with(|| Value::Mapping(Mapping::new()))
+    else {
         return;
     };
+    if group_map.is_none() {
+        group_map = take(auth, "group_map");
+    }
+
+    // `auth.chain`: the 1.4.x static-token module (`tokens` / `static-tokens`) is REMOVED in 1.5.0;
+    // the data-plane signed-key verifier is `keys`. Rewrite it (deduped) so `--validate` does not
+    // reject the chain, and surface the re-mint TODO (1.x bearer tokens stop working).
+    if let Some(Value::Sequence(chain)) = auth.get_mut(Value::from("chain")) {
+        let mut rewrote = false;
+        let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        let mut out: Vec<Value> = Vec::new();
+        for e in std::mem::take(chain) {
+            let mapped = match e.as_str() {
+                Some("tokens") | Some("static-tokens") => {
+                    rewrote = true;
+                    Value::from("keys")
+                }
+                _ => e,
+            };
+            match mapped.as_str().map(str::to_string) {
+                Some(k) => {
+                    if seen.insert(k) {
+                        out.push(mapped);
+                    }
+                }
+                None => out.push(mapped),
+            }
+        }
+        *chain = out;
+        if rewrote {
+            changes.push(
+                "auth.chain: tokens -> keys (static tokens removed; mint signed keys)".into(),
+            );
+            todos.push(
+                "auth.chain: the static-token module is GONE in 1.5.0; every caller needs a minted \
+                 signed key (POST /api/v1/admin/keys) - 1.x bearer tokens stop working"
+                    .into(),
+            );
+        }
+    }
+
+    // `auth.modules` (per-module trust-boundary caps) is REMOVED in 1.5.0. `max_admin_scope` has a
+    // deterministic home: the chain/admin entry for that module (`{ <module>: { max_admin_scope } }`),
+    // so the admin-scope CEILING is never silently lost. `allowed_groups` (the group-assertion
+    // allowlist) has no 1.5.0 equivalent -> a TODO, never a silent drop.
+    if let Some(Value::Mapping(modules)) = take(auth, "modules") {
+        for (mod_name, caps) in modules {
+            let mod_name = mod_name.as_str().unwrap_or("?").to_string();
+            let caps = as_map(caps);
+            if let Some(scope) = caps.get(Value::from("max_admin_scope")).cloned() {
+                let mut applied = false;
+                for list in ["chain", "admin_auth"] {
+                    if let Some(Value::Sequence(seq)) = auth.get_mut(Value::from(list)) {
+                        if set_max_admin_scope(seq, &mod_name, scope.clone()) {
+                            applied = true;
+                            break;
+                        }
+                    }
+                }
+                if applied {
+                    changes.push(format!(
+                        "auth.modules.{mod_name}.max_admin_scope -> auth chain entry \
+                         {{ {mod_name}: {{ max_admin_scope }} }}"
+                    ));
+                } else {
+                    todos.push(format!(
+                        "auth.modules.{mod_name}.max_admin_scope: module '{mod_name}' is in no \
+                         chain; set max_admin_scope on its chain/admin_auth entry once you add it"
+                    ));
+                }
+            }
+            if caps.contains_key(Value::from("allowed_groups")) {
+                todos.push(format!(
+                    "auth.modules.{mod_name}.allowed_groups: the per-module group-assertion \
+                     allowlist was REMOVED in 1.5.0 (bindings are nested by module in \
+                     role_bindings); re-express that trust boundary in role_bindings.{mod_name} or \
+                     the module's own plugin config"
+                ));
+            }
+        }
+        changes.push(
+            "auth.modules removed (max_admin_scope folded into the chain entry; allowed_groups \
+             dropped with a TODO)"
+                .into(),
+        );
+    }
+
     if let Some(mode) = take(auth, "mode").and_then(|v| v.as_str().map(str::to_string)) {
         match mode.as_str() {
             "passthrough" => {
@@ -426,7 +658,7 @@ fn migrate_auth(
         );
         changes.push("auth.client_tokens removed (static tokens are gone)".into());
     }
-    let Some(gm) = take(auth, "group_map") else {
+    let Some(gm) = group_map else {
         return;
     };
     // Which MODULE do the old flat bindings nest under? Mechanical when the chain names exactly
@@ -614,16 +846,39 @@ fn migrate_hooks_block(root: &mut Mapping, changes: &mut Vec<String>, todos: &mu
         |h: &Mapping, k: &str| h.get(Value::from(k)).and_then(|v| v.as_bool()) == Some(true);
 
     let mut placed: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    // 1. global: true entries -> global_hooks.
-    let mut global_list: Vec<Value> = root
-        .get(Value::from("global_hooks"))
+    // 1a. The 1.4.x TOP-LEVEL `global_hooks:` was a `Vec<String>` of REGISTRY names; 1.5.0's is a
+    // list of inline refs (same shape as a pool's `hooks:`). Resolve each name to its inline ref so
+    // a bare registry name never survives to trip `--validate` (a bare non-strategy name is not a
+    // valid 1.5.0 global-hook ref). Entries already in inline-ref (map) form pass through.
+    let mut global_list: Vec<Value> = Vec::new();
+    for entry in take(root, "global_hooks")
         .and_then(|v| v.as_sequence().cloned())
-        .unwrap_or_default();
+        .unwrap_or_default()
+    {
+        match entry {
+            Value::String(name) => {
+                if let Some(h) = hooks
+                    .get(Value::from(name.as_str()))
+                    .and_then(|v| v.as_mapping())
+                {
+                    global_list.push(inline_ref(&name, h, todos));
+                    placed.insert(name.clone());
+                    changes.push(format!("global_hooks: '{name}' -> inline module ref"));
+                } else {
+                    // Not a registry hook - leave it (a human decides), but do not lose it.
+                    global_list.push(Value::String(name));
+                }
+            }
+            other => global_list.push(other),
+        }
+    }
+    // 1b. Registry entries flagged `global: true` -> global_hooks, unless already placed by 1a (so a
+    // hook that is BOTH named in global_hooks AND `global: true` appears exactly once, not twice).
     for (name, h) in &hooks {
         let (Some(name), Some(h)) = (name.as_str(), h.as_mapping()) else {
             continue;
         };
-        if is_true(h, "global") {
+        if is_true(h, "global") && !placed.contains(name) {
             global_list.push(inline_ref(name, h, todos));
             placed.insert(name.to_string());
             changes.push(format!("hooks.{name} (global) -> global_hooks inline ref"));
@@ -749,7 +1004,76 @@ fn migrate_pools(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut Vec<
                 changes.push(format!("pools.{pname}.failover.cap -> max_hops"));
             }
         }
+        migrate_on_exhausted(&pname, p, changes, todos);
     }
+}
+
+/// Rewrite a 1.4.x `on_exhausted: { action: <string> }` to the 1.5.0 [`OnExhaustedCfg`] shape.
+///
+/// 1.4.x wrapped the behavior in an `action:` string with several accepted spellings
+/// (`reject`/`503`/`status_503`/`status503`, `least_bad`/`least-bad`/`leastbad`,
+/// `fallback_pool:<name>`). 1.5.0 uses `deny_unknown_fields` and takes a BARE keyword
+/// (`reject` / `least_bad`) or a `{ fallback_pool: <name> }` map -- so the 1.4.x `{ action: … }`
+/// wrapper is rejected at parse with the exact user-reported error ("unknown field `action`").
+/// This was a SILENT pass-through (migrate reported changes but never touched `on_exhausted`), the
+/// precise failure class this migrator exists to prevent. A value already in the 1.5.0 form (a bare
+/// string, or a `{ fallback_pool }` map with no `action:` key) is left untouched (idempotent).
+fn migrate_on_exhausted(
+    pname: &str,
+    p: &mut Mapping,
+    changes: &mut Vec<String>,
+    todos: &mut Vec<String>,
+) {
+    let Some(oe) = p.get(Value::from("on_exhausted")).cloned() else {
+        return;
+    };
+    // Only the 1.4.x `{ action: … }` MAP form needs rewriting; the `action` key is its tell.
+    let Some(action) = oe
+        .as_mapping()
+        .and_then(|m| m.get(Value::from("action")))
+        .and_then(|v| v.as_str())
+    else {
+        return;
+    };
+    let action = action.trim().to_string();
+    let new_val: Value = if let Some(pool) = action.strip_prefix("fallback_pool:") {
+        let pool = pool.trim();
+        if pool.is_empty() {
+            todos.push(format!(
+                "pools.{pname}.on_exhausted: the 1.4.x `fallback_pool:` action named NO pool; set \
+                 `on_exhausted: {{ fallback_pool: <pool> }}` to a real pool (left as `reject`)"
+            ));
+            Value::from("reject")
+        } else {
+            let mut fb = Mapping::new();
+            fb.insert("fallback_pool".into(), pool.into());
+            Value::Mapping(fb)
+        }
+    } else {
+        match action.as_str() {
+            "reject" | "503" | "status_503" | "status503" => Value::from("reject"),
+            "least_bad" | "least-bad" | "leastbad" => Value::from("least_bad"),
+            "fallback_pool" | "fallback" | "failover" => {
+                todos.push(format!(
+                    "pools.{pname}.on_exhausted: the 1.4.x `{action}` action needs a target pool; \
+                     set `on_exhausted: {{ fallback_pool: <pool> }}` (left as `reject`)"
+                ));
+                Value::from("reject")
+            }
+            other => {
+                todos.push(format!(
+                    "pools.{pname}.on_exhausted: unrecognized 1.4.x action `{other}`; the 1.5.0 \
+                     options are `reject` | `least_bad` | {{ fallback_pool: <pool> }} (left as \
+                     `reject`)"
+                ));
+                Value::from("reject")
+            }
+        }
+    };
+    p.insert("on_exhausted".into(), new_val);
+    changes.push(format!(
+        "pools.{pname}.on_exhausted: {{ action: {action} }} -> 1.5.0 bare keyword / {{ fallback_pool }}"
+    ));
 }
 
 /// `observability.otlp_endpoint` -> `otlp_url` (C7).
