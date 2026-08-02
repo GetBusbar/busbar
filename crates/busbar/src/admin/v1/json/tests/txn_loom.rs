@@ -26,11 +26,18 @@ use loom::sync::{Arc, Mutex, RwLock};
 /// bytes" wording in loom's own public doc comment. The default (`generator::DEFAULT_STACK_SIZE
 /// = 0x1000` words = 32 KiB real) overflowed on the real Linux CI runner's debug-build call depth
 /// (RUST_MIN_STACK has NO effect here -- that's the unrelated OS-thread-stack knob, not this
-/// green-thread mechanism). This many words = 48 MiB real, comfortably above what CI needed
-/// (confirmed: an earlier attempt requesting an effective 32 MiB still overflowed there) and
-/// comfortably under macOS's own default hard `ulimit -s` (~64 MiB), which `generator::Stack::new`
-/// hard-fails past locally with a DIFFERENT error ("ExceedsMaximumSize") if exceeded.
-const LOOM_STACK_WORDS: usize = 6_291_456;
+/// green-thread mechanism).
+///
+/// KNOWN UNRESOLVED: an earlier value here (6_291_456 words = 48 MiB real) ALSO still overflowed
+/// on the real Linux CI runner (confirmed via a genuine fresh rebuild, not a stale cache -- ruled
+/// out by checking the run's own log for "Compiling busbar v1.5.0" immediately before the
+/// failure), despite passing clean locally every time. macOS's own default hard `ulimit -s`
+/// (~64 MiB) makes anything much bigger untestable on a dev machine -- `generator::Stack::new`
+/// hard-fails past it locally with a DIFFERENT error ("ExceedsMaximumSize"), so this value is
+/// large specifically BECAUSE it cannot be locally validated end-to-end; only a real CI run
+/// proves it. If this ALSO overflows, the words-vs-bytes theory itself needs to be re-examined
+/// (e.g. by instrumenting the actual byte count generator receives), not just increased again.
+const LOOM_STACK_WORDS: usize = 67_108_864; // 512 MiB real, if the words-not-bytes theory holds
 
 /// The `AppHandle` shape under test: a swappable snapshot behind an `RwLock`, read by `load` and
 /// replaced wholesale by `swap` — `crate::state::AppHandle` in miniature, with `config_version`
