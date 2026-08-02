@@ -56,13 +56,20 @@ impl RequestCtx {
             deadline: start.saturating_add(deadline_secs),
             // Overflow-safe: `Instant`'s `Add` impl PANICS on overflow (it `.expect()`s internally, in
             // release too). `deadline_secs` is operator-controlled (`failover.timeout_secs`), so a huge
-            // value would panic the serving task on every request. `checked_add` + a far-future fallback
+            // value would panic the serving task on every request. `checked_add` + a defensive fallback
             // keeps the data plane crash-free even if config_validate's upper bound is ever bypassed; the
             // sibling `deadline` above is already saturating for the same reason.
+            //
+            // The fallback is UNREACHABLE in practice — `config_validate` caps `failover.timeout_secs` at
+            // `MAX_FAILOVER_DEADLINE_SECS` (86_400s), far below the `Instant` overflow point — so it is a
+            // pure defensive floor. It is set to the SAME cap (not a smaller stopgap like 3600s) so that
+            // if a huge value ever DID reach here, the fallback never SHORTENS the real budget below what
+            // a valid config could legitimately request.
             deadline_wall: std::time::Instant::now()
                 .checked_add(std::time::Duration::from_secs(deadline_secs))
                 .unwrap_or_else(|| {
-                    std::time::Instant::now() + std::time::Duration::from_secs(3600)
+                    std::time::Instant::now()
+                        + std::time::Duration::from_secs(crate::config::MAX_FAILOVER_DEADLINE_SECS)
                 }),
             excluded: std::collections::HashSet::new(),
             visited_pools: std::collections::HashSet::new(),
