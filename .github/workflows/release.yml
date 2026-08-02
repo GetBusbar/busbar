@@ -282,12 +282,24 @@ jobs:
                  "up within 24h (self-healing fallback intact), but the instant path is unavailable." >&2
             exit 1
           fi
+          ver="${GITHUB_REF_NAME#v}"
+          sha="${GITHUB_SHA}"
+          fail=0
           while IFS= read -r repo; do
             # Skip blank lines and comments.
             case "$repo" in ''|'#'*) continue ;; esac
-            echo "Dispatching upstream-release to ${repo}..."
-            gh api "repos/${repo}/dispatches" \
+            echo "Dispatching upstream-release to ${repo} (tag ${GITHUB_REF_NAME}, sha ${sha:0:7})..."
+            # A downstream repo that has no release-on-upstream workflow yet simply ignores the
+            # event — a harmless no-op — so a full target list is safe before every repo is wired.
+            # A real API/auth failure must still surface, so collect failures and report at the end.
+            if ! gh api "repos/${repo}/dispatches" \
               -f event_type=upstream-release \
               -f "client_payload[tag]=${GITHUB_REF_NAME}" \
-              -f "client_payload[repo]=${GITHUB_REPOSITORY}"
+              -f "client_payload[version]=${ver}" \
+              -f "client_payload[sha]=${sha}" \
+              -f "client_payload[repo]=${GITHUB_REPOSITORY}"; then
+              echo "::warning::dispatch to ${repo} failed"
+              fail=1
+            fi
           done < .github/release-notify-targets.txt
+          [ "$fail" = 0 ] || { echo "::error::one or more downstream dispatches failed (see warnings)"; exit 1; }

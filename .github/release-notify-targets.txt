@@ -1,16 +1,35 @@
-# Master list of GetBusbar repos to notify (via repository_dispatch, event_type=upstream-release)
-# whenever busbar itself cuts a real release (release.yml, on a v* tag push).
-#
-# Each of these repos already has its own daily-poll self-heal workflow (the Homebrew-tap pattern —
-# see GetBusbar/homebrew-busbar/.github/workflows/bump.yml, GetBusbar/helm-charts/.github/workflows/
-# bump-chart.yml) that ALREADY accepts this dispatch as an optional instant trigger, layered on top
-# of its own daily cron fallback. Polling never goes away — it's the safety net for a missed/failed
-# dispatch; this list is what makes the common case same-minute instead of up-to-24h-later.
-#
-# To add a new downstream consumer to the release-notify fan-out: add its repo name here (one per
-# line, `GetBusbar/<repo>` form) — no workflow-file edits needed elsewhere. The repo itself is
-# responsible for having a workflow that accepts `repository_dispatch: types: [upstream-release]`;
-# adding a name here without that workflow existing is a harmless no-op dispatch that repo ignores.
-GetBusbar/homebrew-busbar
+# THE RELEASE-TRAIN TARGET LIST — every repo that cuts its own next version when busbar core
+# ships. On a core release, release.yml's notify-downstream repository_dispatches `upstream-release`
+# {tag, version, sha} to each of these. Each repo owns a release-on-upstream.yml that re-pins to
+# `sha`, bumps its OWN version line, tags, and publishes. Adding a downstream = one line here.
+# See docs/RELEASE-TRAIN.md for the full contract. Every repo also keeps a daily-cron self-heal,
+# so a missed/failed dispatch is picked up within 24h — this list makes the common case instant.
+
+# First-party plugins (rebuilt + re-signed against the new engine)
+GetBusbar/store-mysql
+GetBusbar/store-postgres
+GetBusbar/store-sqlite
+GetBusbar/store-valkey
+GetBusbar/hashicorp-vault
+GetBusbar/auth-oidc
+GetBusbar/webrequest-hook
+GetBusbar/headroom-hook
+
+# Packaging / deploy surfaces
 GetBusbar/helm-charts
+GetBusbar/homebrew-busbar
 GetBusbar/marketing
+
+# Providers (own version lines)
+GetBusbar/terraform-provider-busbar
+GetBusbar/provider-busbar
+GetBusbar/pulumi-busbar
+
+# SDKs + CLI (regenerated from the new OpenAPI asset)
+GetBusbar/busbar-python
+GetBusbar/busbar-js
+GetBusbar/busbar-go
+GetBusbar/busbar-admin
+
+# CI action (rides :latest; self-heals — listed so it re-validates its example on release)
+GetBusbar/validate-action
