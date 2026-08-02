@@ -920,8 +920,8 @@ A keyword stays bare; a reference is structured (the 1.5.0 `on_X` convention):
 
 | Value | Behavior |
 |---|---|
-| `reject` | Return `503 Service Unavailable` with a `Retry-After` header set to the soonest member cooldown expiry. This is the default when `on_exhausted` is omitted. Accepted aliases: `status_503`, `status503`, `503`. |
-| `least_bad` | Route to the member whose cooldown expires soonest, even though it is Open. The request is likely to fail, but degraded service is preferred over a hard 503. This is logged as a degraded dispatch. Accepted aliases: `least-bad`, `leastbad`. |
+| `reject` | Return `503 Service Unavailable` with a `Retry-After` header. When a member is in breaker cooldown, `Retry-After` is the soonest genuine cooldown expiry; when exhaustion is pure saturation (every member at its `max_concurrent` limit, breakers closed), it is a small saturation floor instead of `1`. This is the default when `on_exhausted` is omitted. Accepted aliases: `status_503`, `status503`, `503`. |
+| `least_bad` | Route to the member whose cooldown expires soonest **that still has a free concurrency permit**, even though it is Open. A soonest member that is itself at capacity is skipped in favour of a servable sibling (rather than a hard 503); only when no admissible member has a free permit does it fall through to `reject`. The request is likely to fail, but degraded service is preferred over a hard 503. This is logged as a degraded dispatch. Accepted aliases: `least-bad`, `leastbad`. |
 | `{ fallback_pool: <name> }` | Route the request to another named pool and run its full selection logic. Cycles (`primary` to `overflow` back to `primary`) and self-references are detected at startup and are errors. |
 
 `reject` and `least_bad` each accept the alias spellings noted above (hyphen/underscore/joined and, for reject, the bare `503` status). **Unknown keywords or a malformed structure are a fatal startup error** (not a runtime 503).
@@ -981,7 +981,7 @@ Optional. Exposes thirteen operational limits (mostly previously hardcoded, plus
 
 ```yaml
 limits:
-  max_inbound_concurrent: 8192    # 0 = unlimited; > 0 adds a global concurrency cap
+  max_inbound_concurrent: 8192    # 0 = unlimited; > 0 caps in-flight inbound and sheds excess (503)
   request_body_max_bytes: 33554432  # 32 MiB
   upstream_request_timeout_secs: 300
   tls_handshake_timeout_secs: 10
@@ -998,7 +998,7 @@ limits:
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `max_inbound_concurrent` | integer | `8192` | Global inbound concurrency cap, applied outermost (before request bodies are buffered), so it is the global bound on peak request memory: worst case is this limit times `request_body_max_bytes`. `0` = unlimited (no cap layer installed, the pre-1.5.0 posture). **Restart-to-apply**: it is captured once in `main()` and baked into a `tower::limit::GlobalConcurrencyLimitLayer` on the router at process start; a config apply swaps only the `App`, never the router, so the semaphore's permit count cannot change live — `reload_to_apply` flags `limits.max_inbound_concurrent` when set. |
+| `max_inbound_concurrent` | integer | `8192` | Global inbound concurrency cap, applied outermost (before request bodies are buffered), so it is the global bound on peak request memory: worst case is this limit times `request_body_max_bytes`. A request that arrives while the cap is full is **shed** — returned a `503` with `Retry-After` immediately — rather than queued behind the cap (the layer is a `tower::limit::GlobalConcurrencyLimitLayer` wrapped in `tower::load_shed`). `0` = unlimited (no cap layer installed, the pre-1.5.0 posture). **Restart-to-apply**: it is captured once in `main()` and baked into the router at process start; a config apply swaps only the `App`, never the router, so the semaphore's permit count cannot change live — `reload_to_apply` flags `limits.max_inbound_concurrent` when set. |
 | `request_body_max_bytes` | integer | `33554432` | Maximum inbound request body size (bytes). Exceeding this returns a protocol-native 413. **Partially restart-to-apply, undocumented in the API today (known gap, tracked for post-1.5.0):** the inbound 413 threshold (`axum::extract::DefaultBodyLimit`) is boot-frozen the same way as `max_inbound_concurrent` above, but the coupled egress translate/buffer cap (`limits::translate_body_max_bytes()`) reads a live snapshot re-installed on every apply. A live `PUT` therefore only half-applies: **lowering** this value moves the egress cap down immediately while the inbound 413 threshold stays at the boot value, so a request body can land in the gap between the two — accepted inbound, but no longer buffer-translatable on a cross-protocol hop, breaking the "accepted implies translatable" invariant. `reload_to_apply` does not flag this field: flagging it dotted would mis-state that the whole field is stored-not-live when three of its four consumers are in fact live. The fix (make the inbound limit read the live snapshot, or otherwise pin the coupling) is deferred past 1.5.0 because it touches the request path and the router layer stack. |
 | `upstream_request_timeout_secs` | integer | `300` | Per-upstream-request wall-clock timeout. Applies to both the connect and the full response. **Restart-to-apply**: the upstream `reqwest::Client` is built once at boot and reused across config applies (warm connection pools are kept deliberately), so a live `PUT` changes the stored value but not the running client — `reload_to_apply` flags `limits.upstream_request_timeout_secs` when set. |
 | `tls_handshake_timeout_secs` | integer | `10` | Wall-clock cap on each inbound TLS handshake; prevents slowloris / handshake-flood. Ignored when `tls:` is absent. |
