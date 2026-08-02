@@ -1,11 +1,8 @@
-# THE RELEASE-TRAIN TARGET LIST — every repo that cuts its own next version when busbar core
-# ships. On a core release, release.yml's notify-downstream repository_dispatches `upstream-release`
-# {tag, version, sha} to each of these. Each repo owns a release-on-upstream.yml that re-pins to
-# `sha`, bumps its OWN version line, tags, and publishes. Adding a downstream = one line here.
-# See docs/RELEASE-TRAIN.md for the full contract. Every repo also keeps a daily-cron self-heal,
-# so a missed/failed dispatch is picked up within 24h — this list makes the common case instant.
+# Repos that release.yml's notify-downstream repository_dispatches `upstream-release`
+# {tag, version, sha} to on a busbar release. Each repo has its own release-on-upstream
+# workflow (plus a daily-cron fallback) that re-pins to `sha`, bumps its own version, and
+# publishes. One line per downstream repo.
 
-# First-party plugins (rebuilt + re-signed against the new engine)
 GetBusbar/store-mysql
 GetBusbar/store-postgres
 GetBusbar/store-sqlite
@@ -14,22 +11,14 @@ GetBusbar/hashicorp-vault
 GetBusbar/auth-oidc
 GetBusbar/webrequest-hook
 GetBusbar/headroom-hook
-
-# Packaging / deploy surfaces
 GetBusbar/helm-charts
 GetBusbar/homebrew-busbar
 GetBusbar/marketing
-
-# Providers (own version lines)
 GetBusbar/terraform-provider-busbar
 GetBusbar/provider-busbar
 GetBusbar/pulumi-busbar
-
-# SDKs + CLI (regenerated from the new OpenAPI asset)
 GetBusbar/busbar-python
 GetBusbar/busbar-js
 GetBusbar/busbar-go
 GetBusbar/busbar-admin
-
-# CI action (rides :latest; self-heals — listed so it re-validates its example on release)
 GetBusbar/validate-action
