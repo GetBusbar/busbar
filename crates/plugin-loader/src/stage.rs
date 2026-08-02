@@ -359,6 +359,11 @@ mod tests {
 
     /// The dead-pid sweep removes a staging dir whose pid is dead, and leaves the live (current)
     /// process's dir alone.
+    ///
+    /// Unix-only: on non-unix `pid_alive` deliberately reports every pid alive (see its doc
+    /// comment — Windows relies on the locked-DLL failure mode instead), so the sweep never
+    /// removes anything there and `removed >= 1` is unsatisfiable by design, not by defect.
+    #[cfg(unix)]
     #[test]
     fn sweep_removes_dead_pid_dirs_only() {
         // A dir for a pid that is certainly dead (pid_max on linux is < 2^22 by default; u32::MAX

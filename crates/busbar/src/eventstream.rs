@@ -1312,11 +1312,14 @@ mod tests {
              doc's own guidance"
         );
         let t4000 = bench(32000);
-        // < 8x, the geometric midpoint of linear's predicted 4x and quadratic's predicted 16x: a
-        // real Windows CI runner measured 6.4x (min-of-7) on genuinely linear code, so 6x was
-        // inside runner noise. 8x still separates the two hypotheses this test exists to tell apart.
+        // < 12x: this asserts against the QUADRATIC hypothesis (predicted ~16x on 4x data), not a
+        // tight linear bound. The code is single-pass (one `drain` at the end), yet real CI runners
+        // measured 6.4x (Windows) and 8.9x (Linux) min-of-7 on it: 8000 frames (~240 KB) fit in L2
+        // while 32000 (~1 MB) spill toward L3, so per-byte cost genuinely rises with n without any
+        // algorithmic change. Bounds of 6x and 8x both produced real-CI false failures on linear
+        // code; 12x keeps the gross-regression tripwire while clearing the cache-hierarchy slope.
         assert!(
-            t4000 < t1000 * 8,
+            t4000 < t1000 * 12,
             "drain_frames_checked scaled worse than linear: min-of-{TRIALS} t(8000)={t1000:?} \
              min-of-{TRIALS} t(32000)={t4000:?} (ratio {:.1}x, quadratic predicts ~16x, linear \
              predicts ~4x)",
