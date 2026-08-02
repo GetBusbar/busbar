@@ -20,6 +20,18 @@
 
 use loom::sync::{Arc, Mutex, RwLock};
 
+/// `loom::thread::Builder::stack_size` forwards, unconverted, straight through to `generator`'s
+/// `Gn::new_opt(size, f)` -> `Stack::new(size)`, which computes `bytes = size *
+/// size_of::<usize>()` -- i.e. this parameter counts 8-byte WORDS, not bytes, despite the "in
+/// bytes" wording in loom's own public doc comment. The default (`generator::DEFAULT_STACK_SIZE
+/// = 0x1000` words = 32 KiB real) overflowed on the real Linux CI runner's debug-build call depth
+/// (RUST_MIN_STACK has NO effect here -- that's the unrelated OS-thread-stack knob, not this
+/// green-thread mechanism). This many words = 48 MiB real, comfortably above what CI needed
+/// (confirmed: an earlier attempt requesting an effective 32 MiB still overflowed there) and
+/// comfortably under macOS's own default hard `ulimit -s` (~64 MiB), which `generator::Stack::new`
+/// hard-fails past locally with a DIFFERENT error ("ExceedsMaximumSize") if exceeded.
+const LOOM_STACK_WORDS: usize = 6_291_456;
+
 /// The `AppHandle` shape under test: a swappable snapshot behind an `RwLock`, read by `load` and
 /// replaced wholesale by `swap` — `crate::state::AppHandle` in miniature, with `config_version`
 /// standing in for the whole `App`.
@@ -48,16 +60,9 @@ fn transaction_never_loses_a_swap() {
         let ths: Vec<_> = (0..2)
             .map(|_| {
                 let (handle, section) = (handle.clone(), section.clone());
-                // Explicit stack_size: loom's generator-backed coroutines default to a bare 4 KiB
-                // stack (`generator::DEFAULT_STACK_SIZE`), which is NOT the OS thread stack
-                // RUST_MIN_STACK controls -- it overflowed on Linux CI (larger debug-build frames
-                // than this happened to need locally on macOS) even at RUST_MIN_STACK=512MiB,
-                // because that env var never reaches this mechanism at all. 4 MiB was still not
-                // enough on the real Linux CI runner in a debug build (confirmed: overflowed there
-                // while passing clean locally on macOS at both --release and debug); 64 MiB gave
-                // real margin and costs nothing (only 2 threads spawned here).
+                // See LOOM_STACK_WORDS's doc comment for why this is needed and what it's in units of.
                 loom::thread::Builder::new()
-                    .stack_size(64 * 1024 * 1024)
+                    .stack_size(LOOM_STACK_WORDS)
                     .spawn(move || {
                         let _guard = section.lock().unwrap();
                         let current = handle.load(); // the FRESH post-lock snapshot
@@ -93,10 +98,9 @@ fn unsectioned_read_build_swap_loses_an_update() {
         let ths: Vec<_> = (0..2)
             .map(|_| {
                 let handle = handle.clone();
-                // See the sibling test's comment: explicit stack_size against generator's tiny
-                // 4 KiB default, the real fix for the CI-only overflow (not RUST_MIN_STACK).
+                // See LOOM_STACK_WORDS's doc comment for why this is needed and what it's in units of.
                 loom::thread::Builder::new()
-                    .stack_size(64 * 1024 * 1024)
+                    .stack_size(LOOM_STACK_WORDS)
                     .spawn(move || {
                         let current = handle.load(); // NO section: the read and the swap can interleave
                         handle.swap(Arc::new(*current + 1));
