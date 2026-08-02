@@ -323,7 +323,11 @@ mod tests {
             .unwrap();
         let bytes = t.into_inner().unwrap().finish().unwrap();
         let err = unpack(&bytes).unwrap_err();
-        assert!(err.contains("cap"), "got {err}");
+        assert!(
+            err.contains("exceeding the") && err.contains("byte cap"),
+            "must name it as the specific declared/read-size cap violation, not just any error \
+             containing \"cap\": got {err}"
+        );
     }
 
     #[test]
@@ -392,6 +396,10 @@ mod tests {
         exact.push(b' ');
         let bytes = build(&exact);
         let err = unpack(&bytes).unwrap_err();
-        assert!(err.contains("cap"), "got {err}");
+        assert!(
+            err.contains("exceeding the") && err.contains("byte cap"),
+            "must name it as the specific declared/read-size cap violation, not just any error \
+             containing \"cap\": got {err}"
+        );
     }
 }
