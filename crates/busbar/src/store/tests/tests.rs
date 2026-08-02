@@ -3536,8 +3536,7 @@ fn test_export_health_reads_consistent_state_cooldown_pair() {
 fn test_unbounded_lane_skips_the_semaphore_bounded_still_enforces() {
     use crate::store::Permit;
     // Unbounded: the sentinel capacity, exactly what main.rs seeds for an omitted max_concurrent.
-    let unbounded =
-        HealthState::new(vec![make_lane_data(0, tokio::sync::Semaphore::MAX_PERMITS)]);
+    let unbounded = HealthState::new(vec![make_lane_data(0, tokio::sync::Semaphore::MAX_PERMITS)]);
     let before = unbounded.available_permits(0);
     let p = unbounded.try_acquire(0).expect("unbounded always admits");
     assert!(matches!(p, Permit::Unbounded), "no slot was counted");
@@ -3588,7 +3587,7 @@ fn test_breaker_verdict_maps_each_cell_state() {
     // Fresh Closed cell (cooldown 0) → Ready.
     let cell = store.cell("p", 0);
     assert_eq!(
-        HealthState::breaker_verdict(cell.as_ref(), now),
+        breaker_verdict(cell.as_ref(), now),
         BreakerVerdict::Ready,
         "a Closed, elapsed-cooldown cell is Ready"
     );
@@ -3597,7 +3596,7 @@ fn test_breaker_verdict_maps_each_cell_state() {
     store.force_open_in("p", 0, now + 600);
     let cell = store.cell("p", 0);
     assert_eq!(
-        HealthState::breaker_verdict(cell.as_ref(), now),
+        breaker_verdict(cell.as_ref(), now),
         BreakerVerdict::Open { until: now + 600 },
         "an unexpired Open cell reports Open with its exact until"
     );
@@ -3606,7 +3605,7 @@ fn test_breaker_verdict_maps_each_cell_state() {
     store.force_open_in("p", 0, 0);
     let cell = store.cell("p", 0);
     assert_eq!(
-        HealthState::breaker_verdict(cell.as_ref(), now),
+        breaker_verdict(cell.as_ref(), now),
         BreakerVerdict::ProbeWinnable,
         "an expired Open cell is ProbeWinnable"
     );
@@ -3618,7 +3617,7 @@ fn test_breaker_verdict_maps_each_cell_state() {
     );
     let cell = store.cell("p", 0);
     assert_eq!(
-        HealthState::breaker_verdict(cell.as_ref(), now),
+        breaker_verdict(cell.as_ref(), now),
         BreakerVerdict::HalfOpen,
         "a HalfOpen (probe-in-flight) cell reports HalfOpen"
     );
