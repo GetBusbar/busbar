@@ -11428,6 +11428,15 @@ async fn drive_admin_error_surface() {
             "not_found",
         ),
         (
+            "plugins_schema_unknown",
+            "GET",
+            "/plugins/ghost/schema",
+            None,
+            None,
+            404,
+            "not_found",
+        ),
+        (
             "group_unknown",
             "GET",
             "/groups/ghost",
@@ -11471,6 +11480,45 @@ async fn drive_admin_error_surface() {
             None,
             400,
             "invalid_request",
+        ),
+        // ── POST /restart's 3 declared conditions ─────────────────────────────────────────────
+        // These 3 have their own dedicated behavioral test (`test_admin_v1_restart_refuses_when_
+        // it_cannot_restart`, which also asserts the exact refusal MESSAGE distinguishing the two
+        // 409s) -- but that test's witnesses must not be this audit's only source of them, per
+        // this function's own doc comment ("independent of whether they [other tests] ran"). Under
+        // parallel `cargo test` scheduling there is no guarantee that test's HTTP calls land before
+        // this function's caller takes its `observed::snapshot()`, so relying on it alone is a real
+        // race, not just a theoretical one -- these 3 rows close it. `can_restart()` is backed by a
+        // `OnceLock` never populated in a test binary, so `confirm: true` deterministically reaches
+        // the NotRestartable gate regardless of environment; NoSupervisor requires no supervisor
+        // marker env var present, matching what that sibling test's own runtime check already
+        // assumes (confirmed true on this repo's CI runners).
+        (
+            "restart_malformed_body",
+            "POST",
+            "/restart",
+            None,
+            Some(r#"{"confrim": true}"#),
+            400,
+            "invalid_request",
+        ),
+        (
+            "restart_no_supervisor",
+            "POST",
+            "/restart",
+            None,
+            None,
+            409,
+            "conflict",
+        ),
+        (
+            "restart_not_restartable",
+            "POST",
+            "/restart",
+            None,
+            Some(r#"{"confirm": true}"#),
+            409,
+            "conflict",
         ),
         // ── Hook definition lifecycle ─────────────────────────────────────────────────────────
         (
