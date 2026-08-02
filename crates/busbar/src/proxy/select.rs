@@ -1,5 +1,11 @@
 use super::*;
 
+/// Slack ε for the [`RequestCtx::debug_assert_within_budget`] failover-budget guard (R6/§5). Generous
+/// on purpose: the guard is a regression tripwire for a path that blocks PAST the whole failover
+/// budget (seconds), so a multi-second ε cannot mask that class of bug while it does absorb scheduler
+/// jitter / a slow CI box. The meaningful, tight bound lives in the property + budget TESTS.
+const BUDGET_ASSERT_EPSILON: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// A compliance restrict captured on the PRIMARY pool that must persist across every failover hop —
 /// including a `fallback_pool` spill to an independent pool. `tags_any` is the eligible tag set,
 /// `on_empty` decides what happens when a hop's candidates carry none of them (fail-closed reject vs
@@ -111,6 +117,23 @@ impl RequestCtx {
         self.deadline_wall
             .saturating_duration_since(std::time::Instant::now())
             .as_millis() as u64
+    }
+
+    /// R6 / §5 budget contract, as an asserted invariant. `deadline_wall` is captured at ingress as
+    /// `ingress + failover.timeout`, so requiring the wall clock at THIS disposition to be within
+    /// `deadline_wall` plus ε is exactly "wall-clock ingress→disposition ≤ failover.timeout + ε". A
+    /// `debug_assert!` so it runs in dev/CI (test + debug builds) and is compiled out of the release
+    /// request path — it exists to CATCH a selection / queue path that regresses to blocking past the
+    /// failover budget (the exact Bug-1 park pathology), never to change production behaviour. ε is
+    /// deliberately generous ([`BUDGET_ASSERT_EPSILON`]) so the guard never false-fires on scheduler
+    /// jitter or a slow CI box; the property/budget TESTS assert a tighter, meaningful bound.
+    pub(crate) fn debug_assert_within_budget(&self, context: &str) {
+        debug_assert!(
+            std::time::Instant::now() <= self.deadline_wall + BUDGET_ASSERT_EPSILON,
+            "failover budget exceeded at `{context}`: disposition landed more than {}ms past the \
+             failover deadline — a selection/queue path blocked past the budget (R6/§5)",
+            BUDGET_ASSERT_EPSILON.as_millis(),
+        );
     }
 
     /// Add a lane to the exclusion set (mark as already tried).
