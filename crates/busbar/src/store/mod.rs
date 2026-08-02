@@ -451,13 +451,15 @@ pub(crate) trait StateStore: Send + Sync + 'static {
     /// the single-flight probe CAS) WITHOUT acquiring a concurrency permit — for the `on_exhausted:
     /// queue` dispatch path, which has ALREADY won a permit directly on the lane's semaphore (via
     /// [`lane_semaphore`](Self::lane_semaphore)) and must still pass the breaker before dispatch.
-    /// `Ok(())` = the caller may dispatch: it now owns the (possibly newly-won) single-flight probe,
-    /// released via `release_probe_in` after the dispatched request records its outcome — EXACTLY the
-    /// unowned-probe contract `pick_among`'s fallback dispatch already relies on. `Err(_)` = the lane
-    /// went Dead / BudgetExhausted / BreakerOpen / lost the probe WHILE the caller was queued; the
-    /// caller must release its held permit and never dispatch onto it. No permit is touched here, so a
-    /// probe won on the `Ok` path is the caller's to release; on `Err` nothing is left armed.
-    fn try_admit_breaker(&self, pool: &str, lane: usize, now: u64) -> Result<(), Unavailable>;
+    /// `Ok(epoch)` = the caller may dispatch: it now owns the (possibly newly-won) single-flight probe,
+    /// released OWNER-CHECKED via `release_probe_owned_in(pool, lane, epoch)` after the dispatched
+    /// request records its outcome — the SAME `Admit.probe_epoch` discipline `try_admit` uses, so the
+    /// queue path no longer relies on the weaker unowned `release_probe_in` (a stale unowned release
+    /// could revert a NEWER probe won by a peer). `Err(_)` = the lane went Dead / BudgetExhausted /
+    /// BreakerOpen / lost the probe WHILE the caller was queued; the caller must release its held permit
+    /// and never dispatch onto it. No permit is touched here, so a probe won on the `Ok` path is the
+    /// caller's to release; on `Err` nothing is left armed.
+    fn try_admit_breaker(&self, pool: &str, lane: usize, now: u64) -> Result<u64, Unavailable>;
     /// Release a single-flight recovery probe WON by `acquire_for_dispatch_in` but then NOT dispatched
     /// (the chosen lane couldn't get a concurrency slot before the request deadline, the semaphore
     /// closed on shutdown, etc.). The probe winner left the cell in HalfOpen with `probe_in_flight ==

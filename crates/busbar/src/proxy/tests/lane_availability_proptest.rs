@@ -225,9 +225,25 @@ fn assert_served_by_fallback_not_primary(status: u16, primary_ok: u64, fallback_
 
 // ── The property test ────────────────────────────────────────────────────────────────────────────
 
+/// Which disposition branch `run_world` actually drove for a case — returned so a targeted test can
+/// PROVE the harness plumbing reaches a specific assertion (e.g. `FallbackSpill` ⇒ the fb_elig branch's
+/// [`assert_served_by_fallback_not_primary`] actually ran), closing the "does the generator/harness
+/// reach it, or only the hand-fed witness?" gap.
+#[derive(Debug, PartialEq, Eq)]
+enum Disposition {
+    PrimaryServed,
+    Reject,
+    LeastBadServed,
+    LeastBadShed,
+    FallbackSpill,
+    FallbackCascade,
+    QueueShed,
+}
+
 /// Drive one request through the REAL selection + dispatch for `world` and assert the strengthened
-/// invariant. Panics on violation (proptest treats the panic as a failing case and shrinks).
-async fn run_world(world: World) {
+/// invariant. Panics on violation (proptest treats the panic as a failing case and shrinks). Returns
+/// the [`Disposition`] branch taken so a targeted test can assert the harness reached it.
+async fn run_world(world: World) -> Disposition {
     crate::metrics::init();
 
     // One mock provider that answers every request with a default 200 (an empty queue pops nothing and
@@ -367,7 +383,7 @@ async fn run_world(world: World) {
     );
 
     // ── The strengthened, disposition-matches-policy invariant (R4). ──
-    if !elig_primary.is_empty() {
+    let disposition = if !elig_primary.is_empty() {
         // (a) An eligible primary lane existed → it MUST dispatch there, never shed, never spill.
         assert_eq!(
             status, 200,
@@ -383,6 +399,7 @@ async fn run_world(world: World) {
             fallback_ok, 0,
             "the fallback pool must not be touched while the primary can serve"
         );
+        Disposition::PrimaryServed
     } else {
         // (b) Primary exhausted → disposition PER POLICY.
         match world.policy {
@@ -390,6 +407,7 @@ async fn run_world(world: World) {
                 assert_eq!(status, 503, "exhausted `reject` pool must shed 503");
                 let ra = retry_after_secs(&resp).expect("a reject 503 must carry Retry-After");
                 assert_disposition_reject(ra, soonest, any_at_cap);
+                Disposition::Reject
             }
             Policy::LeastBad => {
                 if ls_serve {
@@ -399,6 +417,7 @@ async fn run_world(world: World) {
                     );
                     assert_eq!(primary_ok, 1, "least_bad served exactly one primary member");
                     assert_eq!(fallback_ok, 0, "least_bad never spills to a fallback pool");
+                    Disposition::LeastBadServed
                 } else {
                     assert_eq!(
                         status, 503,
@@ -408,11 +427,13 @@ async fn run_world(world: World) {
                         retry_after_secs(&resp).is_some(),
                         "a least_bad 503 must carry Retry-After"
                     );
+                    Disposition::LeastBadShed
                 }
             }
             Policy::Fallback => {
                 if fb_elig {
                     assert_served_by_fallback_not_primary(status, primary_ok, fallback_ok);
+                    Disposition::FallbackSpill
                 } else {
                     assert_eq!(
                         status, 503,
@@ -423,6 +444,7 @@ async fn run_world(world: World) {
                         retry_after_secs(&resp).is_some(),
                         "the cascaded 503 must carry Retry-After"
                     );
+                    Disposition::FallbackCascade
                 }
             }
             Policy::Queue(max_ms) => {
@@ -442,12 +464,14 @@ async fn run_world(world: World) {
                     "queue waited {elapsed:?}, exceeding max_ms {max_ms} + ε — it must be bounded by \
                      max_ms, not the failover budget"
                 );
+                Disposition::QueueShed
             }
         }
-    }
+    };
 
     server.shutdown().await;
     drop(held_permits);
+    disposition
 }
 
 proptest! {
@@ -492,6 +516,39 @@ fn invariant_rejects_park_then_serve_primary_witness() {
 
     // The CORRECT spill outcome passes the very same assertion.
     assert_served_by_fallback_not_primary(200, /*primary_ok*/ 0, /*fallback_ok*/ 1);
+}
+
+/// HARNESS teeth (closes the gap the witness above cannot): the witness proves the assertion FUNCTION
+/// rejects a bad triple, but not that `run_world`'s Policy::Fallback / fb_elig plumbing actually REACHES
+/// it on a real dispatch. Drive a targeted `World` shaped exactly for the fb_elig branch — a
+/// breaker-healthy but SATURATED primary (so `elig_primary` is empty and the Bug-1 park-then-serve
+/// temptation is live) with an eligible (Closed, free) fallback — through the REAL `run_world` harness,
+/// and assert it took the `FallbackSpill` branch. That branch is where `assert_served_by_fallback_not_primary`
+/// runs, so a wiring bug that short-circuited before it (a shadowed `if`, an early return) would make
+/// this return something other than `FallbackSpill` and fail here.
+#[tokio::test]
+async fn run_world_reaches_fallback_spill_assertion_on_a_generated_shape() {
+    let world = World {
+        primary: vec![Member {
+            dead: false,
+            budget_out: false,
+            breaker: Breaker::Closed,
+            cap: Cap::Saturated, // healthy but at capacity → not eligible → the spill trigger
+        }],
+        fallback: vec![Member {
+            dead: false,
+            budget_out: false,
+            breaker: Breaker::Closed,
+            cap: Cap::Unbounded, // eligible fallback → fb_elig == true
+        }],
+        policy: Policy::Fallback,
+    };
+    assert_eq!(
+        run_world(world).await,
+        Disposition::FallbackSpill,
+        "run_world must actually REACH and pass the fb_elig assert_served_by_fallback_not_primary \
+         branch on this generated fallback shape — not skip it"
+    );
 }
 
 /// The concrete Bug-1 witness on the REAL dispatch path, tied to the shared discriminating assertion:

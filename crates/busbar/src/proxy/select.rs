@@ -54,8 +54,16 @@ impl RequestCtx {
         let start = now();
         Self {
             deadline: start.saturating_add(deadline_secs),
+            // Overflow-safe: `Instant`'s `Add` impl PANICS on overflow (it `.expect()`s internally, in
+            // release too). `deadline_secs` is operator-controlled (`failover.timeout_secs`), so a huge
+            // value would panic the serving task on every request. `checked_add` + a far-future fallback
+            // keeps the data plane crash-free even if config_validate's upper bound is ever bypassed; the
+            // sibling `deadline` above is already saturating for the same reason.
             deadline_wall: std::time::Instant::now()
-                + std::time::Duration::from_secs(deadline_secs),
+                .checked_add(std::time::Duration::from_secs(deadline_secs))
+                .unwrap_or_else(|| {
+                    std::time::Instant::now() + std::time::Duration::from_secs(3600)
+                }),
             excluded: std::collections::HashSet::new(),
             visited_pools: std::collections::HashSet::new(),
             active_restricts: Vec::new(),
@@ -162,34 +170,36 @@ impl RequestCtx {
     }
 }
 
-/// RAII release for a WON-but-UNDISPATCHED single-flight recovery probe.
+/// RAII release for a WON single-flight recovery probe, covering an async DISPATCH window.
 ///
-/// Once `acquire_for_dispatch_in` wins the probe the cell is HalfOpen + `probe_in_flight == true`; the
-/// flag is normally cleared only when a request records an outcome. Every path between winning the
-/// probe and actually dispatching a request must release it, INCLUDING the implicit path where the
-/// `pick_among` future is DROPPED (client disconnect) while parked at the `timeout(sem.acquire_owned())`
-/// await — no early-return runs on drop, so without this guard the cell stays HalfOpen+probe_in_flight
-/// and the lane is benched until the slow out-of-band prober resets it (the HIGH this fixes).
+/// Once a probe is won the cell is HalfOpen + `probe_in_flight == true`; the flag is normally cleared
+/// only when a request records an outcome. If the future holding the probe is DROPPED mid-dispatch
+/// (client disconnect while the upstream call is in flight) no early-return cleanup runs, so without a
+/// Drop guard the cell stays HalfOpen + probe_in_flight and the lane is benched until the slow
+/// out-of-band prober resets it (the HIGH this fixes).
 ///
 /// `Drop` calls the owner-checked `release_probe_owned_in` (CAS HalfOpen→Open + clear flag) while
-/// `armed`. The two paths that hand a LIVE permit to a dispatched request DISARM the guard first,
-/// because the dispatched request now owns the probe and releases it via its recorded outcome.
+/// `armed`. A path that hands the probe to a dispatched request that will record its own outcome
+/// DISARMS the guard (sets `armed = false`) first, because that request now owns the probe.
 ///
-/// As of the lane-availability refactor `pick_among` no longer constructs a `ProbeGuard`: `try_admit`
-/// owns the won-but-undispatched probe release internally (there is no await between winning the probe
-/// and returning/excluding). The RAII model is retained here — exercised directly by
-/// `probe_guard_tests` as the canonical statement of the release/disarm/owner-check semantics — so the
-/// release build has no constructor for it yet; silence the dead-code lint there only.
-#[cfg_attr(not(test), allow(dead_code))]
+/// Where it is used: the on_exhausted degraded dispatch, `engine::walk::forward_once`, constructs one
+/// covering its whole dispatch window — armed across every early-return error path (each records a
+/// transient first, which already transitions the cell, so the guard's release is a safe owner-checked
+/// no-op) and disarmed the moment the request records a legitimate SUCCESS (`record_success_in`). Its
+/// only OTHER exerciser is `probe_guard_tests`, the canonical statement of the release/disarm/
+/// owner-check semantics. (The pre-refactor `pick_among` parking loop that once constructed this guard
+/// is gone — `try_admit` is now a single non-async admission that releases a won-but-undispatched probe
+/// internally, with no await between winning the probe and returning.)
 pub(crate) struct ProbeGuard<'a> {
     pub(crate) store: &'a dyn crate::store::StateStore,
     pub(crate) pool: &'a str,
     pub(crate) lane: usize,
     pub(crate) armed: bool,
-    /// The probe-epoch (owner token) captured when this guard won the probe. Because a guard can be
-    /// dropped LATE - after parking on the permit-wait await while the cell moved on - the drop uses
-    /// the OWNER-CHECKED `release_probe_owned_in` so a stale release cannot revert a NEWER probe (P2
-    /// #4). It is a strict no-op unless the cell's epoch still matches this captured value.
+    /// The probe-epoch (owner token) captured when the probe was won. Because a guard can be dropped
+    /// LATE — after the dispatched request already recorded an outcome and a peer won a NEWER probe on
+    /// the same cell — the drop uses the OWNER-CHECKED `release_probe_owned_in` so a stale release
+    /// cannot revert that newer probe (P2 #4). It is a strict no-op unless the cell's epoch still
+    /// matches this captured value.
     pub(crate) probe_epoch: u64,
 }
 

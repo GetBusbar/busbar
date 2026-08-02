@@ -185,16 +185,63 @@ async fn ordered_walk_falls_through_to_swrr_when_no_preferred_ready() {
 }
 
 /// An empty order (the contract's normalized Abstain shape never produces this, but defend it):
-/// the walk has nothing preferred, so it falls straight through to SWRR.
+/// the walk has nothing preferred, so it falls straight through to SWRR. Strengthened beyond a
+/// tautological `idx <= 2` (which any return satisfies): prove SWRR actually (a) DISTRIBUTES across
+/// the healthy candidates rather than pinning one lane, and (b) never dispatches to an unhealthy lane.
 #[tokio::test]
 async fn ordered_walk_empty_order_is_swrr() {
     let app = three_lane_app();
-    let mut rc = RequestCtx::new(60);
     let order: [usize; 0] = [];
-    let (idx, _permit, _probe_epoch) = pick_among(&app, &cands(), &mut rc, None, "p", Some(&order))
-        .await
-        .expect("empty order behaves as SWRR");
-    assert!(idx <= 2);
+
+    // (a) Distribution: over many empty-order picks, SWRR must rotate — more than one distinct lane is
+    // returned. A regression that always returns a fixed lane (defeating load distribution) fails here.
+    let mut seen = std::collections::HashSet::new();
+    for _ in 0..9 {
+        let mut rc = RequestCtx::new(60);
+        let (idx, _permit, _probe_epoch) =
+            pick_among(&app, &cands(), &mut rc, None, "p", Some(&order))
+                .await
+                .expect("empty order behaves as SWRR");
+        assert!(idx <= 2, "picked an out-of-range lane {idx}");
+        seen.insert(idx);
+    }
+    assert!(
+        seen.len() >= 2,
+        "empty-order SWRR must distribute across healthy candidates, not pin one lane; saw {seen:?}"
+    );
+
+    // (b) Health filter: trip lane 0 Open — SWRR must never dispatch to it, always picking a healthy
+    // sibling (1 or 2). A broken filter that ignores health would eventually return the tripped lane.
+    app.store
+        .force_open_in("p", 0, crate::state::now() + 1_000_000);
+    for _ in 0..9 {
+        let mut rc = RequestCtx::new(60);
+        let (idx, _permit, _probe_epoch) =
+            pick_among(&app, &cands(), &mut rc, None, "p", Some(&order))
+                .await
+                .expect("SWRR finds a healthy lane");
+        assert!(
+            idx == 1 || idx == 2,
+            "SWRR must skip the tripped lane 0 and pick a healthy candidate, got {idx}"
+        );
+    }
+}
+
+/// Finding (panic): `RequestCtx::new` must not panic on an operator-controlled, extremely large
+/// `failover.timeout_secs`. The `deadline_wall` `Instant` math is overflow-safe (`checked_add` + a
+/// far-future fallback), so even `u64::MAX` seconds constructs cleanly and `remaining_ms()` reads back
+/// without the `Instant + Duration` overflow panic the plain `+` operator would raise.
+#[test]
+fn request_ctx_new_huge_deadline_does_not_panic() {
+    for secs in [u64::MAX, u64::MAX / 2, 1_000_000_000_000_000_000] {
+        let rc = RequestCtx::new(secs);
+        // Reading the wall-clock budget back must also not panic and must be a large positive bound.
+        let ms = rc.remaining_ms();
+        assert!(
+            ms > 0,
+            "a huge deadline must yield a positive remaining budget (secs={secs}), got {ms}"
+        );
+    }
 }
 
 /// C2 (weight:0 drain): a policy that ranks a DRAINED (weight 0) lane #1 must NOT dispatch to it.

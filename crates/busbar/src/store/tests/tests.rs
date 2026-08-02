@@ -3903,6 +3903,94 @@ fn test_try_admit_at_capacity_does_not_leak_probe() {
     );
 }
 
+/// R9 fix: a `ProbeWinnable` (expired-Open) cell that is ALSO at capacity returns `AtCapacity` WITHOUT
+/// EVER TOUCHING the single-flight recovery probe — the permit is peeked BEFORE the breaker CAS, so a
+/// tripped+saturated lane no longer burns-and-reverts its probe on every attempt. The distinguishing
+/// witness (vs. the sibling "does not leak" test, which only proves the end state) is the probe EPOCH:
+/// it is unchanged across the failed attempt (the old win-then-revert order bumped it), the cell stays
+/// re-winnable, and once a permit frees the probe can be won and the breaker recovers to Closed.
+#[test]
+fn test_try_admit_probe_winnable_at_capacity_preserves_probe() {
+    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 1)]));
+    let now = 1000u64;
+
+    // Expired-Open in pool "p" → ProbeWinnable (the breaker step COULD win a probe).
+    store.force_open_in("p", 0, 0);
+    let epoch_before = store.probe_epoch_in("p", 0);
+
+    // Occupy the only permit so `try_admit` cannot acquire one.
+    let held = store.try_acquire(0).expect("occupy the only permit");
+
+    assert!(
+        matches!(
+            store.try_admit("p", 0, now),
+            Err(Unavailable::AtCapacity {
+                drain_hint_ms: None
+            })
+        ),
+        "a ProbeWinnable lane at capacity yields AtCapacity"
+    );
+
+    // The crux: the probe was NEVER touched — its epoch is unchanged (the old order won it then
+    // reverted, which BUMPED the epoch). The cell is still Open (probe preserved for a real permit).
+    assert_eq!(
+        store.probe_epoch_in("p", 0),
+        epoch_before,
+        "an at-capacity ProbeWinnable attempt must NOT win/burn the probe (epoch unchanged)"
+    );
+    assert!(
+        matches!(store.breaker_state_in("p", 0), BreakerState::Open { .. }),
+        "the cell stays Open (its recovery probe is preserved, not consumed)"
+    );
+
+    // Free the permit; now the preserved probe can be WON and the breaker can recover.
+    drop(held);
+    let admit = store
+        .try_admit("p", 0, now)
+        .expect("with a free permit the preserved probe is won and the lane admits");
+    assert!(
+        matches!(store.breaker_state_in("p", 0), BreakerState::HalfOpen),
+        "winning the preserved probe flips the cell HalfOpen"
+    );
+    // Recording a success on the won probe recovers the breaker to Closed.
+    store.record_success_in("p", 0);
+    assert!(
+        matches!(store.breaker_state_in("p", 0), BreakerState::Closed),
+        "a success on the recovery probe closes the breaker — the R9 wedge is gone"
+    );
+    drop(admit);
+}
+
+/// `try_admit` ProbeWinnable + FREE permit SUCCESS (breaker-recovery happy path the queue/on_exhausted
+/// dispatch relies on): an expired-Open cell with a free permit returns `Ok(Admit)`, flips the cell
+/// HalfOpen, and hands back the CORRECT probe epoch for the caller's later owner-checked release.
+#[test]
+fn test_try_admit_probe_winnable_free_permit_succeeds() {
+    let store = Arc::new(InMemoryStore::new(vec![make_lane_data(0, 1)]));
+    let now = 1000u64;
+    store.force_open_in("p", 0, 0); // expired-Open → ProbeWinnable, permit free
+
+    let admit = store
+        .try_admit("p", 0, now)
+        .expect("a ProbeWinnable lane with a free permit admits");
+    assert!(
+        matches!(store.breaker_state_in("p", 0), BreakerState::HalfOpen),
+        "a won probe transitions the cell to HalfOpen"
+    );
+    assert_eq!(
+        admit.probe_epoch,
+        store.probe_epoch_in("p", 0),
+        "the Admit surfaces the cell's current probe epoch for owner-checked release"
+    );
+    // The owner token round-trips: releasing with it reverts HalfOpen→Open exactly.
+    store.release_probe_owned_in("p", 0, admit.probe_epoch);
+    assert!(
+        matches!(store.breaker_state_in("p", 0), BreakerState::Open { .. }),
+        "the surfaced epoch is the correct owner token (single owner-checked revert)"
+    );
+    drop(admit);
+}
+
 /// A Closed lane at capacity yields `AtCapacity` WITHOUT ever touching the breaker (no probe to
 /// burn) — the Ready-branch release is a harmless no-op on a Closed cell.
 #[test]

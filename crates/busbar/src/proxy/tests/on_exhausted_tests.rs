@@ -78,6 +78,7 @@ fn test_config_parsing_bare_fallback_pool_fails() {
 
 use crate::proxy::forward_with_pool;
 use crate::state::{now, WeightedLane};
+use crate::store::BreakerState;
 use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
 use serde_json::json;
 use std::sync::Arc;
@@ -1005,6 +1006,35 @@ async fn retry_after_has_saturation_floor_when_purely_at_capacity() {
     );
 }
 
+/// Finding (correctness): an EMPTY/unknown candidate set — reachable via a fallback loop A→B→A or an
+/// unconfigured `fallback_pool` target, both of which call `handle_status_503` with `&[]` — must
+/// advertise the honest ≥2s floor (`AT_CAPACITY_RETRY_AFTER_SECS`), never the deceptive bare `1`
+/// ("retry immediately, just re-collide"). RED before the `None => 1` → `None => floor` fix.
+#[test]
+fn retry_after_empty_candidate_set_uses_floor_not_one() {
+    crate::metrics::init();
+    let app = TestApp::new()
+        .lane(
+            LaneSpec::new(
+                "m",
+                crate::proto::Protocol::anthropic(),
+                "http://127.0.0.1:1",
+            )
+            .provider("p"),
+        )
+        .pool("p", &[(0, 1)])
+        .build();
+    // Directly exercise the shed with an EMPTY candidate slice (the fallback-loop / unconfigured-target
+    // shape) — no genuine cooldown, nothing at-capacity in `&[]`.
+    let resp = crate::proxy::engine::handle_status_503(&app, &[], now(), "p", "anthropic");
+    assert_eq!(resp.status().as_u16(), 503);
+    let ra = retry_after_secs(&resp);
+    assert!(
+        ra >= 2,
+        "an empty candidate set must get the >=2s honest floor, never the deceptive 1; got {ra}"
+    );
+}
+
 // ── on_exhausted: queue{max_ms} (Phase 3) ───────────────────────────────────────────────────────
 // The queue waits BOUNDED on the AtCapacity candidates' OWN FIFO semaphores (R2) — a permit freed on
 // a busy lane wakes exactly one waiter with the stored permit (no lost wakeup, no thundering herd) —
@@ -1037,6 +1067,22 @@ fn spawn_request(
     ))
 }
 
+/// Poll-until-parked: wait (bounded) for the pool's queue depth to reach `min_depth`, re-asserting on
+/// a tight interval rather than sleeping a fixed wall-clock time. Replaces flaky fixed-sleep syncs
+/// under CI scheduler pressure — it only proceeds once the spawned request(s) have actually reached
+/// the queue park point. Panics if the depth is not reached within the bound.
+async fn wait_until_queued(app: &std::sync::Arc<crate::state::App>, pool: &str, min_depth: u64) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while app.queued_depth.depth(pool) < min_depth {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for queue depth >= {min_depth} on pool {pool} (got {})",
+            app.queued_depth.depth(pool)
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
 /// queue DISPATCHES when a permit frees before the deadline: the request parks on the saturated
 /// lane's semaphore, and once the held permit is released the queued waiter acquires it, passes the
 /// (Closed) breaker, and is served by THAT freed lane (200). RED before Phase 3 (no queue arm →
@@ -1055,8 +1101,8 @@ async fn queue_dispatches_when_permit_frees_before_deadline() {
         .build();
 
     let req = spawn_request(app.clone());
-    // Let the request pick, find the lane at-capacity, and PARK on the semaphore.
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    // Poll until the request has actually PARKED in the queue (not a fixed sleep — flaky under CI load).
+    wait_until_queued(&app, "p", 1).await;
     assert!(
         app.queued_depth.depth("p") >= 1,
         "the request must be parked in the queue (busbar_pool_queued source > 0 during the wait)"
@@ -1084,6 +1130,180 @@ async fn queue_dispatches_when_permit_frees_before_deadline() {
         "the park depth returns to 0 after dispatch (RAII guard dropped)"
     );
     svc.shutdown().await;
+}
+
+/// Finding (concurrency HIGH): a queued dispatch that WON a single-flight recovery probe, then has its
+/// future DROPPED mid-upstream-await (client disconnect), must RELEASE the probe via the RAII
+/// `ProbeGuard` — the cell must not be left wedged HalfOpen (which would bench the lane until the
+/// out-of-band prober rescues it). Deterministic via `MockResponse::Gated` (a `Notify`, not a sleep).
+/// RED before the forward_once ProbeGuard: the explicit `release_probe_in` sites are code AFTER the
+/// dropped await, so none run on drop and the cell stays HalfOpen.
+#[tokio::test]
+async fn queue_dropped_dispatch_future_releases_probe() {
+    crate::metrics::init();
+    let state = Arc::new(MockServerState::new());
+    let started = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    // A non-2xx gated body: forward_once reads it via `read_capped_body(...).await` (parking WITH the
+    // permit AND the won probe held) before recording any outcome — the exact mid-dispatch await the
+    // dropped-future guard must cover.
+    state.push(MockResponse::Gated {
+        status: axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+        body: json!({"error": {"message": "boom"}}),
+        started: started.clone(),
+        release: release.clone(),
+    });
+    let server = MockServer::new(state.clone()).await;
+
+    let sem = Arc::new(tokio::sync::Semaphore::new(1));
+    let held = sem.clone().try_acquire_owned().unwrap();
+    let app = TestApp::new()
+        .lane(busy_real_lane("svc", &server.base_url(), &sem))
+        .pool("p", &[(0, 1)])
+        .failover(long_failover())
+        .on_exhausted("p", crate::config::OnExhausted::Queue { max_ms: 30_000 })
+        .build();
+    // Make the member EXPIRED-OPEN so that when the freed permit is won the queue's `try_admit_breaker`
+    // WINS a single-flight recovery probe (cell → HalfOpen) — the state that wedges without a guard.
+    app.store.force_open_in("p", 0, 0);
+
+    let req = spawn_request(app.clone());
+    wait_until_queued(&app, "p", 1).await;
+
+    // Free the permit → the queued waiter wins the probe (HalfOpen) and dispatches; it parks in the
+    // gated upstream body read.
+    drop(held);
+    tokio::time::timeout(Duration::from_secs(5), started.notified())
+        .await
+        .expect("the queued dispatch must reach the upstream body read");
+    assert!(
+        matches!(app.store.breaker_state_in("p", 0), BreakerState::HalfOpen),
+        "precondition: the queued dispatch won the recovery probe (cell HalfOpen)"
+    );
+
+    // DROP the dispatch future mid-await (client disconnect): abort the task and observe cancellation.
+    req.abort();
+    let _ = req.await;
+
+    // The ProbeGuard's Drop must have released the probe (owner-checked HalfOpen→Open) — the cell must
+    // NOT be stuck HalfOpen. Poll briefly for the drop to take effect.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while matches!(app.store.breaker_state_in("p", 0), BreakerState::HalfOpen) {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the dropped forward_once future left the cell stuck HalfOpen — the probe leaked"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(
+        matches!(
+            app.store.breaker_state_in("p", 0),
+            BreakerState::Open { .. }
+        ),
+        "a dropped forward_once future must release the probe (HalfOpen→Open), not bench the lane"
+    );
+
+    release.notify_waiters();
+    server.shutdown().await;
+}
+
+/// The design's claimed no-thundering-herd property: with 2+ requests parked on a 1-permit saturated
+/// lane, freeing ONE permit lets EXACTLY ONE waiter dispatch — the survivor stays parked (the single
+/// tokio permit can never be handed to two dispatchers, so max_concurrent is never exceeded). Made
+/// observable with a gated non-2xx: while the winner holds the one permit inside its body read, the
+/// loser is provably still parked; releasing the winner then lets the loser dispatch and serve 200.
+#[tokio::test]
+async fn queue_two_waiters_one_freed_permit_wakes_exactly_one() {
+    crate::metrics::init();
+    let state = Arc::new(MockServerState::new());
+    let started = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    // Responses pop from the END: push the plain OK FIRST (served SECOND, to the loser once it wins the
+    // freed permit) and the gated 500 LAST (served FIRST, to the winner — it holds the one permit while
+    // parked in the gated body read).
+    state.push(MockResponse::Ok {
+        status: axum::http::StatusCode::OK,
+        body: json!({
+            "role": "assistant",
+            "content": [{"type": "text", "text": "hi"}],
+            "model": "svc",
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 1, "output_tokens": 1}
+        }),
+    });
+    state.push(MockResponse::Gated {
+        status: axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+        body: json!({"error": {"message": "hold the permit"}}),
+        started: started.clone(),
+        release: release.clone(),
+    });
+    let server = MockServer::new(state.clone()).await;
+
+    let sem = Arc::new(tokio::sync::Semaphore::new(1));
+    let held = sem.clone().try_acquire_owned().unwrap();
+    let app = TestApp::new()
+        .lane(busy_real_lane("svc", &server.base_url(), &sem))
+        .pool("p", &[(0, 1)])
+        .failover(long_failover())
+        .on_exhausted("p", crate::config::OnExhausted::Queue { max_ms: 30_000 })
+        .build();
+
+    // TWO concurrent waiters on the single-permit saturated lane.
+    let a = spawn_request(app.clone());
+    let b = spawn_request(app.clone());
+    wait_until_queued(&app, "p", 2).await;
+
+    // Free EXACTLY ONE permit.
+    drop(held);
+    tokio::time::timeout(Duration::from_secs(5), started.notified())
+        .await
+        .expect("exactly one waiter must win the freed permit and dispatch");
+
+    // The winner holds the ONE permit inside its gated body read → no permit remains, and the loser is
+    // provably STILL PARKED (not finished). If freeing one permit had woken both (a herd), the second
+    // could not have acquired a permit anyway (tokio hands one permit to one waiter) — this locks that.
+    assert_eq!(
+        sem.available_permits(),
+        0,
+        "the single freed permit is held by the one winner — none left for a second dispatcher"
+    );
+    assert!(
+        !a.is_finished() && !b.is_finished(),
+        "while the winner holds the only permit, the surviving waiter must still be parked (no herd)"
+    );
+
+    // Release the winner → its permit frees → the loser wins it and serves the OK (200).
+    release.notify_waiters();
+    let r1 = tokio::time::timeout(Duration::from_secs(5), a)
+        .await
+        .expect("waiter A completes")
+        .expect("task A ok");
+    let r2 = tokio::time::timeout(Duration::from_secs(5), b)
+        .await
+        .expect("waiter B completes")
+        .expect("task B ok");
+
+    // The winner saw the gated 500; the survivor then dispatched serially through the ONE permit and
+    // resolved (200 if the breaker held, or 503 if the winner's 500 benched the lane — both are valid
+    // SERIAL outcomes; the no-herd/no-double-dispatch core is already proven by the mid-flight
+    // permit==0 + both-parked assertions above). The load-bearing fact: exactly one 500, and both
+    // resolved without a hang or a double-serve.
+    let mut statuses = [r1.status().as_u16(), r2.status().as_u16()];
+    statuses.sort_unstable();
+    assert_eq!(
+        statuses[0], 500,
+        "exactly one waiter (the permit winner) saw the gated 500; got {statuses:?}"
+    );
+    assert!(
+        statuses[1] == 200 || statuses[1] == 503,
+        "the survivor serializes through the one freed permit to a valid outcome; got {statuses:?}"
+    );
+    assert_eq!(
+        app.queued_depth.depth("p"),
+        0,
+        "park depth returns to 0 after both waiters resolve"
+    );
+    server.shutdown().await;
 }
 
 /// queue TIMES OUT → 503 + Retry-After when no permit ever frees within `max_ms`. The wait is bounded

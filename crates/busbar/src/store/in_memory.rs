@@ -1548,7 +1548,23 @@ impl InMemoryStore {
     /// so the `/stats` availability can never drift from the routing verdict. Side-effect-free.
     /// Breaker-first: an Open-and-at-capacity lane returns `BreakerOpen` (the orthogonal
     /// `at_capacity`/`breaker_state` snapshot fields keep each axis independently legible — R9).
+    // Retained as the direct (verdict-computing) entry point exercised by the store tests as the
+    // canonical statement of the lane-global taxonomy; `snapshot` uses the `_from_verdict` arm to avoid
+    // a second fold, so this has no non-test caller.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn classify_lane(&self, lane: usize, now: u64) -> Result<(), Unavailable> {
+        self.classify_lane_from_verdict(lane, self.lane_breaker_verdict(lane, now))
+    }
+
+    /// [`classify_lane`](Self::classify_lane) with a PRE-COMPUTED breaker verdict. `snapshot` derives
+    /// both the availability and the breaker-state axes from ONE `lane_breaker_verdict` call (an RwLock
+    /// read + per-cell fold) rather than folding it twice; this arm carries the verdict in. The
+    /// dead/budget/permit reads are cheap atomics, so recomputing them per axis costs nothing.
+    fn classify_lane_from_verdict(
+        &self,
+        lane: usize,
+        verdict: BreakerVerdict,
+    ) -> Result<(), Unavailable> {
         let ls = self.get_lane(lane);
         if ls.dead.load(Ordering::Relaxed) {
             return Err(Unavailable::Dead);
@@ -1556,7 +1572,7 @@ impl InMemoryStore {
         if ls.limited && ls.budget.load(Ordering::Relaxed) <= 0 {
             return Err(Unavailable::BudgetExhausted);
         }
-        match self.lane_breaker_verdict(lane, now) {
+        match verdict {
             BreakerVerdict::Open { until } => return Err(Unavailable::BreakerOpen { until }),
             BreakerVerdict::HalfOpen => return Err(Unavailable::ProbeInFlight),
             BreakerVerdict::Ready | BreakerVerdict::ProbeWinnable => {}
@@ -1577,11 +1593,24 @@ impl InMemoryStore {
     /// reports `Open { until: u64::MAX }` (matching `breaker_state_for`). An expired-Open cell maps to
     /// `Open` (its cooldown deadline is in the past) even though it would win a probe — the RAW FSM
     /// state, so an operator sees `open` alongside `at_capacity` for the R9 wedge case.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn lane_breaker_state(&self, lane: usize, now: u64) -> BreakerState {
+        self.lane_breaker_state_from_verdict(lane, self.lane_breaker_verdict(lane, now), now)
+    }
+
+    /// [`lane_breaker_state`](Self::lane_breaker_state) with a PRE-COMPUTED breaker verdict — the
+    /// breaker-state twin of [`classify_lane_from_verdict`](Self::classify_lane_from_verdict), so
+    /// `snapshot` derives both axes from a SINGLE `lane_breaker_verdict` fold.
+    fn lane_breaker_state_from_verdict(
+        &self,
+        lane: usize,
+        verdict: BreakerVerdict,
+        now: u64,
+    ) -> BreakerState {
         if self.get_lane(lane).dead.load(Ordering::Relaxed) {
             return BreakerState::Open { until: u64::MAX };
         }
-        match self.lane_breaker_verdict(lane, now) {
+        match verdict {
             BreakerVerdict::Ready => BreakerState::Closed,
             BreakerVerdict::HalfOpen => BreakerState::HalfOpen,
             // Expired-Open (`ProbeWinnable`) is still FSM-Open until a probe actually closes it; its
@@ -1940,39 +1969,40 @@ impl StateStore for InMemoryStore {
             BreakerVerdict::HalfOpen => return Err(Unavailable::ProbeInFlight),
             BreakerVerdict::Ready | BreakerVerdict::ProbeWinnable => {}
         }
+        // R9 fix: acquire the concurrency PERMIT before the breaker probe CAS. For a `ProbeWinnable`
+        // (expired-Open) cell that is ALSO at capacity, the old breaker-first order won the single-flight
+        // recovery probe and then immediately reverted it when `try_acquire` failed — every attempt,
+        // forever, so a tripped+saturated lane could never observe a real dispatch outcome and never
+        // recovered. By peeking capacity FIRST we return `AtCapacity` WITHOUT ever touching the probe,
+        // so the breaker probe is preserved for when a permit is actually available (see the
+        // `test_try_admit_probe_winnable_at_capacity_preserves_probe` store test). For a Closed-ready
+        // cell the CAS below is a pure no-op, so acquiring the permit first is byte-for-byte identical to
+        // the shipped order; on the has-permit path the outcome (`Admit`) is likewise unchanged. The Err
+        // reason on a saturated lane is `AtCapacity` either way, so failover behaviour is unaffected.
+        let permit = match self.try_acquire(lane) {
+            Some(p) => p,
+            None => {
+                return Err(Unavailable::AtCapacity {
+                    drain_hint_ms: None,
+                })
+            }
+        };
         // Mutating probe acquisition — the Open→HalfOpen CAS for an expired-Open cell, a no-op for a
-        // Closed-ready one. Breaker-first, THEN permit: exactly the order the shipped `pick_among`
-        // used (`acquire_for_dispatch_in` then `try_acquire`), preserving behaviour.
-        //
-        // TODO(R9): for a `ProbeWinnable` cell that is ALSO at capacity this wins-then-reverts the
-        // single-flight probe every attempt (so its breaker can never close — a PRE-EXISTING pathology
-        // today's `pick_among` shares). Peeking the permit BEFORE this CAS for `ProbeWinnable` cells
-        // would avoid burning a probe it can't use; deferred here to keep exact behavioural parity with
-        // the shipped selection path in this phase (do not regress). The Err reason is identical either
-        // way, so failover behaviour is unaffected.
+        // Closed-ready one. We hold a permit now, so a probe won here is always dispatchable.
         if !Self::cell_acquire_breaker(cell.as_ref(), now) {
-            // Lost the single-flight race (or a peer moved the cell on since the verdict peek).
+            // Lost the single-flight race (or a peer moved the cell on since the verdict peek). Release
+            // the permit we grabbed — never hold a slot we won't dispatch to.
+            drop(permit);
             return Err(Unavailable::ProbeInFlight);
         }
         // Owner token for the (possibly newly-won) probe, captured synchronously — the cell is HalfOpen
         // (single-flight), so no peer can win a newer probe before we read it. Mirrors `pick_among`'s
         // capture discipline; the dispatched request releases via `release_probe_owned_in`.
         let probe_epoch = cell.probe_epoch().load(Ordering::Acquire);
-        match self.try_acquire(lane) {
-            Some(permit) => Ok(Admit {
-                permit,
-                probe_epoch,
-            }),
-            None => {
-                // At capacity: release the won-but-undispatched probe EXACTLY (owner-checked) so the
-                // cell reverts HalfOpen→Open and is not benched. A no-op on a Closed-ready cell (no
-                // probe was won) and never a double-release.
-                Self::cell_release_probe_owned(cell.as_ref(), probe_epoch);
-                Err(Unavailable::AtCapacity {
-                    drain_hint_ms: None,
-                })
-            }
-        }
+        Ok(Admit {
+            permit,
+            probe_epoch,
+        })
     }
 
     fn lane_semaphore(&self, lane: usize) -> Option<Arc<Semaphore>> {
@@ -1986,7 +2016,7 @@ impl StateStore for InMemoryStore {
         Some(ls.sem.clone())
     }
 
-    fn try_admit_breaker(&self, pool: &str, lane: usize, now: u64) -> Result<(), Unavailable> {
+    fn try_admit_breaker(&self, pool: &str, lane: usize, now: u64) -> Result<u64, Unavailable> {
         // Same lane-global gates as `try_admit` (SEPARATE reads, R3): the lane may have gone
         // dead/budget-exhausted while the caller was parked on the semaphore.
         let ls = self.get_lane(lane);
@@ -2008,12 +2038,16 @@ impl StateStore for InMemoryStore {
         // Win the single-flight probe (a no-op CAS on a Closed-ready cell). Unlike `try_admit` this
         // does NOT then acquire a permit — the queue caller already holds one from the lane's own
         // semaphore. On success the probe ownership transfers to the caller (the dispatched request
-        // releases it via `release_probe_in`, matching the fallback dispatch path); on a lost race we
-        // report `ProbeInFlight` and leave nothing armed.
+        // releases it OWNER-CHECKED via `release_probe_owned_in`, using the returned epoch — matching
+        // `try_admit`'s `Admit.probe_epoch` discipline); on a lost race we report `ProbeInFlight` and
+        // leave nothing armed.
         if !Self::cell_acquire_breaker(cell.as_ref(), now) {
             return Err(Unavailable::ProbeInFlight);
         }
-        Ok(())
+        // Owner token for the (possibly newly-won) probe, captured synchronously — the cell is HalfOpen
+        // (single-flight), so no peer can win a newer probe before we read it. Handed back so the queue
+        // dispatch path can release it OWNER-CHECKED, exactly like `try_admit`'s `Admit.probe_epoch`.
+        Ok(cell.probe_epoch().load(Ordering::Acquire))
     }
 
     fn release_probe_in(&self, pool: &str, lane: usize) {
@@ -2385,6 +2419,9 @@ impl StateStore for InMemoryStore {
 
     fn snapshot(&self, lane: usize, t: u64) -> LaneSnapshot {
         let ls = self.get_lane(lane);
+        // Compute the lane-global breaker verdict ONCE (RwLock read + per-cell fold) and derive both
+        // the availability and breaker_state fields from it below (perf: was folded twice).
+        let breaker_verdict = self.lane_breaker_verdict(lane, t);
         LaneSnapshot {
             model: ls.model.clone(),
             provider: ls.provider.clone(),
@@ -2403,9 +2440,11 @@ impl StateStore for InMemoryStore {
             at_capacity: ls.max < Semaphore::MAX_PERMITS && ls.sem.available_permits() == 0,
             // Phase 2: render availability from the SAME taxonomy routing dispatches on (design §8),
             // aggregated lane-globally, so `/stats` cannot silently drift from behaviour. The breaker
-            // axis is surfaced separately (R9) via `lane_breaker_state`.
-            availability: self.classify_lane(lane, t),
-            breaker_state: self.lane_breaker_state(lane, t),
+            // axis is surfaced separately (R9) via `lane_breaker_state`. BOTH axes derive from ONE
+            // `lane_breaker_verdict` fold (RwLock read + per-cell scan) computed here, rather than each
+            // helper re-folding it independently — halving snapshot()'s breaker-cell scan cost.
+            availability: self.classify_lane_from_verdict(lane, breaker_verdict),
+            breaker_state: self.lane_breaker_state_from_verdict(lane, breaker_verdict, t),
             ok: ls.ok.load(Ordering::Relaxed),
             err: ls.err.load(Ordering::Relaxed),
             client_fault: ls.client_fault.load(Ordering::Relaxed),
