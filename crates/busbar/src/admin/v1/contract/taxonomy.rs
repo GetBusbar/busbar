@@ -263,7 +263,13 @@ pub(crate) enum MethodTag {
     Delete,
 }
 
-#[cfg(any(test, feature = "openapi-schema"))]
+// Every real caller needs EITHER `openapi-schema` (the `openapi_doc`-body call, and the
+// `json/tests` consistency tests, both gated on that feature alone) OR `test` PLUS
+// `auth-admin-tokens` (the `admin::tests` taxonomy-drift audit, which itself requires that
+// feature — see its `mod tests;` gate). Plain `cfg(test)` alone is NOT a real caller: under
+// `--no-default-features` (auth-admin-tokens off) that left this compiled but unreachable,
+// tripping `-D dead-code` in CI.
+#[cfg(any(feature = "openapi-schema", all(test, feature = "auth-admin-tokens")))]
 impl MethodTag {
     /// Parse an OpenAPI operation key (`"get"`, `"post"`, …) back into a tag. `None` for the `x-*`
     /// specification extensions that share the path-item object with real operations. Called from
@@ -630,7 +636,10 @@ pub(crate) mod observed {
 
     static WITNESSED: Mutex<BTreeSet<Emission>> = Mutex::new(BTreeSet::new());
 
-    /// Every emission the process has witnessed so far.
+    /// Every emission the process has witnessed so far. Its only caller is the `auth-admin-tokens`
+    /// -gated taxonomy-drift audit in `admin::tests` (`record`, right below, has a real caller
+    /// independent of that feature, so the gate lives here rather than on the whole module).
+    #[cfg(feature = "auth-admin-tokens")]
     pub(crate) fn snapshot() -> BTreeSet<Emission> {
         WITNESSED.lock().map(|s| s.clone()).unwrap_or_default()
     }

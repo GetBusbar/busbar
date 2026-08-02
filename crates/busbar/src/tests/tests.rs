@@ -1131,7 +1131,9 @@ fn secret_ref_wrong_kind_plugin_fails_at_preflight() {
 // gave said the rotation had landed. These drive the REAL `build_app_from_config` apply path.
 
 /// Build a minimal, valid RootCfg whose admin token and signing key are `file:` secret refs, so a
-/// rotation is "write different bytes to the same path".
+/// rotation is "write different bytes to the same path". Only used by the 3 `auth-admin-tokens`
+/// -gated tests below.
+#[cfg(feature = "auth-admin-tokens")]
 fn cfg_with_credentials(
     token_path: &std::path::Path,
     key_path: &std::path::Path,
@@ -1230,6 +1232,7 @@ fn a_rebuild_carries_the_probe_schedule() {
 
 /// Rotating the admin-token secret on disk and RE-APPLYING changes the credential the process
 /// accepts. RED without the re-resolution: the digest stays on `tok-v1` forever.
+#[cfg(feature = "auth-admin-tokens")]
 #[test]
 fn admin_token_secret_ref_re_resolves_on_apply() {
     crate::metrics::init();
@@ -1273,6 +1276,7 @@ fn admin_token_secret_ref_re_resolves_on_apply() {
 /// The same for `auth.signing_key`: after rotating the key material and re-applying, a token minted
 /// under the OLD key no longer verifies and a freshly-minted one does. A resolution FAILURE on
 /// apply is fail-closed — the apply is refused rather than silently keeping the old key.
+#[cfg(feature = "auth-admin-tokens")]
 #[test]
 fn signing_key_secret_ref_re_resolves_on_apply_and_fails_closed() {
     crate::metrics::init();
@@ -1338,6 +1342,7 @@ fn signing_key_secret_ref_re_resolves_on_apply_and_fails_closed() {
 /// consequence is worse than "the admin API is silently locked": the digest is taken over the blank
 /// string, so `admin_token_hash` becomes `Some(sha256(""))` — a real credential that an empty
 /// presented token satisfies. An env var expanding to nothing would hand over the admin surface.
+#[cfg(feature = "auth-admin-tokens")]
 #[test]
 fn blank_admin_token_refuses_to_start() {
     crate::metrics::init();
