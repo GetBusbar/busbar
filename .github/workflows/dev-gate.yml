@@ -88,6 +88,16 @@ jobs:
           done <<<"$registry"
           ls -la
 
+      # busbar-admin (busbarctl) is NOT a plugin, so it is not in plugins.yaml — but release-check.sh
+      # runs its integration.sh against the freshly-built busbar (the reverse of the plugin phases,
+      # bidirectional testing). Explicit checkout as a sibling.
+      - name: Checkout busbar-admin (busbarctl — reverse-direction integration)
+        uses: actions/checkout@v7
+        with:
+          repository: GetBusbar/busbar-admin
+          path: busbar-admin
+        continue-on-error: true
+
       - name: Build the store-sqlite-plugin cdylib from the sibling checkout
         run: cargo build --release -p busbar-store-sqlite-plugin
         working-directory: store-sqlite
