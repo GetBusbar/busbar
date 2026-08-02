@@ -16,10 +16,13 @@
 #   4. An optional extra test command against the SIBLING busbar checkout (e.g. the monorepo's own
 #      live-service integration test for this exact backend) — the reason the sibling checkout
 #      exists in the first place for store plugins.
-#   5. SIGNOFF: pack the plugin with the real busbar-plugin-pack tool (unsigned locally, same
-#      fallback CI's own release jobs use when BUSBAR_SIGN_KEY isn't provisioned) on every push —
-#      proves the manifest/tarball actually packs into a valid shape *now*, not first discovered at
-#      release time. This step is new: none of the 4 hand-written ci.yml files had it before this.
+#   5. SIGNOFF: pack + SIGN the plugin with the real busbar-plugin-pack tool using an EPHEMERAL
+#      per-run ed25519 keypair (never the real release key) — proves the manifest/tarball actually
+#      packs into a valid shape *now*, not first discovered at release time.
+#   6. SIGNING GATE: build busbar with the ephemeral PUBLIC key embedded (BUSBAR_RELEASE_PUBKEY)
+#      and prove end-to-end that a correctly-signed tarball is accepted while unsigned, wrong-key,
+#      and tampered tarballs are each refused with the exact expected error. No CI step uses
+#      --allow-unsigned / plugins.trust.allow_unsigned anymore — that bypass is local-dev only.
 name: plugin-ci
 
 on:
@@ -170,24 +173,43 @@ jobs:
         working-directory: busbarAI
         run: cargo build --release -p busbar-plugin-pack
 
-      - name: SIGNOFF — pack the plugin, prove the manifest/tarball shape is valid now
+      - name: Ephemeral CI release keypair (never the real release key)
+        # One throwaway ed25519 pair per run. The PUBLIC half is embedded into the busbar binary
+        # built below (BUSBAR_RELEASE_PUBKEY), the PRIVATE half signs the signoff tarball — so
+        # every later step exercises the REAL first-party verification path instead of the
+        # --allow-unsigned bypass this workflow used to ship.
+        run: |
+          set -euo pipefail
+          busbarAI/target/release/busbar-plugin-pack keygen > /tmp/ci-keys
+          PRIV=$(sed -n 's/^private.*: //p' /tmp/ci-keys)
+          PUB=$(sed -n 's/^public.*: //p' /tmp/ci-keys)
+          rm -f /tmp/ci-keys
+          echo "::add-mask::$PRIV"
+          echo "CI_EPHEMERAL_SIGN_KEY=$PRIV" >> "$GITHUB_ENV"
+          echo "CI_EPHEMERAL_PUBKEY=$PUB" >> "$GITHUB_ENV"
+          # A verified first-party plugin must be at/above the binary's version (automatic
+          # anti-downgrade floor), so the signoff pack version must match busbar's own version —
+          # the old 0.0.0-ci would be REJECTED by a signature-verifying binary.
+          BUSBAR_VER=$(sed -n 's/^version *= *"\(.*\)"/\1/p' busbarAI/crates/busbar/Cargo.toml | head -1)
+          echo "BUSBAR_VER=$BUSBAR_VER" >> "$GITHUB_ENV"
+
+      - name: SIGNOFF — pack + SIGN the plugin, prove the manifest/tarball shape is valid now
         run: |
           set -euo pipefail
           libext=so; libprefix=lib
           lib="plugin/target/debug/${libprefix}$(echo "${{ inputs.plugin_crate }}" | tr '-' '_').${libext}"
           [ -f "$lib" ] || { echo "expected cdylib not found at $lib" >&2; ls -la plugin/target/debug/ >&2; exit 1; }
-          busbarAI/target/release/busbar-plugin-pack pack \
+          BUSBAR_SIGN_KEY="$CI_EPHEMERAL_SIGN_KEY" busbarAI/target/release/busbar-plugin-pack pack \
             --lib "$lib" \
             --name "${{ inputs.plugin_crate }}" \
             --alias "${{ inputs.plugin_alias }}" \
             --kind "${{ inputs.plugin_kind }}" \
-            --version "0.0.0-ci" \
+            --version "$BUSBAR_VER" \
             --publisher busbar \
             --description "CI signoff pack for ${{ inputs.plugin_crate }}" \
             --license Apache-2.0 \
-            --out /tmp/signoff.tar.gz \
-            --allow-unsigned
-          echo "packed OK:"
+            --out /tmp/signoff.tar.gz
+          echo "packed OK (signed with the ephemeral CI key):"
           ls -l /tmp/signoff.tar.gz
 
       # ── Everything below proves the plugin works the way a real operator actually gets it into a
@@ -204,9 +226,26 @@ jobs:
       #         `reload_to_apply: ["store"]` and the change only takes effect after a real process
       #         restart, which busbar's own `POST /restart` deliberately does NOT self-perform — it
       #         drains and exits, expecting a supervisor to respawn it, so CI plays that role here).
-      - name: Build busbar (from the sibling checkout)
+      - name: Build busbar (from the sibling checkout) with the ephemeral release key embedded
         working-directory: busbarAI
-        run: cargo build --release --bin busbar
+        # option_env!("BUSBAR_RELEASE_PUBKEY") is compile-time (crates/plugin-sign); with the key
+        # set, this binary VERIFIES first-party signatures — no allow_unsigned anywhere below.
+        run: |
+          touch crates/plugin-sign/src/lib.rs
+          BUSBAR_RELEASE_PUBKEY="$CI_EPHEMERAL_PUBKEY" cargo build --release --bin busbar
+
+      - name: SIGNING GATE — signed loads; unsigned / wrong-key / tampered are refused
+        # End-to-end proof against the real binary + real `busbar --validate` trust pipeline:
+        #   positive (correctly signed passes) and four negatives (unsigned, wrong key, tampered
+        #   lib bytes, tampered manifest), each asserted on the exact refusal message.
+        # BUSBAR_GATE_* reuses this run's keypair, so the busbar binary built above is reused as-is.
+        run: |
+          set -euo pipefail
+          libext=so; libprefix=lib
+          lib="plugin/target/debug/${libprefix}$(echo "${{ inputs.plugin_crate }}" | tr '-' '_').${libext}"
+          BUSBAR_GATE_SIGN_KEY="$CI_EPHEMERAL_SIGN_KEY" BUSBAR_GATE_PUBKEY="$CI_EPHEMERAL_PUBKEY" \
+            bash busbarAI/scripts/signing-gate.sh busbarAI \
+            "${{ inputs.plugin_crate }}" "${{ inputs.plugin_kind }}" "${{ inputs.plugin_alias }}" "$lib"
 
       - name: INSTALL-AND-SERVE — boot a real busbar, install THIS plugin over the real admin API, confirm it activates
         if: inputs.plugin_kind == 'store'
@@ -228,11 +267,12 @@ jobs:
             chain: [keys]
             admin_auth:
               - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }
+          # STRICT trust posture — no allow_unsigned: the tarball is signed with this run's
+          # ephemeral key and the binary above embeds the matching public key, so acceptance here
+          # exercises the real first-party signature verification path.
           plugins:
             enabled: true
             dir: $WORKDIR/plugins
-            trust:
-              allow_unsigned: true
           providers:
             anthropic:
               api_key: { env: FAKE_UPSTREAM_KEY }
@@ -264,7 +304,7 @@ jobs:
           import base64, json, sys
           with open('/tmp/signoff.tar.gz', 'rb') as f:
               b64 = base64.b64encode(f.read()).decode('ascii')
-          json.dump({'file': '${{ inputs.plugin_crate }}-0.0.0-ci.tar.gz', 'tarball_b64': b64}, open('/tmp/install-body.json', 'w'))
+          json.dump({'file': '${{ inputs.plugin_crate }}-ci.tar.gz', 'tarball_b64': b64}, open('/tmp/install-body.json', 'w'))
           "
           echo "install..."
           INSTALL_STATUS=$(curl -s -o /tmp/install.json -w "%{http_code}" -X POST \
@@ -360,11 +400,12 @@ jobs:
             chain: [keys]
             admin_auth:
               - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }
+          # STRICT trust posture — no allow_unsigned: the tarball is signed with this run's
+          # ephemeral key and the binary above embeds the matching public key, so acceptance here
+          # exercises the real first-party signature verification path.
           plugins:
             enabled: true
             dir: $WORKDIR/plugins
-            trust:
-              allow_unsigned: true
           store:
             module: ${{ inputs.plugin_crate }}
             settings: $STORE_SETTINGS_FLOW
