@@ -2025,21 +2025,18 @@ impl PluginsCfg {
         self.to_policy_with_floor(env!("CARGO_PKG_VERSION"))
     }
 
-    /// Build the trust policy with an EXPLICIT first-party anti-downgrade floor OVERRIDE — the seam
-    /// that makes "automatic vs explicit" downgrade concrete in code (1.5.0 rollback-friendly
-    /// versioning). `binary_version` is the frozen `busbar_plugin_sign::evaluate` first-party floor: a
-    /// `publisher: busbar` artifact below it is a hard reject no opt-in can relax.
+    /// Build the trust policy. `binary_version` is carried on the policy for error text/telemetry
+    /// only — it is NOT a floor: `busbar_plugin_sign::evaluate` applies PER-NAME floors alone
+    /// (`first_party_floors` rollback pins + `min_versions`), because first-party plugins version
+    /// on independent lines (1.0.x stores/auth/hooks, 2.x headroom, under a 1.5.0 engine) and an
+    /// automatic "plugin >= binary version" floor rejected every correctly-signed current release
+    /// (removed before 1.5.0 shipped; see plugin-sign's evaluate() for the full rationale).
     ///
-    /// - AUTOMATIC paths call [`to_policy`], which passes the running binary's own version — the full
-    ///   floor. A replayed old first-party artifact hitting any automatic path still faces it and is
-    ///   refused. Anti-downgrade holds.
-    /// - An EXPLICIT operator ROLLBACK (Full-scope, If-Match, audited) passes the operator's pinned
-    ///   TARGET version here, LOWERING the floor to exactly that version, so the prior artifact — and
-    ///   nothing older — re-loads. The distinction is not in the frozen `evaluate`/`Manifest` (both
-    ///   untouched): it is WHICH floor the engine feeds the policy, and that choice is gated by an
-    ///   authenticated, audited human action. `plugins.min_versions` (the configured third-party
-    ///   floor) is carried as-is here; the rollback lowers the relevant `min_versions` entry via the
-    ///   persisted overlay `plugin_versions` pin (see `overlay::apply_plugin_versions_to_deploy`).
+    /// Anti-downgrade still holds per name: an explicit operator ROLLBACK (Full-scope, If-Match,
+    /// audited) persists a per-name pin via the overlay `plugin_versions` mechanism (see
+    /// `overlay::apply_plugin_versions_to_deploy`), and `plugins.min_versions` floors first- and
+    /// third-party alike. (Future: the plugin registry embeds known per-plugin floors at release
+    /// time, restoring zero-config anti-replay without version-line coupling.)
     pub(crate) fn to_policy_with_floor(
         &self,
         binary_version: &str,
