@@ -1561,7 +1561,7 @@ governance:
   enabled: true
   store: sqlite
   db_path: "/var/lib/busbar/governance.db"
-  admin_token: "${PATH}"
+  admin_token: '${PATH}'
 providers:
   anthropic:
     api_key_env: ANTHROPIC_KEY
