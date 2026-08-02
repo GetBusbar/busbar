@@ -80,7 +80,7 @@ loom = { version = "0.7", optional = true }
 # the RS256 signature (`RsaKeyPair::from_pkcs8` + `RSA_PKCS1_SHA256`); `base64` does the PEM→DER decode
 # of the service-account private key and the JWT base64url segments.
 ring = "0.17"
-base64 = "0.22"
+base64 = "0.23"
 # SIMD JSON (NEON on arm64, AVX2/SSE on x86): used for the hot request/response parse+serialize on
 # the translate path, where its SIMD escape-scanning is ~5× serde_json on the large string-heavy
 # bodies LLM traffic carries. `serde_json` is retained for the cold/config/error paths and as the
