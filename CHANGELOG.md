@@ -21,9 +21,27 @@ item under **Changed**.
 - **`/stats` and `/metrics` capacity signal.** Each lane now reports whether it is at its
   `max_concurrent` limit, so a saturated lane is externally distinguishable from an idle one (and, in
   Prometheus, from a merely slow upstream). `/stats` lanes gain `available` (free permits, or
-  `"unbounded"`) and `at_capacity` (bool). `/metrics` gains `busbar_lane_at_capacity{pool,lane}`
-  (`1` when a bounded lane is saturated) and `busbar_lane_available_permits{pool,lane}` (bounded lanes
-  only), using the same `pool`/`lane` labels as `busbar_lane_state` so they PromQL-join.
+  `"unbounded"`) and `at_capacity` (bool). `/metrics` gains `busbar_lane_available_permits{pool,lane}`
+  (bounded lanes only), using the same `pool`/`lane` labels as `busbar_lane_state` so they PromQL-join.
+
+- **Unified lane-availability signal on `/stats` and `/metrics`, rendered from the shared
+  `Unavailable` taxonomy.** `/stats` lanes gain `availability` (`"available"`, or the reason a lane
+  can't take a request — `at_capacity`, `breaker_open`, `dead`, `budget_exhausted`, …),
+  `recovery_hint_ms` (when it could plausibly recover, or `null` for reasons that don't self-recover),
+  and `breaker_state` — a breaker axis kept ORTHOGONAL to `at_capacity` so an Open, saturated lane is
+  legible on both axes at once. `/metrics` gains `busbar_lane_available{pool,lane}` (`1` = the lane
+  would admit, `0` = it wouldn't — the successor to, and replacement for, the earlier
+  `busbar_lane_at_capacity`), `busbar_lane_recovery_hint_ms{pool,lane}`, and
+  `busbar_pool_queued{pool}` (live `on_exhausted: queue` park depth). Because operators, `/metrics`,
+  and the router all read the SAME `classify` verdict, the observed signal cannot drift from routing
+  behavior.
+
+- **`on_exhausted: { queue: { max_ms } }` policy.** A pool whose members are all at capacity can now
+  hold an excess request for a BOUNDED wait (`max_ms`, validated `> 0` and `<= failover.timeout_secs *
+  1000`) for a permit to free, then dispatch it — or, on timeout, fall through to `reject` (503 +
+  `Retry-After`). The wait is capped at `min(max_ms, failover-budget-remaining)`, so it can never
+  block past the failover deadline; a pool that is down rather than merely busy skips the wait
+  entirely. Complements the existing `reject`, `least_bad`, and `fallback_pool` actions.
 
 ### Changed
 
