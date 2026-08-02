@@ -289,6 +289,10 @@ jobs:
           case "${{ inputs.service }}" in
             postgres) STORE_SETTINGS='{"url": "postgres://busbar:busbar@127.0.0.1:5432/busbar_test"}' ;;
             mysql)    STORE_SETTINGS='{"url": "mysql://busbar:busbar@127.0.0.1:3306/busbar_test"}' ;;
+            # store-valkey dropped its localhost default -- its settings now REQUIRE a "url"
+            # ("valkey plugin config requires a \"url\""), so the empty-settings fallback made the
+            # restarted busbar die at boot exactly like postgres/mysql did before their fix above.
+            redis)    STORE_SETTINGS='{"url": "redis://127.0.0.1:6379"}' ;;
             *)        STORE_SETTINGS='{}' ;;
           esac
           echo "set store module..."
@@ -348,6 +352,7 @@ jobs:
           case "${{ inputs.service }}" in
             postgres) STORE_SETTINGS_FLOW='{ url: "postgres://busbar:busbar@127.0.0.1:5432/busbar_test" }' ;;
             mysql)    STORE_SETTINGS_FLOW='{ url: "mysql://busbar:busbar@127.0.0.1:3306/busbar_test" }' ;;
+            redis)    STORE_SETTINGS_FLOW='{ url: "redis://127.0.0.1:6379" }' ;;  # see the redis note above
             *)        STORE_SETTINGS_FLOW='{}' ;;
           esac
           cat > "$WORKDIR/config.yaml" <<EOF
