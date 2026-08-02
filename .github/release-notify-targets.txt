@@ -13,3 +13,4 @@
 # adding a name here without that workflow existing is a harmless no-op dispatch that repo ignores.
 GetBusbar/homebrew-busbar
 GetBusbar/helm-charts
+GetBusbar/marketing
