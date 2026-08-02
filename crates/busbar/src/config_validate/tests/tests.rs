@@ -2578,6 +2578,53 @@ fn test_validate_rejects_queue_max_ms_exceeding_resolved_budget() {
     );
 }
 
+/// Boundary: `queue.max_ms` EXACTLY equal to the resolved failover budget is ACCEPTED (only a value
+/// strictly greater is rejected — the validator uses `max_ms > budget_ms`). Guards the `<` vs `<=`
+/// off-by-one the sibling reject test cannot catch.
+#[test]
+fn test_validate_accepts_queue_max_ms_equal_to_resolved_budget() {
+    let (providers, models, _) = valid_maps();
+    let mut pools = HashMap::new();
+    let mut pool = make_pool(vec![make_member("mymodel")]);
+    // Resolved budget = 1s = 1000ms; ask for EXACTLY 1000ms.
+    pool.failover = Some(config::FailoverCfg {
+        timeout_secs: 1,
+        exclusions: None,
+        max_hops: 3,
+    });
+    pool.on_exhausted = Some(config::OnExhaustedCfg::Queue { max_ms: 1000 });
+    pools.insert("mypool".to_string(), pool);
+    let cfg = make_root_cfg(providers, models, pools);
+    assert!(
+        validate(&cfg).is_ok(),
+        "max_ms EXACTLY equal to the resolved failover budget must be accepted (only > is rejected)"
+    );
+}
+
+/// Rule 6b upper bound: a `failover.timeout_secs` beyond the 24h maximum is a fat-finger typo (an
+/// over-large value would otherwise feed `RequestCtx::new` an `Instant`-overflowing duration). It must
+/// be rejected at `--validate`/boot with an actionable message.
+#[test]
+fn test_validate_rejects_failover_timeout_secs_over_max() {
+    let (providers, models, _) = valid_maps();
+    let mut pools = HashMap::new();
+    let mut pool = make_pool(vec![make_member("mymodel")]);
+    pool.failover = Some(config::FailoverCfg {
+        timeout_secs: config::MAX_FAILOVER_DEADLINE_SECS + 1,
+        exclusions: None,
+        max_hops: 3,
+    });
+    pools.insert("mypool".to_string(), pool);
+    let cfg = make_root_cfg(providers, models, pools);
+    let errs =
+        validate(&cfg).expect_err("a failover.timeout_secs above the 24h maximum must be rejected");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("exceeds the maximum") && e.contains("mypool")),
+        "expected a timeout_secs-too-large error; got: {errs:?}"
+    );
+}
+
 #[test]
 fn test_validate_rejects_self_referential_fallback_pool() {
     // A pool whose on_exhausted fallback points at ITSELF (A -> A) never engages at runtime
