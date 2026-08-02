@@ -174,6 +174,9 @@ wait_for_http() {
   done
 }
 
+# ── Millisecond wall clock (the soak phase asserts per-request latency against the failover budget). ─
+now_ms() { python3 -c 'import time; print(int(time.time()*1000))'; }
+
 # ── Platform-specific cdylib naming (host-native build; matches release.yml's per-target matrix
 #    entries for the OS this script actually runs on). ─────────────────────────────────────────────
 case "$(uname -s)" in
@@ -192,19 +195,27 @@ MOCK_TEXT_MARKER_SEQ=0
 # a unique marker, so the assertions below can prove the SPECIFIC response that came back through
 # busbar (not just "some 200"), and whose usage.{input,output}_tokens are nonzero so the admin API's
 # key-usage counters have something real to accumulate + persist across a restart.
+#
+# Third arg (optional) is a per-response INJECTED LATENCY in seconds (default 0). The saturation-soak
+# phase uses it so an in-flight request HOLDS its lane permit long enough to drive the pool past
+# `max_concurrent` — a real, wall-clock-observable saturation window, not a mocked flag. Threaded so
+# a slow in-flight request never head-of-line-blocks a concurrent one at the mock itself.
 start_mock_upstream() {
-  local port="$1" marker="$2"
+  local port="$1" marker="$2" delay="${3:-0}"
   local script
   script="$(new_tmpdir)/mock_upstream.py"
   cat >"$script" <<PYEOF
-import http.server, json, sys
+import http.server, json, sys, time
 
 MARKER = ${marker@Q}
+DELAY = float("${delay}")
 
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
         self.rfile.read(length)
+        if DELAY > 0:
+            time.sleep(DELAY)
         body = json.dumps({
             "id": "msg_release_check",
             "type": "message",
@@ -223,7 +234,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
 
-http.server.HTTPServer(("127.0.0.1", ${port}), Handler).serve_forever()
+http.server.ThreadingHTTPServer(("127.0.0.1", ${port}), Handler).serve_forever()
 PYEOF
   python3 "$script" &
   local pid=$!
@@ -254,6 +265,197 @@ phase "Phase 0b: nothing in-tree to build (every store/auth/secret plugin is ful
 ok "no in-tree plugin tarballs to pack"
 
 ls -l "$PLUGIN_DIST"
+
+# ── Phase 0c: lane-saturation soak — the Bug-1 SLO, proven end-to-end against the real binary ──────
+#
+# This is an ENGINE-level soak, NOT a plugin phase: it is deliberately OUTSIDE the plugins.yaml
+# registry-driven loop (Phase 2) and needs no sibling checkout, no Docker, and no store plugin — it
+# boots the real busbar binary against an in-RAM store (`store:` omitted) with `auth.chain: []` so
+# every data-plane route is open, and drives real HTTP concurrency past a lane's `max_concurrent`.
+# scripts/plugin-registry-check.sh check 3 only looks for suite-loop / `../<dir>` coverage per
+# registry entry, so this standalone phase (touching no plugin dir) does not perturb that gate.
+#
+# It proves, against the real binary, the guarantees the property test (Phase 4) asserts in-process:
+#   • reject           → excess-of-capacity requests get 503 + `Retry-After >= 2` (the at-capacity
+#                        floor; NEVER the deceptive 1/0), returned FAST — well inside the failover budget.
+#   • queue{max_ms}    → excess requests wait <= max_ms then dispatch-or-503, and NEVER hang past
+#                        max_ms + budget (the Bug-1 anti-park guarantee).
+#   • /stats + /metrics DURING the saturation window reflect it: the saturated lane shows
+#                        `at_capacity: true` / `available: 0` / `inflight >= 1`, and under queue the
+#                        pool shows `busbar_pool_queued > 0`.
+# It is bounded on purpose (small request counts, short holder latencies, a 5s failover budget) so it
+# adds well under a minute to the ~2h gate — a few real requests, not a load test.
+SOAK_LISTEN_PORT=19080
+SOAK_MOCK_PORT=19079
+
+# One authed-less chat POST to the pool. Prints "HTTP<code> RA=<retry-after|none> MS=<wall-ms>" and
+# uses a unique temp header/body file per call so CONCURRENT invocations never clobber each other.
+soak_chat() {
+  local u out code ra t0 t1
+  u="$(mktemp "${SOAK_WORK}/req.XXXXXX")"
+  t0="$(now_ms)"
+  out="$(curl -s -o "${u}.body" -D "${u}.hdr" -w '%{http_code}' \
+    "http://127.0.0.1:${SOAK_LISTEN_PORT}/v1/chat/completions" \
+    -H 'Content-Type: application/json' \
+    -d '{"model":"satpool","messages":[{"role":"user","content":"hi"}]}' 2>/dev/null || true)"
+  t1="$(now_ms)"
+  code="$out"
+  ra="$( (grep -i '^retry-after:' "${u}.hdr" || true) | tr -d '\r' | awk '{print $2}')"
+  ra="${ra:-none}"
+  rm -f "$u" "${u}.body" "${u}.hdr"
+  echo "HTTP${code} RA=${ra} MS=$((t1 - t0))"
+}
+
+# Write the soak config for a one-member pool (max_concurrent=1) pointing at the latency-injecting
+# mock, under the given on_exhausted policy. The caller launches busbar (so its pid lands in the
+# parent's BG_PIDS for the EXIT cleanup trap, not a command-substitution subshell's copy).
+soak_write_config() {
+  local policy="$1"
+  cat >"${SOAK_WORK}/providers.yaml" <<EOF
+slow:
+  protocol: anthropic
+  base_url: "http://127.0.0.1:${SOAK_MOCK_PORT}"
+EOF
+  cat >"${SOAK_WORK}/config.yaml" <<EOF
+listen: "127.0.0.1:${SOAK_LISTEN_PORT}"
+auth:
+  chain: []
+metrics:
+  buffer_seconds: 60
+providers:
+  slow:
+    api_key: { env: MOCK_KEY }
+models:
+  slow-model:
+    provider: slow
+    max_concurrent: 1
+pools:
+  satpool:
+    members:
+      - model: slow-model
+    failover:
+      timeout_secs: 5
+    on_exhausted: ${policy}
+EOF
+}
+
+# Poll /stats until the lane reports at_capacity (proves the permit is genuinely held). Echoes the
+# saturating snapshot's lane object; fails loudly if saturation never appears.
+soak_wait_saturated() {
+  local snap ac
+  for _ in $(seq 1 50); do
+    snap="$(curl -fsS "http://127.0.0.1:${SOAK_LISTEN_PORT}/stats" 2>/dev/null || echo '{}')"
+    ac="$(echo "$snap" | jq -r '.lanes[] | select(.model=="slow-model") | .at_capacity')"
+    if [ "$ac" = "true" ]; then
+      echo "$snap" | jq -c '.lanes[] | select(.model=="slow-model") | {at_capacity,available,inflight,availability,recovery_hint_ms}'
+      return 0
+    fi
+    sleep 0.1
+  done
+  echo "  soak: lane never reported at_capacity in /stats" >&2
+  cat "${SOAK_WORK}/busbar.log" >&2 || true
+  return 1
+}
+
+run_saturation_soak() {
+  local budget_ms=5000
+  SOAK_WORK="$(new_tmpdir)"
+  local marker="soak-$$-${RANDOM}"
+
+  # ---- Scenario A: on_exhausted: reject ----
+  phase "Phase 0c: saturation soak — on_exhausted: reject (real binary, real HTTP, max_concurrent=1)"
+  echo "  starting latency-injecting mock upstream on 127.0.0.1:${SOAK_MOCK_PORT} (delay=2.0s)"
+  # NB: call as a statement with stdout to /dev/null (never `$(...)`) — the mock's serve_forever holds
+  # its inherited stdout open, so a command substitution would block forever. It records its own pid
+  # in BG_PIDS; grab the just-appended one (portable index for bash 3.2).
+  start_mock_upstream "$SOAK_MOCK_PORT" "$marker" 2.0 >/dev/null
+  local mock_pid="${BG_PIDS[$((${#BG_PIDS[@]} - 1))]}"
+  soak_write_config reject
+  BUSBAR_CONFIG="${SOAK_WORK}/config.yaml" BUSBAR_PROVIDERS="${SOAK_WORK}/providers.yaml" \
+    MOCK_KEY=unused RUST_LOG=warn "$BUSBAR_BIN" >"${SOAK_WORK}/busbar.log" 2>&1 &
+  local pid=$!; BG_PIDS+=("$pid")
+  wait_for_http "http://127.0.0.1:${SOAK_LISTEN_PORT}/healthz" 30
+  ok "busbar up (pid ${pid}), pool 'satpool' member max_concurrent=1, budget=5s"
+
+  # Holder: one request that occupies the single permit for the mock's 2s latency.
+  soak_chat >"${SOAK_WORK}/holder.out" & local holder=$!
+  local lane; lane="$(soak_wait_saturated)"
+  ok "/stats DURING saturation: ${lane}"
+  echo "$lane" | jq -e '.at_capacity==true and .available==0 and .inflight>=1' >/dev/null \
+    || { echo "  soak: capacity signal wrong (expected at_capacity=true, available=0, inflight>=1)" >&2; exit 1; }
+  ok "capacity signal asserted: at_capacity=true, available=0, inflight>=1"
+
+  # Excess: while the permit is held, more requests than capacity must 503 + Retry-After>=2, FAST.
+  local i r code ra ms
+  for i in 1 2 3; do
+    r="$(soak_chat)"; echo "    excess #${i} -> ${r}"
+    code="${r#HTTP}"; code="${code%% *}"
+    ra="$(echo "$r" | sed -E 's/.*RA=([^ ]+).*/\1/')"
+    ms="$(echo "$r" | sed -E 's/.*MS=([0-9]+).*/\1/')"
+    [ "$code" = "503" ] || { echo "  soak reject excess#${i}: expected 503, got ${code}" >&2; exit 1; }
+    { [ "$ra" != "none" ] && [ "$ra" -ge 2 ] 2>/dev/null; } \
+      || { echo "  soak reject excess#${i}: Retry-After='${ra}' not >= 2 (the at-capacity floor)" >&2; exit 1; }
+    [ "$ms" -lt "$budget_ms" ] || { echo "  soak reject excess#${i}: wall ${ms}ms exceeded ${budget_ms}ms budget (unbounded block)" >&2; exit 1; }
+  done
+  ok "REJECT SLO proven: excess -> 503 + Retry-After>=2, every request under the 5s failover budget"
+
+  wait "$holder"; local ho; ho="$(cat "${SOAK_WORK}/holder.out")"
+  echo "  holder result: ${ho}"
+  echo "$ho" | grep -q 'HTTP200' || { echo "  soak: holder request should have dispatched 200: ${ho}" >&2; exit 1; }
+  ms="$(echo "$ho" | sed -E 's/.*MS=([0-9]+).*/\1/')"
+  [ "$ms" -lt "$budget_ms" ] || { echo "  soak: holder wall ${ms}ms exceeded budget" >&2; exit 1; }
+  ok "holder dispatched 200 within budget (${ms}ms) — the ELIGIBLE request was served, not starved"
+  kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true
+  kill "$mock_pid" 2>/dev/null || true; wait "$mock_pid" 2>/dev/null || true
+
+  # ---- Scenario B: on_exhausted: queue{max_ms} ----
+  phase "Phase 0c: saturation soak — on_exhausted: queue{max_ms:2000} (bounded wait, no unbounded park)"
+  echo "  starting latency-injecting mock upstream on 127.0.0.1:${SOAK_MOCK_PORT} (delay=3.0s > max_ms)"
+  start_mock_upstream "$SOAK_MOCK_PORT" "$marker" 3.0 >/dev/null
+  mock_pid="${BG_PIDS[$((${#BG_PIDS[@]} - 1))]}"
+  soak_write_config '{ queue: { max_ms: 2000 } }'
+  BUSBAR_CONFIG="${SOAK_WORK}/config.yaml" BUSBAR_PROVIDERS="${SOAK_WORK}/providers.yaml" \
+    MOCK_KEY=unused RUST_LOG=warn "$BUSBAR_BIN" >"${SOAK_WORK}/busbar.log" 2>&1 &
+  pid=$!; BG_PIDS+=("$pid")
+  wait_for_http "http://127.0.0.1:${SOAK_LISTEN_PORT}/healthz" 30
+  ok "busbar up (pid ${pid}), queue{max_ms:2000} policy, holder latency 3.0s"
+
+  soak_chat >"${SOAK_WORK}/qholder.out" & local qholder=$!
+  lane="$(soak_wait_saturated)"
+  ok "/stats DURING saturation (queue): ${lane}"
+
+  # Two queued excess requests: they must PARK (busbar_pool_queued>0), then bound out at ~max_ms.
+  soak_chat >"${SOAK_WORK}/q1.out" & local q1=$!
+  soak_chat >"${SOAK_WORK}/q2.out" & local q2=$!
+  local qseen=0 qval=0 q
+  for _ in $(seq 1 40); do
+    q="$(curl -fsS "http://127.0.0.1:${SOAK_LISTEN_PORT}/metrics" 2>/dev/null | awk '/^busbar_pool_queued/{print $2; exit}')"
+    q="${q:-0}"
+    if awk "BEGIN{exit !(${q}>0)}"; then qseen=1; qval="$q"; break; fi
+    sleep 0.1
+  done
+  [ "$qseen" = "1" ] || { echo "  soak queue: busbar_pool_queued never went >0 during the park window" >&2; exit 1; }
+  ok "/metrics DURING park: busbar_pool_queued=${qval} (> 0) — the queue policy is genuinely parking"
+
+  wait "$q1"; wait "$q2"
+  local f
+  for f in q1 q2; do
+    r="$(cat "${SOAK_WORK}/${f}.out")"; echo "    queued ${f} -> ${r}"
+    code="$(echo "$r" | sed -E 's/HTTP([0-9]+).*/\1/')"
+    ms="$(echo "$r" | sed -E 's/.*MS=([0-9]+).*/\1/')"
+    { [ "$code" = "200" ] || [ "$code" = "503" ]; } \
+      || { echo "  soak queue ${f}: expected dispatch(200) or bounded reject(503), got ${code}" >&2; exit 1; }
+    [ "$ms" -lt $((2000 + budget_ms)) ] || { echo "  soak queue ${f}: wall ${ms}ms hung past max_ms(2000)+budget(${budget_ms}) — UNBOUNDED PARK (Bug 1)" >&2; exit 1; }
+  done
+  ok "QUEUE SLO proven: excess parked <= max_ms then dispatched-or-503, NONE hung past max_ms+budget"
+
+  wait "$qholder" 2>/dev/null || true
+  kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true
+  kill "$mock_pid" 2>/dev/null || true; wait "$mock_pid" 2>/dev/null || true
+  ok "saturation soak complete: elapsed=${SECONDS}s"
+}
+
+run_saturation_soak
 
 # ── Shared traffic-and-restart-survival driver, parameterized by store module/settings ─────────────
 # 1. writes config.yaml + providers.yaml exactly matching docs/getting-started.md +
