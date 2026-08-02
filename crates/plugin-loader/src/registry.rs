@@ -1103,8 +1103,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// First-party anti-downgrade in the pipeline: an old (validly signed) first-party plugin is
-    /// REJECTED (inventory shows below-floor; scan skips it with the anti-downgrade reason).
+    /// First-party anti-downgrade in the pipeline is PER-NAME (floors-only — no automatic
+    /// binary-version floor, since first-party plugins version on independent 1.0.x/2.x lines):
+    /// a below-pin first-party plugin is REJECTED with the anti-downgrade reason (inventory shows
+    /// it; scan skips it), while the same artifact without a pin loads.
     #[test]
     fn first_party_downgrade_is_rejected_in_pipeline() {
         let release = key(1);
@@ -1113,10 +1115,23 @@ mod tests {
         m.version = "1.0.0".into();
         let m = sign(&release, m, b"old lib");
         write_tarball(&dir, "old.tar.gz", &m, b"old lib");
+
+        // Unpinned: its 1.0.0 line is its own business — it loads.
         let reg = scan_and_validate(&dir, &policy(&release)).expect("scan");
+        assert!(
+            reg.resolve("redis").is_some(),
+            "an unpinned first-party plugin loads regardless of the binary version"
+        );
+
+        // Pinned above its version: rejected with the anti-downgrade reason, end to end.
+        let mut pinned = policy(&release);
+        pinned
+            .first_party_floors
+            .insert("busbar-store-redis".to_string(), "1.0.1".to_string());
+        let reg = scan_and_validate(&dir, &pinned).expect("scan");
         assert!(reg.resolve("redis").is_none());
         assert!(reg.skipped()[0].reason.contains("anti-downgrade"));
-        let rows = inventory(&dir, &policy(&release));
+        let rows = inventory(&dir, &pinned);
         assert!(
             rows[0].status.starts_with("REJECTED:"),
             "got {}",

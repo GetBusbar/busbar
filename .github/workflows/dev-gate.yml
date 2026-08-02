@@ -94,6 +94,25 @@ jobs:
           path: store-redis
         continue-on-error: true
 
+      # store-mysql and hashicorp-vault were the 2 of 8 first-party plugins this gate never pulled
+      # in (found during the 1.5.0 ship): release-check.sh's vault phase existed but always skipped
+      # for want of this checkout, and mysql had no phase at all until Phase 2.6 was added with
+      # this commit. The full first-party set the gate must cover is: store-{mysql,postgres,
+      # sqlite,redis}, hashicorp-vault, auth-oidc, webrequest-hook, headroom-hook.
+      - name: Checkout store-mysql (first-party plugin source)
+        uses: actions/checkout@v7
+        with:
+          repository: GetBusbar/store-mysql
+          path: store-mysql
+        continue-on-error: true
+
+      - name: Checkout hashicorp-vault (first-party plugin source)
+        uses: actions/checkout@v7
+        with:
+          repository: GetBusbar/hashicorp-vault
+          path: hashicorp-vault
+        continue-on-error: true
+
       - name: Checkout auth-oidc (first-party plugin source)
         uses: actions/checkout@v7
         with:

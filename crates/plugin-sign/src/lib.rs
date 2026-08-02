@@ -25,12 +25,12 @@
 //!
 //! - **First-party**: a manifest whose `publisher` is `busbar` verifies against the release public
 //!   key EMBEDDED in the binary ([`embedded_release_pubkey`]) - trusted with ZERO configuration.
-//!   First-party anti-downgrade is AUTOMATIC: the plugin `version` must be at or above the running
-//!   binary's version (no `min_versions` entry needed), so a validly-signed but OLD first-party
-//!   release cannot be replayed against a newer binary.
+//!   First-party anti-downgrade is PER-PLUGIN: rollback pins (`first_party_floors`) and
+//!   `plugins.min_versions` floors, both hard rejects. There is no automatic binary-version
+//!   floor — first-party plugins version on independent lines (1.0.x/2.x under a 1.5.0 engine).
 //! - **Third-party**: `plugins.trust.publishers` allowlists third-party signing keys. A valid
 //!   signature from an allowlisted publisher is TRUSTED. `plugins.min_versions` pins per-plugin
-//!   anti-downgrade floors (third-party only in practice; first-party is automatic).
+//!   anti-downgrade floors (first- and third-party alike).
 //! - **Everything else** (unsigned, tampered, unknown publisher) is UNTRUSTED and, by DEFAULT,
 //!   rejected. The operator opts in per category via [`TrustPolicy::allow_unsigned`] and
 //!   [`TrustPolicy::allow_third_party`].
@@ -243,16 +243,16 @@ pub struct TrustPolicy {
     /// The embedded busbar release public key ([`embedded_release_pubkey`]). `None` in a build with
     /// no embedded key: first-party plugins then cannot verify (they are treated as unsigned).
     pub first_party_key: Option<VerifyingKey>,
-    /// The running binary's version (`CARGO_PKG_VERSION`) - the AUTOMATIC first-party
-    /// anti-downgrade floor: a `publisher: busbar` plugin whose `version` is below this is rejected
-    /// even with a valid signature. Empty disables the automatic floor (tests only).
+    /// The running binary's version (`CARGO_PKG_VERSION`). Informational (error text/telemetry)
+    /// only: it is NOT a floor. First-party plugins version on their own independent lines
+    /// (1.0.x stores/auth/hooks, 2.x headroom, under a 1.5.0 engine), so the pre-release
+    /// automatic "plugin >= binary version" floor would have rejected every correctly-signed
+    /// current first-party release and was removed before 1.5.0 shipped.
     pub binary_version: String,
-    /// PER-PLUGIN first-party anti-downgrade floor OVERRIDES (1.5.0 rollback, M1). An explicit,
-    /// audited rollback of ONE first-party plugin lowers the floor for THAT NAME ONLY — every other
-    /// first-party plugin still faces the full `binary_version` floor. `name` -> the pinned target
-    /// version. Empty (the default) means every first-party plugin uses `binary_version`. Scoping the
-    /// override per name is what keeps a rollback of plugin A from silently admitting an unpinned old
-    /// plugin B (the M1 defect: a single global floor lowered it for ALL first-party plugins).
+    /// PER-PLUGIN first-party anti-downgrade floors (1.5.0 rollback pins, M1) — with no automatic
+    /// binary floor these are the ONLY first-party floors (alongside `min_versions`). `name` ->
+    /// the pinned minimum version; a name absent here carries no first-party floor. Scoping per
+    /// name keeps a rollback of plugin A from ever changing what plugin B is allowed to be.
     pub first_party_floors: BTreeMap<String, String>,
     /// THIRD-PARTY allowlist: publisher name -> ed25519 public key. The first-party publisher
     /// (`busbar`) never resolves here.
@@ -263,8 +263,8 @@ pub struct TrustPolicy {
     pub allow_third_party: bool,
     /// ANTI-DOWNGRADE floors: plugin `name` -> minimum acceptable `version`. A floored name must
     /// PROVE (via a trusted signature over a manifest at/above the floor) that it meets the floor;
-    /// anything else is a hard reject no opt-in flag can relax. Third-party only in practice -
-    /// first-party is automatic via `binary_version`.
+    /// anything else is a hard reject no opt-in flag can relax. Applies to first- and third-party
+    /// alike (first-party has no automatic floor).
     pub min_versions: BTreeMap<String, String>,
 }
 
@@ -707,19 +707,21 @@ pub fn evaluate(
         }
     };
 
-    // FIRST-PARTY AUTOMATIC anti-downgrade: a VERIFIED first-party plugin must be at or above the
-    // running binary's version. A hard reject (a validly-signed but old first-party release is
-    // exactly the rollback/replay this stops); no opt-in flag applies to a verified first-party.
+    // FIRST-PARTY anti-downgrade: PER-NAME floors only (`first_party_floors`, plus the general
+    // `min_versions` block below). There is deliberately NO automatic binary-version floor:
+    // first-party plugins version on their own independent lines (the stores/auth/hooks ship
+    // 1.0.x and headroom 2.x under a 1.5.0 engine — product decision, 2026-08-02), so "at or
+    // above the binary's version" would reject every correctly-signed current release. The
+    // replay threat the old automatic floor addressed is covered per name: a rollback pin
+    // (`first_party_floors`) or an operator/registry `min_versions` floor, both hard rejects no
+    // opt-in flag can relax. (Future: the plugin registry embeds known per-plugin floors at
+    // release time, restoring zero-config anti-replay without version-line coupling.)
     if let Ok(true) = trusted_or_untrusted {
-        // The floor for THIS first-party plugin: an explicit per-name rollback override
-        // (`first_party_floors`) if one exists for this exact name, else the global automatic
-        // `binary_version` floor. A rollback of plugin A therefore lowers A's floor ALONE — an
-        // unpinned first-party plugin B still faces `binary_version` (M1).
         let floor = policy
             .first_party_floors
             .get(&manifest.name)
             .map(String::as_str)
-            .unwrap_or(policy.binary_version.as_str());
+            .unwrap_or("");
         if !floor.is_empty() && !version_at_least(&manifest.version, floor) {
             return Err(Rejected::new(
                 RejectKind::AntiDowngrade,
@@ -955,28 +957,45 @@ mod tests {
         assert!(err.contains("gizmo"), "got {err}");
     }
 
+    /// First-party plugin versions float FREE of the binary's version: the fleet ships 1.0.x
+    /// stores/auth/hooks (and 2.x headroom) under a 1.5.0 engine, so a verified first-party
+    /// plugin below the binary version MUST load when no per-name floor pins it. (The automatic
+    /// binary-version floor this replaces rejected every correctly-signed current release.)
     #[test]
-    fn first_party_below_binary_version_is_auto_rejected() {
+    fn first_party_version_floats_free_of_the_binary_version() {
         let release = test_key(1);
-        let artifact = b"old first-party build";
+        let artifact = b"current first-party build on its own version line";
         let mut m = manifest("busbar-store-redis", "redis", FIRST_PARTY_PUBLISHER);
-        m.version = "1.4.0".into(); // binary is 1.5.0
+        m.version = "1.0.1".into(); // binary is 1.5.0 — and that must not matter
         let m = sign(&release, m, artifact);
         let pol = policy(Some(&release), &[], false, false);
-        let err = evaluate(artifact, &m, &pol).unwrap_err();
+        assert!(
+            matches!(
+                evaluate(artifact, &m, &pol),
+                Ok(Verdict::Trusted {
+                    first_party: true,
+                    ..
+                })
+            ),
+            "a verified first-party plugin with no per-name floor loads regardless of the binary version"
+        );
+
+        // A per-name floor (rollback pin / registry floor) still hard-rejects below it, and no
+        // loose opt-in flag can launder that (verified first-party never consults opt-ins).
+        let mut floored = policy(Some(&release), &[], true, true);
+        floored
+            .first_party_floors
+            .insert("busbar-store-redis".to_string(), "1.0.2".to_string());
+        let err = evaluate(artifact, &m, &floored).unwrap_err();
         assert!(
             err.reason.contains("first-party anti-downgrade"),
             "got {err:?}"
         );
-
-        // Loose posture cannot launder it either (verified first-party never consults opt-ins).
-        let loose = policy(Some(&release), &[], true, true);
-        assert!(evaluate(artifact, &m, &loose).is_err());
     }
 
-    /// M1: a PER-NAME first-party floor override lowers the floor for the pinned name ONLY. A rollback
-    /// of plugin A (pinned to 1.4.0) must NOT admit an unpinned old first-party plugin B — B still faces
-    /// the full `binary_version` floor. This is the fix for the single-global-floor defect.
+    /// M1 (per-name scoping, floors-only form): a PER-NAME first-party floor binds the pinned name
+    /// ONLY. Plugin A's floor must never change what plugin B is allowed to be — B is judged
+    /// solely by its own pin (or, absent one, no floor).
     #[test]
     fn first_party_floor_override_is_scoped_per_name() {
         let release = test_key(1);
@@ -989,27 +1008,27 @@ mod tests {
         b.version = "1.4.0".into();
         let b = sign(&release, b, artifact_b);
 
-        // Pin ONLY A to 1.4.0 (an explicit, audited rollback of A).
+        // Floor A at 1.4.1 (above what A ships) and leave B unpinned.
         let mut pol = policy(Some(&release), &[], false, false);
         pol.first_party_floors
-            .insert("busbar-store-redis".to_string(), "1.4.0".to_string());
+            .insert("busbar-store-redis".to_string(), "1.4.1".to_string());
 
-        // A clears its lowered floor and loads.
+        // A is below ITS OWN floor and is rejected.
+        let err = evaluate(artifact_a, &a, &pol).unwrap_err();
+        assert!(
+            err.reason.contains("anti-downgrade"),
+            "a pinned first-party plugin below its own floor is rejected: {err:?}"
+        );
+        // B, unpinned, is untouched by A's floor and loads.
         assert!(
             matches!(
-                evaluate(artifact_a, &a, &pol),
+                evaluate(artifact_b, &b, &pol),
                 Ok(Verdict::Trusted {
                     first_party: true,
                     ..
                 })
             ),
-            "the pinned first-party plugin clears its own lowered floor"
-        );
-        // B, unpinned, still faces the full binary_version (1.5.0) floor and is REJECTED — the M1 fix.
-        let err = evaluate(artifact_b, &b, &pol).unwrap_err();
-        assert!(
-            err.reason.contains("anti-downgrade"),
-            "an UNPINNED first-party plugin is not admitted by another plugin's rollback: {err:?}"
+            "another plugin's floor must not leak onto an unpinned first-party plugin"
         );
     }
 
