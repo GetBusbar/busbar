@@ -39,7 +39,7 @@ jobs:
       - name: Structure lint
         run: scripts/structure-lint.sh
       # THE REGISTRY GATE (plugins.yaml is the single source of truth for first-party plugins):
-      # red when a registered plugin lacks coverage anywhere — no dev-gate checkout, no
+      # red when a registered plugin lacks coverage anywhere — no qa-gate checkout, no
       # release-check phase, no published release (or a phantom release with zero assets) — or
       # when a plugin-shaped org repo exists unregistered. Found necessary during the 1.5.0 ship:
       # the plugin list was duplicated across 5+ places and the "full plugin gate" silently ran
@@ -52,8 +52,7 @@ jobs:
 
   check:
     name: fmt · clippy · build · test
-    # 4-core org larger runner (ubuntu-latest is 2-core) — this build+test job is compile-bound.
-    runs-on: ubuntu-latest-m
+    runs-on: ubuntu-latest
     # Live-DB service containers for the store-postgres / store-redis roundtrip tests. Without these
     # the roundtrip tests skip (their URLs are unset) and the two 1.5.0 store backends ship with ZERO
     # CI coverage of the delete_key cascade + credential cleanup. The tests read BUSBAR_TEST_POSTGRES_URL
@@ -146,7 +145,7 @@ jobs:
   # compliance-by-compilation guarantee: `auth.chain: [tokens]` is a boot error in this binary.
   no-default-features:
     name: no-default-features build · clippy · test
-    runs-on: ubuntu-latest-m
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -167,8 +166,7 @@ jobs:
   # get their own job — otherwise the transaction guard could be dismantled with the tree still green.
   txn-guards:
     name: txn compile fence · loom model
-    # loom is an exhaustive model checker — extra cores cut its wall-clock.
-    runs-on: ubuntu-latest-m
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -184,9 +182,7 @@ jobs:
   # sleeps) the instant they land. Fine-grained overhead numbers are bench/latency/'s job.
   timing:
     name: timing gate (release)
-    # Long pole (release compile). Safe on a faster runner: the gate asserts UPPER latency bounds
-    # (25ms p50 / 250ms p99), which a faster machine only makes easier to meet, never harder.
-    runs-on: ubuntu-latest-m
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -197,8 +193,7 @@ jobs:
   # Portability gate: busbar must build + pass tests on Windows too (no OS-specific code).
   windows:
     name: windows build · test
-    # 8-core org larger runner — Windows Rust compile is the slow one; extra cores help most here.
-    runs-on: windows-latest-l
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
