@@ -292,6 +292,10 @@ jobs:
             "$PWD/$BUSBAR_BIN" > "$WORKDIR/busbar.log" 2>&1 &
           BUSBAR_PID=$!
           trap 'kill $BUSBAR_PID 2>/dev/null || true' EXIT
+          # On ANY failure, dump every busbar log before dying — a relaunched busbar that
+          # never comes back up otherwise fails as a bare curl exit 7 with its actual boot
+          # error invisible (exactly how store-valkey's post-restart boot failure hid).
+          trap 'ec=$?; echo "=== step failed (exit $ec) — busbar logs ==="; for f in "$WORKDIR"/busbar*.log; do echo "--- $f ---"; cat "$f" 2>/dev/null || true; done; exit $ec' ERR
           for _ in $(seq 1 20); do curl -sf -o /dev/null "http://127.0.0.1:8081/api/v1/admin/plugins?type=store" -H "Authorization: Bearer $BUSBAR_ADMIN_TOKEN" && break; sleep 0.5; done
 
           # The packed tarball's base64 text can run into the tens of MB for a plugin that bundles
@@ -425,6 +429,10 @@ jobs:
             "$PWD/$BUSBAR_BIN" > "$WORKDIR/busbar.log" 2>&1 &
           BUSBAR_PID=$!
           trap 'kill $BUSBAR_PID 2>/dev/null || true' EXIT
+          # On ANY failure, dump every busbar log before dying — a relaunched busbar that
+          # never comes back up otherwise fails as a bare curl exit 7 with its actual boot
+          # error invisible (exactly how store-valkey's post-restart boot failure hid).
+          trap 'ec=$?; echo "=== step failed (exit $ec) — busbar logs ==="; for f in "$WORKDIR"/busbar*.log; do echo "--- $f ---"; cat "$f" 2>/dev/null || true; done; exit $ec' ERR
           for _ in $(seq 1 20); do curl -sf -o /dev/null "$ADMIN/plugins?type=store" -H "Authorization: Bearer $BUSBAR_ADMIN_TOKEN" && break; sleep 0.5; done
 
           if grep -q "does not match any plugin" "$WORKDIR/busbar.log"; then
