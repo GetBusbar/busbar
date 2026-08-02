@@ -253,7 +253,7 @@ key or an IdP credential a chain module verifies.
 
 ```yaml
 auth:
-  signing_key: { file: /run/secrets/busbar-signing.key }  # optional; generated 0600 on first boot
+  signing_key: { file: /run/secrets/busbar-signing.key }  # REQUIRED with `keys`; busbar --generate-signing-key
   upstream_credentials: own
   chain:
     - keys                                                # built-in signed-key verifier (no config)
@@ -268,7 +268,7 @@ auth:
 
 | Field | Type | Required | Default | Notes |
 |---|---|---|---|---|
-| `signing_key` | secret reference | no | generated on first boot | The ed25519 key Busbar signs virtual-key tokens with. Fleet-shared (every node verifying the same tokens resolves the same key). Absent: Busbar generates a keypair on first boot and persists it with mode 0600 (dev zero-config). Rotating it revokes every outstanding key. |
+| `signing_key` | secret reference | **when `keys` is in the chain** | none | The ed25519 key Busbar signs + verifies virtual-key tokens with, as a secret reference (`{ file: … }` / `{ env: … }` / a secret plugin — never an inline literal). Fleet-shared (every node verifying the same tokens resolves the same key). **Required whenever the data-plane chain names the built-in `keys` verifier**; its absence there fails `--validate`/boot. Busbar does **not** auto-generate one (1.5.1: the earlier generate-and-persist-beside-config behavior boot-looped read-only config mounts) — generate a key with `busbar --generate-signing-key`. Rotating it revokes every outstanding key. |
 | `upstream_credentials` | string | no | `own` | Whose key hits the provider: `own` (Busbar's configured lane credential) or `passthrough` (forward the caller's own token upstream; Busbar holds no keys). |
 | `chain` | list of module entries | no | `[]` | The ordered DATA-PLANE authentication chain. Each entry is a bare module name (`- keys`) or a single-key map `- <module>: { max_admin_scope?, settings? }` where `settings` is the module's own opaque config. `keys` is the built-in signed-key verifier; **any other name loads a `kind: auth` plugin** from the plugins directory (see [auth plugins](#auth-plugins) below). `[]` (default) is the open front door: development only, loud startup warning. A configured auth plugin that cannot be loaded — missing/untrusted tarball, wrong kind, `plugins.enabled: false`, or an ABI failure — is a **hard startup error** (fail-closed: the front door never silently opens). |
 | `admin_auth` | list of module entries | no | `[admin-tokens]` | The chain gating `/api/v1/admin/*`. The built-in `admin-tokens` module carries the operator credential as a secret reference (`token:`). `[]` = OPEN admin (dev only; loud warning). |
@@ -1191,7 +1191,8 @@ admin_listen: "127.0.0.1:8081"      # the admin API always runs on its own liste
 # verifier); the admin API is gated by the admin-tokens operator credential.
 # ---------------------------------------------------------------------------
 auth:
-  # signing_key: { file: /run/secrets/busbar-signing.key }  # absent = generated on first boot
+  signing_key: { file: /run/secrets/busbar-signing.key }  # REQUIRED with `keys`; no auto-gen
+  #                                                        # (`busbar --generate-signing-key`)
   chain:
     - keys
   admin_auth:
@@ -1333,7 +1334,8 @@ observability:
 
 # ---------------------------------------------------------------------------
 # Prometheus metrics — OPT-IN. Omit this block entirely and busbar records
-# nothing and does not mount /metrics. `buffer_seconds` is REQUIRED: it is how
+# nothing and does not mount /metrics. When the block IS present, `buffer_seconds`
+# is REQUIRED (omit the whole block and no buffer_seconds is needed): it is how
 # many seconds of observations to retain (quantiles cover that window; _sum and
 # _count stay cumulative), and it bounds the memory metrics cost.
 # ---------------------------------------------------------------------------
