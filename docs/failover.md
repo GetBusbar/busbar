@@ -101,8 +101,8 @@ pools:
 
 Three actions are available:
 
-- **`reject`** (default) — return `503` with `Retry-After` set to the soonest member's cooldown expiry.
-- **`least_bad`** — select the member whose cooldown expires soonest and send the request anyway, even though its breaker is Open, with a loud degraded-service warning.
+- **`reject`** (default) — return `503` with `Retry-After`. When a member is in breaker cooldown, `Retry-After` is the soonest genuine cooldown expiry; when exhaustion is pure saturation (every member at its `max_concurrent` limit, breakers closed), it is a small saturation floor rather than the misleading `1`.
+- **`least_bad`** — select the least-bad member — the one whose cooldown expires soonest that still has a free concurrency permit — and send the request anyway, even though its breaker is Open, with a loud degraded-service warning. A soonest member that is itself at capacity is skipped in favour of a servable sibling rather than returning a hard `503`.
 - **`{ fallback_pool: <name> }`** — route to another named pool. Loop-guarded: cycles through the fallback chain are detected and broken.
 
 The full value reference, including the accepted alias spellings for each keyword, lives in **[Configuration → `on_exhausted`](/docs/configuration/#on_exhausted)**.
