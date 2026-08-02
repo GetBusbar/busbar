@@ -286,7 +286,8 @@ pub(crate) async fn handle_queue(
                     pool,
                     // The probe `try_admit_breaker` won, released OWNER-CHECKED by `forward_once`'s
                     // `ProbeGuard` (consistent with the `Admit.probe_epoch` discipline everywhere else).
-                    probe_epoch,
+                    // `Some(_)` = this dispatch owns a probe, so the guard IS built.
+                    Some(probe_epoch),
                     op,
                     req_content_type,
                     usage_sink,
@@ -380,12 +381,14 @@ pub(crate) async fn forward_once(
     // a single-flight HalfOpen probe on it, so recording on `""` left the pool cell wedged HalfOpen +
     // `probe_in_flight` forever. An empty `pool` means the lane-default cell (direct/ad-hoc routes).
     pool: &str,
-    // Owner token for the single-flight recovery probe this dispatch owns on the `(pool, i)` cell,
-    // captured by the caller at the moment it won the probe (`Admit.probe_epoch` from `pick_among`, the
-    // epoch from `try_admit_breaker`, or the cell's current epoch on the least-bad path that bypasses
-    // the breaker). Used by the RAII `ProbeGuard` below to release the probe OWNER-CHECKED if this
-    // future is DROPPED mid-dispatch (client disconnect) — see the guard construction.
-    probe_epoch: u64,
+    // Owner token for the single-flight recovery probe this dispatch owns on the `(pool, i)` cell.
+    // `Some(epoch)` = this dispatch WON a probe (captured at the win: `Admit.probe_epoch` from
+    // `pick_among`, or the epoch from `try_admit_breaker`); a RAII `ProbeGuard` is armed to release
+    // that probe OWNER-CHECKED if this future is DROPPED mid-dispatch (client disconnect) — see the
+    // guard construction. `None` = this dispatch OWNS NO PROBE (the least-bad path bypasses the breaker
+    // and wins nothing), so NO guard is built and this call can never release/revert any probe — in
+    // particular it can never revert a probe a concurrent PEER legitimately won on the same cell.
+    probe_epoch: Option<u64>,
     op: crate::handlers::Op,
     req_content_type: &str,
     usage_sink: Option<UsageSink>,
@@ -395,25 +398,32 @@ pub(crate) async fn forward_once(
     // (mirrors the hot path's `effective_reasoning`).
     reasoning_override: Option<bool>,
 ) -> Result<Response, ()> {
-    // RAII probe release covering the WHOLE dispatch window (HIGH concurrency finding). The caller won
-    // a single-flight recovery probe on the `(pool, i)` cell before entering here; if THIS future is
-    // dropped mid-`.await` (client disconnects while the upstream call is in flight) none of the
-    // explicit early-return paths below run, so without a Drop guard the cell would stay HalfOpen +
-    // `probe_in_flight` forever and the lane would be benched until the slow out-of-band prober reset
-    // it. `ProbeGuard::drop` releases it OWNER-CHECKED (keyed on `probe_epoch`, so a stale drop never
-    // reverts a NEWER probe won by a peer). It stays ARMED across every early-return error path (those
-    // paths record a transient first, which already transitions the cell, making the guard's release a
-    // safe no-op) and is DISARMED exactly once the request records a legitimate SUCCESS outcome
-    // (`record_success_in` below) — from that point the dispatched request/stream owns the probe through
-    // its recorded outcome, so the guard must not also release it. Idempotent, owner-checked: never a
-    // double-release. This supersedes the previous scattered unowned `release_probe_in` calls.
-    let mut probe_guard = crate::proxy::select::ProbeGuard {
+    // RAII probe release covering the WHOLE dispatch window (HIGH concurrency finding), built ONLY when
+    // this dispatch actually won a probe (`probe_epoch == Some`). The caller won a single-flight
+    // recovery probe on the `(pool, i)` cell before entering here; if THIS future is dropped mid-`.await`
+    // (client disconnects while the upstream call is in flight) none of the explicit early-return paths
+    // below run, so without a Drop guard the cell would stay HalfOpen + `probe_in_flight` forever and the
+    // lane would be benched until the slow out-of-band prober reset it. `ProbeGuard::drop` releases it
+    // OWNER-CHECKED (keyed on the captured `epoch`, so a stale drop never reverts a NEWER probe won by a
+    // peer). It stays ARMED across every early-return error path (those paths record a transient first,
+    // which already transitions the cell, making the guard's release a safe no-op) and is DISARMED
+    // exactly once the request records a legitimate SUCCESS outcome (`record_success_in` below) — from
+    // that point the dispatched request/stream owns the probe through its recorded outcome, so the guard
+    // must not also release it. Idempotent, owner-checked: never a double-release. This supersedes the
+    // previous scattered unowned `release_probe_in` calls.
+    //
+    // `probe_epoch == None` (the least-bad path, which bypasses the breaker and owns NO probe) builds NO
+    // guard at all: there is nothing to release, so this dispatch can never revert a probe a concurrent
+    // PEER legitimately won on the same cell. Representing "no probe" as `None` — rather than passing the
+    // cell's CURRENT epoch to an armed guard — is what closes that HIGH: an epoch-equality release keyed
+    // on a peer's live epoch would otherwise revert the peer's in-flight probe on a dropped future.
+    let mut probe_guard = probe_epoch.map(|epoch| crate::proxy::select::ProbeGuard {
         store: app.store.as_ref(),
         pool,
         lane: i,
         armed: true,
-        probe_epoch,
-    };
+        probe_epoch: epoch,
+    });
     // Re-parse body for per-lane model rewriting. An OPAQUE (non-JSON) body — multipart/binary
     // operations — parses to `None` and relays/translates at the byte level, exactly like the main
     // path; only a JSON-Content-Type body that FAILS to parse is the caller's 400.
@@ -747,8 +757,11 @@ pub(crate) async fn forward_once(
             // DISARM the probe guard: `record_success_in` recorded this dispatch's legitimate outcome
             // (HalfOpen→Closed, probe cleared), so the request now owns the probe through to that
             // outcome. From here the streamed/buffered success body (or its own mid-stream failure
-            // recording) is responsible for the cell, and the guard must NOT also release on drop.
-            probe_guard.armed = false;
+            // recording) is responsible for the cell, and the guard must NOT also release on drop. No-op
+            // when no guard was built (least-bad path, `probe_epoch == None`).
+            if let Some(g) = probe_guard.as_mut() {
+                g.armed = false;
+            }
             // Mirror the main path: fold time-to-headers into the lane's latency EWMA (routing
             // `fastest` signal). Lane-global; off the selection path.
             app.store
@@ -1039,7 +1052,8 @@ pub(crate) async fn handle_fallback_pool(
             // CAS-won the single-flight HalfOpen probe on) — record this attempt's breaker outcome
             // against THAT cell, not the default `""` cell.
             pool_name,
-            probe_epoch,
+            // `pick_among` CAS-won a single-flight probe for this dispatch, so the guard IS built.
+            Some(probe_epoch),
             op,
             req_content_type,
             // Clone per attempt: a transient transport failure retries the next member, so the sink
@@ -1131,11 +1145,14 @@ pub(crate) async fn handle_least_bad(
         // The least-bad member was ranked via this pool's cell (`cooldown_remaining_in(pool, …)`), so
         // record its breaker outcome against the POOL cell.
         pool,
-        // least_bad BYPASSES the breaker (it dispatches to an Open member without winning a probe), so
-        // there is no probe of its own to guard — pass the cell's CURRENT epoch. `forward_once`'s
-        // owner-checked release is then a strict no-op on this path (the cell isn't a HalfOpen probe
-        // this dispatch owns), exactly matching the prior unowned `release_probe_in` no-op behaviour.
-        app.store.probe_epoch_in(pool, soonest_idx),
+        // least_bad BYPASSES the breaker: it dispatches to an Open member via `try_acquire` and wins NO
+        // probe, so it OWNS NO PROBE to guard — pass `None`. `forward_once` then builds NO `ProbeGuard`
+        // at all, so a dropped least-bad future can NEVER release/revert a probe. Passing the cell's
+        // CURRENT epoch here instead (as an armed guard) would be UNSAFE: if the cell is HalfOpen because
+        // a concurrent PEER legitimately won the probe, that current epoch is the PEER's live epoch, and
+        // an owner-checked release keyed on it would match and revert the peer's in-flight probe on drop
+        // — breaking single-flight. `None` is the type-enforced statement of "owns no probe".
+        None,
         op,
         req_content_type,
         usage_sink,
