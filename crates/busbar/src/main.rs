@@ -3125,6 +3125,7 @@ pub(crate) fn build_app_from_config(
         pool_runtime,
         fallback_pools,
         on_exhausted_cfgs,
+        queued_depth: std::sync::Arc::new(crate::state::QueuedDepth::default()),
         governance,
         secret_resolver,
         cost,

@@ -2506,6 +2506,79 @@ fn test_validate_accepts_existing_fallback_pool() {
 }
 
 #[test]
+fn test_queue_config_parses_and_both_keys_conflict() {
+    // R7 disambiguation: a `queue` mapping parses to Queue{max_ms}; a mapping carrying BOTH
+    // `fallback_pool` and `queue` is an explicit "exactly one of" error, not a silent force-fit.
+    match serde_yaml::from_str::<config::OnExhaustedCfg>("{ queue: { max_ms: 250 } }").unwrap() {
+        config::OnExhaustedCfg::Queue { max_ms } => assert_eq!(max_ms, 250),
+        other => panic!("expected Queue, got {other:?}"),
+    }
+    let both = serde_yaml::from_str::<config::OnExhaustedCfg>(
+        "{ fallback_pool: cold, queue: { max_ms: 250 } }",
+    );
+    let err = format!("{}", both.expect_err("both keys must be a conflict error"));
+    assert!(
+        err.contains("exactly one of"),
+        "both-keys error must say exactly one of fallback_pool | queue; got: {err}"
+    );
+}
+
+#[test]
+fn test_validate_accepts_queue_within_budget() {
+    let (providers, models, _) = valid_maps();
+    let mut pools = HashMap::new();
+    let mut pool = make_pool(vec![make_member("mymodel")]);
+    // Default resolved failover budget is 120s = 120000ms; 250ms is well within it.
+    pool.on_exhausted = Some(config::OnExhaustedCfg::Queue { max_ms: 250 });
+    pools.insert("mypool".to_string(), pool);
+    let cfg = make_root_cfg(providers, models, pools);
+    assert!(
+        validate(&cfg).is_ok(),
+        "a queue max_ms within the failover budget must validate"
+    );
+}
+
+#[test]
+fn test_validate_rejects_queue_max_ms_zero() {
+    let (providers, models, _) = valid_maps();
+    let mut pools = HashMap::new();
+    let mut pool = make_pool(vec![make_member("mymodel")]);
+    pool.on_exhausted = Some(config::OnExhaustedCfg::Queue { max_ms: 0 });
+    pools.insert("mypool".to_string(), pool);
+    let cfg = make_root_cfg(providers, models, pools);
+    let errs = validate(&cfg).expect_err("a 0 max_ms queue must fail validation");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("queue.max_ms must be > 0") && e.contains("mypool")),
+        "expected a max_ms>0 error; got: {errs:?}"
+    );
+}
+
+#[test]
+fn test_validate_rejects_queue_max_ms_exceeding_resolved_budget() {
+    // The budget is the RESOLVED per-pool failover timeout: set this pool's own timeout to 1s
+    // (1000ms) and ask for a 2000ms queue — it exceeds the pool's OWN budget and must be rejected.
+    let (providers, models, _) = valid_maps();
+    let mut pools = HashMap::new();
+    let mut pool = make_pool(vec![make_member("mymodel")]);
+    pool.failover = Some(config::FailoverCfg {
+        timeout_secs: 1,
+        exclusions: None,
+        max_hops: 3,
+    });
+    pool.on_exhausted = Some(config::OnExhaustedCfg::Queue { max_ms: 2000 });
+    pools.insert("mypool".to_string(), pool);
+    let cfg = make_root_cfg(providers, models, pools);
+    let errs = validate(&cfg)
+        .expect_err("a max_ms above the resolved failover budget must fail validation");
+    assert!(
+        errs.iter().any(|e| e.contains("exceeds the resolved failover budget")
+            && e.contains("mypool")),
+        "expected a budget-exceeded error resolved against the pool's own 1s timeout; got: {errs:?}"
+    );
+}
+
+#[test]
 fn test_validate_rejects_self_referential_fallback_pool() {
     // A pool whose on_exhausted fallback points at ITSELF (A -> A) never engages at runtime
     // (the loop guard terminates on re-entry) — reject it at boot.

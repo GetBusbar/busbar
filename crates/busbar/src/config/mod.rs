@@ -1576,15 +1576,22 @@ fn default_max_hops() -> usize {
 /// A pool's STRUCTURED `on_exhausted:` (C1: a keyword stays bare, a reference is structured):
 ///
 /// ```yaml
-/// on_exhausted: reject                     # 503 + Retry-After (the default)
-/// on_exhausted: least_bad                  # degraded: soonest-recovering member
-/// on_exhausted: { fallback_pool: cold }    # route to another pool
+/// on_exhausted: reject                       # 503 + Retry-After (the default)
+/// on_exhausted: least_bad                    # degraded: soonest-recovering member
+/// on_exhausted: { fallback_pool: cold }      # route to another pool
+/// on_exhausted: { queue: { max_ms: 250 } }   # bounded wait for a freed permit, then reject
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum OnExhaustedCfg {
     Reject,
     LeastBad,
     FallbackPool(String),
+    /// Bounded wait for a concurrency permit to free on an at-capacity member, then fall through to
+    /// reject. `max_ms` is the wait ceiling in milliseconds (validated `> 0` and `<= resolved
+    /// failover.timeout_secs * 1000` at `--validate`).
+    Queue {
+        max_ms: u64,
+    },
 }
 
 impl OnExhaustedCfg {
@@ -1594,6 +1601,7 @@ impl OnExhaustedCfg {
             OnExhaustedCfg::Reject => OnExhausted::Status503,
             OnExhaustedCfg::LeastBad => OnExhausted::LeastBad,
             OnExhaustedCfg::FallbackPool(name) => OnExhausted::FallbackPool(name.clone()),
+            OnExhaustedCfg::Queue { max_ms } => OnExhausted::Queue { max_ms: *max_ms },
         }
     }
 }
@@ -1608,6 +1616,16 @@ impl<'de> Deserialize<'de> for OnExhaustedCfg {
         struct FallbackBody {
             fallback_pool: String,
         }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct QueueInner {
+            max_ms: u64,
+        }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct QueueBody {
+            queue: QueueInner,
+        }
 
         let value = serde_yaml::Value::deserialize(deserializer)?;
         match value {
@@ -1617,21 +1635,47 @@ impl<'de> Deserialize<'de> for OnExhaustedCfg {
                 other => Err(serde::de::Error::custom(format!(
                     "unknown on_exhausted keyword '{other}': the bare keywords are `reject` | \
                      `least_bad`; a fallback pool is referenced structured: \
-                     `on_exhausted: {{ fallback_pool: <pool> }}`"
+                     `on_exhausted: {{ fallback_pool: <pool> }}`, a bounded wait as \
+                     `on_exhausted: {{ queue: {{ max_ms: <ms> }} }}`"
                 ))),
             },
             v @ serde_yaml::Value::Mapping(_) => {
-                let body: FallbackBody =
-                    serde_yaml::from_value(v).map_err(serde::de::Error::custom)?;
-                if body.fallback_pool.trim().is_empty() {
-                    return Err(serde::de::Error::custom(
-                        "on_exhausted: { fallback_pool: … } must name a non-empty pool",
-                    ));
+                // R7: a structured `on_exhausted` mapping is DISAMBIGUATED by its key set rather than
+                // force-fit into `FallbackBody` — peek the top-level keys so `fallback_pool` and
+                // `queue` route to distinct variants, both keys present is an explicit error, and an
+                // unrecognized mapping still gets the actionable "one of …" message.
+                let has_fallback = v.get("fallback_pool").is_some();
+                let has_queue = v.get("queue").is_some();
+                match (has_fallback, has_queue) {
+                    (true, true) => Err(serde::de::Error::custom(
+                        "on_exhausted takes exactly one of `fallback_pool` | `queue`, not both",
+                    )),
+                    (true, false) => {
+                        let body: FallbackBody =
+                            serde_yaml::from_value(v).map_err(serde::de::Error::custom)?;
+                        if body.fallback_pool.trim().is_empty() {
+                            return Err(serde::de::Error::custom(
+                                "on_exhausted: { fallback_pool: … } must name a non-empty pool",
+                            ));
+                        }
+                        Ok(OnExhaustedCfg::FallbackPool(body.fallback_pool))
+                    }
+                    (false, true) => {
+                        let body: QueueBody =
+                            serde_yaml::from_value(v).map_err(serde::de::Error::custom)?;
+                        Ok(OnExhaustedCfg::Queue {
+                            max_ms: body.queue.max_ms,
+                        })
+                    }
+                    (false, false) => Err(serde::de::Error::custom(
+                        "on_exhausted is `reject`, `least_bad`, `{ fallback_pool: <pool> }`, or \
+                         `{ queue: { max_ms: <ms> } }`",
+                    )),
                 }
-                Ok(OnExhaustedCfg::FallbackPool(body.fallback_pool))
             }
             _ => Err(serde::de::Error::custom(
-                "on_exhausted is `reject`, `least_bad`, or `{ fallback_pool: <pool> }`",
+                "on_exhausted is `reject`, `least_bad`, `{ fallback_pool: <pool> }`, or \
+                 `{ queue: { max_ms: <ms> } }`",
             )),
         }
     }
@@ -1649,6 +1693,10 @@ pub(crate) enum OnExhausted {
     /// LeastBad: send to the member with soonest cooldown expiry even though Open.
     /// Log loudly that this is a degraded path.
     LeastBad,
+    /// Queue{max_ms}: wait up to `max_ms` (bounded also by the failover budget) for a concurrency
+    /// permit to free on an at-capacity member, dispatch on the freed lane, else fall through to a
+    /// 503 + Retry-After. Handled in `walk.rs` on_exhausted dispatch, never inside `pick_among`.
+    Queue { max_ms: u64 },
 }
 
 /// Affinity mode. `session` is the default and only supported mode. Modelled as a (currently
