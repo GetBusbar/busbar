@@ -154,8 +154,12 @@ directly exposed to untrusted networks is not recommended.
 | `GET /stats` | virtual key | Per-lane health snapshot + pool membership, JSON. |
 
 `/stats` returns, per lane: `model`, `provider`, `max_concurrent`, `inflight`,
-`free_slots`, `ok`, `err`, `usable`, `dead`, `dead_reason`, `cooldown_remaining_s`,
-`streak`, and `budget`. It is the first place to look when a pool is degraded.
+`free_slots`, `available` (free permits for a bounded lane, or `"unbounded"`),
+`at_capacity` (`true` when a bounded lane is at its `max_concurrent` limit and is
+therefore shedding/spilling rather than queueing), `ok`, `err`, `usable`, `dead`,
+`dead_reason`, `cooldown_remaining_s`, `streak`, and `budget`. It is the first place to
+look when a pool is degraded; `at_capacity` distinguishes an oversubscribed lane from a
+merely slow one.
 
 ## Running multiple instances (HA)
 
@@ -217,6 +221,8 @@ All metrics are Prometheus counters/histograms exposed at `/metrics`, which is o
 | `busbar_bucket_budget_remaining_cents` | gauge | `bucket`, `group`, `window` | Budget cap minus derived spend, only for buckets carrying a `budget` limit. Enables Prometheus burn-rate alerting per group. |
 | `busbar_bucket_tokens` | gauge | `bucket`, `group`, `window`, `model`, `tier` | Per-(bucket, model, tier) token counters (the raw material for external cost dashboards). |
 | `busbar_lane_state` | gauge | `pool`, `lane` | Circuit-breaker health per lane: `0` = Closed, `1` = HalfOpen, `2` = Open (tripped). Side-effect-free at scrape. |
+| `busbar_lane_at_capacity` | gauge | `pool`, `lane` | Saturation signal: `1` when a bounded (`max_concurrent`) lane is at its limit (shedding/spilling), else `0` (has headroom or unbounded). Distinguishes an oversubscribed lane from a slow upstream, which the duration histogram cannot. Side-effect-free. |
+| `busbar_lane_available_permits` | gauge | `pool`, `lane` | Free concurrency permits for a bounded lane (`0` = saturated). Unbounded lanes emit no sample. Side-effect-free. |
 | `busbar_route_policy_selections_total` | counter | `pool`, `policy` | Requests where a selection strategy (a native strategy or a gate hook) produced a usable ranked order. Only incremented on a successful `Order` outcome; abstains and on-error fallbacks are not counted. |
 | `busbar_route_policy_rejections_total` | counter | `pool`, `policy`, `status` | Requests deliberately rejected by a routing hook's `reject` verb (a 4xx to the caller, no upstream dispatched). A guardrail saying no, not a failure. |
 | `busbar_webhook_logs_dropped_total` | counter | n/a | Request-log webhook deliveries shed because the in-flight delivery pool was saturated (a slow/unreachable webhook endpoint). A non-zero rate means request logs are being silently dropped, scale the endpoint or alert. |
@@ -354,10 +360,11 @@ and the client must retry.
 
 When all members are unusable, the pool's `on_exhausted` action decides:
 
-- `reject` / `status_503` (default): `503` with `Retry-After` = soonest member's
-  cooldown expiry.
-- `least_bad`, serve the member whose cooldown expires soonest (degraded, logged
-  loudly).
+- `reject` / `status_503` (default): `503` with `Retry-After` — the soonest genuine
+  member cooldown, or a small saturation floor when exhaustion is pure at-capacity
+  (not the misleading `1`).
+- `least_bad`, serve the soonest-cooldown member that still has a free permit
+  (skipping a saturated one), degraded and logged loudly.
 - `{ fallback_pool: <name> }`, route to another pool (loop-guarded).
 
 If `outcome="exhausted"` (503) is climbing in `busbar_requests_total`, check

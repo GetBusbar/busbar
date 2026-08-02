@@ -1,29 +1,47 @@
 use super::*;
 
-/// Find the lane index with the soonest cooldown expiry among candidates.
-pub(crate) fn find_soonest_cooldown(
-    store: &Arc<dyn crate::store::StateStore>,
-    cands: &[WeightedLane],
-    now: u64,
-    pool: &str,
-) -> Option<usize> {
-    let mut soonest_idx = None;
-    let mut soonest_remaining = u64::MAX;
+/// Saturation Retry-After floor (whole seconds) for a 503 shed whose ONLY exhaustion cause is
+/// at-capacity members (no genuine breaker cooldown). A busy concurrency slot typically frees on the
+/// order of one in-flight request — there is no fixed breaker window to quote — but advertising the
+/// bare 1s floor reads to a rate-aware client as "retry immediately", which just re-collides with the
+/// saturation. A small non-trivial floor asks the client to back off briefly instead. (Bug 1 Finding
+/// 3: post-fix, an at-capacity 503 is the COMMON shed shape, so this must not always be 1.)
+const AT_CAPACITY_RETRY_AFTER_SECS: u64 = 2;
 
-    for wl in cands {
-        // A dead or budget-exhausted lane reports a cooldown of 0 (deadness lives outside the cell
-        // FSM), so without this it sorts FIRST and beats a lane that genuinely recovers in seconds.
-        if !store.lane_admissible(wl.idx) {
-            continue;
-        }
-        let remaining = store.cooldown_remaining_in(pool, wl.idx, now);
-        if remaining < soonest_remaining {
-            soonest_remaining = remaining;
-            soonest_idx = Some(wl.idx);
-        }
+/// Compute the `Retry-After` (whole seconds) for a 503 shed, reflecting the ACTUAL backpressure axis.
+///
+/// Exhaustion has two distinct causes that want different backoff, and the pre-fix code conflated
+/// them: it took the MINIMUM cooldown across admissible members, but an at-capacity-but-Closed member
+/// reports cooldown 0 — so under saturation (now the common 503 shape) Retry-After always collapsed to
+/// 1, badly under-serving backoff when siblings were in a long cooldown. Instead:
+///   * If any admissible member has a GENUINE breaker cooldown (> 0), advertise the SOONEST such
+///     cooldown — the client should retry when a benched lane is due to re-probe. An at-capacity
+///     member's spurious 0 is ignored here, so a long-cooldown sibling is no longer masked by it.
+///   * Else if exhaustion is (purely) SATURATION — some candidate is at-capacity (bounded lane, no
+///     free permit) with no cooldown at all — advertise the [`AT_CAPACITY_RETRY_AFTER_SECS`] floor.
+///   * Else (no cooldown, nothing at-capacity — e.g. an empty candidate set) fall back to 1.
+///
+/// Always floored at 1 (a 0 Retry-After is meaningless).
+fn retry_after_secs(app: &Arc<App>, cands: &[WeightedLane], now: u64, pool: &str) -> u64 {
+    let soonest_genuine_cooldown = cands
+        .iter()
+        // Deadness lives outside the cell FSM (a dead/budget-exhausted lane reports cooldown 0), so
+        // filter to admissible members exactly as the old `find_soonest_cooldown` did.
+        .filter(|wl| app.store.lane_admissible(wl.idx))
+        .map(|wl| app.store.cooldown_remaining_in(pool, wl.idx, now))
+        .filter(|&r| r > 0)
+        .min();
+    // At-capacity == bounded lane with no free permit. `available_permits` reports an effectively
+    // unbounded count for unbounded lanes, so this is never a false positive there.
+    let any_at_capacity = cands
+        .iter()
+        .any(|wl| app.store.available_permits(wl.idx) == 0);
+    match soonest_genuine_cooldown {
+        Some(secs) => secs,
+        None if any_at_capacity => AT_CAPACITY_RETRY_AFTER_SECS,
+        None => 1,
     }
-
-    soonest_idx
+    .max(1)
 }
 
 /// Handle pool exhaustion based on configured mode for a specific pool.
@@ -103,11 +121,7 @@ pub(crate) fn handle_status_503(
     pool: &str,
     ingress_protocol: &str,
 ) -> Response {
-    let soonest_remaining = find_soonest_cooldown(&app.store, cands, now, pool)
-        .map(|idx| app.store.cooldown_remaining_in(pool, idx, now))
-        .unwrap_or(1);
-
-    let retry_after = soonest_remaining.max(1); // Ensure at least 1 second
+    let retry_after = retry_after_secs(app, cands, now, pool);
 
     let mut resp = ingress_error(
         ingress_protocol,
@@ -822,8 +836,33 @@ pub(crate) async fn handle_least_bad(
     req_content_type: &str,
     usage_sink: Option<UsageSink>,
 ) -> Response {
-    let Some(soonest_idx) = find_soonest_cooldown(&app.store, cands, now, pool) else {
-        // No candidates at all - fall back to Status503.
+    // Rank admissible members by soonest cooldown (the "least bad" order), then dispatch to the FIRST
+    // that ALSO has a free concurrency permit. Bug 1 Finding 2: the soonest-cooldown member may itself
+    // be AT-CAPACITY, and `least_bad` exists precisely to serve a degraded response when everything is
+    // tripped — refusing with a hard 503 because the single best member is momentarily busy, while a
+    // slightly-worse sibling has a free slot, defeats its purpose. The prior code did one `try_acquire`
+    // on the single soonest member and 503'd on failure, so a saturated soonest member masked a serving
+    // sibling. Admissibility (dead/budget) is filtered here too, so a dead lane's spurious cooldown-0
+    // never sorts first. Sort is by the SAME `cooldown_remaining_in(pool, …)` the old single-pick used.
+    let mut ranked: Vec<usize> = cands
+        .iter()
+        .map(|wl| wl.idx)
+        .filter(|&idx| app.store.lane_admissible(idx))
+        .collect();
+    ranked.sort_by_key(|&idx| app.store.cooldown_remaining_in(pool, idx, now));
+
+    // Bypass breaker usability for the last-resort path; grab the first free concurrency permit in
+    // least-bad order. An at-capacity candidate (no permit) is SKIPPED to the next, not a 503.
+    let mut dispatch = None;
+    for idx in ranked {
+        if let Some(permit) = app.store.try_acquire(idx) {
+            dispatch = Some((idx, permit));
+            break;
+        }
+    }
+    let Some((soonest_idx, permit)) = dispatch else {
+        // No admissible candidate at all, or EVERY admissible candidate is at-capacity — no degraded
+        // dispatch is possible, so shed with 503 (+ Retry-After).
         return handle_status_503(app, cands, now, pool, ingress_protocol);
     };
 
@@ -834,11 +873,6 @@ pub(crate) async fn handle_least_bad(
         "least-bad mode: routing to a degraded member (pool exhausted)"
     );
 
-    // Bypass breaker usability for the last-resort path; grab the concurrency permit directly.
-    let Some(permit) = app.store.try_acquire(soonest_idx) else {
-        return handle_status_503(app, cands, now, pool, ingress_protocol);
-    };
-
     match forward_once(
         app,
         soonest_idx,
@@ -847,8 +881,8 @@ pub(crate) async fn handle_least_bad(
         caller_token,
         request_ctx.remaining(now),
         ingress_protocol,
-        // The least-bad member was selected via this pool's cell (`find_soonest_cooldown` /
-        // `cooldown_remaining_in(pool, …)`), so record its breaker outcome against the POOL cell.
+        // The least-bad member was ranked via this pool's cell (`cooldown_remaining_in(pool, …)`), so
+        // record its breaker outcome against the POOL cell.
         pool,
         op,
         req_content_type,

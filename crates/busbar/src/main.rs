@@ -3304,18 +3304,52 @@ fn build_split_routers_with_limits(
 /// OUTERMOST inbound-concurrency cap. `max_inbound_concurrent == 0` disables the layer entirely (a
 /// true no-op) — but `0` is NOT the default; `DEFAULT_MAX_INBOUND_CONCURRENT` is `8192`, so the layer
 /// IS installed out of the box and an operator opts OUT with `0`, not in. When `> 0` (including the
-/// default), a tower `GlobalConcurrencyLimitLayer` (ONE shared semaphore across ALL requests) wraps
-/// the whole router: requests beyond the cap queue for a permit rather than overrunning. Applied as
-/// the last `.layer()` so it is outermost (it must admission-control before any inner work, including
-/// body buffering). Factored out so the add-only-when-`>0` rule is unit-testable in isolation.
+/// default), a tower `GlobalConcurrencyLimitLayer` (ONE shared semaphore across ALL requests) bounds
+/// in-flight inbound work, wrapped in `LoadShed` so a request that arrives with the cap FULL is SHED
+/// with a 503 immediately rather than queued for a permit (Bug 4). Applied as the last `.layer()` so
+/// it is outermost (it must admission-control before any inner work, including body buffering).
+/// Factored out so the add-only-when-`>0` rule is unit-testable in isolation.
+///
+/// Layer order (outer→inner): `HandleError` maps the shed `Overloaded` error back into a 503 response
+/// so the whole stack keeps axum's `Error = Infallible` contract; `LoadShed` turns "inner not ready"
+/// (permit unavailable) into that error instead of parking; `GlobalConcurrencyLimit` is the semaphore.
 fn apply_inbound_concurrency_limit(router: Router, max_inbound_concurrent: usize) -> Router {
     if max_inbound_concurrent > 0 {
-        router.layer(tower::limit::GlobalConcurrencyLimitLayer::new(
-            max_inbound_concurrent,
-        ))
+        router.layer(
+            tower::ServiceBuilder::new()
+                .layer(axum::error_handling::HandleErrorLayer::new(
+                    |_err: tower::BoxError| async { inbound_overloaded_response() },
+                ))
+                .layer(tower::load_shed::LoadShedLayer::new())
+                .layer(tower::limit::GlobalConcurrencyLimitLayer::new(
+                    max_inbound_concurrent,
+                )),
+        )
     } else {
         router
     }
+}
+
+/// The 503 returned when an inbound request is SHED because `max_inbound_concurrent` is saturated
+/// (Bug 4). This admission control sits OUTSIDE protocol routing, so it uses a generic JSON envelope
+/// (the request's ingress dialect is not yet known here) with a `Retry-After` so rate-aware clients
+/// back off instead of hammering the full gateway.
+fn inbound_overloaded_response() -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let mut resp = (
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        [(
+            axum::http::header::CONTENT_TYPE,
+            axum::http::HeaderValue::from_static(crate::proxy::APPLICATION_JSON),
+        )],
+        r#"{"error":{"type":"overloaded","message":"The gateway is at capacity. Please retry shortly."}}"#,
+    )
+        .into_response();
+    resp.headers_mut().insert(
+        axum::http::header::RETRY_AFTER,
+        axum::http::HeaderValue::from_static("1"),
+    );
+    resp
 }
 
 #[cfg(test)]

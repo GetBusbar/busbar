@@ -85,6 +85,15 @@ pub(crate) async fn stats(
                 "max_concurrent": snap.max_concurrent,
                 "inflight": snap.inflight,
                 "free_slots": snap.free_slots,
+                // Bug 1 capacity signal: a saturated lane is now externally distinguishable from an
+                // idle or unbounded one. `available` is the free permit count for a bounded lane, or
+                // the string "unbounded" when `max_concurrent` is omitted; `at_capacity` is true iff
+                // a bounded lane is at its limit (available == 0) and is therefore shedding/spilling.
+                "available": match snap.available {
+                    Some(n) => json!(n),
+                    None => json!("unbounded"),
+                },
+                "at_capacity": snap.at_capacity,
                 "ok": snap.ok,
                 "err": snap.err,
                 "client_fault": snap.client_fault,
@@ -361,6 +370,66 @@ mod tests {
         let pools = body["pools"].as_object().expect("pools object");
         assert!(pools.contains_key("pool-a") && pools.contains_key("pool-b"));
         assert_eq!(body["lanes"].as_array().expect("lanes array").len(), 3);
+    }
+
+    /// Bug 1 capacity signal: `/stats` must externally distinguish a saturated (at-capacity) lane
+    /// from an idle one. A bounded lane's `available`/`at_capacity` flip when its last permit is
+    /// held; an unbounded lane reports `available: "unbounded"` and is never at capacity.
+    #[tokio::test]
+    async fn test_stats_reports_at_capacity_when_lane_saturated() {
+        let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+        let app = TestApp::new()
+            .lane(
+                LaneSpec::new("bounded", crate::proto::Protocol::openai(), "http://b")
+                    .max(1)
+                    .sem(sem.clone()),
+            )
+            .lane(
+                LaneSpec::new("unbounded", crate::proto::Protocol::openai(), "http://u")
+                    .max(tokio::sync::Semaphore::MAX_PERMITS),
+            )
+            .pool("p", &[(0, 1), (1, 1)])
+            .build();
+
+        // Idle: the bounded lane has its one permit free; the unbounded lane reports "unbounded".
+        let body = stats_json(app.clone(), GovCtx::default()).await;
+        let lane = |b: &Value, model: &str| -> Value {
+            b["lanes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|l| l["model"] == model)
+                .cloned()
+                .unwrap_or_else(|| panic!("lane {model} missing from /stats"))
+        };
+        let bounded = lane(&body, "bounded");
+        assert_eq!(
+            bounded["available"],
+            json!(1),
+            "idle bounded lane: 1 permit free"
+        );
+        assert_eq!(bounded["at_capacity"], json!(false));
+        let unbounded = lane(&body, "unbounded");
+        assert_eq!(unbounded["available"], json!("unbounded"));
+        assert_eq!(unbounded["at_capacity"], json!(false));
+
+        // Saturate the bounded lane by holding its only permit; the signal must flip.
+        let _held = sem
+            .clone()
+            .try_acquire_owned()
+            .expect("hold the bounded lane's only permit");
+        let body = stats_json(app, GovCtx::default()).await;
+        let bounded = lane(&body, "bounded");
+        assert_eq!(
+            bounded["available"],
+            json!(0),
+            "a saturated bounded lane reports 0 available permits"
+        );
+        assert_eq!(
+            bounded["at_capacity"],
+            json!(true),
+            "a saturated bounded lane must be flagged at_capacity in /stats"
+        );
     }
 
     async fn models_ids(app: Arc<App>, gov: GovCtx) -> Vec<String> {

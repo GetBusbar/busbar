@@ -2080,10 +2080,6 @@ impl StateStore for InMemoryStore {
         ls.sem.clone().try_acquire_owned().ok().map(Permit::Bounded)
     }
 
-    fn lane_semaphore(&self, lane: usize) -> Arc<Semaphore> {
-        self.get_lane(lane).sem.clone()
-    }
-
     fn spend_budget(&self, lane: usize) -> bool {
         let ls = self.get_lane(lane);
         if !ls.limited {
@@ -2135,6 +2131,14 @@ impl StateStore for InMemoryStore {
             // in-flight request. `max - available` rather than a separate counter that can drift.
             inflight: ls.max.saturating_sub(ls.sem.available_permits()) as i64,
             free_slots: ls.sem.available_permits(),
+            // Bounded lane (`max < MAX_PERMITS`): report real available permits and whether it is at
+            // its cap. Unbounded lane: `available = None` (nothing to count) and never at-capacity.
+            available: if ls.max >= Semaphore::MAX_PERMITS {
+                None
+            } else {
+                Some(ls.sem.available_permits())
+            },
+            at_capacity: ls.max < Semaphore::MAX_PERMITS && ls.sem.available_permits() == 0,
             ok: ls.ok.load(Ordering::Relaxed),
             err: ls.err.load(Ordering::Relaxed),
             client_fault: ls.client_fault.load(Ordering::Relaxed),

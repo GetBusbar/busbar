@@ -232,6 +232,19 @@ const BUCKET_BUDGET_REMAINING_CENTS: &str = "busbar_bucket_budget_remaining_cent
 /// matches the proxy engine counter sites so the gauge and counters can be PromQL-joined on `lane`).
 const LANE_STATE: &str = "busbar_lane_state";
 
+/// Per-(pool, lane-model) saturation gauge (Bug 1 capacity signal). `1` = the lane is a BOUNDED
+/// (`max_concurrent`) lane currently at its limit (zero free permits) — post-fix it sheds/spills
+/// rather than queueing, so this is the Prometheus signal that a pool is oversubscribed rather than
+/// merely slow (previously indistinguishable from a slow upstream in the duration histogram). `0` =
+/// the lane has headroom OR is unbounded. Same `pool`/`lane` label convention as `busbar_lane_state`
+/// so it PromQL-joins with the breaker gauge and the engine counters.
+const LANE_AT_CAPACITY: &str = "busbar_lane_at_capacity";
+
+/// Per-(pool, lane-model) available concurrency permits, for BOUNDED lanes only (an unbounded lane
+/// counts nothing, so it emits no sample here). The companion depth signal to `busbar_lane_at_capacity`:
+/// `0` means saturated. Same label convention as the gauges above.
+const LANE_AVAILABLE_PERMITS: &str = "busbar_lane_available_permits";
+
 /// Prometheus text exposition format content-type (version 0.0.4), returned by the `/metrics`
 /// scrape handler. Defined as a constant so the string is not duplicated across handler and tests.
 const PROMETHEUS_CONTENT_TYPE: &str = "text/plain; version=0.0.4";
@@ -471,6 +484,16 @@ fn describe() {
         LANE_STATE,
         Unit::Count,
         "Per-(pool,lane) circuit-breaker health: 0=healthy, 1=half-open, 2=tripped (scrape-time)"
+    );
+    describe_gauge!(
+        LANE_AT_CAPACITY,
+        Unit::Count,
+        "Per-(pool,lane) saturation: 1 = bounded lane at its max_concurrent limit (shedding/spilling), 0 = has headroom or unbounded (scrape-time)"
+    );
+    describe_gauge!(
+        LANE_AVAILABLE_PERMITS,
+        Unit::Count,
+        "Per-(pool,lane) available concurrency permits for a BOUNDED lane (scrape-time; unbounded lanes emit no sample)"
     );
 }
 
@@ -821,9 +844,12 @@ fn refresh_scrape_gauges(app: &App) {
             metrics::gauge!(
                 LANE_STATE,
                 "pool" => pool_name.clone(),
-                "lane" => lane_label
+                "lane" => lane_label.clone()
             )
             .set(state_val);
+            // Bug 1 capacity signal: expose saturation to Prometheus so a busy lane is distinguishable
+            // from a slow upstream. `available`/`at_capacity` are pure atomic reads off the snapshot.
+            emit_capacity_gauges(pool_name, &lane_label, &snap);
         }
     }
 
@@ -851,6 +877,29 @@ fn refresh_scrape_gauges(app: &App) {
             "lane" => app.lanes[lane_idx].model.clone()
         )
         .set(state_val);
+        emit_capacity_gauges(model, &app.lanes[lane_idx].model.clone(), &snap);
+    }
+}
+
+/// Emit the per-(pool, lane) capacity gauges from a lane snapshot (Bug 1 signal). `at_capacity` is
+/// always emitted (0/1); `available_permits` is emitted only for BOUNDED lanes — an unbounded lane
+/// has no meaningful permit count, so it contributes no `busbar_lane_available_permits` sample rather
+/// than a misleading effectively-infinite number. Shared by the pool loop and the by_model loop so
+/// the two label conventions (`pool`=pool name / `pool`=model name) stay identical to `LANE_STATE`.
+fn emit_capacity_gauges(pool_label: &str, lane_label: &str, snap: &crate::store::LaneSnapshot) {
+    metrics::gauge!(
+        LANE_AT_CAPACITY,
+        "pool" => pool_label.to_string(),
+        "lane" => lane_label.to_string()
+    )
+    .set(if snap.at_capacity { 1.0 } else { 0.0 });
+    if let Some(available) = snap.available {
+        metrics::gauge!(
+            LANE_AVAILABLE_PERMITS,
+            "pool" => pool_label.to_string(),
+            "lane" => lane_label.to_string()
+        )
+        .set(available as f64);
     }
 }
 
@@ -1257,6 +1306,68 @@ mod tests {
         assert!(
             out.contains("pool=\"pool-x\""),
             "pool label must appear; got:\n{out}"
+        );
+    }
+
+    /// Bug 1 capacity signal (report test I): `/metrics` must expose per-lane saturation so a busy
+    /// lane is distinguishable from a slow upstream in Prometheus. `busbar_lane_at_capacity` flips
+    /// 0→1 and `busbar_lane_available_permits` drops 1→0 when the bounded lane's only permit is held.
+    #[test]
+    fn test_scrape_gauges_lane_at_capacity_flips_on_saturation() {
+        init();
+
+        // Find the trailing numeric value of the exposition line for `metric` labeled with `pool`.
+        fn gauge_value(out: &str, metric: &str, pool: &str) -> Option<f64> {
+            out.lines()
+                .find(|l| {
+                    !l.starts_with('#')
+                        && l.starts_with(metric)
+                        && l.contains(&format!("pool=\"{pool}\""))
+                })
+                .and_then(|l| l.rsplit(' ').next())
+                .and_then(|v| v.trim().parse::<f64>().ok())
+        }
+
+        let sem = Arc::new(tokio::sync::Semaphore::new(1));
+        let app = TestApp::new()
+            .lane(
+                LaneSpec::new("cap-model", crate::proto::Protocol::openai(), "http://c")
+                    .max(1)
+                    .sem(sem.clone()),
+            )
+            .pool("cap-pool", &[(0, 1)])
+            .build();
+
+        // Idle: not at capacity, one permit available.
+        refresh_scrape_gauges(&app);
+        let out = render();
+        assert_eq!(
+            gauge_value(&out, LANE_AT_CAPACITY, "cap-pool"),
+            Some(0.0),
+            "an idle bounded lane must report at_capacity=0; got:\n{out}"
+        );
+        assert_eq!(
+            gauge_value(&out, LANE_AVAILABLE_PERMITS, "cap-pool"),
+            Some(1.0),
+            "an idle max_concurrent=1 lane has 1 available permit; got:\n{out}"
+        );
+
+        // Saturate by holding the only permit → the gauges must flip.
+        let _held = sem
+            .clone()
+            .try_acquire_owned()
+            .expect("hold the only permit");
+        refresh_scrape_gauges(&app);
+        let out = render();
+        assert_eq!(
+            gauge_value(&out, LANE_AT_CAPACITY, "cap-pool"),
+            Some(1.0),
+            "a saturated bounded lane must report at_capacity=1; got:\n{out}"
+        );
+        assert_eq!(
+            gauge_value(&out, LANE_AVAILABLE_PERMITS, "cap-pool"),
+            Some(0.0),
+            "a saturated bounded lane must report 0 available permits; got:\n{out}"
         );
     }
 
