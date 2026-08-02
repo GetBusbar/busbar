@@ -923,8 +923,11 @@ A keyword stays bare; a reference is structured (the 1.5.0 `on_X` convention):
 | `reject` | Return `503 Service Unavailable` with a `Retry-After` header. When a member is in breaker cooldown, `Retry-After` is the soonest genuine cooldown expiry; when exhaustion is pure saturation (every member at its `max_concurrent` limit, breakers closed), it is a small saturation floor instead of `1`. This is the default when `on_exhausted` is omitted. Accepted aliases: `status_503`, `status503`, `503`. |
 | `least_bad` | Route to the member whose cooldown expires soonest **that still has a free concurrency permit**, even though it is Open. A soonest member that is itself at capacity is skipped in favour of a servable sibling (rather than a hard 503); only when no admissible member has a free permit does it fall through to `reject`. The request is likely to fail, but degraded service is preferred over a hard 503. This is logged as a degraded dispatch. Accepted aliases: `least-bad`, `leastbad`. |
 | `{ fallback_pool: <name> }` | Route the request to another named pool and run its full selection logic. Cycles (`primary` to `overflow` back to `primary`) and self-references are detected at startup and are errors. |
+| `{ queue: { max_ms: <ms> } }` | Wait a **bounded** time for a concurrency permit to free on an at-capacity member, then dispatch on the freed lane. The waiter acquires directly on the candidate lanes' own FIFO semaphores, so a freed permit wakes **exactly one** waiter (no lost wakeup, no thundering herd). The wait is bounded by `min(max_ms, remaining failover budget)` and can never block past `failover.timeout_secs`; on winning a permit the lane's breaker is **re-checked** (a lane that tripped Open while queued is dropped and the wait continues on the rest). On deadline, a closed semaphore, or no remaining candidates it falls through to `reject`. Queueing only helps **saturation** (at-capacity) exhaustion — if every excluded member is dead / budget-exhausted / breaker-open it sheds immediately without waiting. `max_ms` is a required inner key. No alias spellings. Live park depth: `busbar_pool_queued{pool}`. |
 
-`reject` and `least_bad` each accept the alias spellings noted above (hyphen/underscore/joined and, for reject, the bare `503` status). **Unknown keywords or a malformed structure are a fatal startup error** (not a runtime 503).
+`reject` and `least_bad` each accept the alias spellings noted above (hyphen/underscore/joined and, for reject, the bare `503` status). `fallback_pool` and `queue` are structured mappings with no alias spellings, and take exactly one of `fallback_pool` / `queue` (both present is an error). **Unknown keywords or a malformed structure are a fatal startup error** (not a runtime 503).
+
+`queue.max_ms` is validated at `--validate`/boot: it must be `> 0` (a `0` wait never queues — that is just `reject` with extra machinery) and `<=` the resolved failover budget (`failover.timeout_secs × 1000`, else the global default `120000` ms). A `max_ms` larger than the whole failover budget is clamped to it at runtime and would never reach its ceiling, so it is rejected at boot with an actionable message rather than shipped as a silent dead-letter. Exactly `max_ms == budget` is accepted (only a value strictly greater is rejected).
 
 ---
 
@@ -1386,11 +1389,14 @@ Busbar validates the merged config before accepting any traffic. Fatal errors ab
 | `weight: 0` | Pool member weight of 0 is invalid |
 | `model` reference missing | A pool member's `model` does not name a configured model |
 | `failover.timeout_secs: 0` | Zero failover deadline |
+| `failover.timeout_secs` too large | Greater than the maximum of `86400` s (24 h); a per-request failover budget over a day is a fat-finger typo |
 | `failover.exclusions` dangling | An exclusion names a model not in the pool |
 | Fallback pool cycle | `on_exhausted: fallback_pool:<X>` where following the chain creates a cycle |
 | Fallback pool self-reference | `on_exhausted: fallback_pool:<self>` |
 | Fallback pool unknown | `on_exhausted: fallback_pool:<name>` where `name` is not a configured pool |
-| `on_exhausted` malformed | Not `reject`, `least_bad`, or `{ fallback_pool: <pool> }` |
+| `on_exhausted` malformed | Not `reject`, `least_bad`, `{ fallback_pool: <pool> }`, or `{ queue: { max_ms: <ms> } }` (or a mapping naming both `fallback_pool` and `queue`) |
+| `on_exhausted.queue.max_ms: 0` | A `0` wait never queues (it is just `reject` with extra machinery) |
+| `on_exhausted.queue.max_ms` too large | Greater than the resolved failover budget (`failover.timeout_secs × 1000` ms); a queue longer than the whole budget never reaches its ceiling |
 | `affinity.mode` unknown | Any value other than `session` |
 | Pool `hooks:` names more than one ordering strategy | A pool has one base ordering |
 | Pool `hooks:` bare name not a built-in strategy | An out-of-process hook is an inline `{ module: ... }` ref; bare names are only `weighted`/`cheapest`/`fastest`/`least_busy`/`usage` |
