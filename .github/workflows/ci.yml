@@ -27,7 +27,7 @@ jobs:
   # is paid off. Both jobs are required checks, and neither can now hide the other.
   structure-lint:
     name: structure lint
-    runs-on: ubuntu-latest-m
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       # The lint's `#[cfg(test)]` scope scanner decides which lines are EXEMPT from every
@@ -41,7 +41,7 @@ jobs:
 
   check:
     name: fmt · clippy · build · test
-    runs-on: ubuntu-latest-m
+    runs-on: ubuntu-latest
     # Live-DB service containers for the store-postgres / store-redis roundtrip tests. Without these
     # the roundtrip tests skip (their URLs are unset) and the two 1.5.0 store backends ship with ZERO
     # CI coverage of the delete_key cascade + credential cleanup. The tests read BUSBAR_TEST_POSTGRES_URL
@@ -114,7 +114,7 @@ jobs:
   #   UPDATE_OPENAPI=1 cargo test -p busbar --features openapi-schema openapi_json_matches_committed_file
   openapi-schema:
     name: openapi-schema clippy · drift · coverage
-    runs-on: ubuntu-latest-m
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -134,7 +134,7 @@ jobs:
   # compliance-by-compilation guarantee: `auth.chain: [tokens]` is a boot error in this binary.
   no-default-features:
     name: no-default-features build · clippy · test
-    runs-on: ubuntu-latest-m
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -155,7 +155,7 @@ jobs:
   # get their own job — otherwise the transaction guard could be dismantled with the tree still green.
   txn-guards:
     name: txn compile fence · loom model
-    runs-on: ubuntu-latest-m
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -171,7 +171,7 @@ jobs:
   # sleeps) the instant they land. Fine-grained overhead numbers are bench/latency/'s job.
   timing:
     name: timing gate (release)
-    runs-on: ubuntu-latest-m
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -182,7 +182,7 @@ jobs:
   # Portability gate: busbar must build + pass tests on Windows too (no OS-specific code).
   windows:
     name: windows build · test
-    runs-on: windows-latest-l
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
