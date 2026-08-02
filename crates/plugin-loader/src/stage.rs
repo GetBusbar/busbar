@@ -241,7 +241,13 @@ fn load_via_memfd(bytes: &[u8], display: &str) -> Result<(Library, Staged), Stri
     // aarch64 cross toolchain (Ubuntu 24.04, gcc-aarch64-linux-gnu + libc6-dev-arm64-cross) both
     // linked it fine -- the syscall route sidesteps this stub-symbol gap entirely, on any sysroot.
     // SAFETY: plain syscall; the name is a debugging label (NUL-terminated, no user input).
-    let raw = unsafe { libc::syscall(libc::SYS_memfd_create, c"busbar-plugin".as_ptr(), libc::MFD_CLOEXEC) };
+    let raw = unsafe {
+        libc::syscall(
+            libc::SYS_memfd_create,
+            c"busbar-plugin".as_ptr(),
+            libc::MFD_CLOEXEC,
+        )
+    };
     if raw < 0 {
         return Err(format!(
             "memfd_create failed: {}",
@@ -250,7 +256,8 @@ fn load_via_memfd(bytes: &[u8], display: &str) -> Result<(Library, Staged), Stri
     }
     // SAFETY: `raw` is a freshly created, owned fd. `libc::syscall` returns `c_long`; a real fd
     // from a successful memfd_create always fits in `RawFd` (i32) -- checked, not assumed.
-    let raw_fd = i32::try_from(raw).map_err(|_| format!("memfd_create returned out-of-range fd: {raw}"))?;
+    let raw_fd =
+        i32::try_from(raw).map_err(|_| format!("memfd_create returned out-of-range fd: {raw}"))?;
     let fd: OwnedFd = unsafe { OwnedFd::from_raw_fd(raw_fd) };
     {
         let mut f = std::fs::File::from(fd.try_clone().map_err(|e| format!("memfd dup: {e}"))?);
