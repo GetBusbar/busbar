@@ -1,0 +1,90 @@
+# THE first-party plugin registry — the single source of truth for "what plugins exist".
+#
+# Every system that needs the plugin list derives it from this file rather than carrying its own
+# copy: scripts/plugin-registry-check.sh (the CI gate that keeps the consumers honest),
+# dev-gate.yml's sibling checkouts, scripts/release-check.sh's per-plugin phases, and the release
+# tooling. Found necessary during the 1.5.0 ship: the list was duplicated across at least five
+# places, and the copies had drifted — the "full plugin gate" silently covered 6 of 8 plugins.
+#
+# Adding a plugin = adding ONE entry here. The registry gate then goes RED until every consumer
+# actually covers it (dev-gate checkout present, release-check phase present, release published) —
+# coverage is enforced, not remembered.
+#
+# Fields:
+#   repo:          GitHub repo under GetBusbar/
+#   kind:          store | auth | hook | secret  (busbar plugin kind; selects the C ABI)
+#   alias:         short config name (busbar-plugin-pack --alias)
+#   crate:         the plugin cdylib's Cargo package name
+#   version_line:  the semver line current releases live on (headroom's 1.x is pre-plugin
+#                  1.4.2-era and must never be retagged)
+#   service:       real backend container its tests need (mysql|postgres|redis|vault|none)
+#   release_gate:  required — release-check.sh hard-fails if the sibling checkout is missing
+#                  optional — release-check.sh loud-skips (still red in the registry gate's
+#                  release check; "optional" only softens a LOCAL run without the checkout)
+
+# Org repos that MATCH the plugin naming pattern but are deliberately NOT plugins (the reverse
+# check in plugin-registry-check.sh flags any pattern-matching org repo that is neither listed
+# above nor excluded here — so a new plugin repo cannot exist unregistered).
+excluded_repos:
+  - hindsight-hook # design docs only — no crate, no workflows, private
+
+plugins:
+  - repo: store-mysql
+    kind: store
+    alias: mysql
+    crate: busbar-store-mysql-plugin
+    version_line: "1.0"
+    service: mysql
+    release_gate: optional
+  - repo: store-postgres
+    kind: store
+    alias: postgres
+    crate: busbar-store-postgres-plugin
+    version_line: "1.0"
+    service: postgres
+    release_gate: required
+  - repo: store-sqlite
+    kind: store
+    alias: sqlite
+    crate: busbar-store-sqlite-plugin
+    version_line: "1.0"
+    service: none
+    release_gate: optional
+  - repo: store-valkey
+    kind: store
+    alias: redis
+    crate: busbar-store-redis-plugin
+    version_line: "1.0"
+    service: redis
+    release_gate: optional
+    # Renamed from store-redis; artifact/crate names deliberately keep the redis identity.
+    # Local checkouts and sibling paths still use the directory name store-redis.
+    checkout_dir: store-redis
+  - repo: hashicorp-vault
+    kind: secret
+    alias: vault
+    crate: busbar-hashicorp-vault-plugin
+    version_line: "1.0"
+    service: vault
+    release_gate: optional
+  - repo: auth-oidc
+    kind: auth
+    alias: oidc
+    crate: busbar-auth-oidc-plugin
+    version_line: "1.0"
+    service: none
+    release_gate: optional
+  - repo: webrequest-hook
+    kind: hook
+    alias: webrequest
+    crate: busbar-webrequest-hook-plugin
+    version_line: "1.0"
+    service: none
+    release_gate: optional
+  - repo: headroom-hook
+    kind: hook
+    alias: headroom
+    crate: headroom-hook
+    version_line: "2.0"
+    service: none
+    release_gate: optional
