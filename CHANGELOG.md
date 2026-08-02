@@ -11,6 +11,8 @@ item under **Changed**.
 
 ## [Unreleased]
 
+## [1.5.1], 2026-08-02
+
 <!-- Release notes accumulate here. Per .github/workflows/cut-release.yml, cutting a release runs
      roll_changelog.py, which promotes this section to `## [X.Y.Z], <cut-date>` and stamps the
      real date. Do NOT hard-code a dated version header here — that collides with the
