@@ -50,87 +50,43 @@ jobs:
           # to the normal ref resolution on workflow_dispatch (no workflow_run event present).
           ref: ${{ github.event.workflow_run.head_sha || github.ref }}
 
-      # Same first-party hook plugin sources release.yml/docker.yml already check out as siblings,
-      # so release-check.sh's Phase 5 (headroom/webrequest --validate) runs for real here instead
-      # of skipping — see .github/workflows/docker.yml's HEADROOM_HOOK_REF comment for the pin
-      # rationale; kept in sync with that same pin.
-      - name: Checkout headroom-hook (first-party plugin source, pinned)
-        uses: actions/checkout@v7
-        with:
-          repository: GetBusbar/headroom-hook
-          # `dev` (not `main`) carries the sibling-relative-path dependency fix this build actually
-          # needs — mirrors busbar's own main/dev split: main stays release-only, ongoing work lands
-          # on dev. An earlier pin here (a61e7f8, an abbreviated SHA) only ever existed in a local
-          # checkout and was never pushed at all, which surfaced as a cargo "manifest path does not
-          # exist" failure rather than a checkout error.
-          ref: dev
-          path: headroom-hook
-        continue-on-error: true
-
-      - name: Checkout webrequest-hook (first-party plugin source, pinned)
-        uses: actions/checkout@v7
-        with:
-          repository: GetBusbar/webrequest-hook
-          path: webrequest-hook
-        continue-on-error: true
-
-      # store-postgres, store-redis, and auth-oidc are release-check.sh's Phase 2/3/4 — Postgres is
-      # a REQUIRED phase there (it hard-fails the whole gate if `../store-postgres` isn't present;
-      # Redis/OIDC degrade to a loud SKIP instead). Without these checkouts dev-gate never actually
-      # ran Phase 2 onward — every push to `dev` failed at "../store-postgres is not checked out as
-      # a sibling" before this fix, so `main` was never getting proven against its own required
-      # plugins on the branch this workflow exists to protect.
-      - name: Checkout store-postgres (first-party plugin source, REQUIRED by release-check.sh)
-        uses: actions/checkout@v7
-        with:
-          repository: GetBusbar/store-postgres
-          path: store-postgres
-        continue-on-error: true
-
-      - name: Checkout store-redis (first-party plugin source)
-        uses: actions/checkout@v7
-        with:
-          repository: GetBusbar/store-redis
-          path: store-redis
-        continue-on-error: true
-
-      # store-mysql and hashicorp-vault were the 2 of 8 first-party plugins this gate never pulled
-      # in (found during the 1.5.0 ship): release-check.sh's vault phase existed but always skipped
-      # for want of this checkout, and mysql had no phase at all until Phase 2.6 was added with
-      # this commit. The full first-party set the gate must cover is: store-{mysql,postgres,
-      # sqlite,redis}, hashicorp-vault, auth-oidc, webrequest-hook, headroom-hook.
-      - name: Checkout store-mysql (first-party plugin source)
-        uses: actions/checkout@v7
-        with:
-          repository: GetBusbar/store-mysql
-          path: store-mysql
-        continue-on-error: true
-
-      - name: Checkout hashicorp-vault (first-party plugin source)
-        uses: actions/checkout@v7
-        with:
-          repository: GetBusbar/hashicorp-vault
-          path: hashicorp-vault
-        continue-on-error: true
-
-      - name: Checkout auth-oidc (first-party plugin source)
-        uses: actions/checkout@v7
-        with:
-          repository: GetBusbar/auth-oidc
-          path: auth-oidc
-        continue-on-error: true
-
-      # store-sqlite now lives entirely in its own repo (fully extracted, same-repo 2-crate
-      # workspace) — this checkout is what `crates/plugin-loader`'s loader-mechanism tests
-      # (TOCTOU-safe loading, hot-swap, staged-file lifecycle, denylist-fallback classification)
-      # build a REAL cdylib from, since there is no in-tree kind:store plugin left to test the
-      # loader's generic mechanics against. See store_fixture_plugin_path()'s doc comment.
-      - name: Checkout store-sqlite (first-party plugin source)
-        uses: actions/checkout@v7
-        with:
-          repository: GetBusbar/store-sqlite
-          path: store-sqlite
-        continue-on-error: true
+      # REGISTRY-DRIVEN sibling checkouts: plugins.yaml (via plugin-registry-check.sh --list) is
+      # the single source of truth for which first-party plugin repos exist — this loop clones
+      # every one of them next to busbarAI/, exactly where release-check.sh expects its ../<dir>
+      # sibling checkouts. Adding a plugin = one plugins.yaml entry; no more hand-written per-repo
+      # checkout steps that drift (the 1.5.0 ship found the hand-written list covering 6 of 8).
+      #
+      # Per-entry knobs the old hand-written steps carried now live in the registry:
+      #   - checkout_dir: clone destination when it differs from the repo name (store-valkey →
+      #     store-redis, the legacy sibling path release-check.sh and local checkouts still use).
+      #   - checkout_ref: non-default branch to clone (headroom-hook pins `dev` — it carries the
+      #     sibling-relative-path dependency fix this build actually needs; mirrors busbar's own
+      #     main/dev split. Formerly a hand-written `ref: dev` here — see plugins.yaml).
+      # A failed clone warns-and-continues (same intent as the old steps' continue-on-error);
+      # release-check.sh itself decides what's fatal (release_gate: required → hard fail there).
+      - name: Checkout all first-party plugin siblings (registry-driven from plugins.yaml)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -u
+          # Capture the feed first (not process substitution into the loop): a registry parse
+          # failure must fail THIS step loudly, never degrade to a silent zero-clone loop.
+          registry="$(./busbarAI/scripts/plugin-registry-check.sh --list)"
+          [ -n "$registry" ] || { echo "empty registry feed" >&2; exit 1; }
+          # feed fields: repo dir alias kind service release_gate gate checkout_ref — this loop
+          # only needs repo, dir, and the ref.
+          while IFS=$'\t' read -r repo dir _ _ _ _ _ ref; do
+            args=(--depth 1)
+            if [ "$ref" != "-" ]; then
+              args+=(--branch "$ref")
+            fi
+            echo "::group::clone GetBusbar/${repo} -> ${dir}$([ "$ref" != "-" ] && echo " (ref: ${ref})")"
+            if ! gh repo clone "GetBusbar/${repo}" "${dir}" -- "${args[@]}"; then
+              echo "::warning::clone of GetBusbar/${repo} failed — release-check.sh will skip or fail its phase"
+            fi
+            echo "::endgroup::"
+          done <<<"$registry"
+          ls -la
 
       - name: Build the store-sqlite-plugin cdylib from the sibling checkout
         run: cargo build --release -p busbar-store-sqlite-plugin

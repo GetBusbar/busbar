@@ -21,6 +21,25 @@
 #   release_gate:  required — release-check.sh hard-fails if the sibling checkout is missing
 #                  optional — release-check.sh loud-skips (still red in the registry gate's
 #                  release check; "optional" only softens a LOCAL run without the checkout)
+#   gate:          HOW release-check.sh covers this plugin:
+#                  suite  — the UNIFORM pattern: release-check.sh's registry-driven loop boots the
+#                           entry's `service` container (if any), exports that service's
+#                           BUSBAR_TEST_* env, and runs `cargo test --workspace --release` in the
+#                           sibling checkout. Adding a `gate: suite` plugin needs NO script edit
+#                           unless it introduces a brand-new `service` value.
+#                  binary — a genuinely-special explicit phase driving the plugin through a full
+#                           busbar binary (real HTTP traffic + restart durability). sqlite only.
+#                  smoke  — a genuinely-special explicit phase: pack the cdylib and prove a real
+#                           busbar --validate dlopens it. The hook plugins.
+#                  The registry gate enforces that binary/smoke plugins still have an explicit
+#                  phase touching ../<dir>, and that the suite loop + every `service` a suite
+#                  plugin declares are actually handled in release-check.sh.
+#
+# Optional fields:
+#   checkout_dir:  local sibling/checkout directory name when it differs from `repo`
+#                  (legacy rename; see store-valkey below)
+#   checkout_ref:  git ref dev-gate.yml's registry-driven clone loop checks the repo out at
+#                  (default: the repo's default branch)
 
 # Org repos that MATCH the plugin naming pattern but are deliberately NOT plugins (the reverse
 # check in plugin-registry-check.sh flags any pattern-matching org repo that is neither listed
@@ -36,6 +55,7 @@ plugins:
     version_line: "1.0"
     service: mysql
     release_gate: optional
+    gate: suite
   - repo: store-postgres
     kind: store
     alias: postgres
@@ -43,6 +63,7 @@ plugins:
     version_line: "1.0"
     service: postgres
     release_gate: required
+    gate: suite
   - repo: store-sqlite
     kind: store
     alias: sqlite
@@ -50,6 +71,7 @@ plugins:
     version_line: "1.0"
     service: none
     release_gate: optional
+    gate: binary
   - repo: store-valkey
     kind: store
     alias: redis
@@ -57,6 +79,7 @@ plugins:
     version_line: "1.0"
     service: redis
     release_gate: optional
+    gate: suite
     # Renamed from store-redis; artifact/crate names deliberately keep the redis identity.
     # Local checkouts and sibling paths still use the directory name store-redis.
     checkout_dir: store-redis
@@ -67,6 +90,7 @@ plugins:
     version_line: "1.0"
     service: vault
     release_gate: optional
+    gate: suite
   - repo: auth-oidc
     kind: auth
     alias: oidc
@@ -74,6 +98,7 @@ plugins:
     version_line: "1.0"
     service: none
     release_gate: optional
+    gate: suite
   - repo: webrequest-hook
     kind: hook
     alias: webrequest
@@ -81,6 +106,7 @@ plugins:
     version_line: "1.0"
     service: none
     release_gate: optional
+    gate: smoke
   - repo: headroom-hook
     kind: hook
     alias: headroom
@@ -88,3 +114,8 @@ plugins:
     version_line: "2.0"
     service: none
     release_gate: optional
+    gate: smoke
+    # `dev` (not the default branch) carries the sibling-relative-path dependency fix dev-gate's
+    # build actually needs — mirrors busbar's own main/dev split: main stays release-only, ongoing
+    # work lands on dev. (Formerly a hand-written `ref: dev` in dev-gate.yml's checkout step.)
+    checkout_ref: dev
