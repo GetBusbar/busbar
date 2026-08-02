@@ -6,7 +6,10 @@ use super::*;
 /// bare 1s floor reads to a rate-aware client as "retry immediately", which just re-collides with the
 /// saturation. A small non-trivial floor asks the client to back off briefly instead. (Bug 1 Finding
 /// 3: post-fix, an at-capacity 503 is the COMMON shed shape, so this must not always be 1.)
-const AT_CAPACITY_RETRY_AFTER_SECS: u64 = 2;
+// `pub(crate)` so the lane-availability taxonomy's at-capacity recovery floor
+// (`store::AT_CAPACITY_RECOVERY_FLOOR_MS`) REUSES this exact shipped value (R5) rather than inventing
+// a separate — and regressing — literal. This module remains the single owner of the value.
+pub(crate) const AT_CAPACITY_RETRY_AFTER_SECS: u64 = 2;
 
 /// Compute the `Retry-After` (whole seconds) for a 503 shed, reflecting the ACTUAL backpressure axis.
 ///
