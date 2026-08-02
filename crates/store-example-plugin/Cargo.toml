@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "busbar-store-example-plugin"
+version = "1.5.0"
+publish = false            # internal TEST-support cdylib; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "A hermetic trivial kind:store plugin cdylib, wrapping the in-tree MemoryStore. Before this crate existed, kind:store was the only plugin kind with zero in-tree ABI-crossing coverage (grep -rn export_store_plugin crates/ returned only the macro's own definition) — mirrors busbar-secret-example-plugin's role for kind:secret. Also the fixture plugin-ci.yml's install-and-serve CI step packs and installs against a real running busbar."
+license = "Apache-2.0"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+busbar-api = { path = "../api" }
+busbar-plugin-sdk = { path = "../plugin-sdk" }
+busbar-store-memory = { path = "../store-memory" }

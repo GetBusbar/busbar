@@ -1,59 +1,250 @@
-/// `admin_scope_for`: the operator principal is full; group-carrying principals resolve
-/// through group_map (most permissive wins, unmapped grants nothing); a groupless non-operator
-/// principal gets nothing; the open posture (no principal) is full.
-#[test]
-fn admin_scope_resolution() {
-    use crate::admin::v1::contract::Scope;
-    let mut gm = std::collections::HashMap::new();
-    gm.insert(
-        "viewers".to_string(),
-        crate::config::GroupMapEntry {
-            admin_scope: Some("read-only".to_string()),
-            ..Default::default()
-        },
-    );
-    gm.insert(
-        "admins".to_string(),
-        crate::config::GroupMapEntry {
-            admin_scope: Some("full".to_string()),
-            ..Default::default()
-        },
-    );
-    gm.insert(
-        "no-admin".to_string(),
-        crate::config::GroupMapEntry {
-            admin_scope: None,
-            ..Default::default()
-        },
-    );
-
-    // Open posture: full.
-    assert_eq!(admin_scope_for(None, &gm), Some(Scope::Full));
-    // The operator principal (admin-tokens): full.
-    #[cfg(feature = "auth-admin-tokens")]
-    assert_eq!(
-        admin_scope_for(Some(&Principal::from_id("admin")), &gm),
-        Some(Scope::Full)
-    );
-    // Group-mapped: most permissive of the mapped groups wins.
-    let mut p = Principal::from_id("ad:alice");
-    p.groups = vec!["viewers".to_string(), "admins".to_string()];
-    assert_eq!(admin_scope_for(Some(&p), &gm), Some(Scope::Full));
-    p.groups = vec!["viewers".to_string()];
-    assert_eq!(admin_scope_for(Some(&p), &gm), Some(Scope::ReadOnly));
-    // Unmapped groups grant nothing (fail closed).
-    p.groups = vec!["strangers".to_string()];
-    assert_eq!(admin_scope_for(Some(&p), &gm), None);
-    // A group mapped WITHOUT admin_scope grants nothing.
-    p.groups = vec!["no-admin".to_string()];
-    assert_eq!(admin_scope_for(Some(&p), &gm), None);
-    // A groupless NON-operator principal gets nothing (an external module cannot mint the
-    // operator identity by returning a bare id).
-    let stranger = Principal::from_id("ad:bob");
-    assert_eq!(admin_scope_for(Some(&stranger), &gm), None);
-}
 use super::*;
 use axum::http::header::CONTENT_TYPE;
+use busbar_api::ScopeRef;
+
+/// Helper: a `RoleBindingCfg` from optional pool list / group / admin scope.
+fn binding(
+    allowed_pools: Option<&[&str]>,
+    group: Option<&str>,
+    admin_scope: Option<&str>,
+) -> crate::config::RoleBindingCfg {
+    crate::config::RoleBindingCfg {
+        allowed_pools: allowed_pools.map(|ps| ps.iter().map(|p| p.to_string()).collect()),
+        group: group.map(str::to_string),
+        admin_scope: admin_scope.map(str::to_string),
+    }
+}
+
+/// Helper: a `RoleBindings` table with one module's role->binding entries.
+fn bindings_for(
+    module: &str,
+    roles: &[(&str, crate::config::RoleBindingCfg)],
+) -> crate::config::RoleBindings {
+    let mut table = std::collections::BTreeMap::new();
+    for (role, b) in roles {
+        table.insert(role.to_string(), b.clone());
+    }
+    let mut rb = crate::config::RoleBindings::new();
+    rb.insert(module.to_string(), table);
+    rb
+}
+
+/// Helper: an `AuthCfg` whose data-plane chain names the given modules (bare entries).
+fn chain_cfg(modules: &[&str]) -> crate::config::AuthCfg {
+    let mut cfg = crate::config::AuthCfg::default_none();
+    cfg.chain = modules
+        .iter()
+        .map(|m| crate::config::AuthChainEntry::bare(*m))
+        .collect();
+    cfg
+}
+
+/// Helper: a role-carrying principal (the shape the test-groups-module mints).
+fn grp_principal(id: &str, roles: &[&str]) -> Principal {
+    let mut p = Principal::from_id(id);
+    p.roles = roles.iter().map(|r| r.to_string()).collect();
+    p
+}
+
+/// `admin_scope_for`: the operator principal is full; role-carrying principals resolve
+/// through `role_bindings.<identifying module>` (the UNION of what its bound roles grant, unbound
+/// roles grant nothing); a roleless non-operator principal gets nothing; the open posture
+/// (no principal) is full.
+#[test]
+fn admin_scope_resolution() {
+    use crate::admin::v1::contract::{Grants, Scope};
+    let rb = bindings_for(
+        "test-groups-module",
+        &[
+            ("viewers", binding(None, None, Some("read-only"))),
+            ("admins", binding(None, None, Some("full"))),
+            ("no-admin", binding(None, None, None)),
+        ],
+    );
+    let module = Some("test-groups-module");
+
+    // Open posture (no principal): full.
+    assert_eq!(admin_scope_for(None, None, &rb), Grants::of(Scope::Full));
+    // The operator principal (admin-tokens): full by definition, no binding required.
+    #[cfg(feature = "auth-admin-tokens")]
+    assert_eq!(
+        admin_scope_for(
+            Some(crate::config::ADMIN_TOKENS_MODULE),
+            Some(&Principal::from_id(
+                busbar_auth_admin_tokens::ADMIN_TOKENS_PRINCIPAL_ID
+            )),
+            &rb
+        ),
+        Grants::of(Scope::Full)
+    );
+    // Role-bound: the union of the principal's bound roles. `with` is a plain bitwise union (never
+    // canonicalized), so `{read-only} ∪ {full}` keeps BOTH bits rather than collapsing to `{full}` —
+    // asserted on `allows`, the actual authorization behaviour, not the raw bit pattern.
+    let p = grp_principal("test:alice", &["viewers", "admins"]);
+    assert!(admin_scope_for(module, Some(&p), &rb).allows(Scope::Full));
+    let p = grp_principal("test:alice", &["viewers"]);
+    assert_eq!(
+        admin_scope_for(module, Some(&p), &rb),
+        Grants::of(Scope::ReadOnly)
+    );
+    // Unbound roles grant nothing (fail closed).
+    let p = grp_principal("test:alice", &["strangers"]);
+    assert_eq!(admin_scope_for(module, Some(&p), &rb), Grants::default());
+    // A role bound WITHOUT an admin_scope grants nothing.
+    let p = grp_principal("test:alice", &["no-admin"]);
+    assert_eq!(admin_scope_for(module, Some(&p), &rb), Grants::default());
+    // A roleless NON-operator principal gets nothing (an external module cannot mint the
+    // operator identity by returning a bare id).
+    let stranger = Principal::from_id("test:bob");
+    assert_eq!(
+        admin_scope_for(module, Some(&stranger), &rb),
+        Grants::default()
+    );
+}
+
+/// R1 (class-8): a principal holding TWO roles bound to INCOMPARABLE sibling scopes must keep
+/// BOTH grants. Under the deleted `.max()` fold (ordinal `Mint` > `HooksRegister`), this used to
+/// collapse to `Mint` alone, and `Mint.allows(HooksRegister)` is false — a DENIAL of authority
+/// either role alone would have granted. `Grants::with` unions instead, so both survive.
+#[test]
+fn sibling_roles_union_keeps_both_grants() {
+    use crate::admin::v1::contract::Scope;
+    let rb = bindings_for(
+        "test-groups-module",
+        &[
+            ("registrar", binding(None, None, Some("hooks-register"))),
+            ("minter", binding(None, None, Some("mint"))),
+        ],
+    );
+    let p = grp_principal("test:alice", &["registrar", "minter"]);
+    let grants = admin_scope_for(Some("test-groups-module"), Some(&p), &rb);
+    assert!(
+        grants.allows(Scope::HooksRegister),
+        "the hooks-register role's grant must survive union with an incomparable sibling"
+    );
+    assert!(
+        grants.allows(Scope::Mint),
+        "the mint role's grant must survive union with an incomparable sibling"
+    );
+}
+
+/// R2 (class-8): REGRESSION PROOF, not a RED test — it passes today (there is no `.max()`/`.min()`
+/// path that could yield `Full` for this input) and exists to kill the rejected alternative of
+/// aggregating roles with the lattice JOIN (`join(HooksRegister, Mint) = Full`), which would be a
+/// genuine privilege escalation: the union of two roles' authority is not the join of the lattice.
+#[test]
+fn sibling_roles_union_is_not_full() {
+    use crate::admin::v1::contract::Scope;
+    let rb = bindings_for(
+        "test-groups-module",
+        &[
+            ("registrar", binding(None, None, Some("hooks-register"))),
+            ("minter", binding(None, None, Some("mint"))),
+        ],
+    );
+    let p = grp_principal("test:alice", &["registrar", "minter"]);
+    let grants = admin_scope_for(Some("test-groups-module"), Some(&p), &rb);
+    assert!(
+        !grants.allows(Scope::Full),
+        "the union of two sibling grants must never confer full authority"
+    );
+}
+
+/// R3 (class-8): a role bound `mint`, ceilinged by `max_admin_scope: hooks-register` — the
+/// SIBLING scope. Under the deleted `std::cmp::min(Mint, HooksRegister)` (`Mint` sorted above
+/// `HooksRegister` by the deleted ordinal), this used to yield `HooksRegister`, an ESCALATION: a
+/// mint-only role gaining hook-register authority its role never granted, purely because the
+/// ceiling named its sibling. The lattice meet of two incomparable scopes is `read-only` — neither
+/// sibling's authority survives.
+#[test]
+fn mint_capped_by_hooks_register_grants_only_read() {
+    use crate::admin::v1::contract::Scope;
+    let rb = bindings_for(
+        "test-scope-module",
+        &[("minters", binding(None, None, Some("mint")))],
+    );
+    let mut app = crate::test_support::TestApp::new().build();
+    let a = std::sync::Arc::get_mut(&mut app).expect("freshly built App Arc is unshared");
+    a.admin_chain = vec!["test-scope-module".to_string()];
+    a.role_bindings = rb;
+    a.auth_scope_caps.insert(
+        "test-scope-module".to_string(),
+        "hooks-register".to_string(),
+    );
+    let grants = dry_run_admin_scope(&app, Some("grp:minters"), None);
+    assert!(
+        !grants.allows(Scope::HooksRegister),
+        "a mint role capped by the sibling hooks-register ceiling must not gain hook authority"
+    );
+    assert!(
+        !grants.allows(Scope::Mint),
+        "the mint ceiling cut is real: the incomparable cap must not preserve mint either"
+    );
+    assert!(
+        grants.allows(Scope::ReadOnly),
+        "the siblings' only common authority (read-only) must survive"
+    );
+}
+
+/// R4 (class-8): the mirror of R3 — a role bound `hooks-register`, ceilinged by
+/// `max_admin_scope: mint`. Under the deleted `min`, this ALSO yielded `HooksRegister` (it sorts
+/// lower), so this direction is not an escalation (the result equals the role's own grant) but the
+/// ceiling FAILS TO CUT: a `mint` ceiling must not leave hooks-register authority in place. The
+/// lattice meet is still `read-only`.
+#[test]
+fn hooks_register_capped_by_mint_grants_only_read() {
+    use crate::admin::v1::contract::Scope;
+    let rb = bindings_for(
+        "test-scope-module",
+        &[("registrars", binding(None, None, Some("hooks-register")))],
+    );
+    let mut app = crate::test_support::TestApp::new().build();
+    let a = std::sync::Arc::get_mut(&mut app).expect("freshly built App Arc is unshared");
+    a.admin_chain = vec!["test-scope-module".to_string()];
+    a.role_bindings = rb;
+    a.auth_scope_caps
+        .insert("test-scope-module".to_string(), "mint".to_string());
+    let grants = dry_run_admin_scope(&app, Some("grp:registrars"), None);
+    assert!(
+        !grants.allows(Scope::HooksRegister),
+        "a mint ceiling must cut a hooks-register role's hook authority, not leave it in place"
+    );
+    assert!(
+        !grants.allows(Scope::Mint),
+        "the ceiling must not invent mint authority the role never granted"
+    );
+    assert!(
+        grants.allows(Scope::ReadOnly),
+        "the siblings' only common authority (read-only) must survive"
+    );
+}
+
+/// S4 module scoping: bindings are NESTED BY MODULE, so a role asserted by module A must NOT
+/// ride module B's binding. A binding that lives only under "other-module" grants nothing to a
+/// principal identified by the test-groups-module.
+#[test]
+fn admin_scope_bindings_are_module_scoped() {
+    use crate::admin::v1::contract::{Grants, Scope};
+    let rb = bindings_for(
+        "other-module",
+        &[("admins", binding(None, None, Some("full")))],
+    );
+    let p = grp_principal("test:alice", &["admins"]);
+    assert!(
+        admin_scope_for(Some("test-groups-module"), Some(&p), &rb) == Grants::default(),
+        "a role asserted by module A must not ride module B's binding"
+    );
+    // Control: the SAME principal identified by the binding's own module resolves.
+    assert_eq!(
+        admin_scope_for(Some("other-module"), Some(&p), &rb),
+        Grants::of(Scope::Full)
+    );
+    // A module with no binding table at all grants nothing.
+    assert_eq!(
+        admin_scope_for(Some("unbound-module"), Some(&p), &rb),
+        Grants::default()
+    );
+}
 
 /// Assert a string is canonical UUID-v4 shaped: five dash-separated lowercase-hex groups of
 /// lengths 8-4-4-4-12, with the version nibble == '4' and the variant nibble in {8,9,a,b}.
@@ -141,142 +332,93 @@ fn test_extract_bearer_token_malformed_no_panic() {
     assert_eq!(AuthMiddleware::extract_bearer_token("Basic abc"), None);
 }
 
-#[cfg(feature = "auth-tokens")]
+/// A configured chain module that recognizes the credential IDENTIFIES: the verdict carries BOTH
+/// the identifying module name and the principal (the struct variant), because role_bindings are
+/// nested by module and policy resolution needs both halves.
 #[test]
-fn test_auth_mode_token_valid() {
-    let cfg = AuthCfg {
-        chain: vec!["tokens".to_string()],
-        upstream_credentials: crate::auth::UpstreamCreds::Own,
-        client_tokens: vec!["tok1".to_string(), "tok2".to_string()],
-        modules: std::collections::HashMap::new(),
-    };
-    let mw = AuthMiddleware::new(&cfg);
+fn test_chain_identifies_with_module_and_principal() {
+    let mw = AuthMiddleware::new_builtin(&chain_cfg(&["test-groups-module"]));
+    match mw.run_chain(Some("grp:dev")) {
+        ChainVerdict::Identified { module, principal } => {
+            assert_eq!(module, "test-groups-module");
+            assert_eq!(principal.id, "test:dev");
+            assert_eq!(principal.roles, vec!["dev".to_string()]);
+        }
+        other => panic!("expected Identified, got {other:?}"),
+    }
+    assert!(mw.validate_token(Some("grp:dev")));
+    assert!(!mw.is_open());
+}
 
-    assert!(mw.validate_token(Some("tok1")));
-    assert!(mw.validate_token(Some("tok2")));
+/// FAIL CLOSED: a NON-EMPTY chain where every module passes (no module recognized the presented
+/// credential, or none was presented) DENIES. This is the successor of the old static-allowlist
+/// "wrong token rejected" coverage.
+#[test]
+fn test_nonempty_chain_fails_closed_on_all_pass() {
+    let mw = AuthMiddleware::new_builtin(&chain_cfg(&["test-groups-module"]));
+    assert_eq!(
+        mw.run_chain(Some("not-a-recognized-credential")),
+        ChainVerdict::Denied,
+        "an unrecognized credential must be denied by a configured chain"
+    );
+    assert_eq!(
+        mw.run_chain(None),
+        ChainVerdict::Denied,
+        "no credential at all must be denied by a configured chain"
+    );
     assert!(!mw.validate_token(Some("tok3")));
     assert!(!mw.validate_token(None));
     assert!(!mw.validate_token(Some(""))); // empty token never matches
 }
 
-#[cfg(feature = "auth-tokens")]
+/// The EMPTY chain is the open front door (the old `none`/`passthrough` modes): every request is
+/// admitted anonymously (`ChainVerdict::Open`), with or without a credential.
 #[test]
-fn test_validate_token_matches_any_allowlist_position() {
-    // Regression for the list-level timing oracle: validation must compare against EVERY
-    // configured token (bitwise-OR fold, no `.any()` short-circuit). Behaviorally this means a
-    // match is found regardless of the token's ordinal position — first, middle, or last.
-    let cfg = AuthCfg {
-        chain: vec!["tokens".to_string()],
-        upstream_credentials: crate::auth::UpstreamCreds::Own,
-        client_tokens: vec![
-            "first-token".to_string(),
-            "middle-token".to_string(),
-            "last-token".to_string(),
-        ],
-        modules: std::collections::HashMap::new(),
-    };
-    let mw = AuthMiddleware::new(&cfg);
-    assert!(mw.validate_token(Some("first-token")), "match at index 0");
-    assert!(mw.validate_token(Some("middle-token")), "match at index 1");
-    assert!(mw.validate_token(Some("last-token")), "match at last index");
-    assert!(!mw.validate_token(Some("absent-token")), "no match");
-}
-
-#[cfg(feature = "auth-tokens")]
-#[test]
-fn test_validate_token_length_independent_compare() {
-    // Regression for the client-token timing-LENGTH leak: the configured token's length must not
-    // be observable via `constant_time_eq`'s early length-mismatch return. Both sides are now
-    // SHA-256-hashed to a fixed 64-hex-char digest before the constant-time compare, so a
-    // wrong-length candidate runs the same work as a right-length one AND still fails.
-    let cfg = AuthCfg {
-        chain: vec!["tokens".to_string()],
-        upstream_credentials: crate::auth::UpstreamCreds::Own,
-        client_tokens: vec!["the-real-token".to_string()],
-        modules: std::collections::HashMap::new(),
-    };
-    let mw = AuthMiddleware::new(&cfg);
-
-    // Correctness preserved: the valid token still authenticates.
-    assert!(
-        mw.validate_token(Some("the-real-token")),
-        "valid token must authenticate"
-    );
-
-    // Wrong tokens are rejected regardless of length — shorter, longer, and equal-length.
-    assert!(
-        !mw.validate_token(Some("x")),
-        "much shorter wrong token rejected"
-    );
-    assert!(
-        !mw.validate_token(Some("a-very-much-longer-wrong-token-value")),
-        "much longer wrong token rejected"
-    );
-    assert!(
-        !mw.validate_token(Some("the-real-tokeX")),
-        "equal-length wrong token rejected"
-    );
-
-    // Structural guarantee: both the candidate and the stored token are hashed to equal length
-    // (32 bytes / 64 hex chars) before the compare, so the compare's runtime no longer depends
-    // on the relationship between the candidate length and the stored-token length.
-    let stored_hash = crate::sigv4::sha256_hex(mw.client_tokens[0].as_bytes());
-    let cand_short = crate::sigv4::sha256_hex(b"x");
-    let cand_long = crate::sigv4::sha256_hex(b"a-very-much-longer-wrong-token-value");
-    assert_eq!(stored_hash.len(), 64);
-    assert_eq!(cand_short.len(), 64);
-    assert_eq!(cand_long.len(), 64);
-}
-
-#[test]
-fn test_auth_mode_passthrough() {
-    let cfg = AuthCfg {
-        chain: vec![],
-        upstream_credentials: crate::auth::UpstreamCreds::Passthrough,
-        client_tokens: vec![],
-        modules: std::collections::HashMap::new(),
-    };
-    let mw = AuthMiddleware::new(&cfg);
-
-    // Passthrough allows all (auth is upstream's responsibility)
+fn test_empty_chain_is_open_front_door() {
+    let mw = AuthMiddleware::new_builtin(&crate::config::AuthCfg::default_none());
+    assert!(mw.is_open());
+    assert_eq!(mw.run_chain(None), ChainVerdict::Open);
+    assert_eq!(mw.run_chain(Some("anything")), ChainVerdict::Open);
     assert!(mw.validate_token(None));
     assert!(mw.validate_token(Some("anything")));
 }
 
+/// `upstream_credentials` selects WHOSE credential goes upstream; it does not gate the front
+/// door. With an empty chain both modes admit everything (the old none/passthrough split is now
+/// chain-shape for the front door + this knob for egress).
 #[test]
-fn test_auth_mode_none() {
-    let cfg = AuthCfg {
-        chain: vec![],
-        upstream_credentials: crate::auth::UpstreamCreds::Own,
-        client_tokens: vec![],
-        modules: std::collections::HashMap::new(),
-    };
-    let mw = AuthMiddleware::new(&cfg);
-
-    // None allows all (open relay)
-    assert!(mw.validate_token(None));
-    assert!(mw.validate_token(Some("anything")));
+fn test_open_door_regardless_of_upstream_creds() {
+    for uc in [UpstreamCreds::Own, UpstreamCreds::Passthrough] {
+        let mut cfg = crate::config::AuthCfg::default_none();
+        cfg.upstream_credentials = uc;
+        let mw = AuthMiddleware::new_builtin(&cfg);
+        assert_eq!(mw.upstream_creds, uc);
+        assert!(mw.validate_token(None));
+        assert!(mw.validate_token(Some("anything")));
+    }
 }
 
+/// `chain: [keys]` sets the `keys_in_chain` flag rather than installing a boxed module: virtual
+/// keys authenticate on the governance path (P1), so the entry records operator intent for
+/// validation/reporting and the boxed chain stays empty.
 #[test]
-fn test_auth_mode_none_with_client_tokens_is_inert_open_relay() {
-    // Regression (MEDIUM/correctness): `mode: none` together with a non-empty client_tokens list
-    // is an open relay — the listed tokens have ZERO enforcement effect. The constructor must not
-    // panic, must preserve the configured tokens, and `validate_token` must still admit EVERY
-    // request (including a token NOT in the list, and no token at all), proving the allowlist is
-    // inert. (A startup warning is emitted but is not asserted here — behaviour is the contract.)
-    let cfg = AuthCfg {
-        chain: vec![],
-        upstream_credentials: crate::auth::UpstreamCreds::Own,
-        client_tokens: vec!["listed-but-ignored".to_string()],
-        modules: std::collections::HashMap::new(),
-    };
-    let mw = AuthMiddleware::new(&cfg);
-    assert_eq!(mw.client_tokens, vec!["listed-but-ignored".to_string()]);
-    // Open relay: a token NOT on the list is admitted (the list does not constrain access).
-    assert!(mw.validate_token(Some("some-other-token")));
-    // And so is no token at all.
-    assert!(mw.validate_token(None));
+fn test_keys_in_chain_sets_flag_not_module() {
+    let mw = AuthMiddleware::new_builtin(&chain_cfg(&["keys"]));
+    assert!(mw.keys_in_chain, "chain: [keys] must set keys_in_chain");
+    assert!(
+        mw.chain_names().is_empty(),
+        "keys is engine-handled, never a boxed module"
+    );
+
+    let mw = AuthMiddleware::new_builtin(&crate::config::AuthCfg::default_none());
+    assert!(!mw.keys_in_chain, "an empty chain must not claim keys");
+
+    // keys + an external module: the flag is set AND the boxed module still identifies.
+    let mw = AuthMiddleware::new_builtin(&chain_cfg(&["keys", "test-groups-module"]));
+    assert!(mw.keys_in_chain);
+    assert_eq!(mw.chain_names(), vec!["test-groups-module"]);
+    assert!(mw.validate_token(Some("grp:dev")));
+    assert!(!mw.validate_token(Some("wrong")), "still fail-closed");
 }
 
 #[test]
@@ -296,24 +438,147 @@ fn test_upstream_credentials_deserialize() {
     );
 }
 
+// ===================== SYNTHESIZED PRINCIPAL KEY (governance re-key) =====================
+
+/// Helper: the granting table for one module, handed to `synthesize_principal_key` the way the
+/// middleware does (`app.role_bindings.get(identifying_module)`).
+fn role_table(
+    roles: &[(&str, crate::config::RoleBindingCfg)],
+) -> std::collections::BTreeMap<String, crate::config::RoleBindingCfg> {
+    roles
+        .iter()
+        .map(|(r, b)| (r.to_string(), b.clone()))
+        .collect()
+}
+
+/// OMITTED `allowed_pools` on a granting binding = ALL pools. The `VirtualKey` runtime encoding
+/// carries the intent intact (`None` = all pools). The key is pure auth: no inline caps of any
+/// kind exist on the struct (limits live on groups only), so the only policy handle is `group`.
 #[test]
-fn test_client_tokens_not_double_interpolated() {
-    // A client token that legitimately contains the literal `${...}` (legal in opaque API keys)
-    // must be passed through verbatim — the whole config file is already env-interpolated once
-    // at load, so AuthMiddleware::new must NOT interpolate again (which would re-expand or panic
-    // on an unset var). Regression for the dropped second interpolation pass.
-    let raw = "sk-${NOT_A_REAL_ENV_VAR}-suffix";
-    let cfg = AuthCfg {
-        chain: vec!["tokens".to_string()],
-        upstream_credentials: crate::auth::UpstreamCreds::Own,
-        client_tokens: vec![raw.to_string()],
-        modules: std::collections::HashMap::new(),
-    };
-    // Must not panic even though NOT_A_REAL_ENV_VAR is unset.
-    let mw = AuthMiddleware::new(&cfg);
-    assert_eq!(mw.client_tokens, vec![raw.to_string()]);
-    // And the verbatim token authenticates (it was not mangled by a second expansion pass).
-    assert!(mw.validate_token(Some(raw)));
+fn test_synth_key_omitted_pools_grants_all_pools() {
+    let table = role_table(&[("dev", binding(None, None, None))]);
+    let p = grp_principal("test:dev", &["dev"]);
+    let key = crate::governance::synthesize_principal_key(&p, Some(&table))
+        .expect("a bound role must synthesize a key");
+    assert_eq!(
+        key.allowed_scopes, None,
+        "omitted allowed_pools = ALL pools = None on the key"
+    );
+    assert!(key.enabled);
+    assert_eq!(key.id, "test:dev");
+    assert!(key.group.is_none());
+}
+
+/// REGRESSION for the C6 flip: an explicit `allowed_pools: []` is the EMPTY SET (no pools), no
+/// longer an "all pools" alias. When EVERY granting binding says `[]`, the union is empty and NO
+/// key is synthesized at all (fail closed - no data-plane access).
+#[test]
+fn test_synth_key_explicit_empty_pools_fails_closed_c6_flip() {
+    let table = role_table(&[("dev", binding(Some(&[]), None, None))]);
+    let p = grp_principal("test:dev", &["dev"]);
+    assert!(
+        crate::governance::synthesize_principal_key(&p, Some(&table)).is_none(),
+        "allowed_pools: [] must be the empty set (no access), not all pools"
+    );
+
+    // Two granting bindings, both explicit []: still the empty union, still no key.
+    let table = role_table(&[
+        ("dev", binding(Some(&[]), None, None)),
+        ("ops", binding(Some(&[]), None, None)),
+    ]);
+    let p = grp_principal("test:dev", &["dev", "ops"]);
+    assert!(
+        crate::governance::synthesize_principal_key(&p, Some(&table)).is_none(),
+        "an all-bindings-[] union must fail closed"
+    );
+
+    // But an explicit [] beside an omitted-pools binding does NOT poison the grant: omitted
+    // means ALL pools, which dominates the union.
+    let table = role_table(&[
+        ("dev", binding(Some(&[]), None, None)),
+        ("ops", binding(None, None, None)),
+    ]);
+    let p = grp_principal("test:dev", &["dev", "ops"]);
+    let key = crate::governance::synthesize_principal_key(&p, Some(&table))
+        .expect("an omitted-pools binding grants all pools");
+    assert_eq!(key.allowed_scopes, None);
+}
+
+/// Explicit pool lists union across granting bindings (deduplicated); an omitted-pools binding
+/// anywhere in the grant set widens the union to ALL pools.
+#[test]
+fn test_synth_key_pool_union_and_all_pools_dominates() {
+    let table = role_table(&[
+        ("a", binding(Some(&["p1"]), None, None)),
+        ("b", binding(Some(&["p2", "p1"]), None, None)),
+    ]);
+    let p = grp_principal("test:u", &["a", "b"]);
+    let key = crate::governance::synthesize_principal_key(&p, Some(&table))
+        .expect("bound roles must synthesize a key");
+    assert_eq!(
+        key.allowed_scopes,
+        Some(vec![ScopeRef::pool("p1"), ScopeRef::pool("p2")])
+    );
+
+    let table = role_table(&[
+        ("a", binding(Some(&["p1"]), None, None)),
+        ("c", binding(None, None, None)),
+    ]);
+    let p = grp_principal("test:u", &["a", "c"]);
+    let key = crate::governance::synthesize_principal_key(&p, Some(&table))
+        .expect("bound roles must synthesize a key");
+    assert_eq!(
+        key.allowed_scopes, None,
+        "one omitted-pools binding widens the union to ALL pools"
+    );
+}
+
+/// Unbound roles grant nothing, and no binding table at all grants nothing (fail closed).
+#[test]
+fn test_synth_key_unbound_roles_grant_nothing() {
+    let p = grp_principal("test:u", &["strangers"]);
+    // The identifying module has a table, but none of the principal's roles are bound in it.
+    let table = role_table(&[("dev", binding(None, None, None))]);
+    assert!(crate::governance::synthesize_principal_key(&p, Some(&table)).is_none());
+    // The identifying module has NO binding table (module-scoped fail-closed: bindings that live
+    // under another module's table are simply not passed in for this module).
+    assert!(crate::governance::synthesize_principal_key(&p, None).is_none());
+}
+
+/// A bound `group:` lands in the synthesized key's `group` binding (the group chain is where
+/// limits are enforced). The first granting role in the principal's role order wins.
+#[test]
+fn test_synth_key_bound_group_lands_in_group_binding() {
+    let table = role_table(&[("dev", binding(None, Some("eng"), None))]);
+    let p = grp_principal("test:dev", &["dev"]);
+    let key = crate::governance::synthesize_principal_key(&p, Some(&table))
+        .expect("a bound role must synthesize a key");
+    assert_eq!(key.group.as_deref(), Some("eng"));
+
+    // Two granting roles with groups: the first in role order carries.
+    let table = role_table(&[
+        ("dev", binding(None, Some("eng"), None)),
+        ("ops", binding(None, Some("platform"), None)),
+    ]);
+    let p = grp_principal("test:dev", &["dev", "ops"]);
+    let key = crate::governance::synthesize_principal_key(&p, Some(&table))
+        .expect("bound roles must synthesize a key");
+    assert_eq!(key.group.as_deref(), Some("eng"));
+}
+
+/// Reserved bucket namespaces: a principal id shaped like a group bucket (`group:...`) or a real
+/// virtual key id (`vk_...`) would alias another ledger cell, so no key is synthesized (fail
+/// closed) even when a binding grants.
+#[test]
+fn test_synth_key_reserved_id_prefixes_refused() {
+    let table = role_table(&[("dev", binding(None, None, None))]);
+    for id in ["group:evil", "vk_0123456789abcdef"] {
+        let p = grp_principal(id, &["dev"]);
+        assert!(
+            crate::governance::synthesize_principal_key(&p, Some(&table)).is_none(),
+            "reserved principal id '{id}' must not synthesize a key"
+        );
+    }
 }
 
 /// Helper: build a request with a single header set, for `extract_client_token` unit tests.
@@ -775,20 +1040,20 @@ fn test_every_router_ingress_path_maps_to_non_fallback_proto() {
     }
 }
 
-/// End-to-end through the real router + `auth_middleware` in TOKEN mode: the busbar client
-/// token authenticates via `x-goog-api-key` (Gemini SDK), via `x-api-key` (Anthropic SDK), and
-/// via `Authorization: Bearer`. A missing/wrong token is rejected 401 with the native error
-/// envelope shaped for the inferred ingress protocol (`application/json`, not `text/plain`).
-#[cfg(feature = "auth-tokens")]
+/// End-to-end through the real router + `auth_middleware` with a CONFIGURED chain: the busbar
+/// client credential authenticates via `x-goog-api-key` (Gemini SDK), via `x-api-key` (Anthropic
+/// SDK), and via `Authorization: Bearer`. A missing/wrong credential is rejected 401 with the
+/// native error envelope shaped for the inferred ingress protocol (`application/json`, not
+/// `text/plain`). The chain is the test-groups-module (`grp:<role>` identifies).
 #[tokio::test]
-async fn test_token_mode_accepts_all_carriers_and_native_401() {
+async fn test_chain_accepts_all_carriers_and_native_401() {
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
     use serde_json::json;
     use std::sync::Arc;
 
     crate::metrics::init();
 
-    let token = "busbar-client-token";
+    let token = "grp:carrier";
 
     let state = Arc::new(MockServerState::new());
     // Three admitted requests reach the upstream; queue three OK bodies.
@@ -808,12 +1073,7 @@ async fn test_token_mode_accepts_all_carriers_and_native_401() {
     }
     let server = MockServer::new(state).await;
 
-    let auth_cfg = crate::config::AuthCfg {
-        chain: vec!["tokens".to_string()],
-        upstream_credentials: crate::auth::UpstreamCreds::Own,
-        client_tokens: vec![token.to_string()],
-        modules: std::collections::HashMap::new(),
-    };
+    let auth_cfg = chain_cfg(&["test-groups-module"]);
     let app = TestApp::new()
         .lane(
             LaneSpec::new(
@@ -824,7 +1084,7 @@ async fn test_token_mode_accepts_all_carriers_and_native_401() {
             .api_key("busbar-upstream-key"),
         )
         .pool("pa", &[(0, 1)])
-        .auth(Arc::new(AuthMiddleware::new(&auth_cfg)))
+        .auth(Arc::new(AuthMiddleware::new_builtin(&auth_cfg)))
         .build();
 
     let router = crate::build_router(app);
@@ -930,7 +1190,6 @@ async fn test_token_mode_accepts_all_carriers_and_native_401() {
 /// RESPECTIVE protocol's native error envelope — not an Anthropic/OpenAI-shaped body. The
 /// existing multi-carrier test only covers the Anthropic path, leaving these two protocol
 /// envelopes untested on the auth boundary (an indistinguishability failure if regressed).
-#[cfg(feature = "auth-tokens")]
 #[tokio::test]
 async fn test_cohere_and_responses_ingress_token_mode_native_401() {
     use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
@@ -943,12 +1202,7 @@ async fn test_cohere_and_responses_ingress_token_mode_native_401() {
     let state = Arc::new(MockServerState::new());
     let server = MockServer::new(state).await;
 
-    let auth_cfg = crate::config::AuthCfg {
-        chain: vec!["tokens".to_string()],
-        upstream_credentials: crate::auth::UpstreamCreds::Own,
-        client_tokens: vec!["the-real-token".to_string()],
-        modules: std::collections::HashMap::new(),
-    };
+    let auth_cfg = chain_cfg(&["test-groups-module"]);
     let app = TestApp::new()
         .lane(
             LaneSpec::new(
@@ -959,7 +1213,7 @@ async fn test_cohere_and_responses_ingress_token_mode_native_401() {
             .api_key("busbar-upstream-key"),
         )
         .pool("pa", &[(0, 1)])
-        .auth(Arc::new(AuthMiddleware::new(&auth_cfg)))
+        .auth(Arc::new(AuthMiddleware::new_builtin(&auth_cfg)))
         .build();
 
     let router = crate::build_router(app);
@@ -1035,7 +1289,6 @@ async fn test_cohere_and_responses_ingress_token_mode_native_401() {
 /// status + typing headers were exercised only by a direct `unauthorized_response` call that
 /// bypasses the middleware → router stack, so a regression dropping the 403/headers in the full
 /// pipeline would be uncaught.
-#[cfg(feature = "auth-tokens")]
 #[tokio::test]
 async fn test_bedrock_ingress_wrong_token_is_403_native_envelope() {
     use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
@@ -1048,12 +1301,7 @@ async fn test_bedrock_ingress_wrong_token_is_403_native_envelope() {
     let state = Arc::new(MockServerState::new());
     let server = MockServer::new(state).await;
 
-    let auth_cfg = crate::config::AuthCfg {
-        chain: vec!["tokens".to_string()],
-        upstream_credentials: crate::auth::UpstreamCreds::Own,
-        client_tokens: vec!["the-real-token".to_string()],
-        modules: std::collections::HashMap::new(),
-    };
+    let auth_cfg = chain_cfg(&["test-groups-module"]);
     let app = TestApp::new()
         .lane(
             LaneSpec::new(
@@ -1064,7 +1312,7 @@ async fn test_bedrock_ingress_wrong_token_is_403_native_envelope() {
             .api_key("busbar-upstream-key"),
         )
         .pool("pa", &[(0, 1)])
-        .auth(Arc::new(AuthMiddleware::new(&auth_cfg)))
+        .auth(Arc::new(AuthMiddleware::new_builtin(&auth_cfg)))
         .build();
 
     let router = crate::build_router(app);
@@ -1125,7 +1373,6 @@ async fn test_bedrock_ingress_wrong_token_is_403_native_envelope() {
 /// "INVALID_ARGUMENT"` (a real Generative Language API bad key is 400 INVALID_ARGUMENT, NOT
 /// 401/UNAUTHENTICATED). The stable-v1 path was previously mis-shaped as an OpenAI 401 because
 /// `proto_for_path` had no `/v1/models/` arm — this exercises both prefixes through the full stack.
-#[cfg(feature = "auth-tokens")]
 #[tokio::test]
 async fn test_gemini_ingress_wrong_token_is_native_bad_key_envelope() {
     use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
@@ -1137,12 +1384,7 @@ async fn test_gemini_ingress_wrong_token_is_native_bad_key_envelope() {
     let state = Arc::new(MockServerState::new());
     let server = MockServer::new(state).await;
 
-    let auth_cfg = crate::config::AuthCfg {
-        chain: vec!["tokens".to_string()],
-        upstream_credentials: crate::auth::UpstreamCreds::Own,
-        client_tokens: vec!["the-real-token".to_string()],
-        modules: std::collections::HashMap::new(),
-    };
+    let auth_cfg = chain_cfg(&["test-groups-module"]);
     let app = TestApp::new()
         .lane(
             LaneSpec::new(
@@ -1153,7 +1395,7 @@ async fn test_gemini_ingress_wrong_token_is_native_bad_key_envelope() {
             .api_key("busbar-upstream-key"),
         )
         .pool("pa", &[(0, 1)])
-        .auth(Arc::new(AuthMiddleware::new(&auth_cfg)))
+        .auth(Arc::new(AuthMiddleware::new_builtin(&auth_cfg)))
         .build();
 
     let router = crate::build_router(app);
@@ -1209,7 +1451,6 @@ async fn test_gemini_ingress_wrong_token_is_native_bad_key_envelope() {
 /// auth branch with the inferred-protocol native 401 envelope — never routed down the admin
 /// branch (which would early-return without the `CallerToken` extension and 500 in a non-admin
 /// handler). `/apix/v1/messages` infers the anthropic protocol via the `/v1/messages` suffix.
-#[cfg(feature = "auth-tokens")]
 #[tokio::test]
 async fn test_admin_prefix_is_boundary_safe() {
     use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
@@ -1221,12 +1462,7 @@ async fn test_admin_prefix_is_boundary_safe() {
     let state = Arc::new(MockServerState::new());
     let server = MockServer::new(state).await;
 
-    let auth_cfg = crate::config::AuthCfg {
-        chain: vec!["tokens".to_string()],
-        upstream_credentials: crate::auth::UpstreamCreds::Own,
-        client_tokens: vec!["the-real-token".to_string()],
-        modules: std::collections::HashMap::new(),
-    };
+    let auth_cfg = chain_cfg(&["test-groups-module"]);
     let app = TestApp::new()
         .lane(
             LaneSpec::new(
@@ -1237,7 +1473,7 @@ async fn test_admin_prefix_is_boundary_safe() {
             .api_key("busbar-upstream-key"),
         )
         .pool("apix", &[(0, 1)])
-        .auth(Arc::new(AuthMiddleware::new(&auth_cfg)))
+        .auth(Arc::new(AuthMiddleware::new_builtin(&auth_cfg)))
         .build();
 
     let router = crate::build_router(app);
@@ -1290,7 +1526,7 @@ async fn test_admin_prefix_is_boundary_safe() {
 /// dropped the `if key.enabled` guard would otherwise pass CI — an authz bypass).
 #[tokio::test]
 async fn test_disabled_virtual_key_is_rejected_401() {
-    use crate::governance::{GovState, SqliteStore, Store, VirtualKey};
+    use crate::governance::{GovState, MemoryStore};
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
     use serde_json::json;
     use std::sync::Arc;
@@ -1310,24 +1546,34 @@ async fn test_disabled_virtual_key_is_rejected_401() {
         });
     let server = MockServer::new(state).await;
 
-    let disabled_secret = "sk-vk-disabled";
-    let enabled_secret = "sk-vk-enabled";
-    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
-    let mk = |id: &str, secret: &str, enabled: bool| VirtualKey {
-        id: id.to_string(),
-        key_hash: crate::sigv4::sha256_hex(secret.as_bytes()),
-        name: id.to_string(),
-        allowed_pools: vec!["pa".to_string()],
-        max_budget_cents: None,
-        budget_period: "total".to_string(),
-        rpm_limit: None,
-        tpm_limit: None,
-        enabled,
-        created_at: 0,
+    let store = Arc::new(MemoryStore::new());
+    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+        &[7u8; 32],
+        crate::governance::signing::DEFAULT_KID,
+    );
+    // An admin token makes the governance engine ACTIVE (the vkey-resolution branch enforces). In a
+    // real deploy keys can only be minted through the admin API, which requires this token — so a
+    // store holding minted keys implies an admin token is set. Without it the engine is INERT and
+    // the static auth chain applies (see `test_governance_inert_without_admin_token_*`).
+    let gov = Arc::new(
+        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
+    );
+    let mk_spec = |name: &str| crate::governance::NewKeySpec {
+        name: name.to_string(),
+        allowed_pools: Some(vec!["pa".to_string()]),
+        group: None,
+        labels: Default::default(),
     };
-    store.put_key(&mk("kdis", disabled_secret, false)).unwrap();
-    store.put_key(&mk("kena", enabled_secret, true)).unwrap();
-    let gov = Arc::new(GovState::new(store, 0, 0, None).unwrap());
+    let (dis_key, disabled_secret) = gov
+        .mint_signed(mk_spec("kdis"), 2_000_000_000, 1_000_000_000)
+        .unwrap();
+    let (_ena_key, enabled_secret) = gov
+        .mint_signed(mk_spec("kena"), 2_000_000_000, 1_000_000_000)
+        .unwrap();
+    // Freeze the first key via the PATCH-shaped update (mint always starts `enabled: true`).
+    gov.update_key(&dis_key.id, Some(false), None).unwrap();
+    let disabled_secret = disabled_secret.as_str();
+    let enabled_secret = enabled_secret.as_str();
 
     let app = TestApp::new()
         .lane(
@@ -1399,7 +1645,7 @@ async fn test_disabled_virtual_key_is_rejected_401() {
     server.shutdown().await;
 }
 
-/// Regression (MEDIUM/correctness): `auth.mode=none` is an open relay, but governance supersedes
+/// `auth.mode=none` is an open relay, but governance supersedes
 /// it. With governance enabled AND auth.mode explicitly None, a request that presents NO token
 /// must still be rejected 401 — none-mode's accept-every-request semantics are NOT honoured. This
 /// pins the documented override (and the parallel one-shot operator warning the override emits)
@@ -1407,7 +1653,7 @@ async fn test_disabled_virtual_key_is_rejected_401() {
 /// silently re-open the relay.
 #[tokio::test]
 async fn test_none_mode_with_governance_still_requires_virtual_key() {
-    use crate::governance::{GovState, SqliteStore, Store, VirtualKey};
+    use crate::governance::{GovState, MemoryStore};
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
     use serde_json::json;
     use std::sync::Arc;
@@ -1425,23 +1671,31 @@ async fn test_none_mode_with_governance_still_requires_virtual_key() {
         });
     let server = MockServer::new(state).await;
 
-    let secret = "sk-vk-ok";
-    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
-    store
-        .put_key(&VirtualKey {
-            id: "k".to_string(),
-            key_hash: crate::sigv4::sha256_hex(secret.as_bytes()),
-            name: "k".to_string(),
-            allowed_pools: vec!["pa".to_string()],
-            max_budget_cents: None,
-            budget_period: "total".to_string(),
-            rpm_limit: None,
-            tpm_limit: None,
-            enabled: true,
-            created_at: 0,
-        })
+    let store = Arc::new(MemoryStore::new());
+    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+        &[7u8; 32],
+        crate::governance::signing::DEFAULT_KID,
+    );
+    // An admin token makes the governance engine ACTIVE (the vkey-resolution branch enforces). In a
+    // real deploy keys can only be minted through the admin API, which requires this token — so a
+    // store holding minted keys implies an admin token is set. Without it the engine is INERT and
+    // the static auth chain applies (see `test_governance_inert_without_admin_token_*`).
+    let gov = Arc::new(
+        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
+    );
+    let (_key, secret) = gov
+        .mint_signed(
+            crate::governance::NewKeySpec {
+                name: "k".to_string(),
+                allowed_pools: Some(vec!["pa".to_string()]),
+                group: None,
+                labels: Default::default(),
+            },
+            2_000_000_000,
+            1_000_000_000,
+        )
         .unwrap();
-    let gov = Arc::new(GovState::new(store, 0, 0, None).unwrap());
+    let secret = secret.as_str();
 
     let app = TestApp::new()
         .lane(
@@ -1494,13 +1748,12 @@ async fn test_none_mode_with_governance_still_requires_virtual_key() {
     server.shutdown().await;
 }
 
-/// Regression (LOW/test-coverage): `auth.mode=passthrough` + governance enabled is a documented
-/// UNSUPPORTED deployment. Passthrough's contract is "accept any caller credential and forward it
-/// upstream", but governance supersedes it: every request must resolve to a valid ENABLED virtual
-/// key. The middleware emits a one-shot operator warning (`WARN_ONCE` at the top of the governance
-/// branch) and then enforces the governance lookup. Following the project precedent
-/// (`test_auth_mode_none_with_client_tokens_is_inert_open_relay` and
-/// `test_none_mode_with_governance_still_requires_virtual_key`), the warn line itself is NOT
+/// `upstream_credentials: passthrough` + governance enabled is a
+/// documented UNSUPPORTED deployment. Passthrough's contract is "accept any caller credential and
+/// forward it upstream", but governance supersedes it: every request must resolve to a valid
+/// ENABLED virtual key. The middleware emits a one-shot operator warning (`WARN_ONCE` at the top
+/// of the governance branch) and then enforces the governance lookup. Following the project
+/// precedent (`test_none_mode_with_governance_still_requires_virtual_key`), the warn line itself is NOT
 /// asserted — it is a one-shot, process-global side effect emitted on a worker thread, so its
 /// documented BEHAVIOURAL consequence is the contract: passthrough's accept-and-forward semantics
 /// are NOT honoured. This pins it end-to-end through the real router so a future refactor can't
@@ -1511,7 +1764,7 @@ async fn test_none_mode_with_governance_still_requires_virtual_key() {
 ///   - a valid enabled virtual key → admitted past auth (governance is what is honoured)
 #[tokio::test]
 async fn test_passthrough_mode_with_governance_still_requires_virtual_key() {
-    use crate::governance::{GovState, SqliteStore, Store, VirtualKey};
+    use crate::governance::{GovState, MemoryStore};
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
     use serde_json::json;
     use std::sync::Arc;
@@ -1529,23 +1782,31 @@ async fn test_passthrough_mode_with_governance_still_requires_virtual_key() {
         });
     let server = MockServer::new(state).await;
 
-    let secret = "sk-vk-pt-ok";
-    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
-    store
-        .put_key(&VirtualKey {
-            id: "k".to_string(),
-            key_hash: crate::sigv4::sha256_hex(secret.as_bytes()),
-            name: "k".to_string(),
-            allowed_pools: vec!["pa".to_string()],
-            max_budget_cents: None,
-            budget_period: "total".to_string(),
-            rpm_limit: None,
-            tpm_limit: None,
-            enabled: true,
-            created_at: 0,
-        })
+    let store = Arc::new(MemoryStore::new());
+    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+        &[7u8; 32],
+        crate::governance::signing::DEFAULT_KID,
+    );
+    // An admin token makes the governance engine ACTIVE (the vkey-resolution branch enforces). In a
+    // real deploy keys can only be minted through the admin API, which requires this token — so a
+    // store holding minted keys implies an admin token is set. Without it the engine is INERT and
+    // the static auth chain applies (see `test_governance_inert_without_admin_token_*`).
+    let gov = Arc::new(
+        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
+    );
+    let (_key, secret) = gov
+        .mint_signed(
+            crate::governance::NewKeySpec {
+                name: "k".to_string(),
+                allowed_pools: Some(vec!["pa".to_string()]),
+                group: None,
+                labels: Default::default(),
+            },
+            2_000_000_000,
+            1_000_000_000,
+        )
         .unwrap();
-    let gov = Arc::new(GovState::new(store, 0, 0, None).unwrap());
+    let secret = secret.as_str();
 
     let app = TestApp::new()
         .lane(
@@ -1613,177 +1874,9 @@ async fn test_passthrough_mode_with_governance_still_requires_virtual_key() {
     server.shutdown().await;
 }
 
-/// A `tracing::Layer` that records the messages of WARN-level events it sees, so a test can
-/// assert a particular `tracing::warn!` fired. Mirrors the helper used in eventstream/config
-/// tests; kept local to the auth test module. Only the `auth-tokens`-gated test below uses it.
-#[cfg(feature = "auth-tokens")]
-#[derive(Clone, Default)]
-struct WarnCapture(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
-
-#[cfg(feature = "auth-tokens")]
-impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for WarnCapture {
-    fn on_event(
-        &self,
-        event: &tracing::Event<'_>,
-        _ctx: tracing_subscriber::layer::Context<'_, S>,
-    ) {
-        if *event.metadata().level() != tracing::Level::WARN {
-            return;
-        }
-        struct Vis(String);
-        impl tracing::field::Visit for Vis {
-            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-                if field.name() == "message" {
-                    self.0 = format!("{value:?}");
-                }
-            }
-        }
-        let mut vis = Vis(String::new());
-        event.record(&mut vis);
-        if let Ok(mut msgs) = self.0.lock() {
-            msgs.push(vis.0);
-        }
-    }
-}
-
-/// Regression (LOW #13, completeness): `auth.mode=token` WITH a non-empty static `client_tokens`
-/// allowlist AND governance enabled is a silently inert configuration — governance supersedes the
-/// static allowlist, so the configured tokens have ZERO enforcement effect. The OLD code emitted
-/// NO diagnostic for this pairing (only the passthrough/none overrides warned), so an operator who
-/// believed the static list still gated access had no signal that it was dead. The fix adds a
-/// parallel one-shot `WARN_ONCE` inside the governance branch, gated on
-/// `auth_mode()==Token && !client_tokens.is_empty()`.
-///
-/// This pins the WARNING itself (not just behaviour): the inert-allowlist behaviour is unchanged
-/// by the fix, so a behaviour-only assertion would pass against the old code too. We drive the
-/// real router + `auth_middleware` on a CURRENT-THREAD runtime so the synchronous `tracing::warn!`
-/// fires on the same thread as the thread-local subscriber (`with_default`) and is captured — the
-/// multi-thread end-to-end siblings (none/passthrough) deliberately could NOT assert their warn
-/// line for exactly this thread-affinity reason. Against the old code the message assertion FAILS
-/// (no such warning); it passes once the diagnostic is emitted. The static `WARN_ONCE` is
-/// process-global, but this is the ONLY test that exercises the token+governance+non-empty pairing,
-/// so it observes the first (and only) firing.
-#[cfg(feature = "auth-tokens")]
-#[test]
-fn test_token_mode_with_governance_and_client_tokens_warns_inert_allowlist() {
-    use crate::governance::{GovState, SqliteStore, Store, VirtualKey};
-    use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-    use serde_json::json;
-    use std::sync::Arc;
-    use tracing_subscriber::layer::SubscriberExt as _;
-
-    crate::metrics::init();
-
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("current-thread runtime must build");
-
-    let cap = WarnCapture::default();
-    let subscriber = tracing_subscriber::registry().with(cap.clone());
-
-    let admitted = tracing::subscriber::with_default(subscriber, || {
-        rt.block_on(async {
-                let state = Arc::new(MockServerState::new());
-                state.push(MockResponse::Ok {
-                    status: axum::http::StatusCode::OK,
-                    body: json!({
-                        "id": "msg_1",
-                        "type": "message",
-                        "role": "assistant",
-                        "model": "test-model",
-                        "content": [{"type": "text", "text": "hi"}],
-                        "stop_reason": "end_turn",
-                        "usage": {"input_tokens": 1, "output_tokens": 1}
-                    }),
-                });
-                let server = MockServer::new(state).await;
-
-                // The virtual key the request actually authenticates with under governance.
-                let vk_secret = "sk-vk-token-gov";
-                let store = Arc::new(SqliteStore::open_in_memory().unwrap());
-                store
-                    .put_key(&VirtualKey {
-                        id: "k".to_string(),
-                        key_hash: crate::sigv4::sha256_hex(vk_secret.as_bytes()),
-                        name: "k".to_string(),
-                        allowed_pools: vec!["pa".to_string()],
-                        max_budget_cents: None,
-                        budget_period: "total".to_string(),
-                        rpm_limit: None,
-                        tpm_limit: None,
-                        enabled: true,
-                        created_at: 0,
-                    })
-                    .unwrap();
-                let gov = Arc::new(GovState::new(store, 0, 0, None).unwrap());
-
-                // auth.mode=token WITH a non-empty static allowlist — the inert combination. The
-                // listed static token is NOT the governance virtual key.
-                let auth_cfg = crate::config::AuthCfg {
-                    chain: vec!["tokens".to_string()], upstream_credentials: crate::auth::UpstreamCreds::Own,
-                    client_tokens: vec!["static-allowlisted-but-inert".to_string()],
-                    modules: std::collections::HashMap::new(),
-                };
-
-                let app = TestApp::new()
-                    .lane(
-                        LaneSpec::new(
-                            "test-model",
-                            crate::proto::Protocol::anthropic(),
-                            &server.base_url(),
-                        )
-                        .api_key("busbar-upstream-key"),
-                    )
-                    .pool("pa", &[(0, 1)])
-                    .auth(Arc::new(AuthMiddleware::new(&auth_cfg)))
-                    .governance(gov)
-                    .build();
-
-                let router = crate::build_router(app);
-                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-                let addr = listener.local_addr().unwrap();
-                // Spawn on the SAME current-thread runtime so the server-side middleware (and its
-                // synchronous warn!) runs on this thread, under the installed subscriber.
-                tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-
-                let client = reqwest::Client::new();
-                let url = format!("http://{addr}/pa/v1/messages");
-                let body = json!({"model": "pa", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 16})
-                    .to_string();
-
-                // Authenticate with the VIRTUAL KEY (governance is what is honoured), exercising the
-                // governance branch where the new warning lives.
-                let resp = client
-                    .post(&url)
-                    .bearer_auth(vk_secret)
-                    .body(body)
-                    .send()
-                    .await
-                    .unwrap();
-                resp.status().as_u16()
-            })
-    });
-
-    assert_eq!(
-        admitted, 200,
-        "the valid enabled virtual key must pass governance auth (got {admitted})"
-    );
-
-    let msgs = cap.0.lock().expect("warn capture mutex");
-    assert!(
-        msgs.iter().any(|m| {
-            let lc = m.to_ascii_lowercase();
-            lc.contains("auth.chain") && lc.contains("governance") && lc.contains("client_tokens")
-        }),
-        "token+governance with a non-empty client_tokens allowlist must WARN that governance \
-             supersedes the static allowlist; captured warnings: {msgs:?}"
-    );
-}
-
 #[test]
 fn test_extract_admin_header_token_empty_filtered() {
-    // Regression (LOW/security-hardening): a present-but-blank `x-admin-token` must be treated as
+    // A present-but-blank `x-admin-token` must be treated as
     // ABSENT, mirroring the empty-filter `extract_client_token` applies to the vendor carriers.
     // The OLD code mapped a blank header to `Some("")` (no `.filter(|t| !t.is_empty())`), so this
     // unit test fails against it; the filtered helper now yields `None`.
@@ -1812,7 +1905,7 @@ fn test_extract_admin_header_token_empty_filtered() {
     assert_eq!(extract_admin_header_token(&absent), None);
 }
 
-/// Regression (LOW/security-hardening): a present-but-blank `x-admin-token` must be rejected on
+/// A present-but-blank `x-admin-token` must be rejected on
 /// the admin surface. Driven end-to-end through the real router + `auth_middleware` so the
 /// extraction + constant-time compare are exercised together. A correct token via the same header
 /// authorizes, proving the 401 is the empty-filter and not a blanket reject.
@@ -1820,14 +1913,14 @@ fn test_extract_admin_header_token_empty_filtered() {
 #[cfg(feature = "auth-admin-tokens")]
 #[tokio::test]
 async fn test_admin_blank_header_token_rejected() {
-    use crate::governance::{GovState, SqliteStore};
+    use crate::governance::{GovState, MemoryStore};
     use crate::test_support::TestApp;
     use std::sync::Arc;
 
     crate::metrics::init();
 
-    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
-    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
+    let store = Arc::new(MemoryStore::new());
+    let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
     let app = TestApp::new().governance(gov).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1867,6 +1960,68 @@ async fn test_admin_blank_header_token_rejected() {
     handle.abort();
 }
 
+/// The `admin.forbidden` audit (class-10a) is bounded by the SAME per-(principal, window) counter
+/// the mutation rate limiter already uses, not written unconditionally. Drives 50 forbidden GETs
+/// (an UNBOUND role, so `admin_scope_for` returns `Grants::default()` and even a read is 403) from
+/// ONE principal and asserts the durable-write-through only fired once or twice, not 50 times.
+#[tokio::test]
+async fn forbidden_admin_requests_audit_once_per_window() {
+    use crate::test_support::TestApp;
+
+    crate::metrics::init();
+
+    // Unique per test run so concurrently-running tests sharing the process-global `AUDIT` ring
+    // cannot be counted here, and this test's own records cannot be miscounted by a sibling.
+    let unique = format!(
+        "unbound-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let principal_id = format!("test:{unique}");
+
+    let app = TestApp::new()
+        .admin_chain(vec!["test-scope-module".to_string()])
+        .build();
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    let url = format!("http://{addr}/api/v1/admin/keys");
+
+    for _ in 0..50 {
+        let r = client
+            .get(&url)
+            .bearer_auth(format!("grp:{unique}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            r.status().as_u16(),
+            403,
+            "an unbound role must be forbidden even on a GET (Grants::default() never allows \
+             ReadOnly), got {}",
+            r.status()
+        );
+    }
+
+    let n = crate::admin::audit::AUDIT
+        .export()
+        .iter()
+        .filter(|e| e.action == "admin.forbidden" && e.principal == principal_id)
+        .count();
+    assert!(
+        (1..=2).contains(&n),
+        "expected 1 or 2 durable audit records for 50 forbidden requests from one principal \
+         (bounded by the per-(principal, window) counter, with <=2 absorbing a window-boundary \
+         straddle), got {n}"
+    );
+
+    handle.abort();
+}
+
 /// Regression for the admin-token carrier-level timing oracle (MEDIUM/security): the two admin
 /// carriers (Authorization: Bearer and x-admin-token) are combined with a bitwise-OR fold, NOT a
 /// short-circuiting `||`. Behaviorally this means EITHER carrier alone authorizes, AND a request
@@ -1880,14 +2035,14 @@ async fn test_admin_blank_header_token_rejected() {
 #[cfg(feature = "auth-admin-tokens")]
 #[tokio::test]
 async fn test_admin_token_both_carriers_or_fold_no_short_circuit() {
-    use crate::governance::{GovState, SqliteStore};
+    use crate::governance::{GovState, MemoryStore};
     use crate::test_support::TestApp;
     use std::sync::Arc;
 
     crate::metrics::init();
 
-    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
-    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
+    let store = Arc::new(MemoryStore::new());
+    let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
     let app = TestApp::new().governance(gov).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1959,14 +2114,14 @@ async fn test_admin_token_both_carriers_or_fold_no_short_circuit() {
 #[cfg(feature = "auth-admin-tokens")]
 #[tokio::test]
 async fn test_admin_token_not_acceptable_via_vendor_carriers() {
-    use crate::governance::{GovState, SqliteStore};
+    use crate::governance::{GovState, MemoryStore};
     use crate::test_support::TestApp;
     use std::sync::Arc;
 
     crate::metrics::init();
 
-    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
-    let gov = Arc::new(GovState::new(store, 0, 0, Some("admintok".to_string())).unwrap());
+    let store = Arc::new(MemoryStore::new());
+    let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
     let app = TestApp::new().governance(gov).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2045,7 +2200,7 @@ async fn test_admin_token_not_acceptable_via_vendor_carriers() {
 /// regression that stopped threading those carriers into `gov.lookup` would otherwise pass CI.
 #[tokio::test]
 async fn test_governance_accepts_vendor_carriers_and_native_401() {
-    use crate::governance::{GovState, SqliteStore, Store, VirtualKey};
+    use crate::governance::{GovState, MemoryStore};
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
     use serde_json::json;
     use std::sync::Arc;
@@ -2070,23 +2225,31 @@ async fn test_governance_accepts_vendor_carriers_and_native_401() {
     }
     let server = MockServer::new(state).await;
 
-    let secret = "sk-vk-carrier";
-    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
-    store
-        .put_key(&VirtualKey {
-            id: "kc".to_string(),
-            key_hash: crate::sigv4::sha256_hex(secret.as_bytes()),
-            name: "kc".to_string(),
-            allowed_pools: vec!["pa".to_string()],
-            max_budget_cents: None,
-            budget_period: "total".to_string(),
-            rpm_limit: None,
-            tpm_limit: None,
-            enabled: true,
-            created_at: 0,
-        })
+    let store = Arc::new(MemoryStore::new());
+    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+        &[7u8; 32],
+        crate::governance::signing::DEFAULT_KID,
+    );
+    // An admin token makes the governance engine ACTIVE (the vkey-resolution branch enforces). In a
+    // real deploy keys can only be minted through the admin API, which requires this token — so a
+    // store holding minted keys implies an admin token is set. Without it the engine is INERT and
+    // the static auth chain applies (see `test_governance_inert_without_admin_token_*`).
+    let gov = Arc::new(
+        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
+    );
+    let (_key, token) = gov
+        .mint_signed(
+            crate::governance::NewKeySpec {
+                name: "kc".to_string(),
+                allowed_pools: Some(vec!["pa".to_string()]),
+                group: None,
+                labels: Default::default(),
+            },
+            2_000_000_000,
+            1_000_000_000,
+        )
         .unwrap();
-    let gov = Arc::new(GovState::new(store, 0, 0, None).unwrap());
+    let secret = token.as_str();
 
     let app = TestApp::new()
         .lane(
@@ -2169,14 +2332,14 @@ async fn test_governance_accepts_vendor_carriers_and_native_401() {
 
 /// Regression for the empty-token governance bypass (finding auth.rs): the governance branch
 /// must reject a request that presents NO credential BEFORE calling `gov.lookup`, rather than
-/// looking up `sha256("")`. We deliberately seed a virtual key whose `key_hash == sha256("")` —
+/// looking up `sha256("")`. We deliberately seed a virtual key whose `generation_hash == sha256("")` —
 /// the exact pathological state (reachable via direct DB writes / a future seeding path that
 /// bypasses `generate_secret`) the finding warns about — and confirm an unauthenticated request
 /// is STILL rejected 401 instead of resolving to that key. Before the fix, the no-token request
 /// would call `gov.lookup("")`, match this enabled key, and be admitted unauthenticated.
 #[tokio::test]
 async fn test_governance_rejects_empty_token_even_if_empty_secret_key_exists() {
-    use crate::governance::{GovState, SqliteStore, Store, VirtualKey};
+    use crate::governance::{GovState, MemoryStore, ScopeRef, Store, VirtualKey};
     use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
     use serde_json::json;
     use std::sync::Arc;
@@ -2187,23 +2350,28 @@ async fn test_governance_rejects_empty_token_even_if_empty_secret_key_exists() {
     let state = Arc::new(MockServerState::new());
     let server = MockServer::new(state).await;
 
-    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+    let store = Arc::new(MemoryStore::new());
     // The pathological key: its hash is sha256("") — what an empty-token lookup would compute.
     store
         .put_key(&VirtualKey {
             id: "empty".to_string(),
-            key_hash: crate::sigv4::sha256_hex(b""),
+            generation_hash: crate::sigv4::sha256_hex(b""),
             name: "empty".to_string(),
-            allowed_pools: vec!["pa".to_string()],
-            max_budget_cents: None,
-            budget_period: "total".to_string(),
-            rpm_limit: None,
-            tpm_limit: None,
+            allowed_scopes: Some(vec![ScopeRef::pool("pa")]),
             enabled: true,
             created_at: 0,
+            group: None,
+            labels: Default::default(),
+            expires_at: None,
+            deleted_at: None,
+            revision: 1,
         })
         .unwrap();
-    let gov = Arc::new(GovState::new(store, 0, 0, None).unwrap());
+    // An admin token makes the governance engine ACTIVE (the vkey-resolution branch enforces). In a
+    // real deploy keys can only be minted through the admin API, which requires this token — so a
+    // store holding minted keys implies an admin token is set. Without it the engine is INERT and
+    // the static auth chain applies (see `test_governance_inert_without_admin_token_*`).
+    let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
 
     let app = TestApp::new()
         .lane(
@@ -2257,39 +2425,135 @@ async fn test_governance_rejects_empty_token_even_if_empty_secret_key_exists() {
     server.shutdown().await;
 }
 
+/// A signed-token key must STOP authenticating after `revoke`, even though `revoke` denylists the
+/// subject but DELIBERATELY leaves `enabled = true` (it preserves the binding for history) — so
+/// the `enabled` check alone is not enough, `verify_token` must also consult the denylist.
+/// (Formerly also covered the now-removed legacy hashed-secret `gov.lookup(secret)` fallback,
+/// which had the same regression via a separate code path; that path no longer exists — see 1.5.0
+/// migration notes, "1.4.x keys no longer authenticate" — so this test now exercises only the
+/// signed-token path.)
+#[tokio::test]
+async fn test_governance_revoked_signed_token_key_rejected() {
+    use crate::governance::{GovState, MemoryStore};
+    use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
+    use serde_json::json;
+    use std::sync::Arc;
+
+    crate::metrics::init();
+
+    let state = Arc::new(MockServerState::new());
+    let server = MockServer::new(state).await;
+
+    let store = Arc::new(MemoryStore::new());
+    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+        &[7u8; 32],
+        crate::governance::signing::DEFAULT_KID,
+    );
+    let gov = Arc::new(
+        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
+    );
+    let (key, token) = gov
+        .mint_signed(
+            crate::governance::NewKeySpec {
+                name: "revocable".to_string(),
+                allowed_pools: Some(vec!["pa".to_string()]),
+                group: None,
+                labels: Default::default(),
+            },
+            2_000_000_000,
+            1_000_000_000,
+        )
+        .unwrap();
+    let secret = token.as_str();
+
+    let app = TestApp::new()
+        .lane(
+            LaneSpec::new(
+                "test-model",
+                crate::proto::Protocol::anthropic(),
+                &server.base_url(),
+            )
+            .api_key("busbar-upstream-key"),
+        )
+        .pool("pa", &[(0, 1)])
+        .governance(gov.clone())
+        .build();
+
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    let url = format!("http://{addr}/pa/v1/messages");
+    let body =
+        json!({"model": "pa", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 16})
+            .to_string();
+
+    // Baseline: the freshly-minted signed token authenticates (200, proxied upstream).
+    let ok = client
+        .post(&url)
+        .bearer_auth(secret)
+        .body(body.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        ok.status().as_u16(),
+        200,
+        "a live signed-token key must authenticate (got {})",
+        ok.status()
+    );
+
+    // Revoke the subject (denylists it WITHOUT flipping `enabled`, exactly as `revoke_key` does).
+    gov.revoke(&key.id, "audit regression").unwrap();
+    assert!(gov.is_revoked(&key.id), "revoke must denylist the subject");
+
+    // The same token must now be REJECTED 401 — a revoked key's signed token is dead.
+    let denied = client
+        .post(&url)
+        .bearer_auth(secret)
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        denied.status().as_u16(),
+        401,
+        "a REVOKED signed-token key's Bearer token must be rejected (got {})",
+        denied.status()
+    );
+
+    handle.abort();
+    server.shutdown().await;
+}
+
 #[test]
 fn test_auth_middleware_debug_redacts_tokens() {
-    // Regression (SECURITY LOW #22): `AuthMiddleware` previously DERIVED `Debug`, which prints
-    // every `client_tokens` entry in PLAINTEXT — a latent credential leak if it (or `App`) is
-    // ever debug-logged. The manual `Debug` must redact the values, exposing only the count.
-    let secret_a = "sk-super-secret-token-AAAA";
-    let secret_b = "sk-super-secret-token-BBBB";
-    let cfg = AuthCfg {
-        chain: vec!["tokens".to_string()],
-        upstream_credentials: crate::auth::UpstreamCreds::Own,
-        client_tokens: vec![secret_a.to_string(), secret_b.to_string()],
-        modules: std::collections::HashMap::new(),
-    };
-    let mw = AuthMiddleware::new(&cfg);
+    // `AuthMiddleware`'s manual `Debug` must expose only shape
+    // (chain length, keys flag, upstream mode), never any credential material. There are no
+    // static client tokens anymore; the invariant is that ONLY the whitelisted shape fields
+    // appear, so a future field holding a secret cannot leak through a derived Debug.
+    let cfg = chain_cfg(&["keys", "test-groups-module"]);
+    let mw = AuthMiddleware::new_builtin(&cfg);
     let dbg = format!("{mw:?}");
-    // No token value (nor any non-trivial prefix of one) may appear in the Debug output.
-    assert!(
-        !dbg.contains(secret_a) && !dbg.contains(secret_b),
-        "AuthMiddleware Debug leaked a token value: {dbg}"
-    );
-    assert!(
-        !dbg.contains("sk-super-secret"),
-        "AuthMiddleware Debug leaked a token prefix: {dbg}"
-    );
-    // The count (and the chain length / upstream mode) are non-secret and SHOULD be reported.
-    assert!(
-        dbg.contains('2'),
-        "AuthMiddleware Debug should report the token count: {dbg}"
-    );
     assert!(
         dbg.contains("chain_len") && dbg.contains("Own"),
         "AuthMiddleware Debug should report the chain length + upstream mode: {dbg}"
     );
+    assert!(
+        dbg.contains("keys_in_chain"),
+        "AuthMiddleware Debug should report the keys flag: {dbg}"
+    );
+    // Nothing beyond the three shape fields is printed (the struct formatter would name any
+    // additional field before its value).
+    for forbidden in ["token", "secret", "credential"] {
+        assert!(
+            !dbg.to_ascii_lowercase()
+                .replace("keys_in_chain", "")
+                .contains(forbidden),
+            "AuthMiddleware Debug printed an unexpected field '{forbidden}': {dbg}"
+        );
+    }
 }
 
 #[test]
@@ -2374,18 +2638,16 @@ fn bedrock_request(path: &str, auth: &str, headers: &[(String, String)]) -> Requ
 }
 
 fn gov_with_aws_key() -> (std::sync::Arc<crate::governance::GovState>, String, String) {
-    use crate::governance::{GovState, NewKeySpec, SqliteStore};
-    let store = std::sync::Arc::new(SqliteStore::open_in_memory().unwrap());
-    let gov = std::sync::Arc::new(GovState::new(store, 0, 0, None).unwrap());
+    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+    let store = std::sync::Arc::new(MemoryStore::new());
+    let gov = std::sync::Arc::new(GovState::new(store, None).unwrap());
     let (_key, _bearer, akid, secret) = gov
         .create_key_with_aws(
             NewKeySpec {
                 name: "bedrock".to_string(),
-                allowed_pools: vec![],
-                max_budget_cents: None,
-                budget_period: "total".to_string(),
-                rpm_limit: None,
-                tpm_limit: None,
+                allowed_pools: None,
+                group: None,
+                labels: Default::default(),
             },
             crate::store::now(),
         )
@@ -2415,6 +2677,60 @@ fn test_verify_bedrock_sigv4_roundtrip_admits_with_govctx() {
         key.name, "bedrock",
         "verify must resolve the AWS-credentialed key that owns this AccessKeyId"
     );
+}
+
+#[test]
+fn test_verify_bedrock_sigv4_roundtrip_with_escaped_query_param_admits() {
+    // Regression for the query-string double-encoding bug: `canonical_query_string` must NOT
+    // re-URI-encode the wire query string, which arrives already percent-encoded once by the
+    // client. A real SigV4 client signs a CanonicalQueryString built from ONE encoding pass over
+    // its query params, and sends that SAME single-encoded text on the wire. If busbar's inbound
+    // verifier ran the wire text through the encoder a second time, the canonical query string it
+    // reconstructs would diverge from what the client signed, and EVERY request carrying a query
+    // parameter that needed escaping (here, a literal '/' in the value) would fail verification.
+    crate::metrics::init();
+    let (gov, akid, secret) = gov_with_aws_key();
+    let amzdate = {
+        let (a, _d) = crate::sigv4::format_amz_time(crate::store::now());
+        a
+    };
+    let datestamp = &amzdate[0..8];
+    let path = "/model/anthropic.claude/converse";
+    // The client's ONE correct URI-encoding of a value containing '/' (per AWS SigV4 query rules,
+    // which — unlike CanonicalURI — are never double-encoded).
+    let wire_query = "p=a%2Fb";
+    let payload_hash = crate::sigv4::sha256_hex(b"");
+    let headers = vec![
+        (
+            "host".to_string(),
+            "bedrock-runtime.us-east-1.amazonaws.com".to_string(),
+        ),
+        (X_AMZ_CONTENT_SHA256.to_string(), payload_hash.clone()),
+        (X_AMZ_DATE.to_string(), amzdate.to_string()),
+    ];
+    let canonical_uri = crate::sigv4::uri_encode_path(path);
+    // The client signs the wire query text UNCHANGED — that IS its CanonicalQueryString.
+    let (sig, signed_headers) = crate::sigv4::sign_v4(
+        &secret,
+        "us-east-1",
+        "bedrock",
+        "POST",
+        &canonical_uri,
+        wire_query,
+        &headers,
+        &payload_hash,
+        &amzdate,
+        datestamp,
+    );
+    let auth = format!(
+        "AWS4-HMAC-SHA256 Credential={akid}/{datestamp}/us-east-1/bedrock/aws4_request, \
+             SignedHeaders={signed_headers}, Signature={sig}"
+    );
+    let full_path = format!("{path}?{wire_query}");
+    let req = bedrock_request(&full_path, &auth, &headers);
+    let key = verify_bedrock_sigv4(&gov, &req, b"")
+        .expect("a correctly-signed request with an escaped query param must verify");
+    assert_eq!(key.name, "bedrock");
 }
 
 #[test]
@@ -2506,25 +2822,22 @@ fn test_verify_bedrock_sigv4_missing_authorization_rejected() {
 #[test]
 fn test_verify_bedrock_sigv4_disabled_key_rejected() {
     crate::metrics::init();
-    use crate::governance::{GovState, NewKeySpec, SqliteStore};
-    let store = std::sync::Arc::new(SqliteStore::open_in_memory().unwrap());
-    let gov = std::sync::Arc::new(GovState::new(store, 0, 0, None).unwrap());
+    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+    let store = std::sync::Arc::new(MemoryStore::new());
+    let gov = std::sync::Arc::new(GovState::new(store, None).unwrap());
     let (key, _b, akid, secret) = gov
         .create_key_with_aws(
             NewKeySpec {
                 name: "k".to_string(),
-                allowed_pools: vec![],
-                max_budget_cents: None,
-                budget_period: "total".to_string(),
-                rpm_limit: None,
-                tpm_limit: None,
+                allowed_pools: None,
+                group: None,
+                labels: Default::default(),
             },
             crate::store::now(),
         )
         .unwrap();
     // Disable the key.
-    gov.update_key(&key.id, Some(false), None, None, None)
-        .unwrap();
+    gov.update_key(&key.id, Some(false), None).unwrap();
     let (a, _d) = crate::sigv4::format_amz_time(crate::store::now());
     let path = "/model/anthropic.claude/converse";
     let (auth, headers) =
@@ -2533,6 +2846,67 @@ fn test_verify_bedrock_sigv4_disabled_key_rejected() {
     assert!(
         verify_bedrock_sigv4(&gov, &req, b"").is_err(),
         "a correctly-signed request for a DISABLED key must be rejected"
+    );
+}
+
+#[test]
+fn test_verify_bedrock_sigv4_revoked_key_rejected() {
+    // A dual-credential key minted with
+    // BOTH a busbar signed bearer token AND a SigV4 credential is bound to ONE subject id. `revoke`
+    // denylists that subject but DELIBERATELY leaves `enabled = true` (it preserves the binding for
+    // history). The signed-token path consults the denylist and rejects; before the fix the inbound
+    // SigV4 admit path resolved purely by AccessKeyId -> key and admitted on `key.enabled` alone,
+    // NEVER consulting the denylist — so the revoked key's SigV4 credential kept authenticating.
+    // The fix gates the SigV4 admit on `!gov.is_revoked(&key.id)`, mirroring the signed-token path.
+    crate::metrics::init();
+    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+    let store = std::sync::Arc::new(MemoryStore::new());
+    let gov = std::sync::Arc::new(GovState::new(store, None).unwrap());
+    // A DUAL-credential key: `create_key_with_aws` issues a signed bearer AND a SigV4 credential.
+    let (key, _bearer, akid, secret) = gov
+        .create_key_with_aws(
+            NewKeySpec {
+                name: "dual".to_string(),
+                allowed_pools: None,
+                group: None,
+                labels: Default::default(),
+            },
+            crate::store::now(),
+        )
+        .unwrap();
+
+    let amzdate = {
+        let (a, _d) = crate::sigv4::format_amz_time(crate::store::now());
+        a
+    };
+    let path = "/model/anthropic.claude/converse";
+
+    // Baseline: before revocation, the correctly-signed SigV4 request ADMITS.
+    let (auth, headers) =
+        sign_bedrock_request(&secret, &akid, "us-east-1", "bedrock", path, b"", &amzdate);
+    let req = bedrock_request(path, &auth, &headers);
+    let admitted = verify_bedrock_sigv4(&gov, &req, b"")
+        .expect("a non-revoked dual-credential key must admit via SigV4");
+    assert_eq!(admitted.name, "dual");
+
+    // Revoke by subject id. This denylists the subject WITHOUT flipping `enabled` (revoke preserves
+    // the binding), exactly as the admin `revoke_key` verb does.
+    gov.revoke(&key.id, "audit regression").unwrap();
+    assert!(gov.is_revoked(&key.id), "revoke must denylist the subject");
+
+    // Re-sign a fresh request (same secret/akid) and assert the SigV4 path now REJECTS — the revoked
+    // subject's SigV4 credential must be rejected exactly like its signed token would be.
+    let amzdate2 = {
+        let (a, _d) = crate::sigv4::format_amz_time(crate::store::now());
+        a
+    };
+    let (auth2, headers2) =
+        sign_bedrock_request(&secret, &akid, "us-east-1", "bedrock", path, b"", &amzdate2);
+    let req2 = bedrock_request(path, &auth2, &headers2);
+    assert_eq!(
+        verify_bedrock_sigv4(&gov, &req2, b""),
+        Err(()),
+        "a correctly-signed SigV4 request for a REVOKED (denylisted) key must be rejected"
     );
 }
 
@@ -2634,12 +3008,722 @@ fn test_has_sigv4_authorization_detects_scheme() {
 }
 
 #[test]
-fn test_canonical_query_string_sorts_and_encodes() {
+fn test_canonical_query_string_sorts_but_does_not_reencode() {
     assert_eq!(canonical_query_string(None), "");
     assert_eq!(canonical_query_string(Some("")), "");
-    // Sorted by key; values URI-encoded (with '/' → %2F).
+    // Sorted by key.
     assert_eq!(canonical_query_string(Some("b=2&a=1")), "a=1&b=2");
-    assert_eq!(canonical_query_string(Some("p=a/b")), "p=a%2Fb");
     // Bare key signs as key= (empty value).
     assert_eq!(canonical_query_string(Some("flag")), "flag=");
+    // REGRESSION (bug: re-URI-encoding the already-encoded wire query string): `query` is the RAW
+    // wire query string, i.e. ALREADY percent-encoded once by the client (per AWS SigV4, the client
+    // builds its wire query string and its CanonicalQueryString with the SAME single encoding pass).
+    // A wire value like `a%2Fb` (the client's one correct encoding of `a/b`) must pass through
+    // UNCHANGED — re-encoding it here would double-encode the `%` into `a%252Fb`, diverging from
+    // what the client signed and breaking verification of every request with an escaped query char.
+    assert_eq!(canonical_query_string(Some("p=a%2Fb")), "p=a%2Fb");
+    // A literal (unencoded) '/' on the wire — also valid, since '/' is unreserved-in-query per RFC
+    // 3986 and some clients don't escape it — likewise passes through unchanged: busbar trusts the
+    // wire bytes are exactly what the client signed, it does not re-derive the "should be" encoding.
+    assert_eq!(canonical_query_string(Some("p=a/b")), "p=a/b");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BACK-COMPAT REGRESSION: governance is ALWAYS constructed (RAM store by default), but must be
+// INERT until an admin token is configured. A legacy deploy that never opted into governance (no
+// admin token, no minted keys) must behave EXACTLY as it did when `governance:` defaulted to
+// disabled: the static `auth.chain` gates ingress and inference succeeds. These pin that the
+// on-by-default governance engine does NOT silently supersede the static chain / open relay.
+// See `auth/mod.rs`: the vkey-resolution branch is gated on `admin_token_hash().is_some()`.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// (a) DEFAULT DEPLOY, NO admin token, a configured static auth chain: a request bearing a
+/// credential that chain recognizes MUST be admitted by the static chain (governance is inert and
+/// does NOT require a virtual key). Before the fix this 401'd because the always-present engine
+/// forced a vkey lookup that no minted key could satisfy.
+#[tokio::test]
+async fn test_governance_inert_without_admin_token_static_token_admitted() {
+    use crate::governance::{GovState, MemoryStore};
+    use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
+    use serde_json::json;
+    use std::sync::Arc;
+
+    crate::metrics::init();
+
+    let state = Arc::new(MockServerState::new());
+    state.push(MockResponse::Ok {
+        status: axum::http::StatusCode::OK,
+        body: json!({
+            "id": "msg_1",
+            "type": "message",
+            "role": "assistant",
+            "model": "test-model",
+            "content": [{"type": "text", "text": "hi"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 1, "output_tokens": 1}
+        }),
+    });
+    let server = MockServer::new(state).await;
+
+    let token = "grp:static";
+    let auth_cfg = chain_cfg(&["test-groups-module"]);
+    // The default-deploy governance engine: RAM store, NO admin token, NO minted keys → INERT.
+    let store = Arc::new(MemoryStore::new());
+    let gov = Arc::new(GovState::new(store, None).unwrap());
+    assert!(
+        gov.admin_token_hash().is_none(),
+        "precondition: engine must be inert (no admin token)"
+    );
+
+    let app = TestApp::new()
+        .lane(
+            LaneSpec::new(
+                "test-model",
+                crate::proto::Protocol::anthropic(),
+                &server.base_url(),
+            )
+            .api_key("busbar-upstream-key"),
+        )
+        .pool("pa", &[(0, 1)])
+        .auth(Arc::new(AuthMiddleware::new_builtin(&auth_cfg)))
+        .governance(gov)
+        .build();
+
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    let url = format!("http://{addr}/pa/v1/messages");
+    let body =
+        json!({"model": "pa", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 16})
+            .to_string();
+
+    // The static token MUST be honoured by the static chain — governance is inert, so no vkey needed.
+    let r_ok = client
+        .post(&url)
+        .bearer_auth(token)
+        .body(body.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        r_ok.status().as_u16(),
+        200,
+        "an inert governance engine must NOT supersede the static [tokens] chain (got {})",
+        r_ok.status()
+    );
+
+    // A WRONG token is still rejected by the static chain (the chain still gates, as before).
+    let r_bad = client
+        .post(&url)
+        .bearer_auth("not-the-token")
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        r_bad.status().as_u16(),
+        401,
+        "the static chain must still reject a non-allowlisted token (got {})",
+        r_bad.status()
+    );
+
+    handle.abort();
+    server.shutdown().await;
+}
+
+/// (b) NO admin token + EMPTY chain (open relay): a request presenting NO token MUST be admitted —
+/// the open front door's accept-every-request semantics are honoured because governance is inert.
+/// Before the fix the always-present engine rejected the tokenless request.
+#[tokio::test]
+async fn test_governance_inert_without_admin_token_open_relay_admits() {
+    use crate::governance::{GovState, MemoryStore};
+    use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
+    use serde_json::json;
+    use std::sync::Arc;
+
+    crate::metrics::init();
+
+    let state = Arc::new(MockServerState::new());
+    state.push(MockResponse::Ok {
+        status: axum::http::StatusCode::OK,
+        body: json!({
+            "id": "msg_1",
+            "type": "message",
+            "role": "assistant",
+            "model": "test-model",
+            "content": [{"type": "text", "text": "hi"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 1, "output_tokens": 1}
+        }),
+    });
+    let server = MockServer::new(state).await;
+
+    let store = Arc::new(MemoryStore::new());
+    let gov = Arc::new(GovState::new(store, None).unwrap());
+
+    let app = TestApp::new()
+        .lane(
+            LaneSpec::new(
+                "test-model",
+                crate::proto::Protocol::anthropic(),
+                &server.base_url(),
+            )
+            .api_key("busbar-upstream-key"),
+        )
+        .pool("pa", &[(0, 1)])
+        // Empty chain = open relay (the old `mode: none`).
+        .upstream_creds(crate::auth::UpstreamCreds::Own)
+        .governance(gov)
+        .build();
+
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    let url = format!("http://{addr}/pa/v1/messages");
+    let body =
+        json!({"model": "pa", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 16})
+            .to_string();
+
+    // NO token — the open relay must admit (governance is inert, not superseding the open door).
+    let r_none = client.post(&url).body(body).send().await.unwrap();
+    assert_eq!(
+        r_none.status().as_u16(),
+        200,
+        "an inert governance engine must NOT supersede the open relay (got {})",
+        r_none.status()
+    );
+
+    handle.abort();
+    server.shutdown().await;
+}
+
+/// (c) WITH admin token + a minted enabled key: governance is ACTIVE, so a valid virtual key is
+/// admitted and an unknown token is rejected — the enforcement path is unchanged once active.
+#[tokio::test]
+async fn test_governance_active_with_admin_token_enforces_minted_key() {
+    use crate::governance::{GovState, MemoryStore};
+    use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
+    use serde_json::json;
+    use std::sync::Arc;
+
+    crate::metrics::init();
+
+    let state = Arc::new(MockServerState::new());
+    state.push(MockResponse::Ok {
+        status: axum::http::StatusCode::OK,
+        body: json!({
+            "id": "msg_1",
+            "type": "message",
+            "role": "assistant",
+            "model": "test-model",
+            "content": [{"type": "text", "text": "hi"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 1, "output_tokens": 1}
+        }),
+    });
+    let server = MockServer::new(state).await;
+
+    let store = Arc::new(MemoryStore::new());
+    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+        &[7u8; 32],
+        crate::governance::signing::DEFAULT_KID,
+    );
+    // Admin token set → governance is ACTIVE (this is the real minted-keys deploy).
+    let gov = Arc::new(
+        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
+    );
+    assert!(
+        gov.admin_token_hash().is_some(),
+        "precondition: engine active"
+    );
+    let (_key, token) = gov
+        .mint_signed(
+            crate::governance::NewKeySpec {
+                name: "k".to_string(),
+                allowed_pools: Some(vec!["pa".to_string()]),
+                group: None,
+                labels: Default::default(),
+            },
+            2_000_000_000,
+            1_000_000_000,
+        )
+        .unwrap();
+    let secret = token.as_str();
+
+    let app = TestApp::new()
+        .lane(
+            LaneSpec::new(
+                "test-model",
+                crate::proto::Protocol::anthropic(),
+                &server.base_url(),
+            )
+            .api_key("busbar-upstream-key"),
+        )
+        .pool("pa", &[(0, 1)])
+        .governance(gov)
+        .build();
+
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    let url = format!("http://{addr}/pa/v1/messages");
+    let body =
+        json!({"model": "pa", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 16})
+            .to_string();
+
+    // The enabled virtual key is admitted.
+    let r_ok = client
+        .post(&url)
+        .bearer_auth(secret)
+        .body(body.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        r_ok.status().as_u16(),
+        200,
+        "an enabled virtual key must pass under active governance (got {})",
+        r_ok.status()
+    );
+
+    // An unknown token is rejected — enforcement is live.
+    let r_bad = client
+        .post(&url)
+        .bearer_auth("sk-vk-unknown")
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        r_bad.status().as_u16(),
+        401,
+        "active governance must reject an unknown token (got {})",
+        r_bad.status()
+    );
+
+    handle.abort();
+    server.shutdown().await;
+}
+
+/// (d) WITH admin token but the request lacks any virtual key: even with an OPEN static chain,
+/// active governance still requires a vkey and rejects the tokenless request. This is the
+/// documented "governance supersedes the open relay" behaviour — preserved when active.
+#[tokio::test]
+async fn test_governance_active_with_admin_token_rejects_missing_vkey() {
+    use crate::governance::{GovState, MemoryStore};
+    use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
+    use serde_json::json;
+    use std::sync::Arc;
+
+    crate::metrics::init();
+
+    // No upstream call should happen — auth must reject before routing.
+    let state = Arc::new(MockServerState::new());
+    let server = MockServer::new(state).await;
+
+    let store = Arc::new(MemoryStore::new());
+    let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
+
+    let app = TestApp::new()
+        .lane(
+            LaneSpec::new(
+                "test-model",
+                crate::proto::Protocol::anthropic(),
+                &server.base_url(),
+            )
+            .api_key("busbar-upstream-key"),
+        )
+        .pool("pa", &[(0, 1)])
+        // Open static chain — but active governance supersedes it.
+        .upstream_creds(crate::auth::UpstreamCreds::Own)
+        .governance(gov)
+        .build();
+
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    let url = format!("http://{addr}/pa/v1/messages");
+    let body =
+        json!({"model": "pa", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 16})
+            .to_string();
+
+    // No virtual key under active governance → 401, even with an open static chain.
+    let r_none = client.post(&url).body(body).send().await.unwrap();
+    assert_eq!(
+        r_none.status().as_u16(),
+        401,
+        "active governance must require a virtual key even behind an open static chain (got {})",
+        r_none.status()
+    );
+
+    handle.abort();
+    server.shutdown().await;
+}
+
+/// BYPASS-EDGE (the durable-store-with-persisted-keys-but-admin-token-removed case): a store that
+/// STILL holds a virtual key, but whose engine has NO admin token, is INERT. A request bearing that
+/// persisted key's secret is therefore NOT governed by the key's per-key controls — it falls through
+/// to the STATIC auth.chain. This pins the exact "bypass by mistake" behaviour the boot guard warns
+/// about: the key's `allowed_pools` (here a pool the request does NOT target) is NOT enforced, and
+/// the static chain (a token allowlist that does NOT list the key secret) is what decides admission.
+///
+/// The auth gate keys inertness on `admin_token_hash().is_some()`, independent of the store backend,
+/// so a seeded `MemoryStore` + `None` admin token faithfully reproduces the durable-store edge for
+/// the middleware's purposes (the store's DURABILITY only matters for the boot-time banner, covered
+/// by the main-crate tests).
+#[tokio::test]
+async fn test_inert_governance_persisted_key_is_not_enforced_static_chain_wins() {
+    use crate::governance::{GovState, MemoryStore, ScopeRef, Store, VirtualKey};
+    use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
+    use serde_json::json;
+    use std::sync::Arc;
+
+    crate::metrics::init();
+
+    let state = Arc::new(MockServerState::new());
+    for _ in 0..2 {
+        state.push(MockResponse::Ok {
+            status: axum::http::StatusCode::OK,
+            body: json!({
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "model": "test-model",
+                "content": [{"type": "text", "text": "hi"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 1, "output_tokens": 1}
+            }),
+        });
+    }
+    let server = MockServer::new(state).await;
+
+    // A key PERSISTED from a prior run, scoped to pool "restricted" ONLY (a pool the request below
+    // does NOT target). If the key's controls were enforced, a request to pool "pa" bearing this
+    // secret would be pool-ACL rejected. Under an INERT engine they are NOT consulted at all.
+    let persisted_secret = "sk-vk-persisted-from-prior-run";
+    let store = Arc::new(MemoryStore::new());
+    store
+        .put_key(&VirtualKey {
+            id: "kold".to_string(),
+            generation_hash: crate::sigv4::sha256_hex(persisted_secret.as_bytes()),
+            name: "kold".to_string(),
+            allowed_scopes: Some(vec![ScopeRef::pool("restricted")]),
+            enabled: true,
+            created_at: 0,
+            group: None,
+            labels: Default::default(),
+            expires_at: None,
+            deleted_at: None,
+            revision: 1,
+        })
+        .unwrap();
+    // NO admin token → INERT: the persisted key's controls are bypassed.
+    let gov = Arc::new(GovState::new(store, None).unwrap());
+    assert!(
+        gov.admin_token_hash().is_none(),
+        "precondition: engine must be inert (no admin token)"
+    );
+
+    // The STATIC chain is what actually gates now - a chain that recognizes a DIFFERENT
+    // credential shape (`grp:<role>`), NOT the persisted key secret.
+    let static_token = "grp:static-chain";
+    let auth_cfg = chain_cfg(&["test-groups-module"]);
+
+    let app = TestApp::new()
+        .lane(
+            LaneSpec::new(
+                "test-model",
+                crate::proto::Protocol::anthropic(),
+                &server.base_url(),
+            )
+            .api_key("busbar-upstream-key"),
+        )
+        .pool("pa", &[(0, 1)])
+        .auth(Arc::new(AuthMiddleware::new_builtin(&auth_cfg)))
+        .governance(gov)
+        .build();
+
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    let url = format!("http://{addr}/pa/v1/messages");
+    let body =
+        json!({"model": "pa", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 16})
+            .to_string();
+
+    // (1) The persisted key secret is NOT in the static allowlist → the static chain REJECTS it.
+    // This is the crux: the persisted key confers NOTHING now (its controls are inert); only the
+    // static chain speaks. (If governance were still enforcing, this same secret would be ADMITTED
+    // as a valid vkey — then pool-ACL/budget/RPM rejected. The 401-from-the-static-chain proves the
+    // vkey path is not taken.)
+    let r_key = client
+        .post(&url)
+        .bearer_auth(persisted_secret)
+        .body(body.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        r_key.status().as_u16(),
+        401,
+        "an inert engine's persisted key must confer nothing — the static chain (which does not \
+         list it) rejects it (got {})",
+        r_key.status()
+    );
+
+    // (2) The STATIC token is admitted — the static chain is fully in charge, and the key's zero
+    // budget / zero RPM (which would block EVERY request if enforced) are NOT consulted. A 200 here
+    // is the direct proof the persisted key's controls are bypassed.
+    let r_static = client
+        .post(&url)
+        .bearer_auth(static_token)
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        r_static.status().as_u16(),
+        200,
+        "the static chain governs an inert engine; the persisted key's 0-budget/0-RPM are NOT \
+         enforced (got {})",
+        r_static.status()
+    );
+
+    handle.abort();
+    server.shutdown().await;
+}
+
+/// CONTROL for the bypass-edge test: the SAME persisted key, but WITH an admin token set →
+/// governance is ACTIVE and the key's per-key controls ARE enforced. The pool-ACL alone is enough
+/// to prove enforcement: the key is scoped to "restricted" but the request targets "pa", so an
+/// active engine rejects it (403 pool-ACL), whereas the inert twin above let the static chain decide.
+#[tokio::test]
+async fn test_active_governance_persisted_key_is_enforced() {
+    use crate::governance::{GovState, MemoryStore};
+    use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
+    use serde_json::json;
+    use std::sync::Arc;
+
+    crate::metrics::init();
+
+    // No upstream body queued — enforcement must reject before any upstream call.
+    let state = Arc::new(MockServerState::new());
+    let server = MockServer::new(state).await;
+
+    let store = Arc::new(MemoryStore::new());
+    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+        &[7u8; 32],
+        crate::governance::signing::DEFAULT_KID,
+    );
+    // Admin token SET → ACTIVE: the key resolves and its pool-ACL is enforced.
+    let gov = Arc::new(
+        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
+    );
+    assert!(
+        gov.admin_token_hash().is_some(),
+        "precondition: engine active"
+    );
+    let (_key, persisted_secret) = gov
+        .mint_signed(
+            crate::governance::NewKeySpec {
+                name: "kold".to_string(),
+                allowed_pools: Some(vec!["restricted".to_string()]), // NOT "pa"
+                group: None,
+                labels: Default::default(),
+            },
+            2_000_000_000,
+            1_000_000_000,
+        )
+        .unwrap();
+    let persisted_secret = persisted_secret.as_str();
+
+    let app = TestApp::new()
+        .lane(
+            LaneSpec::new(
+                "test-model",
+                crate::proto::Protocol::anthropic(),
+                &server.base_url(),
+            )
+            .api_key("busbar-upstream-key"),
+        )
+        .pool("pa", &[(0, 1)])
+        .governance(gov)
+        .build();
+
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    let url = format!("http://{addr}/pa/v1/messages");
+    let body =
+        json!({"model": "pa", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 16})
+            .to_string();
+
+    // The key resolves (active engine) but its allowed_pools excludes "pa" → pool-ACL 403. The key
+    // IS enforced — the opposite of the inert twin, where the static chain decided instead.
+    let r = client
+        .post(&url)
+        .bearer_auth(persisted_secret)
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status().as_u16(),
+        403,
+        "an active engine enforces the persisted key's pool-ACL (got {})",
+        r.status()
+    );
+
+    handle.abort();
+    server.shutdown().await;
+}
+
+/// The module `max_admin_scope` ceiling (App.auth_scope_caps) still caps what role_bindings
+/// grant, exercised through `dry_run_admin_scope` (the same chain -> bindings -> cap pipeline
+/// the admin middleware runs):
+///   - an external module DEFAULTS to a read-only ceiling, so a full binding is capped;
+///   - an explicit `max_admin_scope: full` cap lifts the ceiling;
+///   - module scoping holds through the full stack: a binding under another module's table
+///     earns the identified principal nothing;
+///   - a credential no module identifies is denied outright.
+#[test]
+fn test_admin_scope_cap_ceilings_external_module() {
+    use crate::admin::v1::contract::{Grants, Scope};
+    crate::metrics::init();
+
+    let mk_app = |cap: Option<&str>, bind_module: &str| {
+        let mut app = crate::test_support::TestApp::new().build();
+        let a = std::sync::Arc::get_mut(&mut app).expect("freshly built App Arc is unshared");
+        a.admin_chain = vec!["test-scope-module".to_string()];
+        a.role_bindings = bindings_for(bind_module, &[("ops", binding(None, None, Some("full")))]);
+        if let Some(c) = cap {
+            a.auth_scope_caps
+                .insert("test-scope-module".to_string(), c.to_string());
+        }
+        app
+    };
+
+    // Default ceiling for an external module is read-only: the full binding is capped.
+    let app = mk_app(None, "test-scope-module");
+    assert_eq!(
+        dry_run_admin_scope(&app, Some("grp:ops"), None),
+        Grants::of(Scope::ReadOnly),
+        "an external module without an explicit cap must be ceilinged to read-only"
+    );
+
+    // Explicit max_admin_scope: full lifts the ceiling; the full binding now lands.
+    let app = mk_app(Some("full"), "test-scope-module");
+    assert_eq!(
+        dry_run_admin_scope(&app, Some("grp:ops"), None),
+        Grants::of(Scope::Full),
+        "an explicit full cap must let the full binding through"
+    );
+
+    // Module scoping through the full stack: the binding lives under ANOTHER module's table, so
+    // the principal (identified by test-scope-module) earns no scope at all.
+    let app = mk_app(Some("full"), "other-module");
+    assert!(
+        dry_run_admin_scope(&app, Some("grp:ops"), None) == Grants::default(),
+        "a binding under another module's table must grant nothing"
+    );
+
+    // A credential no chain module identifies: denied (fail closed).
+    let app = mk_app(Some("full"), "test-scope-module");
+    assert!(dry_run_admin_scope(&app, Some("not-a-grp"), None) == Grants::default());
+}
+
+/// The structural SigV4 gate (class-4b) rejects a malformed `AWS4-HMAC-SHA256` Authorization header
+/// WITHOUT reading the request body. Discriminator: the client announces a `Content-Length` and then
+/// sends ZERO body bytes. If the gate rejects on headers alone, the 403 arrives immediately; if the
+/// (pre-fix) code buffers the body first (`axum::body::to_bytes`), the server blocks waiting for
+/// bytes that never arrive, and the client's read hangs (this test drives `axum::serve` directly,
+/// with no `TimeoutBody`/read-timeout wrapper, specifically so an unbounded hang is the only
+/// alternative to an immediate response - there is no third outcome to confuse the result).
+#[tokio::test]
+async fn structural_sigv4_gate_rejects_without_reading_the_body() {
+    use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    crate::metrics::init();
+
+    let state = Arc::new(MockServerState::new());
+    let server = MockServer::new(state).await;
+    let auth_cfg = chain_cfg(&["test-groups-module"]);
+    // The inbound-SigV4 verify branch runs only when governance is enabled with an admin token
+    // configured (`auth/mod.rs`'s `app.governance.filter(|g| g.admin_token_hash().is_some())`) - a
+    // deploy with no admin token can never have a virtual key to resolve against. Without this the
+    // request falls through the plain bearer-token path instead, which never touches the SigV4
+    // structural gate at all (and rejects just as fast, defeating the discriminator).
+    let gov = std::sync::Arc::new(
+        crate::governance::GovState::new(
+            std::sync::Arc::new(crate::governance::MemoryStore::new()),
+            Some("admintok".to_string()),
+        )
+        .unwrap(),
+    );
+    let app = TestApp::new()
+        .lane(
+            LaneSpec::new(
+                "test-model",
+                crate::proto::Protocol::anthropic(),
+                &server.base_url(),
+            )
+            .api_key("busbar-upstream-key"),
+        )
+        .pool("pa", &[(0, 1)])
+        .auth(Arc::new(AuthMiddleware::new_builtin(&auth_cfg)))
+        .governance(gov)
+        .build();
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let mut sock = tokio::net::TcpStream::connect(addr).await.unwrap();
+    // Malformed: `AWS4-HMAC-SHA256` with no Credential/SignedHeaders/Signature at all, and no
+    // x-amz-content-sha256/x-amz-date headers either - fails `parse_authorization_header` AND the
+    // header-presence checks, so both gate conditions independently reject it. A large
+    // Content-Length is announced; NO body bytes are ever sent.
+    sock.write_all(
+        b"POST /model/anthropic.claude/converse HTTP/1.1\r\n\
+          Host: localhost\r\n\
+          Authorization: AWS4-HMAC-SHA256\r\n\
+          Content-Length: 1000000\r\n\
+          \r\n",
+    )
+    .await
+    .unwrap();
+    sock.flush().await.unwrap();
+
+    let mut buf = [0u8; 512];
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(2), sock.read(&mut buf))
+        .await
+        .expect(
+            "the structural gate did NOT reject before reading the body: the connection hung \
+             waiting for body bytes that were never sent, meaning `to_bytes` was called first",
+        )
+        .unwrap();
+    assert!(outcome > 0, "expected a response, got EOF");
+    let resp = String::from_utf8_lossy(&buf[..outcome]);
+    assert!(
+        resp.starts_with("HTTP/1.1 403"),
+        "expected an immediate 403 from the structural gate: {resp}"
+    );
+
+    handle.abort();
+    server.shutdown().await;
 }

@@ -19,14 +19,18 @@ use axum::{extract::Path, extract::Query, Router};
 use serde::Serialize;
 use serde_json::json;
 
-use super::contract::{AdminError, PATH_ADMIN_AUTH, PATH_CONFIG_VALIDATE, PATH_HOOKS};
-use super::service::{build_with_hook, build_with_registry, build_without_hook, AdminService};
+use super::contract::taxonomy::Cond;
+use super::contract::{AdminError, PATH_ADMIN_AUTH, PATH_CONFIG_VALIDATE, PATH_GROUPS, PATH_HOOKS};
+use super::service::{
+    build_with_group, build_with_hook, build_with_registry, build_without_group,
+    build_without_hook, AdminService,
+};
 use crate::admin::audit;
 use crate::admin::transport::AdminTransport;
 use crate::state::AppHandle;
 
 /// The JSON-REST adapter for v1: the `/api/v1/admin/*` resource API with the stable
-/// `{"error":{"code","message"}}` envelope (design-admin-api-v1 §0.3). Zero-sized — each request
+/// `{"error":{"code","message"}}` envelope. Zero-sized — each request
 /// builds an `AdminService` over the CURRENT snapshot from the router's `Arc<AppHandle>` state (so a
 /// read after a config apply reflects the new config), and the mutation path swaps through the handle.
 pub(crate) struct JsonV1;
@@ -50,7 +54,8 @@ impl AdminTransport for JsonV1 {
         // from `contract::ADMIN_PREFIX`. Each handler pulls the `Arc<AppHandle>` state, loads the
         // current snapshot into a per-request `AdminService`, and maps the typed result onto the
         // JSON wire.
-        Router::new()
+        #[cfg_attr(not(test), allow(clippy::let_and_return))]
+        let router = Router::new()
             .route("/info", get(info))
             .route("/pools", get(list_pools))
             .route("/pools/{name}", get(get_pool))
@@ -65,7 +70,29 @@ impl AdminTransport for JsonV1 {
             .route("/hooks/{name}/settings", patch(patch_hook_settings))
             .route("/hooks/{name}/schema", get(hook_schema))
             .route("/hooks/{name}/status", get(hook_status))
-            .route("/plugins", get(list_plugins))
+            // Groups — the `groups:` limit-tree CRUD (Phase 1, task #100): runtime-mutable groups
+            // → per-user budgets. Reads are read-only scope; mutations are full scope.
+            .route(PATH_GROUPS, get(list_groups).post(register_group))
+            .route(
+                "/groups/{name}",
+                get(get_group)
+                    .put(put_group)
+                    .patch(patch_group)
+                    .delete(delete_group),
+            )
+            .route("/groups/{name}/usage", get(get_group_usage))
+            // Per-section overlay RESET (D3): DISCARD a section's overlay mutations and revert it to
+            // base config.yaml. Full scope (the mutation fallthrough). section ∈ {groups, hooks}.
+            .route(
+                "/overlay/{section}",
+                axum::routing::delete(reset_overlay_section),
+            )
+            .route("/plugins", get(list_plugins).post(install_plugin))
+            .route("/plugins/inspect", post(inspect_plugin))
+            .route("/plugins/reload", post(reload_plugins))
+            .route("/plugins/rollback", post(rollback_plugin))
+            .route("/plugins/{file}", axum::routing::delete(remove_plugin))
+            .route("/plugins/{file}/schema", get(plugin_schema))
             .route("/auth", get(get_auth))
             .route(PATH_ADMIN_AUTH, get(get_admin_auth).put(put_auth))
             .route("/usage", get(get_usage))
@@ -77,8 +104,13 @@ impl AdminTransport for JsonV1 {
             .route("/config/diff", get(config_diff))
             .route("/config/rollback", post(rollback_config))
             .route("/config/reload", post(reload_config))
+            .route("/restart", post(restart))
             .route("/auth/cache/flush", post(flush_credential_cache))
             .route("/config/apply", post(apply_config))
+            .route(
+                "/config/settings",
+                get(get_config_settings).put(put_config_settings),
+            )
             .route("/openapi.json", get(openapi))
             // Virtual-key management — the keys resource of the SAME v1 admin surface. Handlers
             // live in `crate::admin` while they migrate into the layered service; mounting them
@@ -95,14 +127,98 @@ impl AdminTransport for JsonV1 {
             )
             .route("/keys/{id}/usage", get(crate::admin::key_usage))
             .route("/keys/{id}/rotate", post(crate::admin::rotate_key))
+            // 1.5.0 signed-token keys: revoke a key (denylist, keep the binding) and rotate the
+            // busbar key-signing key (revoke-all).
+            .route("/keys/{id}/revoke", post(crate::admin::revoke_key))
+            .route(
+                "/signing-key/rotate",
+                post(crate::admin::rotate_signing_key),
+            )
             // EVERY response on this surface speaks the frozen envelope — including an unmatched
             // path (404 `not_found`) and a matched path with the wrong method (405
             // `method_not_allowed`). Without these, axum's nest semantics leak an empty-body 405
             // from the inner MethodRouter and fall unmatched paths through to the data plane's
-            // vendor-native shaping (re-audit HIGH-1).
-            .fallback(|| async { err_json(&AdminError::NotFound("resource".into())) })
-            .method_not_allowed_fallback(|| async { err_json(&AdminError::MethodNotAllowed) })
+            // vendor-native shaping.
+            .fallback(|| async { err_json(&AdminError::not_found("resource")) })
+            .method_not_allowed_fallback(|| async { err_json(&AdminError::MethodNotAllowed) });
+        // TEST-ONLY: the taxonomy recording layer. `Router::layer` runs AFTER routing, so it sees
+        // the `MatchedPath` (the operation) alongside the tag `err_json` stamped on the response —
+        // the join `err_json` alone cannot make. Every test in the suite is therefore a driver for
+        // the class-level drift check (see `contract::taxonomy::observed`).
+        #[cfg(test)]
+        let router = router.layer(axum::middleware::from_fn(record_declared_error));
+        router
     }
+}
+
+/// TEST-ONLY recording layer (see `JsonV1::router`). For every response carrying a taxonomy tag it
+/// (a) PANICS when the endpoint's `declared_errors` does not list that emission — an UNDER-CLAIM,
+/// failing the very test that triggered it, with no test-ordering dependency — and (b) witnesses the
+/// emission so the class test can prove no declared entry is an OVER-CLAIM.
+///
+/// The under-claim comparison runs at the SAME `(operation, ErrKind, Cond)` granularity the
+/// over-claim direction does, whenever the emission names its condition (`err_json_cond`). It used
+/// to compare `ErrKind` alone, which made the guard blind to the exact defect it exists to catch: a
+/// handler emitting a NEW condition under an ALREADY-DECLARED kind sailed through, because a
+/// sibling condition on the same operation kept `.any(|d| d.kind == tag.kind)` true. Two such
+/// emissions shipped undocumented in 1.5.0 behind that hole — the `AtKeyCap` 409 on
+/// `PATCH /keys/{id}` (declared nowhere, but Conflict was declared for `GovernanceOff`) and the
+/// delegated-mint 400 on `POST /keys` (which additionally reused the wrong `Cond`, so its
+/// openapi.json prose described the rebind target instead). Both now fail the build at emission.
+#[cfg(test)]
+async fn record_declared_error(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    use crate::admin::v1::contract::taxonomy;
+    let Some(method) = taxonomy::method_tag(req.method()) else {
+        return next.run(req).await;
+    };
+    let matched = req
+        .extensions()
+        .get::<axum::extract::MatchedPath>()
+        .map(|m| m.as_str().to_string());
+    let resp = next.run(req).await;
+    let tag = resp.extensions().get::<taxonomy::observed::Tag>().copied();
+    if let (Some(path), Some(tag)) = (matched, tag) {
+        let rel = path
+            .strip_prefix(crate::admin::v1::contract::ADMIN_PREFIX)
+            .unwrap_or(&path);
+        // UNDER-CLAIM IS FATAL, HERE, NOW. If a handler emitted something the endpoint's
+        // declaration does not list, `openapi.json` would under-document the surface — so fail the
+        // test that produced it rather than accumulating a report someone has to read. Every test in
+        // the suite is a driver for this direction; there is no ordering dependency and no way to
+        // add an undocumented error response without turning the build red.
+        //
+        // GRANULARITY. A `err_json_cond` emission names its condition, so it is matched on the FULL
+        // `(kind, cond)` pair — matching on `kind` alone would let a new condition hide behind a
+        // declared sibling of the same kind, which is exactly the hole this guard is for. An
+        // untagged emission (`err_json`) can only be matched on `kind`; that residual weakness is
+        // what `COND_WITNESS_DEBT` ledgers and shrinks from the over-claim side.
+        let declared = taxonomy::declared_errors(method, rel);
+        let matched_decl = match tag.cond {
+            Some(cond) => declared
+                .iter()
+                .any(|d| d.kind == tag.kind && d.cond == cond),
+            None => declared.iter().any(|d| d.kind == tag.kind),
+        };
+        assert!(
+            matched_decl,
+            "OpenAPI UNDER-CLAIM: {} {rel} emitted {:?}/{} ({}), which contract::taxonomy::\
+             declared_errors does not declare — openapi.json would omit or mis-describe the {} \
+             response. Declare it (with its Cond) or stop emitting it.",
+            method.as_str().to_uppercase(),
+            tag.kind,
+            match tag.cond {
+                Some(c) => format!("{c:?}"),
+                None => "<untagged>".to_string(),
+            },
+            tag.kind.code(),
+            tag.kind.status(),
+        );
+        taxonomy::observed::record(rel, method, tag);
+    }
+    resp
 }
 
 /// Build a per-request `AdminService` over the CURRENT snapshot loaded from the handle.
@@ -120,7 +236,7 @@ fn ap(rel: &str) -> String {
     format!("{}{rel}", crate::admin::v1::contract::ADMIN_PREFIX)
 }
 
-/// §6.3 BODY-DERIVED AUTHORIZATION REFINEMENT for hook registration. The route matrix admits a
+/// BODY-DERIVED AUTHORIZATION REFINEMENT for hook registration. The route matrix admits a
 /// `hooks-register` principal to POST/PUT `/api/v1/admin/hooks*`, but that scope is "define a hook,
 /// don't wire it into a security-critical path". A non-`Full` caller therefore may NOT register a
 /// hook that (a) sees or rewrites caller content/identity (`prompt`/`user` above `no`) or (b) sets
@@ -132,7 +248,7 @@ fn hooks_register_escalation(
     cfg: &crate::config::HookCfg,
 ) -> Option<AdminError> {
     use crate::admin::v1::contract::Scope;
-    if scope.0 == Some(Scope::Full) {
+    if scope.0.contains(Scope::Full) {
         return None;
     }
     if cfg.global
@@ -146,16 +262,12 @@ fn hooks_register_escalation(
     None
 }
 
-/// Serializes config-plane MUTATIONS (hook register/replace/delete, config apply/reload/rollback,
-/// settings, auth chain) so each `read current → build next → swap → record` runs atomically with
-/// respect to the others. READS stay lock-free (`handle.load()`), and mutations are rare
-/// admin-only operations, so this never touches request-serving latency. Without it, two
-/// concurrent mutations both read version N, both build N+1, and one swap is silently lost while
-/// the version log gains two divergent N+1 entries; and a settings PATCH could have another
-/// mutation slip in during its (up to 5s) configure-ack await. The lock is held only across the
-/// SYNC build+swap+record — never across a network await (the settings push happens BEFORE the
-/// lock, then the version is re-validated under it).
-static CONFIG_MUTATION_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+/// The config-plane mutation choke point. Every mutation — from any transport, in any module — runs
+/// inside `txn::config_transaction`, which owns the (file-private) mutation lock, hands the body a
+/// FRESH post-lock snapshot, forces store/disk work onto `spawn_blocking`, and applies the resulting
+/// plan through `AppHandle::commit_and_swap`. See `txn.rs` for the four guarantees.
+mod txn;
+pub(crate) use txn::{config_transaction, Outcome};
 
 // ── JSON wire helpers (v1) ───────────────────────────────────────────────────────────────────────
 
@@ -175,13 +287,37 @@ fn ok_json<T: Serialize>(status: StatusCode, view: &T) -> Response {
 /// `{"error":{"code":<stable>,"message":<human>}}` with the error's HTTP status. Tooling branches on
 /// `code`; `message` is human-only.
 pub(crate) fn err_json(e: &AdminError) -> Response {
+    err_json_tagged(e, None)
+}
+
+/// `err_json`, but NAMING the taxonomy [`Cond`] that produced the error. Used at the shared seams
+/// whose condition is fixed (malformed `If-Match`, malformed cursor, the keys surface), so the
+/// class-level drift test can witness the declaration at CONDITION granularity, not just at
+/// `ErrKind` granularity. The wire bytes are identical to `err_json` — the tag is `#[cfg(test)]`.
+pub(crate) fn err_json_cond(e: &AdminError, cond: Cond) -> Response {
+    err_json_tagged(e, Some(cond))
+}
+
+/// The one construction site of the v1 error envelope. In a TEST build it stamps the response with
+/// the taxonomy [`observed::Tag`] so the router's recording layer — which knows the matched route,
+/// which this function does not — can attribute the emission to an operation and check it against
+/// `declared_errors`. In a release build the tag does not exist and this is the plain projection.
+#[cfg_attr(not(test), allow(unused_variables))]
+fn err_json_tagged(e: &AdminError, cond: Option<Cond>) -> Response {
     let status = StatusCode::from_u16(e.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-    (
+    #[cfg_attr(not(test), allow(unused_mut))]
+    let mut resp = (
         status,
         [(CONTENT_TYPE, crate::proxy::APPLICATION_JSON)],
         json!({"error": {"code": e.code(), "message": e.message()}}).to_string(),
     )
-        .into_response()
+        .into_response();
+    #[cfg(test)]
+    if let Some(kind) = crate::admin::v1::contract::taxonomy::err_kind_of(e) {
+        resp.extensions_mut()
+            .insert(crate::admin::v1::contract::taxonomy::observed::Tag { kind, cond });
+    }
+    resp
 }
 
 /// Map a service `Result<View, AdminError>` onto the JSON wire: `ok_json` on success (given status),
@@ -202,9 +338,10 @@ fn cursor_offset(q: &std::collections::HashMap<String, String>) -> Result<usize,
     match q.get("cursor") {
         None => Ok(0),
         Some(c) => crate::admin::v1::contract::decode_offset_cursor(c).ok_or_else(|| {
-            err_json(&AdminError::Validation(
-                "invalid or foreign pagination cursor".into(),
-            ))
+            err_json_cond(
+                &AdminError::Validation("invalid or foreign pagination cursor".into()),
+                Cond::MalformedCursor,
+            )
         }),
     }
 }
@@ -212,6 +349,10 @@ fn cursor_offset(q: &std::collections::HashMap<String, String>) -> Result<usize,
 /// Given a slice fetched with `limit + 1` starting at `start`, trim it IN PLACE to `limit` and return
 /// the next opaque cursor iff the probe row existed (i.e. a further page remains). The one seam that
 /// gives keys/audit/versions an identical `{items, next_cursor}` continuation.
+///
+/// PRECONDITION: `limit >= 1`. At `limit == 0` the cursor would encode `start + 0 == start` — a
+/// cursor pointing at the exact offset it was just served from, so a cursor-following client loops
+/// forever. Every caller clamps `limit` to at least 1 before reaching here.
 fn page_cursor<T>(items: &mut Vec<T>, start: usize, limit: usize) -> Option<String> {
     if items.len() > limit {
         items.truncate(limit);
@@ -243,11 +384,14 @@ fn if_match_version(headers: &axum::http::HeaderMap) -> Result<Option<u64>, Resp
     let bare = s.strip_prefix("W/").unwrap_or(s); // weak tags compare by value here
     let bare = bare.trim_matches('"');
     bare.parse::<u64>().map(Some).map_err(|_| {
-        err_json(&AdminError::Validation(
-            "malformed If-Match: expected the config-plane ETag (a quoted config version, e.g. \
-             \"42\") or *"
-                .into(),
-        ))
+        err_json_cond(
+            &AdminError::Validation(
+                "malformed If-Match: expected the config-plane ETag (a quoted config version, e.g. \
+                 \"42\") or *"
+                    .into(),
+            ),
+            Cond::MalformedIfMatch,
+        )
     })
 }
 

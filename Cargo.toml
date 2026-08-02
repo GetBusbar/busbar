@@ -3,9 +3,20 @@ resolver = "2"
 members = [
     "crates/busbar",
     "crates/api",
-    "crates/auth-tokens",
+    "crates/plugin-abi",
+    "crates/plugin-sdk",
+    "crates/plugin-testkit",
+    "crates/plugin-loader",
+    "crates/plugin-sign",
+    "crates/plugin-pack",
+    "crates/secret-ref",
     "crates/auth-admin-tokens",
+    "crates/auth-static-plugin",
+    "crates/hook-test-plugin",
+    "crates/secret-example-plugin",
+    "crates/store-example-plugin",
     "crates/hooks-ranking",
+    "crates/store-memory",
 ]
 
 [profile.release]

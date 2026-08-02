@@ -38,7 +38,7 @@ use std::sync::Arc;
 /// external mock). It's a no-op unless `BUSBAR_CAPTURE_METRICS` is set, so it costs nothing in CI.
 ///
 /// For release-representative numbers, build under `--release`:
-///   BUSBAR_CAPTURE_METRICS=1 cargo test --release -p busbar capture_latency_metrics -- --nocapture
+/// BUSBAR_CAPTURE_METRICS=1 cargo test --release -p busbar capture_latency_metrics -- --nocapture
 /// Emits a line the site metrics harness parses:  `BUSBAR_METRICS busbar.latency.inproc_handle_us ...`
 #[tokio::test]
 async fn capture_latency_metrics() {
@@ -82,21 +82,52 @@ async fn capture_latency_metrics() {
         body: json!({"content": [{"type": "text", "text": "ok"}]}),
     };
 
+    // Scope the `UPSTREAM_RTT_US` task-local exactly as the `server_timing` middleware does in
+    // production, so `record_upstream_rtt` (fired inside the forward path when the upstream call
+    // returns) lands its value in a slot we can read per request. This lets us compute the REAL
+    // `busbar;dur` = total in-process handle time MINUS the upstream round-trip — the number the
+    // `Server-Timing: busbar;dur` header actually reports — instead of the total-including-the-
+    // loopback-HTTP figure the raw handle time conflates. `dur` is busbar's OWN added latency.
+    use std::sync::atomic::Ordering;
+    let run_once = |app: std::sync::Arc<crate::state::App>,
+                    cands: Vec<crate::state::WeightedLane>,
+                    body: bytes::Bytes| async move {
+        let slot = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX));
+        let t = std::time::Instant::now();
+        let _ = crate::proxy::UPSTREAM_RTT_US
+            .scope(slot.clone(), forward(app, cands, body, None, None))
+            .await;
+        let total_ns = t.elapsed().as_nanos() as u64;
+        let rtt_ns = match slot.load(Ordering::Relaxed) {
+            u64::MAX => 0, // no upstream hop recorded → attribute the full time to busbar
+            us => us.saturating_mul(1000),
+        };
+        // `busbar;dur` in NANOS: total in-process handle minus the upstream round-trip.
+        let dur_ns = total_ns.saturating_sub(rtt_ns);
+        (total_ns, dur_ns)
+    };
+
     for _ in 0..warmup {
         state.push(ok());
-        let _ = forward(app.clone(), cands(), body.clone(), None, None).await;
+        let _ = run_once(app.clone(), cands(), body.clone()).await;
     }
-    let mut ns: Vec<u64> = Vec::with_capacity(n);
+    let mut ns: Vec<u64> = Vec::with_capacity(n); // total in-process handle time (incl. upstream RTT)
+    let mut durs: Vec<u64> = Vec::with_capacity(n); // busbar;dur = total - upstream RTT (nanos)
     for _ in 0..n {
         state.push(ok());
-        let t = std::time::Instant::now();
-        let _ = forward(app.clone(), cands(), body.clone(), None, None).await;
-        ns.push(t.elapsed().as_nanos() as u64);
+        let (total_ns, dur_ns) = run_once(app.clone(), cands(), body.clone()).await;
+        ns.push(total_ns);
+        durs.push(dur_ns);
     }
     ns.sort_unstable();
+    durs.sort_unstable();
     let pct = |p: f64| -> f64 {
         let i = (((ns.len() - 1) as f64) * p).round() as usize;
         ns[i] as f64 / 1000.0
+    };
+    let pct_dur = |p: f64| -> f64 {
+        let i = (((durs.len() - 1) as f64) * p).round() as usize;
+        durs[i] as f64 / 1000.0
     };
     eprintln!(
         "BUSBAR_METRICS busbar.latency.inproc_handle_us n={} p50={:.2} p90={:.2} p99={:.2}",
@@ -105,6 +136,17 @@ async fn capture_latency_metrics() {
         pct(0.90),
         pct(0.99)
     );
+    // THE number that counts: busbar's own added latency (total minus upstream RTT), i.e. `busbar;dur`.
+    eprintln!(
+        "BUSBAR_METRICS busbar.dur_us n={} p50={:.2} p90={:.2} p99={:.2}",
+        n,
+        pct_dur(0.50),
+        pct_dur(0.90),
+        pct_dur(0.99)
+    );
+    // When `BUSBAR_PROFILE` is set, emit the per-stage breakdown accumulated across the run (the
+    // `BUSBAR_PROFILE stage=...` lines). No-op otherwise.
+    crate::profile::dump();
     server.shutdown().await;
 }
 
@@ -317,7 +359,7 @@ async fn test_cross_protocol_nonstream_preserves_model() {
 /// TPM never tripped. After recording, a second request in the same window is rejected (429).
 #[tokio::test]
 async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
-    use crate::governance::{GovState, SqliteStore, Store, VirtualKey};
+    use crate::governance::{GovState, MemoryStore};
     crate::metrics::init();
 
     let state = Arc::new(MockServerState::new());
@@ -333,23 +375,44 @@ async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
     }
     let server = MockServer::new(state.clone()).await;
 
-    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
-    let secret = "sk-vk-tpm";
-    store
-        .put_key(&VirtualKey {
-            id: "ktpm".to_string(),
-            key_hash: crate::sigv4::sha256_hex(secret.as_bytes()),
-            name: "tpm".to_string(),
-            allowed_pools: vec!["pa".to_string()],
-            max_budget_cents: None,
-            budget_period: "total".to_string(),
-            rpm_limit: Some(100), // high, so RPM doesn't interfere — TPM is what we exercise
-            tpm_limit: Some(30),
-            enabled: true,
-            created_at: 0,
-        })
+    let store = Arc::new(MemoryStore::new());
+    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+        &[7u8; 32],
+        crate::governance::signing::DEFAULT_KID,
+    );
+    let gov = Arc::new(
+        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
+    );
+    let (_key, token) = gov
+        .mint_signed(
+            crate::governance::NewKeySpec {
+                name: "tpm".to_string(),
+                // The TPM cap lives on the bound GROUP now (keys are pure auth): 30 tokens/minute.
+                allowed_pools: Some(vec!["pa".to_string()]),
+                group: Some("tpmgrp".to_string()),
+                labels: Default::default(),
+            },
+            2_000_000_000,
+            1_000_000_000,
+        )
         .unwrap();
-    let gov = Arc::new(GovState::new(store, 0, 0, None).unwrap());
+    let secret = token.as_str();
+    let groups = std::collections::BTreeMap::from([(
+        "tpmgrp".to_string(),
+        crate::config::GroupCfg {
+            parent: None,
+            enabled: true,
+            limits: vec![crate::config::groups::LimitCfg {
+                metric: crate::config::groups::LimitMetric::Tokens,
+                amount: 30,
+                per: Some(crate::config::groups::LimitWindow::Minute),
+                scope: None,
+                on_exhaust: None,
+                downgrade_to: None,
+            }],
+            ..Default::default()
+        },
+    )]);
 
     let app = TestApp::new()
         .lane(
@@ -362,6 +425,7 @@ async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
         )
         .pool("pa", &[(0, 1)])
         .governance(gov)
+        .cost(crate::cost::CostModel::resolve_parts(None, 0, &groups))
         .build();
 
     let router = crate::build_router(app);
@@ -410,7 +474,7 @@ async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
 /// Regression: token usage from a cross-protocol STREAMING response must be charged to the
 /// virtual key, so TPM limits enforce on streams too. The streaming path records tokens through
 /// a completely separate code path from the non-stream test above: `FirstByteBody`'s stream-end
-/// handler reads IR-derived usage via `translate.usage()` and calls `gov.record_tokens` via the
+/// handler reads IR-derived usage via `translate.usage()` and calls `gov.record_usage` via the
 /// `UsageSink` on clean 2xx completion (proxy engine), NOT the buffered `record_nonstream_usage`.
 /// A regression that broke the
 /// stream-end charge (the drop/poll handler not firing, the sink not wired into the streaming
@@ -419,7 +483,7 @@ async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
 /// stream fully drains (160 tokens charged), a second request in the same window is rejected (429).
 #[tokio::test]
 async fn test_cross_protocol_stream_records_tokens_for_tpm() {
-    use crate::governance::{GovState, SqliteStore, Store, VirtualKey};
+    use crate::governance::{GovState, MemoryStore};
     crate::metrics::init();
 
     // OpenAI-protocol SSE stream whose final chunk carries usage totalling 160 tokens
@@ -442,23 +506,44 @@ async fn test_cross_protocol_stream_records_tokens_for_tpm() {
     }
     let server = MockServer::new(state.clone()).await;
 
-    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
-    let secret = "sk-vk-tpm-stream";
-    store
-        .put_key(&VirtualKey {
-            id: "ktpmstream".to_string(),
-            key_hash: crate::sigv4::sha256_hex(secret.as_bytes()),
-            name: "tpm-stream".to_string(),
-            allowed_pools: vec!["pas".to_string()],
-            max_budget_cents: None,
-            budget_period: "total".to_string(),
-            rpm_limit: Some(100), // high, so RPM doesn't interfere — TPM is what we exercise
-            tpm_limit: Some(30),
-            enabled: true,
-            created_at: 0,
-        })
+    let store = Arc::new(MemoryStore::new());
+    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+        &[7u8; 32],
+        crate::governance::signing::DEFAULT_KID,
+    );
+    let gov = Arc::new(
+        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
+    );
+    let (_key, token) = gov
+        .mint_signed(
+            crate::governance::NewKeySpec {
+                name: "tpm-stream".to_string(),
+                // The TPM cap lives on the bound GROUP now (keys are pure auth): 30 tokens/minute.
+                allowed_pools: Some(vec!["pas".to_string()]),
+                group: Some("tpmsgrp".to_string()),
+                labels: Default::default(),
+            },
+            2_000_000_000,
+            1_000_000_000,
+        )
         .unwrap();
-    let gov = Arc::new(GovState::new(store, 0, 0, None).unwrap());
+    let secret = token.as_str();
+    let groups = std::collections::BTreeMap::from([(
+        "tpmsgrp".to_string(),
+        crate::config::GroupCfg {
+            parent: None,
+            enabled: true,
+            limits: vec![crate::config::groups::LimitCfg {
+                metric: crate::config::groups::LimitMetric::Tokens,
+                amount: 30,
+                per: Some(crate::config::groups::LimitWindow::Minute),
+                scope: None,
+                on_exhaust: None,
+                downgrade_to: None,
+            }],
+            ..Default::default()
+        },
+    )]);
 
     // Lane speaks OpenAI; ingress below is Anthropic streaming → cross-protocol SSE reframe.
     let app = TestApp::new()
@@ -472,6 +557,7 @@ async fn test_cross_protocol_stream_records_tokens_for_tpm() {
         )
         .pool("pas", &[(0, 1)])
         .governance(gov)
+        .cost(crate::cost::CostModel::resolve_parts(None, 0, &groups))
         .build();
 
     let router = crate::build_router(app);
@@ -774,28 +860,28 @@ async fn test_metrics_admitted_in_open_relay_mode() {
     handle.abort();
 }
 
-/// Companion to `test_metrics_admitted_in_open_relay_mode`: in `auth.mode=token`, a GET
-/// /metrics with NO bearer token is rejected with 401 — `/metrics` is auth-gated, NOT exempt
-/// like `/healthz`. This guards the [Unreleased] security fix that made `/metrics` auth-gated
-/// (superseding the 0.16.2 review note that described it as intentionally open): a regression
-/// that re-added `/metrics` to the always-open allowlist alongside `/healthz` (auth.rs)
-/// would let this unauthenticated scrape through and fail here. The same request WITH the
-/// configured token is admitted (200), proving the gate is token-based, not a blanket block.
-#[cfg(feature = "auth-tokens")]
+/// Companion to `test_metrics_admitted_in_open_relay_mode`: with a data-plane auth CHAIN
+/// configured, a GET /metrics with NO credential is rejected with 401 - `/metrics` is
+/// auth-gated, NOT exempt like `/healthz`. This guards the [Unreleased] security fix that made
+/// `/metrics` auth-gated (superseding the 0.16.2 review note that described it as intentionally
+/// open): a regression that re-added `/metrics` to the always-open allowlist alongside
+/// `/healthz` (auth.rs) would let this unauthenticated scrape through and fail here. The same
+/// request WITH a chain-admitted credential is admitted (200), proving the gate is
+/// credential-based, not a blanket block. (The static `tokens` allowlist is REMOVED in 1.5.0;
+/// the test-only groups module stands in for a real chain module.)
 #[tokio::test]
-async fn test_metrics_requires_auth_in_token_mode() {
+async fn test_metrics_requires_auth_in_chain_mode() {
     crate::metrics::init();
     metrics::counter!(crate::metrics::REQUESTS_TOTAL, "outcome" => "ok").increment(1);
 
-    let token = "sk-metrics-scrape";
+    let token = "grp:metrics-scrapers";
     let auth_cfg = crate::config::AuthCfg {
-        chain: vec!["tokens".to_string()],
+        chain: vec![crate::config::AuthChainEntry::bare("test-groups-module")],
         upstream_credentials: crate::auth::UpstreamCreds::Own,
-        client_tokens: vec![token.to_string()],
-        modules: std::collections::HashMap::new(),
+        ..crate::config::AuthCfg::default_none()
     };
     let app = TestApp::new()
-        .auth(Arc::new(AuthMiddleware::new(&auth_cfg)))
+        .auth(Arc::new(AuthMiddleware::new_builtin(&auth_cfg)))
         .build();
 
     let router = crate::build_router(app);
@@ -843,26 +929,30 @@ async fn test_metrics_requires_auth_in_token_mode() {
 /// governance-enabled router enforces virtual-key auth + allowed-pools over real HTTP.
 #[tokio::test]
 async fn test_governance_vkey_auth_and_pool_acl() {
-    use crate::governance::{GovState, SqliteStore, Store, VirtualKey};
+    use crate::governance::{GovState, MemoryStore};
 
     crate::metrics::init();
-    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
-    let secret = "sk-vk-allowed";
-    store
-        .put_key(&VirtualKey {
-            id: "k1".to_string(),
-            key_hash: crate::sigv4::sha256_hex(secret.as_bytes()),
-            name: "tester".to_string(),
-            allowed_pools: vec!["allowedpool".to_string()],
-            max_budget_cents: None,
-            budget_period: "total".to_string(),
-            rpm_limit: None,
-            tpm_limit: None,
-            enabled: true,
-            created_at: 0,
-        })
+    let store = Arc::new(MemoryStore::new());
+    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+        &[7u8; 32],
+        crate::governance::signing::DEFAULT_KID,
+    );
+    let gov = Arc::new(
+        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
+    );
+    let (_key, token) = gov
+        .mint_signed(
+            crate::governance::NewKeySpec {
+                name: "tester".to_string(),
+                allowed_pools: Some(vec!["allowedpool".to_string()]),
+                group: None,
+                labels: Default::default(),
+            },
+            2_000_000_000,
+            1_000_000_000,
+        )
         .unwrap();
-    let gov = Arc::new(GovState::new(store, 1, 0, None).unwrap());
+    let secret = token.as_str();
 
     let app = TestApp::new().governance(gov).build();
 
@@ -916,30 +1006,68 @@ async fn test_governance_vkey_auth_and_pool_acl() {
 /// a virtual key over its budget is rejected (429 for body/Anthropic ingress) before forwarding.
 #[tokio::test]
 async fn test_governance_budget_over_quota() {
-    use crate::governance::{GovState, SqliteStore, Store, VirtualKey};
+    use crate::governance::{GovState, MemoryStore, Store};
 
     crate::metrics::init();
-    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
-    let secret = "sk-vk-broke";
-    store
-        .put_key(&VirtualKey {
-            id: "kb".to_string(),
-            key_hash: crate::sigv4::sha256_hex(secret.as_bytes()),
-            name: "broke".to_string(),
-            allowed_pools: vec![], // all pools
-            max_budget_cents: Some(100),
-            budget_period: "total".to_string(),
-            rpm_limit: None,
-            tpm_limit: None,
-            enabled: true,
-            created_at: 0,
-        })
+    let store = Arc::new(MemoryStore::new());
+    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+        &[7u8; 32],
+        crate::governance::signing::DEFAULT_KID,
+    );
+    let gov = Arc::new(
+        GovState::new_with_signer(store.clone(), Some("admintok".to_string()), Some(signer))
+            .unwrap(),
+    );
+    let (_key, token) = gov
+        .mint_signed(
+            crate::governance::NewKeySpec {
+                name: "broke".to_string(),
+                allowed_pools: None, // all pools
+                // The 100c budget cap lives on the bound GROUP (keys are pure auth).
+                group: Some("bgrp".to_string()),
+                labels: Default::default(),
+            },
+            2_000_000_000,
+            1_000_000_000,
+        )
         .unwrap();
-    // Pre-seed usage past the 100c budget (window 0 = "total").
-    store.add_usage("kb", 0, 250, 0, true).unwrap();
-    let gov = Arc::new(GovState::new(store, 1, 0, None).unwrap());
+    let secret = token.as_str();
+    // Pre-seed usage past the group's 100c budget (window 0 = "total") in the DURABLE store:
+    // 250 requests at a 1c flat fee derive to 250 cents of spend on the group's total bucket.
+    store
+        .put_usage(
+            "group:bgrp@total",
+            0,
+            &busbar_api::UsageLedger {
+                requests: 250,
+                billable_requests: 250,
+                models: vec![],
+            },
+        )
+        .unwrap();
+    let groups = std::collections::BTreeMap::from([(
+        "bgrp".to_string(),
+        crate::config::GroupCfg {
+            parent: None,
+            enabled: true,
+            limits: vec![crate::config::groups::LimitCfg {
+                metric: crate::config::groups::LimitMetric::Budget,
+                amount: 100,
+                per: Some(crate::config::groups::LimitWindow::Total),
+                scope: None,
+                on_exhaust: None,
+                downgrade_to: None,
+            }],
+            ..Default::default()
+        },
+    )]);
+    let cost = crate::cost::CostModel::resolve_parts(None, 1, &groups);
+    // Enforcement is now IN-MEMORY (authoritative): hydrate the budget cells from the store — exactly
+    // as boot does — so the admission gate sees the pre-seeded over-budget spend. (Without this the
+    // store seed would be invisible to the in-memory gate and the request would be admitted.)
+    gov.hydrate_budgets(&cost, 0).expect("hydrate");
 
-    let app = TestApp::new().governance(gov).build();
+    let app = TestApp::new().governance(gov).cost(cost).build();
 
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -992,33 +1120,67 @@ async fn test_governance_budget_over_quota() {
 /// Returns the bound address, the serve handle, and the secret to present. Shared by the
 /// per-protocol over-quota envelope tests below: the rejection fires before resolution, so no lane/pool/backend is
 /// needed — only a parseable body that carries `model` where the protocol expects it.
-async fn over_budget_router() -> (
-    std::net::SocketAddr,
-    tokio::task::JoinHandle<()>,
-    &'static str,
-) {
-    use crate::governance::{GovState, SqliteStore, Store, VirtualKey};
+async fn over_budget_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>, String) {
+    use crate::governance::{GovState, MemoryStore, Store};
 
-    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
-    let secret = "sk-vk-broke-multi";
-    store
-        .put_key(&VirtualKey {
-            id: "kbm".to_string(),
-            key_hash: crate::sigv4::sha256_hex(secret.as_bytes()),
-            name: "broke-multi".to_string(),
-            allowed_pools: vec![], // all pools
-            max_budget_cents: Some(100),
-            budget_period: "total".to_string(),
-            rpm_limit: None,
-            tpm_limit: None,
-            enabled: true,
-            created_at: 0,
-        })
+    let store = Arc::new(MemoryStore::new());
+    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+        &[7u8; 32],
+        crate::governance::signing::DEFAULT_KID,
+    );
+    let gov = Arc::new(
+        GovState::new_with_signer(store.clone(), Some("admintok".to_string()), Some(signer))
+            .unwrap(),
+    );
+    let (_key, token) = gov
+        .mint_signed(
+            crate::governance::NewKeySpec {
+                name: "broke-multi".to_string(),
+                allowed_pools: None, // all pools
+                // The 100c budget cap lives on the bound GROUP (keys are pure auth).
+                group: Some("bgrpm".to_string()),
+                labels: Default::default(),
+            },
+            2_000_000_000,
+            1_000_000_000,
+        )
         .unwrap();
-    store.add_usage("kbm", 0, 250, 0, true).unwrap();
-    let gov = Arc::new(GovState::new(store, 1, 0, None).unwrap());
+    let secret = token;
+    // Seed 250 requests on the GROUP's total bucket: at a 1c flat fee the DERIVED spend is
+    // 250 cents, past the group's 100-cent cap, so admission rejects before any forwarding.
+    store
+        .put_usage(
+            "group:bgrpm@total",
+            0,
+            &busbar_api::UsageLedger {
+                requests: 250,
+                billable_requests: 250,
+                models: vec![],
+            },
+        )
+        .unwrap();
+    let groups = std::collections::BTreeMap::from([(
+        "bgrpm".to_string(),
+        crate::config::GroupCfg {
+            parent: None,
+            enabled: true,
+            limits: vec![crate::config::groups::LimitCfg {
+                metric: crate::config::groups::LimitMetric::Budget,
+                amount: 100,
+                per: Some(crate::config::groups::LimitWindow::Total),
+                scope: None,
+                on_exhaust: None,
+                downgrade_to: None,
+            }],
+            ..Default::default()
+        },
+    )]);
+    let cost = crate::cost::CostModel::resolve_parts(None, 1, &groups);
+    // Enforcement is IN-MEMORY (authoritative): hydrate the budget cells from the durable store — as
+    // boot does — so the pre-seeded over-budget spend is visible to the admission gate.
+    gov.hydrate_budgets(&cost, 0).expect("hydrate");
 
-    let app = TestApp::new().governance(gov).build();
+    let app = TestApp::new().governance(gov).cost(cost).build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -1198,28 +1360,52 @@ async fn test_budget_over_quota_bedrock_envelope() {
 /// a virtual key over its RPM is rejected with 429 + Retry-After.
 #[tokio::test]
 async fn test_governance_rate_limit_429() {
-    use crate::governance::{GovState, SqliteStore, Store, VirtualKey};
+    use crate::governance::{GovState, MemoryStore};
 
     crate::metrics::init();
-    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
-    let secret = "sk-vk-rl";
-    store
-        .put_key(&VirtualKey {
-            id: "krl".to_string(),
-            key_hash: crate::sigv4::sha256_hex(secret.as_bytes()),
-            name: "rl".to_string(),
-            allowed_pools: vec![],
-            max_budget_cents: None,
-            budget_period: "total".to_string(),
-            rpm_limit: Some(2),
-            tpm_limit: None,
-            enabled: true,
-            created_at: 0,
-        })
+    let store = Arc::new(MemoryStore::new());
+    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+        &[7u8; 32],
+        crate::governance::signing::DEFAULT_KID,
+    );
+    let gov = Arc::new(
+        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
+    );
+    let (_key, token) = gov
+        .mint_signed(
+            crate::governance::NewKeySpec {
+                name: "rl".to_string(),
+                allowed_pools: None,
+                // The 2-requests-per-minute limit lives on the bound GROUP (keys are pure auth).
+                group: Some("rl2".to_string()),
+                labels: Default::default(),
+            },
+            2_000_000_000,
+            1_000_000_000,
+        )
         .unwrap();
-    let gov = Arc::new(GovState::new(store, 0, 0, None).unwrap());
+    let secret = token.as_str();
 
-    let app = TestApp::new().governance(gov).build();
+    let groups = std::collections::BTreeMap::from([(
+        "rl2".to_string(),
+        crate::config::GroupCfg {
+            parent: None,
+            enabled: true,
+            limits: vec![crate::config::groups::LimitCfg {
+                metric: crate::config::groups::LimitMetric::Requests,
+                amount: 2,
+                per: Some(crate::config::groups::LimitWindow::Minute),
+                scope: None,
+                on_exhaust: None,
+                downgrade_to: None,
+            }],
+            ..Default::default()
+        },
+    )]);
+    let app = TestApp::new()
+        .governance(gov)
+        .cost(crate::cost::CostModel::resolve_parts(None, 0, &groups))
+        .build();
 
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1228,7 +1414,7 @@ async fn test_governance_rate_limit_429() {
     let client = reqwest::Client::new();
     let url = format!("http://{addr}/anypool/v1/messages");
 
-    // `check_rate` buckets by a 60s WALL-CLOCK window (`now / 60 * 60`), so if the three requests
+    // The limit engine buckets by a 60s WALL-CLOCK minute window, so if the three requests
     // below straddle a minute boundary the per-window counter resets and the 3rd is admitted (404)
     // instead of rate-limited (429) — a rare timing flake on a loaded CI runner. Deterministic fix:
     // if we're in the last few seconds of the current window, wait for the next one to start so all
@@ -1275,40 +1461,59 @@ async fn test_governance_rate_limit_429() {
     handle.abort();
 }
 
-/// Build a router whose ONLY virtual key has `rpm_limit: Some(0)`, so EVERY request is
-/// rate-limited (429) by `rate_check` before any forwarding (`check_rate` rejects on the first
-/// request when `requests >= rpm` with `rpm == 0`). Returns the bound address, the serve handle,
-/// and the secret to present. The 429 mirror of `over_budget_router`: shared by the per-protocol
-/// `test_rate_limit_429_*_native_envelope` tests below — the rejection fires before resolution, so
-/// no lane/pool/backend is needed, only a parseable body that carries `model` where the protocol
-/// expects it. `allowed_pools: vec![]` admits every pool so the ACL never short-circuits the rate
-/// gate.
-async fn over_rpm_router() -> (
-    std::net::SocketAddr,
-    tokio::task::JoinHandle<()>,
-    &'static str,
-) {
-    use crate::governance::{GovState, SqliteStore, Store, VirtualKey};
+/// Build a router whose ONLY virtual key binds to a group with `{ requests: 0, per: minute }`, so
+/// EVERY request is rate-limited (429) by the admission engine before any forwarding (the check
+/// rejects on the first request when `requests + 1 > cap` with cap 0). Returns the bound address,
+/// the serve handle, and the secret to present. The 429 mirror of `over_budget_router`: shared by
+/// the per-protocol `test_rate_limit_429_*_native_envelope` tests below: the rejection fires
+/// before resolution, so no lane/pool/backend is needed, only a parseable body that carries
+/// `model` where the protocol expects it. An omitted `allowed_pools` admits every pool so the ACL
+/// never short-circuits the rate gate.
+async fn over_rpm_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>, String) {
+    use crate::governance::{GovState, MemoryStore};
 
-    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
-    let secret = "sk-vk-rl-multi";
-    store
-        .put_key(&VirtualKey {
-            id: "krlm".to_string(),
-            key_hash: crate::sigv4::sha256_hex(secret.as_bytes()),
-            name: "rl-multi".to_string(),
-            allowed_pools: vec![], // all pools
-            max_budget_cents: None,
-            budget_period: "total".to_string(),
-            rpm_limit: Some(0), // 0 ⇒ rate-limited on the first request
-            tpm_limit: None,
-            enabled: true,
-            created_at: 0,
-        })
+    let store = Arc::new(MemoryStore::new());
+    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+        &[7u8; 32],
+        crate::governance::signing::DEFAULT_KID,
+    );
+    let gov = Arc::new(
+        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
+    );
+    let (_key, token) = gov
+        .mint_signed(
+            crate::governance::NewKeySpec {
+                name: "rl-multi".to_string(),
+                allowed_pools: None, // all pools
+                group: Some("rl0".to_string()),
+                labels: Default::default(),
+            },
+            2_000_000_000,
+            1_000_000_000,
+        )
         .unwrap();
-    let gov = Arc::new(GovState::new(store, 0, 0, None).unwrap());
+    let secret = token;
 
-    let app = TestApp::new().governance(gov).build();
+    let groups = std::collections::BTreeMap::from([(
+        "rl0".to_string(),
+        crate::config::GroupCfg {
+            parent: None,
+            enabled: true,
+            limits: vec![crate::config::groups::LimitCfg {
+                metric: crate::config::groups::LimitMetric::Requests,
+                amount: 0,
+                per: Some(crate::config::groups::LimitWindow::Minute),
+                scope: None,
+                on_exhaust: None,
+                downgrade_to: None,
+            }],
+            ..Default::default()
+        },
+    )]);
+    let app = TestApp::new()
+        .governance(gov)
+        .cost(crate::cost::CostModel::resolve_parts(None, 0, &groups))
+        .build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -1503,11 +1708,18 @@ async fn test_rate_limit_429_bedrock_native_envelope() {
 #[cfg(feature = "auth-admin-tokens")]
 #[tokio::test]
 async fn test_governance_admin_api() {
-    use crate::governance::{GovState, SqliteStore};
+    use crate::governance::{GovState, MemoryStore};
 
     crate::metrics::init();
-    let store = Arc::new(SqliteStore::open_in_memory().unwrap());
-    let gov = Arc::new(GovState::new(store, 1, 0, Some("admintok".to_string())).unwrap());
+    let store = Arc::new(MemoryStore::new());
+    // A signing key is required to MINT signed-token keys (1.5.0).
+    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+        &[9u8; 32],
+        crate::governance::signing::DEFAULT_KID,
+    );
+    let gov = Arc::new(
+        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
+    );
 
     let app = TestApp::new().governance(gov).build();
 
@@ -1529,18 +1741,23 @@ async fn test_governance_admin_api() {
 
     // Create a key with the admin token.
     let r = client
-            .post(format!("{base}/api/v1/admin/keys"))
-            .bearer_auth("admintok")
-            .json(&serde_json::json!({"name": "team-a", "allowed_pools": ["allowedpool"], "rpm_limit": 5}))
-            .send()
-            .await
-            .unwrap();
+        .post(format!("{base}/api/v1/admin/keys"))
+        .bearer_auth("admintok")
+        .json(&serde_json::json!({"name": "team-a", "allowed_pools": ["allowedpool"]}))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(r.status().as_u16(), 201, "admin create → 201");
     let created: serde_json::Value = r.json().await.unwrap();
     let id = created["id"].as_str().unwrap().to_string();
-    let secret = created["secret"].as_str().unwrap().to_string();
-    assert!(secret.starts_with("sk-bb-"), "secret returned once");
-    assert!(created.get("key_hash").is_none(), "hash never returned");
+    // The key credential is a busbar-SIGNED token (1.5.0), returned once - never a stored secret.
+    let secret = created["token"].as_str().unwrap().to_string();
+    assert!(secret.starts_with("bbk_"), "signed token returned once");
+    assert!(
+        created.get("generation_hash").is_none(),
+        "hash never returned"
+    );
+    assert!(created.get("secret").is_none(), "no legacy secret in 1.5.0");
 
     // List shows it (no hash).
     let r = client
@@ -1551,7 +1768,7 @@ async fn test_governance_admin_api() {
         .unwrap();
     let listed: serde_json::Value = r.json().await.unwrap();
     assert_eq!(listed["items"].as_array().unwrap().len(), 1);
-    assert!(listed["items"][0].get("key_hash").is_none());
+    assert!(listed["items"][0].get("generation_hash").is_none());
 
     // Usage endpoint works.
     let r = client
@@ -2008,8 +2225,7 @@ async fn test_section6_passthrough_401_no_trip_vs_token_mode() {
     let auth_cfg_passthrough = AuthCfg {
         chain: vec![],
         upstream_credentials: crate::auth::UpstreamCreds::Passthrough,
-        client_tokens: vec![],
-        modules: std::collections::HashMap::new(),
+        ..crate::config::AuthCfg::default_none()
     };
     let app_passthrough = TestApp::new()
         .lane(
@@ -2021,7 +2237,7 @@ async fn test_section6_passthrough_401_no_trip_vs_token_mode() {
             .api_key("busbar-key"),
         )
         .pool("default", &[(0, 1)])
-        .auth(Arc::new(AuthMiddleware::new(&auth_cfg_passthrough)))
+        .auth(Arc::new(AuthMiddleware::new_builtin(&auth_cfg_passthrough)))
         .build();
 
     // Scenario A response: pushed immediately before the forward() that consumes it.
@@ -2069,10 +2285,9 @@ async fn test_section6_passthrough_401_no_trip_vs_token_mode() {
     });
 
     let auth_cfg_token = AuthCfg {
-        chain: vec!["tokens".to_string()],
+        chain: vec![crate::config::AuthChainEntry::bare("keys")],
         upstream_credentials: crate::auth::UpstreamCreds::Own,
-        client_tokens: vec!["caller-token-123".to_string()],
-        modules: std::collections::HashMap::new(),
+        ..crate::config::AuthCfg::default_none()
     };
     let app_token = TestApp::new()
         .lane(
@@ -2084,7 +2299,7 @@ async fn test_section6_passthrough_401_no_trip_vs_token_mode() {
             .api_key("busbar-key"),
         )
         .pool("default", &[(0, 1)])
-        .auth(Arc::new(AuthMiddleware::new(&auth_cfg_token)))
+        .auth(Arc::new(AuthMiddleware::new_builtin(&auth_cfg_token)))
         .build();
 
     let req_body = serde_json::to_vec(&json!({"model": "test-model", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 100})).unwrap();
@@ -2183,8 +2398,7 @@ async fn test_passthrough_forwards_caller_token() {
     let auth_cfg_passthrough = AuthCfg {
         chain: vec![],
         upstream_credentials: crate::auth::UpstreamCreds::Passthrough,
-        client_tokens: vec![],
-        modules: std::collections::HashMap::new(),
+        ..crate::config::AuthCfg::default_none()
     };
     let app = TestApp::new()
         .lane(
@@ -2196,7 +2410,7 @@ async fn test_passthrough_forwards_caller_token() {
             .api_key("busbar-central-key"),
         )
         .pool("default", &[(0, 1)])
-        .auth(Arc::new(AuthMiddleware::new(&auth_cfg_passthrough)))
+        .auth(Arc::new(AuthMiddleware::new_builtin(&auth_cfg_passthrough)))
         .build();
 
     // Caller's Bearer token (NOT busbar's key)
@@ -3201,7 +3415,7 @@ mod disposition_matrix_tests {
             prompt_caching: None,
             max_requests: -1,
             provider: "p".into(),
-            max_concurrent: 10,
+            max_concurrent: Some(10),
             default_max_tokens: None,
             upstream_model: None,
             attempt_timeout_ms: None,
@@ -3209,18 +3423,18 @@ mod disposition_matrix_tests {
         let pool = crate::config::PoolCfg {
             members: vec![crate::config::PoolMember {
                 reasoning: None,
-                target: "m".into(),
+                model: "m".into(),
                 weight: 1,
                 attempt_timeout_ms: None,
                 context_max: None,
                 tier: None,
-                cost_per_mtok: None,
                 tags: Vec::new(),
             }],
             breaker: None,
             failover: None,
             on_exhausted: None,
             affinity: None,
+            module_hooks: Vec::new(),
             policy: crate::config::PoolPolicy::default(),
             gates: Vec::new(),
             base_named: false,
@@ -3232,15 +3446,15 @@ mod disposition_matrix_tests {
                 crate::config::ProviderCfg {
                     protocol: "anthropic".into(),
                     base_url: "https://api.example.com".into(),
-                    api_key_env: "API_KEY".into(),
+                    api_key: crate::config::SecretRef::env("API_KEY"),
                     health: None,
                     error_map,
                     path: None,
                     path_base: None,
                     token_url: None,
                     scope: None,
+                    subject: None,
                     auth: None,
-                    _legacy_api_key: None,
                     allow_metadata_hosts: Vec::new(),
                 },
             );
@@ -3255,7 +3469,11 @@ mod disposition_matrix_tests {
                 admin_tls: None,
                 auth: None,
                 admin_auth: vec!["admin-tokens".to_string()],
-                group_map: std::collections::HashMap::new(),
+                groups: std::collections::BTreeMap::new(),
+                rate_card: None,
+                per_request_fee: 0,
+                store: None,
+                secrets: std::collections::BTreeMap::new(),
                 providers,
                 models,
                 pools,
@@ -3449,15 +3667,22 @@ mod disposition_matrix_tests {
         // Should get 400 from lane 0
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
-        // Lane 1 should NOT have been called (no requests to server1)
-        // We verify by checking state1 is empty (pop consumed nothing)
-        {
-            let responses = state1.responses.lock().unwrap();
-            assert!(
-                responses.is_empty(),
-                "Lane 1 should NOT be hit on client fault from lane 0"
-            );
-        }
+        // Lane 1 must NOT be dispatched to: a 4xx client fault is the CLIENT's error and must not
+        // be retried against a second upstream. `responses` is the queue of canned responses THIS
+        // test supplied, not a record of received requests — it starts empty regardless of whether
+        // lane 1 was hit, so it cannot discriminate. `get_last_request_path` is the actual hit
+        // witness, recorded unconditionally on every request the mock handler receives.
+        assert!(
+            state1.get_last_request_path().is_none(),
+            "lane 1 must not receive a request: a 4xx client fault is the CLIENT's error and must \
+             not be retried against a second upstream"
+        );
+        // Positive control: lane 0 WAS hit, so the negative above is about failover, not about the
+        // request never leaving busbar at all.
+        assert!(
+            state0.get_last_request_path().is_some(),
+            "lane 0 was dispatched to"
+        );
 
         server0.shutdown().await;
         server1.shutdown().await;
@@ -3641,7 +3866,7 @@ async fn test_exhaustion_least_bad_selects_soonest() {
     server1.shutdown().await;
 }
 
-/// Round-4 MEDIUM/correctness: `forward_once` (the LeastBad/FallbackPool helper) must record
+/// `forward_once` (the LeastBad/FallbackPool helper) must record
 /// lane success AND spend budget on a 2xx, mirroring the main forward loop. Without it a HalfOpen
 /// lane served only via the degraded path never recovers and its `max_requests` budget never
 /// depletes. Route a budget-limited lane via LeastBad and assert `ok` incremented and `budget`
@@ -3710,7 +3935,7 @@ async fn test_forward_once_records_success_and_spends_budget() {
     server.shutdown().await;
 }
 
-/// REGRESSION (R7 MEDIUM, proxy engine gemini-json-array gating): a BODY-MODEL client (openai) that
+/// A BODY-MODEL client (openai) that
 /// sends `__busbar_gemini_json_array:true` in its own fully-controlled body must NOT have its SSE
 /// stream reframed as a JSON array under `Content-Type: application/json`. The framing is gated on
 /// `ingress_protocol == "gemini"`, so an openai-ingress streaming response stays `text/event-stream`
@@ -3784,7 +4009,7 @@ async fn test_gemini_json_array_shim_ignored_for_body_model_ingress() {
     server.shutdown().await;
 }
 
-/// REGRESSION (R7 MEDIUM, forward_once): the DEGRADED path (LeastBad/FallbackPool → `forward_once`)
+/// The DEGRADED path (LeastBad/FallbackPool → `forward_once`)
 /// must shape a CROSS-protocol upstream 401/403 into the ingress protocol's native error envelope
 /// with the SAME kind the main `forward_with_pool` path uses — `authentication_error` for 401,
 /// `permission_error` for 403 — NOT the old degraded-path `invalid_request_error`. Anthropic
@@ -4220,8 +4445,8 @@ async fn test_sticky_session_while_healthy() {
 /// pick falling through to SWRR over the healthy remainder. That requires TWO
 /// things to line up deterministically:
 ///
-///   1. the session key must hash onto the TRIPPED member, and
-///   2. the tripped member's breaker must actually be Open at selection time.
+/// 1. the session key must hash onto the TRIPPED member, and
+/// 2. the tripped member's breaker must actually be Open at selection time.
 ///
 /// `pick_among` computes `pos = stable_hash(key) % cands.len()` and treats
 /// `cands[pos].idx` as the sticky member. With `cands = [lane0, lane1]`,
@@ -5025,7 +5250,7 @@ async fn forwarded_openai_to_anthropic(
     got
 }
 
-/// Regression (max_tokens translation contract): an OpenAI request that legally OMITS
+/// An OpenAI request that legally OMITS
 /// `max_tokens`, routed to an Anthropic backend, must reach the upstream WITH a `max_tokens`
 /// (Anthropic 400s without it). With no per-lane default, the conservative fallback is injected.
 #[tokio::test]
@@ -5517,7 +5742,7 @@ async fn test_same_size_pool_exhausts() {
     server.shutdown().await;
 }
 
-/// Regression (CRITICAL): a CLEAN SSE stream end records SUCCESS, not a failure. Serving several
+/// A CLEAN SSE stream end records SUCCESS, not a failure. Serving several
 /// back-to-back successful streams must NOT trip the lane's breaker — the old `Poll::Ready(None)`
 /// arm recorded a spurious failure on every completed stream, tripping healthy streaming lanes.
 #[tokio::test]
@@ -5588,7 +5813,7 @@ async fn test_clean_sse_end_records_success_not_failure() {
     server.shutdown().await;
 }
 
-/// Regression (HIGH): an upstream 429 with `Retry-After: N` flowing through forward() must set a
+/// An upstream 429 with `Retry-After: N` flowing through forward() must set a
 /// cooldown floor of at least N seconds on the lane. Exercises the end-to-end extraction path
 /// (header parsed in forward → RawUpstreamError.retry_after_secs → CanonicalSignal.retry_after →
 /// store cooldown floor) that no test previously covered — the header was silently dropped.
@@ -5644,7 +5869,7 @@ async fn test_429_retry_after_header_sets_cooldown_floor() {
     server.shutdown().await;
 }
 
-/// Regression (HIGH): when a lane's concurrency permits are saturated, pick_among (inside
+/// When a lane's concurrency permits are saturated, pick_among (inside
 /// forward) must NOT spin forever — once the request deadline passes it must give up and the
 /// request must resolve (503), bounded by the failover deadline. Previously the permit-wait was
 /// an unbounded 1ms spin-loop with no deadline check (a head-of-line-blocking DoS surface).
@@ -5709,6 +5934,92 @@ async fn test_saturated_lane_respects_deadline_no_infinite_spin() {
         "pick_among must honor the deadline and not block indefinitely (took {elapsed:?})"
     );
     drop(held);
+    server.shutdown().await;
+}
+
+/// `max_concurrent` OMITTED (unbounded) must impose NO concurrency cap: a burst far larger than the
+/// old default cap acquires every permit without a single denial. This models exactly what main.rs
+/// builds for a `None` config field — a lane seeded with `Semaphore::MAX_PERMITS` permits. Before the
+/// fix `max_concurrent` was mandatory, so an operator always had SOME finite cap; now the default is
+/// truly unbounded.
+#[tokio::test]
+async fn test_unbounded_max_concurrent_never_throttles_a_burst() {
+    crate::metrics::init();
+    let state = Arc::new(MockServerState::new());
+    let server = MockServer::new(state).await;
+
+    // A lane built exactly as an OMITTED max_concurrent resolves in main.rs: MAX_PERMITS permits.
+    let app = TestApp::new()
+        .lane(
+            LaneSpec::new(
+                "unbounded-model",
+                crate::proto::Protocol::anthropic(),
+                &server.base_url(),
+            )
+            .max(tokio::sync::Semaphore::MAX_PERMITS),
+        )
+        .pool("default", &[(0, 1)])
+        .build();
+
+    // A burst WAY above the old default cap (10). Every acquire must succeed — no throttling.
+    const BURST: usize = 5_000;
+    let mut permits = Vec::with_capacity(BURST);
+    for i in 0..BURST {
+        let p = app
+            .store
+            .try_acquire(0)
+            .unwrap_or_else(|| panic!("unbounded lane must admit permit #{i} without throttling"));
+        permits.push(p);
+    }
+    assert_eq!(
+        permits.len(),
+        BURST,
+        "an unbounded lane must admit the entire burst"
+    );
+    // Sanity: still far from exhaustion — the lane is effectively unbounded.
+    assert!(
+        app.store.try_acquire(0).is_some(),
+        "an unbounded lane still has permits after a large burst"
+    );
+
+    drop(permits);
+    server.shutdown().await;
+}
+
+/// A model WITH `max_concurrent` set still enforces the cap (existing behaviour preserved): the
+/// (N+1)th concurrent acquire is denied until a permit frees.
+#[tokio::test]
+async fn test_bounded_max_concurrent_still_enforces_the_cap() {
+    crate::metrics::init();
+    let state = Arc::new(MockServerState::new());
+    let server = MockServer::new(state).await;
+
+    let app = TestApp::new()
+        .lane(
+            LaneSpec::new(
+                "capped-model",
+                crate::proto::Protocol::anthropic(),
+                &server.base_url(),
+            )
+            .max(2), // cap = 2
+        )
+        .pool("default", &[(0, 1)])
+        .build();
+
+    let p1 = app.store.try_acquire(0).expect("permit 1 of 2 acquires");
+    let p2 = app.store.try_acquire(0).expect("permit 2 of 2 acquires");
+    // The cap is reached — the 3rd immediate acquire must be denied.
+    assert!(
+        app.store.try_acquire(0).is_none(),
+        "a max_concurrent=2 lane must deny the 3rd concurrent permit"
+    );
+    // Free one → a slot opens again (the limiter is live, not a one-way latch).
+    drop(p1);
+    assert!(
+        app.store.try_acquire(0).is_some(),
+        "releasing a permit must free a slot under the cap"
+    );
+    drop(p2);
     server.shutdown().await;
 }
 

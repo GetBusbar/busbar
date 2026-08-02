@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Moderation IR (design-operations-oop.md §5b). The degenerate operation: OpenAI-only (K=1), no
+//! Moderation IR. The degenerate operation: OpenAI-only (K=1), no
 //! cross-provider superset needed — no other provider ships a moderations endpoint — so this models
-//! OpenAI's shape exactly. Split request/response per §12.4. Flat-fee: no `Billing` on the response
+//! OpenAI's shape exactly. Split request/response per. Flat-fee: no `Billing` on the response
 //! (`IrResp::usage()` returns `Billing::Flat` for moderation).
-#![allow(dead_code)]
 
 use crate::lossless::SourceScopedExtra;
 use std::collections::BTreeMap;

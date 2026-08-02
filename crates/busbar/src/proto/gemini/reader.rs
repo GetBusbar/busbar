@@ -320,13 +320,28 @@ impl ProtocolReader for GeminiReader {
                             // keyed by (index, name). The Gemini writer ignores the ToolUse `id`
                             // (it round-trips `name`), so this is safe for same-protocol passthrough
                             // and gives cross-protocol Anthropic/OpenAI egress a non-empty id.
-                            let id = synth_tool_call_id(tool_call_index, &name);
+                            // No turn salt needed here: `tool_call_index` is global across the whole
+                            // `contents` array (every turn in the visible history), so it already has
+                            // no cross-turn collision (see `synth_tool_call_id`'s doc comment).
+                            let id = synth_tool_call_id(tool_call_index, &name, "");
                             tool_call_index += 1;
+                            // `thoughtSignature` is a sibling of `functionCall` on the `Part` object
+                            // (NOT nested inside it) — same placement as the `thought:true` block's
+                            // signature above. Gemini 3 requires this echoed back verbatim on the
+                            // next turn; capture it here so same-protocol Gemini history round-trips
+                            // it (even though that path never actually reaches this reader — it's a
+                            // raw passthrough — capturing it is harmless and future-proof).
+                            let thought_signature = part
+                                .get("thoughtSignature")
+                                .and_then(|s| s.as_str())
+                                .filter(|s| !s.is_empty())
+                                .map(String::from);
                             msg_content.push(crate::ir::IrBlock::ToolUse {
                                 id,
                                 name,
                                 input: args,
                                 cache_control: None,
+                                thought_signature,
                             });
                         }
                         // FunctionResponse (ToolResult)
@@ -444,6 +459,7 @@ impl ProtocolReader for GeminiReader {
                             description,
                             input_schema: parameters,
                             cache_control: None,
+                            hosted: None,
                         });
                     }
                 }
@@ -823,9 +839,8 @@ impl ProtocolReader for GeminiReader {
                             // of Gemini's part ordering; the index is then stable for the stream.
                             if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
                                 if !text.is_empty() {
-                                    let offset = usize::from(state.reasoning_seen);
                                     let ti =
-                                        state.text_index.unwrap_or(offset + state.open_tools.len());
+                                        state.text_index.unwrap_or_else(|| state.claim_ir_index());
                                     if state.thinking_block_open {
                                         state.thinking_block_open = false;
                                         out.push(IrStreamEvent::BlockStop { index: 0 });
@@ -855,31 +870,40 @@ impl ProtocolReader for GeminiReader {
 
                                 // Bound `state.open_tools` so an adversarial/buggy upstream that
                                 // streams an unbounded run of `functionCall` parts without ever
-                                // emitting `finishReason` (the only event that drains the set)
-                                // cannot grow per-request heap without bound. Past the cap we
-                                // skip recording the frame AND emitting its BlockStart/BlockDelta
-                                // — the next index is derived from `open_tools.len()`, so a
-                                // recorded-but-uncapped frame would also produce duplicate
-                                // indices once growth stalled. No legitimate Gemini turn carries
-                                // this many parallel tool calls. Mirrors the Cohere reader's cap.
+                                // reaching a terminal path (a `finishReason` chunk OR a mid-stream
+                                // prompt-block envelope — see `MAX_GEMINI_TOOL_FRAMES`'s doc comment;
+                                // both drain the set) cannot grow per-request heap without bound. Past
+                                // the cap we skip recording the frame AND emitting its
+                                // BlockStart/BlockDelta — the next index is derived from
+                                // `open_tools.len()`, so a recorded-but-uncapped frame would also
+                                // produce duplicate indices once growth stalled. No legitimate Gemini
+                                // turn carries this many parallel tool calls. Mirrors the Cohere
+                                // reader's cap.
                                 if !name_val.is_empty()
                                     && state.open_tools.len() < MAX_GEMINI_TOOL_FRAMES
                                 {
-                                    // A tool block claims the next free IR index by order of first
-                                    // appearance: the count of tool blocks already opened, plus 1 iff
-                                    // the text block has ALREADY claimed a slot this stream
-                                    // (`text_index.is_some()`, a PERSISTENT marker — not the live
-                                    // `text_block_open` flag). Keying on the persistent marker keeps a
-                                    // tool-only stream contiguous from 0 while guaranteeing text and
-                                    // tools never collide on an index regardless of arrival order:
-                                    // tool-before-text → tool takes 0, text takes the next slot;
-                                    // text-before-tool → text takes 0, tools take 1.. . Recorded in
-                                    // `open_tools` so the finishReason handler emits a matching
-                                    // BlockStop for every tool block.
-                                    let offset = usize::from(state.reasoning_seen);
+                                    // A tool block claims the next free IR index from the MONOTONE
+                                    // counter, by order of first appearance — never reset for the
+                                    // life of the stream, so a slot claimed pre-terminal cannot be
+                                    // re-claimed by a block that arrives after a terminal path has
+                                    // run (the defect the sibling openai_chat reader had before this
+                                    // same fix; see `claim_ir_index`'s own docs). `text_base` is kept
+                                    // ONLY for `synth_tool_call_id` below (an id-derivation detail,
+                                    // not index arithmetic) — the ID space is unrelated to the IR
+                                    // index space. Recorded in `open_tools` so the finishReason
+                                    // handler emits a matching BlockStop for every tool block.
                                     let text_base = usize::from(state.text_index.is_some());
-                                    let ir_idx = offset + text_base + state.open_tools.len();
+                                    let ir_idx = state.claim_ir_index();
                                     state.open_tools.insert(ir_idx);
+
+                                    // Close a still-open thinking block first (the text-part arm
+                                    // does this too): otherwise the tool block at `ir_idx` opens
+                                    // while index 0 (thinking) is still open, and Anthropic's
+                                    // documented stream never has two content blocks open at once.
+                                    if state.thinking_block_open {
+                                        state.thinking_block_open = false;
+                                        out.push(IrStreamEvent::BlockStop { index: 0 });
+                                    }
 
                                     // A zero-arg Gemini `functionCall` either omits `args` or sends
                                     // `{}`. Default the MISSING case to an empty JSON OBJECT, not
@@ -896,8 +920,18 @@ impl ProtocolReader for GeminiReader {
                                     // Anthropic/OpenAI stream writers emit a non-empty id on the
                                     // content_block_start. Tool blocks occupy indices
                                     // `text_base..text_base+n`, so `ir_idx - text_base` is the
-                                    // 0-based tool position.
-                                    let id = synth_tool_call_id(ir_idx - text_base, &name_val);
+                                    // 0-based tool position. Salted with this chunk's `responseId`
+                                    // (native Gemini streams repeat it on every chunk) so two
+                                    // DIFFERENT streamed turns in the same conversation whose first
+                                    // tool call shares a name do not synthesize the same id (see
+                                    // `synth_tool_call_id`'s doc comment).
+                                    let turn_salt =
+                                        data.get(FIELD_RESPONSE_ID).and_then(|v| v.as_str());
+                                    let id = synth_tool_call_id(
+                                        ir_idx - text_base,
+                                        &name_val,
+                                        turn_salt.unwrap_or(""),
+                                    );
                                     out.push(IrStreamEvent::BlockStart {
                                         index: ir_idx,
                                         block: crate::ir::IrBlockMeta::ToolUse {
@@ -906,6 +940,17 @@ impl ProtocolReader for GeminiReader {
                                         },
                                     });
 
+                                    // NOTE: `IrBlockMeta::ToolUse` deliberately has no
+                                    // `thoughtSignature` slot, and this arm deliberately does not
+                                    // read `part.get("thoughtSignature")`. Same-protocol Gemini
+                                    // streams are relayed raw and never decoded through this reader,
+                                    // so a captured value here would never reach a same-protocol
+                                    // client. A genuine cross-protocol stream has no downstream field
+                                    // to carry a captured signature into for the client's NEXT
+                                    // request either — it's `IrReq::prepare_for_egress` (request-side,
+                                    // sentinel injection), not stream capture, that actually supplies
+                                    // the `thoughtSignature` Gemini needs on that next turn. Do not
+                                    // "fix" this as a gap without re-reading that control flow.
                                     // Emit the whole args as InputJsonDelta (Gemini doesn't stream functionCall)
                                     let args_str =
                                         crate::json::to_string(&args).unwrap_or_default();
@@ -930,14 +975,19 @@ impl ProtocolReader for GeminiReader {
             // block's index (`state.text_index`, or the next free slot if no text part has appeared
             // yet) and emit the citations delta against it BEFORE the finishReason path closes the
             // block below. Without this arm a streamed Gemini citation was silently dropped.
-            let citations = read_gemini_citations(candidate);
+            //
+            // `anchor_text: None` — DELIBERATELY left as raw byte offsets: a
+            // citation's indices address the FULL response text, which `GeminiStreamState` does not
+            // accumulate (it carries `text_index`, an index, not text). Adding a full-text
+            // accumulator to this hot streaming path for an offset correction would fail the
+            // layering test; the non-stream path (which HAS the full text) does convert.
+            let citations = read_gemini_citations(candidate, None);
             if !citations.is_empty() {
-                // Offset by the thinking slot (index 0) when a reasoning block is open, exactly
-                // like the text-part arm — otherwise a citation/logprobs delta arriving before the
-                // first answer-text part opens a text block at index 0, colliding with the
-                // thinking block and corrupting cross-protocol block-index mapping.
-                let offset = usize::from(state.reasoning_seen);
-                let ti = state.text_index.unwrap_or(offset + state.open_tools.len());
+                // Claim the text block's index from the monotone counter (see `claim_ir_index`),
+                // exactly like the text-part arm — otherwise a citation/logprobs delta arriving
+                // before the first answer-text part could reuse an index another block already
+                // claimed, colliding and corrupting cross-protocol block-index mapping.
+                let ti = state.text_index.unwrap_or_else(|| state.claim_ir_index());
                 if !state.text_block_open {
                     // Close a still-open thinking block first (the text-part arm does this too);
                     // otherwise two blocks are open at once and the downstream translator sees an
@@ -966,12 +1016,11 @@ impl ProtocolReader for GeminiReader {
             // stream can re-emit them as `choices[].logprobs.content[]`.
             let stream_logprobs = read_gemini_logprobs(candidate.get("logprobsResult"));
             if !stream_logprobs.is_empty() {
-                // Offset by the thinking slot (index 0) when a reasoning block is open, exactly
-                // like the text-part arm — otherwise a citation/logprobs delta arriving before the
-                // first answer-text part opens a text block at index 0, colliding with the
-                // thinking block and corrupting cross-protocol block-index mapping.
-                let offset = usize::from(state.reasoning_seen);
-                let ti = state.text_index.unwrap_or(offset + state.open_tools.len());
+                // Claim the text block's index from the monotone counter (see `claim_ir_index`),
+                // exactly like the text-part arm — otherwise a citation/logprobs delta arriving
+                // before the first answer-text part could reuse an index another block already
+                // claimed, colliding and corrupting cross-protocol block-index mapping.
+                let ti = state.text_index.unwrap_or_else(|| state.claim_ir_index());
                 if !state.text_block_open {
                     // Close a still-open thinking block first (the text-part arm does this too);
                     // otherwise two blocks are open at once and the downstream translator sees an
@@ -997,7 +1046,7 @@ impl ProtocolReader for GeminiReader {
             if let Some(finish_reason_val) =
                 candidate.get(FIELD_FINISH_REASON).and_then(|r| r.as_str())
             {
-                // PF-M2: map Gemini's full FinishReason set to the canonical IR stop reasons (no
+                // Map Gemini's full FinishReason set to the canonical IR stop reasons (no
                 // verbatim-lowercased Gemini-only token leaks to a non-Gemini client).
                 let mut stop_reason = map_gemini_finish_reason(finish_reason_val);
 
@@ -1135,6 +1184,16 @@ impl ProtocolReader for GeminiReader {
         let mut content: Vec<crate::ir::IrBlock> = Vec::new();
         // Per-response tool-call index feeding `synth_tool_call_id` (Gemini carries no tool id).
         let mut tool_call_index: usize = 0;
+        // This response's own `responseId`, salted into every synthesized tool-call id below so a
+        // DIFFERENT LLM turn in the same growing conversation (a separate `read_response` call,
+        // whose `tool_call_index` independently restarts at 0) cannot synthesize the SAME id for a
+        // same-named first tool call — see `synth_tool_call_id`'s doc comment. Absent on the rare
+        // response that omits `responseId`, falling back to no salt (matching the pre-fix behavior
+        // only for that edge case).
+        let tool_id_turn_salt = obj
+            .get(FIELD_RESPONSE_ID)
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if let Some(parts_arr) = candidate
             .get("content")
             .and_then(|c| c.get("parts"))
@@ -1190,42 +1249,47 @@ impl ProtocolReader for GeminiReader {
                     // reader's note): the tool-call input is an argument map, so a no-arg call is `{}`.
                     let args = empty_object_if_absent(func_call.get("args"));
 
-                    let id = synth_tool_call_id(tool_call_index, &name_val);
+                    let id = synth_tool_call_id(tool_call_index, &name_val, tool_id_turn_salt);
                     tool_call_index += 1;
+                    // `thoughtSignature` is a sibling of `functionCall` on the `Part` object, same
+                    // placement as the thought block's signature above. Gemini 3 REQUIRES this
+                    // echoed back verbatim on the function call's next-turn replay; capture it so a
+                    // same-protocol Gemini→Gemini history round-trips it faithfully.
+                    let thought_signature = part
+                        .get("thoughtSignature")
+                        .and_then(|s| s.as_str())
+                        .filter(|s| !s.is_empty())
+                        .map(String::from);
                     content.push(crate::ir::IrBlock::ToolUse {
                         id,
                         name: name_val,
                         input: args,
                         cache_control: None,
+                        thought_signature,
                     });
                 }
             }
         }
 
-        // L2: grounding/web-search citations. Gemini reports them at the CANDIDATE level
+        // Grounding/web-search citations. Gemini reports them at the CANDIDATE level
         // (`candidates[].citationMetadata.citationSources[]`), not per content-part, whereas the IR
-        // carries citations ON a Text block. Attach the mapped citations to the FIRST Text block of
-        // the candidate so they survive the seam (cross-protocol Anthropic egress re-emits them, and
-        // a same-protocol Gemini path re-emits them at candidate level). If the candidate has no Text
-        // block (e.g. a tool-only turn) there is nothing to anchor them to — Gemini does not emit
-        // citations for such turns in practice, so dropping is faithful.
-        let gemini_citations = read_gemini_citations(candidate);
-        if !gemini_citations.is_empty() {
-            if let Some(crate::ir::IrBlock::Text { citations, .. }) = content
-                .iter_mut()
-                .find(|b| matches!(b, crate::ir::IrBlock::Text { .. }))
-            {
-                *citations = gemini_citations;
-            }
-        }
+        // carries citations ON a Text block. `citationSources[].startIndex`/`endIndex` are byte
+        // offsets into the candidate's FULL output text — the concatenation of EVERY text part, not
+        // just one of them — so a response that splits its answer across multiple text parts must
+        // convert against the full concatenation and route each citation to whichever block its span
+        // actually falls in, with the index re-expressed relative to that block's own text (matching
+        // Anthropic's per-block `char_location` contract). `attach_gemini_citations_to_text_blocks`
+        // does both; it is a no-op when the candidate has no Text block (e.g. a tool-only turn) or no
+        // citationMetadata.
+        attach_gemini_citations_to_text_blocks(candidate, &mut content);
 
         // Parse finishReason → stop_reason (map Gemini→canonical)
         let stop_reason = candidate
             .get(FIELD_FINISH_REASON)
             .and_then(|r| r.as_str())
-            // PF-M2: canonical-map the full Gemini FinishReason set (see
-            // `map_gemini_finish_reason`) so a Gemini-only reason never reaches a non-Gemini
-            // client as an unrecognized lowercased token.
+            // Canonical-map the full Gemini FinishReason set (see `map_gemini_finish_reason`) so a
+            // Gemini-only reason never reaches a non-Gemini client as an unrecognized lowercased
+            // token.
             .map(map_gemini_finish_reason);
 
         // Gemini's `FinishReason` enum has NO TOOL_USE member: a tool-call turn ends with STOP, which

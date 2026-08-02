@@ -15,7 +15,6 @@
 //! STREAMING translation additionally rides the stream-event machinery those same vtables provide
 //! (`read_response_events`/`write_response_event`), reached through the engine only after the
 //! dispatch has resolved THIS handler.
-#![allow(dead_code)]
 
 use crate::handlers::{CodecError, IngressReject, OperationHandler, WireBody};
 use crate::ir::variant::{IrReq, IrResp};
@@ -60,10 +59,43 @@ impl OperationHandler for ChatOperation {
     }
     fn extract_usage(&self, ingress_protocol: &str, body: &[u8]) -> Option<IrUsage> {
         // Same-protocol usage tap: run the egress (== ingress) reader over the reassembled body.
-        crate::proto::protocol_for(ingress_protocol)
-            .zip(crate::json::parse::<Value>(body).ok())
-            .and_then(|(p, v)| p.reader().read_response(&v).ok())
-            .map(|ir| ir.usage)
+        // Three distinct failure points (unknown protocol / bad JSON / decode failure) — each is
+        // logged at its own site so a same-protocol 2xx body that fails to decode is never a
+        // silent 0-tokens bill (mirrors the default `OperationHandler::extract_usage`'s
+        // diagnostic, which chat would otherwise lose by overriding it).
+        let Some(p) = crate::proto::protocol_for(ingress_protocol) else {
+            tracing::warn!(
+                protocol = ingress_protocol,
+                "usage tap: unknown ingress protocol for a same-protocol 2xx body; \
+                 billing 0 tokens for this request"
+            );
+            return None;
+        };
+        let v = match crate::json::parse::<Value>(body) {
+            Ok(v) => v,
+            Err(_e) => {
+                // Never log the raw sonic-rs `Display`/`Debug` here — it embeds a fragment of the
+                // offending body, which can carry secrets/PII (see `crate::json::parse_err_log`'s
+                // doc comment and every other `crate::json::parse` call site in this crate).
+                tracing::warn!(
+                    error = %crate::json::parse_err_log(body.len()),
+                    "usage tap: failed to parse a same-protocol 2xx body as JSON; \
+                     billing 0 tokens for this request"
+                );
+                return None;
+            }
+        };
+        match p.reader().read_response(&v) {
+            Ok(ir) => Some(ir.usage),
+            Err(e) => {
+                tracing::warn!(
+                    error = ?e,
+                    "usage tap: read_response failed to decode a same-protocol 2xx body; \
+                     billing 0 tokens for this request"
+                );
+                None
+            }
+        }
     }
     fn egress_accept(&self, writer: &dyn ProtocolWriter, wants_stream: bool) -> &'static str {
         writer.egress_accept(wants_stream)
@@ -194,5 +226,98 @@ mod tests {
         let wire = anthropic.write_request(&ir);
         let v: Value = serde_json::from_slice(&wire).unwrap();
         assert_eq!(v["messages"][0]["content"][0]["text"], "hi");
+    }
+
+    /// A same-protocol 2xx body chat's `extract_usage` cannot decode must still bill 0 tokens
+    /// (`None`) — the fail-safe outcome is unchanged — but it must now warn, like every other
+    /// operation's default `extract_usage` does on the identical failure. Before the fix, chat's
+    /// override collapsed this to `None` via a silent `Option` chain with no log at all.
+    #[test]
+    fn extract_usage_warns_on_undecodable_body_and_still_bills_zero() {
+        use crate::test_support::warn_capture::WarnCapture;
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        let chat = ChatOperation("openai");
+        // Valid JSON, but not a shape the openai chat reader accepts as a response (no
+        // `choices`/`object`) — a same-protocol 2xx body that fails to decode.
+        let body = br#"{"not":"a chat completion"}"#;
+
+        let cap = WarnCapture::default();
+        let subscriber = tracing_subscriber::registry().with(cap.clone());
+        let usage =
+            tracing::subscriber::with_default(subscriber, || chat.extract_usage("openai", body));
+
+        assert_eq!(usage, None, "an undecodable body still bills 0 tokens");
+        // Distinguishing text (not just the substring common to all three sites) — this is the
+        // `read_response` decode-failure site specifically, proving the 3-site design actually
+        // fires the site its cause maps to (a single generic log would pass this test too, but
+        // could not tell this failure apart from the other two in an operator's log stream).
+        assert!(
+            cap.contains("read_response failed to decode")
+                && cap.contains("billing 0 tokens for this request"),
+            "an undecodable same-protocol 2xx body must warn at the decode-failure site: {:?}",
+            cap.messages()
+        );
+    }
+
+    /// Malformed JSON hits the earlier parse step of the same collapse — must warn too, at its
+    /// OWN site (distinct message from the decode-failure site above).
+    #[test]
+    fn extract_usage_warns_on_invalid_json_and_still_bills_zero() {
+        use crate::test_support::warn_capture::WarnCapture;
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        let chat = ChatOperation("openai");
+        // Include a value ("hunter2") that must NEVER reach the log — `crate::json::parse`'s raw
+        // (sonic-rs) error embeds a fragment of the offending bytes, so the parse-failure site
+        // must log via `parse_err_log` (byte count only), not the raw error.
+        let body = br#"not json at all, but say hunter2 anyway"#;
+
+        let cap = WarnCapture::default();
+        let subscriber = tracing_subscriber::registry().with(cap.clone());
+        let usage =
+            tracing::subscriber::with_default(subscriber, || chat.extract_usage("openai", body));
+
+        assert_eq!(usage, None);
+        assert!(
+            cap.contains("failed to parse a same-protocol 2xx body as JSON")
+                && cap.contains("billing 0 tokens for this request"),
+            "invalid JSON in a same-protocol 2xx body must warn at the parse-failure site: {:?}",
+            cap.messages()
+        );
+        assert!(
+            !cap.contains("hunter2"),
+            "the parse-failure log must never echo a fragment of the offending body: {:?}",
+            cap.messages()
+        );
+    }
+
+    /// An unresolvable ingress protocol hits the first step of the same collapse — must warn too,
+    /// at its OWN site. (Today's sole production caller, `proxy/response_body.rs`, always resolves
+    /// `ingress_protocol` before storing it, so this arm is defensive rather than
+    /// currently-reachable in production — but `extract_usage` is a trait method over an
+    /// arbitrary `&str`, and a caller that skips that normalization must not bill 0 tokens with
+    /// no diagnostic either.)
+    #[test]
+    fn extract_usage_warns_on_unknown_protocol_and_still_bills_zero() {
+        use crate::test_support::warn_capture::WarnCapture;
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        let chat = ChatOperation("openai");
+        let body = br#"{"id":"c","object":"chat.completion","created":0,"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"x"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#;
+
+        let cap = WarnCapture::default();
+        let subscriber = tracing_subscriber::registry().with(cap.clone());
+        let usage = tracing::subscriber::with_default(subscriber, || {
+            chat.extract_usage("not-a-real-protocol", body)
+        });
+
+        assert_eq!(usage, None);
+        assert!(
+            cap.contains("unknown ingress protocol")
+                && cap.contains("billing 0 tokens for this request"),
+            "an unresolvable ingress protocol must warn at the protocol-lookup site: {:?}",
+            cap.messages()
+        );
     }
 }

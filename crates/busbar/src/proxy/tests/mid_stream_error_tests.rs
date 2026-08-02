@@ -328,7 +328,7 @@ fn test_strip_same_protocol_model_shim() {
     assert_eq!(v["model"], "gpt-4o", "openai model never stripped");
 }
 
-/// REGRESSION (R7 CRITICAL, proxy engine shim-strip ordering): a PATH-MODEL ingress (gemini/bedrock)
+/// A PATH-MODEL ingress (gemini/bedrock)
 /// crossing to a BODY-MODEL egress (openai/anthropic/cohere/responses) must reach the backend WITH
 /// the authoritative egress `model`. The bug: `rewrite_model` ran, then an UNCONDITIONAL strip
 /// removed `model`, so the cross-protocol body hit the backend with no `model` (a guaranteed 400).

@@ -178,3 +178,37 @@ fn native_metadata_wins_over_promoted_user() {
         "metadata must be the verbatim original, not a merged object"
     );
 }
+
+/// class-6 6c1: `/v1/responses` DOES model top-level `parallel_tool_calls`, identically to Chat
+/// Completions — the reader previously hardcoded `None` (total ingress loss for a Responses caller
+/// who explicitly set it), unlike Bedrock/Gemini/Cohere where `None` is the ACCURATE "this dialect
+/// has no such parameter". Round-trips ingress read AND egress re-emit.
+#[test]
+fn responses_parallel_tool_calls_round_trips() {
+    use crate::proto::openai_responses::{ResponsesReader, ResponsesWriter};
+
+    let body = serde_json::json!({
+        "model": "gpt-4o",
+        "input": [{"role": "user", "content": "hi"}],
+        "tools": [{"type": "function", "name": "f", "parameters": {}}],
+        "parallel_tool_calls": false
+    });
+    let ir = ResponsesReader.read_request(&body).expect("parses");
+    assert_eq!(
+        ir.parallel_tool_calls,
+        Some(false),
+        "parallel_tool_calls must be read into the typed IR field"
+    );
+    assert!(
+        !ir.extra.contains_key("parallel_tool_calls"),
+        "a modeled key must not also ride extra (double-emit guard)"
+    );
+
+    let responses_writer = ResponsesWriter;
+    let out = responses_writer.write_request(&ir);
+    assert_eq!(
+        out["parallel_tool_calls"],
+        serde_json::json!(false),
+        "the writer must re-emit the modeled value: {out}"
+    );
+}

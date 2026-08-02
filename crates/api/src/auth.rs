@@ -7,19 +7,20 @@ use sha2::{Digest, Sha256};
 
 /// The authenticated PRINCIPAL — who the caller IS, established at the auth stage and keyed to by
 /// everything downstream (governance, audit attribution, the hook `send_user` projection, admin
-/// scopes). IDENTITY ONLY: a module returns who; policy (allowed pools, budgets, admin scope) is
-/// resolved by busbar from config (`group_map:`), never asserted by the module (design-hooks-v2
-/// §2.3). NEVER carries the credential itself.
+/// scopes). IDENTITY ONLY: a module returns who; policy (allowed pools, group, admin scope) is
+/// resolved by busbar from config (`auth.role_bindings:`, nested by module), never asserted by the
+/// module. NEVER carries the credential itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Principal {
     /// Stable identity handle (required): the virtual-key id for governance keys, a stable
-    /// module-scoped handle otherwise (e.g. `tokens:2`, an AD UPN).
+    /// module-scoped handle otherwise (e.g. an AD UPN).
     pub id: String,
     /// Display name, if the module knows one.
     pub name: Option<String>,
-    /// Group memberships (external modules). Mapped to governance via config `group_map:`;
-    /// intersected with the module's `allowed_groups:` cap before mapping. Empty = no groups.
-    pub groups: Vec<String>,
+    /// ROLES the identifying module asserts for this principal (1.5.0: `roles`, was `groups`).
+    /// Mapped to policy through `auth.role_bindings.<module>` (nested by module, so a role from
+    /// one module never rides another's binding). Empty = no roles (grants nothing).
+    pub roles: Vec<String>,
     /// Module-suggested cache TTL for this identification, seconds (clamped by the engine's hard
     /// cap when the credential cache lands). `None` = engine default.
     pub ttl_secs: Option<u64>,
@@ -31,14 +32,14 @@ impl Principal {
         Self {
             id: id.into(),
             name: None,
-            groups: Vec::new(),
+            roles: Vec::new(),
             ttl_secs: None,
         }
     }
 }
 
-/// The verdict of one auth module. The PAM-style trichotomy the 1.3 auth-plugin layer is built on
-/// (design-hooks-v2 §2): `Identify` = this module authenticated the caller and this is WHO —
+/// The verdict of one auth module. The PAM-style trichotomy the 1.3 auth-plugin layer is built on:
+/// `Identify` = this module authenticated the caller and this is WHO —
 /// carries the [`Principal`]; `Reject` = a credential was presented but is invalid (fail-closed,
 /// stop the chain); `Pass` = "not mine" — no usable credential for this module, defer to the next
 /// module / the mode default.
@@ -68,10 +69,15 @@ pub trait AuthModule: Send + Sync {
     }
 }
 
-/// Constant-time string comparison to avoid leaking how much of a token matches via timing.
-/// `#[inline(never)]` + `black_box` keep the optimizer from turning the accumulation loop into
-/// an early-exit branch (which would reintroduce a timing signal). The length check is a
-/// deliberate fast-path: token *length* is not treated as secret.
+/// Constant-time comparison of the CONTENTS once lengths already match, to avoid leaking how much
+/// of a token matches via timing. `#[inline(never)]` + `black_box` keep the optimizer from turning
+/// the accumulation loop into an early-exit branch (which would reintroduce a timing signal for the
+/// contents). The length check IS an early exit, and is only safe to apply to raw secret material
+/// when the material's length is not itself sensitive — which a raw token generally is NOT expected
+/// to be, but a caller comparing genuinely secret raw bytes directly (rather than through
+/// [`sha256_hex`] below) still leaks whether the two lengths matched. Prefer hashing both sides
+/// first (see `sha256_hex`'s doc) so length never enters the comparison at all; this primitive alone
+/// does not guarantee that for its caller.
 #[inline(never)]
 pub fn constant_time_eq(a: &str, b: &str) -> bool {
     let a_bytes = a.as_bytes();
@@ -91,7 +97,11 @@ pub fn constant_time_eq(a: &str, b: &str) -> bool {
 }
 
 /// Lowercase hex SHA-256 of `data` — THE digest facility credentials are compared under (a module
-/// hashes both sides before [`constant_time_eq`], so candidate length leaks nothing).
+/// hashes both sides before [`constant_time_eq`]: every digest is 64 hex chars, so
+/// `constant_time_eq`'s length early-exit never fires on a length difference driven by the raw
+/// candidate, and candidate length leaks nothing). This is the pattern every auth module SHOULD
+/// follow when comparing a caller-supplied credential against configured secret material — compare
+/// raw only when the material's length is not itself sensitive.
 pub fn sha256_hex(data: &[u8]) -> String {
     hex::encode(Sha256::digest(data))
 }

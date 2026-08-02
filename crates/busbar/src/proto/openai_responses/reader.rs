@@ -125,7 +125,7 @@ impl ProtocolReader for ResponsesReader {
                             });
                         }
                         Some("input_image") => {
-                            // L5: a Responses `input_image` can reference an uploaded file by
+                            // A Responses `input_image` can reference an uploaded file by
                             // `file_id` INSTEAD of carrying an inline `image_url`. The prior code only
                             // read `image_url`, so a file_id-only image produced an EMPTY Image block
                             // (media_type/data both ""), a lossy degradation. Carry the file_id
@@ -183,6 +183,7 @@ impl ProtocolReader for ResponsesReader {
                                     name,
                                     input,
                                     cache_control: None,
+                                    thought_signature: None,
                                 }],
                             });
                         }
@@ -234,6 +235,25 @@ impl ProtocolReader for ResponsesReader {
                             // cross-protocol hop. Content can be an array of `input_text` blocks or
                             // a bare string; handle both.
                             if role_str == "system" || role_str == "developer" {
+                                // A `system`/`developer` item can legally appear ANYWHERE in
+                                // `input`, but the IR cannot express a positioned system turn
+                                // (`IrRole` has no such member, and every writer that models
+                                // system content re-folds it to the top — e.g.
+                                // `anthropic/writer.rs`'s Messages API cannot take `role:"system"`
+                                // mid-conversation). So this instruction is hoisted to apply from
+                                // turn 1 regardless of where it appeared — a real semantic change
+                                // when a conversational turn already preceded it. Warn so the
+                                // divergence is visible rather than silently reordering intent.
+                                if !messages.is_empty() {
+                                    tracing::warn!(
+                                        role = role_str,
+                                        "a Responses `{role_str}` item appeared AFTER an earlier \
+                                         conversational turn; busbar hoists it to apply from the \
+                                         start of the conversation (the IR has no positioned \
+                                         system-turn concept), which changes when this instruction \
+                                         takes effect relative to the native Responses behavior"
+                                    );
+                                }
                                 push_system_content(&mut system_blocks, item.get("content"));
                                 continue;
                             }
@@ -267,16 +287,13 @@ impl ProtocolReader for ResponsesReader {
                             // paired writer (`write_request`) re-emits this as a `reasoning` input
                             // item, so a same-protocol Responses->Responses round-trip is preserved.
                             let text = read_reasoning_text(item);
-                            let signature = item
-                                .get("encrypted_content")
-                                .and_then(|s| s.as_str())
-                                .filter(|s| !s.is_empty())
-                                .map(String::from);
+                            let signature =
+                                read_reasoning_encrypted_content(item).map(String::from);
                             if !text.is_empty() || signature.is_some() {
                                 messages.push(crate::ir::IrMessage {
                                     role: crate::ir::IrRole::Assistant,
                                     content: vec![crate::ir::IrBlock::Thinking {
-                                        text,
+                                        text: text.into_owned(),
                                         signature,
                                         redacted: false,
                                         cache_control: None,
@@ -299,6 +316,17 @@ impl ProtocolReader for ResponsesReader {
                         // the system prompt and must be accumulated into `system_blocks` rather than
                         // dropped (the prior `_ => continue` lost them on cross-protocol hops).
                         if role_str == "system" || role_str == "developer" {
+                            // Same hoist-visibility warn as the typed `message` arm above.
+                            if !messages.is_empty() {
+                                tracing::warn!(
+                                    role = role_str,
+                                    "a Responses `{role_str}` item appeared AFTER an earlier \
+                                     conversational turn; busbar hoists it to apply from the \
+                                     start of the conversation (the IR has no positioned \
+                                     system-turn concept), which changes when this instruction \
+                                     takes effect relative to the native Responses behavior"
+                                );
+                            }
                             push_system_content(&mut system_blocks, content_val);
                             continue;
                         }
@@ -332,6 +360,32 @@ impl ProtocolReader for ResponsesReader {
         let mut tools: Vec<crate::ir::IrTool> = Vec::new();
         if let Some(tools_val) = obj.get("tools") {
             for tool_val in tools_val.as_array().unwrap_or(&Vec::new()) {
+                // HOSTED-TOOL PASSTHROUGH (Finding 5). The Responses `tools` array mixes CUSTOM
+                // function tools (`type:"function"` with a flat `name`/`parameters`) with provider-
+                // HOSTED tools (`type:"web_search"`/`"file_search"`/`"code_interpreter"`/
+                // `"computer_use_preview"`/`"mcp"`/...) that carry NO `name`/`parameters`. Parsing a
+                // hosted tool as a function tool yielded an empty `{"type":"function","name":""}` that
+                // a Responses backend 400s on. A tool is a function tool ONLY when its `type` is
+                // exactly `"function"` (or, defensively, when `type` is absent but a `name` is present,
+                // the pre-Responses shorthand); ANY other `type` is a hosted tool and must round-trip
+                // its raw JSON verbatim so the writer re-emits it unchanged.
+                let type_str = tool_val.get("type").and_then(|t| t.as_str());
+                let is_function = match type_str {
+                    Some("function") => true,
+                    Some(_) => false,
+                    None => tool_val.get("name").is_some(),
+                };
+                if !is_function {
+                    tools.push(crate::ir::IrTool {
+                        name: String::new(),
+                        description: None,
+                        input_schema: serde_json::Value::Null,
+                        cache_control: None,
+                        hosted: Some(tool_val.clone()),
+                    });
+                    continue;
+                }
+
                 let name = tool_val
                     .get("name")
                     .and_then(|v| v.as_str())
@@ -351,6 +405,7 @@ impl ProtocolReader for ResponsesReader {
                     description,
                     input_schema,
                     cache_control: None,
+                    hosted: None,
                 });
             }
         }
@@ -439,13 +494,20 @@ impl ProtocolReader for ResponsesReader {
             .and_then(crate::ir::IrReasoningEffort::parse)
             .map(crate::ir::IrReasoningAsk::Effort);
 
+        // `/v1/responses` models a top-level `parallel_tool_calls` boolean, identically to Chat
+        // Completions (class-6 6c1 ingress). Previously hardcoded `None`, which — unlike
+        // Bedrock/Gemini/Cohere (whose native dialects genuinely have no such parameter, so `None`
+        // there is the accurate "caller never said") — is total ingress loss for Responses callers
+        // who explicitly set it.
+        let parallel_tool_calls = obj.get("parallel_tool_calls").and_then(|v| v.as_bool());
+
         Ok(crate::ir::IrRequest {
             reasoning,
             reasoning_budgets: None,
             logprobs: None,
             top_logprobs: None,
             user: None,
-            parallel_tool_calls: None,
+            parallel_tool_calls,
             system: system_blocks,
             messages,
             tools,
@@ -958,7 +1020,7 @@ impl ProtocolReader for ResponsesReader {
                                     .and_then(|v| v.as_u64())
                                     .unwrap_or(0),
                                 cache_creation_input_tokens: None,
-                                // H6: carry the streamed prompt-cache hit count
+                                // Carry the streamed prompt-cache hit count
                                 // (`usage.input_tokens_details.cached_tokens`) into the IR's
                                 // read-side cache field so a streaming Responses terminal preserves
                                 // the cache saving.
@@ -1119,10 +1181,17 @@ impl ProtocolReader for ResponsesReader {
                                     if let Some(text) =
                                         block_item.get("text").and_then(|t| t.as_str())
                                     {
+                                        // `annotations` is a sibling key on this same content-part
+                                        // object. See `read_url_annotations` for why offsets are
+                                        // deliberately not carried.
+                                        let citations = block_item
+                                            .get("annotations")
+                                            .map(crate::proto::openai_chat::read_url_annotations)
+                                            .unwrap_or_default();
                                         content.push(crate::ir::IrBlock::Text {
                                             text: text.to_string(),
                                             cache_control: None,
-                                            citations: Vec::new(),
+                                            citations,
                                         });
                                     }
                                 } else if block_type == "refusal" {
@@ -1173,6 +1242,7 @@ impl ProtocolReader for ResponsesReader {
                             name,
                             input,
                             cache_control: None,
+                            thought_signature: None,
                         });
                     }
 
@@ -1199,16 +1269,12 @@ impl ProtocolReader for ResponsesReader {
                     // explicit rather than an implied promise of cross-vendor reasoning continuation.
                     ITEM_TYPE_REASONING => {
                         let text = read_reasoning_text(item);
-                        let signature = item
-                            .get("encrypted_content")
-                            .and_then(|s| s.as_str())
-                            .filter(|s| !s.is_empty())
-                            .map(String::from);
+                        let signature = read_reasoning_encrypted_content(item).map(String::from);
                         // Skip a wholly-empty reasoning item (no text and no encrypted_content)
                         // rather than emitting a blank Thinking block.
                         if !text.is_empty() || signature.is_some() {
                             content.push(crate::ir::IrBlock::Thinking {
-                                text,
+                                text: text.into_owned(),
                                 signature,
                                 redacted: false,
                                 cache_control: None,
@@ -1273,7 +1339,7 @@ impl ProtocolReader for ResponsesReader {
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0),
             cache_creation_input_tokens: None,
-            // H6: the Responses API reports prompt-cache hits under
+            // The Responses API reports prompt-cache hits under
             // `usage.input_tokens_details.cached_tokens`. Map it into the IR's
             // `cache_read_input_tokens` (the read-side cache field Bedrock already uses) so the cache
             // saving survives a cross-protocol hop instead of being dropped. No new IR field is added.

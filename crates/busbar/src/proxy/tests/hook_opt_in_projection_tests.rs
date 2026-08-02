@@ -90,7 +90,7 @@ fn system_text_chars_counts_block_arrays() {
     assert_eq!(system_text_chars(&Value::Null, "anthropic"), 0);
 }
 
-/// REGRESSION (audit c1r4): the projection read-path was blind to GEMINI ingress — it read
+/// The projection read-path was blind to GEMINI ingress — it read
 /// only `messages`/`system`, so a gemini body (`contents`/`systemInstruction`/`parts`)
 /// projected EMPTY: a rewrite gate saw `message_count: 0` with no prompt and silently
 /// no-oped. The read side must mirror the dialects `apply_rewrite_to_body` writes.
@@ -129,7 +129,7 @@ fn prompt_projection_reads_gemini_contents() {
     assert_eq!(req.prompt.as_ref().unwrap().messages.len(), 2);
 }
 
-/// REGRESSION (audit c1r4), Responses-API half: `input` (list OR bare string) and
+/// Responses-API half: `input` (list OR bare string) and
 /// `instructions` must project — the old read-path saw neither.
 #[test]
 fn prompt_projection_reads_responses_input() {
@@ -167,7 +167,7 @@ fn prompt_projection_reads_responses_input() {
     assert_eq!(req.message_count, 1);
     assert_eq!(req.total_chars, 15);
 
-    // REGRESSION (audit c1r9): TOP-LEVEL typed items in `input[]` carry text at the item ROOT
+    // TOP-LEVEL typed items in `input[]` carry text at the item ROOT
     // (`{type:"input_text", text}`), not under `content`. They must project (not blank) and
     // count toward the SIZE signal, with role inferred from `type`.
     let v: Value = serde_json::json!({
@@ -195,7 +195,7 @@ fn prompt_projection_reads_responses_input() {
     assert_eq!(req.total_chars, 12);
 }
 
-/// REGRESSION (audit c1r7): the `max_tokens` routing SIZE signal must be dialect-aware. The
+/// The `max_tokens` routing SIZE signal must be dialect-aware. The
 /// Responses API names it `max_output_tokens`, so reading `max_tokens` unconditionally projected
 /// `None` for every responses-ingress request — silently blinding any routing policy/tap that
 /// keys on the size signal. Non-responses dialects still read `max_tokens`.
@@ -260,4 +260,535 @@ fn body_end_user_reads_both_dialects() {
     assert_eq!(body_end_user(&v), None);
     let v: Value = serde_json::json!({"metadata": {"user_id": ""}});
     assert_eq!(body_end_user(&v), None);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Reasoning-block hook-visibility bypass (`block_text`). The old probes keyed on
+// `b.get("text")`, which stands in for a typed dispatch over block/dialect kind — every reasoning
+// wire shape that stores its text under a DIFFERENT key (`thinking`, `reasoningContent.
+// reasoningText.text`, `summary[].text`) fell through silently, so a `prompt: ro` screening hook
+// saw `{role, text: ""}` for a turn the provider received in full: an operator-owned PII/DLP/
+// guardrail gate silently passing content it was deployed to inspect. Two of the three shapes
+// (Bedrock `reasoningText`, Responses summary-only `reasoning`) require NO signature at all to
+// reach the provider verbatim — equally clean, no-forgery bypasses, not one worse than the other.
+// ---------------------------------------------------------------------------------------------
+
+/// Bypass #1: Anthropic `thinking` plaintext lives under the key `thinking`, not `text`
+/// (`proto/anthropic/mod.rs` reader). Before the fix the projection read `""`.
+#[test]
+fn prompt_projection_sees_anthropic_thinking_text() {
+    let v: Value = serde_json::json!({
+        "messages": [
+            {"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "SMUGGLED", "signature": "sig"}
+            ]}
+        ]
+    });
+    let p = build_prompt_projection(&v, "anthropic");
+    assert_eq!(
+        p.messages,
+        vec![("assistant".into(), "SMUGGLED".into())]
+            as Vec<(std::borrow::Cow<'_, str>, std::borrow::Cow<'_, str>)>
+    );
+}
+
+/// Bypass #2 — the highest-value case: Bedrock's writer re-emits `reasoningContent.reasoningText`
+/// with NO unsigned-drop filter (unlike Anthropic's egress path), so a client-fabricated, entirely
+/// unsigned block ships to the provider verbatim. Before the fix the projection read `""`.
+#[test]
+fn prompt_projection_sees_bedrock_reasoning_text() {
+    let v: Value = serde_json::json!({
+        "messages": [
+            {"role": "assistant", "content": [
+                {"reasoningContent": {"reasoningText": {"text": "SMUGGLED", "signature": "sig-xyz"}}}
+            ]}
+        ]
+    });
+    let p = build_prompt_projection(&v, "bedrock");
+    assert_eq!(
+        p.messages,
+        vec![("assistant".into(), "SMUGGLED".into())]
+            as Vec<(std::borrow::Cow<'_, str>, std::borrow::Cow<'_, str>)>
+    );
+    // The generic arms must not incidentally pick up the sibling `signature` field as if it were
+    // content — opaque provider material is not screenable text either. The fixture above carries
+    // a real `signature` (Bedrock's `reasoningText` shape is `{text, signature}`, see
+    // `proto/bedrock/mod.rs`'s `read_bedrock_reasoning_block`), so this assertion is meaningful:
+    // without it, a naive dispatch could accidentally string-search the whole `reasoningContent`
+    // object rather than just `reasoningText.text`.
+    assert!(!p.messages[0].1.contains("sig-xyz"));
+}
+
+/// Bypass #3: a Responses `reasoning` INPUT item with NO `content` key (summary-only — the second
+/// no-signature bypass: `encrypted_content` is `Option`, the reader admits the item on
+/// `!text.is_empty()` alone) carries its text under `summary[].text`, never at the item root.
+/// Before the fix the projection took the item-root `text` probe and read `""`.
+#[test]
+fn prompt_projection_sees_responses_reasoning_summary_only() {
+    let v: Value = serde_json::json!({
+        "input": [
+            {"type": "reasoning", "summary": [{"type": "summary_text", "text": "SMUGGLED"}]}
+        ]
+    });
+    let p = build_prompt_projection(&v, "responses");
+    assert_eq!(p.messages.len(), 1);
+    assert_eq!(p.messages[0].1.as_ref(), "SMUGGLED");
+}
+
+/// Anthropic `redacted_thinking` carries only opaque encrypted bytes — IR never holds plaintext
+/// for it. The projection must show the fixed marker (a screening hook's correct read is "there is
+/// content here I cannot screen", not "this turn is empty") and must NEVER expose the ciphertext:
+/// handing a hook a base64 blob has zero screening value and would be a new information
+/// disclosure (the bytes would reach an operator-configured sidecar that never saw them before).
+#[test]
+fn prompt_projection_marks_anthropic_redacted_thinking() {
+    let v: Value = serde_json::json!({
+        "messages": [
+            {"role": "assistant", "content": [
+                {"type": "redacted_thinking", "data": "OPAQUE_CIPHERTEXT_BYTES"}
+            ]}
+        ]
+    });
+    let p = build_prompt_projection(&v, "anthropic");
+    assert_eq!(
+        p.messages,
+        vec![("assistant".into(), REDACTED_REASONING_MARKER.into())]
+            as Vec<(std::borrow::Cow<'_, str>, std::borrow::Cow<'_, str>)>
+    );
+    assert!(!p.messages[0].1.contains("OPAQUE_CIPHERTEXT_BYTES"));
+}
+
+/// Same guard as above, Bedrock's redacted shape (`reasoningContent.redactedContent`).
+#[test]
+fn prompt_projection_marks_bedrock_redacted_content() {
+    let v: Value = serde_json::json!({
+        "messages": [
+            {"role": "assistant", "content": [
+                {"reasoningContent": {"redactedContent": "OPAQUE_CIPHERTEXT_BYTES"}}
+            ]}
+        ]
+    });
+    let p = build_prompt_projection(&v, "bedrock");
+    assert_eq!(
+        p.messages,
+        vec![("assistant".into(), REDACTED_REASONING_MARKER.into())]
+            as Vec<(std::borrow::Cow<'_, str>, std::borrow::Cow<'_, str>)>
+    );
+    assert!(!p.messages[0].1.contains("OPAQUE_CIPHERTEXT_BYTES"));
+}
+
+/// Follow-up bypass (Bug A): a Responses `reasoning` item admitted by the reader on its opaque
+/// `encrypted_content` blob ALONE (no `content`/`summary` text at all — no `content` key present)
+/// must project the redacted marker, not silently read as "nothing here". Before the fix,
+/// `read_reasoning_text` returned `""` for this shape and `block_text`'s Responses arm collapsed
+/// straight to `BlockText::None`.
+#[test]
+fn prompt_projection_marks_responses_encrypted_content_only_reasoning() {
+    let v: Value = serde_json::json!({
+        "input": [
+            {"type": "reasoning", "encrypted_content": "OPAQUE_BLOB_XYZ"}
+        ]
+    });
+    let p = build_prompt_projection(&v, "responses");
+    assert_eq!(
+        p.messages,
+        vec![("assistant".into(), REDACTED_REASONING_MARKER.into())]
+            as Vec<(std::borrow::Cow<'_, str>, std::borrow::Cow<'_, str>)>
+    );
+    assert!(!p.messages[0].1.contains("OPAQUE_BLOB_XYZ"));
+}
+
+/// THE MOST IMPORTANT regression test (Bug B): the SAME encrypted-content-only reasoning item, but
+/// with `"content": []` explicitly PRESENT (an empty array, not absent). Before the fix, both
+/// `total_text_chars` and `build_prompt_projection` dispatched on `m.get("content")`'s SHAPE
+/// first — `Some(Value::Array([]))` took the array-walk branch (zero blocks, contributes nothing)
+/// and never called `block_text` on the item root at all, so the item was invisible to BOTH
+/// callers even after `block_text`'s reasoning arm itself learned to recognize
+/// `encrypted_content` (Bug A). This exercises the CALLER dispatch, not `block_text` in isolation,
+/// which is exactly the level Bug B lived at.
+#[test]
+fn prompt_projection_and_total_chars_mark_responses_reasoning_with_empty_content_array() {
+    let v: Value = serde_json::json!({
+        "input": [
+            {"type": "reasoning", "content": [], "encrypted_content": "OPAQUE_BLOB_XYZ"}
+        ]
+    });
+    let p = build_prompt_projection(&v, "responses");
+    assert_eq!(
+        p.messages,
+        vec![("assistant".into(), REDACTED_REASONING_MARKER.into())]
+            as Vec<(std::borrow::Cow<'_, str>, std::borrow::Cow<'_, str>)>
+    );
+    assert!(!p.messages[0].1.contains("OPAQUE_BLOB_XYZ"));
+
+    let total = total_text_chars(&v, "responses", 0);
+    assert_eq!(
+        total,
+        REDACTED_REASONING_MARKER.chars().count(),
+        "total_text_chars must count the marker's length, not silently contribute 0"
+    );
+}
+
+/// Malformed `encrypted_content` (empty string, non-string) must NOT be treated as a real opaque
+/// blob — matches the reader's own filter (`read_reasoning_encrypted_content`, mirroring
+/// `reader.rs`'s `.and_then(Value::as_str).filter(|s| !s.is_empty())`), which drops such an item
+/// entirely (never ships it) when it also carries no text. `block_text` must agree: `None`, not
+/// `Redacted`.
+#[test]
+fn block_text_responses_reasoning_rejects_malformed_encrypted_content() {
+    let empty_string: Value = serde_json::json!({"type": "reasoning", "encrypted_content": ""});
+    assert!(matches!(
+        block_text(&empty_string, "responses"),
+        BlockText::None
+    ));
+
+    let non_string: Value = serde_json::json!({"type": "reasoning", "encrypted_content": 123});
+    assert!(matches!(
+        block_text(&non_string, "responses"),
+        BlockText::None
+    ));
+}
+
+/// Non-regression / ordering guard: a realistic round-trip shape (mirrors
+/// `test_reasoning_item_thinking_round_trip` in `proto/openai_responses/tests/tests.rs`) carrying
+/// BOTH real `content[reasoning_text]` text AND a non-empty `encrypted_content` signature. The
+/// plaintext must win — project as real text, not the redacted marker — and neither the marker
+/// nor the raw blob's bytes leak into the wrong place.
+#[test]
+fn prompt_projection_responses_reasoning_prefers_text_over_encrypted_content() {
+    let v: Value = serde_json::json!({
+        "input": [
+            {
+                "type": "reasoning",
+                "content": [{"type": "reasoning_text", "text": "VISIBLE"}],
+                "encrypted_content": "ENC_BLOB_123"
+            }
+        ]
+    });
+    let p = build_prompt_projection(&v, "responses");
+    assert_eq!(p.messages.len(), 1);
+    assert_eq!(p.messages[0].1.as_ref(), "VISIBLE");
+    assert!(!p.messages[0].1.contains(REDACTED_REASONING_MARKER));
+    assert!(!p.messages[0].1.contains("ENC_BLOB_123"));
+}
+
+/// Perf follow-up (no behavior change): `block_text`'s Responses reasoning arm no longer wraps
+/// `read_reasoning_text`'s result in `Cow::Owned` — a single text-bearing part (in EITHER
+/// `content[]` or `summary[]` alone) must come through `block_text` still borrowed.
+#[test]
+fn responses_single_part_reasoning_text_borrows() {
+    let content_only = serde_json::json!({
+        "type": "reasoning",
+        "content": [{"type": "reasoning_text", "text": "one part"}]
+    });
+    assert!(matches!(
+        block_text(&content_only, "responses"),
+        BlockText::Text(std::borrow::Cow::Borrowed(_))
+    ));
+
+    let summary_only = serde_json::json!({
+        "type": "reasoning",
+        "summary": [{"type": "summary_text", "text": "just a summary"}]
+    });
+    assert!(matches!(
+        block_text(&summary_only, "responses"),
+        BlockText::Text(std::borrow::Cow::Borrowed(_))
+    ));
+}
+
+/// Two `content[]` parts + one `summary[]` part must still allocate through `block_text` — and
+/// concatenate content-array-then-summary-array, with NO separator (the pre-existing, deliberate
+/// separator-less concat `read_reasoning_text` uses — verified unchanged by this fix).
+#[test]
+fn responses_multi_part_reasoning_text_concatenates() {
+    let item = serde_json::json!({
+        "type": "reasoning",
+        "content": [
+            {"type": "reasoning_text", "text": "first "},
+            {"type": "reasoning_text", "text": "second "}
+        ],
+        "summary": [{"type": "summary_text", "text": "third"}]
+    });
+    match block_text(&item, "responses") {
+        BlockText::Text(t) => {
+            assert!(matches!(t, std::borrow::Cow::Owned(_)));
+            assert_eq!(t.as_ref(), "first second third");
+        }
+        BlockText::Redacted => panic!("expected BlockText::Text, got Redacted"),
+        BlockText::None => panic!("expected BlockText::Text, got None"),
+    }
+}
+
+/// Role-inference bug: a Responses `reasoning` item is assistant-authored (the reader already
+/// maps it to a standalone assistant `IrMessage`, `responses/reader.rs`), but the old `_ => "user"`
+/// fallback attributed it to the caller. Isolated from the summary-only test above by using a
+/// `content[]`-bearing item, which already projected its text correctly today — so this fails
+/// ONLY on role, not on text visibility.
+#[test]
+fn prompt_projection_attributes_responses_reasoning_to_assistant() {
+    let v: Value = serde_json::json!({
+        "input": [
+            {"type": "reasoning", "content": [{"type": "reasoning_text", "text": "chain of thought"}]}
+        ]
+    });
+    let p = build_prompt_projection(&v, "responses");
+    assert_eq!(p.messages.len(), 1);
+    assert_eq!(p.messages[0].0.as_ref(), "assistant");
+}
+
+/// A single turn carrying both a `text` block and a `thinking` block: both must be projected,
+/// newline-joined, order preserved (mirrors the existing mixed-content test for text/image).
+#[test]
+fn prompt_projection_mixed_text_and_thinking_turn_joins_both() {
+    let v: Value = serde_json::json!({
+        "messages": [
+            {"role": "assistant", "content": [
+                {"type": "text", "text": "visible answer"},
+                {"type": "thinking", "thinking": "SMUGGLED", "signature": "sig"}
+            ]}
+        ]
+    });
+    let p = build_prompt_projection(&v, "anthropic");
+    assert_eq!(p.messages[0].1.as_ref(), "visible answer\nSMUGGLED");
+}
+
+/// Regression guard, NOT a RED test (passes before and after this fix): Gemini's thought part
+/// already carries a real `text` field (`{text, thought:true, thoughtSignature}`), so the
+/// dialect-dispatch reordering in `block_text` must not break it.
+#[test]
+fn prompt_projection_gemini_thought_part_still_projects() {
+    let v: Value = serde_json::json!({
+        "contents": [
+            {"role": "model", "parts": [
+                {"text": "the answer", "thought": false},
+                {"text": "reasoning about it", "thought": true, "thoughtSignature": "sig"}
+            ]}
+        ]
+    });
+    let p = build_prompt_projection(&v, "gemini");
+    assert_eq!(p.messages[0].1.as_ref(), "the answer\nreasoning about it");
+}
+
+/// SIZE signal: `total_text_chars` must count reasoning text across all three bypass shapes —
+/// before the fix each contributed 0, silently under-counting a request a size-keyed routing
+/// policy or tap keys on.
+#[test]
+fn total_text_chars_counts_reasoning_text() {
+    let anthropic: Value = serde_json::json!({
+        "messages": [{"role": "assistant", "content": [{"type": "thinking", "thinking": "12345"}]}]
+    });
+    assert_eq!(total_text_chars(&anthropic, "anthropic", 0), 5);
+
+    let bedrock: Value = serde_json::json!({
+        "messages": [{"role": "assistant", "content": [
+            {"reasoningContent": {"reasoningText": {"text": "1234567"}}}
+        ]}]
+    });
+    assert_eq!(total_text_chars(&bedrock, "bedrock", 0), 7);
+
+    let responses: Value = serde_json::json!({
+        "input": [{"type": "reasoning", "summary": [{"type": "summary_text", "text": "123"}]}]
+    });
+    assert_eq!(total_text_chars(&responses, "responses", 0), 3);
+}
+
+/// The divergence tripwire (`system_text_chars_counts_block_arrays`'s sibling), extended to
+/// reasoning: `total_text_chars` must agree with `build_prompt_projection`'s char count, modulo
+/// the documented one-char-per-block-boundary newline allowance — this is what keeps the shared
+/// `block_text` extractor from re-diverging into three probe sites that silently drift apart
+/// again (that drift is the documented reason this test file already has a "they diverged once"
+/// tripwire for the non-reasoning case).
+#[test]
+fn size_signal_and_projection_agree_on_reasoning() {
+    let v: Value = serde_json::json!({
+        "messages": [
+            {"role": "assistant", "content": [
+                {"type": "text", "text": "visible"},
+                {"type": "thinking", "thinking": "hidden reasoning"}
+            ]},
+            {"role": "assistant", "content": [
+                {"type": "redacted_thinking", "data": "opaque"}
+            ]}
+        ]
+    });
+    let total = total_text_chars(&v, "anthropic", 0);
+    let p = build_prompt_projection(&v, "anthropic");
+    let projected_chars: usize = p.messages.iter().map(|(_, t)| t.chars().count()).sum();
+    // One separator newline per block boundary within a turn (turn 1 has 2 blocks => 1 newline);
+    // turn 2 has 1 block => 0 newlines. `total_text_chars` counts text only, no separators.
+    assert_eq!(projected_chars, total + 1);
+}
+
+/// Exhaustiveness guard for `block_text`'s dispatch, modeled on `ProtocolRegistry::with_builtins`
+/// (`proto/mod.rs`) rather than on an `IrBlock`-variant witness table (`all_block_metas()`,
+/// `proto/tests/stream_translate_tests.rs`): unlike `IrBlock`, `ingress_protocol` is a `&str`, so
+/// rustc cannot make an unmatched arm a hard compile error. This is deliberately keyed on the
+/// PROTOCOL axis, not the IR-variant axis — all three bypasses above collapse onto the SAME
+/// existing `IrBlock::Thinking` variant (the IR is already unified across dialects), so an
+/// IR-variant witness table would add zero new rows for any of them and would not catch a future
+/// protocol-specific reasoning wire shape either. `KNOWN_PROTOCOLS` is the single source of truth
+/// (also used by `ProtocolRegistry::with_builtins` and the config validator); a 7th protocol added
+/// there without a row below fails THIS test, which `cargo test --workspace` runs in CI.
+#[test]
+fn every_known_protocol_has_a_declared_reasoning_wire_shape() {
+    struct Row {
+        protocol: &'static str,
+        // `None` = this dialect has no reasoning-specific wire shape; the generic `text` probe
+        // covers it (declared explicitly, not by omission).
+        sample: Option<serde_json::Value>,
+        expect_text_contains: Option<&'static str>,
+        expect_redacted: bool,
+    }
+    let rows = vec![
+        Row {
+            protocol: "anthropic",
+            sample: Some(serde_json::json!({"type": "thinking", "thinking": "W"})),
+            expect_text_contains: Some("W"),
+            expect_redacted: false,
+        },
+        Row {
+            protocol: "anthropic",
+            sample: Some(serde_json::json!({"type": "redacted_thinking", "data": "b64"})),
+            expect_text_contains: None,
+            expect_redacted: true,
+        },
+        Row {
+            protocol: "bedrock",
+            sample: Some(serde_json::json!({"reasoningContent": {"reasoningText": {"text": "W"}}})),
+            expect_text_contains: Some("W"),
+            expect_redacted: false,
+        },
+        Row {
+            protocol: "bedrock",
+            sample: Some(serde_json::json!({"reasoningContent": {"redactedContent": "b64"}})),
+            expect_text_contains: None,
+            expect_redacted: true,
+        },
+        Row {
+            protocol: "responses",
+            sample: Some(serde_json::json!({
+                "type": "reasoning",
+                "summary": [{"type": "summary_text", "text": "W"}]
+            })),
+            expect_text_contains: Some("W"),
+            expect_redacted: false,
+        },
+        Row {
+            protocol: "responses",
+            sample: Some(serde_json::json!({
+                "type": "reasoning",
+                "encrypted_content": "OPAQUE_BLOB"
+            })),
+            expect_text_contains: None,
+            expect_redacted: true,
+        },
+        // gemini/openai/cohere: no dialect-specific reasoning shape declared in `block_text` —
+        // every block's text (if any) goes through the generic `text`-field probe.
+        Row {
+            protocol: "gemini",
+            sample: None,
+            expect_text_contains: None,
+            expect_redacted: false,
+        },
+        Row {
+            protocol: "openai",
+            sample: None,
+            expect_text_contains: None,
+            expect_redacted: false,
+        },
+        Row {
+            protocol: "cohere",
+            sample: None,
+            expect_text_contains: None,
+            expect_redacted: false,
+        },
+    ];
+
+    // Belt-and-suspenders, mirroring `ProtocolRegistry::with_builtins`'s
+    // `debug_assert_eq!(map.len(), KNOWN_PROTOCOLS.len())`: every `KNOWN_PROTOCOLS` name must
+    // appear here, or a newly registered protocol silently has no declared reasoning-shape row.
+    for &proto in crate::proto::KNOWN_PROTOCOLS {
+        assert!(
+            rows.iter().any(|r| r.protocol == proto),
+            "protocol '{proto}' was added to KNOWN_PROTOCOLS but has no row in this witness \
+             table — declare its reasoning wire shape (or explicitly `None`) in `block_text`'s \
+             protocol dispatch AND here"
+        );
+    }
+    assert_eq!(
+        rows.iter()
+            .map(|r| r.protocol)
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        crate::proto::KNOWN_PROTOCOLS.len(),
+        "witness table covers a different protocol set than KNOWN_PROTOCOLS"
+    );
+
+    for row in &rows {
+        let Some(sample) = &row.sample else { continue };
+        match block_text(sample, row.protocol) {
+            BlockText::Text(t) => assert!(
+                row.expect_text_contains
+                    .is_some_and(|needle| t.contains(needle)),
+                "protocol {} sample unexpectedly produced Text({t:?})",
+                row.protocol
+            ),
+            BlockText::Redacted => assert!(
+                row.expect_redacted,
+                "protocol {} sample unexpectedly produced Redacted",
+                row.protocol
+            ),
+            BlockText::None => panic!(
+                "protocol {} sample produced BlockText::None — its declared reasoning shape is \
+                 not being dispatched",
+                row.protocol
+            ),
+        }
+    }
+}
+
+/// REQUIRED (not optional — the `prompt: rw` behavior change this fix carries needs a test, not
+/// just a CHANGELOG line): `apply_rewrite_to_body` is NOT index-aligned, so a `prompt: rw` hook
+/// that ECHOES the projection it received writes reasoning text — or, for a redacted turn, the
+/// non-content marker — into a REAL, visible content block that ships upstream. This is a
+/// pre-existing, out-of-scope-to-fix hazard (documented on `apply_rewrite_to_body` and on
+/// `REDACTED_REASONING_MARKER`); this test pins the CURRENT behavior (marker echoes as literal
+/// text, not as corrupted/garbage bytes, and not as if it were trusted ciphertext) so a future
+/// change to the write-back path cannot silently regress the documented note into a stale claim.
+#[test]
+fn apply_rewrite_to_body_echoes_redacted_marker_as_visible_text() {
+    let mut v: Value = serde_json::json!({
+        "messages": [
+            {"role": "assistant", "content": [
+                {"type": "redacted_thinking", "data": "OPAQUE_CIPHERTEXT_BYTES"}
+            ]}
+        ]
+    });
+    let p = build_prompt_projection(&v, "anthropic");
+    assert_eq!(p.messages[0].1.as_ref(), REDACTED_REASONING_MARKER);
+
+    // A hook that echoes exactly what it was projected (the common "pass through" rewrite shape).
+    let rewrite = crate::hooks::wire::RewriteReply {
+        messages: vec![serde_json::json!({
+            "role": "assistant",
+            "content": REDACTED_REASONING_MARKER,
+        })],
+        tools: vec![],
+    };
+    let applied = apply_rewrite_to_body(&mut v, &rewrite, "anthropic");
+    assert!(applied);
+
+    // The marker is now the LITERAL, VISIBLE assistant content that ships upstream — inert text,
+    // never the raw ciphertext (which never left this projection in the first place), but a real
+    // content injection into the request the hook did not compose from scratch.
+    let msgs = v
+        .get("messages")
+        .and_then(Value::as_array)
+        .expect("messages array");
+    assert_eq!(msgs.len(), 1);
+    assert_eq!(
+        msgs[0].get("content").and_then(Value::as_str),
+        Some(REDACTED_REASONING_MARKER)
+    );
+    assert!(!v.to_string().contains("OPAQUE_CIPHERTEXT_BYTES"));
 }

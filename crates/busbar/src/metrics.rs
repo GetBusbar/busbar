@@ -43,6 +43,7 @@ use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use std::sync::OnceLock;
+use std::time::Duration;
 
 use crate::state::App;
 
@@ -50,6 +51,80 @@ use crate::state::App;
 // without panicking: `None` = install was attempted and failed; `Some(handle)` = installed. The
 // `OnceLock` still serializes the single global `install_recorder()` call across threads/tests.
 static HANDLE: OnceLock<Option<PrometheusHandle>> = OnceLock::new();
+
+/// Whether the operator opted in to metrics (`observability.metrics` present). Set SYNCHRONOUSLY by
+/// [`configure`] at startup, before the router is built, while the recorder install itself happens on
+/// a background thread — so route mounting reads a settled decision rather than racing the install.
+/// Unset ⇒ `false`: a build that never calls `configure` (and every test that does not ask for
+/// metrics) has them off.
+static ENABLED: OnceLock<bool> = OnceLock::new();
+
+/// Did the operator opt in to metrics? Gates the `/metrics` routes; the recorder's own absence is
+/// what makes the hot path free.
+pub(crate) fn enabled() -> bool {
+    ENABLED.get().copied().unwrap_or(false)
+}
+
+/// Apply the operator's `observability.metrics` decision. `None` = the block was absent = metrics
+/// OFF: no recorder is installed, so every emission macro and bank helper is a no-op, `/metrics` is
+/// not mounted, and nothing UNBOUNDED is retained (the per-thread histogram sample buffers this
+/// gates via [`retaining`] are dropped rather than buffered). `Some(buffer)` = opted in with a
+/// declared retention window.
+///
+/// NOT a literal "nothing is retained" contract: `CounterSlot::add` stays unconditional even when
+/// metrics are off (see its doc comment) — a small, FIXED footprint bounded by thread count x chunk
+/// count survives regardless, because counters are cumulative and must not lose pre-install adds.
+/// What this rules out is UNBOUNDED, traffic-proportional retention, which is what the histogram
+/// buffers were doing before [`retaining`] existed.
+///
+/// Called once, synchronously, from `run()` after config load. The RECORDER install is deferred to a
+/// background thread because its one-time clock calibration (~200 ms) would otherwise delay the
+/// listener bind; the enabled flag is set here, in the foreground, so the router sees it.
+pub(crate) fn configure(buffer: Option<Duration>) {
+    let _ = ENABLED.set(buffer.is_some());
+    if let Some(buffer) = buffer {
+        std::thread::spawn(move || init_with(buffer));
+    }
+}
+
+/// Should a histogram slot RETAIN a newly-recorded sample right now? Three states, not two:
+///
+/// * Recorder INSTALLED (`HANDLE` resolved to `Some(_)`) -> `true`. Samples will reach `/metrics`.
+/// * Not yet installed but the operator OPTED IN (`HANDLE` unresolved, [`enabled`] true) -> `true`.
+///   This is the ~200 ms boot window between `configure` setting `ENABLED` synchronously and
+///   `init_with` finishing recorder install on its background thread (see `configure`'s doc
+///   comment). An operator who opted in has traffic flowing during that window; gating on recorder
+///   installation alone would silently drop it even though the samples WILL be drained once install
+///   completes.
+/// * Recorder install PERMANENTLY FAILED (`HANDLE` resolved to `Some(None)`), or metrics were never
+///   configured / the operator opted out (`HANDLE` unresolved, `enabled()` false) -> `false`.
+///   Nothing will ever drain these samples, so a histogram slot must not buffer them.
+///
+/// Deliberately NOT `recorder_installed()` alone — see the boot-window case above, verified real
+/// against `configure`/`init_with`'s actual timing, not assumed.
+#[inline]
+pub(crate) fn retaining() -> bool {
+    retaining_from(HANDLE.get().map(Option::is_some), enabled)
+}
+
+/// The decision table behind [`retaining`], factored out as a pure function of explicit inputs so
+/// it is unit-testable: `HANDLE`/`ENABLED` are process-global `OnceLock`s that can only be set once
+/// per test binary, so a test cannot drive the real globals through every state in one run.
+///
+/// `handle_installed` mirrors `HANDLE.get().map(Option::is_some)`'s three shapes: `None` = `HANDLE`
+/// not yet resolved (pre-install, boot window or metrics off); `Some(false)` = resolved to install
+/// FAILURE; `Some(true)` = resolved to install SUCCESS. `opted_in` is called ONLY in the `None`
+/// (not-yet-resolved) case, matching `retaining`'s lazy call to `enabled()` — it must not be called
+/// eagerly, or a test double could observe it being invoked when the real code path wouldn't.
+pub(crate) fn retaining_from(
+    handle_installed: Option<bool>,
+    opted_in: impl FnOnce() -> bool,
+) -> bool {
+    match handle_installed {
+        Some(installed) => installed,
+        None => opted_in(),
+    }
+}
 
 /// The canonical busbar metric taxonomy. Names are referenced here so the emission sites and the
 /// descriptions below stay in one authoritative list.
@@ -128,14 +203,27 @@ pub(crate) const BILLING_TRUNCATED_TOTAL: &str = "busbar_billing_truncated_total
 /// Label: `key` = virtual-key id (operator-bounded). Only emitted when governance is enabled.
 const KEY_SPEND_CENTS: &str = "busbar_key_spend_cents";
 
-/// Max budget minus current spend for keys that carry a `max_budget_cents` cap. Scrape-time gauge.
-/// Enables Prometheus burn-rate alerting against a bounded, operator-controlled label set.
-/// Label: `key` = virtual-key id. Only emitted for keys with a budget cap.
-const KEY_BUDGET_REMAINING_CENTS: &str = "busbar_key_budget_remaining_cents";
-
 /// Accumulated tokens consumed by each virtual key in the current budget window. Scrape-time gauge.
 /// Label: `key` = virtual-key id. Only emitted when governance is enabled.
 const KEY_TOKENS_TOTAL: &str = "busbar_key_tokens_total";
+
+/// Per-(bucket, model, tier) token counters for the bucket's CURRENT budget window. Scrape-time
+/// gauge, derived from the token ledger. `bucket` is a virtual-key id or `group:<name>` (both
+/// operator-bounded); `model` is bounded by the configured fleet (an ad-hoc passthrough model is
+/// only possible with pricing off); `tier` is one of the four fixed pricing tiers. Key-bucket
+/// series additionally echo the key's mint-time labels, so external dashboards can
+/// `sum by (team)` without busbar knowing what "team" means.
+const BUCKET_TOKENS: &str = "busbar_bucket_tokens";
+
+/// DERIVED spend (cents, abstract minor units) per BUDGET-GROUP bucket for its current window,
+/// recomputed from the token ledger x the CURRENT rate card at scrape time (reprice-on-read).
+/// Label: `bucket` = `group:<name>`. Key-bucket spend stays on `busbar_key_spend_cents`.
+const BUCKET_SPEND_CENTS: &str = "busbar_bucket_spend_cents";
+
+/// Cap minus derived spend per BUDGET-GROUP bucket. Label: `bucket` = `group:<name>`. The
+/// external-alerting linchpin: Alertmanager fires at 80% burn without busbar shipping any
+/// alerting of its own.
+const BUCKET_BUDGET_REMAINING_CENTS: &str = "busbar_bucket_budget_remaining_cents";
 
 /// Per-(pool, lane-model) circuit-breaker health gauge.
 /// Values: 0 = healthy (Closed), 1 = half-open (cooling but probe admitted), 2 = tripped (Open /
@@ -151,14 +239,31 @@ const PROMETHEUS_CONTENT_TYPE: &str = "text/plain; version=0.0.4";
 /// Install the global Prometheus recorder. Idempotent: safe to call once at startup and
 /// repeatedly from tests (the global recorder can only be installed once per process, so the
 /// `OnceLock` guards it). Also registers HELP/TYPE descriptions for the taxonomy.
-pub(crate) fn init() {
+/// Install the recorder for an operator who OPTED IN, retaining `buffer` seconds of observations.
+///
+/// `buffer` is `observability.metrics.buffer_seconds` — a REQUIRED config field, so this value is
+/// always one a human named (see `config::MetricsCfg`). It sets both halves of the retention
+/// contract: the rolling-summary window (quantiles cover the last `buffer`; anything older is
+/// dropped) and, via [`MAINTENANCE_DIVISOR`], how often parked raw samples are folded into it.
+///
+/// NOT called unless `observability.metrics` is present. With no recorder installed, every emission
+/// macro and every bank helper is a no-op against the default recorder, so an operator who did not
+/// opt in records nothing and retains nothing.
+pub(crate) fn init_with(buffer: Duration) {
+    // Retention is split across a few rolling buckets so quantiles degrade smoothly as the window
+    // slides, instead of the whole window vanishing at once on rollover. The buckets SUM to
+    // `buffer`, which is the operator's declared retention.
+    let bucket = buffer
+        .checked_div(SUMMARY_BUCKETS.get())
+        .unwrap_or(buffer)
+        .max(Duration::from_millis(1));
     // The global recorder can only be installed once per process, so the `OnceLock` runs this
     // initializer exactly once and serializes concurrent callers (startup + tests). On install
     // FAILURE — typically because another library already installed a global recorder — we log and
-    // store `None` rather than panicking: `init()` runs on a background thread (main.rs) where a
+    // store `None` rather than panicking: this runs on a background thread (main.rs) where a
     // panic would be silent, leaving `/metrics` empty with no operator-visible cause. Storing `None`
     // degrades gracefully (empty exposition) AND emits an error log so the cause is discoverable.
-    HANDLE.get_or_init(|| match PrometheusBuilder::new().install_recorder() {
+    HANDLE.get_or_init(|| match build_recorder(bucket) {
         Ok(handle) => {
             describe();
             // Pre-register the unlabeled counter so `/metrics` is non-empty from the first
@@ -170,6 +275,7 @@ pub(crate) fn init() {
             // inventing label values, which the cardinality contract above forbids. The
             // labeled gauges appear on the first scrape via `refresh_scrape_gauges`.
             metrics::counter!(BILLING_TRUNCATED_TOTAL).absolute(0);
+            spawn_maintenance(bucket);
             Some(handle)
         }
         Err(e) => {
@@ -177,6 +283,127 @@ pub(crate) fn init() {
             None
         }
     });
+}
+
+/// Number of rolling buckets the retention window is split across (see [`init_with`]).
+const SUMMARY_BUCKETS: std::num::NonZeroU32 = match std::num::NonZeroU32::new(3) {
+    Some(n) => n,
+    None => unreachable!(),
+};
+
+/// How long a gauge whose subject no longer exists keeps appearing in the exposition.
+///
+/// Per-key gauges are only `set` while iterating LIVE keys, so a deleted key's series would
+/// otherwise be re-rendered with its final value for the life of the process — `/metrics` grows
+/// with the operator's lifetime key churn, and dashboards show a deleted key's spend as current.
+///
+/// Deliberately its own constant rather than a reuse of the histogram retention window: that window
+/// is sized by raw-sample memory cost, and coupling the two would let a memory-budget choice
+/// silently decide how long a deleted key lingers. GAUGES ONLY — expiring a counter would reset it
+/// and break `rate()`, and expiring a histogram would discard its summary.
+///
+/// A live series can never be caught by this: `refresh_scrape_gauges` runs inside `render`, so every
+/// live gauge is re-set microseconds before it is rendered regardless of the scrape interval.
+const GAUGE_IDLE_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Build the Prometheus recorder with the operator's retention window and install it globally.
+/// Split out of [`init_with`] so the fallible builder chain reads in one place.
+fn build_recorder(
+    bucket: Duration,
+) -> Result<PrometheusHandle, metrics_exporter_prometheus::BuildError> {
+    recorder_builder(bucket, GAUGE_IDLE_TIMEOUT)?.install_recorder()
+}
+
+/// The builder itself, with the idle timeout as a parameter so a test can drive expiry on a short
+/// window instead of the shipped one. Installing is global and once-per-process; building is not,
+/// which is what makes the reaping behaviour testable at all.
+fn recorder_builder(
+    bucket: Duration,
+    gauge_idle: Duration,
+) -> Result<PrometheusBuilder, metrics_exporter_prometheus::BuildError> {
+    Ok(PrometheusBuilder::new()
+        .set_bucket_duration(bucket)?
+        .set_bucket_count(SUMMARY_BUCKETS)
+        .idle_timeout(metrics_util::MetricKindMask::GAUGE, Some(gauge_idle)))
+}
+
+/// Test-only entry point: install the recorder with a retention window long enough that no test's
+/// samples age out mid-assertion. Production ALWAYS goes through [`init_with`] with the operator's
+/// configured `buffer_seconds`; there is deliberately no arg-less initializer outside tests, so no
+/// build path can install metrics without a named retention window.
+#[cfg(test)]
+pub(crate) fn init() {
+    let _ = ENABLED.set(true);
+    init_with(Duration::from_secs(3600));
+}
+
+// ── SCRAPE-INDEPENDENT MAINTENANCE ───────────────────────────────────────────────────────────────
+//
+// THE INVARIANT: an observation costs BOUNDED memory whether or not anyone ever scrapes `/metrics`.
+//
+// Two layers buffer raw per-request observations on the way to their bounded aggregate form:
+//   1. the telemetry BANK — each thread appends one `f64` per request to its own sample `Vec`
+//      (`telemetry::HistogramSlot::record`), drained by `telemetry::flush_to_recorder`;
+//   2. the Prometheus recorder — `metrics-exporter-prometheus` parks every histogram sample handed
+//      to it in an `AtomicBucket` (a linked list of 64-slot blocks, ~8.4 B/sample) until something
+//      calls `run_upkeep()`/render, which folds them into the FIXED-SIZE rolling summary.
+//
+// Both drains used to happen ONLY inside `render()` — i.e. only when a scrape arrived. A gateway
+// nobody scrapes therefore retained one f64 per request FOREVER: RSS grew linearly with total
+// requests served (measured: ~23 B/request; 18.1 M requests → +389 MiB, with no plateau and no
+// release when the load stopped), instead of tracking the live working set. That is a leak by any
+// ordinary definition — `/metrics` is an OPTIONAL endpoint, and memory must not depend on whether
+// an operator wired Prometheus up (or on whether their scrape job is currently healthy).
+//
+// The fix is one choke point: a maintenance tick that performs EXACTLY the same two drains a scrape
+// performs, on a timer, so the buffered depth is bounded by one interval's traffic instead of by the
+// process lifetime. It changes no metric value: `_sum`/`_count` are cumulative either way, and the
+// quantile window becomes a true rolling window (samples land in the bucket matching when they were
+// observed) rather than every sample since the last scrape being crammed into the scrape instant.
+
+// The tick cadence is DERIVED from the operator's `buffer_seconds` rather than picked here: it is
+// one rolling bucket (`buffer / 3`), so parked raw samples never exceed a third of the declared
+// retention window, and every sample lands in the bucket its own timestamp belongs to.
+
+/// Fold every buffered observation into its bounded aggregate storage — the drain half of a scrape,
+/// without rendering. Idempotent and safe to call at any time (a no-op before the recorder is
+/// installed, and when nothing is buffered).
+pub(crate) fn drain_pending() {
+    // Test-only: keep `run_upkeep`'s bucket frees on the same thread as the drain that fed them —
+    // see `telemetry::drain_serial`. Re-entrant, so the nested `flush_to_recorder` is free.
+    #[cfg(test)]
+    let _serial = crate::telemetry::drain_serial::lock();
+    // Outer `None` = `init()` has not run; inner `None` = install failed. Both mean there is no
+    // recorder to drain into, and the bank's own emit helpers are no-ops in that state.
+    let Some(Some(handle)) = HANDLE.get() else {
+        return;
+    };
+    // 1. bank → recorder (per-thread sample buffers + counter deltas)
+    crate::telemetry::flush_to_recorder();
+    // 2. recorder's per-sample buckets → fixed-size distributions
+    handle.run_upkeep();
+}
+
+/// Start the maintenance tick. Called once, from the successful branch of [`init`], so every build
+/// that has a recorder also has the drain — no configuration, no operator action, no dependency on
+/// anyone scraping. A dedicated OS thread (not a Tokio task) because the drain is synchronous and
+/// takes the bank's locks: it must never occupy an executor worker, and it must keep running even
+/// if the runtime is saturated. Best-effort: if the thread cannot be spawned we log and continue —
+/// the pre-existing scrape-driven drain still applies.
+fn spawn_maintenance(interval: Duration) {
+    let spawned = std::thread::Builder::new()
+        .name("busbar-metrics-drain".into())
+        .spawn(move || loop {
+            std::thread::sleep(interval);
+            drain_pending();
+        });
+    if let Err(e) = spawned {
+        tracing::warn!(
+            error = %e,
+            "could not spawn the metrics maintenance thread; buffered observations now drain only \
+             on a /metrics scrape"
+        );
+    }
 }
 
 fn describe() {
@@ -222,9 +449,18 @@ fn describe() {
         "Per-virtual-key accumulated spend in cents for the current budget window (scrape-time)"
     );
     describe_gauge!(
-        KEY_BUDGET_REMAINING_CENTS,
+        BUCKET_TOKENS,
+        "Per-(bucket, model, tier) tokens in the bucket's current budget window (key and budget-group buckets; derived from the token ledger at scrape time)"
+    );
+    describe_gauge!(
+        BUCKET_SPEND_CENTS,
         Unit::Count,
-        "Per-virtual-key budget remaining in cents (max_budget_cents - spend); only for capped keys (scrape-time)"
+        "Derived spend (abstract minor units) per budget-group bucket for its current window, recomputed from the token ledger x the current rate card at scrape time"
+    );
+    describe_gauge!(
+        BUCKET_BUDGET_REMAINING_CENTS,
+        Unit::Count,
+        "Budget-group cap minus derived spend for the current window"
     );
     describe_gauge!(
         KEY_TOKENS_TOTAL,
@@ -238,12 +474,158 @@ fn describe() {
     );
 }
 
+// ─── PER-REQUEST HANDLE CACHE ─────────────────────────────────────────────────────────────────────
+//
+// `finish_inner` emits exactly two metrics on EVERY served request: the `REQUESTS_TOTAL` counter and
+// the `REQUEST_DURATION_SECONDS` histogram. Emitting them through the `counter!`/`histogram!` macros
+// re-runs, per request: two owned-`String` label allocations (`ingress_protocol` + `pool`), a `Key`
+// build, and a recorder registry hash+lookup — for a label set drawn from a FINITE, operator-bounded
+// space (`|protocols| × (|pools| + 1) × |outcomes|`). `metrics::Counter`/`Histogram` are cheap-to-
+// clone `Arc`-backed handles straight to the metric's storage that SURVIVE recorder swaps, so caching
+// one per label set turns the steady-state hot path into a lock-free map read + an atomic increment —
+// no per-request allocation and no registry lookup.
+//
+// The cache is a `RwLock<HashMap<Box<str>, Handle>>` keyed on a COMPACT single key built by joining
+// the (bounded) label values with a `\x1f` unit separator — a byte that cannot appear in a protocol
+// or pool name, so the join is unambiguous. Building that key is a single small allocation, but the
+// steady-state path performs the lookup under a shared read lock and never touches the metrics
+// registry (which would allocate the two `Label` Strings AND a `Key` AND hash+probe its own map);
+// net, one small alloc replaces two label allocs + a `Key` build + a registry probe.
+//
+// Correctness vs. the recorder-install ordering the module contract calls out (a handle minted before
+// `init()` installs the recorder binds to the no-op recorder FOREVER): the cache is populated ONLY
+// once the recorder is installed (`HANDLE == Some(Some(_))`). Before that — `init()` not yet run, or
+// install failed — these helpers fall through to the plain macro (itself a no-op against the default
+// recorder), caching nothing. So a pre-`init()` emission is never cached, and every cached handle is
+// bound to the real Prometheus recorder. In production `init()` runs at startup before any request
+// reaches `finish_inner`, so the steady state is always the cached fast path.
+use std::collections::HashMap;
+use std::sync::RwLock;
+
+/// Unit separator joining label values into the compact cache key — a control byte that cannot occur
+/// in an ingress-protocol or pool name, so `"a\x1fb"` can never collide with `"a"` + `"\x1fb"`.
+const CACHE_KEY_SEP: char = '\u{1f}';
+
+static REQUESTS_HANDLES: OnceLock<RwLock<HashMap<Box<str>, metrics::Counter>>> = OnceLock::new();
+static DURATION_HANDLES: OnceLock<RwLock<HashMap<Box<str>, metrics::Histogram>>> = OnceLock::new();
+
+/// True once the global Prometheus recorder is INSTALLED (not merely that `init()` was attempted).
+/// Gating handle caching on this guarantees a cached handle can never be bound to the no-op recorder
+/// that stands in before install.
+#[inline]
+pub(crate) fn recorder_installed() -> bool {
+    matches!(HANDLE.get(), Some(Some(_)))
+}
+
+/// Increment `REQUESTS_TOTAL` for `(ingress_protocol, pool, outcome)` via a CACHED counter handle —
+/// no registry lookup and no per-request `Label`/`Key` construction on the steady-state path. Falls
+/// back to the plain macro until the recorder is installed (see the cache-module note above).
+/// Byte-for-byte the same series and value the macro produced.
+pub(crate) fn incr_requests_total(ingress_protocol: &str, pool: &str, outcome: &'static str) {
+    // MUTATION-TESTING NOTE (cargo-mutants: `delete !` here): this `!recorder_installed()` branch
+    // is real (it exists so pre-install traffic never caches a handle bound to the no-op
+    // recorder), but it is NOT practically unit-testable in this crate as it stands. `ENABLED`/
+    // `HANDLE` are process-global `OnceLock`s that install (via `init()`) exactly once per
+    // process and never uninstall; `busbar`'s crate is `[[bin]]`-only (no `[lib]` target — see
+    // Cargo.toml), so there is no way for a `tests/*.rs` integration test to link the crate's
+    // internals into its OWN separate process either (the only integration-test pattern available,
+    // `tests/cli_validate.rs`, black-box-spawns the built binary as a subprocess instead). Within
+    // the single shared `#[cfg(test)]` unit-test process, some other test has near-certainly
+    // already called `init()` before this one runs (parallel test execution, no ordering
+    // guarantee), so this branch is unreachable from a normal `#[test]`. A real fix would mean
+    // adding a `[lib]` target to this crate purely to enable a never-calls-init() integration
+    // test binary — out of scope for a mutation-testing gap. Externally, the two branches are
+    // ALSO behaviorally identical before install: both ultimately call the same no-op
+    // `metrics::counter!` macro against the default recorder, so even a real subprocess test
+    // could not distinguish them by observable effect. Left as a documented, investigated gap.
+    if !recorder_installed() {
+        // Pre-install: don't cache (would bind to the no-op recorder). The macro is itself a no-op.
+        metrics::counter!(
+            REQUESTS_TOTAL,
+            "ingress_protocol" => ingress_protocol.to_string(),
+            "pool" => pool.to_string(),
+            "outcome" => outcome
+        )
+        .increment(1);
+        return;
+    }
+    let cache = REQUESTS_HANDLES.get_or_init(|| RwLock::new(HashMap::new()));
+    let key = format!("{ingress_protocol}{CACHE_KEY_SEP}{pool}{CACHE_KEY_SEP}{outcome}");
+    // Fast path: shared-read hit (the common case — a bounded, quickly-saturated key set).
+    if let Some(h) = cache
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(key.as_str())
+    {
+        h.increment(1);
+        return;
+    }
+    // Cold path (first time this label set is seen): register the handle once, then cache it.
+    let handle = metrics::counter!(
+        REQUESTS_TOTAL,
+        "ingress_protocol" => ingress_protocol.to_string(),
+        "pool" => pool.to_string(),
+        "outcome" => outcome
+    );
+    handle.increment(1);
+    cache
+        .write()
+        .unwrap_or_else(|p| p.into_inner())
+        .entry(key.into_boxed_str())
+        .or_insert(handle);
+}
+
+/// Record a `REQUEST_DURATION_SECONDS` observation for `(ingress_protocol, pool)` via a CACHED
+/// histogram handle. Same caching contract as [`incr_requests_total`].
+pub(crate) fn record_request_duration(ingress_protocol: &str, pool: &str, seconds: f64) {
+    if !recorder_installed() {
+        metrics::histogram!(
+            REQUEST_DURATION_SECONDS,
+            "ingress_protocol" => ingress_protocol.to_string(),
+            "pool" => pool.to_string()
+        )
+        .record(seconds);
+        return;
+    }
+    let cache = DURATION_HANDLES.get_or_init(|| RwLock::new(HashMap::new()));
+    let key = format!("{ingress_protocol}{CACHE_KEY_SEP}{pool}");
+    if let Some(h) = cache
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(key.as_str())
+    {
+        h.record(seconds);
+        return;
+    }
+    let handle = metrics::histogram!(
+        REQUEST_DURATION_SECONDS,
+        "ingress_protocol" => ingress_protocol.to_string(),
+        "pool" => pool.to_string()
+    );
+    handle.record(seconds);
+    cache
+        .write()
+        .unwrap_or_else(|p| p.into_inner())
+        .entry(key.into_boxed_str())
+        .or_insert(handle);
+}
+
 /// Render the current Prometheus exposition text. Empty until `init()` has run.
+///
+/// Flushes the TELEMETRY BANK (per-thread hot-path cells; see `telemetry.rs`) into the recorder
+/// first, so every scrape — and every test that reads the exposition — observes up-to-date totals
+/// for the banked hot-path counters/histograms alongside the macro-emitted ones.
 pub(crate) fn render() -> String {
+    // Test-only: a scrape is a drain too — see `telemetry::drain_serial`.
+    #[cfg(test)]
+    let _serial = crate::telemetry::drain_serial::lock();
     // Outer `None` = `init()` not yet run; inner `None` = recorder install failed. Both render an
     // empty exposition rather than panicking.
     match HANDLE.get() {
-        Some(Some(h)) => h.render(),
+        Some(Some(h)) => {
+            crate::telemetry::flush_to_recorder();
+            h.render()
+        }
         _ => String::new(),
     }
 }
@@ -264,12 +646,19 @@ fn refresh_scrape_gauges(app: &App) {
     // ── Governance: per-key spend, budget-remaining, tokens ────────────────────────────────────
     if let Some(gov) = &app.governance {
         // `all_keys()` lists every VirtualKey from the SQLite store; this is a low-frequency scrape
-        // path. On error we skip the gauge refresh rather than returning a stale/wrong value.
+        // path. On error we skip only the PER-KEY gauge refresh below (by treating the key list as
+        // empty) rather than returning a stale/wrong per-key value. This must NOT `return` out of
+        // the whole function: the group-bucket loop just below does not consume `keys` at all (it
+        // walks `app.cost.groups()` and has its own per-bucket error handling), and the lane-health
+        // gauges further down don't touch governance at all — an unrelated governance-store hiccup
+        // must not blind Prometheus to a breaker tripping during that exact window (see
+        // GAUGE_IDLE_TIMEOUT: a skipped refresh leaves the last-known value looking "current" for up
+        // to 24h).
         let keys = match gov.all_keys() {
             Ok(ks) => ks,
             Err(e) => {
-                tracing::warn!(error = %e, "metrics scrape: failed to list virtual keys; skipping spend gauges");
-                return;
+                tracing::warn!(error = %e, "metrics scrape: failed to list virtual keys; skipping per-key spend/token gauges");
+                Vec::new()
             }
         };
         // Cap per-key gauge emission. Above this many keys, emitting one series per key per scrape
@@ -289,7 +678,7 @@ fn refresh_scrape_gauges(app: &App) {
         }
         for key in keys.iter().take(key_gauge_limit) {
             // `usage_for` queries the SQLite store for the key's current-window counters.
-            let usage = match gov.usage_for(&key.id, now) {
+            let usage = match gov.usage_for(&app.cost, &key.id, now) {
                 Ok(Some(u)) => u,
                 Ok(None) => continue, // key vanished between list and get — skip
                 Err(e) => {
@@ -297,14 +686,104 @@ fn refresh_scrape_gauges(app: &App) {
                     continue;
                 }
             };
-            // key label = the operator-visible virtual-key id (`vk_<hex>`), never the bearer secret.
-            metrics::gauge!(KEY_SPEND_CENTS, "key" => key.id.clone()).set(usage.spend_cents as f64);
-            metrics::gauge!(KEY_TOKENS_TOTAL, "key" => key.id.clone()).set(usage.tokens as f64);
-            // Budget-remaining: only for keys that carry a `max_budget_cents` cap.
-            if let Some(max) = key.max_budget_cents {
-                let remaining = max.saturating_sub(usage.spend_cents).max(0);
-                metrics::gauge!(KEY_BUDGET_REMAINING_CENTS, "key" => key.id.clone())
-                    .set(remaining as f64);
+            // key label = the operator-visible virtual-key id (`vk_<hex>`), never the bearer
+            // secret. The key's MINT-TIME labels (e.g. team=growth) are echoed onto every series
+            // so external Grafana can `sum by (team)` and Alertmanager can fire per team WITHOUT
+            // busbar knowing what "team" means. Label KEYS are operator-chosen at mint (bounded by
+            // the admin surface), never request bytes.
+            let base_labels = |extra: &[(&'static str, String)]| -> Vec<metrics::Label> {
+                let mut labels: Vec<metrics::Label> =
+                    vec![metrics::Label::new("key", key.id.clone())];
+                for (k, v) in &key.labels {
+                    labels.push(metrics::Label::new(k.clone(), v.clone()));
+                }
+                for (k, v) in extra {
+                    labels.push(metrics::Label::new(*k, v.clone()));
+                }
+                labels
+            };
+            metrics::gauge!(KEY_SPEND_CENTS, base_labels(&[])).set(usage.spend_cents as f64);
+            metrics::gauge!(KEY_TOKENS_TOTAL, base_labels(&[])).set(usage.tokens as f64);
+            // 1.5.0: keys are PURE AUTH (no inline budget cap), so there is no per-key
+            // budget-remaining gauge; remaining/limit headroom lives on the GROUP buckets below.
+            // Per-(bucket, model, tier) token gauges from the key bucket's ledger (the raw
+            // material any external per-model cost dashboard multiplies by its own catalog). The
+            // key's attribution bucket accrues in the all-time window.
+            for (model, tokens) in
+                gov.bucket_model_tokens(&key.id, crate::governance::WINDOW_TOTAL, now)
+            {
+                for (tier, v) in [
+                    ("input", tokens.input),
+                    ("output", tokens.output),
+                    ("cache_read", tokens.cache_read),
+                    ("cache_write", tokens.cache_write),
+                ] {
+                    let mut labels: Vec<metrics::Label> =
+                        vec![metrics::Label::new("bucket", key.id.clone())];
+                    for (k, val) in &key.labels {
+                        labels.push(metrics::Label::new(k.clone(), val.clone()));
+                    }
+                    labels.push(metrics::Label::new("model", model.clone()));
+                    labels.push(metrics::Label::new("tier", tier));
+                    metrics::gauge!(BUCKET_TOKENS, labels).set(v as f64);
+                }
+            }
+        }
+
+        // ── GROUP buckets: derived spend + remaining + per-(model, tier) tokens, one series per
+        // (group, window) enforcement bucket. Bounded by |groups| x |windows-in-use| (operator-
+        // owned names + the fixed window vocabulary). Spend derives fresh from the ledger x the
+        // CURRENT rate card (reprice-on-read), fee included (each bucket counts its own requests).
+        // The `group` and `window` labels are the 1.5.0 limit dimensions; `bucket` stays the raw
+        // ledger id for join-ability with the store.
+        for group in app.cost.groups() {
+            for bucket in &group.buckets {
+                let derived = match gov.derived_bucket_usage(
+                    &app.cost,
+                    &bucket.bucket_id,
+                    bucket.window,
+                    true,
+                    now,
+                ) {
+                    Ok(u) => u,
+                    Err(e) => {
+                        tracing::warn!(bucket = %bucket.bucket_id, error = %e, "metrics scrape: group ledger read failed; skipping");
+                        continue;
+                    }
+                };
+                let dims = |extra: &[(&'static str, String)]| -> Vec<metrics::Label> {
+                    let mut labels = vec![
+                        metrics::Label::new("bucket", bucket.bucket_id.clone()),
+                        metrics::Label::new("group", group.name.clone()),
+                        metrics::Label::new("window", bucket.window),
+                    ];
+                    for (k, v) in extra {
+                        labels.push(metrics::Label::new(*k, v.clone()));
+                    }
+                    labels
+                };
+                metrics::gauge!(BUCKET_SPEND_CENTS, dims(&[])).set(derived.spend_cents as f64);
+                // Budget-remaining: only for a bucket that carries a `budget` cap.
+                if let Some(cap) = bucket.budget_cap {
+                    let remaining = cap.saturating_sub(derived.spend_cents).max(0);
+                    metrics::gauge!(BUCKET_BUDGET_REMAINING_CENTS, dims(&[])).set(remaining as f64);
+                }
+                for (model, tokens) in
+                    gov.bucket_model_tokens(&bucket.bucket_id, bucket.window, now)
+                {
+                    for (tier, v) in [
+                        ("input", tokens.input),
+                        ("output", tokens.output),
+                        ("cache_read", tokens.cache_read),
+                        ("cache_write", tokens.cache_write),
+                    ] {
+                        metrics::gauge!(
+                            BUCKET_TOKENS,
+                            dims(&[("model", model.clone()), ("tier", tier.to_string())])
+                        )
+                        .set(v as f64);
+                    }
+                }
             }
         }
     }
@@ -404,7 +883,8 @@ pub(crate) async fn handler(crate::state::CurrentApp(app): crate::state::Current
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::governance::{GovState, SqliteStore, Store, VirtualKey};
+    use crate::governance::{GovState, MemoryStore, Store, VirtualKey};
+    use crate::store::StateStore;
     use crate::test_support::{LaneSpec, TestApp};
     use std::sync::Arc;
 
@@ -431,6 +911,51 @@ mod tests {
         );
     }
 
+    /// Closes the `enabled`/`recorder_installed`/`retaining`/`describe`/`GAUGE_IDLE_TIMEOUT`
+    /// cargo-mutants gaps together, since `ENABLED`/`HANDLE` are process-global `OnceLock`s that
+    /// can only be driven through their "resolved" state once per test binary — every other test
+    /// in this module already calls `init()`, so by the time this runs the globals are certainly
+    /// resolved either way; the assertions below are meaningful regardless of ordering.
+    #[test]
+    fn test_enabled_recorder_installed_retaining_and_describe_after_init() {
+        init();
+        assert!(
+            enabled(),
+            "enabled() must be true once init() has run (ENABLED.set(true))"
+        );
+        assert!(
+            recorder_installed(),
+            "recorder_installed() must be true once init()'s recorder install completes"
+        );
+        assert!(
+            retaining(),
+            "retaining() must be true once the recorder is installed"
+        );
+        // describe() registers HELP text via describe_counter! — observable in the exposition as
+        // a `# HELP <metric> <text>` line. A no-op describe() (the `with ()` mutant) would leave
+        // this line absent even though the counter itself still renders once emitted.
+        metrics::counter!(
+            REQUESTS_TOTAL,
+            "ingress_protocol" => "describe_probe",
+            "pool" => "describe_probe",
+            "outcome" => "describe_probe"
+        )
+        .increment(1);
+        let out = render();
+        assert!(
+            out.contains("# HELP busbar_requests_total"),
+            "describe() must have registered REQUESTS_TOTAL's HELP text; got:\n{out}"
+        );
+    }
+
+    /// The gauge idle-eviction window is exactly 24h, not some other magnitude a mutated
+    /// `*`/`+`/`/` in `24 * 60 * 60` could silently produce.
+    #[test]
+    fn test_gauge_idle_timeout_is_exactly_24_hours() {
+        assert_eq!(GAUGE_IDLE_TIMEOUT, Duration::from_secs(86_400));
+        assert_eq!(GAUGE_IDLE_TIMEOUT, Duration::from_secs(24 * 60 * 60));
+    }
+
     #[test]
     fn test_init_is_idempotent_and_does_not_panic() {
         // Regression: `init()` no longer `expect()`s the recorder install. Calling it repeatedly
@@ -447,23 +972,24 @@ mod tests {
 
     /// Helper: build a minimal `GovState` backed by an in-memory SQLite store.
     fn gov_with_key(key: VirtualKey) -> Arc<GovState> {
-        let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+        let store = Arc::new(MemoryStore::new());
         store.put_key(&key).unwrap();
-        Arc::new(GovState::new(store, 0, 0, None).unwrap())
+        Arc::new(GovState::new(store, None).unwrap())
     }
 
     fn sample_vkey(id: &str) -> VirtualKey {
         VirtualKey {
             id: id.to_string(),
-            key_hash: format!("hash-{id}"),
+            generation_hash: format!("hash-{id}"),
             name: format!("key-{id}"),
-            allowed_pools: vec![],
-            max_budget_cents: Some(5000),
-            budget_period: "total".to_string(),
-            rpm_limit: None,
-            tpm_limit: None,
+            allowed_scopes: None,
             enabled: true,
             created_at: 1_700_000_000,
+            group: None,
+            labels: Default::default(),
+            expires_at: None,
+            deleted_at: None,
+            revision: 1,
         }
     }
 
@@ -476,12 +1002,28 @@ mod tests {
         let key = sample_vkey("vk_spend_test01");
         let gov = gov_with_key(key.clone());
 
-        // Record some spend: charge 200 cents worth of usage.
-        gov.record_request(&key, 1_700_000_000, 0);
-        // Use a price of 0 (set in `gov_with_key`), so spend stays 0 unless we seed it directly.
-        // Seed spend via the store directly for a deterministic test.
+        // Seed a durable ledger directly: 200 requests (derived spend = 200 cents at the
+        // TestApp default `CostModel::flat(1)`) plus 5000 tokens so the tokens gauge is nonzero.
         let usage_store = gov.store();
-        usage_store.add_usage(&key.id, 0, 200, 5000, false).unwrap();
+        usage_store
+            .put_usage(
+                &key.id,
+                0,
+                &busbar_api::UsageLedger {
+                    requests: 200,
+                    billable_requests: 200,
+                    models: vec![busbar_api::ModelTokens {
+                        model: "m".to_string(),
+                        tokens: crate::governance::TierTokens {
+                            input: 5000,
+                            output: 0,
+                            cache_read: 0,
+                            cache_write: 0,
+                        },
+                    }],
+                },
+            )
+            .unwrap();
 
         // Build a minimal App with governance.
         let app = TestApp::new()
@@ -507,24 +1049,129 @@ mod tests {
             "spend gauge must be present; got:\n{out}"
         );
         assert!(
-            out.contains(KEY_BUDGET_REMAINING_CENTS),
-            "budget-remaining gauge must be present; got:\n{out}"
-        );
-        assert!(
             out.contains(KEY_TOKENS_TOTAL),
             "tokens gauge must be present; got:\n{out}"
         );
+        // 1.5.0: keys are pure auth (no cap), so no per-key budget-remaining gauge exists; the
+        // remaining/limit dimension lives on the GROUP buckets (asserted below).
+        assert!(
+            !out.contains("busbar_key_budget_remaining_cents"),
+            "the removed per-key remaining gauge must not resurface; got:\n{out}"
+        );
     }
 
-    /// `refresh_scrape_gauges` must NOT emit `KEY_BUDGET_REMAINING_CENTS` for a key with no
-    /// `max_budget_cents` cap — the gauge is meaningless without a ceiling and would just be 0.
+    /// A group bucket WITHOUT a `budget` cap must NOT emit `BUCKET_BUDGET_REMAINING_CENTS` - the
+    /// gauge is meaningless without a ceiling and would just be 0. (The per-key remaining gauge is
+    /// gone entirely: keys are pure auth.)
     #[test]
-    fn test_scrape_gauges_uncapped_key_no_remaining() {
+    fn test_scrape_gauges_uncapped_group_bucket_no_remaining() {
         init();
 
         let mut key = sample_vkey("vk_uncapped_test01");
-        key.max_budget_cents = None; // no cap
+        key.group = Some("uncapped-grp".to_string());
         let gov = gov_with_key(key);
+
+        // The group carries only a requests limit: its minute bucket exists but has NO budget cap.
+        let groups: std::collections::BTreeMap<String, crate::config::GroupCfg> =
+            std::collections::BTreeMap::from([(
+                "uncapped-grp".to_string(),
+                crate::config::GroupCfg {
+                    parent: None,
+                    enabled: true,
+                    limits: vec![crate::config::groups::LimitCfg {
+                        metric: crate::config::groups::LimitMetric::Requests,
+                        amount: 100,
+                        per: Some(crate::config::groups::LimitWindow::Minute),
+                        scope: None,
+                        on_exhaust: None,
+                        downgrade_to: None,
+                    }],
+                    ..Default::default()
+                },
+            )]);
+        let app = TestApp::new()
+            .lane(LaneSpec::new(
+                "m",
+                crate::proto::Protocol::openai(),
+                "http://m",
+            ))
+            .pool("pool-b", &[(0, 1)])
+            .governance(gov)
+            .cost(crate::cost::CostModel::resolve_parts(None, 0, &groups))
+            .build();
+
+        refresh_scrape_gauges(&app);
+
+        let out = render();
+        // The remaining gauge for the budget-less bucket must NOT appear.
+        // NOTE: other tests in this process may have emitted it for different buckets; we can only
+        // check that this bucket id does not appear on a budget-remaining line.
+        let remaining_lines: Vec<&str> = out
+            .lines()
+            .filter(|l| l.contains(BUCKET_BUDGET_REMAINING_CENTS))
+            .collect();
+        for line in &remaining_lines {
+            assert!(
+                !line.contains("uncapped-grp"),
+                "a budget-less group bucket must not appear in budget_remaining_cents lines; got:\n{line}"
+            );
+        }
+        // Its spend series DOES appear, keyed by the new (bucket, group, window) dimensions.
+        assert!(
+            out.lines().any(|l| l.contains(BUCKET_SPEND_CENTS)
+                && l.contains("group:uncapped-grp@minute")
+                && l.contains("window=\"minute\"")),
+            "the group bucket's spend gauge carries the group/window dimensions; got:\n{out}"
+        );
+    }
+
+    /// The 1.5.0 cost-model exposure: `busbar_bucket_tokens{bucket, model, tier}` series for key
+    /// AND budget-group buckets, derived `busbar_bucket_spend_cents` / `_budget_remaining_cents`
+    /// for group buckets, and the key's MINT-TIME labels echoed onto its series (so external
+    /// dashboards can `sum by (team)` without busbar knowing what a team is).
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn test_scrape_gauges_bucket_model_tier_and_key_labels() {
+        init();
+
+        let mut key = sample_vkey("vk_bucket_test1");
+        key.group = Some("growth".to_string());
+        key.labels = std::collections::BTreeMap::from([("team".to_string(), "growth".to_string())]);
+        let gov = gov_with_key(key.clone());
+
+        // A cost model with the growth group; flat fee 1 (TestApp default shape).
+        let groups = std::collections::BTreeMap::from([(
+            "growth".to_string(),
+            crate::config::GroupCfg {
+                parent: None,
+                enabled: true,
+                limits: vec![crate::config::groups::LimitCfg {
+                    metric: crate::config::groups::LimitMetric::Budget,
+                    amount: 1_000,
+                    per: Some(crate::config::groups::LimitWindow::Total),
+                    scope: None,
+                    on_exhaust: None,
+                    downgrade_to: None,
+                }],
+                ..Default::default()
+            },
+        )]);
+        let cost = crate::cost::CostModel::resolve_parts(None, 1, &groups);
+
+        // Accrue per-model tier tokens through the REAL accrual path (fans out to key + group).
+        gov.record_usage(
+            &cost,
+            &key,
+            "",
+            "gpt-5",
+            &busbar_api::TierTokens {
+                input: 100,
+                output: 40,
+                cache_read: 7,
+                cache_write: 3,
+            },
+            1_700_000_000,
+        );
 
         let app = TestApp::new()
             .lane(LaneSpec::new(
@@ -534,24 +1181,55 @@ mod tests {
             ))
             .pool("pool-b", &[(0, 1)])
             .governance(gov)
+            .cost(crate::cost::CostModel::resolve_parts(None, 1, &groups))
             .build();
-
         refresh_scrape_gauges(&app);
-
         let out = render();
-        // The remaining gauge for the uncapped key must NOT appear.
-        // NOTE: other tests in this process may have emitted it for different keys; we can only
-        // check that the uncapped key id does not appear on a budget-remaining line.
-        let remaining_lines: Vec<&str> = out
+
+        // Key-bucket per-(model, tier) series with the mint label echoed.
+        let key_line = out
             .lines()
-            .filter(|l| l.contains(KEY_BUDGET_REMAINING_CENTS))
-            .collect();
-        for line in &remaining_lines {
-            assert!(
-                !line.contains("vk_uncapped_test01"),
-                "uncapped key must not appear in budget_remaining_cents lines; got:\n{line}"
-            );
-        }
+            .find(|l| {
+                l.starts_with("busbar_bucket_tokens")
+                    && l.contains("bucket=\"vk_bucket_test1\"")
+                    && l.contains("model=\"gpt-5\"")
+                    && l.contains("tier=\"input\"")
+            })
+            .unwrap_or_else(|| panic!("key-bucket input-tier series missing: {out}"));
+        assert!(
+            key_line.contains("team=\"growth\""),
+            "mint labels echo onto metric series: {key_line}"
+        );
+        assert!(
+            key_line.trim_end().ends_with("100"),
+            "input tier value: {key_line}"
+        );
+
+        // Group-bucket series exist too (the chain accrual fanned out), keyed by the 1.5.0
+        // per-(group, window) bucket id and carrying the group/window dimensions.
+        assert!(
+            out.lines().any(|l| l.starts_with("busbar_bucket_tokens")
+                && l.contains("bucket=\"group:growth@total\"")
+                && l.contains("group=\"growth\"")
+                && l.contains("window=\"total\"")
+                && l.contains("tier=\"output\"")),
+            "group-bucket token series missing: {out}"
+        );
+        // Derived group spend (0 without a rate card and no admitted request) + remaining
+        // (= full cap).
+        assert!(
+            out.lines()
+                .any(|l| l.starts_with("busbar_bucket_spend_cents")
+                    && l.contains("bucket=\"group:growth@total\"")),
+            "group spend gauge missing"
+        );
+        assert!(
+            out.lines()
+                .any(|l| l.starts_with("busbar_bucket_budget_remaining_cents")
+                    && l.contains("bucket=\"group:growth@total\"")
+                    && l.trim_end().ends_with("1000")),
+            "group remaining gauge = full cap when token spend derives to 0: {out}"
+        );
     }
 
     /// `refresh_scrape_gauges` with no governance must not panic and must emit `LANE_STATE` gauges.
@@ -579,6 +1257,116 @@ mod tests {
         assert!(
             out.contains("pool=\"pool-x\""),
             "pool label must appear; got:\n{out}"
+        );
+    }
+
+    /// A `Store` whose `list_keys` fails on every call AFTER the first — the first call succeeds so
+    /// `GovState::new` (which loads the key cache via `list_keys` at construction time) can still
+    /// build successfully, and every call from then on (i.e. from `refresh_scrape_gauges`'s
+    /// `all_keys()`) fails, simulating a governance-store hiccup discovered exactly at scrape time.
+    /// Every other method delegates to a real in-memory `MemoryStore`.
+    struct ScrapeTimeBrokenKeyListStore {
+        inner: MemoryStore,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+    impl Store for ScrapeTimeBrokenKeyListStore {
+        fn list_keys(&self) -> crate::governance::StoreResult<Vec<VirtualKey>> {
+            let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if n == 0 {
+                self.inner.list_keys()
+            } else {
+                Err(crate::governance::StoreError(
+                    "governance store unavailable (simulated scrape-time outage)".into(),
+                ))
+            }
+        }
+        fn put_key(&self, key: &VirtualKey) -> crate::governance::StoreResult<()> {
+            self.inner.put_key(key)
+        }
+        fn get_key(&self, id: &str) -> crate::governance::StoreResult<Option<VirtualKey>> {
+            self.inner.get_key(id)
+        }
+        fn delete_key(&self, id: &str) -> crate::governance::StoreResult<()> {
+            self.inner.delete_key(id)
+        }
+        fn get_usage(
+            &self,
+            bucket_id: &str,
+            window_start: u64,
+        ) -> crate::governance::StoreResult<busbar_api::UsageLedger> {
+            self.inner.get_usage(bucket_id, window_start)
+        }
+        fn put_usage(
+            &self,
+            bucket_id: &str,
+            window_start: u64,
+            ledger: &busbar_api::UsageLedger,
+        ) -> crate::governance::StoreResult<()> {
+            self.inner.put_usage(bucket_id, window_start, ledger)
+        }
+        fn add_metering(
+            &self,
+            delta: &crate::governance::MeteringDelta,
+        ) -> crate::governance::StoreResult<()> {
+            self.inner.add_metering(delta)
+        }
+        fn list_metering(
+            &self,
+            bucket: u64,
+        ) -> crate::governance::StoreResult<Vec<crate::governance::MeteringRow>> {
+            self.inner.list_metering(bucket)
+        }
+    }
+
+    /// Regression (codeaudit round-8, correctness + error-handling lenses, independently):
+    /// `refresh_scrape_gauges` must keep refreshing `busbar_lane_state` (and the group-bucket
+    /// gauges, which don't depend on `all_keys()` either) even when the governance store's
+    /// `all_keys()` call fails during the scrape. The old code did a bare `return` on that error,
+    /// which — given the metrics recorder's 24h gauge idle-timeout — left `busbar_lane_state`
+    /// showing stale/absent values for up to a day after a single transient governance-store
+    /// hiccup, hiding a breaker that trips during that exact window from lane-health alerting.
+    #[test]
+    fn test_scrape_gauges_lane_state_survives_governance_all_keys_failure() {
+        init();
+
+        let key = sample_vkey("vk_broken_store01");
+        let store = Arc::new(ScrapeTimeBrokenKeyListStore {
+            inner: MemoryStore::new(),
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        store.put_key(&key).unwrap();
+        // Construction consumes the ONE successful `list_keys` call.
+        let gov = Arc::new(GovState::new(store, None).unwrap());
+
+        let app = TestApp::new()
+            .lane(LaneSpec::new(
+                "model-broken",
+                crate::proto::Protocol::openai(),
+                "http://broken",
+            ))
+            .pool("pool-broken", &[(0, 1)])
+            .governance(gov)
+            .build();
+
+        // Every `all_keys()` call from here on fails (simulated scrape-time governance outage).
+        refresh_scrape_gauges(&app);
+
+        let out = render();
+        // The lane-health gauge must still be present and labeled for this pool — it has nothing to
+        // do with the governance store and must not be collateral damage of the failed key list.
+        let lane_line = out.lines().find(|l| {
+            l.contains(LANE_STATE) && l.contains("pool=\"pool-broken\"") && !l.starts_with('#')
+        });
+        assert!(
+            lane_line.is_some(),
+            "busbar_lane_state for pool-broken must still be emitted despite the governance \
+             all_keys() failure; got:\n{out}"
+        );
+        // The per-key spend gauge (which DOES depend on the failed `all_keys()` read) must
+        // correctly be absent — this is the one thing that should actually be skipped.
+        assert!(
+            !out.contains("vk_broken_store01"),
+            "the failed key's id must not appear as a per-key gauge label; got:\n{out}"
         );
     }
 
@@ -620,6 +1408,166 @@ mod tests {
         );
     }
 
+    /// A pool-scoped cell that is Open with a live cooldown, while the SAME underlying lane stays
+    /// usable via a SIBLING pool's untouched (Closed) cell, must render `busbar_lane_state = 1`
+    /// (HalfOpen) for the tripped pool — not 0 (would require `pool_cooldown == 0`) and not 2
+    /// (would require the lane itself being unusable everywhere). This is the ONLY reachable path
+    /// to state 1 for a pool-routed lane: `cell_ready_breaker` reports HALF_OPEN itself as NOT
+    /// ready, so "cooldown>0 but usable" only happens when a *different* cell for the same lane is
+    /// what makes `lane_usable_any_cell` true. Proves the `pool_cooldown > 0 && !snap.usable`
+    /// (line 794) and the by-model twin (line 825) guards distinguish state 1 from state 2 for
+    /// real, not just "some non-zero value".
+    #[test]
+    fn test_lane_state_half_open_via_sibling_pool_cell() {
+        init();
+
+        let (app, store) = TestApp::new()
+            .lane(LaneSpec::new(
+                "model-ho",
+                crate::proto::Protocol::openai(),
+                "http://ho",
+            ))
+            .pool("pool-tripped", &[(0, 1)])
+            .pool("pool-sibling", &[(0, 1)])
+            .build_with_store();
+
+        let now = crate::state::now();
+        // Materialize the sibling pool's cell fresh (Closed, cooldown=0, ready) BEFORE tripping the
+        // other pool — `lane_usable_any_cell` only sees cells that have been touched at least once.
+        let _ = store.cell("pool-sibling", 0);
+        // Trip pool-tripped's cell Open with a cooldown well into the future.
+        store.force_open_in("pool-tripped", 0, now + 600);
+
+        refresh_scrape_gauges(&app);
+        let out = render();
+
+        let tripped_line = out.lines().find(|l| {
+            l.contains(LANE_STATE) && l.contains("pool=\"pool-tripped\"") && !l.starts_with('#')
+        });
+        assert!(
+            tripped_line.is_some(),
+            "lane_state for pool-tripped must be present; got:\n{out}"
+        );
+        let line = tripped_line.unwrap();
+        assert!(
+            line.ends_with(" 1") || line.ends_with(" 1.0"),
+            "a cell with cooldown>0 but a usable sibling cell must report state 1 (HalfOpen), \
+             not 0 (would need cooldown==0) or 2 (would need the lane unusable everywhere); \
+             got:\n{line}"
+        );
+
+        // The untouched sibling pool's OWN cell is genuinely Closed/healthy — state 0 — proving
+        // this isn't just "every pool on a partially-tripped lane reports 1".
+        let sibling_line = out.lines().find(|l| {
+            l.contains(LANE_STATE) && l.contains("pool=\"pool-sibling\"") && !l.starts_with('#')
+        });
+        assert!(
+            sibling_line.is_some(),
+            "lane_state for pool-sibling must be present; got:\n{out}"
+        );
+        let sline = sibling_line.unwrap();
+        assert!(
+            sline.ends_with(" 0") || sline.ends_with(" 0.0"),
+            "the sibling pool's own untouched cell must report state 0; got:\n{sline}"
+        );
+    }
+
+    /// The `by_model` (direct/no-pool routing) twin of the HalfOpen test above: the DEFAULT (`""`)
+    /// cell tripped Open with a cooldown, while a SIBLING per-pool cell for the same lane stays
+    /// fresh/Closed, must still report state 1 for the model-labeled gauge — proving line 825's
+    /// `cooldown > 0 && !snap.usable` guard (distinct code from the pool-loop's identical-looking
+    /// line 794 guard) is independently exercised. Every `TestApp` lane is auto-registered in
+    /// `by_model` regardless of pool membership, so adding a pool here (to materialize a per-pool
+    /// cell) doesn't remove the lane from the by_model gauge loop.
+    #[test]
+    fn test_lane_state_half_open_by_model_via_sibling_pool_cell() {
+        init();
+
+        let (app, store) = TestApp::new()
+            .lane(LaneSpec::new(
+                "model-by",
+                crate::proto::Protocol::openai(),
+                "http://by",
+            ))
+            .pool("some-pool", &[(0, 1)])
+            .build_with_store();
+
+        let now = crate::state::now();
+        // Materialize a per-pool cell fresh/Closed so `lane_usable_any_cell` has a ready cell to
+        // find (without this, it would fall back to the default cell itself, which we're about to
+        // trip — making usable/cooldown check the SAME cell and state 1 unreachable).
+        let _ = store.cell("some-pool", 0);
+        // Trip the DEFAULT ("") cell — the one `cooldown_remaining_in("", lane_idx, now)` reads in
+        // the by_model loop.
+        store.force_open_in("", 0, now + 600);
+
+        refresh_scrape_gauges(&app);
+        let out = render();
+
+        let model_line = out.lines().find(|l| {
+            l.contains(LANE_STATE) && l.contains("pool=\"model-by\"") && !l.starts_with('#')
+        });
+        assert!(
+            model_line.is_some(),
+            "lane_state for the by_model entry (pool label = model name) must be present; \
+             got:\n{out}"
+        );
+        let line = model_line.unwrap();
+        assert!(
+            line.ends_with(" 1") || line.ends_with(" 1.0"),
+            "default cell cooling down but the lane usable via a sibling per-pool cell must \
+             report state 1 (HalfOpen) in the by_model gauge loop too; got:\n{line}"
+        );
+    }
+
+    /// The `>` boundary in line 825's `cooldown > 0 && !snap.usable` guard specifically: with the
+    /// DEFAULT (`""`) cell UNTOUCHED (cooldown reads exactly 0, `by_model`'s direct-routing path
+    /// never went through it) while every per-pool cell for the SAME lane is Open/unusable, the
+    /// by_model gauge must report state 0 (the direct path's own cell is genuinely healthy — pool
+    /// brokenness on a completely separate traffic path is irrelevant to it), not 2. A mutated
+    /// `cooldown == 0` would flip this specific case to 2, since `0 == 0` is true where `0 > 0` is
+    /// false — the two operators only diverge exactly at cooldown == 0, which the other HalfOpen
+    /// tests (cooldown = 600) can never reach.
+    #[test]
+    fn test_lane_state_by_model_default_cell_untouched_zero_cooldown_reports_healthy() {
+        init();
+
+        let (app, store) = TestApp::new()
+            .lane(LaneSpec::new(
+                "model-zero",
+                crate::proto::Protocol::openai(),
+                "http://zero",
+            ))
+            .pool("poolX", &[(0, 1)])
+            .pool("poolY", &[(0, 1)])
+            .build_with_store();
+
+        let now = crate::state::now();
+        // Trip EVERY per-pool cell Open (unexpired cooldown) — the lane is unusable via any pool.
+        // The DEFAULT ("") cell is deliberately never touched: cooldown_remaining_in("", 0, now)
+        // reads exactly 0 (its pristine untouched state), which is the boundary value that
+        // distinguishes `>` from `==`.
+        store.force_open_in("poolX", 0, now + 600);
+        store.force_open_in("poolY", 0, now + 600);
+
+        refresh_scrape_gauges(&app);
+        let out = render();
+
+        let model_line = out.lines().find(|l| {
+            l.contains(LANE_STATE) && l.contains("pool=\"model-zero\"") && !l.starts_with('#')
+        });
+        assert!(
+            model_line.is_some(),
+            "lane_state for the by_model entry must be present; got:\n{out}"
+        );
+        let line = model_line.unwrap();
+        assert!(
+            line.ends_with(" 0") || line.ends_with(" 0.0"),
+            "the untouched default cell (cooldown == 0) must report state 0 for the direct-routing \
+             gauge regardless of unrelated pool cells being broken; got:\n{line}"
+        );
+    }
+
     /// `refresh_scrape_gauges` must emit at most `key_gauge_limit` (2000) distinct per-key series
     /// even when the governance store holds more than that many virtual keys.
     ///
@@ -636,30 +1584,49 @@ mod tests {
         // The default key-gauge limit is 2000 (no limits installed in this test ⇒ the historical
         // default). We use the same value here to keep the test self-consistent.
         const LIMIT: usize = crate::config::DEFAULT_KEY_GAUGE_LIMIT;
-        let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+        let store = Arc::new(MemoryStore::new());
 
         // Insert LIMIT + 1 keys so the truncation branch fires.
         for i in 0..=(LIMIT) {
             let id = format!("vk_limit_{i:04x}");
             let key = VirtualKey {
                 id: id.clone(),
-                key_hash: format!("hash-limit-{i}"),
+                generation_hash: format!("hash-limit-{i}"),
                 name: format!("key-limit-{i}"),
-                allowed_pools: vec![],
-                max_budget_cents: None, // no budget cap → only spend + tokens gauges
-                budget_period: "total".to_string(),
-                rpm_limit: None,
-                tpm_limit: None,
+                allowed_scopes: None,
                 enabled: true,
                 created_at: 1_700_000_000,
+                group: None,
+                labels: Default::default(),
+                expires_at: None,
+                deleted_at: None,
+                revision: 1,
             };
             store.put_key(&key).unwrap();
             // Seed minimal usage so the key has a row in usage_counters and the spend gauge is
             // actually emitted (keys with zero usage_for results are skipped).
-            store.add_usage(&id, 0, 1, 10, false).unwrap();
+            store
+                .put_usage(
+                    &id,
+                    0,
+                    &busbar_api::UsageLedger {
+                        requests: 1,
+                        billable_requests: 1,
+                        models: vec![busbar_api::ModelTokens {
+                            model: "m".to_string(),
+                            tokens: crate::governance::TierTokens {
+                                input: 10,
+                                output: 0,
+                                cache_read: 0,
+                                cache_write: 0,
+                            },
+                        }],
+                    },
+                )
+                .unwrap();
         }
 
-        let gov = Arc::new(GovState::new(store, 0, 0, None).unwrap());
+        let gov = Arc::new(GovState::new(store, None).unwrap());
         let app = TestApp::new()
             .lane(LaneSpec::new(
                 "m",
@@ -694,6 +1661,104 @@ mod tests {
         );
     }
 
+    /// Build an `App` backed by a governance store seeded with `n` distinct virtual keys, each
+    /// with minimal usage so its per-key spend gauge actually emits. Shared by the key-gauge-limit
+    /// boundary tests below.
+    fn app_with_n_keys(n: usize) -> Arc<App> {
+        let store = Arc::new(MemoryStore::new());
+        for i in 0..n {
+            let id = format!("vk_bound_{i:04x}");
+            let key = VirtualKey {
+                id: id.clone(),
+                generation_hash: format!("hash-bound-{i}"),
+                name: format!("key-bound-{i}"),
+                allowed_scopes: None,
+                enabled: true,
+                created_at: 1_700_000_000,
+                group: None,
+                labels: Default::default(),
+                expires_at: None,
+                deleted_at: None,
+                revision: 1,
+            };
+            store.put_key(&key).unwrap();
+            store
+                .put_usage(
+                    &id,
+                    0,
+                    &busbar_api::UsageLedger {
+                        requests: 1,
+                        billable_requests: 1,
+                        models: vec![busbar_api::ModelTokens {
+                            model: "m".to_string(),
+                            tokens: crate::governance::TierTokens {
+                                input: 1,
+                                output: 0,
+                                cache_read: 0,
+                                cache_write: 0,
+                            },
+                        }],
+                    },
+                )
+                .unwrap();
+        }
+        let gov = Arc::new(GovState::new(store, None).unwrap());
+        TestApp::new()
+            .lane(LaneSpec::new(
+                "m",
+                crate::proto::Protocol::openai(),
+                "http://m",
+            ))
+            .pool("pool-bound", &[(0, 1)])
+            .governance(gov)
+            .build()
+    }
+
+    /// `keys.len() > key_gauge_limit` is the EXACT boundary that gates the truncation warning: a
+    /// mutated `>` (e.g. `<`) would make the warning fire on the WRONG side of the boundary
+    /// (never at `limit + 1`, always below `limit`, or some other inversion) — `render()`'s output
+    /// is unaffected either way (`.take(key_gauge_limit)` bounds emission unconditionally), so
+    /// this can only be proven via the actual `tracing::warn!` call, not the metric text.
+    #[test]
+    fn test_key_gauge_limit_warning_fires_exactly_past_the_boundary() {
+        use crate::test_support::warn_capture::WarnCapture;
+        use tracing_subscriber::layer::SubscriberExt as _;
+        init();
+        const LIMIT: usize = crate::config::DEFAULT_KEY_GAUGE_LIMIT;
+
+        // AT the limit: no warning.
+        let app_at_limit = app_with_n_keys(LIMIT);
+        let cap = WarnCapture::default();
+        let subscriber = tracing_subscriber::registry().with(cap.clone());
+        tracing::subscriber::with_default(subscriber, || {
+            refresh_scrape_gauges(&app_at_limit);
+        });
+        assert!(
+            !cap
+                .messages()
+                .iter()
+                .any(|m| m.contains("per-key gauge limit")),
+            "exactly key_gauge_limit ({LIMIT}) keys must NOT trigger the truncation warning; got: {:?}",
+            cap.messages()
+        );
+
+        // ONE past the limit: warning fires.
+        let app_over_limit = app_with_n_keys(LIMIT + 1);
+        let cap2 = WarnCapture::default();
+        let subscriber2 = tracing_subscriber::registry().with(cap2.clone());
+        tracing::subscriber::with_default(subscriber2, || {
+            refresh_scrape_gauges(&app_over_limit);
+        });
+        assert!(
+            cap2.messages()
+                .iter()
+                .any(|m| m.contains("per-key gauge limit")),
+            "key_gauge_limit + 1 ({}) keys MUST trigger the truncation warning; got: {:?}",
+            LIMIT + 1,
+            cap2.messages()
+        );
+    }
+
     /// Cardinality invariant: label values in the scrape output must NOT contain raw bearer secrets
     /// (which start with `sk-bb-`). The key id (`vk_<hex>`) is the only key-identifying label.
     #[test]
@@ -719,6 +1784,74 @@ mod tests {
         assert!(
             !out.contains("sk-bb-"),
             "raw bearer secret prefix must never appear as a label value in the scrape output; got:\n{out}"
+        );
+    }
+    /// A gauge whose subject is gone must stop being exported; one still being refreshed must not.
+    ///
+    /// Per-key gauges are only `set` while iterating LIVE keys, so without an idle timeout a deleted
+    /// key's spend was re-rendered with its final value for the life of the process — `/metrics`
+    /// growing with lifetime key churn, and dashboards showing a deleted key's spend as current.
+    ///
+    /// Driven through a LOCALLY-built recorder: installing is global and once-per-process, but
+    /// building is not, so the reaping behaviour can be exercised on a short window.
+    #[test]
+    fn a_gauge_that_stops_being_refreshed_is_expired() {
+        let idle = Duration::from_millis(60);
+        let recorder = super::recorder_builder(Duration::from_secs(1), idle)
+            .expect("builder")
+            .build_recorder();
+        let handle = recorder.handle();
+
+        metrics::with_local_recorder(&recorder, || {
+            metrics::gauge!("busbar_test_deleted_subject").set(1.0);
+            metrics::gauge!("busbar_test_live_subject").set(1.0);
+        });
+        let before = handle.render();
+        assert!(before.contains("busbar_test_deleted_subject"), "{before}");
+        assert!(before.contains("busbar_test_live_subject"));
+
+        std::thread::sleep(idle * 3);
+        // Only the live subject is refreshed — exactly what `refresh_scrape_gauges` does for the
+        // keys that still exist.
+        metrics::with_local_recorder(&recorder, || {
+            metrics::gauge!("busbar_test_live_subject").set(2.0);
+        });
+
+        let after = handle.render();
+        assert!(
+            !after.contains("busbar_test_deleted_subject"),
+            "a gauge nothing refreshes must stop being exported, got:\n{after}"
+        );
+        assert!(
+            after.contains("busbar_test_live_subject"),
+            "a refreshed gauge must survive, got:\n{after}"
+        );
+    }
+
+    /// Counters and histograms must NOT be reaped: expiring a counter resets it and breaks `rate()`,
+    /// and expiring a histogram discards its summary. Only gauges are in the mask.
+    #[test]
+    fn only_gauges_are_expired() {
+        let idle = Duration::from_millis(60);
+        let recorder = super::recorder_builder(Duration::from_secs(1), idle)
+            .expect("builder")
+            .build_recorder();
+        let handle = recorder.handle();
+
+        metrics::with_local_recorder(&recorder, || {
+            metrics::counter!("busbar_test_idle_counter").increment(7);
+            metrics::histogram!("busbar_test_idle_histogram").record(1.0);
+        });
+        std::thread::sleep(idle * 3);
+
+        let after = handle.render();
+        assert!(
+            after.contains("busbar_test_idle_counter"),
+            "an idle counter must survive — expiring it would reset it and break rate(), got:\n{after}"
+        );
+        assert!(
+            after.contains("busbar_test_idle_histogram"),
+            "an idle histogram must survive, got:\n{after}"
         );
     }
 }

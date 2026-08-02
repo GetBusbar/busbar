@@ -9,6 +9,17 @@ use serde::{Deserialize, Serialize};
 /// The busbar-owned config overlay (persistence substrate for API-applied hook changes).
 pub(crate) mod overlay;
 
+/// The top-level `groups:` limit tree (S3): GroupCfg + the generic limit shape.
+pub(crate) mod groups;
+/// The 1.4.x -> 1.5.0 config migrator + the loud fail-closed 1.x detector (P9).
+pub(crate) mod migrate;
+/// The secret-reference type (C2): `{ module, settings }` + the `{env}`/`{file}` sugar.
+pub(crate) mod patch;
+pub(crate) mod secret;
+
+pub(crate) use groups::{GroupCfg, LimitCfg};
+pub(crate) use secret::SecretRef;
+
 // Re-export status_class_from_str for config validation
 pub(crate) use crate::breaker::status_class_from_str;
 use crate::proto::PROTO_ANTHROPIC;
@@ -16,17 +27,29 @@ use crate::proto::PROTO_ANTHROPIC;
 /// Reject an env-var value that could break out of the surrounding YAML scalar when substituted
 /// into the raw config text BEFORE parsing. `interpolate_env` splices each value in verbatim, so a
 /// value carrying a YAML-structural control character — most critically a NEWLINE or carriage
-/// return — can close the quoted scalar it sits inside and inject sibling YAML nodes (e.g. an extra
-/// `client_tokens` entry, or a rewritten `admin_token`). Since both `client_tokens` and
-/// `admin_token` are interpolated from env vars inside double-quoted scalars in the shipped
-/// `config.yaml`, whoever controls those env vars (a CI pipeline, secret store, orchestrator) could
-/// otherwise silently widen the auth allowlist without editing the config file.
+/// return — can close the quoted (or plain) scalar it sits inside and inject sibling YAML nodes.
+/// This is the FIRST of two layers: it is a fast, cheap, clear-error rejection of the
+/// newline-based injection shape. It is NOT sufficient on its own — see
+/// [`interpolate_env_with`]'s structural-equivalence check for the second layer, which closes the
+/// remaining injection surface that needs no newline at all: inside a YAML FLOW collection
+/// (`{ }` / `[ ]` — used by this project's own documented interpolation examples, e.g.
+/// `client_tokens: [ "${VAR}" ]`), a value containing a bare `,`, `"`, or `'` can inject sibling
+/// structure on a single line. A flow SEQUENCE has no schema-level defense against an extra
+/// element (it silently widens e.g. a client-token allowlist), and an opaque `settings:` map
+/// (`serde_json::Map`, used by auth-chain/hook module config and `SecretRef`) has no
+/// `deny_unknown_fields` to reject an injected sibling key either — both are real, exploitable
+/// shapes in this config format. (A typed struct like `PluginsCfg`, which DOES carry
+/// `#[serde(deny_unknown_fields)]` on every field, blocks a bare sibling-key injection at the
+/// deserialize layer for that specific struct — but that is struct-specific luck, not a general
+/// guarantee, and does not help flow sequences or opaque maps at all.)
 ///
 /// No legitimate secret, token, URL, or path value contains a raw control character, so blocking
 /// the entire C0 control range (plus DEL and the C1 NEL/LS/PS line-breaks YAML also treats as line
-/// boundaries) closes the structural-injection vector with effectively zero false positives. A
-/// double-quote or `#` on its own is harmless without a line break to terminate the current scalar,
-/// and YAML's own quoting handles them, so we do not over-reject those.
+/// boundaries) closes the newline-based injection vector with effectively zero false positives. A
+/// double-quote, `#`, or comma on its own is harmless without a line break to terminate the
+/// current scalar in most positions, and YAML's own quoting handles them, so we do not
+/// over-reject those here — the flow-collection case they DO enable is handled by the structural
+/// check instead, which is not a character-based check.
 fn reject_yaml_unsafe_value(var_name: &str, value: &str) -> Result<(), String> {
     if let Some(bad) = value.chars().find(|c| {
         // C0 controls (incl. \n, \r, \t, NUL) and DEL, plus the Unicode line/paragraph separators
@@ -53,21 +76,47 @@ pub(crate) enum EnvSubst {
     Lenient,
 }
 
-/// Expand `${VAR}` tokens from the environment (see [`EnvSubst`] for unset-variable behavior). A
-/// substituted value carrying a YAML-structural control character is rejected (`reject_yaml_unsafe_value`)
-/// so an env var cannot break out of the quoted scalar it lands in and inject extra YAML nodes.
+/// Expand `${VAR}` tokens from the environment (see [`EnvSubst`] for unset-variable behavior). See
+/// [`interpolate_env_with`] for the two-layer injection defense applied to every substituted value.
 pub(crate) fn interpolate_env(s: &str) -> Result<String, String> {
     interpolate_env_with(s, EnvSubst::Strict, &mut Vec::new())
 }
 
+/// A single `${VAR}` occurrence resolved during interpolation: the real substituted text and the
+/// per-occurrence placeholder token that stands in for it in the "shape" pass (see
+/// [`assert_interpolation_preserves_structure`]). Recorded in source order so a structural
+/// mismatch can be attributed back to a specific occurrence / variable, best-effort.
+struct Occurrence {
+    var_name: String,
+    real_value: String,
+    placeholder: String,
+}
+
 /// See [`interpolate_env`]. In [`EnvSubst::Lenient`] mode each unset variable name is pushed into
 /// `unset` (first-seen, deduped) and a placeholder substituted; in `Strict` mode `unset` is untouched.
+///
+/// Two independent layers guard every substituted value against breaking out of the raw YAML text
+/// it is spliced into, verbatim, BEFORE parsing:
+///
+/// 1. [`reject_yaml_unsafe_value`] rejects a NEWLINE (or other YAML-structural control character)
+///    in the value outright — cheap, and gives a precise error for that shape.
+/// 2. A structural-equivalence check (this function, below): after interpolation, the SAME raw
+///    template is interpolated a second time with every `${VAR}` replaced by a unique, YAML-inert
+///    placeholder token instead of its real value. Both results are parsed to `serde_yaml::Value`
+///    and their trees are compared for structural equivalence (same map keys, same sequence
+///    lengths, same node kind, at every position — NOT scalar leaf values, which are expected and
+///    allowed to differ in content and even inferred type). Any difference means a substituted
+///    value injected or removed YAML structure — the config would parse into a different SHAPE
+///    than the template declares — and interpolation is rejected. This closes injection shapes
+///    that need no newline at all (flow-collection `,`/`"`/`'` breakout, anchor/tag games), which
+///    (1) alone cannot see.
 pub(crate) fn interpolate_env_with(
     s: &str,
     mode: EnvSubst,
     unset: &mut Vec<String>,
 ) -> Result<String, String> {
     let mut result = String::with_capacity(s.len());
+    let mut occurrences: Vec<Occurrence> = Vec::new();
     let mut chars = s.chars().peekable();
 
     while let Some(ch) = chars.next() {
@@ -112,12 +161,217 @@ pub(crate) fn interpolate_env_with(
             // the surrounding YAML scalar and inject sibling nodes (e.g. extra client_tokens).
             reject_yaml_unsafe_value(&var_name, &value)?;
             result.push_str(&value);
+            // Unique PER OCCURRENCE (not per var name): two different `${VAR}` references never
+            // collapse to the same placeholder token, so a real shape difference between two
+            // occurrences of the same variable can never be masked by the placeholder pass
+            // accidentally making them look like "the same node twice". Reusing the SAME var's
+            // real value at multiple points needs no special handling either way — the shape
+            // check never compares scalar leaf VALUES, only node kind/keys/lengths, so two
+            // occurrences sharing a real value are indistinguishable, structurally, from two
+            // occurrences with different values; both are fine.
+            let placeholder = structural_placeholder(occurrences.len());
+            occurrences.push(Occurrence {
+                var_name,
+                real_value: value,
+                placeholder,
+            });
         } else {
             result.push(ch);
         }
     }
 
+    if !occurrences.is_empty() {
+        assert_interpolation_preserves_structure(s, &result, &occurrences)?;
+    }
+
     Ok(result)
+}
+
+/// The per-occurrence placeholder token used by the structural-equivalence check: alphanumeric +
+/// underscore only, so it can never itself introduce YAML structure (no `,` `"` `'` `&` `*` `!`
+/// `:` `[` `]` `{` `}` `#` `|` `>` `-` or whitespace) regardless of where in the template it lands.
+fn structural_placeholder(occurrence_index: usize) -> String {
+    format!("__BUSBAR_INTERP_PLACEHOLDER_{occurrence_index}__")
+}
+
+/// Re-run the interpolation of `template` with the placeholder token substituted for occurrence
+/// `keep_real` (kept as its real value) and every OTHER occurrence's placeholder for all others,
+/// re-scanning `template` for `${...}` spans in the same left-to-right order `occurrences` was
+/// built in. Used only on the (rare, boot-time-only) attribution path after a mismatch is already
+/// known, to isolate which single occurrence's real value is responsible.
+fn splice_occurrences(
+    template: &str,
+    occurrences: &[Occurrence],
+    keep_real: Option<usize>,
+) -> String {
+    let mut out = String::with_capacity(template.len());
+    let mut chars = template.chars().peekable();
+    let mut idx = 0usize;
+    while let Some(ch) = chars.next() {
+        if ch == '$' && chars.peek() == Some(&'{') {
+            chars.next();
+            for ch in chars.by_ref() {
+                if ch == '}' {
+                    break;
+                }
+            }
+            let occ = &occurrences[idx];
+            if keep_real == Some(idx) {
+                out.push_str(&occ.real_value);
+            } else {
+                out.push_str(&occ.placeholder);
+            }
+            idx += 1;
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+/// The structural-equivalence check (see [`interpolate_env_with`] doc comment). `real` is the
+/// already fully-interpolated text; `template` is the original raw source (re-scanned to build the
+/// all-placeholder text and, on the failure path, single-occurrence hybrids for attribution).
+fn assert_interpolation_preserves_structure(
+    template: &str,
+    real: &str,
+    occurrences: &[Occurrence],
+) -> Result<(), String> {
+    // If the real text doesn't even parse as YAML, that already fails safely downstream (the
+    // caller re-parses it and gets a loud, ordinary parse error) — nothing "succeeded silently",
+    // so there is nothing for this check to add. Skip rather than invent a confusing second error.
+    let real_value: serde_yaml::Value = match serde_yaml::from_str(real) {
+        Ok(v) => v,
+        Err(_) => return Ok(()),
+    };
+
+    let placeholder_text = splice_occurrences(template, occurrences, None);
+    let placeholder_value: serde_yaml::Value = match serde_yaml::from_str(&placeholder_text) {
+        Ok(v) => v,
+        Err(e) => {
+            // The placeholder text is built from YAML-inert tokens, so this should not normally
+            // happen. Real interpolation succeeded (parsed fine above) but we cannot verify it
+            // preserves the template's structure — fail closed rather than let an unverifiable
+            // interpolation through.
+            return Err(format!(
+                "could not verify that environment-variable interpolation preserves config \
+                 structure (internal placeholder document failed to parse: {e}); refusing to \
+                 proceed"
+            ));
+        }
+    };
+
+    if structural_shapes_match(&real_value, &placeholder_value, 0) {
+        return Ok(());
+    }
+
+    // Mismatch: try to isolate which single occurrence's real value is responsible by swapping
+    // real values back in one at a time against the all-placeholder baseline. Boot-time-only,
+    // rare (error) path, so re-parsing per occurrence is a non-issue.
+    let mut culprits: Vec<String> = Vec::new();
+    for (i, occ) in occurrences.iter().enumerate() {
+        let hybrid_text = splice_occurrences(template, occurrences, Some(i));
+        let matches = match serde_yaml::from_str::<serde_yaml::Value>(&hybrid_text) {
+            Ok(hybrid_value) => structural_shapes_match(&hybrid_value, &placeholder_value, 0),
+            Err(_) => false, // this occurrence alone breaks parsing outright: also a culprit
+        };
+        if !matches && !culprits.contains(&occ.var_name) {
+            culprits.push(occ.var_name.clone());
+        }
+    }
+
+    if culprits.is_empty() {
+        // No single occurrence reproduces the mismatch in isolation (e.g. it takes two or more
+        // values together) — name every candidate rather than guess wrong.
+        let mut all: Vec<String> = occurrences.iter().map(|o| o.var_name.clone()).collect();
+        all.sort();
+        all.dedup();
+        Err(format!(
+            "environment-variable interpolation would change the config's YAML structure (extra \
+             or missing key, different sequence length, or different node kind at some position), \
+             but no single variable reproduces it in isolation — inspect: {}",
+            all.join(", ")
+        ))
+    } else {
+        Err(format!(
+            "environment variable(s) {} would change the config's YAML structure when \
+             interpolated (extra or missing key, different sequence length, or different node \
+             kind) — a substituted value must only ever change a scalar leaf's content, never the \
+             document's shape",
+            culprits.join(", ")
+        ))
+    }
+}
+
+/// The node "kind" compared by the structural-equivalence check: every scalar variant (`Null`,
+/// `Bool`, `Number`, `String`) folds into one bucket, because interpolation legitimately changes a
+/// leaf's content and even its INFERRED TYPE (e.g. `port: ${PORT}` — a real `8080` infers as
+/// `Number`, the placeholder token infers as `String`) without that being an injection. `Mapping`,
+/// `Sequence`, and `Tagged` stay distinct: those are shapes a plain scalar substitution should
+/// never turn into, so seeing one appear only on the real side (or vice versa) IS the signal.
+///
+/// `depth` bounds the recursion (mirrors `json::MAX_JSON_DEPTH`'s reasoning, at the same limit):
+/// this walks an UNTYPED `serde_yaml::Value` tree built from a config file only "trusted but
+/// validated" per this project's own threat model (a typo shouldn't become a crash), and unlike
+/// the typed deserialize path this function has no schema to bound its own depth — a config with
+/// deeply nested (even accidentally, via a templating bug) mappings/sequences could otherwise
+/// stack-overflow the boot/reload path. Past the limit, treat the pair as a shape MISMATCH (fail
+/// closed into the ordinary "would change structure" rejection) rather than let a document too
+/// deep to safely verify slip through.
+const MAX_STRUCTURAL_COMPARE_DEPTH: usize = 128;
+
+fn structural_shapes_match(a: &serde_yaml::Value, b: &serde_yaml::Value, depth: usize) -> bool {
+    use serde_yaml::Value;
+    if depth > MAX_STRUCTURAL_COMPARE_DEPTH {
+        return false;
+    }
+    match (a, b) {
+        (Value::Mapping(ma), Value::Mapping(mb)) => {
+            let mut ka: Vec<String> = ma.iter().map(|(k, _)| mapping_key_repr(k)).collect();
+            let mut kb: Vec<String> = mb.iter().map(|(k, _)| mapping_key_repr(k)).collect();
+            ka.sort();
+            kb.sort();
+            // Compared as a SET, not in map order: a real injection would not necessarily
+            // preserve key order, and order carries no semantic meaning for a YAML mapping here
+            // (`serde_yaml` / the typed structs downstream don't treat map key order as
+            // significant either), so an order-sensitive compare would be both meaningless and a
+            // source of spurious failures.
+            if ka != kb {
+                return false;
+            }
+            ma.iter().all(|(k, va)| match mb.get(k.clone()) {
+                Some(vb) => structural_shapes_match(va, vb, depth + 1),
+                None => false,
+            })
+        }
+        (Value::Sequence(sa), Value::Sequence(sb)) => {
+            sa.len() == sb.len()
+                && sa
+                    .iter()
+                    .zip(sb.iter())
+                    .all(|(va, vb)| structural_shapes_match(va, vb, depth + 1))
+        }
+        (Value::Tagged(ta), Value::Tagged(tb)) => {
+            ta.tag == tb.tag && structural_shapes_match(&ta.value, &tb.value, depth + 1)
+        }
+        (Value::Mapping(_), _) | (_, Value::Mapping(_)) => false,
+        (Value::Sequence(_), _) | (_, Value::Sequence(_)) => false,
+        (Value::Tagged(_), _) | (_, Value::Tagged(_)) => false,
+        // Both plain scalars (Null/Bool/Number/String in any combination): shape matches
+        // regardless of content or inferred type — see the doc comment above.
+        _ => true,
+    }
+}
+
+/// A YAML mapping key rendered to a comparable string for the structural-equivalence check's
+/// key-set comparison. Every key in this project's config surface is a plain YAML string, so the
+/// common case is exact; the fallback exists only so a non-string key (not expected in practice)
+/// degrades to a still-deterministic, still-comparable representation instead of panicking.
+fn mapping_key_repr(key: &serde_yaml::Value) -> String {
+    match key {
+        serde_yaml::Value::String(s) => s.clone(),
+        other => format!("{other:?}"),
+    }
 }
 
 /// The fully-resolved runtime config. NOT deserialized from YAML: the on-disk shape is `DeployCfg`
@@ -139,22 +393,29 @@ pub(crate) struct RootCfg {
     pub(crate) providers: HashMap<String, ProviderCfg>,
     pub(crate) models: HashMap<String, ModelCfg>,
     pub(crate) pools: HashMap<String, PoolCfg>,
-    /// The top-level hook registry (`hooks:`). Each entry is a named tap or gate; pools reference a
-    /// gate by name via `hook:`, and `global_hooks` names those firing on every request. Empty when
-    /// no `hooks:` block is present.
+    /// The RUNTIME hook registry, SYNTHESIZED by `resolve` from the inline hook refs in
+    /// `pools.<p>.hooks` and `global_hooks` (S9: there is no `hooks:` config block; instances are
+    /// named where they run). Admin-registered hooks land here too.
     pub(crate) hooks: HashMap<String, HookCfg>,
-    /// The ADMIN auth chain (`admin_auth:`) — ordered module names gating `/api/v1/admin/*` (the
-    /// parallel of `auth.chain` for the operator surface). Default `[admin-tokens]` (the single
-    /// operator admin token, exactly 1.2.1 behavior). `[]` = OPEN admin (dev only; loud boot
-    /// warning). Each name must resolve to a compiled-in admin auth module.
+    /// The ADMIN auth chain module names (from `auth.admin_auth:`, in order) gating
+    /// `/api/v1/admin/*`. Default `[admin-tokens]`. `[]` = OPEN admin (dev only; loud boot
+    /// warning).
     pub(crate) admin_auth: Vec<String>,
-    /// `group_map:` — principal GROUPS (returned by external auth modules) → operator-owned
-    /// policy. Policy stays in config, never asserted by a plugin (design-hooks-v2 §2.3): a
-    /// module says WHO, this map says WHAT THEY MAY DO. Multiple groups union; the most
-    /// permissive `admin_scope` wins; unmapped groups grant NOTHING (fail closed).
-    pub(crate) group_map: HashMap<String, GroupMapEntry>,
-    /// Names of hooks that fire on EVERY request (`global_hooks:` plus any hook with inline
-    /// `global: true`, deduped). Validated to reference registry entries at boot.
+    /// The top-level `groups:` limit tree (S3).
+    pub(crate) groups: std::collections::BTreeMap<String, GroupCfg>,
+    /// The top-level `rate_card:` - the ONLY cost source (S5). See `DeployCfg::rate_card`.
+    pub(crate) rate_card: Option<std::collections::BTreeMap<String, RateEntryCfg>>,
+    /// Flat cents charged per request (default 0).
+    pub(crate) per_request_fee: i64,
+    /// The `store:` block as configured; `None` = the block was ABSENT (ephemeral RAM store,
+    /// presence-driven governance stays off unless another governance signal is present).
+    pub(crate) store: Option<StoreCfg>,
+    /// Module-level `open()` config for `kind: secret` plugins, keyed by module name (the top-level
+    /// `secrets:` block). Empty = every secret plugin opens with `{}` (the prior behavior). The
+    /// built-in `env` / `file` modules take no config and must not appear here.
+    pub(crate) secrets: std::collections::BTreeMap<String, SecretModuleCfg>,
+    /// Names of hooks that fire on EVERY request - the registry names synthesized from the
+    /// `global_hooks:` inline refs, in order.
     pub(crate) global_hooks: Vec<String>,
     /// Operator-supplied additions to the hardcoded cloud-metadata denylist (see
     /// [`SecurityCfg::blocked_metadata_hosts`]). Resolved from `DeployCfg.security`; empty when no
@@ -182,91 +443,218 @@ pub(crate) struct RootCfg {
 
 /// Native inbound TLS configuration for the client↔Busbar hop. Absent (`Config.tls == None`) ⇒
 /// Busbar serves plain HTTP exactly as before. Present ⇒ Busbar terminates TLS itself; if
-/// `client_ca_file` is also set, it additionally requires and verifies a client certificate (mTLS).
-/// All three paths are PEM files on the operator's host; they are loaded once at startup and any
-/// load/parse error is fatal (`die`). Key bytes are never logged.
-#[derive(Deserialize, Clone, Debug)]
+/// `client_ca` is also set, it additionally requires and verifies a client certificate (mTLS).
+/// All three values are SECRET REFERENCES (C2: `{ file: … }` / `{ env: … }` / a secret module)
+/// resolving to PEM bytes; they are resolved once at startup and any resolve/parse error is fatal
+/// (`die`). Key bytes are never logged.
+// deny_unknown_fields (M8): a typo under `tls:` - e.g. `client_c:` for `client_ca:` - would
+// otherwise be SILENTLY IGNORED, leaving mTLS DISABLED while the operator believes it is on
+// (a security downgrade with no diagnostic). Reject any unknown key here so the typo fails boot.
+#[derive(Deserialize, Serialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct TlsCfg {
-    /// PEM certificate chain, leaf first (e.g. fullchain.pem).
-    pub(crate) cert_file: String,
-    /// PEM private key matching the leaf cert (PKCS#8, PKCS#1, or SEC1).
-    pub(crate) key_file: String,
+    /// PEM certificate chain, leaf first (e.g. fullchain.pem), as a secret reference.
+    pub(crate) cert: SecretRef,
+    /// PEM private key matching the leaf cert (PKCS#8, PKCS#1, or SEC1), as a secret reference.
+    pub(crate) key: SecretRef,
     /// PEM CA bundle to verify client certs against. `Some` ⇒ mTLS required: a client must present
     /// a cert chaining to this CA to complete the handshake at all. `None` ⇒ server-only TLS.
     #[serde(default)]
-    pub(crate) client_ca_file: Option<String>,
+    pub(crate) client_ca: Option<SecretRef>,
 }
 
-/// Per-module TRUST-BOUNDARY CAPS (`auth.modules.<name>:`) — design-hooks-v2 §2.4. An auth module
-/// is a fully trusted endpoint (a module returning `groups: ["busbar-admins"]` IS asserting an
-/// admin); these two operator-owned caps bound its blast radius. They apply to BOTH chains (the
-/// data-plane `auth.chain` and the admin `admin_auth:`) — the module namespace is shared.
+/// One entry in an auth chain (`auth.chain:` / `auth.admin_auth:`) - an ORDERED-LIST module entry
+/// (C2b/C2c): a bare module NAME for a module needing no config (`- keys`), or a single-key map
+/// whose key is the module name and whose value carries the busbar-TYPED fields alongside the
+/// module's own opaque `settings:`:
+///
+/// ```yaml
+/// chain:
+/// - keys
+/// - ad: { max_admin_scope: full, settings: { server: "ldaps://corp" } }
+/// admin_auth:
+/// - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct AuthChainEntry {
+    /// The module name (built-in `keys` / `admin-tokens`, or a `kind: auth` plugin name/alias).
+    pub(crate) module: String,
+    /// Ceiling on the ADMIN scope obtainable through this module, regardless of what
+    /// `role_bindings:` grants: `read-only` | `hooks-register` | `mint` | `full`. Absent =
+    /// `read-only` for every module except the built-in `admin-tokens` operator credential (full by
+    /// definition and exempt) - `full` from an external chain is an explicit opt-in.
+    pub(crate) max_admin_scope: Option<String>,
+    /// The operator ADMIN credential, for the built-in `admin-tokens` module (a secret reference).
+    /// Meaningless on other modules (validated).
+    pub(crate) token: Option<SecretRef>,
+    /// The module's own opaque settings (pushed to an auth plugin verbatim).
+    pub(crate) settings: serde_json::Map<String, serde_json::Value>,
+}
+
+impl AuthChainEntry {
+    /// A bare, config-less entry (the `- keys` form).
+    pub(crate) fn bare(module: impl Into<String>) -> Self {
+        Self {
+            module: module.into(),
+            max_admin_scope: None,
+            token: None,
+            settings: serde_json::Map::new(),
+        }
+    }
+}
+
+/// The typed body of a configured chain entry (`{ <module>: { …this… } }`).
 #[derive(Debug, Deserialize, Clone, Default)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct AuthModuleCfg {
-    /// Groups this module may assert: busbar INTERSECTS the module's returned `groups` with this
-    /// allowlist BEFORE `group_map:` resolution, so a module cannot claim a group the operator did
-    /// not pre-authorize for it. Absent = no cap (every returned group passes through).
+struct AuthChainEntryBody {
     #[serde(default)]
-    pub(crate) allowed_groups: Option<Vec<String>>,
-    /// Ceiling on the ADMIN scope obtainable through this module, regardless of what `group_map:`
-    /// grants: `read-only` | `hooks-register` | `full`. Absent = `read-only` for every module
-    /// except the built-in `admin-tokens` operator credential (which is full by definition and
-    /// exempt) — `full` from an external chain is an explicit, boot-warned opt-in.
+    max_admin_scope: Option<String>,
     #[serde(default)]
-    pub(crate) max_admin_scope: Option<String>,
+    token: Option<SecretRef>,
+    #[serde(default)]
+    settings: serde_json::Map<String, serde_json::Value>,
 }
 
-#[derive(Deserialize, Clone)]
+impl<'de> Deserialize<'de> for AuthChainEntry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct EntryVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for EntryVisitor {
+            type Value = AuthChainEntry;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(
+                    "an auth chain entry: a bare module name (`- keys`) or a single-key map \
+                     `- <module>: { max_admin_scope?, token?, settings? }`",
+                )
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<AuthChainEntry, E>
+            where
+                E: serde::de::Error,
+            {
+                if v.trim().is_empty() {
+                    return Err(E::custom(
+                        "an auth chain entry module name must be non-empty",
+                    ));
+                }
+                Ok(AuthChainEntry::bare(v))
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<AuthChainEntry, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let Some((module, body)) = map.next_entry::<String, AuthChainEntryBody>()? else {
+                    return Err(serde::de::Error::custom(
+                        "an auth chain map entry needs exactly one key (the module name)",
+                    ));
+                };
+                if map.next_key::<String>()?.is_some() {
+                    return Err(serde::de::Error::custom(
+                        "an auth chain map entry takes exactly ONE module key; write each module \
+                         as its own list item",
+                    ));
+                }
+                if module.trim().is_empty() {
+                    return Err(serde::de::Error::custom(
+                        "an auth chain entry module name must be non-empty",
+                    ));
+                }
+                Ok(AuthChainEntry {
+                    module,
+                    max_admin_scope: body.max_admin_scope,
+                    token: body.token,
+                    settings: body.settings,
+                })
+            }
+        }
+
+        deserializer.deserialize_any(EntryVisitor)
+    }
+}
+
+/// One `auth.role_bindings.<module>.<role>` entry - the operator-owned PURE-AUTH policy granted to
+/// a ROLE asserted by that specific module (S4: bindings are NESTED BY MODULE, so `ad.platform`
+/// and `oidc.platform` are distinct grants and a module can never ride another module's binding).
+/// An unbound role grants NOTHING (fail closed). Limits live on the bound `group`, never here.
+#[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RoleBindingCfg {
+    /// DATA-PLANE grant: pools this role may target. OMITTED = ALL pools (C6);
+    /// an explicit `[]` = NO pools (empty list is the empty set).
+    #[serde(default)]
+    pub(crate) allowed_pools: Option<Vec<String>>,
+    /// The `groups:` bucket this role's principals charge through. Absent = no group (unlimited).
+    #[serde(default)]
+    pub(crate) group: Option<String>,
+    /// The ADMIN scope this role grants: `read-only` | `hooks-register` | `mint` | `full`. Absent =
+    /// no admin access from this role. A principal holds the UNION of what its bound roles grant
+    /// (`hooks-register` and `mint` are incomparable siblings, so holding both keeps both — see
+    /// `Grants` in the contract module), ceilinged by the asserting module's `max_admin_scope`.
+    #[serde(default)]
+    pub(crate) admin_scope: Option<String>,
+}
+
+/// `role_bindings:` - module name -> role name -> grant.
+pub(crate) type RoleBindings =
+    std::collections::BTreeMap<String, std::collections::BTreeMap<String, RoleBindingCfg>>;
+
+#[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct AuthCfg {
-    /// The authentication CHAIN — ordered module names (e.g. `[tokens]`). Empty (the default) is the
-    /// open front door (the old `mode: none`). Replaces `mode:` — a stale `mode:` key is a loud boot
-    /// error (deny_unknown_fields). Each name must resolve to a compiled-in auth module.
+    /// The key-signing key (S2): a SECRET REFERENCE resolving to the ed25519 signing key busbar
+    /// mints virtual-key tokens with. Fleet-shared (every node verifying the same tokens resolves
+    /// the same key). Absent ⇒ busbar GENERATES a keypair on first boot and persists it 0600
+    /// (dev zero-config). Rotating it revokes every outstanding key.
     #[serde(default)]
-    pub(crate) chain: Vec<String>,
+    pub(crate) signing_key: Option<SecretRef>,
     /// Upstream-credential mode: `own` (default — busbar's configured lane key) or `passthrough`
     /// (forward the caller's credential upstream; the old `mode: passthrough`).
     #[serde(default)]
     pub(crate) upstream_credentials: crate::auth::UpstreamCreds,
-    /// The `tokens` module's allowlist. Inert unless `tokens` is in `chain`.
+    /// The DATA-PLANE authentication CHAIN - ordered module entries. Empty (the default) is the
+    /// open front door. `keys` is the built-in signed-key verifier.
     #[serde(default)]
-    pub(crate) client_tokens: Vec<String>,
-    /// Per-module trust-boundary caps, keyed by module name (see [`AuthModuleCfg`]). Applies to
-    /// the module wherever it appears — data-plane chain or `admin_auth:`.
+    pub(crate) chain: Vec<AuthChainEntry>,
+    /// The ADMIN auth chain gating `/api/v1/admin/*` (the parallel of `chain` for the operator
+    /// surface). Default `[admin-tokens]`. `[]` = OPEN admin (dev only; loud boot warning).
+    #[serde(default = "default_admin_auth")]
+    pub(crate) admin_auth: Vec<AuthChainEntry>,
+    /// Role -> policy bindings, NESTED BY MODULE (see [`RoleBindingCfg`]).
     #[serde(default)]
-    pub(crate) modules: std::collections::HashMap<String, AuthModuleCfg>,
-}
-
-// MANUAL Debug that REDACTS every credential field. A derived `Debug` would print every entry of
-// `client_tokens` in PLAINTEXT — a latent credential leak the moment an `AuthCfg` (or any struct
-// that embeds it, e.g. `RootCfg`/`DeployCfg`) is debug-logged. Print only the COUNT of allowlist
-// tokens, never the values (and never any prefix/suffix, which would be a partial-secret oracle).
-// Mirrors `auth::AuthMiddleware`.
-impl fmt::Debug for AuthCfg {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("AuthCfg")
-            .field("chain", &self.chain)
-            .field("upstream_credentials", &self.upstream_credentials)
-            .field(
-                "client_tokens",
-                &format_args!("<redacted; {} configured>", self.client_tokens.len()),
-            )
-            .finish()
-    }
+    pub(crate) role_bindings: RoleBindings,
 }
 
 impl AuthCfg {
-    /// Create a default (open front door) AuthCfg for initialization.
+    /// Create a default (open front door, default admin chain) AuthCfg for initialization.
     pub(crate) fn default_none() -> Self {
         Self {
-            chain: vec![],
+            signing_key: None,
             upstream_credentials: crate::auth::UpstreamCreds::Own,
-            client_tokens: vec![],
-            modules: std::collections::HashMap::new(),
+            chain: vec![],
+            admin_auth: default_admin_auth(),
+            role_bindings: RoleBindings::new(),
         }
     }
+
+    /// The `admin-tokens` operator-credential secret reference, if configured.
+    pub(crate) fn admin_token_ref(&self) -> Option<&SecretRef> {
+        self.admin_auth
+            .iter()
+            .chain(self.chain.iter())
+            .find(|e| e.module == ADMIN_TOKENS_MODULE)
+            .and_then(|e| e.token.as_ref())
+    }
 }
+
+/// The built-in signed-key verifier module name (`auth.chain: [keys]`).
+pub(crate) const KEYS_MODULE: &str = "keys";
+/// The built-in operator admin-token module name (`auth.admin_auth: [admin-tokens]`).
+pub(crate) const ADMIN_TOKENS_MODULE: &str = "admin-tokens";
 
 /// Append a targeted migration hint to a config-deserialize error when it is the removed 1.3.0
 /// `auth.mode:` key (rejected by `AuthCfg`'s `deny_unknown_fields`), so an upgrading operator gets
@@ -286,12 +674,15 @@ pub(crate) fn augment_config_error(err: impl std::fmt::Display) -> String {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)] // M8: a typo'd provider key must fail boot, not be silently ignored.
 pub(crate) struct ProviderCfg {
     #[serde(default = "default_protocol")]
     pub(crate) protocol: String,
     pub(crate) base_url: String,
-    pub(crate) api_key_env: String,
+    /// The provider credential as a SECRET REFERENCE (C2) - `{ env: VAR }`, `{ file: … }`, or a
+    /// secret module. Resolved once at startup; the resolved value never appears in config or logs.
+    pub(crate) api_key: SecretRef,
     /// Active health-probe settings for this provider's lanes (mode + interval + timeout).
     #[serde(default)]
     pub(crate) health: Option<HealthCfg>,
@@ -310,6 +701,9 @@ pub(crate) struct ProviderCfg {
     /// OAuth scope for `auth: oauth-client-credentials` (see ProviderDef::scope).
     #[serde(default)]
     pub(crate) scope: Option<String>,
+    /// JWT-bearer assertion `sub` (subject) claim for `auth: jwt-bearer` (see ProviderDef::subject).
+    #[serde(default)]
+    pub(crate) subject: Option<String>,
     /// Optional auth-style override (see ProviderDef::auth).
     #[serde(default)]
     pub(crate) auth: Option<ProviderAuth>,
@@ -327,39 +721,6 @@ pub(crate) struct ProviderCfg {
     /// (all metadata blocked).
     #[serde(default)]
     pub(crate) allow_metadata_hosts: Vec<String>,
-    // Future fields (parse and be inert):
-    #[serde(default, rename = "api_key")]
-    pub(crate) _legacy_api_key: Option<String>,
-}
-
-// MANUAL Debug that REDACTS the legacy inline API key. A derived `Debug` would print
-// `_legacy_api_key` in PLAINTEXT — a latent credential leak if a `ProviderCfg` (or `RootCfg`, which
-// holds them) is debug-logged. `api_key_env` is only the NAME of an env var, not the secret, so it
-// stays. Print presence only for the legacy key, never the value.
-impl fmt::Debug for ProviderCfg {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ProviderCfg")
-            .field("protocol", &self.protocol)
-            .field("base_url", &self.base_url)
-            .field("api_key_env", &self.api_key_env)
-            .field("health", &self.health)
-            .field("error_map", &self.error_map)
-            .field("path", &self.path)
-            .field("path_base", &self.path_base)
-            .field("token_url", &self.token_url)
-            .field("scope", &self.scope)
-            .field("auth", &self.auth)
-            .field("allow_metadata_hosts", &self.allow_metadata_hosts)
-            .field(
-                "_legacy_api_key",
-                &if self._legacy_api_key.is_some() {
-                    "<redacted; present>"
-                } else {
-                    "<absent>"
-                },
-            )
-            .finish()
-    }
 }
 
 /// Default provider protocol when not specified. Wire-contract: providers.yaml catalog entries
@@ -431,7 +792,16 @@ pub(crate) struct ModelCfg {
     #[serde(default = "neg1")]
     pub(crate) max_requests: i64,
     pub(crate) provider: String,
-    pub(crate) max_concurrent: usize,
+    /// Per-lane concurrency limiter: the max number of in-flight requests admitted to this lane at
+    /// once (excess requests park on the lane's semaphore until a slot frees or the request budget
+    /// expires). OPTIONAL — omitted means UNBOUNDED (no concurrency cap), the same opt-in-limiter
+    /// posture as `max_requests` (default -1 = unlimited). Set a positive integer to opt into a cap;
+    /// `0` is rejected at boot (`config_validate`) as a lane that admits nothing. Unbounded is
+    /// realized as a `Semaphore` seeded with `tokio::sync::Semaphore::MAX_PERMITS` (see main.rs) —
+    /// "effectively unbounded"; a literal `usize::MAX` would panic (tokio caps permits at
+    /// `MAX_PERMITS`).
+    #[serde(default)]
+    pub(crate) max_concurrent: Option<usize>,
     /// Default max output tokens injected when a cross-protocol translation targets a backend that
     /// REQUIRES `max_tokens` (Anthropic Messages) and the source request omitted it (legal for
     /// OpenAI). Unset falls back to `crate::proto::DEFAULT_MAX_TOKENS`. Must be > 0 when set.
@@ -474,6 +844,155 @@ fn neg1() -> i64 {
     -1
 }
 
+/// One inline HOOK reference (S9): where a hook RUNS is where it is named - in a pool's
+/// `hooks: [...]` (ordered) or the top-level `global_hooks: [...]` (ordered). Two spellings:
+///
+/// ```yaml
+/// hooks:
+/// - cheapest                                    # bare BUILT-IN (an ordering strategy)
+/// - { module: my-hook-plugin, settings: { url: "https://sidecar/hook" }, on_error: reject }
+/// ```
+///
+/// A bare name is ONLY a built-in (weighted | cheapest | fastest | least_busy | usage); everything
+/// else is a module ref naming a `kind: hook` plugin (by signed-manifest name/alias).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum HookRefEntry {
+    /// A bare built-in name.
+    Builtin(String),
+    /// A `{ module: …, settings: …, …typed }` module instance.
+    Module(HookModuleRef),
+}
+
+/// The map form of an inline hook reference: the module name + its opaque `settings:` plus the
+/// busbar-TYPED per-instance fields (C2c: typed fields sit ALONGSIDE settings, never inside).
+#[derive(Debug, Deserialize, Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct HookModuleRef {
+    /// The hook module: a `kind: hook` plugin's signed-manifest name/alias.
+    pub(crate) module: String,
+    /// The module's own opaque settings (busbar never interprets them; pushed to the plugin via
+    /// `configure`).
+    #[serde(default)]
+    pub(crate) settings: serde_json::Map<String, serde_json::Value>,
+    /// The hook's MODE: `gate` (fire-and-wait; the default for an inline ref - it was named where
+    /// decisions happen) or `tap` (fire-and-forget).
+    #[serde(default)]
+    pub(crate) kind: Option<HookKind>,
+    /// Gate decision deadline in ms (default 1).
+    #[serde(default)]
+    pub(crate) timeout_ms: Option<u64>,
+    /// Gate failure posture (C1: keyword bare, a reference is `{ hook: … }` - parsed by the
+    /// existing on_error chain machinery). Default `nothing`.
+    #[serde(default)]
+    pub(crate) on_error: Option<OnErrorCfg>,
+    /// Gate restrict empty-intersection behavior.
+    #[serde(default)]
+    pub(crate) on_empty: Option<PolicyOnError>,
+    /// TAP observation stage.
+    #[serde(default)]
+    pub(crate) at: Option<HookStage>,
+    /// PROMPT access grant (`no` | `ro` | `rw`).
+    #[serde(default)]
+    pub(crate) prompt: Option<PromptAccess>,
+    /// Caller-identity access grant (`no` | `ro`).
+    #[serde(default)]
+    pub(crate) user: Option<UserAccess>,
+    /// Ordering key (default 0).
+    #[serde(default)]
+    pub(crate) priority: Option<u16>,
+}
+
+impl<'de> Deserialize<'de> for HookRefEntry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // A YAML scalar is a bare built-in name; a map is the module-ref form. serde_yaml's
+        // untagged support struggles with nested opaque maps, so branch on the raw value shape.
+        let value = serde_yaml::Value::deserialize(deserializer)?;
+        match value {
+            serde_yaml::Value::String(name) => {
+                if name.trim().is_empty() {
+                    return Err(serde::de::Error::custom(
+                        "a bare hook reference must be a non-empty built-in name",
+                    ));
+                }
+                Ok(HookRefEntry::Builtin(name))
+            }
+            v @ serde_yaml::Value::Mapping(_) => {
+                let r: HookModuleRef =
+                    serde_yaml::from_value(v).map_err(serde::de::Error::custom)?;
+                Ok(HookRefEntry::Module(r))
+            }
+            _ => Err(serde::de::Error::custom(
+                "a hook reference is a bare built-in name (weighted | cheapest | fastest | \
+                 least_busy | usage) or a `{ module: …, settings: … }` map",
+            )),
+        }
+    }
+}
+
+/// A structured `on_error:` value (C1): a reserved keyword stays BARE
+/// (`nothing` | `weighted` | `reject` | `first`); a fallback-hook reference is `{ hook: <name> }`.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum OnErrorCfg {
+    /// One of the reserved terminals (see [`on_error_terminal`]).
+    Terminal(String),
+    /// A fallback hook reference.
+    Hook(String),
+}
+
+impl OnErrorCfg {
+    /// The flat NAME the existing on_error chain machinery resolves (terminal word or hook name).
+    pub(crate) fn as_name(&self) -> &str {
+        match self {
+            OnErrorCfg::Terminal(s) | OnErrorCfg::Hook(s) => s,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for OnErrorCfg {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct HookRefBody {
+            hook: String,
+        }
+
+        let value = serde_yaml::Value::deserialize(deserializer)?;
+        match value {
+            serde_yaml::Value::String(word) => {
+                if on_error_terminal(&word).is_some() {
+                    Ok(OnErrorCfg::Terminal(word))
+                } else {
+                    Err(serde::de::Error::custom(format!(
+                        "on_error keyword '{word}' is not one of the reserved terminals \
+                         (nothing | weighted | reject | first); a fallback HOOK is referenced \
+                         structured: `on_error: {{ hook: {word} }}`"
+                    )))
+                }
+            }
+            v @ serde_yaml::Value::Mapping(_) => {
+                let body: HookRefBody =
+                    serde_yaml::from_value(v).map_err(serde::de::Error::custom)?;
+                if body.hook.trim().is_empty() {
+                    return Err(serde::de::Error::custom(
+                        "on_error: { hook: … } must name a non-empty hook",
+                    ));
+                }
+                Ok(OnErrorCfg::Hook(body.hook))
+            }
+            _ => Err(serde::de::Error::custom(
+                "on_error is a bare terminal (nothing | weighted | reject | first) or a \
+                 structured hook reference `{ hook: <name> }`",
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct PoolCfg {
     pub(crate) members: Vec<PoolMember>,
@@ -483,6 +1002,10 @@ pub(crate) struct PoolCfg {
     pub(crate) failover: Option<FailoverCfg>,
     pub(crate) on_exhausted: Option<OnExhaustedCfg>,
     pub(crate) affinity: Option<AffinityCfg>,
+    /// The pool's inline MODULE hook refs (`hooks: [...]` map entries), in config order. Projected
+    /// into the internal hook registry by `resolve` (which fills `gates` with the synthesized
+    /// registry names).
+    pub(crate) module_hooks: Vec<HookModuleRef>,
     /// The pool's native ranking STRATEGY (a strategy name in `hooks: [...]`). `weighted`
     /// (default / absent) is today's SWRR
     /// with ZERO added cost — no `RoutingPolicy` object, byte-identical hot path. `cheapest`/`fastest`/
@@ -502,16 +1025,18 @@ pub(crate) struct PoolCfg {
     pub(crate) base_named: bool,
 }
 
-/// Manual `Deserialize` for [`PoolCfg`] so retired config keys become CLEAN-BREAK migration errors
-/// instead of silent surprises: the removed 1.2.1 `route:` pool key AND the retired transitional
-/// `policy:`/`hook:` pair each fail loudly with the exact fix. `hooks: [...]` is THE pool form —
-/// one list naming an optional ordering strategy and any gates (everything is a hook).
+/// Manual `Deserialize` for [`PoolCfg`]: the `hooks: [...]` list is THE pool form - one ORDERED
+/// list naming an optional built-in ordering strategy (bare name) and any module hook instances
+/// (inline `{ module: … }` refs, S9). Desugars into the internal (base policy, module refs)
+/// representation; `resolve` projects the module refs into the runtime hook registry.
 impl<'de> Deserialize<'de> for PoolCfg {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
+        // Deny unknown keys so a typo'd pool key fails boot.
         #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
         struct RawPoolCfg {
             #[serde(default)]
             members: Vec<PoolMember>,
@@ -523,25 +1048,15 @@ impl<'de> Deserialize<'de> for PoolCfg {
             on_exhausted: Option<OnExhaustedCfg>,
             #[serde(default)]
             affinity: Option<AffinityCfg>,
-            /// RETIRED transitional key — captured only to emit a migration error naming the fix.
+            /// The pool's hooks - an ordering strategy (bare built-in name) and/or inline module
+            /// hook instances - in ONE ordered list.
             #[serde(default)]
-            policy: Option<serde::de::IgnoredAny>,
-            /// RETIRED transitional key — captured only to emit a migration error naming the fix.
-            #[serde(default)]
-            hook: Option<serde::de::IgnoredAny>,
-            /// THE pool form (everything-is-a-hook): a pool names the hooks it wants — an ordering
-            /// strategy (weighted/cheapest/…) and/or gates — in ONE list. Desugars into the internal
-            /// (base policy, gates) representation.
-            #[serde(default)]
-            hooks: Option<Vec<String>>,
-            /// REMOVED in 1.3 — captured only to emit a migration error naming the fix.
-            #[serde(default)]
-            route: Option<String>,
+            hooks: Option<Vec<HookRefEntry>>,
         }
 
-        // Is `name` one of the native ordering strategies (an ordering hook), vs a gate reference?
-        // The strategy set is fixed + known at parse time, so `hooks: [...]` classifies without the
-        // (not-yet-available) registry: a strategy name sets the base ordering; anything else is a gate.
+        // Is `name` one of the native ordering strategies? The strategy set is fixed + known at
+        // parse time: a strategy name sets the base ordering; any other bare name is an error
+        // (out-of-process hooks are inline `{ module: … }` refs, never bare names).
         fn is_strategy_name(name: &str) -> bool {
             matches!(
                 name,
@@ -553,94 +1068,47 @@ impl<'de> Deserialize<'de> for PoolCfg {
             )
         }
 
+        fn parse_strategy(name: &str) -> PoolPolicy {
+            match name {
+                STRATEGY_CHEAPEST => PoolPolicy::Cheapest,
+                STRATEGY_FASTEST => PoolPolicy::Fastest,
+                STRATEGY_LEAST_BUSY => PoolPolicy::LeastBusy,
+                STRATEGY_USAGE => PoolPolicy::Usage,
+                _ => PoolPolicy::Weighted,
+            }
+        }
+
         let raw = RawPoolCfg::deserialize(deserializer)?;
 
-        // The `route:` pool key is GONE in 1.3 (a pool names its hooks in one `hooks: [...]` list;
-        // `route` now means only the HTTP router). Name the fix per legacy value.
-        if let Some(route) = raw.route.as_deref() {
-            let msg = match route {
-                ON_ERROR_WEIGHTED | STRATEGY_CHEAPEST | STRATEGY_FASTEST | STRATEGY_LEAST_BUSY
-                | STRATEGY_USAGE | "native" => {
-                    "the `route:` pool key was removed in 1.3; a pool names its ordering strategy \
-                     in its `hooks:` list — write `hooks: [<name>]` (e.g. `hooks: [cheapest]`)."
-                }
-                "socket" | "webhook" => {
-                    "the `route: socket|webhook` transport was removed in 1.3; define the hook once \
-                     under top-level `hooks:` (e.g. `hooks: { my-hook: { kind: gate, socket: ... } }`) \
-                     and name it in the pool's list: `hooks: [my-hook]`."
-                }
-                "script" => {
-                    "route: script (the embedded Rhai transport) was removed in 1.3. Define an \
-                     out-of-process gate under top-level `hooks:` (kind: gate, socket:) and name it \
-                     in the pool's `hooks: [...]` list. See the 1.2.x -> 1.3 migration guide."
-                }
-                _ => {
-                    "the `route:` pool key was removed in 1.3. Name the pool's ordering strategy \
-                     and/or gates in its `hooks: [...]` list (definitions live under top-level \
-                     `hooks:`)."
-                }
-            };
-            return Err(serde::de::Error::custom(msg));
-        }
-
-        // The transitional `policy:`/`hook:` pool keys are RETIRED — `hooks: [...]` is the one form.
-        if raw.policy.is_some() {
-            return Err(serde::de::Error::custom(
-                "the `policy:` pool key was retired in 1.3; a pool names its ordering strategy in \
-                 its `hooks:` list — write `hooks: [<strategy>]` (e.g. `hooks: [cheapest]`).",
-            ));
-        }
-        if raw.hook.is_some() {
-            return Err(serde::de::Error::custom(
-                "the `hook:` pool key was retired in 1.3; name the gate in the pool's `hooks:` \
-                 list — write `hooks: [my-gate]` (an ordering strategy may share the list, e.g. \
-                 `hooks: [cheapest, my-gate]`).",
-            ));
-        }
-
-        fn parse_strategy<E: serde::de::Error>(name: &str) -> Result<PoolPolicy, E> {
-            match name {
-                ON_ERROR_WEIGHTED => Ok(PoolPolicy::Weighted),
-                STRATEGY_CHEAPEST => Ok(PoolPolicy::Cheapest),
-                STRATEGY_FASTEST => Ok(PoolPolicy::Fastest),
-                STRATEGY_LEAST_BUSY => Ok(PoolPolicy::LeastBusy),
-                STRATEGY_USAGE => Ok(PoolPolicy::Usage),
-                other => Err(serde::de::Error::custom(format!(
-                    "unknown pool policy '{other}': expected weighted, cheapest, fastest, \
-                     least_busy, or usage"
-                ))),
-            }
-        }
-
-        // Resolve the internal (base policy, gates) representation from the `hooks: [...]` list.
-        let (policy, gates, base_named) = if let Some(names) = raw.hooks {
-            // Partition the list: ordering strategies set the base ranking; anything else is a gate ref
-            // (validated against the registry at startup). At most one strategy (a pool has ONE base
-            // ordering); ANY number of gates, keeping list order — that is the phase-2 chain
-            // tie-break order (reject/restrict commute; order last-wins; `priority` sorts first).
+        // Resolve the internal (base policy, module refs) representation from the `hooks:` list.
+        let (policy, module_hooks, base_named) = if let Some(entries) = raw.hooks {
             let mut policy: Option<PoolPolicy> = None;
-            let mut gates: Vec<String> = Vec::new();
-            for name in names {
-                if is_strategy_name(&name) {
-                    if policy.is_some() {
-                        return Err(serde::de::Error::custom(
-                            "a pool `hooks:` list names more than one ordering strategy; a pool has \
-                             one base ordering",
-                        ));
+            let mut module_hooks: Vec<HookModuleRef> = Vec::new();
+            for entry in entries {
+                match entry {
+                    HookRefEntry::Builtin(name) if is_strategy_name(&name) => {
+                        if policy.is_some() {
+                            return Err(serde::de::Error::custom(
+                                "a pool `hooks:` list names more than one ordering strategy; a \
+                                 pool has one base ordering",
+                            ));
+                        }
+                        policy = Some(parse_strategy(&name));
                     }
-                    policy = Some(parse_strategy(&name)?);
-                } else {
-                    gates.push(name);
+                    HookRefEntry::Builtin(name) => {
+                        return Err(serde::de::Error::custom(format!(
+                            "unknown built-in hook '{name}' in a pool `hooks:` list; the bare \
+                             built-ins are weighted | cheapest | fastest | least_busy | usage - \
+                             a plugin hook is an inline module ref naming a `kind: hook` plugin, \
+                             e.g. `{{ module: my-hook-plugin, settings: {{ … }} }}`"
+                        )));
+                    }
+                    HookRefEntry::Module(r) => module_hooks.push(r),
                 }
             }
-            // No strategy named ⇒ the base is the default (resolved at startup: the `default:` hook if
-            // one exists, else the compiled-in `weighted` backstop). Placeholder is `weighted` here;
-            // `base_named` records whether a strategy WAS named so resolution knows to inherit or not.
             let base_named = policy.is_some();
-            (policy.unwrap_or_default(), gates, base_named)
+            (policy.unwrap_or_default(), module_hooks, base_named)
         } else {
-            // No `hooks:` list ⇒ the defaults: weighted-placeholder base (base NOT named, so the
-            // `default:` hook — if registered — becomes the base at resolution), no gates.
             (PoolPolicy::default(), Vec::new(), false)
         };
 
@@ -650,8 +1118,9 @@ impl<'de> Deserialize<'de> for PoolCfg {
             failover: raw.failover,
             on_exhausted: raw.on_exhausted,
             affinity: raw.affinity,
+            module_hooks,
             policy,
-            gates,
+            gates: Vec::new(),
             base_named,
         })
     }
@@ -720,8 +1189,7 @@ impl PromptAccess {
     pub(crate) fn sends_prompt(self) -> bool {
         !matches!(self, PromptAccess::No)
     }
-    /// Whether the hook may return a `rewrite` arm (only `rw`). Wired in the slice-4 seam.
-    #[allow(dead_code)]
+    /// Whether the hook may return a `rewrite` arm (only `rw`).
     pub(crate) fn can_rewrite(self) -> bool {
         matches!(self, PromptAccess::Rw)
     }
@@ -834,64 +1302,33 @@ pub(crate) const RESERVED_HOOK_NAMES: &[&str] = &[
     "admin-tokens",
 ];
 
-/// The serde default for `admin_auth:` — the built-in `admin-tokens` module (the single operator
-/// admin token; byte-identical to the pre-chain behavior).
-fn default_admin_auth() -> Vec<String> {
-    vec!["admin-tokens".to_string()]
+/// The serde default for `auth.admin_auth:` - the built-in `admin-tokens` module (the single
+/// operator admin token; byte-identical to the pre-chain behavior).
+fn default_admin_auth() -> Vec<AuthChainEntry> {
+    vec![AuthChainEntry::bare(ADMIN_TOKENS_MODULE)]
 }
 
-/// One `group_map:` entry — the operator-owned policy granted to a principal GROUP (design-hooks-v2
-/// §2.3): the admin authorization scope AND the data-plane governance grants. A group-carrying
-/// principal (an external auth module's verdict) gets governance enforcement synthesized from the
-/// UNION of its mapped groups — identical machinery, keyed by the principal id, so an SSO user and
-/// a virtual key get identical enforcement. Unmapped groups grant nothing (fail closed).
-#[derive(Debug, Deserialize, Serialize, Clone, Default)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct GroupMapEntry {
-    /// The ADMIN scope this group grants: `read-only` | `hooks-register` | `full`. Absent = no
-    /// admin access from this group. Validated at boot; the most permissive of a principal's
-    /// mapped groups wins.
-    #[serde(default)]
-    pub(crate) admin_scope: Option<String>,
-    /// DATA-PLANE grant: pools this group may target. Setting this (even `[]`) is what grants the
-    /// group data-plane access at all; a group that only maps `admin_scope` confers none. Across a
-    /// principal's groups the pool lists UNION; an explicit `[]` grants access to EVERY pool
-    /// (mirroring a virtual key with no pool restriction).
-    #[serde(default)]
-    pub(crate) allowed_pools: Option<Vec<String>>,
-    /// Requests-per-minute cap for principals granted through this group. Most-permissive union:
-    /// a granting group WITHOUT a cap makes the principal uncapped; otherwise the max wins.
-    #[serde(default)]
-    pub(crate) rpm_limit: Option<u32>,
-    /// Tokens-per-minute cap; same most-permissive union as `rpm_limit`.
-    #[serde(default)]
-    pub(crate) tpm_limit: Option<u32>,
-    /// Spend cap in cents (an all-time "total" window); same most-permissive union.
-    #[serde(default)]
-    pub(crate) max_budget_cents: Option<i64>,
-}
-
-/// A named entry in the top-level `hooks:` registry — a single hook (tap or gate) and its transport.
-/// One transport per hook: exactly one of `socket` (Unix domain socket, ~8us) or `webhook` (HTTPS
-/// sidecar). Shared runtime knobs carry over from the 1.2.1 policy block. A pool references a GATE by
-/// name via its `hook:` key; global taps/gates via `global_hooks:` (or inline `global: true`).
+/// A named entry in the top-level `hooks:` registry — a single hook (tap or gate) and the `kind: hook`
+/// PLUGIN that backs it. A hook is now a dlopen plugin under the hybrid ABI (the 1.5.0 retirement of
+/// the out-of-process socket/webhook transport): exactly ONE `plugin:` reference names the signed
+/// plugin (by manifest name/alias), loaded like a store/auth plugin. Shared runtime knobs carry over
+/// from the 1.2.1 policy block. A pool references a GATE by name via its `hook:` key; global taps/gates
+/// via `global_hooks:` (or inline `global: true`).
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct HookCfg {
     /// The hook's MODE: `tap` (fire-and-forget) or `gate` (fire-and-wait, returns a reply arm).
     pub(crate) kind: HookKind,
-    // ── transport (exactly one) ──────────────────────────────────────────────────────────────────
-    /// Unix domain socket path of the operator-run hook binary. Lazy connect (the hook may start
-    /// after busbar). Unix-only. Mutually exclusive with `webhook`.
-    #[serde(default)]
-    pub(crate) socket: Option<String>,
-    /// HTTPS sidecar URL. Validated by the routing-URL SSRF guard (loopback allowed; IMDS/RFC1918/
-    /// CGNAT/metadata blocked — the OTLP precedent). Mutually exclusive with `socket`.
-    #[serde(default)]
-    pub(crate) webhook: Option<String>,
+    // ── plugin reference (exactly one, required) ─────────────────────────────────────────────────
+    /// The `kind: hook` PLUGIN backing this hook, by signed-manifest name or alias — resolved against
+    /// the same validated plugin registry that store/auth plugins load through (fail-closed: an
+    /// unresolvable or wrong-kind reference refuses to boot). This REPLACES the retired
+    /// `socket`/`webhook` out-of-process transports: a hook now runs in-process behind the frozen
+    /// plugin ABI. Required and non-empty.
+    pub(crate) plugin: String,
     // ── shared runtime knobs ─────────────────────────────────────────────────────────────────────
-    /// Hard wall-clock deadline for a gate decision, in milliseconds (default 1). Co-located socket
-    /// ~8us, webhook ~34us, so 1ms is 20x+ headroom; RAISE it for a hook that hits a DB/network/model.
+    /// Hard wall-clock deadline for a gate decision, in milliseconds (default 1). An in-process gate
+    /// is microseconds; RAISE it for a hook plugin that does real work (a DB/network/model call).
     /// On timeout the decision is coerced to `on_error` and the request proceeds.
     #[serde(default = "default_policy_timeout_ms")]
     pub(crate) timeout_ms: u64,
@@ -916,7 +1353,7 @@ pub(crate) struct HookCfg {
     #[serde(default)]
     pub(crate) user: UserAccess,
     /// Hook ordering key (default 0). Orders the rewrite transform chain and the phase-2 decision
-    /// chain (which reject surfaces; which order is "last" — see design-hooks-v2 §3.2). Ascending;
+    /// chain (which reject surfaces; which order is "last" — see design-hooks-v2). Ascending;
     /// ties keep globals before pool gates, then config order.
     #[serde(default)]
     pub(crate) priority: u16,
@@ -931,9 +1368,9 @@ pub(crate) struct HookCfg {
     /// reconcile.
     #[serde(default)]
     pub(crate) on_empty: Option<PolicyOnError>,
-    /// OPAQUE settings map pushed to the hook via the `configure` wire message (D2): sent as the
-    /// first line on every socket connection and re-pushed (commit-on-ack) by
-    /// `PATCH /api/v1/admin/hooks/{name}/settings`. Busbar never interprets the contents.
+    /// OPAQUE settings map pushed to the hook via the `configure` op (D2): sent to the plugin at
+    /// load and re-pushed (commit-on-ack) by `PATCH /api/v1/admin/hooks/{name}/settings`. Busbar
+    /// never interprets the contents.
     #[serde(default)]
     pub(crate) settings: serde_json::Map<String, serde_json::Value>,
     /// Fire on EVERY request — inline sugar for adding this name to `global_hooks:`. Default false.
@@ -960,14 +1397,17 @@ fn default_policy_timeout_ms() -> u64 {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)] // M8: a typo'd pool-member key must fail boot, not be silently ignored.
 pub(crate) struct PoolMember {
-    pub(crate) target: String,
+    /// The member's MODEL (a `models:` key). C4: reference fields name the referenced thing
+    /// (renamed from the 1.4.x `target:`).
+    pub(crate) model: String,
     #[serde(default = "default_weight")]
     pub(crate) weight: u32,
     #[serde(default)]
     pub(crate) context_max: Option<usize>,
     /// Operator-declared routing tier (e.g. `"large"`/`"small"`/`"primary"`/`"overflow"`). Projected
-    /// into the routing `Candidate` (via `MemberMeta`) and read by webhook/socket policies.
+    /// into the routing `Candidate` (via `MemberMeta`) and read by hook plugin policies.
     #[serde(default)]
     pub(crate) tier: Option<String>,
     /// Per-ATTEMPT time-to-response-headers cap (ms) for THIS member in THIS pool — overrides the
@@ -980,18 +1420,24 @@ pub(crate) struct PoolMember {
     /// `ModelCfg::reasoning` for semantics.
     #[serde(default)]
     pub(crate) reasoning: Option<bool>,
-    /// Operator-declared cost in currency-units per million tokens. Drives the native `cheapest`
-    /// policy and is exposed to webhook/socket policies. Inert when unset.
-    #[serde(default)]
-    pub(crate) cost_per_mtok: Option<f64>,
     /// Free-form operator tags (e.g. `["opus"]`) a policy can match on. Projected into the routing
-    /// `Candidate` and read by webhook/socket policies.
+    /// `Candidate` and read by hook plugin policies.
+    ///
+    /// NOTE: the 1.4.x `cost_per_mtok:` member field is REMOVED (S5): `rate_card` is the ONLY cost
+    /// source, and routing (`cheapest`) derives its scalar from the member's model's rate entry.
     #[serde(default)]
     pub(crate) tags: Vec<String>,
 }
 
 fn default_weight() -> u32 {
     1
+}
+
+/// The routing-scalar projection of a rate entry (abstract units per million tokens), fed to the
+/// `cheapest` policy and the hook `Candidate.cost_per_mtok` signal: the blended
+/// (input + output) / 2 (1 micro-unit/token == 1 unit/mtok, so no further scaling).
+pub(crate) fn rate_entry_per_mtok(r: &RateEntryCfg) -> f64 {
+    (r.input_utok + r.output_utok) / 2.0
 }
 
 /// Trip mode for breaker configuration.
@@ -1009,17 +1455,17 @@ pub(crate) enum BreakerTripMode {
 pub(crate) struct BreakerTripConfig {
     #[serde(default = "default_trip_mode")]
     pub(crate) mode: BreakerTripMode,
-    /// Sliding-window length in seconds. Renamed from `window_s` in 1.0.0; the old key is still
-    /// accepted via the serde alias so existing configs keep loading.
-    #[serde(default = "default_window_secs", alias = "window_s")]
+    /// Sliding-window length in seconds (C3: one canonical name; the pre-1.0 `window_s` alias is
+    /// GONE - an unknown key fails boot).
+    #[serde(default = "default_window_secs")]
     pub(crate) window_secs: u64,
     #[serde(default = "default_threshold")]
     pub(crate) threshold: f64,
     #[serde(default = "default_min_requests")]
     pub(crate) min_requests: usize,
-    /// Consecutive-failure threshold for `BreakerTripMode::Consecutive`. Renamed from `n` in 1.0.0;
-    /// the old key is still accepted via the serde alias so existing configs keep loading.
-    #[serde(default = "default_consecutive_n", alias = "n")]
+    /// Consecutive-failure threshold for `BreakerTripMode::Consecutive` (C3: one canonical name;
+    /// the pre-1.0 `n` alias is GONE).
+    #[serde(default = "default_consecutive_n")]
     pub(crate) consecutive_n: u32,
 }
 
@@ -1098,17 +1544,16 @@ fn default_max_cooldown() -> u64 {
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct FailoverCfg {
-    /// Failover wall-clock budget in seconds. Renamed from `deadline_secs` in 1.0.0; the old key is
-    /// still accepted via the serde alias so existing configs keep loading.
-    #[serde(default = "default_failover_timeout", alias = "deadline_secs")]
+    /// Failover wall-clock budget in seconds (C3: one canonical name; the pre-1.0 `deadline_secs`
+    /// alias is GONE).
+    #[serde(default = "default_failover_timeout")]
     pub(crate) timeout_secs: u64,
     /// Member model names excluded from this pool's candidate set — never selected (primary or
     /// failover). A per-pool blocklist for temporarily benching a member without editing `members`.
     #[serde(default)]
     pub(crate) exclusions: Option<Vec<String>>,
-    /// Maximum failover hops per request. Renamed from `cap` in 1.0.0; the old key is still accepted
-    /// via the serde alias so existing configs keep loading.
-    #[serde(default = "default_max_hops", alias = "cap")]
+    /// Maximum failover hops per request (C3: one canonical name; the pre-1.0 `cap` alias is GONE).
+    #[serde(default = "default_max_hops")]
     pub(crate) max_hops: usize,
 }
 
@@ -1125,22 +1570,71 @@ fn default_max_hops() -> usize {
     DEFAULT_FAILOVER_CAP
 }
 
-#[derive(Debug, Deserialize, Clone)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct OnExhaustedCfg {
-    #[serde(default = "default_on_exhausted_action")]
-    pub(crate) action: String,
+/// A pool's STRUCTURED `on_exhausted:` (C1: a keyword stays bare, a reference is structured):
+///
+/// ```yaml
+/// on_exhausted: reject                     # 503 + Retry-After (the default)
+/// on_exhausted: least_bad                  # degraded: soonest-recovering member
+/// on_exhausted: { fallback_pool: cold }    # route to another pool
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum OnExhaustedCfg {
+    Reject,
+    LeastBad,
+    FallbackPool(String),
 }
 
-/// Default on_exhausted action: return 503 Service Unavailable when all pool members are exhausted.
-const DEFAULT_ON_EXHAUSTED: &str = "reject";
-
-fn default_on_exhausted_action() -> String {
-    DEFAULT_ON_EXHAUSTED.to_string()
+impl OnExhaustedCfg {
+    /// The executable behavior this config value selects.
+    pub(crate) fn to_runtime(&self) -> OnExhausted {
+        match self {
+            OnExhaustedCfg::Reject => OnExhausted::Status503,
+            OnExhaustedCfg::LeastBad => OnExhausted::LeastBad,
+            OnExhaustedCfg::FallbackPool(name) => OnExhausted::FallbackPool(name.clone()),
+        }
+    }
 }
 
-/// Pool exhaustion mode configuration.
-/// Maps from config string `action` field to executable behavior when all members are tripped/excluded.
+impl<'de> Deserialize<'de> for OnExhaustedCfg {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct FallbackBody {
+            fallback_pool: String,
+        }
+
+        let value = serde_yaml::Value::deserialize(deserializer)?;
+        match value {
+            serde_yaml::Value::String(word) => match word.as_str() {
+                "reject" => Ok(OnExhaustedCfg::Reject),
+                "least_bad" => Ok(OnExhaustedCfg::LeastBad),
+                other => Err(serde::de::Error::custom(format!(
+                    "unknown on_exhausted keyword '{other}': the bare keywords are `reject` | \
+                     `least_bad`; a fallback pool is referenced structured: \
+                     `on_exhausted: {{ fallback_pool: <pool> }}`"
+                ))),
+            },
+            v @ serde_yaml::Value::Mapping(_) => {
+                let body: FallbackBody =
+                    serde_yaml::from_value(v).map_err(serde::de::Error::custom)?;
+                if body.fallback_pool.trim().is_empty() {
+                    return Err(serde::de::Error::custom(
+                        "on_exhausted: { fallback_pool: … } must name a non-empty pool",
+                    ));
+                }
+                Ok(OnExhaustedCfg::FallbackPool(body.fallback_pool))
+            }
+            _ => Err(serde::de::Error::custom(
+                "on_exhausted is `reject`, `least_bad`, or `{ fallback_pool: <pool> }`",
+            )),
+        }
+    }
+}
+
+/// Pool exhaustion mode - the executable behavior when all members are tripped/excluded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum OnExhausted {
     /// Status503: return 503 Service Unavailable with Retry-After header
@@ -1152,42 +1646,6 @@ pub(crate) enum OnExhausted {
     /// LeastBad: send to the member with soonest cooldown expiry even though Open.
     /// Log loudly that this is a degraded path.
     LeastBad,
-}
-
-/// Prefix for the `fallback_pool:<name>` on_exhausted action. Used for BOTH the `starts_with`
-/// guard AND the slice offset so the prefix literal and the offset are ALWAYS coupled.
-const FALLBACK_POOL_PREFIX: &str = "fallback_pool:";
-
-impl OnExhausted {
-    /// Parse an action string from config into an OnExhausted variant.
-    /// Returns Err(String) for unknown actions - NO bare _ => allowed.
-    pub(crate) fn parse(action: &str) -> Result<Self, String> {
-        match action {
-            "reject" | "503" | "status_503" => Ok(OnExhausted::Status503),
-            "fallback_pool" => Err("fallback_pool requires a pool name argument".into()),
-            "least_bad" | "least-bad" | "leastbad" => Ok(OnExhausted::LeastBad),
-            // FallbackPool with name - parse as "fallback_pool:<pool_name>" format
-            s if s.starts_with(FALLBACK_POOL_PREFIX) => {
-                let pool_name = &s[FALLBACK_POOL_PREFIX.len()..];
-                if pool_name.is_empty() {
-                    Err("fallback_pool requires a non-empty pool name".into())
-                } else {
-                    Ok(OnExhausted::FallbackPool(pool_name.to_string()))
-                }
-            }
-            // Explicit handling of common typos/variants for clarity
-            "status503" => Ok(OnExhausted::Status503),
-            "fallback" | "failover" => Err(format!(
-                "'{}' is not a valid on_exhausted action; use 'fallback_pool:<pool_name>'",
-                action
-            )),
-            // Unknown actions - explicit error, NO _ => catch-all
-            unknown => Err(format!(
-                "unknown on_exhausted action '{}': valid values are 'reject', '503', 'status_503', 'fallback_pool:<name>', or 'least_bad'",
-                unknown
-            )),
-        }
-    }
 }
 
 /// Affinity mode. `session` is the default and only supported mode. Modelled as a (currently
@@ -1280,6 +1738,17 @@ pub(crate) struct ProviderDef {
     /// otherwise. E.g. Azure OpenAI: `https://cognitiveservices.azure.com/.default`.
     #[serde(default)]
     pub(crate) scope: Option<String>,
+    /// JWT-bearer assertion `sub` (subject) claim for `auth: jwt-bearer` (RFC 7523 §3). Optional and
+    /// UNSET by default — omitted entirely, not merely empty. Google's own client libraries
+    /// (`google-auth-python` et al.) only emit `sub` when a subject/impersonation is explicitly
+    /// configured, because for a Google service account the mere PRESENCE of `sub` switches the grant
+    /// into domain-wide-delegation/impersonation semantics regardless of its value — so this must stay
+    /// opt-in, never defaulted to `iss`, or every plain (non-delegated) service account (e.g. the
+    /// shipped Vertex AI setup) starts failing `unauthorized_client`/`invalid_grant`. Set this only when
+    /// impersonating a specific principal (Google domain-wide delegation) or when a non-Google IdP's
+    /// jwt-bearer profile requires `sub`. Ignored for every other auth style.
+    #[serde(default)]
+    pub(crate) subject: Option<String>,
     /// Optional auth-style override. Defaults to the protocol's native auth (bearer for
     /// openai/anthropic/responses, `x-goog-api-key` for gemini, SigV4 for bedrock). Set to
     /// `api-key` for backends that authenticate with an `api-key: <key>` header instead of a
@@ -1295,10 +1764,12 @@ pub(crate) struct ProviderDef {
 }
 
 /// Provider deployment - operator config in config.yaml (names provider + supplies key).
-#[derive(Deserialize, Clone, Default)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ProviderDeploy {
-    pub(crate) api_key_env: String,
+    /// The provider credential as a SECRET REFERENCE (C2). Replaces the removed `api_key_env:`
+    /// (`api_key_env: VAR` becomes `api_key: { env: VAR }`).
+    pub(crate) api_key: SecretRef,
     #[serde(default)]
     pub(crate) protocol: Option<String>,
     #[serde(default)]
@@ -1318,6 +1789,10 @@ pub(crate) struct ProviderDeploy {
     /// OAuth scope for `auth: oauth-client-credentials` (see ProviderDef::scope).
     #[serde(default)]
     pub(crate) scope: Option<String>,
+    /// JWT-bearer assertion `sub` claim for `auth: jwt-bearer` (see ProviderDef::subject). Opt-in;
+    /// unset (the default) means no `sub` claim, unchanged from before this field existed.
+    #[serde(default)]
+    pub(crate) subject: Option<String>,
     /// Optional auth-style override (see ProviderDef::auth).
     #[serde(default)]
     pub(crate) auth: Option<ProviderAuth>,
@@ -1329,46 +1804,14 @@ pub(crate) struct ProviderDeploy {
     /// `health` when set; this is the block the shipped `config.yaml` documents under a provider.
     #[serde(default)]
     pub(crate) health: Option<HealthCfg>,
-    /// Legacy inline `api_key:` under a provider. Captured ONLY so an operator who sets it (the
-    /// field name invites the mistake) gets a loud boot warning that inline keys are unsupported and
-    /// `api_key_env` must be used — rather than the value being silently dropped by serde with no
-    /// signal. busbar never reads a key from here; `resolve()` warns and discards it.
-    #[serde(default, rename = "api_key")]
-    pub(crate) _legacy_api_key: Option<String>,
-}
-
-// MANUAL Debug that REDACTS the legacy inline API key. A derived `Debug` would print
-// `_legacy_api_key` in PLAINTEXT — a latent credential leak if a `ProviderDeploy` (or `DeployCfg`,
-// which holds them) is debug-logged. `api_key_env` is only the NAME of an env var, not the secret,
-// so it stays. Print presence only for the legacy key, never the value.
-impl fmt::Debug for ProviderDeploy {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ProviderDeploy")
-            .field("api_key_env", &self.api_key_env)
-            .field("protocol", &self.protocol)
-            .field("base_url", &self.base_url)
-            .field("error_map", &self.error_map)
-            .field("path", &self.path)
-            .field("path_base", &self.path_base)
-            .field("token_url", &self.token_url)
-            .field("scope", &self.scope)
-            .field("auth", &self.auth)
-            .field("allow_metadata_hosts", &self.allow_metadata_hosts)
-            .field("health", &self.health)
-            .field(
-                "_legacy_api_key",
-                &if self._legacy_api_key.is_some() {
-                    "<redacted; present>"
-                } else {
-                    "<absent>"
-                },
-            )
-            .finish()
-    }
 }
 
 /// Deployment configuration - operator-owned config.yaml structure.
+// deny_unknown_fields: a typo'd or unknown TOP-LEVEL key (e.g. `plugin:` for `plugins:`) must be a
+// loud startup error, not a silently-ignored block - the fail-closed posture every nested
+// security-relevant struct (auth/governance/plugins/security) already enforces.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct DeployCfg {
     #[serde(default = "default_listen")]
     pub(crate) listen: String,
@@ -1399,26 +1842,41 @@ pub(crate) struct DeployCfg {
     /// without defining any pool.
     #[serde(default)]
     pub(crate) pools: HashMap<String, PoolCfg>,
-    /// The top-level hook registry (`hooks:`) — named taps + gates. Optional; absent = empty.
+    /// Hook instances that fire on EVERY request (`global_hooks:`, ordered) - inline refs, same
+    /// shape as a pool's `hooks:` list (S9: there is NO top-level `hooks:` registry block).
     #[serde(default)]
-    pub(crate) hooks: HashMap<String, HookCfg>,
-    /// The ADMIN auth chain (`admin_auth:`). Absent ⇒ the default `[admin-tokens]`.
-    #[serde(default = "default_admin_auth")]
-    pub(crate) admin_auth: Vec<String>,
-    /// `group_map:` — principal groups → operator-owned policy. Optional; absent = empty.
+    pub(crate) global_hooks: Vec<HookRefEntry>,
+    /// The top-level `groups:` block - THE one limit tree (S3). Optional; absent = no groups.
     #[serde(default)]
-    pub(crate) group_map: HashMap<String, GroupMapEntry>,
-    /// Hooks that fire on every request (`global_hooks:`). Optional; unioned at resolve with any hook
-    /// carrying inline `global: true`.
+    pub(crate) groups: std::collections::BTreeMap<String, GroupCfg>,
+    /// The top-level `rate_card:` - the ONLY cost source (S5). Per-model entry; ALL-OR-NOTHING:
+    /// absent => token pricing is 0 for every model; present => AUTHORITATIVE and COMPLETE (every
+    /// configured model must have an entry or boot/`--validate` FAIL naming the missing models).
+    /// The numbers are ABSTRACT cost units (no currency, no FX).
     #[serde(default)]
-    pub(crate) global_hooks: Vec<String>,
+    pub(crate) rate_card: Option<std::collections::BTreeMap<String, RateEntryCfg>>,
+    /// Flat cents (abstract minor units) charged per request for budget accounting. Default 0.
+    #[serde(default = "default_per_request_fee")]
+    pub(crate) per_request_fee: i64,
+    /// The durable store as `{ module, settings }` (S6). Absent = the ephemeral RAM store.
+    #[serde(default)]
+    pub(crate) store: Option<StoreCfg>,
+    /// Module-level `open()` config for `kind: secret` plugins, keyed by module name — the delivery
+    /// path a Vault-style secret plugin needs (address / namespace / auth token / CA). Absent = every
+    /// secret plugin opens with `{}`. Mirrors `store.settings` for the store plugin.
+    #[serde(default)]
+    pub(crate) secrets: std::collections::BTreeMap<String, SecretModuleCfg>,
+    /// Internal tuning knobs (the `advanced:` block).
+    #[serde(default)]
+    pub(crate) advanced: AdvancedCfg,
     /// Optional observability sinks (OTLP traces + request-log webhook). Metrics
     /// (`/metrics`) are always on and need no config.
     #[serde(default)]
     pub(crate) observability: Option<ObservabilityCfg>,
-    /// optional governance (virtual keys, budgets, rate limits). Absent = disabled.
+    /// The dynamic plugin subsystem (`plugins:` block, top-level). Absent = disabled (the default
+    /// `enabled: false` master switch): no plugin is ever discovered or loaded.
     #[serde(default)]
-    pub(crate) governance: Option<GovernanceCfg>,
+    pub(crate) plugins: PluginsCfg,
     /// Optional security controls. Today this carries only `blocked_metadata_hosts`, the operator
     /// extension to the hardcoded cloud-metadata SSRF denylist. Absent ⇒ only the hardcoded denylist
     /// applies.
@@ -1428,9 +1886,11 @@ pub(crate) struct DeployCfg {
     /// field defaults to its historical hardcoded value (absent = today's behavior).
     #[serde(default)]
     pub(crate) limits: LimitsCfg,
-    /// Process-wide metrics tunables.
+    /// Prometheus metrics — 100% OPT-IN. ABSENT = metrics are OFF: no recorder is installed, the
+    /// hot path records nothing, `/metrics` is not mounted, and nothing is retained. Present = the
+    /// operator opted in and MUST name `buffer_seconds` (see [`MetricsCfg`]).
     #[serde(default)]
-    pub(crate) metrics: MetricsCfg,
+    pub(crate) metrics: Option<MetricsCfg>,
     /// Process-wide active-probe fallbacks (per-lane overrides still win).
     #[serde(default)]
     pub(crate) health: HealthDefaultsCfg,
@@ -1440,7 +1900,7 @@ pub(crate) struct DeployCfg {
 }
 
 /// Operator-owned security controls (config.yaml `security:` block).
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SecurityCfg {
     /// Additional hosts/IPs APPENDED to the hardcoded cloud-metadata denylist. A provider `base_url`
@@ -1463,115 +1923,296 @@ pub(crate) struct SecurityCfg {
     pub(crate) allow_all_metadata: bool,
 }
 
-/// Governance config. When present + enabled, callers authenticate with virtual keys
-/// (not the static auth token) and are subject to per-key allowed-pools / budgets / rate limits.
-// deny_unknown_fields: a typo in a security-relevant governance key (e.g. `admin_tokn:`) must be a
-// loud startup error, not a silent default (which would leave the admin API unreachable / a budget
-// unset). Mirrors the same guard on AuthCfg.
-#[derive(Deserialize, Clone)]
+/// The top-level `plugins:` block — the ONLY configuration surface of the dynamic plugin subsystem.
+/// A plugin is a plugin: store, auth, and hook plugins share this one block (one directory, one
+/// trust model, one master switch); the manifest `kind` inside each signed tarball selects which
+/// engine subsystem consumes it.
+#[derive(Deserialize, Clone, Debug)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct GovernanceCfg {
+pub(crate) struct PluginsCfg {
+    /// MASTER SWITCH, default FALSE. When false (or the whole `plugins:` block is absent), NO
+    /// plugin is ever loaded — a tarball dropped into the directory is INERT. Referencing a plugin
+    /// while disabled (`store.module:` other than `memory`) is a BOOT ERROR naming this flag.
     #[serde(default)]
     pub(crate) enabled: bool,
-    /// SQLite database path for the durable governance store. Defaults to `busbar-governance.db`.
-    #[serde(default = "default_gov_db_path")]
-    pub(crate) db_path: String,
-    /// Flat cents charged per request for budget accounting. Defaults to 1.
-    #[serde(default = "default_price_per_request_cents")]
-    pub(crate) price_per_request_cents: i64,
-    /// Cents charged per 1000 tokens (input + output), accrued from response usage. Defaults to 0.
-    /// Total budget spend per request = price_per_request_cents + tokens/1000 * price_per_1k_tokens_cents.
+    /// Directory the signed plugin tarballs live in. Default `plugins` (relative to the working
+    /// directory).
+    #[serde(default = "default_plugins_dir")]
+    pub(crate) dir: String,
+    /// Trust policy for plugin signatures. busbar's OWN release key is EMBEDDED in the binary —
+    /// first-party plugins verify with zero configuration; this block is for THIRD-PARTY keys and
+    /// the explicit untrusted opt-ins.
     #[serde(default)]
-    pub(crate) price_per_1k_tokens_cents: i64,
-    /// bearer token guarding the /admin management API. None = admin API disabled.
+    pub(crate) trust: PluginsTrustCfg,
+    /// ANTI-DOWNGRADE floors: plugin canonical `name` -> minimum acceptable `version`. Third-party
+    /// only in practice — first-party plugins are automatically floored at the running binary's
+    /// version. A floored plugin must prove (trusted signature, version at/above the floor) that it
+    /// meets the floor; nothing else loads it. Sibling of `trust` (a version axis, not a trust axis).
     #[serde(default)]
-    pub(crate) admin_token: Option<String>,
-    /// Behavior when the budget store errors during the atomic admission check-and-charge.
-    /// `allow` (default) fails OPEN — the request proceeds, preserving availability on a telemetry-
-    /// store hiccup (today's behavior). `deny` fails CLOSED — the request is rejected, the strict
-    /// stance for security/regulated deployments that want a hard budget guarantee. Only the store-
-    /// ERROR path is affected; a definitive over-budget result always rejects regardless.
-    #[serde(default)]
-    pub(crate) budget_on_store_error: BudgetOnStoreError,
-    /// SQLite `busy_timeout` (ms) applied to each governance connection (default 5000).
-    #[serde(default = "default_sqlite_busy_timeout_ms")]
-    pub(crate) sqlite_busy_timeout_ms: i64,
-    /// Amortization interval for the rate-limiter stale-entry sweep: every Nth `check_rate` pays the
-    /// full retain (default 256).
-    #[serde(default = "default_rate_sweep_interval")]
-    pub(crate) rate_sweep_interval: u32,
+    pub(crate) min_versions: std::collections::BTreeMap<String, String>,
+    /// RUNTIME-ONLY (never in config, `#[serde(skip)]`): PER-PLUGIN FIRST-PARTY anti-downgrade floor
+    /// OVERRIDES for EXPLICIT operator rollbacks (1.5.0; M1). Empty (the default, and the ONLY value the
+    /// automatic boot/reload path ever sees) = every first-party plugin uses the running binary's own
+    /// version — the full automatic floor. An explicit, audited `POST /plugins/rollback` of a
+    /// FIRST-PARTY plugin adds a `name -> pinned target version` entry so `busbar_plugin_sign::evaluate`
+    /// admits the prior artifact for THAT NAME ONLY (an unpinned first-party plugin still faces the full
+    /// floor — the M1 fix, replacing the earlier single global floor). Derived from the persisted
+    /// `plugin_versions` pins during a rebuild (`overlay::apply_plugin_versions_to_deploy`); it is
+    /// never deserialized, so config parsing + `deny_unknown_fields` are unchanged.
+    #[serde(skip)]
+    pub(crate) first_party_floors: std::collections::BTreeMap<String, String>,
 }
 
-impl Default for GovernanceCfg {
+impl Default for PluginsCfg {
     fn default() -> Self {
-        // Route the limit fields through the serde-default fns; the non-limit fields keep their
-        // historical zero/disabled defaults (governance is off unless `enabled` is set).
         Self {
             enabled: false,
-            db_path: default_gov_db_path(),
-            price_per_request_cents: default_price_per_request_cents(),
-            price_per_1k_tokens_cents: 0,
-            admin_token: None,
-            budget_on_store_error: BudgetOnStoreError::default(),
-            sqlite_busy_timeout_ms: default_sqlite_busy_timeout_ms(),
-            rate_sweep_interval: default_rate_sweep_interval(),
+            dir: default_plugins_dir(),
+            trust: PluginsTrustCfg::default(),
+            min_versions: std::collections::BTreeMap::new(),
+            first_party_floors: std::collections::BTreeMap::new(),
         }
     }
 }
 
-/// Fail-mode for the budget check on a store error. Default `allow` (fail-open) preserves
-/// today's availability-first behavior.
-#[derive(Debug, Deserialize, Clone, Copy, Default, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum BudgetOnStoreError {
-    /// Fail OPEN: on a store error during the budget check, proceed (availability). Today's behavior.
-    #[default]
-    Allow,
-    /// Fail CLOSED: on a store error during the budget check, reject (hard budget guarantee).
-    Deny,
+/// `plugins.trust` — how the engine treats plugin signatures. A first-party (busbar-signed) plugin
+/// verifies against the EMBEDDED release key; a third-party plugin verifies against `publishers`;
+/// anything else (unsigned, tampered, unknown publisher) is UNTRUSTED and, by DEFAULT, logged and
+/// SKIPPED (never `dlopen`ed) unless the matching opt-in flag is set.
+#[derive(Deserialize, Clone, Default, Debug)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PluginsTrustCfg {
+    /// THIRD-PARTY allowlist: publishers whose signatures mark a plugin TRUSTED. Each maps a
+    /// publisher name to a hex ed25519 public key. The first-party `busbar` key is embedded in the
+    /// binary and never configured here.
+    #[serde(default)]
+    pub(crate) publishers: Vec<PluginPublisher>,
+    /// EXPLICIT opt-in: load plugins that carry NO valid signature (unsigned / tampered). Default
+    /// `false` — an unsigned plugin found in `plugins.dir` is LOGGED and SKIPPED (never `dlopen`ed
+    /// / executed), at boot and in the admin catalog.
+    #[serde(default)]
+    pub(crate) allow_unsigned: bool,
+    /// EXPLICIT opt-in: load plugins that ARE validly signed but by a publisher NOT in
+    /// `publishers`. Default `false` — a third-party-signed plugin is LOGGED and SKIPPED.
+    #[serde(default)]
+    pub(crate) allow_third_party: bool,
 }
 
-// MANUAL Debug that REDACTS the admin bearer token. A derived `Debug` would print `admin_token` in
-// PLAINTEXT — a latent credential leak if a `GovernanceCfg` (or `DeployCfg`, which holds it) is
-// debug-logged. Print presence only, never the value.
-impl fmt::Debug for GovernanceCfg {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("GovernanceCfg")
-            .field("enabled", &self.enabled)
-            .field("db_path", &self.db_path)
-            .field("price_per_request_cents", &self.price_per_request_cents)
-            .field("price_per_1k_tokens_cents", &self.price_per_1k_tokens_cents)
-            .field(
-                "admin_token",
-                &if self.admin_token.is_some() {
-                    "<redacted; present>"
-                } else {
-                    "<absent>"
-                },
-            )
-            .field("budget_on_store_error", &self.budget_on_store_error)
-            .finish()
+/// One allowlisted plugin publisher: a name and its hex ed25519 public key.
+#[derive(Deserialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PluginPublisher {
+    pub(crate) name: String,
+    pub(crate) public_key: String,
+}
+
+impl PluginsCfg {
+    /// Resolve into the `busbar-plugin-sign` trust policy: the EMBEDDED first-party release key +
+    /// the binary's own version (the automatic first-party anti-downgrade floor) + the configured
+    /// third-party publishers/opt-ins/floors. A malformed publisher key is a boot error, not a
+    /// silent skip (a skipped trust anchor could wrongly reject a good plugin).
+    pub(crate) fn to_policy(&self) -> Result<busbar_plugin_sign::TrustPolicy, String> {
+        // The AUTOMATIC anti-downgrade posture: the first-party floor is the running binary's own
+        // version, so a validly-signed but OLD first-party artifact can never be REPLAYED into a newer
+        // binary and silently accepted as "current". This is the policy every automatic path
+        // (boot / config reload / config apply / admin plugin reload) uses — UNLESS an explicit,
+        // audited rollback has set `first_party_floor` (a runtime-only, serde-skip field derived from
+        // the persisted `plugin_versions` pins), in which case the operator's pinned floor stands.
+        // `first_party_floors` is EMPTY on every path except a rebuild carrying persisted rollback
+        // pins, so the automatic guarantee is unchanged by default. Each entry lowers the floor for
+        // ONE named first-party plugin only (M1); every other first-party plugin still faces the
+        // running binary's version.
+        self.to_policy_with_floor(env!("CARGO_PKG_VERSION"))
+    }
+
+    /// Build the trust policy with an EXPLICIT first-party anti-downgrade floor OVERRIDE — the seam
+    /// that makes "automatic vs explicit" downgrade concrete in code (1.5.0 rollback-friendly
+    /// versioning). `binary_version` is the frozen `busbar_plugin_sign::evaluate` first-party floor: a
+    /// `publisher: busbar` artifact below it is a hard reject no opt-in can relax.
+    ///
+    /// - AUTOMATIC paths call [`to_policy`], which passes the running binary's own version — the full
+    ///   floor. A replayed old first-party artifact hitting any automatic path still faces it and is
+    ///   refused. Anti-downgrade holds.
+    /// - An EXPLICIT operator ROLLBACK (Full-scope, If-Match, audited) passes the operator's pinned
+    ///   TARGET version here, LOWERING the floor to exactly that version, so the prior artifact — and
+    ///   nothing older — re-loads. The distinction is not in the frozen `evaluate`/`Manifest` (both
+    ///   untouched): it is WHICH floor the engine feeds the policy, and that choice is gated by an
+    ///   authenticated, audited human action. `plugins.min_versions` (the configured third-party
+    ///   floor) is carried as-is here; the rollback lowers the relevant `min_versions` entry via the
+    ///   persisted overlay `plugin_versions` pin (see `overlay::apply_plugin_versions_to_deploy`).
+    pub(crate) fn to_policy_with_floor(
+        &self,
+        binary_version: &str,
+    ) -> Result<busbar_plugin_sign::TrustPolicy, String> {
+        let mut publishers = std::collections::BTreeMap::new();
+        for p in &self.trust.publishers {
+            if p.name == busbar_plugin_sign::FIRST_PARTY_PUBLISHER {
+                return Err(format!(
+                    "plugins.trust.publishers['{}']: the publisher name '{}' is reserved for \
+                     busbar's embedded release key and cannot be configured",
+                    p.name,
+                    busbar_plugin_sign::FIRST_PARTY_PUBLISHER
+                ));
+            }
+            let key = busbar_plugin_sign::public_key_from_hex(&p.public_key)
+                .map_err(|e| format!("plugins.trust.publishers['{}']: {e}", p.name))?;
+            publishers.insert(p.name.clone(), key);
+        }
+        // A malformed floor is not a config error (it does not stop the boot — `version_at_least`
+        // fails closed at the comparator, refusing just the one floored plugin, per class-12 D2) but
+        // it IS worth telling the operator about early, before an artifact is even present: an
+        // unparsable floor silently disarms the anti-downgrade control, so an operator who believes
+        // it is armed should not have to discover that from a missing `--list-plugins` row.
+        for (name, floor) in &self.min_versions {
+            if !floor.is_empty() && !busbar_plugin_sign::valid_semver(floor) {
+                tracing::warn!(
+                    key = %format!("plugins.min_versions['{name}']"),
+                    value = %floor,
+                    "anti-downgrade floor is not a valid MAJOR.MINOR.PATCH version (no leading \
+                     'v'); it cannot be satisfied, so this plugin will be refused. Fix or remove \
+                     the entry."
+                );
+            }
+        }
+        for (name, floor) in &self.first_party_floors {
+            if !floor.is_empty() && !busbar_plugin_sign::valid_semver(floor) {
+                tracing::warn!(
+                    key = %format!("plugins.first_party_floors['{name}']"),
+                    value = %floor,
+                    "anti-downgrade floor is not a valid MAJOR.MINOR.PATCH version (no leading \
+                     'v'); it cannot be satisfied, so this plugin will be refused — and this pin \
+                     REPLACES the binary-version floor, so the plugin is refused unconditionally \
+                     until this is fixed. Fix or remove the entry."
+                );
+            }
+        }
+        Ok(busbar_plugin_sign::TrustPolicy {
+            first_party_key: busbar_plugin_sign::embedded_release_pubkey(),
+            binary_version: binary_version.to_string(),
+            first_party_floors: self.first_party_floors.clone(),
+            publishers,
+            allow_unsigned: self.trust.allow_unsigned,
+            allow_third_party: self.trust.allow_third_party,
+            min_versions: self.min_versions.clone(),
+        })
     }
 }
 
-/// Default SQLite database path for the governance store.
-const DEFAULT_GOVERNANCE_DB: &str = "busbar-governance.db";
+/// The compiled-in store name (`store.module: memory`) - the only store that is not a plugin.
+pub(crate) const GOVERNANCE_STORE_MEMORY: &str = "memory";
 
-fn default_gov_db_path() -> String {
-    DEFAULT_GOVERNANCE_DB.to_string()
+/// The top-level `store:` block (S6): the durable store as `{ module, settings }` - the same
+/// module/settings shape as every other plugin instance (C5). `settings` is the store module's OWN
+/// config, passed through verbatim (the built-in sqlite plugin reads `db_path` /
+/// `busy_timeout_ms`; postgres/redis read `url`). Absent block = the compiled-in ephemeral RAM
+/// store (keys/usage reset on restart).
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct StoreCfg {
+    /// The store module, by plugin ALIAS or CANONICAL NAME. `memory` (default) is the compiled-in
+    /// ephemeral RAM store. Anything else names a STORE PLUGIN resolved from the `plugins.*`
+    /// registry - the shipped first-party stores (`sqlite` / `postgres` / `redis`, canonically
+    /// `busbar-store-<x>`) or a third-party store by its manifest name. A non-`memory` store
+    /// REQUIRES `plugins.enabled: true`; anything else is a boot error naming the flag.
+    #[serde(default = "default_governance_store")]
+    pub(crate) module: String,
+    /// The module's own opaque settings, passed through verbatim as its config JSON.
+    #[serde(default)]
+    pub(crate) settings: serde_json::Map<String, serde_json::Value>,
 }
 
-fn default_price_per_request_cents() -> i64 {
-    1
+impl Default for StoreCfg {
+    fn default() -> Self {
+        Self {
+            module: default_governance_store(),
+            settings: serde_json::Map::new(),
+        }
+    }
+}
+
+fn default_governance_store() -> String {
+    GOVERNANCE_STORE_MEMORY.to_string()
+}
+
+/// A top-level `secrets:` entry — MODULE-LEVEL initialization config for a `kind: secret` plugin,
+/// keyed by the module NAME (alias or canonical). This is the delivery path for the config a secret
+/// plugin needs in its `open()` (a Vault plugin's address / namespace / auth token / TLS CA), exactly
+/// as `store.settings` carries a store plugin's `open()` config. WITHOUT this block a `kind: secret`
+/// plugin's `open()` receives `{}`, forcing operators to repeat every piece of module config in EVERY
+/// individual `SecretRef.settings` (multiplying exposure of the Vault address/token). The built-in
+/// `env` / `file` modules take no module config and MUST NOT appear here (validated).
+///
+/// The `settings` are resolved against the BUILT-IN `env` / `file` secret resolvers ONLY (so
+/// `{ token: { env: VAULT_TOKEN } }` works) — NEVER against another secret plugin, which would be a
+/// bootstrap cycle (a secret module cannot resolve its OWN config through itself).
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SecretModuleCfg {
+    /// The module's own opaque module-level settings, delivered to the plugin's `open()` as its config
+    /// JSON. Any `SecretRef`-typed value (e.g. `token: { env: VAULT_TOKEN }`) is resolved via the
+    /// built-in env/file modules before it crosses the ABI.
+    #[serde(default)]
+    pub(crate) settings: serde_json::Map<String, serde_json::Value>,
+}
+
+/// The `advanced:` block - INTERNAL tuning knobs (formerly under `governance:`). Every field
+/// defaults to its historical value; the whole block is normally omitted.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AdvancedCfg {
+    /// Amortization interval for the rate-limiter stale-entry sweep: every Nth `check_rate` pays
+    /// the full retain (default 256).
+    #[serde(default = "default_rate_sweep_interval")]
+    pub(crate) rate_sweep_interval: u32,
+    /// Write-behind flush cadence (ms) for the in-memory usage/budget counters. On an UNGRACEFUL
+    /// crash (kill -9 / power loss) at most this many ms of accrued spend/requests can be lost; a
+    /// graceful shutdown flushes fully. Default 100.
+    #[serde(default = "default_usage_flush_interval_ms")]
+    pub(crate) usage_flush_interval_ms: u64,
+}
+
+impl Default for AdvancedCfg {
+    fn default() -> Self {
+        Self {
+            rate_sweep_interval: default_rate_sweep_interval(),
+            usage_flush_interval_ms: default_usage_flush_interval_ms(),
+        }
+    }
+}
+
+/// The serde default for `per_request_fee:` - 0 (no flat per-request charge; token spend derives
+/// from the ledger x rate_card).
+fn default_per_request_fee() -> i64 {
+    0
+}
+
+/// One top-level `rate_card:` entry: the four per-token rates in MICRO-units (1e-6 abstract cost
+/// unit) per token, one per pricing tier. A tier omitted in YAML prices at 0 for that tier (e.g. a
+/// model with no cache pricing simply omits the cache rates). Values must be finite and >= 0
+/// (validated at boot). Floats exist ONLY here at the config boundary: they are converted once at
+/// resolve time to integer nano-units per token, and the hot path does pure integer math.
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RateEntryCfg {
+    #[serde(default)]
+    pub(crate) input_utok: f64,
+    #[serde(default)]
+    pub(crate) output_utok: f64,
+    #[serde(default)]
+    pub(crate) cache_read_utok: f64,
+    #[serde(default)]
+    pub(crate) cache_write_utok: f64,
 }
 
 /// Observability sinks. All fields optional; absent = that sink is disabled.
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields)] // M8: a typo'd observability key must fail boot, not be silently ignored.
 pub(crate) struct ObservabilityCfg {
-    /// OTLP/HTTP traces endpoint (e.g. `http://localhost:4318/v1/traces`). When set, busbar
-    /// installs an OpenTelemetry tracer + exports spans.
+    /// OTLP/HTTP traces endpoint URL (e.g. `http://localhost:4318/v1/traces`). When set, busbar
+    /// installs an OpenTelemetry tracer + exports spans. C7: URL fields end `_url` (renamed from
+    /// the 1.4.x `otlp_endpoint`).
     #[serde(default)]
-    pub(crate) otlp_endpoint: Option<String>,
+    pub(crate) otlp_url: Option<String>,
     /// When set, busbar fires a best-effort (fire-and-forget) JSON request-log POST per request
     /// to this URL.
     #[serde(default)]
@@ -1596,7 +2237,7 @@ impl Default for ObservabilityCfg {
         // Route the limit fields through the serde-default fns so the omitted-block path and the
         // omitted-field path share one source of truth (the URL sinks stay disabled by default).
         Self {
-            otlp_endpoint: None,
+            otlp_url: None,
             request_log_webhook_url: None,
             max_inflight_webhook_deliveries: default_max_inflight_webhook_deliveries(),
             webhook_delivery_timeout_secs: default_webhook_delivery_timeout_secs(),
@@ -1633,9 +2274,42 @@ pub(crate) const REQUEST_BODY_MAX_BYTES_FLOOR: usize = 64 * 1024;
 /// is a memory-exhaustion foot-gun. 1 GiB is far above any legitimate completion payload.
 pub(crate) const REQUEST_BODY_MAX_BYTES_CEIL: usize = 1024 * 1024 * 1024;
 /// Default max idle keep-alive connections the upstream client pools per host. Mirrors `main.rs`.
-const DEFAULT_POOL_MAX_IDLE_PER_HOST: usize = 64;
-/// Default inbound concurrency limit. `0` = unlimited (today's behavior — NO layer added).
-pub(crate) const DEFAULT_MAX_INBOUND_CONCURRENT: usize = 0;
+///
+/// Sized for the sustained-throughput regime, not the idle-footprint regime: under an LLM-latency
+/// workload the in-flight connection count is `RPS × upstream_latency` (Little's law) — e.g. 40k RPS
+/// against a 20 ms upstream needs ~800 sockets held open concurrently. A small idle cap (the former
+/// 64) forces reqwest to CLOSE every connection beyond the cap the instant a request completes, so
+/// the next request re-pays a full TCP + TLS handshake on the hot path — connection CHURN that both
+/// caps sustained RPS and inflates tail latency. 1024 lets the pool retain the working set for a
+/// 4-core box saturating a 20 ms upstream without reconnecting, at a bounded idle-socket cost
+/// (idle keep-alives are cheap; the OS reclaims them and `pool_idle_timeout`/`tcp_keepalive` bound
+/// their lifetime). Operators with many distinct upstream hosts can lower it; high-RPS single-host
+/// deployments are the ones this default protects.
+const DEFAULT_POOL_MAX_IDLE_PER_HOST: usize = 1024;
+/// Default idle keep-alive lifetime (seconds) for pooled upstream connections.
+///
+/// EXPLICIT 300s, replacing reqwest's implicit 90s default: under a bursty LLM workload the warm
+/// working set (`pool_max_idle_per_host` sockets, each carrying an amortized TCP+TLS handshake and
+/// — on h2 — an established multiplexed session) should SURVIVE inter-burst gaps of a few minutes
+/// instead of being reaped at 90s and re-paid as cold handshakes on the hot path when the next
+/// burst lands. Safe to hold that long because `tcp_keepalive(60s)` actively validates every idle
+/// socket — a middlebox silently dropping a long-idle connection is detected by the keepalive
+/// probe, not discovered as a spurious request failure — so the longer lifetime adds warm-socket
+/// retention without adding stale-socket risk. Bounded: the OS reclaims idle sockets under
+/// pressure, and `pool_max_idle_per_host` caps the count.
+pub(crate) const DEFAULT_POOL_IDLE_TIMEOUT_SECS: u64 = 300;
+/// Default inbound concurrency limit. `0` = unlimited (NO layer added).
+///
+/// Non-zero by default because this is the ONLY global bound on buffered request memory: every
+/// request buffers its body (up to `request_body_max_bytes`, default 32 MiB) BEFORE any handler
+/// logic can reject it, so peak memory is `(concurrent requests) x (body cap)` — with no admission
+/// bound, a hostile connection burst is an OOM, not a slowdown. The limit layer is applied
+/// OUTERMOST (see `apply_inbound_concurrency_limit`), so a queued request has NOT yet buffered its
+/// body — the bound genuinely caps peak at `limit x body cap`. 8192 is ~4x the highest useful
+/// in-flight count measured on a 4-core box (sustained throughput peaks near 1-2k concurrent) —
+/// far above any legitimate working set, low enough that the worst case stays bounded. Operators
+/// who want the old unlimited posture set `limits.max_inbound_concurrent: 0` explicitly.
+pub(crate) const DEFAULT_MAX_INBOUND_CONCURRENT: usize = 8192;
 /// Default hard-down sticky cooldown (seconds). Mirrors `store.rs`.
 pub(crate) const DEFAULT_HARD_DOWN_COOLDOWN_SECS: u64 = 1800;
 /// Default ceiling on a honored upstream `Retry-After` (seconds). Mirrors `store.rs` (24h).
@@ -1644,6 +2318,12 @@ pub(crate) const DEFAULT_MAX_HONORED_RETRY_AFTER_SECS: u64 = 86_400;
 pub(crate) const DEFAULT_UPSTREAM_ERROR_BODY_MAX_BYTES: usize = 256 * 1024;
 /// Default TLS handshake wall-clock bound (seconds). Mirrors `tls.rs`.
 pub(crate) const DEFAULT_TLS_HANDSHAKE_TIMEOUT_SECS: u64 = 10;
+/// Default inbound request-BODY read bound (seconds): the max time allowed BETWEEN inbound body
+/// frames before the connection is dropped. Bounds a slow-loris that dribbles the request body one
+/// byte at a time (the header-read timeout only covers the header phase). Mirrors `tls.rs`. 30s is
+/// far longer than any real client needs to send its next body chunk, so it cannot false-positive on
+/// a healthy upload.
+pub(crate) const DEFAULT_REQUEST_BODY_READ_TIMEOUT_SECS: u64 = 30;
 /// Default global fallback for the translation-injected `max_tokens` (mirrors `proto::DEFAULT_MAX_TOKENS`).
 pub(crate) const DEFAULT_DEFAULT_MAX_TOKENS: u32 = 4096;
 /// Default max concurrent webhook deliveries. Mirrors `observability.rs`.
@@ -1652,10 +2332,11 @@ pub(crate) const DEFAULT_MAX_INFLIGHT_WEBHOOK_DELIVERIES: usize = 64;
 pub(crate) const DEFAULT_WEBHOOK_DELIVERY_TIMEOUT_SECS: u64 = 2;
 /// Default max per-key gauge series emitted per scrape. Mirrors `metrics.rs`.
 pub(crate) const DEFAULT_KEY_GAUGE_LIMIT: usize = 2000;
-/// Default SQLite `busy_timeout` (ms) for the governance store. Mirrors `governance.rs`.
-pub(crate) const DEFAULT_SQLITE_BUSY_TIMEOUT_MS: i64 = 5_000;
 /// Default rate-sweep amortization interval. Mirrors `governance.rs`.
 pub(crate) const DEFAULT_RATE_SWEEP_INTERVAL: u32 = 256;
+/// Default write-behind flush cadence (ms) for the in-memory governance usage/budget counters.
+/// Mirrors `governance.rs`.
+pub(crate) const DEFAULT_USAGE_FLUSH_INTERVAL_MS: u64 = 100;
 /// Default active-probe interval (seconds) — the process-wide fallback for the per-lane override.
 pub(crate) const DEFAULT_PROBE_INTERVAL_SECS: u64 = 30;
 /// Default active-probe timeout (seconds) — the process-wide fallback for the per-lane override.
@@ -1670,8 +2351,19 @@ fn default_request_body_max_bytes() -> usize {
 fn default_pool_max_idle_per_host() -> usize {
     DEFAULT_POOL_MAX_IDLE_PER_HOST
 }
+fn default_pool_idle_timeout_secs() -> u64 {
+    DEFAULT_POOL_IDLE_TIMEOUT_SECS
+}
 fn default_max_inbound_concurrent() -> usize {
     DEFAULT_MAX_INBOUND_CONCURRENT
+}
+/// `0` = unlimited keys per group (today's behavior — an absent knob changes nothing).
+fn default_max_keys_per_principal() -> usize {
+    0
+}
+/// `0` = unlimited auto-provisioned groups (today's behavior — an absent knob changes nothing).
+fn default_max_auto_provisioned_groups() -> usize {
+    0
 }
 fn default_hard_down_cooldown_secs() -> u64 {
     DEFAULT_HARD_DOWN_COOLDOWN_SECS
@@ -1685,6 +2377,9 @@ fn default_upstream_error_body_max_bytes() -> usize {
 fn default_tls_handshake_timeout_secs() -> u64 {
     DEFAULT_TLS_HANDSHAKE_TIMEOUT_SECS
 }
+fn default_request_body_read_timeout_secs() -> u64 {
+    DEFAULT_REQUEST_BODY_READ_TIMEOUT_SECS
+}
 fn default_default_max_tokens() -> u32 {
     DEFAULT_DEFAULT_MAX_TOKENS
 }
@@ -1697,11 +2392,14 @@ fn default_webhook_delivery_timeout_secs() -> u64 {
 fn default_key_gauge_limit() -> usize {
     DEFAULT_KEY_GAUGE_LIMIT
 }
-fn default_sqlite_busy_timeout_ms() -> i64 {
-    DEFAULT_SQLITE_BUSY_TIMEOUT_MS
+fn default_plugins_dir() -> String {
+    "plugins".to_string()
 }
 fn default_rate_sweep_interval() -> u32 {
     DEFAULT_RATE_SWEEP_INTERVAL
+}
+fn default_usage_flush_interval_ms() -> u64 {
+    DEFAULT_USAGE_FLUSH_INTERVAL_MS
 }
 fn default_probe_interval_secs() -> u64 {
     DEFAULT_PROBE_INTERVAL_SECS
@@ -1712,7 +2410,8 @@ fn default_probe_timeout_secs() -> u64 {
 
 /// The `limits:` block — global operational caps. Each field defaults to its historical hardcoded
 /// value, so an absent field (or an absent block) is today's behavior.
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields)] // M8: a typo'd limits key must fail boot, not be silently ignored.
 pub(crate) struct LimitsCfg {
     #[serde(default = "default_upstream_request_timeout_secs")]
     pub(crate) upstream_request_timeout_secs: u64,
@@ -1723,16 +2422,41 @@ pub(crate) struct LimitsCfg {
     pub(crate) request_body_max_bytes: usize,
     #[serde(default = "default_pool_max_idle_per_host")]
     pub(crate) pool_max_idle_per_host: usize,
+    /// Idle keep-alive lifetime (seconds) for pooled upstream connections — see
+    /// `DEFAULT_POOL_IDLE_TIMEOUT_SECS` for the 300s (vs reqwest's implicit 90s) rationale.
+    #[serde(default = "default_pool_idle_timeout_secs")]
+    pub(crate) pool_idle_timeout_secs: u64,
     /// Inbound concurrency cap. `0` (default) = unlimited: NO layer is added (a true no-op). When
     /// `>0`, a `tower` global concurrency limit wraps the router as the outermost layer.
     #[serde(default = "default_max_inbound_concurrent")]
     pub(crate) max_inbound_concurrent: usize,
+    /// Cap on how many keys may be BOUND TO ONE GROUP — the anti-sprawl mitigation for self-service
+    /// minting. Because a `user:<sub>` leaf group IS the principal, this is
+    /// effectively "max keys per principal": a self-issued mint into a group already holding this
+    /// many keys is a `409`. `0` (default) = UNLIMITED (today's behavior — an absent knob changes
+    /// nothing). Enforced at `POST /keys` only; keys already present are never retroactively revoked.
+    #[serde(default = "default_max_keys_per_principal")]
+    pub(crate) max_keys_per_principal: usize,
+    /// Cap on how many groups `POST /keys` may AUTO-PROVISION (`parent:` self-service). The
+    /// key-count cap bounds keys per group but says nothing about the number of GROUPS, so a
+    /// `mint`-scope credential could grow the limit tree without bound — every new `user:<sub>`
+    /// leaf is a new bucket in the enforcement chain, the version log and the persisted overlay
+    /// Counted over the WHOLE runtime (overlay) group set, since that is what
+    /// auto-provisioning grows. `0` (default) = UNLIMITED (an absent knob changes nothing).
+    /// Explicitly configured groups are unaffected: the ceiling gates auto-provisioning only.
+    #[serde(default = "default_max_auto_provisioned_groups")]
+    pub(crate) max_auto_provisioned_groups: usize,
     #[serde(default = "default_hard_down_cooldown_secs")]
     pub(crate) hard_down_cooldown_secs: u64,
     #[serde(default = "default_upstream_error_body_max_bytes")]
     pub(crate) upstream_error_body_max_bytes: usize,
     #[serde(default = "default_tls_handshake_timeout_secs")]
     pub(crate) tls_handshake_timeout_secs: u64,
+    /// Max time (seconds) allowed BETWEEN inbound request-body frames before the connection is
+    /// dropped - the slow-loris body defense the header-read timeout does not cover. See
+    /// `DEFAULT_REQUEST_BODY_READ_TIMEOUT_SECS`.
+    #[serde(default = "default_request_body_read_timeout_secs")]
+    pub(crate) request_body_read_timeout_secs: u64,
     #[serde(default = "default_max_honored_retry_after_secs")]
     pub(crate) max_honored_retry_after_secs: u64,
     #[serde(default = "default_default_max_tokens")]
@@ -1747,7 +2471,7 @@ pub(crate) struct LimitsCfg {
 }
 
 /// The `minimal/low/medium/high` → token-budget table (see `LimitsCfg::reasoning_effort_budgets`).
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 pub(crate) struct ReasoningEffortBudgets {
     #[serde(default = "default_reasoning_minimal")]
     pub(crate) minimal: u32,
@@ -1791,10 +2515,14 @@ impl Default for LimitsCfg {
             upstream_request_timeout_secs: default_upstream_request_timeout_secs(),
             request_body_max_bytes: default_request_body_max_bytes(),
             pool_max_idle_per_host: default_pool_max_idle_per_host(),
+            pool_idle_timeout_secs: default_pool_idle_timeout_secs(),
             max_inbound_concurrent: default_max_inbound_concurrent(),
+            max_keys_per_principal: default_max_keys_per_principal(),
+            max_auto_provisioned_groups: default_max_auto_provisioned_groups(),
             hard_down_cooldown_secs: default_hard_down_cooldown_secs(),
             upstream_error_body_max_bytes: default_upstream_error_body_max_bytes(),
             tls_handshake_timeout_secs: default_tls_handshake_timeout_secs(),
+            request_body_read_timeout_secs: default_request_body_read_timeout_secs(),
             max_honored_retry_after_secs: default_max_honored_retry_after_secs(),
             default_max_tokens: default_default_max_tokens(),
             reasoning_effort_budgets: ReasoningEffortBudgets::default(),
@@ -1802,24 +2530,37 @@ impl Default for LimitsCfg {
     }
 }
 
-/// The `metrics:` block.
-#[derive(Debug, Deserialize, Clone)]
+/// The `metrics:` block — PRESENT means the operator opted in to Prometheus metrics. Omit the whole
+/// block and busbar collects nothing (no recorder, no `/metrics`, no retention).
+///
+/// WHY OPT-IN. Recording an observation is not free: each sample is held as a raw
+/// `(value, timestamp)` pair until something folds it into its aggregate form. A gateway collecting
+/// metrics nobody reads pays that cost for data no one will look at. With the block absent the cost
+/// is structurally zero rather than merely small.
+///
+/// WHY `buffer_seconds` HAS NO DEFAULT. It is the retention window the operator asks busbar to hold
+/// in memory on their behalf — busbar folds parked samples into the rolling summary on a timer and
+/// drops what is older. That is a memory-for-fidelity trade with no universally right answer (at
+/// 100k rps each second of buffer is a few MB of raw samples), so it is NAMED by whoever opts in
+/// rather than defaulted to a number they never chose. Turning metrics on is a decision; how much
+/// memory that decision costs is part of the same decision.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields)] // M8: a typo'd metrics key must fail boot, not be silently ignored.
 pub(crate) struct MetricsCfg {
+    /// How many SECONDS of observations to retain. REQUIRED — omitting it fails config load, the
+    /// same posture as any other field whose value must be a deliberate choice. Quantile lines on
+    /// `/metrics` cover the last `buffer_seconds`; `_sum`/`_count` stay cumulative and are unaffected
+    /// by the window. Also bounds memory: raw samples are folded on a timer derived from this value,
+    /// so retention is one window's traffic instead of the whole process lifetime.
+    pub(crate) buffer_seconds: u64,
     #[serde(default = "default_key_gauge_limit")]
     pub(crate) key_gauge_limit: usize,
 }
 
-impl Default for MetricsCfg {
-    fn default() -> Self {
-        Self {
-            key_gauge_limit: default_key_gauge_limit(),
-        }
-    }
-}
-
 /// The `health:` block — process-wide active-probe fallbacks (per-lane `health.interval_secs` /
 /// `timeout_secs` still override these).
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields)] // a typo'd health key must fail boot, not be silently ignored.
 pub(crate) struct HealthDefaultsCfg {
     #[serde(default = "default_probe_interval_secs")]
     pub(crate) default_probe_interval_secs: u64,
@@ -1838,7 +2579,8 @@ impl Default for HealthDefaultsCfg {
 
 /// The `routing:` block — the global default policy timeout (per-policy `policy.timeout_ms` still
 /// overrides).
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(deny_unknown_fields)] // M8: a typo'd routing key must fail boot, not be silently ignored.
 pub(crate) struct RoutingCfg {
     #[serde(default = "default_policy_timeout_ms")]
     pub(crate) default_policy_timeout_ms: u64,
@@ -1860,18 +2602,25 @@ pub(crate) struct LimitsResolved {
     pub(crate) upstream_request_timeout_secs: u64,
     pub(crate) request_body_max_bytes: usize,
     pub(crate) pool_max_idle_per_host: usize,
+    pub(crate) pool_idle_timeout_secs: u64,
     pub(crate) max_inbound_concurrent: usize,
+    /// Max keys bound to one group (0 = unlimited) — the self-service mint anti-sprawl cap.
+    pub(crate) max_keys_per_principal: usize,
+    /// Max groups a mint may AUTO-PROVISION (0 = unlimited) — the sibling anti-sprawl cap on the
+    /// SHAPE of the limit tree, not just its contents.
+    pub(crate) max_auto_provisioned_groups: usize,
     pub(crate) hard_down_cooldown_secs: u64,
     pub(crate) upstream_error_body_max_bytes: usize,
     pub(crate) tls_handshake_timeout_secs: u64,
+    pub(crate) request_body_read_timeout_secs: u64,
     pub(crate) max_honored_retry_after_secs: u64,
     pub(crate) default_max_tokens: u32,
     pub(crate) reasoning_effort_budgets: ReasoningEffortBudgets,
     pub(crate) max_inflight_webhook_deliveries: usize,
     pub(crate) webhook_delivery_timeout_secs: u64,
     pub(crate) key_gauge_limit: usize,
-    pub(crate) sqlite_busy_timeout_ms: i64,
     pub(crate) rate_sweep_interval: u32,
+    pub(crate) usage_flush_interval_ms: u64,
     pub(crate) default_probe_interval_secs: u64,
     pub(crate) default_probe_timeout_secs: u64,
     pub(crate) default_policy_timeout_ms: u64,
@@ -1882,8 +2631,8 @@ impl Default for LimitsResolved {
         Self::from_sections(
             &LimitsCfg::default(),
             &ObservabilityCfg::default(),
-            &GovernanceCfg::default(),
-            &MetricsCfg::default(),
+            &AdvancedCfg::default(),
+            None,
             &HealthDefaultsCfg::default(),
             &RoutingCfg::default(),
         )
@@ -1894,8 +2643,8 @@ impl LimitsResolved {
     fn from_sections(
         limits: &LimitsCfg,
         obs: &ObservabilityCfg,
-        gov: &GovernanceCfg,
-        metrics: &MetricsCfg,
+        advanced: &AdvancedCfg,
+        metrics: Option<&MetricsCfg>,
         health: &HealthDefaultsCfg,
         routing: &RoutingCfg,
     ) -> Self {
@@ -1903,18 +2652,24 @@ impl LimitsResolved {
             upstream_request_timeout_secs: limits.upstream_request_timeout_secs,
             request_body_max_bytes: limits.request_body_max_bytes,
             pool_max_idle_per_host: limits.pool_max_idle_per_host,
+            pool_idle_timeout_secs: limits.pool_idle_timeout_secs,
             max_inbound_concurrent: limits.max_inbound_concurrent,
+            max_keys_per_principal: limits.max_keys_per_principal,
+            max_auto_provisioned_groups: limits.max_auto_provisioned_groups,
             hard_down_cooldown_secs: limits.hard_down_cooldown_secs,
             upstream_error_body_max_bytes: limits.upstream_error_body_max_bytes,
             tls_handshake_timeout_secs: limits.tls_handshake_timeout_secs,
+            request_body_read_timeout_secs: limits.request_body_read_timeout_secs,
             max_honored_retry_after_secs: limits.max_honored_retry_after_secs,
             default_max_tokens: limits.default_max_tokens,
             reasoning_effort_budgets: limits.reasoning_effort_budgets,
             max_inflight_webhook_deliveries: obs.max_inflight_webhook_deliveries,
             webhook_delivery_timeout_secs: obs.webhook_delivery_timeout_secs,
-            key_gauge_limit: metrics.key_gauge_limit,
-            sqlite_busy_timeout_ms: gov.sqlite_busy_timeout_ms,
-            rate_sweep_interval: gov.rate_sweep_interval,
+            // Metrics off (block absent) ⇒ the gauge cap is inert; carry the historical value so
+            // nothing downstream has to special-case a disabled collector.
+            key_gauge_limit: metrics.map_or_else(default_key_gauge_limit, |m| m.key_gauge_limit),
+            rate_sweep_interval: advanced.rate_sweep_interval,
+            usage_flush_interval_ms: advanced.usage_flush_interval_ms,
             default_probe_interval_secs: health.default_probe_interval_secs,
             default_probe_timeout_secs: health.default_probe_timeout_secs,
             default_policy_timeout_ms: routing.default_policy_timeout_ms,
@@ -1925,11 +2680,60 @@ impl LimitsResolved {
 /// Resolve DeployCfg + ProviderDef map into resolved RootCfg.
 /// For each deployed provider, look up its definition by name; produce a resolved ProviderCfg
 /// = def's protocol/base_url/error_map (with any config.yaml override applied) + the deployment's api_key_env.
+/// Build a runtime [`HookCfg`] registry entry from one inline module ref. `module:` now names the
+/// `kind: hook` PLUGIN that backs the hook (by signed-manifest name/alias) — the retired socket/webhook
+/// built-in transports are gone. `settings:` stays fully opaque (pushed to the plugin via `configure`);
+/// nothing is consumed out of it. The plugin reference must be non-empty; an unresolvable/wrong-kind
+/// reference is caught fail-closed at the plugin pre-flight (like a store/auth ref).
+fn hook_cfg_from_ref(r: &HookModuleRef, default_kind: HookKind) -> Result<HookCfg, String> {
+    let settings = r.settings.clone();
+    let plugin = r.module.trim().to_string();
+    if plugin.is_empty() {
+        return Err("a hook module ref must name a non-empty `kind: hook` plugin".to_string());
+    }
+    Ok(HookCfg {
+        kind: r.kind.unwrap_or(default_kind),
+        plugin,
+        timeout_ms: r.timeout_ms.unwrap_or(DEFAULT_POLICY_TIMEOUT_MS),
+        on_error: r
+            .on_error
+            .as_ref()
+            .map(|o| o.as_name().to_string())
+            .unwrap_or_else(default_on_error),
+        prompt: r.prompt.unwrap_or_default(),
+        user: r.user.unwrap_or_default(),
+        priority: r.priority.unwrap_or(0),
+        at: r.at,
+        on_empty: r.on_empty.clone(),
+        settings: settings.clone(),
+        global: false,
+        default: false,
+    })
+}
+
 pub(crate) fn resolve(
     deploy: &DeployCfg,
     defs: &HashMap<String, ProviderDef>,
 ) -> Result<RootCfg, Vec<String>> {
     let mut errors = Vec::new();
+
+    // `metrics.buffer_seconds: 0` would ask busbar to retain observations for no time at all: the
+    // rolling window is empty at every scrape, so `/metrics` renders quantiles over nothing while
+    // the hot path still pays the full recording cost — opted-in metrics that report nothing.
+    // Omitting the whole `metrics:` block is how collection is turned OFF; `0` is not that, so it
+    // fails boot loudly rather than silently producing an inert collector.
+    if deploy
+        .metrics
+        .as_ref()
+        .is_some_and(|m| m.buffer_seconds == 0)
+    {
+        errors.push(
+            "metrics.buffer_seconds: 0 retains no observations, so every scrape would report empty \
+             quantiles while still paying the recording cost — name a positive retention window in \
+             seconds, or omit the whole `metrics:` block to turn metrics off"
+                .to_string(),
+        );
+    }
     let mut resolved_providers: HashMap<String, ProviderCfg> = HashMap::new();
 
     for (deploy_name, deploy_cfg) in &deploy.providers {
@@ -1955,17 +2759,6 @@ pub(crate) fn resolve(
             .clone()
             .unwrap_or_else(|| def.base_url.clone());
 
-        // A legacy inline `api_key:` under a provider is NOT supported — keys come only from
-        // `api_key_env`. Warn loudly and discard it (rather than letting serde drop it silently),
-        // so an operator who set it learns why their key isn't taking effect.
-        if deploy_cfg._legacy_api_key.is_some() {
-            tracing::warn!(
-                provider = %deploy_name,
-                "inline `api_key:` under a provider is unsupported and ignored; set the key in the \
-                 environment variable named by `api_key_env` instead"
-            );
-        }
-
         // Merge error_map: def's map with deployment override taking precedence
         let mut error_map = def.error_map.clone();
         if let Some(override_map) = &deploy_cfg.error_map {
@@ -1979,7 +2772,7 @@ pub(crate) fn resolve(
             ProviderCfg {
                 protocol,
                 base_url,
-                api_key_env: deploy_cfg.api_key_env.clone(),
+                api_key: deploy_cfg.api_key.clone(),
                 // Deployment health config wins over the catalog default (mirrors path/auth), so
                 // the `health:` block documented in config.yaml actually takes effect.
                 health: deploy_cfg.health.clone().or_else(|| def.health.clone()),
@@ -1995,26 +2788,92 @@ pub(crate) fn resolve(
                     .clone()
                     .or_else(|| def.token_url.clone()),
                 scope: deploy_cfg.scope.clone().or_else(|| def.scope.clone()),
+                subject: deploy_cfg.subject.clone().or_else(|| def.subject.clone()),
                 auth: deploy_cfg.auth.or(def.auth),
                 // deployment override (Some) replaces the catalog default
                 allow_metadata_hosts: deploy_cfg
                     .allow_metadata_hosts
                     .clone()
                     .unwrap_or_else(|| def.allow_metadata_hosts.clone()),
-                _legacy_api_key: None,
             },
         );
     }
 
-    // Governance is read from `DeployCfg` (it does not land on the resolved `RootCfg`, so
-    // `config_validate::validate(&RootCfg)` cannot see it). Validate it here, on `resolve`'s
-    // existing fail-loud error channel, so an enabled-but-admin-token-less governance block (which
-    // silently locks the /admin API) is rejected at boot rather than discovered at runtime.
-    if let Some(governance) = &deploy.governance {
-        if let Err(gov_errors) =
-            crate::config_validate::validate_governance(governance, deploy.auth.as_ref())
-        {
-            errors.extend(gov_errors);
+    // S9: project the INLINE hook refs (pool `hooks:` module entries + `global_hooks:`) into the
+    // runtime hook registry. Each ref becomes a named registry entry (deterministic names: the
+    // module name, suffixed `#N` on collision, iterating pools in sorted order); the pool's
+    // `gates` list / the resolved `global_hooks` names carry the synthesized names in config
+    // order. A module ref names a `kind: hook` plugin; an unresolvable/wrong-kind reference is a
+    // FAIL-CLOSED plugin-preflight error (like a store/auth ref).
+    let mut hooks_registry: HashMap<String, HookCfg> = HashMap::new();
+    let mut pools = deploy.pools.clone();
+    let register = |registry: &mut HashMap<String, HookCfg>,
+                    r: &HookModuleRef,
+                    where_: &str,
+                    default_kind: HookKind,
+                    errors: &mut Vec<String>|
+     -> Option<String> {
+        let cfg = match hook_cfg_from_ref(r, default_kind) {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                errors.push(format!("{where_}: {e}"));
+                return None;
+            }
+        };
+        let mut name = r.module.clone();
+        let mut n = 1usize;
+        while registry.contains_key(&name) {
+            n += 1;
+            name = format!("{}#{n}", r.module);
+        }
+        registry.insert(name.clone(), cfg);
+        Some(name)
+    };
+    let mut pool_names: Vec<&String> = pools.keys().collect();
+    pool_names.sort();
+    let mut pool_gates: HashMap<String, Vec<String>> = HashMap::new();
+    for pool_name in pool_names {
+        let pool = &deploy.pools[pool_name];
+        let mut gates = Vec::new();
+        for r in &pool.module_hooks {
+            if let Some(name) = register(
+                &mut hooks_registry,
+                r,
+                &format!("pools.{pool_name}.hooks"),
+                HookKind::Gate,
+                &mut errors,
+            ) {
+                gates.push(name);
+            }
+        }
+        pool_gates.insert(pool_name.clone(), gates);
+    }
+    for (pool_name, gates) in pool_gates {
+        if let Some(p) = pools.get_mut(&pool_name) {
+            p.gates = gates;
+        }
+    }
+    let mut global_hook_names = Vec::new();
+    for entry in &deploy.global_hooks {
+        match entry {
+            HookRefEntry::Builtin(name) => {
+                errors.push(format!(
+                    "global_hooks entry '{name}': a global hook is an inline module ref naming a \
+                     `kind: hook` plugin (`{{ module: my-hook-plugin, settings: {{ … }} }}`); bare \
+                     built-in names are pool ordering strategies and have no global meaning"
+                ));
+            }
+            HookRefEntry::Module(r) => {
+                if let Some(name) = register(
+                    &mut hooks_registry,
+                    r,
+                    "global_hooks",
+                    HookKind::Tap,
+                    &mut errors,
+                ) {
+                    global_hook_names.push(name);
+                }
+            }
         }
     }
 
@@ -2029,12 +2888,12 @@ pub(crate) fn resolve(
         let has_client_mtls = deploy
             .admin_tls
             .as_ref()
-            .is_some_and(|t| t.client_ca_file.is_some());
+            .is_some_and(|t| t.client_ca.is_some());
         if exposed && !has_client_mtls && !deploy.admin_insecure {
             errors.push(format!(
                 "admin_listen '{admin_listen}' is network-exposed but the admin plane has no mTLS \
-                 (admin_tls.client_ca_file is unset). Require client certificates by supplying \
-                 admin_tls.client_ca_file, bind admin_listen to loopback, or set admin_insecure: \
+                 (admin_tls.client_ca is unset). Require client certificates by supplying \
+                 admin_tls.client_ca, bind admin_listen to loopback, or set admin_insecure: \
                  true to deliberately run a token-only admin plane (e.g. behind a mesh)."
             ));
         }
@@ -2049,22 +2908,26 @@ pub(crate) fn resolve(
             auth: deploy.auth.clone(),
             providers: resolved_providers,
             models: deploy.models.clone(),
-            pools: deploy.pools.clone(),
-            hooks: deploy.hooks.clone(),
-            admin_auth: deploy.admin_auth.clone(),
-            group_map: deploy.group_map.clone(),
-            // global_hooks = explicit `global_hooks:` list UNIONed with any hook carrying inline
-            // `global: true`, deduped, order-stable (explicit list first, then inline in registry
-            // iteration order). Dangling refs are caught by config_validate.
-            global_hooks: {
-                let mut names = deploy.global_hooks.clone();
-                for (name, hook) in &deploy.hooks {
-                    if hook.global && !names.iter().any(|n| n == name) {
-                        names.push(name.clone());
-                    }
-                }
-                names
-            },
+            pools,
+            hooks: hooks_registry,
+            // The admin chain module names, from `auth.admin_auth:` (default `[admin-tokens]`
+            // when the whole `auth:` block is absent).
+            admin_auth: deploy
+                .auth
+                .as_ref()
+                .map(|a| a.admin_auth.iter().map(|e| e.module.clone()).collect())
+                .unwrap_or_else(|| {
+                    default_admin_auth()
+                        .iter()
+                        .map(|e| e.module.clone())
+                        .collect()
+                }),
+            groups: deploy.groups.clone(),
+            rate_card: deploy.rate_card.clone(),
+            per_request_fee: deploy.per_request_fee,
+            store: deploy.store.clone(),
+            secrets: deploy.secrets.clone(),
+            global_hooks: global_hook_names,
             blocked_metadata_hosts: deploy
                 .security
                 .as_ref()
@@ -2080,14 +2943,14 @@ pub(crate) fn resolve(
                 .as_ref()
                 .map(|s| s.allow_all_metadata)
                 .unwrap_or(false),
-            // Project the operational-limit sections onto a flat resolved struct. The `observability:`
-            // and `governance:` blocks are optional; absent ⇒ their section defaults (which are the
-            // historical hardcoded values, via the manual `Default` impls).
+            // Project the operational-limit sections onto a flat resolved struct. The
+            // `observability:` / `advanced:` blocks are optional; absent ⇒ their section defaults
+            // (the historical hardcoded values, via the manual `Default` impls).
             limits: LimitsResolved::from_sections(
                 &deploy.limits,
                 &deploy.observability.clone().unwrap_or_default(),
-                &deploy.governance.clone().unwrap_or_default(),
-                &deploy.metrics,
+                &deploy.advanced,
+                deploy.metrics.as_ref(),
                 &deploy.health,
                 &deploy.routing,
             ),

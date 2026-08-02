@@ -1,0 +1,19 @@
+[package]
+name = "busbar-secret-ref"
+version = "1.5.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "The SecretRef reference type (plugin-settings-schema-SPEC.md): { module, settings } plus the { env } / { file } sugar spellings. Extracted out of the busbar binary crate's private config::secret module so busbar-plugin-pack and any future schema-generation tooling can derive the x-busbar-secret oneOf shape from the SAME type the engine deserializes, rather than a hand-written parallel copy that can drift."
+license = "Apache-2.0"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+# See busbar's own Cargo.toml: `serde_yaml` (dtolnay) is archived/deprecated; `serde_yaml_ng` is
+# the maintained, API-compatible fork. Test-only here (round-trip parsing the same YAML shapes
+# the engine accepts).
+serde_yaml = { package = "serde_yaml_ng", version = "0.10" }
+jsonschema = "0.30"

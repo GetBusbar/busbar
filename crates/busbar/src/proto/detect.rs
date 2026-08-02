@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The ingress Router (design-operations-oop.md §6, the 1.2 lynchpin): DUMB protocol identification.
+//! The ingress Router: DUMB protocol identification.
 //! `(path, headers)` → which protocol dialect the client is speaking — that is the Router's ENTIRE
 //! job. Which OPERATION the request asks for is the chosen `RequestHandler`'s decision
 //! (`resolve_operation(path, body)` — it may need the body; the Router never sees one). Returns
@@ -11,7 +11,6 @@
 //! `OperationHandler` cells. Nothing else.
 //!
 //! NB: this is `router` (protocol identification), distinct from `routing` (load-balancing policy).
-#![allow(dead_code)]
 
 use axum::http::HeaderMap;
 
@@ -108,7 +107,7 @@ mod tests {
         h
     }
 
-    /// The resolver table (design §6 test obligation), exercised through the REAL two-step pipeline:
+    /// The resolver table, exercised through the REAL two-step pipeline:
     /// Router IDs the protocol, then that protocol's `RequestHandler::resolve_operation` decides the
     /// operation. Includes collision defaults and the ordering (an Anthropic request to a shared path
     /// must not fall through to OpenAI).

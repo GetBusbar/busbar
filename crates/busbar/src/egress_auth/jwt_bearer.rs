@@ -23,11 +23,19 @@ const DEFAULT_SCOPE: &str = "https://www.googleapis.com/auth/cloud-platform";
 struct Signer {
     key_pair: ring::signature::RsaKeyPair,
     rng: ring::rand::SystemRandom,
-    /// JWT `iss`/`sub` — the service account's `client_email`.
+    /// JWT `iss` — the service account's `client_email`.
     issuer: String,
     /// JWT `aud` AND the POST target — the SA JSON `token_uri`.
     token_uri: String,
     scope: String,
+    /// JWT `sub` (RFC 7523 §3), emitted ONLY when the operator explicitly configures it
+    /// (`ProviderCfg::subject`). Left `None` — the default, and the only case that matters for a plain
+    /// (non-delegated) Google service account — the assertion carries no `sub` at all, UNCHANGED from
+    /// pre-fix behavior: for a Google service account, the mere PRESENCE of `sub` (not its value)
+    /// switches the grant into domain-wide-delegation/impersonation semantics, so it must never be
+    /// defaulted (e.g. to `iss`) or every plain SA (the shipped Vertex AI setup) starts failing
+    /// `unauthorized_client`/`invalid_grant`. Mirrors `google-auth-python`'s own opt-in `subject=`.
+    subject: Option<String>,
     http: reqwest::Client,
 }
 
@@ -40,10 +48,13 @@ struct Signer {
 /// `mint` closure to [`super::bearer_token::spawn`], which mints the
 /// first token in the background and refreshes it thereafter. `credential` is the SA JSON — inline
 /// (starts with `{`) or a path to a key file. `scope_override` replaces the default `cloud-platform`
-/// scope when set.
+/// scope when set. `subject` is the operator-configured `ProviderCfg::subject` (RFC 7523 `sub`) — `None`
+/// (the default) omits the claim entirely, unchanged from before this field existed; `Some` emits it
+/// verbatim, for Google domain-wide-delegation impersonation or a third-party IdP that requires `sub`.
 pub(crate) fn build(
     credential: &str,
     scope_override: Option<&str>,
+    subject: Option<&str>,
     ssrf: &super::MetadataSsrfPolicy,
 ) -> Result<CredentialProviderArc, String> {
     let (sa, key_pair) = parse_service_account(credential, ssrf)?;
@@ -54,7 +65,8 @@ pub(crate) fn build(
         issuer: sa.client_email,
         token_uri: sa.token_uri,
         scope: scope_override.unwrap_or(DEFAULT_SCOPE).to_string(),
-        http: super::minter_client(),
+        subject: subject.map(str::to_string),
+        http: super::minter_client()?,
     });
 
     let minter: Minter = Arc::new(move || {
@@ -138,7 +150,14 @@ impl Signer {
         let now = now_epoch();
         let exp = now + 3600; // 1h assertion; the returned token's own TTL governs refresh
         let header = b64url(br#"{"alg":"RS256","typ":"JWT"}"#);
-        let claims_json = jwt_claims_json(&self.issuer, &self.scope, &self.token_uri, now, exp)?;
+        let claims_json = jwt_claims_json(
+            &self.issuer,
+            &self.scope,
+            &self.token_uri,
+            now,
+            exp,
+            self.subject.as_deref(),
+        )?;
         let claims = b64url(claims_json.as_bytes());
         let signing_input = format!("{header}.{claims}");
 
@@ -163,12 +182,16 @@ impl Signer {
             ])
             .send()
             .await
-            .map_err(|e| format!("token endpoint request failed: {e}"))?;
+            // `.without_url()` strips the token-endpoint URL from the reqwest error Display — the URL
+            // can carry query/secret material and leaking it into a surfaced/logged error is an SSRF /
+            // secret-hygiene hazard. The status/body branch below already redacts.
+            .map_err(|e| format!("token endpoint request failed: {}", e.without_url()))?;
         let status = resp.status();
-        let body = resp
-            .text()
-            .await
-            .map_err(|e| format!("reading token response failed: {e}"))?;
+        // The token endpoint is not fully trusted (its `expires_in` below is already treated as
+        // attacker-influenced), so read the body under the shared capped-read helper rather than
+        // `resp.text()`'s unbounded read — see `super::read_capped_token_response` for the cap
+        // rationale and the truncated/transport-error distinction.
+        let body = super::read_capped_token_response(resp).await?;
         if !status.is_success() {
             // Never log the assertion/body wholesale (may echo claims); status + a short snippet only.
             return Err(format!(
@@ -178,12 +201,12 @@ impl Signer {
         }
         let tok: TokenResponse =
             serde_json::from_str(&body).map_err(|e| format!("token response JSON invalid: {e}"))?;
-        Ok(CachedToken {
-            token: tok.access_token,
+        Ok(CachedToken::new(
+            tok.access_token,
             // saturating_add: `expires_in` is attacker-influenced (comes off the token endpoint), so a
             // huge value must clamp to u64::MAX rather than wrap/panic (1.4.0 audit, egress-auth).
-            expires_at: now.saturating_add(tok.expires_in),
-        })
+            now.saturating_add(tok.expires_in),
+        ))
     }
 }
 
@@ -193,20 +216,33 @@ impl Signer {
 /// the provider's `scope:` config (or the cloud-platform default), so this is also where a configured
 /// scope lands in the assertion. Extracted as a pure fn so the escaping and scope-placement are unit-
 /// testable without a network round-trip.
+///
+/// `subject` is RFC 7523 §3's `sub` claim, threaded from the operator's optional `ProviderCfg::subject`.
+/// It is emitted ONLY when `Some` — `None` (the default) produces a claim set with NO `sub` key at all,
+/// byte-identical to this function's behavior before `subject` existed. This is deliberately opt-in: for
+/// a Google service account, the mere PRESENCE of `sub` (regardless of value) switches the OAuth grant
+/// into domain-wide-delegation/impersonation semantics, so unconditionally setting it (e.g. to `issuer`)
+/// would break every plain, non-delegated service account — including the shipped Vertex AI config —
+/// with `unauthorized_client`/`invalid_grant`. `google-auth-python` and friends have the same opt-in
+/// `subject=` behavior; this mirrors it.
 fn jwt_claims_json(
     issuer: &str,
     scope: &str,
     aud: &str,
     iat: u64,
     exp: u64,
+    subject: Option<&str>,
 ) -> Result<String, String> {
-    let claims = serde_json::json!({
+    let mut claims = serde_json::json!({
         "iss": issuer,
         "scope": scope,
         "aud": aud,
         "iat": iat,
         "exp": exp,
     });
+    if let Some(sub) = subject {
+        claims["sub"] = serde_json::Value::String(sub.to_string());
+    }
     serde_json::to_string(&claims).map_err(|e| format!("serializing JWT claims failed: {e}"))
 }
 
@@ -373,6 +409,7 @@ mod tests {
             "https://oauth2.googleapis.com/token",
             1000,
             4600,
+            None,
         )
         .unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -386,13 +423,62 @@ mod tests {
         assert_eq!(v["exp"], 4600);
     }
 
+    /// Conformance fix (round-10 codeaudit, RFC 7523 §3): with `subject` UNSET (the default — every
+    /// existing Vertex AI config, which never sets it), the claim set must contain NO `sub` key at all —
+    /// byte-identical to pre-fix behavior. This is the regression guard: a prior attempt that
+    /// unconditionally set `sub = iss` was REFUTED by adversarial review because Google service-account
+    /// OAuth treats the mere PRESENCE of `sub` as a domain-wide-delegation/impersonation switch,
+    /// regardless of value, and would have broken every plain (non-delegated) service account.
+    #[test]
+    fn jwt_claims_omit_sub_when_subject_unset() {
+        let json = jwt_claims_json(
+            "svc@proj.iam.gserviceaccount.com",
+            DEFAULT_SCOPE,
+            "https://oauth2.googleapis.com/token",
+            1000,
+            4600,
+            None,
+        )
+        .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(
+            v.as_object().unwrap().get("sub").is_none(),
+            "no `sub` key must be present when subject is unset: {v}"
+        );
+        assert_eq!(
+            v.as_object().unwrap().len(),
+            5,
+            "exactly iss/scope/aud/iat/exp — no sub — when subject is unset: {v}"
+        );
+    }
+
+    /// Conformance fix (round-10 codeaudit, RFC 7523 §3): with `subject` explicitly configured, the
+    /// claim set MUST contain `sub` set to that exact value — this is the opt-in RFC-7523-conformant /
+    /// Google-delegation-correct path the fix adds. RED-before-green: this fails to COMPILE against the
+    /// unfixed code (`jwt_claims_json` had no 6th parameter at all — see the earlier red run) and passes
+    /// once `jwt_claims_json`/`Signer`/`build`/`ProviderCfg` grow the opt-in `subject` plumbing.
+    #[test]
+    fn jwt_claims_include_sub_with_exact_value_when_subject_set() {
+        let json = jwt_claims_json(
+            "svc@proj.iam.gserviceaccount.com",
+            DEFAULT_SCOPE,
+            "https://oauth2.googleapis.com/token",
+            1000,
+            4600,
+            Some("impersonated-user@example.com"),
+        )
+        .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["sub"], "impersonated-user@example.com");
+    }
+
     /// M10: a quote/backslash/control char in an operator-controlled claim value is ESCAPED, not
     /// spliced — the claims are always valid JSON and the value round-trips exactly. This is what the
     /// serde serializer buys over string interpolation (which would emit malformed JSON / inject).
     #[test]
     fn jwt_claims_escape_hostile_values() {
         let nasty = "a\"b\\c\nd\tsneaky\":\"injected";
-        let json = jwt_claims_json(nasty, nasty, "aud", 1, 2).unwrap();
+        let json = jwt_claims_json(nasty, nasty, "aud", 1, 2, None).unwrap();
         // Parses as valid JSON (string interpolation would have produced a parse error here)...
         let v: serde_json::Value = serde_json::from_str(&json).expect("claims must be valid JSON");
         // ...and the value round-trips exactly, with no injected keys.
@@ -402,6 +488,84 @@ mod tests {
             v.as_object().unwrap().len(),
             5,
             "exactly iss/scope/aud/iat/exp — no injected claim: {v}"
+        );
+    }
+
+    /// A test-only 2048-bit PKCS#8 RSA private key (generated for this test suite only; not used
+    /// anywhere else and grants no real access) so [`Signer::mint`] can actually sign an assertion
+    /// and exercise the real HTTP exchange against a mock token endpoint.
+    const TEST_PRIVATE_KEY_PEM: &str = "-----BEGIN PRIVATE KEY-----\n\
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCu2RTBghXyuvqd\n\
+v/4AIq1NcPzdRUCr0wyjEH35avOM9vSW+fuira0UtCQcyTHJZswoJqgwcdO2SRav\n\
+/QMZhnjB/sCzuvHrbILd/T0nK19Fdld/wKMQlQlqz94OpS5b0J/nEc7/IOTxszbq\n\
+4B2geG7lJc5wm3dMjKwr7IPbnWs5fMEVyZFaFsctrejOTURx8duff8eM2L+Lf5No\n\
+H2k0h+6blyDTq1Iu+9UM5/AfycgvdhPlcKCL1VZq9+YY5zW5GuXj997TnEWEeiam\n\
+ZfaHklhdSX3zzSUkShqayzaxX6YRdlUvE6yEIkjq/AVRVrMZDynyD7J0nsyjykhx\n\
+WVh79c5fAgMBAAECggEALHaz2onUPwfhl6AtXadz3s+u3i4wRgHDouwcvQK/sMdU\n\
+Z9hmb3YvH6a30EIx0P+9RzCdcMRhjGeFx3dWBHW3282G/624u5+6n+04Ue+rqKRx\n\
+l+FLFnpwDKOT2rGS2nJxV3el5iddUUG743rezeISgV9d4jEG44aaegkJdx3PGKz/\n\
+E76BIyi9H4oUgiqIyPW2trPEeg5n/1oVMHLGDBhotuM7VPUCegh/J3e1jSxcYvi8\n\
+0CutgOLynZAS1xSatbbp8nWrUSRHOUYrgE9OYbS7TSgGz1PjzdcmLEsHEGcor0wm\n\
+cT4oePDjZmuxICFBSg96Ffb82t6UGXC7xLQbglsfQQKBgQDlBOBtVQafWVJiEj83\n\
+fG2YfKTMx1neGO/6ftBMn7XUt4D/AbL0Kx0/Z5lfxm2cixlxcGWT6e96CmZmEsyA\n\
+RFSyuG/bvbTF1c0vaKXcjghtPH5TaB6MjgP3VmjOHR5V5o3JMQX0Xayxf/kBP//f\n\
+wfolsPUM5hcB7pMjVDQz0OZacQKBgQDDcm0i42UA1wrh4XUTNAbVHfacTm/zBhVB\n\
+zvtEC3WGkBCRdU9JSwFAJitPmxrVS3+w2fxO47IiSngeQEyC2neew/H5FrWSNs+L\n\
+xV9Jystubq6oTCulEGBP4gb99FkDY2RToNYOjVrEQDsmiijv3CeZyHnes0/8uMQq\n\
+5ekEveH9zwKBgBZvR9zt+1wYz+0zhGXXFpVdgHde//q1zqxnR9h5vMI9x7EzZWht\n\
+4MuZRnkPYyV2quNl801uGTuHUUimhsn556IqVyrbhp3qt9LxGW5lq4Wn62gYRwXV\n\
+06WjHVkzmQkpMLKIzuCFXKl2s9nffx1YTzzp/Ndqos5ZpKhNU1/QEwDBAoGAfVvA\n\
+WldFqmNDbJwCTp3ZIAqG6bx5m4O0ULBkg0FiUTvIFLQMdbMxCycwMnAGpvY04Yb/\n\
+iM4MrGfdYXHWYTuk6+U8J4sETNLxDfI7awYysxM03Wd1uvqk+7e6ylpWWZD/gZAw\n\
+m8bYh/W2usJ0/VvU3pMyb7/NNwh/chBjBBKSiAsCgYEAsTCMDD6CYdncyFWMtWpK\n\
+vaTrTko3xPDigybk5520jK5UkEaZr0meRn1CFYFAnfUs0sKB4EbWkcmkZOayPPtQ\n\
+su3l06s8o+WrP8Bp2GikIg+jVz9sdz9Vph0Vr0VOPwdBKbWUT4As0r6Muceq+sH6\n\
+oy3z0wnL4GXkIelYmU1zCk0=\n\
+-----END PRIVATE KEY-----\n";
+
+    fn test_signer(token_uri: String) -> Signer {
+        let der = pem_to_pkcs8_der(TEST_PRIVATE_KEY_PEM).expect("test key parses");
+        let key_pair =
+            ring::signature::RsaKeyPair::from_pkcs8(&der).expect("test key is valid PKCS#8 RSA");
+        Signer {
+            key_pair,
+            rng: ring::rand::SystemRandom::new(),
+            issuer: "svc@proj.iam.gserviceaccount.com".to_string(),
+            token_uri,
+            scope: DEFAULT_SCOPE.to_string(),
+            subject: None,
+            http: super::super::minter_client().unwrap(),
+        }
+    }
+
+    /// The token endpoint is an untrusted network peer (its `expires_in` is already treated as
+    /// attacker-influenced in `mint`), so `mint()` must read the response body under a size cap
+    /// rather than `resp.text()`'s unbounded read: a hijacked/misbehaving token endpoint returning a
+    /// body past the `upstream_error_body_max_bytes()` cap must surface a clear error, never
+    /// silently buffer the whole thing or attempt a partial JSON parse of a truncated fragment.
+    #[tokio::test]
+    async fn mint_rejects_a_response_body_over_the_cap() {
+        let state = std::sync::Arc::new(crate::test_support::MockServerState::new());
+        let oversized_token = "a".repeat(300 * 1024);
+        state.push(crate::test_support::MockResponse::Ok {
+            status: axum::http::StatusCode::OK,
+            body: serde_json::json!({ "access_token": oversized_token, "expires_in": 3600 }),
+        });
+        let server = crate::test_support::MockServer::new(state).await;
+
+        let signer = test_signer(server.base_url());
+        let result = signer.mint().await;
+        server.shutdown().await;
+
+        let err = match result {
+            Ok(_) => {
+                panic!("an over-cap token response must be a clear error, not a buffered success")
+            }
+            Err(e) => e,
+        };
+        assert!(
+            err.contains("cap") || err.contains("truncat"),
+            "expected an error naming the size cap / truncation, got: {err}"
         );
     }
 }

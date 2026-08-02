@@ -7,15 +7,15 @@
 
 use serde_json::Value;
 
-// Per-operation IR variants (design §5b). Chat is the existing `IrRequest`/`IrResponse` below; the
-// new operations live in submodules and are assembled into `enum IrReq`/`enum IrResp` (§12.4) once
+// Per-operation IR variants. Chat is the existing `IrRequest`/`IrResponse` below; the
+// new operations live in submodules and are assembled into `enum IrReq`/`enum IrResp` once
 // all six exist.
 pub(crate) mod audio;
 pub(crate) mod embeddings;
 pub(crate) mod image;
 pub(crate) mod moderation;
 pub(crate) mod rerank;
-pub(crate) mod variant; // IrReq / IrResp enums + the operation-blind surface (§12.4)
+pub(crate) mod variant; // IrReq / IrResp enums + the operation-blind surface
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub(crate) struct IrRequest {
@@ -463,6 +463,18 @@ pub(crate) enum IrBlock {
         /// (cost/latency regression). Only the Anthropic reader populates it and only the Anthropic
         /// writer emits it; other protocols have no native analog and leave it `None`.
         cache_control: Option<CacheControl>,
+        /// Opaque, vendor-scoped continuation token — Gemini 3's `thoughtSignature`, a sibling of
+        /// `functionCall` on the wire `Part`, that MUST be echoed back verbatim on the next turn or
+        /// the Gemini backend 400s ("missing a thought_signature"). Mirrors [`IrBlock::Thinking`]'s
+        /// `signature` field, but scoped to a tool-use block instead of a thinking block. Populated
+        /// two ways: (1) read off the wire by Gemini's own readers when Gemini is the SOURCE
+        /// protocol (round-tripped verbatim; harmless to capture even though same-protocol
+        /// Gemini→Gemini traffic never actually passes through the IR), and (2) INJECTED by
+        /// [`IrReq::prepare_for_egress`] with Google's documented sentinel value when the egress lane
+        /// is Gemini AI Studio and the block has no real signature — this is the path that matters
+        /// for cross-protocol traffic (e.g. OpenAI history replayed against a Gemini backend), since
+        /// no foreign protocol has a `thoughtSignature` concept of its own to read.
+        thought_signature: Option<String>,
     },
     ToolResult {
         tool_use_id: String,
@@ -620,6 +632,21 @@ pub(crate) struct IrTool {
     /// breakpoint was being dropped on every hop. First-class so it survives the seam. Only the
     /// Anthropic reader populates it / writer emits it; other protocols leave it `None`.
     pub(crate) cache_control: Option<CacheControl>,
+    /// HOSTED (built-in) tool passthrough spec (Finding 5). The OpenAI Responses API `tools` array
+    /// mixes CUSTOM function tools with provider-HOSTED tools discriminated purely by a top-level
+    /// `type` (`web_search`, `file_search`, `code_interpreter`, `computer_use_preview`, `mcp`, ...).
+    /// A hosted tool carries NO `name`/`parameters`, so parsing it as a function tool yields an empty
+    /// `{"type":"function","name":""}` that a Responses backend 400s on. When set, this holds the RAW
+    /// hosted-tool JSON object verbatim; the Responses writer re-emits it unchanged (a same-protocol
+    /// passthrough) and skips the function-tool projection. `None` for an ordinary function tool
+    /// (`name`/`input_schema` carry it). Only the Responses reader populates it and only the Responses
+    /// writer honors it. Every OTHER egress writer is `hosted`-BLIND: it projects an `IrTool` as a
+    /// function tool keyed on `name`, so a hosted tool (whose `name` is empty) would be emitted as a
+    /// MALFORMED empty-name `{"type":"function","name":""}` the backend rejects with a 400 - NOT
+    /// silently ignored. To prevent that, `IrReq::prepare_for_egress` DROPS every hosted tool on the
+    /// cross-protocol seam (drop-with-warn), so a hosted tool only ever reaches the Responses writer
+    /// (same-protocol Responses->Responses, where the body is forwarded verbatim anyway).
+    pub(crate) hosted: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -645,6 +672,9 @@ impl IrUsage {
     /// the Anthropic/Bedrock family (whose cache reads/writes are separate from input). All adds are
     /// `saturating_add`: the operands are UPSTREAM-CONTROLLED counts, so an unchecked `+` could
     /// panic in debug / wrap in release.
+    // Production billing now ledgers the TIER SPLIT (`proxy::usage::tier_tokens`); this total
+    // survives as the normalization contract's test surface (stream translate/fanout tests).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn billable_tokens(&self) -> u64 {
         self.input_tokens
             .saturating_add(self.cache_read_input_tokens.unwrap_or(0))
@@ -727,6 +757,10 @@ pub(crate) struct StreamDecodeState {
     pub(crate) reasoning_seen: bool,
     /// Whether the reasoning Thinking block (index 0) is currently open.
     pub(crate) thinking_block_open: bool,
+    /// Set once a `delta.refusal` chunk is seen. A refusal reports `finish_reason: "stop"`, so
+    /// without this latch the terminal frame maps to `EndTurn` and the refusal SIGNAL is lost even
+    /// though the text survived. OpenAI Chat reader only; other readers leave it false.
+    pub(crate) refusal_seen: bool,
     /// Stop reason buffered across two Bedrock stream frames. Native Bedrock ConverseStream splits
     /// the stop reason (`messageStop` frame) from the token usage (a following `metadata` frame). To
     /// emit ONE combined `MessageDelta{stop_reason, usage}` (so a cross-protocol ingress sees the
@@ -734,16 +768,49 @@ pub(crate) struct StreamDecodeState {
     /// reader stashes the `messageStop` stop_reason here and pairs it with the usage when `metadata`
     /// arrives. Used by the Bedrock reader only; other protocols leave it `None`.
     pub(crate) pending_stop_reason: Option<IrStopReason>,
-    /// OpenAI-only: maps each opened OpenAI tool_call `index` (the `oai_idx`) to the IR block index
-    /// its `BlockStart` was emitted with. The OpenAI flat stream lets text arrive AFTER tool calls,
-    /// and the text block's presence shifts the tool index base — so the IR index a tool's BlockStart
-    /// claimed at OPEN time can diverge from a value RECOMPUTED at finish/close time (where text is
-    /// now `Some`). Recording the emitted IR index here and replaying it verbatim at close guarantees
-    /// every tool `BlockStop` pairs with the SAME index as its `BlockStart`, regardless of later text
-    /// arrival. Empty for every other reader (which assign IR indices 1:1 or via `open_tools`/
-    /// `text_index` directly and never recompute a divergent base). Keyed by `oai_idx` so it tracks
-    /// `open_tools` one-for-one.
+    /// Maps each opened tool-call wire index (the OpenAI reader's `oai_idx` / the Cohere reader's
+    /// `frame_idx`) to the IR block index its `BlockStart` was emitted with, giving O(log n)
+    /// lookup/insert instead of a linear scan over `open_tools`. Every key inserted here is also
+    /// inserted into `open_tools` at the same time (so `open_tools` remains the membership set this
+    /// map indexes), but the reverse does not always hold: Cohere's `open_tools` additionally carries
+    /// the `TEXT_BLOCK_SEEN_SENTINEL` (cohere.rs), which is deliberately never mirrored into this map.
+    /// Neither map is shrunk for the ordinary duration of a stream, for the same reason `open_tools`
+    /// is never shrunk, so a `tool-call-end`/finish path can replay the exact index a `BlockStart` was
+    /// opened with — except the OpenAI Chat reader's terminal branch, which `mem::take`s BOTH maps
+    /// together once the finish/close events have been emitted (see `openai_chat/reader.rs`).
+    ///
+    /// OpenAI reader: the flat stream lets text arrive AFTER tool calls, and the text block's
+    /// presence shifts the tool index base — so the IR index a tool's BlockStart claimed at OPEN
+    /// time can diverge from a value RECOMPUTED at finish/close time (where text is now `Some`).
+    /// Recording the emitted IR index here and replaying it verbatim at close guarantees every tool
+    /// `BlockStop` pairs with the SAME index as its `BlockStart`, regardless of later text arrival.
+    ///
+    /// Cohere reader: the index is assigned once at `tool-call-start` and never recomputed (no
+    /// divergent base to reconcile), so this map exists purely as the O(log n) lookup counterpart to
+    /// `open_tools`'s O(log n) membership check — replacing an O(n) linear scan that made a stream
+    /// with many sequential tool calls cost O(n²) overall (round-9 codeaudit, performance lens).
+    ///
+    /// Empty for every other reader (which assign IR indices 1:1 or via `open_tools`/`text_index`
+    /// directly and never need this lookup).
     pub(crate) tool_ir_index: std::collections::BTreeMap<usize, usize>,
+    /// Monotone next-free IR block index, for readers that allocate slots by ORDER OF FIRST
+    /// APPEARANCE. NEVER reset for the life of the stream. The terminal branch's `mem::take` of
+    /// `open_tools`/`tool_ir_index` (openai_chat reader) clears WHO IS OPEN — it must not also be
+    /// read as clearing WHICH SLOTS ARE SPENT: a chunk arriving after a finish chunk would then
+    /// re-claim an index the client already has content in, reintroducing a block-index collision
+    /// on the post-terminal path. OpenAI Chat reader only; other readers leave it 0.
+    pub(crate) next_ir_index: usize,
+}
+
+impl StreamDecodeState {
+    /// Claim the next free IR block index. `reasoning_seen` reserves index 0 for the thinking block
+    /// (the OpenAI reader emits that one with a hardcoded 0), so the first claim after reasoning
+    /// starts at 1.
+    pub(crate) fn claim_ir_index(&mut self) -> usize {
+        let idx = self.next_ir_index.max(usize::from(self.reasoning_seen));
+        self.next_ir_index = idx + 1;
+        idx
+    }
 }
 
 #[cfg(test)]

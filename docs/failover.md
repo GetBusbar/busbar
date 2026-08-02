@@ -47,24 +47,7 @@ The practical implication: for workloads where mid-stream failure recovery matte
 
 ## Failover budget and exclusions
 
-Each request carries a per-request failover budget: a wall-clock deadline and a hop count cap. Both are configured per pool:
-
-```yaml
-pools:
-  resilient:
-    members:
-      - target: primary-model
-        weight: 3
-      - target: fallback-model
-        weight: 1
-      - target: last-resort-model
-        weight: 1
-    failover:
-      timeout_secs: 30     # wall-clock budget across all hops; default 120
-      max_hops: 3          # max hop count; default 3
-      exclusions:
-        - last-resort-model    # never selected as primary or failover
-```
+Each request carries a per-request failover budget: a wall-clock deadline (`timeout_secs`) and a hop-count cap (`max_hops`), both configured per pool under `failover:`, plus an optional `exclusions` member blocklist. The field-by-field reference — types, defaults, and validation — lives in **[Configuration → `failover`](/docs/configuration/#failover)**; this page stays conceptual.
 
 `exclusions` is a per-pool member blocklist. A model listed in `exclusions` is never selected through the pool: not as the initial pick and not as a failover destination. A request to the pool can never land on it. The model itself stays fully routable by its own name, because direct routing bypasses pools entirely: `"model": "last-resort-model"` on `/v1/chat/completions`, or `POST /last-resort-model/v1/messages`. That is the point of excluding rather than removing: the member keeps its `/stats` row (an expensive last resort a human or a specific job can still invoke deliberately), while the pool's automatic selection never spends on it. Each `exclusions` entry must name a member of this pool.
 
@@ -82,9 +65,9 @@ When a request is too large for a member (the provider returns a context-length 
 pools:
   long-context:
     members:
-      - target: claude-haiku
+      - model: claude-haiku
         context_max: 200000
-      - target: gemini-2.5-flash
+      - model: gemini-2.5-flash
         context_max: 1048576
 ```
 
@@ -94,22 +77,9 @@ Context-length failover is suppressed on 5xx responses, even if the body mention
 
 ## Session affinity
 
-Pin a session to one member while it remains healthy:
+Pin a session to one member while it remains healthy: set `affinity.mode: session` on the pool and, optionally, `affinity.header_name` (the field reference — `mode` and `header_name` with their defaults — is in **[Configuration → `affinity`](/docs/configuration/#affinity)**).
 
-```yaml
-pools:
-  smart:
-    members:
-      - target: claude-sonnet
-      - target: gpt-4o
-    affinity:
-      mode: session
-      header_name: x-session-id    # default
-```
-
-When a request carries `x-session-id: <value>`, Busbar pins that session to a specific member. If the pinned member is unavailable (tripped, at-capacity, or excluded), affinity is ignored and normal SWRR selection runs, affinity is a preference, and an unhealthy member releases it. The client receives no signal that the pin was broken.
-
-`session` is the only supported `mode`. `header_name` defaults to `x-session-id`.
+When a request carries `x-session-id: <value>` (the default header), Busbar pins that session to a specific member. If the pinned member is unavailable (tripped, at-capacity, or excluded), affinity is ignored and normal SWRR selection runs, affinity is a preference, and an unhealthy member releases it. The client receives no signal that the pin was broken. `session` is the only supported `mode`; `header_name` defaults to `x-session-id`.
 
 ## Pool exhaustion
 
@@ -119,25 +89,23 @@ When all candidates are unavailable, tripped, excluded, or at-capacity, the pool
 pools:
   primary:
     members:
-      - target: fast-model
-      - target: fallback-model
-    on_exhausted:
-      action: fallback_pool:overflow    # try another pool
+      - model: fast-model
+      - model: fallback-model
+    on_exhausted: { fallback_pool: overflow }   # try another pool
 
   overflow:
     members:
-      - target: cheap-model
-    on_exhausted:
-      action: least_bad    # degraded but not a hard error
+      - model: cheap-model
+    on_exhausted: least_bad    # degraded but not a hard error
 ```
 
-| Action | Behavior |
-|---|---|
-| `reject` / `status_503` / `503` | Return `503` with `Retry-After` set to the soonest member's cooldown expiry. (Default when `on_exhausted` is omitted.) |
-| `least_bad` | Select the member whose cooldown expires soonest and send the request anyway, even though its breaker is Open. Logs a loud degraded-service warning. |
-| `fallback_pool:<name>` | Route to another named pool. Loop-guarded: if the fallback pool itself is exhausted and also falls back, cycles are detected and broken. |
+Three actions are available:
 
-(The parser also accepts the spellings `status503` for reject and `least-bad` / `leastbad` for least-bad.)
+- **`reject`** (default) — return `503` with `Retry-After` set to the soonest member's cooldown expiry.
+- **`least_bad`** — select the member whose cooldown expires soonest and send the request anyway, even though its breaker is Open, with a loud degraded-service warning.
+- **`{ fallback_pool: <name> }`** — route to another named pool. Loop-guarded: cycles through the fallback chain are detected and broken.
+
+The full value reference, including the accepted alias spellings for each keyword, lives in **[Configuration → `on_exhausted`](/docs/configuration/#on_exhausted)**.
 
 A `503` from pool exhaustion sets `Retry-After` so clients and upstream proxies know how long to back off. The `/metrics` counter `busbar_requests_total{outcome="exhausted"}` tracks these. A rising exhausted rate combined with a falling `busbar_upstream_attempts_total` for the pool's lanes indicates breakers are tripping faster than they recover, check `busbar_breaker_trips_total` and `/stats` for individual lane state.
 

@@ -26,34 +26,24 @@ const MAX_TRACKED_TOOL_FRAMES: usize = 4096;
 /// index 0 EVEN AFTER the text block has closed (`text_block_open` reverts to false on
 /// `content-end`, so that live flag cannot answer the question on its own).
 ///
-/// `usize::MAX` is used because every genuine tool entry recorded in `open_tools` is a small
-/// bit-PACKED `(frame_idx, ir_index)` value (see `pack_tool_entry`), bounded far below `usize::MAX`
-/// by `MAX_TRACKED_TOOL_FRAMES`; a packed entry of `usize::MAX` can never occur in practice, so the
-/// sentinel never collides with a genuine tool entry and is trivially excluded from every scan
-/// below. Recording it in the existing `open_tools` set keeps the fix entirely within this protocol
-/// module (the shared `StreamDecodeState` carries no text-high-water field).
+/// `usize::MAX` is used because every genuine tool entry recorded in `open_tools` is the (clamped)
+/// wire `frame_idx` itself, bounded far below `usize::MAX` by `MAX_TOOL_FRAME_INDEX`; a `frame_idx`
+/// of `usize::MAX` can never occur in practice, so the sentinel never collides with a genuine tool
+/// entry and is trivially excluded from every scan below. Recording it in the existing `open_tools`
+/// set keeps the fix entirely within this protocol module (the shared `StreamDecodeState` carries no
+/// text-high-water field).
 ///
-/// The wire `index` is upstream-controlled, so a hostile/buggy backend could send a huge value; the
-/// frame component of every packed entry is clamped to `MAX_TOOL_FRAME_INDEX` (see
-/// `clamp_frame_index`), so no real entry can ever reach the sentinel.
+/// The wire `index` is upstream-controlled, so a hostile/buggy backend could send a huge value;
+/// every read site clamps it to `MAX_TOOL_FRAME_INDEX` (see `clamp_frame_index`), so no real entry
+/// can ever reach the sentinel.
 const TEXT_BLOCK_SEEN_SENTINEL: usize = usize::MAX;
 
 /// Upper bound applied to the upstream-controlled stream-frame `index` at every tool-call read
 /// site. The wire value is attacker-controllable; clamping to a small bounded cap (matching
-/// `MAX_TRACKED_TOOL_FRAMES`) keeps the packed `(frame_idx, ir_index)` entries far below the
+/// `MAX_TRACKED_TOOL_FRAMES`) keeps every recorded `frame_idx` far below the
 /// `TEXT_BLOCK_SEEN_SENTINEL`, while leaving every realistic stream (small sequential indices)
 /// untouched. Mirrors the OpenAI reader's `MAX_TOOL_INDEX` clamp.
 const MAX_TOOL_FRAME_INDEX: u64 = MAX_TRACKED_TOOL_FRAMES as u64;
-
-/// Number of low bits each packed `open_tools` entry reserves for the assigned IR block index; the
-/// remaining high bits hold the wire `frame_idx`. Both fields are bounded well below
-/// `MAX_TRACKED_TOOL_FRAMES` (4096 < 2^13 < 2^20), so 20 bits per field cannot overflow and the
-/// largest possible packed value (`MAX_TOOL_FRAME_INDEX << 20 | mask` ≈ 2^32) stays far below the
-/// `TEXT_BLOCK_SEEN_SENTINEL` (`usize::MAX`, ≥ 2^64 on every supported target).
-const TOOL_ENTRY_IR_BITS: u32 = 20;
-
-/// Low-bit mask isolating the assigned IR index from a packed `open_tools` entry.
-const TOOL_ENTRY_IR_MASK: usize = (1usize << TOOL_ENTRY_IR_BITS) - 1;
 
 // ── Cohere v2 stream event-type tokens ────────────────────────────────────────
 /// Cohere v2 stream `type` field value for the message-start event.
@@ -97,28 +87,6 @@ const COHERE_FINISH_MAX_TOKENS: &str = "MAX_TOKENS";
 const COHERE_TOOL_CHOICE_REQUIRED: &str = "REQUIRED";
 /// Cohere v2 `tool_choice` value forbidding all tool calls.
 const COHERE_TOOL_CHOICE_NONE: &str = "NONE";
-
-/// Pack a tool call's wire `frame_idx` and the IR block index ASSIGNED to it at `tool-call-start`
-/// into a single `usize` recorded in `state.open_tools`. The IR index lives in the low
-/// `TOOL_ENTRY_IR_BITS`; the frame index in the high bits. Storing BOTH is what makes the IR index
-/// immutable for the tool's lifetime: it is assigned once on start and looked up verbatim on
-/// delta/end (see `cohere_lookup_tool_ir_index`), so a non-monotonic upstream `frame_idx` can no
-/// longer perturb a live rank and shift a tool's index mid-lifecycle.
-fn pack_tool_entry(frame_idx: usize, ir_index: usize) -> usize {
-    (frame_idx << TOOL_ENTRY_IR_BITS) | (ir_index & TOOL_ENTRY_IR_MASK)
-}
-
-/// The wire `frame_idx` component of a packed `open_tools` entry. Caller must exclude the
-/// `TEXT_BLOCK_SEEN_SENTINEL` before calling.
-fn tool_entry_frame(entry: usize) -> usize {
-    entry >> TOOL_ENTRY_IR_BITS
-}
-
-/// The assigned IR block index component of a packed `open_tools` entry. Caller must exclude the
-/// `TEXT_BLOCK_SEEN_SENTINEL` before calling.
-fn tool_entry_ir_index(entry: usize) -> usize {
-    entry & TOOL_ENTRY_IR_MASK
-}
 
 /// Read the upstream-controlled stream-frame `index`, defaulting to 0 when absent/non-numeric, and
 /// clamp it to `MAX_TOOL_FRAME_INDEX` so the packed entry can never collide with the sentinel.
@@ -231,6 +199,15 @@ fn read_cohere_stop_reason(token: &str) -> crate::ir::IrStopReason {
 /// enum and a strict client rejects; such reasons degrade to the SDK-safe terminal `COMPLETE`.
 /// EXHAUSTIVE: a reason with no Cohere analog (`refusal`, `pause_turn`, `other`) also falls back to
 /// `COMPLETE`.
+///
+/// `S::Safety` maps to the SAME `ERROR` token as `S::Error`, deliberately: `ERROR_TOXIC` is a v1
+/// Generate-API value, not a member of v2 `/v2/chat`'s `finish_reason` enum
+/// (`COMPLETE|STOP_SEQUENCE|MAX_TOKENS|TOOL_CALL|ERROR`), and emitting it would be exactly the
+/// off-spec-token bug `IrStopReason` exists to prevent. This DOES cost a Cohere-dialect client the
+/// ability to distinguish a content-filter stop from an infra error on egress — accepted, because
+/// the v2 enum genuinely cannot express the distinction and an off-spec token a strict client
+/// rejects is strictly worse. The reader's `ERROR_TOXIC`→`S::Safety` stays asymmetric on purpose
+/// (forward-compat for a v1-dialect upstream); do not "fix" it back to match this writer arm.
 fn write_cohere_stop_reason(reason: crate::ir::IrStopReason) -> &'static str {
     use crate::ir::IrStopReason as S;
     match reason {
@@ -238,7 +215,7 @@ fn write_cohere_stop_reason(reason: crate::ir::IrStopReason) -> &'static str {
         S::StopSequence => COHERE_FINISH_STOP_SEQUENCE,
         S::MaxTokens => COHERE_FINISH_MAX_TOKENS,
         S::ToolUse => COHERE_FINISH_TOOL_CALL,
-        S::Safety => COHERE_FINISH_ERROR_TOXIC,
+        S::Safety => COHERE_FINISH_ERROR,
         S::Error => COHERE_FINISH_ERROR,
         S::Refusal | S::PauseTurn | S::Other => COHERE_FINISH_COMPLETE,
     }
@@ -339,32 +316,31 @@ fn cohere_error_is_content_moderation(signal: &str) -> bool {
 }
 
 /// Number of genuine tool frames currently recorded in `state.open_tools` (excludes the
-/// `TEXT_BLOCK_SEEN_SENTINEL`). `open_tools` may also carry the text sentinel, so the raw `len()` is
-/// NOT the tool count.
+/// `TEXT_BLOCK_SEEN_SENTINEL`). `open_tools` may also carry the text sentinel, so `len()` alone is
+/// NOT the tool count — but since it holds at most one sentinel plus one entry per tracked tool, a
+/// single O(log n) `contains` check (rather than a full O(n) scan-and-filter) is enough to correct
+/// for it.
 fn cohere_tracked_tool_count(state: &crate::ir::StreamDecodeState) -> usize {
-    state
-        .open_tools
-        .iter()
-        .filter(|&&e| e != TEXT_BLOCK_SEEN_SENTINEL)
-        .count()
+    state.open_tools.len() - usize::from(state.open_tools.contains(&TEXT_BLOCK_SEEN_SENTINEL))
 }
 
 /// Look up the IMMUTABLE IR block index previously ASSIGNED to the tool call whose wire `frame_idx`
 /// was recorded at `tool-call-start`, or `None` if that frame was never tracked (a duplicate-free
-/// frame past the cap, or an end/delta with no matching start). The index is read verbatim from the
-/// packed `open_tools` entry — it is NOT recomputed from a live rank — so start, delta(s), and end
-/// for a given tool always resolve to the SAME IR index even when the upstream streams frame indices
-/// out of order (a non-monotonic frame index would otherwise perturb a recomputed rank and shift a
+/// frame past the cap, or an end/delta with no matching start). The index is read verbatim from
+/// `state.tool_ir_index` — it is NOT recomputed from a live rank — so start, delta(s), and end for a
+/// given tool always resolve to the SAME IR index even when the upstream streams frame indices out
+/// of order (a non-monotonic frame index would otherwise perturb a recomputed rank and shift a
 /// tool's index mid-lifecycle).
+///
+/// O(log n) via the shared `StreamDecodeState.tool_ir_index` `BTreeMap`, mirroring the openai_chat
+/// reader's `oai_idx -> ir_idx` lookup (see `openai_chat/reader.rs`) — this used to be a full O(n)
+/// linear scan over `open_tools` on EVERY tool-call-start/delta frame, which made a stream with many
+/// sequential tool calls cost O(n²) instead of O(n) overall.
 fn cohere_lookup_tool_ir_index(
     state: &crate::ir::StreamDecodeState,
     frame_idx: usize,
 ) -> Option<usize> {
-    state
-        .open_tools
-        .iter()
-        .find(|&&e| e != TEXT_BLOCK_SEEN_SENTINEL && tool_entry_frame(e) == frame_idx)
-        .map(|&e| tool_entry_ir_index(e))
+    state.tool_ir_index.get(&frame_idx).copied()
 }
 
 /// Record a `tool-call-start` for wire `frame_idx`, ASSIGNING it a stable IR block index, and return
@@ -378,8 +354,9 @@ fn cohere_lookup_tool_ir_index(
 /// Keying the per-tool offset on INSERTION ORDER (the count of already-tracked tools) rather than the
 /// wire-index rank makes the assignment independent of monotonic wire indices and immutable once
 /// made: a later tool with a SMALLER wire `frame_idx` no longer retroactively shifts an earlier
-/// tool's index. `state.open_tools` is never shrunk for the stream's lifetime, so a
-/// recorded entry — and the IR index packed into it — survives until the stream ends.
+/// tool's index. Neither `state.open_tools` nor `state.tool_ir_index` is ever shrunk for the
+/// stream's lifetime, so a recorded frame — and the IR index assigned to it — survives until the
+/// stream ends.
 fn cohere_assign_tool_ir_index(
     state: &mut crate::ir::StreamDecodeState,
     frame_idx: usize,
@@ -395,9 +372,8 @@ fn cohere_assign_tool_ir_index(
     }
     let base = usize::from(state.open_tools.contains(&TEXT_BLOCK_SEEN_SENTINEL));
     let ir_index = base + tracked;
-    state
-        .open_tools
-        .insert(pack_tool_entry(frame_idx, ir_index));
+    state.open_tools.insert(frame_idx);
+    state.tool_ir_index.insert(frame_idx, ir_index);
     Some(ir_index)
 }
 

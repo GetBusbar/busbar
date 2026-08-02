@@ -31,7 +31,7 @@ pub(crate) struct HookRequest<'a> {
     pub(crate) op: &'static str,
     pub(crate) request: HookReqProjection<'a>,
     pub(crate) candidates: Vec<HookCandidate<'a>>,
-    pub(crate) context: HookContext,
+    pub(crate) context: HookContext<'a>,
     /// TAP observation-stage payload — present ONLY on stage taps (`at: route|attempt|completion`);
     /// absent on request-stage taps and every gate, so the pre-stages wire is byte-identical
     /// (append-only schema).
@@ -69,11 +69,11 @@ pub(crate) struct HookStageProjection<'a> {
 /// candidate's metadata + live signals in `HookCandidate`) — nothing sensitive. On top of that, at
 /// most **two access-gated SECURITY fields** ride the projection, each opted in per hook by an
 /// explicit grant:
-///   - `prompt` grant (`no|ro|rw`): `system` + `messages` (flattened text) — present when the grant
-///     is `ro` OR `rw`. The REQUEST wire is IDENTICAL for `ro` and `rw` (a hook must SEE the prompt to
-///     screen it or to rewrite it); the extra power of `rw` is on the REPLY only — a `rw` hook's
-///     `rewrite` arm is applied, a `ro` hook's is dropped (enforced at the rewrite seam by the grant).
-///   - `user` grant (`no|ro`): caller identity — present when `ro`.
+/// - `prompt` grant (`no|ro|rw`): `system` + `messages` (flattened text) — present when the grant
+///   is `ro` OR `rw`. The REQUEST wire is IDENTICAL for `ro` and `rw` (a hook must SEE the prompt to
+///   screen it or to rewrite it); the extra power of `rw` is on the REPLY only — a `rw` hook's
+///   `rewrite` arm is applied, a `ro` hook's is dropped (enforced at the rewrite seam by the grant).
+/// - `user` grant (`no|ro`): caller identity — present when `ro`.
 ///
 /// A grant of `no` OMITS the field from the JSON entirely AND is fail-closed the other direction too
 /// (a returned value for a field the hook wasn't granted is ignored): `ro`'s rewrite is dropped,
@@ -164,54 +164,18 @@ pub(crate) struct HookCandidate<'a> {
 /// The POOL-SCOPED signal bucket (distinct from the per-candidate signals). `request.pool` already
 /// names the pool — it is not duplicated here (contract audit #12).
 #[derive(Serialize)]
-pub(crate) struct HookContext {
+pub(crate) struct HookContext<'a> {
     /// Pool-level remaining request budget; omitted when the pool is uncapped.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) budget_remaining: Option<i64>,
-}
-
-/// The CONFIGURE message (D2) — the FIRST line busbar sends on every socket connection (and the
-/// push a settings PATCH makes before committing): the hook's current desired-state settings.
-/// The top-level `configure` KEY (presence, never key order) discriminates it as a management
-/// message; per-request payloads carry the `op` field instead. Idempotent desired-state:
-/// re-sending the same settings must be a no-op for the hook.
-#[derive(Serialize)]
-pub(crate) struct ConfigureMsg<'a> {
-    pub(crate) configure: ConfigureBody<'a>,
-}
-
-#[derive(Serialize)]
-pub(crate) struct ConfigureBody<'a> {
-    /// The hook's own registry name (context echo).
-    pub(crate) hook: &'a str,
-    /// The opaque settings map from the hook's registry entry (operator/API-owned).
-    pub(crate) settings: &'a serde_json::Map<String, serde_json::Value>,
-    /// Monotonic settings version (the config_version that committed them) — the ack echoes it.
-    pub(crate) settings_version: u64,
-    pub(crate) busbar_version: &'static str,
-}
-
-/// The hook's configure ACK: `{"ack": {"settings_version": N}}`. Anything else (error, wrong
-/// version, garbage, timeout) is a FAILED configure — a settings PATCH does not commit.
-#[derive(Debug, Deserialize)]
-pub(crate) struct ConfigureAck {
-    pub(crate) ack: Option<ConfigureAckBody>,
-}
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct ConfigureAckBody {
-    pub(crate) settings_version: u64,
-}
-
-/// The DESCRIBE request (D2): `{"describe": true}` — the hook replies its self-description
-/// ENVELOPE: `{"schema": <settings JSON Schema>, "dashboard"?: {"widgets": [...]}}`. ONE
-/// declaration drives both the config form (`schema` — served at
-/// `GET /api/v1/admin/hooks/{name}/schema`) and the plugin dashboard layout (`dashboard`,
-/// reserved for the dashboard read; values come from `status.metrics` — busbar-ui suggestion #2).
-/// Both members optional; unknown members ignored (append-only).
-#[derive(Serialize)]
-pub(crate) struct DescribeMsg {
-    pub(crate) describe: bool,
+    /// The request's BUDGET-CHAIN state (the caller key's bucket + every ancestor budget group,
+    /// innermost first): `{bucket_id, budget_group?, spend_micros_at_current_rate,
+    /// remaining_micros?, window_start, budget_period}` per bucket, derived at the current rate
+    /// card. Omitted when empty (governance off / no key) so pre-cost-model payloads are
+    /// byte-identical. The budget-aware-routing READ seam: a hook may downshift on it; busbar
+    /// never routes on budget itself.
+    #[serde(skip_serializing_if = "<[busbar_api::BudgetBucketState]>::is_empty")]
+    pub(crate) budget: &'a [busbar_api::BudgetBucketState],
 }
 
 /// The describe reply envelope, parsed liberally.
@@ -219,23 +183,6 @@ pub(crate) struct DescribeMsg {
 pub(crate) struct DescribeReply {
     #[serde(default)]
     pub(crate) schema: Option<serde_json::Value>,
-    #[serde(default)]
-    #[allow(dead_code)] // reserved: consumed by the plugin-dashboard read (post-1.3 additive)
-    pub(crate) dashboard: Option<serde_json::Value>,
-}
-
-/// The STATUS management message: `{"status": true}` — mirrors `describe`'s key-discriminated
-/// idiom. The hook replies its OBSERVED state: `{"status": {"settings_version"?: N,
-/// "settings"?: {...}, "metrics"?: [<entry>, ...]}}`. `metrics` is an ARRAY of Prometheus-shaped
-/// entries (see [`HookMetric`]) — the shape that carries per-dimension `labels` and `histogram`
-/// distributions a flat map cannot. Every reply key is optional; unknown keys are ignored; a hook
-/// that does not implement `status` replies `{}` (busbar treats empty/absent as "unsupported" and
-/// fails open). This is the control-plane read that lets busbar surface a hook's own settings and
-/// operational data ("Your AI Control Plane" — a dashboard on busbar sees what each plug is doing).
-/// Entries are validated + bounded by busbar (a hostile hook cannot flood or exfiltrate).
-#[derive(Serialize)]
-pub(crate) struct StatusMsg {
-    pub(crate) status: bool,
 }
 
 /// One hook-reported metric entry — a Prometheus/OpenMetrics-shaped observation (parsed liberally;
@@ -362,7 +309,7 @@ pub(crate) fn valid_metric_name(name: &str) -> bool {
         && bytes.all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'_'))
 }
 
-/// Char-boundary-safe sanitize + cap (re-audit F1: `String::truncate` takes BYTES and panics off a
+/// Char-boundary-safe sanitize + cap (`String::truncate` takes BYTES and panics off a
 /// char boundary; `.chars().take(n)` is panic-free and matches the documented "≤ N chars" rule).
 fn sanitize_cap(raw: &str, n: usize) -> String {
     sanitize_reject_message(raw).chars().take(n).collect()
@@ -400,6 +347,9 @@ pub(crate) fn parse_status_metrics(raw: &[serde_json::Value]) -> Vec<HookMetric>
                 .collect()
         });
         // Quantiles: keys parse to a probability in [0,1], values finite; drop the map if empty.
+        // Capped like labels and buckets: the [0,1] filter does NOT bound the count — "0.5", "0.50",
+        // "0.500" are all distinct keys that all parse in range — and the scrape renders one line per
+        // quantile per metric, so an uncapped map defeats `scrape.rs`'s stated BOUNDED property.
         m.quantiles = m
             .quantiles
             .map(|q| {
@@ -407,6 +357,7 @@ pub(crate) fn parse_status_metrics(raw: &[serde_json::Value]) -> Vec<HookMetric>
                     .filter(|(k, val)| {
                         val.is_finite() && k.parse::<f64>().is_ok_and(|p| (0.0..=1.0).contains(&p))
                     })
+                    .take(MAX_METRIC_LABELS)
                     .collect::<std::collections::BTreeMap<_, _>>()
             })
             .filter(|q| !q.is_empty());
@@ -476,18 +427,16 @@ pub(crate) struct HookResponse {
     /// RESTRICT the surviving candidate set to members carrying ANY of these tags
     /// (`{"restrict": {"tags_any": [...]}}`). A compliance gate ("only BAA-covered lanes"). Untyped +
     /// FAIL-CLOSED like `reject`: a malformed restrict must fall to the gate's `on_error`/`on_empty`,
-    /// never silently allow-all. Parsed by `parse_restrict`. Wired into the two-phase decision seam in
-    /// a later slice-4 step; the reply contract + parser land here first (tested in isolation).
+    /// never silently allow-all. Parsed by `parse_restrict`, folded into `RoutingDecision::Restrict`
+    /// by `normalize`, and re-applied on every downstream failover hop by
+    /// `proxy::select::enforce_restricts`.
     #[serde(default)]
     pub(crate) restrict: Option<serde_json::Value>,
     /// REWRITE the request body (`{"rewrite": {"messages": [...], "tools": [...]}}`) — the
     /// compression/redaction arm (Headroom). Untyped + FAIL-CLOSED: a malformed/oversize rewrite must
     /// proceed with the UNMODIFIED body, never a corrupted one. Requires the hook's `prompt: rw` grant.
-    /// Parsed by `parse_rewrite`. Applied by the priority-ordered transform pass wired in a later
-    /// slice-4 step; the reply contract + parser land here first (tested in isolation).
+    /// Parsed by `parse_rewrite` and applied by the priority-ordered transform pass at the `parsed.rewrite` read below.
     #[serde(default)]
-    #[allow(dead_code)]
-    // consumed when the priority-ordered transform pass is wired (later slice-4 step)
     pub(crate) rewrite: Option<serde_json::Value>,
 }
 
@@ -527,7 +476,6 @@ pub(crate) use busbar_api::RewriteReply;
 /// Parse the untyped `rewrite` value fail-closed. A well-formed rewrite is `{"messages": [...],
 /// "tools"?: [...]}` with a NON-EMPTY messages array; anything else yields `None` (proceed with the
 /// original body). `tools` is optional (defaults empty).
-#[allow(dead_code)] // applied by the priority-ordered transform pass in a later slice-4 step
 pub(crate) fn parse_rewrite(value: &serde_json::Value) -> Option<RewriteReply> {
     let messages: Vec<serde_json::Value> = value.get("messages")?.as_array()?.clone();
     if messages.is_empty() {
@@ -576,11 +524,6 @@ pub(crate) fn transform_outcome(parsed: HookResponse) -> busbar_api::TransformOu
 
 /// Reject-status clamp range + fallback: any status outside 400..=499 becomes 403.
 const REJECT_STATUS_DEFAULT: u16 = 403;
-
-/// Shared cap on a routing-hook reply body — one bound for BOTH transports (the socket's
-/// NDJSON reply line and the webhook's response body), so a runaway/hostile hook can never drive
-/// unbounded allocation and the two transports cannot drift on the limit.
-pub(crate) const MAX_HOOK_REPLY_BYTES: usize = 64 * 1024;
 
 /// Clamp a hook-supplied reject status to the client-error range: anything outside 400..=499
 /// becomes `REJECT_STATUS_DEFAULT` (403). Shared by `parse_reject_detail` (the transports' reply
@@ -689,6 +632,7 @@ pub(crate) fn build<'a>(
         stage: None,
         context: HookContext {
             budget_remaining: ctx.budget_remaining,
+            budget: ctx.budget,
         },
     }
 }
@@ -729,7 +673,7 @@ pub(crate) fn normalize(parsed: HookResponse, candidates: &[Candidate<'_>]) -> R
 
 #[cfg(test)]
 mod tests {
-    /// Re-audit F1 REGRESSION: a hook-supplied multi-byte help/label/unit must cap at a CHAR
+    /// A hook-supplied multi-byte help/label/unit must cap at a CHAR
     /// boundary, never panic (String::truncate takes bytes — 100 × '€' panicked the admin handler).
     #[test]
     fn status_metric_hints_cap_char_safe() {
@@ -806,6 +750,29 @@ mod tests {
         assert_eq!((by(4).ci_low, by(4).ci_high), (None, None));
     }
 
+    /// Unlike labels/buckets, the `[0,1]` filter on quantile keys does not bound the COUNT —
+    /// "0.5001", "0.5002", ... are all distinct strings that all parse in range. A hostile or buggy
+    /// hook could otherwise mint an unbounded quantile map, defeating `scrape.rs`'s stated BOUNDED
+    /// scrape-output property (one Prometheus line per quantile per metric).
+    #[test]
+    fn status_metrics_caps_the_quantile_count() {
+        let mut quantiles = serde_json::Map::new();
+        for i in 1..=500 {
+            quantiles.insert(format!("0.{i:04}"), serde_json::json!(1.0));
+        }
+        let m = [
+            serde_json::json!({"name":"h","type":"histogram","value":1.0,
+                                     "quantiles": quantiles}),
+        ];
+        let parsed = super::parse_status_metrics(&m);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(
+            parsed[0].quantiles.as_ref().unwrap().len(),
+            super::MAX_METRIC_LABELS,
+            "quantile count must be capped exactly like labels and buckets"
+        );
+    }
+
     /// Native histogram `buckets` are validated like quantiles: a key must be `+Inf` or parse as a
     /// finite `le` bound, a count must be finite and non-negative, and an all-bad map drops to
     /// `None` (so the renderer never emits a malformed histogram).
@@ -875,6 +842,7 @@ mod tests {
         RoutingContext {
             pool: "p",
             budget_remaining: None,
+            budget: &[],
         }
     }
 
@@ -921,7 +889,7 @@ mod tests {
         assert_eq!(v["candidates"][0]["tags"][0], "team-a");
         assert_eq!(v["candidates"][0]["tags"][1], "eu");
         // The identity projection is built from the key RECORD: no token/secret field exists.
-        for key in ["\"token\"", "\"secret\"", "\"key_hash\""] {
+        for key in ["\"token\"", "\"secret\"", "\"generation_hash\""] {
             assert!(!json.contains(key), "payload leaked {key}: {json}");
         }
     }

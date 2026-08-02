@@ -21,7 +21,7 @@ use std::sync::RwLock;
 use crate::config::{
     LimitsResolved, DEFAULT_KEY_GAUGE_LIMIT, DEFAULT_POLICY_TIMEOUT_MS,
     DEFAULT_PROBE_INTERVAL_SECS, DEFAULT_PROBE_TIMEOUT_SECS, DEFAULT_RATE_SWEEP_INTERVAL,
-    DEFAULT_REQUEST_BODY_MAX_BYTES, DEFAULT_SQLITE_BUSY_TIMEOUT_MS,
+    DEFAULT_REQUEST_BODY_MAX_BYTES, DEFAULT_USAGE_FLUSH_INTERVAL_MS,
     DEFAULT_WEBHOOK_DELIVERY_TIMEOUT_SECS,
 };
 
@@ -35,8 +35,68 @@ static INSTALLED: RwLock<Option<LimitsResolved>> = RwLock::new(None);
 /// Install (or RE-install) the resolved limits process-wide: at boot from `main`'s construction
 /// path, and again on every config apply/reload — the newest install wins, so operator limit
 /// changes are live without restart.
+///
+/// TEST-ONLY. Production installs through [`InstallGuard`], never through this: a config that is
+/// subsequently REJECTED must not leave its limits behind, and an unconditional install is exactly
+/// what made that possible. `tls`'s handshake-bound tests moved to `InstallGuard` (it restores the
+/// prior value on drop, which a bare install cannot). The remaining consumer is
+/// `nonstream_tap_cap_is_read_once_per_decision` (`#[ignore]`d — see its own doc comment), whose
+/// SUBJECT is racing the live cap by re-installing it in a hot loop with no rollback between
+/// iterations; `InstallGuard` cannot serve that (a guard restores on drop, but the test wants the
+/// value to keep flipping mid-run).
+#[cfg(test)]
 pub(crate) fn install(resolved: &LimitsResolved) {
     *INSTALLED.write().unwrap_or_else(|e| e.into_inner()) = Some(resolved.clone());
+}
+
+/// INSTALL FOR THE DURATION OF A BUILD, AND ROLL BACK UNLESS THE BUILD SUCCEEDS.
+///
+/// `build_app_from_config` installs the candidate limits FIRST — it has to, because the build reads
+/// them through the deep-call-stack accessors above (the store open, the health-probe fallbacks, the
+/// routing policy timeout) — but every step AFTER the install is fallible: semantic validation, the
+/// plugin pre-flight, secret-ref resolution, the store open. Before this guard, a rejected apply
+/// left the REJECTED config's limits installed process-wide while the old `App` kept serving, and no
+/// error path put them back. That broke the surface's central promise that an invalid apply changes
+/// nothing, and it did so in the worst direction: the values `validate_limits` exists to reject —
+/// e.g. a `request_body_max_bytes` below `REQUEST_BODY_MAX_BYTES_FLOOR` — are precisely the ones
+/// that got installed anyway, because the range check runs after the install. A 400-ed
+/// `POST /config/apply` could shrink the live SigV4 auth-middleware buffer and the cross-protocol
+/// translate buffer under a still-running gateway, 401-ing larger Bedrock requests.
+///
+/// So: snapshot, install, and restore on drop unless [`InstallGuard::commit`] is called. Rollback on
+/// the DROP rather than on each `return Err` is what makes it total — a build step added later
+/// cannot forget to unwind, and neither can a `?`.
+#[must_use = "an uncommitted InstallGuard rolls the limits back when dropped"]
+pub(crate) struct InstallGuard {
+    /// What was installed before — `None` when nothing was (boot, or a test process).
+    prior: Option<LimitsResolved>,
+    committed: bool,
+}
+
+impl InstallGuard {
+    /// Snapshot the currently-installed limits and install `resolved` in their place.
+    pub(crate) fn install(resolved: &LimitsResolved) -> Self {
+        let mut slot = INSTALLED.write().unwrap_or_else(|e| e.into_inner());
+        let prior = slot.clone();
+        *slot = Some(resolved.clone());
+        Self {
+            prior,
+            committed: false,
+        }
+    }
+
+    /// The build succeeded: KEEP the installed limits.
+    pub(crate) fn commit(mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for InstallGuard {
+    fn drop(&mut self) {
+        if !self.committed {
+            *INSTALLED.write().unwrap_or_else(|e| e.into_inner()) = self.prior.clone();
+        }
+    }
 }
 
 /// Read the installed value (or `None` when uninstalled — tests / pre-install).
@@ -59,6 +119,14 @@ pub(crate) fn tls_handshake_timeout_secs() -> u64 {
     get()
         .map(|l| l.tls_handshake_timeout_secs)
         .unwrap_or(crate::config::DEFAULT_TLS_HANDSHAKE_TIMEOUT_SECS)
+}
+
+/// Inbound request-BODY inter-frame read bound (seconds), read per served connection in `tls`. Bounds
+/// a slow-loris that dribbles the request body after headers are complete.
+pub(crate) fn request_body_read_timeout_secs() -> u64 {
+    get()
+        .map(|l| l.request_body_read_timeout_secs)
+        .unwrap_or(crate::config::DEFAULT_REQUEST_BODY_READ_TIMEOUT_SECS)
 }
 
 /// Cap on a buffered upstream ERROR / verbatim-relay body (bytes).
@@ -90,18 +158,20 @@ pub(crate) fn key_gauge_limit() -> usize {
         .unwrap_or(DEFAULT_KEY_GAUGE_LIMIT)
 }
 
-/// SQLite `busy_timeout` (ms) for the governance store.
-pub(crate) fn sqlite_busy_timeout_ms() -> i64 {
-    get()
-        .map(|l| l.sqlite_busy_timeout_ms)
-        .unwrap_or(DEFAULT_SQLITE_BUSY_TIMEOUT_MS)
-}
-
 /// Rate-limiter stale-entry sweep amortization interval.
 pub(crate) fn rate_sweep_interval() -> u32 {
     get()
         .map(|l| l.rate_sweep_interval)
         .unwrap_or(DEFAULT_RATE_SWEEP_INTERVAL)
+}
+
+/// Write-behind flush cadence (ms) for the in-memory governance usage/budget counters. On an
+/// UNGRACEFUL crash (kill -9 / power loss) at most this many ms of accrued spend/requests can be
+/// lost; a graceful shutdown flushes fully (the flusher's shutdown arm). Default 100.
+pub(crate) fn usage_flush_interval_ms() -> u64 {
+    get()
+        .map(|l| l.usage_flush_interval_ms)
+        .unwrap_or(DEFAULT_USAGE_FLUSH_INTERVAL_MS)
 }
 
 /// Process-wide active-probe interval fallback (seconds). Per-lane `health.interval_secs` overrides.
@@ -139,7 +209,6 @@ mod tests {
     fn uninstalled_accessors_return_historical_defaults() {
         assert_eq!(translate_body_max_bytes(), DEFAULT_REQUEST_BODY_MAX_BYTES);
         assert_eq!(key_gauge_limit(), DEFAULT_KEY_GAUGE_LIMIT);
-        assert_eq!(sqlite_busy_timeout_ms(), DEFAULT_SQLITE_BUSY_TIMEOUT_MS);
         assert_eq!(rate_sweep_interval(), DEFAULT_RATE_SWEEP_INTERVAL);
         assert_eq!(default_probe_interval_secs(), DEFAULT_PROBE_INTERVAL_SECS);
         assert_eq!(default_probe_timeout_secs(), DEFAULT_PROBE_TIMEOUT_SECS);
@@ -147,6 +216,14 @@ mod tests {
         assert_eq!(
             webhook_delivery_timeout_secs(),
             DEFAULT_WEBHOOK_DELIVERY_TIMEOUT_SECS
+        );
+        // Discharges the warning two paragraphs up: `tls.rs`'s body-read-timeout test now installs
+        // its NON-default value through `InstallGuard` (restores on drop) instead of the bare
+        // `install`, so this assertion is safe to add — if a future test regresses back to a bare
+        // install that leaks its value, this fails hard instead of silently depending on run order.
+        assert_eq!(
+            request_body_read_timeout_secs(),
+            crate::config::DEFAULT_REQUEST_BODY_READ_TIMEOUT_SECS
         );
     }
 }

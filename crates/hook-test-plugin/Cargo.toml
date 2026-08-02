@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "busbar-hook-test-plugin"
+version = "1.5.0"
+publish = false            # internal TEST-support cdylib; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "A hermetic trivial kind:hook plugin cdylib used to drive the end-to-end DlopenPolicy seam tests (no network; a fixed gate that ranks/transforms/reports based on the projection it is handed)."
+license = "Apache-2.0"
+
+[lib]
+# cdylib for the real dlopen ABI seam; rlib is REQUIRED for `cargo test` to actually emit the
+# cdylib artifact at all — with cdylib-only, `cargo test -p busbar` builds a trivial "0 tests"
+# harness for this package but never produces the .so/.dylib, so every hooks::tests:: test gated on
+# `hook_cdylib()` silently found nothing and skipped (confirmed: no .so/.dylib under target/debug
+# at all after a bare `cargo test -p busbar`, only .rcgu.o object files). Same fix already applied
+# to store-postgres-plugin's identical crate-type-only-cdylib bug.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+busbar-plugin-sdk = { path = "../plugin-sdk" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

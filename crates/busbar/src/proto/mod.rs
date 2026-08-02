@@ -31,6 +31,14 @@ pub(crate) const SIGNAL_IR_PARSE: &str = "ir_parse";
 pub(crate) const SSE_DONE_SENTINEL: &str = "[DONE]";
 pub(crate) const SSE_DONE_FRAME: &[u8] = b"data: [DONE]\n\n";
 
+/// A native Anthropic stream emits `event: ping` immediately after `message_start` (and
+/// periodically thereafter); a translated cross-protocol stream never did, which is both a
+/// fingerprintable proxy tell and closes some of the idle-timeout gap a native stream survives.
+/// Injected once, right after the translated `message_start` frame, on any INGRESS-Anthropic
+/// cross-protocol stream (same-protocol Anthropic passthrough is byte-verbatim and already carries
+/// the upstream's own pings, so it never needs this).
+pub(crate) const ANTHROPIC_PING_SSE_FRAME: &[u8] = b"event: ping\ndata: {\"type\":\"ping\"}\n\n";
+
 /// The HTTP `Authorization` header name (lowercase, canonical). Emitted by the bearer/SigV4 auth-header
 /// builders across protocols; named once so no builder re-spells it.
 pub(crate) const HDR_AUTHORIZATION: &str = "authorization";
@@ -297,8 +305,10 @@ pub(crate) trait ProtocolReader: Send + Sync {
 /// Per-request signing context. Most protocols' `auth_headers` ignore this; protocols that
 /// sign the whole request (AWS SigV4 for Bedrock) need the method/host/path/body/time.
 pub(crate) struct SigningContext<'a> {
-    /// Upstream host (no scheme), e.g. `bedrock-runtime.us-east-1.amazonaws.com`.
-    pub(crate) host: String,
+    /// Upstream host (no scheme), e.g. `bedrock-runtime.us-east-1.amazonaws.com`. Borrowed from the
+    /// lane's precomputed `signing_host` on the forward path (no per-request allocation); only the
+    /// Bedrock SigV4 writer reads it.
+    pub(crate) host: &'a str,
     /// URI-encoded request path (no query), e.g. `/model/anthropic.claude%3A0/converse`.
     pub(crate) canonical_uri: String,
     /// The exact request body bytes that will be sent.
@@ -391,6 +401,17 @@ pub(crate) trait ProtocolWriter: Send + Sync {
         false
     }
 
+    /// The maximum number of `cache_control` breakpoints this writer's dialect accepts on a single
+    /// request, or `None` when the vendor publishes no fixed cap (Bedrock's cap is model-specific,
+    /// not protocol-wide, so it is deliberately left `None` here rather than guessed). Anthropic
+    /// documents a hard cap of 4 (`"A maximum of 4 blocks with cache_control may be provided"`).
+    /// The IR carries breakpoints as an unbounded per-block `Option<IrCacheControl>`, so a
+    /// cross-protocol request (same-protocol Anthropic is a verbatim passthrough that never reaches
+    /// a writer) can exceed a smaller target's cap; `prepare_for_egress` clamps against this.
+    fn max_cache_control_breakpoints(&self) -> Option<usize> {
+        None
+    }
+
     /// Write a response/stream event to wire (event_type, data).
     fn write_response_event(&self, ev: &IrStreamEvent) -> Option<(String, serde_json::Value)>;
 
@@ -415,7 +436,7 @@ pub(crate) trait ProtocolWriter: Send + Sync {
 
     /// Render a router/forward/auth-layer error as this protocol's NATIVE error envelope, so a
     /// client on the vendor's official SDK gets the typed exception it expects instead of a
-    /// plain-text body it cannot decode (the §8.1 / Unit I transparency gap). `status` is the HTTP
+    /// plain-text body it cannot decode (the / Unit I transparency gap). `status` is the HTTP
     /// status to be sent (informational; the envelope body may also embed it, e.g. Gemini's
     /// `error.code`); `kind` is a protocol-appropriate error type/category string (e.g.
     /// `"invalid_request_error"`, `"not_found"`); `message` is the human-readable detail.
@@ -751,7 +772,7 @@ pub(crate) trait ProtocolWriter: Send + Sync {
         };
         let mut body = self.write_request(&ir);
         let _ = self.rewrite_model_if_needed(&mut body, model);
-        serde_json::to_vec(&body).unwrap_or_default()
+        crate::json::to_vec(&body).unwrap_or_default()
     }
 
     /// Build the per-stream framing state for THIS protocol as an INGRESS (client-facing) writer.
@@ -942,6 +963,58 @@ pub(crate) trait StreamFraming: Send {
     fn folds_terminal_usage(&self) -> bool {
         true
     }
+
+    /// CLIENT-INTENT seam (OpenAI ingress, Findings 2+3). Records whether the ORIGINAL client request
+    /// carried `stream_options.include_usage == true`. Busbar always injects `include_usage` on the
+    /// UPSTREAM request so it can bill streaming calls (Finding 3), which makes the upstream emit a
+    /// trailing usage chunk; but a native OpenAI stream only emits that usage-bearing trailing chunk
+    /// when the CLIENT opted in. A client that did NOT opt in and receives an unsolicited
+    /// `{choices:[], usage}` chunk hits `choices[0]` IndexError. So when this is `false`, the OpenAI
+    /// framing STRIPS the folded usage entirely (no trailing chunk) rather than un-folding it (Finding
+    /// 2); when `true` it un-folds to the native separate trailing chunk. Billing is unaffected either
+    /// way — it reads the IR-side `last_usage` A-tap, not the client-facing chunk.
+    ///
+    /// Default ([`PassthroughFraming`] and every non-OpenAI ingress): no-op — the flag is meaningless
+    /// for protocols without the `include_usage` convention.
+    fn set_client_include_usage(&mut self, _include: bool) {}
+
+    /// SAME-PROTOCOL VERBATIM-STRIP seam (OpenAI ingress, round-3 regression fix R3-A-b). On the
+    /// same-protocol universal-translate path the translator re-emits each upstream frame BYTE-FOR-BYTE
+    /// and NEVER routes it through [`on_egress_chunk`], so the `include_usage` strip that protects an
+    /// opted-out client from the unsolicited trailing usage chunk never fires. Busbar forces
+    /// `stream_options.include_usage` on the UPSTREAM request (to bill), so an OpenAI upstream emits a
+    /// NATIVE trailing usage-only chunk (`{... "choices":[], "usage":{...}}`) even when the CLIENT did
+    /// not opt in - which a strict SDK `choices[0]`-IndexErrors on. Returning `true` for that exact
+    /// frame tells the same-proto feed loop to DROP it from the client-facing bytes (billing is
+    /// unaffected: the A-tap already read the usage from the parsed frame). Every other frame - and the
+    /// opted-in case - returns `false` and is re-emitted verbatim.
+    ///
+    /// Default ([`PassthroughFraming`] and every non-OpenAI ingress): `false` - no frame is suppressed
+    /// on the verbatim path (those protocols carry no unsolicited-usage-chunk convention).
+    fn suppress_same_proto_frame(&self, _data: &serde_json::Value) -> bool {
+        false
+    }
+
+    /// SAME-PROTOCOL INTERMEDIATE-USAGE STRIP seam (OpenAI ingress). On the same-protocol verbatim path
+    /// busbar re-emits each upstream frame BYTE-FOR-BYTE. Because busbar forces
+    /// `stream_options.include_usage` on the UPSTREAM request (to bill), an OpenAI upstream stamps
+    /// `"usage":null` on EVERY intermediate `chat.completion.chunk` (and the finish chunk). A native
+    /// OpenAI stream for a client that did NOT request `include_usage` OMITS the `usage` key entirely on
+    /// those content chunks, so re-emitting `"usage":null` on every chunk is a wire-shape TELL that
+    /// distinguishes a busbar-proxied stream from a direct one. Returning `true` for a content/finish
+    /// chunk that carries a `usage` field tells the same-proto feed loop to STRIP the top-level `usage`
+    /// member from that frame's bytes before re-emitting it (a targeted byte-level edit, NOT a full DOM
+    /// re-serialize of the fast path). Billing is unaffected - the A-tap read the frame's usage before
+    /// the strip. The trailing usage-ONLY chunk (empty `choices`) is handled by
+    /// [`suppress_same_proto_frame`] (dropped whole), not here; the opted-IN client sees every frame
+    /// verbatim. Distinct from `suppress_same_proto_frame` (which drops a whole frame) - this one KEEPS
+    /// the frame and only removes its `usage` member.
+    ///
+    /// Default ([`PassthroughFraming`] and every non-OpenAI ingress): `false` - no frame is rewritten
+    /// on the verbatim path.
+    fn strip_same_proto_usage(&self, _data: &serde_json::Value) -> bool {
+        false
+    }
 }
 
 /// Inert default [`StreamFraming`]: every method takes the trait's no-op default. Used by every
@@ -998,6 +1071,14 @@ impl Protocol {
         self.name
     }
 
+    /// The protocol name as the registry's INTERNED `&'static str` (the `name` field is `&'static`).
+    /// Lets a caller that must OUTLIVE the borrowed lookup key (e.g. a streaming response body that
+    /// stores the ingress protocol for the life of the stream) hold the name without allocating an
+    /// owned copy — the value points into the process-lifetime protocol table, not the request.
+    pub(crate) fn name_static(&self) -> &'static str {
+        self.name
+    }
+
     /// Returns the reader for this protocol.
     pub(crate) fn reader(&self) -> &dyn ProtocolReader {
         self.reader.as_ref()
@@ -1044,10 +1125,12 @@ impl Protocol {
 /// zero-sized, but a fresh instance is REQUIRED per request regardless: `GeminiWriter`,
 /// `CohereWriter`, and `ResponsesWriter` carry per-STREAM mutable state (e.g. `Mutex<Vec<…>>`,
 /// `AtomicU64`) seeded from their const constructors, so they must not be shared/cached across
-/// concurrent requests. The allocations are small (empty collections) and confined to per-request
-/// setup paths — never per-chunk loops. Registry SWEEPS that only need pure-by-name vtable facts
-/// (`streaming_content_types`, `array_stream_shim_keys`) memoize their results to avoid repeating
-/// these allocations on the hot path.
+/// concurrent requests. The allocations are small (empty collections) and happen only on
+/// request/response SETUP paths — a handful of times per request as each layer resolves the
+/// protocol it needs from a name string, never inside a per-chunk loop. Callers that hold a
+/// resolution for the life of a stream resolve it once and keep it (see `FirstByteBody::new`);
+/// callers that need only a pure by-name vtable fact go through the memoized registry sweeps below
+/// (`streaming_content_types`, `array_stream_shim_keys`) rather than resolving here.
 pub(crate) fn protocol_for(name: &str) -> Option<Protocol> {
     match name {
         PROTO_ANTHROPIC => Some(Protocol::anthropic()),
@@ -1341,7 +1424,7 @@ pub(crate) fn find_frame_terminator(buf: &[u8]) -> Option<(usize, usize)> {
 
 /// Parse one SSE frame into `(event_type, data_payload)`. `event_type` is "" when the frame has
 /// no `event:` line (OpenAI style). Multiple `data:` lines in a single frame are concatenated with
-/// `\n` per the SSE spec (§9.2.6). Returns `None` if the frame carries no `data:` line (including a
+/// `\n` per the SSE spec. Returns `None` if the frame carries no `data:` line (including a
 /// frame with only an `event:` line) or is invalid UTF-8.
 pub(crate) fn parse_sse_frame(frame: &[u8]) -> Option<(String, String)> {
     let text = std::str::from_utf8(frame).ok()?;
@@ -1363,14 +1446,265 @@ pub(crate) fn parse_sse_frame(frame: &[u8]) -> Option<(String, String)> {
     Some((event_type, data_lines.join("\n")))
 }
 
-/// Re-frame an IR-derived `(event_type, data)` as INGRESS SSE bytes. A non-empty `event_type`
-/// yields Anthropic-style `event:`/`data:` frames; an empty one yields OpenAI-style bare `data:`.
-fn reframe_sse(event_type: &str, data: &serde_json::Value) -> String {
-    if event_type.is_empty() {
-        format!("data: {data}\n\n")
-    } else {
-        format!("event: {event_type}\ndata: {data}\n\n")
+/// Byte-level removal of a TOP-LEVEL `"usage"` member from a JSON object string, preserving every
+/// other byte exactly. Returns `Some(stripped)` when a single top-level `"usage"` member was found
+/// and removed (with the correct adjacent comma and no other reshaping), or `None` when a safe
+/// byte-level edit is NOT possible for this input - a malformed/non-object body, a `"usage"` that
+/// only appears nested inside a value or inside a string, more than one top-level `"usage"`, or any
+/// shape the scanner does not fully understand. On `None` the caller falls back to parse-reserialize
+/// for THAT frame only (correctness over speed for the rare shape).
+///
+/// This exists for the same-protocol OpenAI verbatim path: busbar forces `include_usage` UPSTREAM to
+/// bill, so an OpenAI upstream stamps `"usage":null` on EVERY intermediate `chat.completion.chunk`.
+/// A native OpenAI stream for a client that did NOT request `include_usage` omits the `usage` key
+/// entirely on those chunks, so re-emitting the `"usage":null` verbatim is a wire-shape TELL. This
+/// deletes exactly that key without a full DOM re-serialize of the (common, non-suppressed) frame.
+///
+/// SAFETY: the scan is a structural single pass that tracks JSON string state (honoring `\`-escapes)
+/// and brace/bracket nesting depth, so the `"usage"` KEY is only matched when it appears as a member
+/// name at object depth 1 - never when the literal text `"usage"` (or even `"usage":null`) appears
+/// inside a string VALUE or a nested object. A key match is confirmed only when the identifier is a
+/// complete quoted string `"usage"` immediately followed (modulo whitespace) by a `:`. Anything the
+/// scanner cannot classify with certainty yields `None` (fall back), never a blind splice.
+pub(crate) fn strip_top_level_usage_member(json: &str) -> Option<String> {
+    let bytes = json.as_bytes();
+    let n = bytes.len();
+    // Skip leading whitespace; the body must be a JSON object.
+    let mut i = 0usize;
+    while i < n && bytes[i].is_ascii_whitespace() {
+        i += 1;
     }
+    if i >= n || bytes[i] != b'{' {
+        return None;
+    }
+    let obj_open = i;
+    i += 1;
+
+    // Scan the top-level object's members. `depth` counts nesting BELOW the top object (0 == directly
+    // inside the top object). We only inspect keys at depth 0. `member_start` marks the byte offset
+    // where the current member begins (the first non-whitespace, non-comma byte after `{` or `,`), so
+    // a matched `usage` member can be removed together with its trailing/leading comma.
+    let mut depth = 0usize;
+    // Byte range of the top-level `usage` member to remove, if found: [start, end) where `start` is
+    // the first byte of the key's opening quote and `end` is one past the member's value.
+    let mut usage_range: Option<(usize, usize)> = None;
+    // `true` once we are positioned at the start of a member (just after `{` or a top-level `,`) and
+    // expect a key next; used to only treat a string at depth 0 as a KEY, never a value.
+    let mut expect_key = true;
+
+    while i < n {
+        let b = bytes[i];
+        match b {
+            b'"' => {
+                // A string. At depth 0 with `expect_key`, this is a member KEY - capture its span and
+                // check whether it is exactly `usage`. Otherwise skip the string body.
+                let key_start = i;
+                let str_end = scan_json_string_end(bytes, i)?; // one past the closing quote
+                if depth == 0 && expect_key {
+                    let is_usage = &bytes[key_start..str_end] == b"\"usage\"";
+                    // Advance past the string, then whitespace, then the mandatory `:`.
+                    let mut j = str_end;
+                    while j < n && bytes[j].is_ascii_whitespace() {
+                        j += 1;
+                    }
+                    if j >= n || bytes[j] != b':' {
+                        return None; // not a well-formed member - bail to reserialize
+                    }
+                    j += 1;
+                    // Find the end of this member's value (a full scan that respects nesting/strings).
+                    let value_end = scan_json_value_end(bytes, j)?;
+                    if is_usage {
+                        if usage_range.is_some() {
+                            return None; // duplicate top-level usage - refuse to guess
+                        }
+                        usage_range = Some((key_start, value_end));
+                    }
+                    i = value_end;
+                    expect_key = false;
+                    continue;
+                }
+                // A nested string (value or below top level) - already fully consumed.
+                i = str_end;
+            }
+            b'{' | b'[' => {
+                depth += 1;
+                expect_key = false;
+                i += 1;
+            }
+            b'}' | b']' => {
+                if depth == 0 {
+                    // Closing the top-level object. Done scanning.
+                    if b == b']' {
+                        return None; // shape mismatch - top level was not an object after all
+                    }
+                    break;
+                }
+                depth -= 1;
+                i += 1;
+            }
+            b',' => {
+                if depth == 0 {
+                    expect_key = true;
+                }
+                i += 1;
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+
+    let (start, end) = usage_range?;
+    // Remove the member together with exactly ONE adjacent comma so the object stays well-formed:
+    // prefer the comma BEFORE the member (and any whitespace between that comma and the key); if the
+    // member is the FIRST one, take the comma AFTER it instead. Whitespace immediately around the
+    // removed span is trimmed so no dangling `, ` or `  ` is left, matching a native chunk's shape.
+    let mut cut_start = start;
+    let mut cut_end = end;
+    // Look left for a preceding comma (skipping whitespace back to it).
+    let mut k = start;
+    while k > obj_open + 1 && bytes[k - 1].is_ascii_whitespace() {
+        k -= 1;
+    }
+    if k > obj_open + 1 && bytes[k - 1] == b',' {
+        // There is a preceding comma: remove from it through the member's value.
+        cut_start = k - 1;
+    } else {
+        // `usage` is the first member: remove the member through a trailing comma (and its whitespace).
+        let mut m = end;
+        while m < n && bytes[m].is_ascii_whitespace() {
+            m += 1;
+        }
+        if m < n && bytes[m] == b',' {
+            cut_end = m + 1;
+        }
+        // If there is NO trailing comma either, `usage` was the sole member - removing just the member
+        // leaves `{}` (with whatever interior whitespace remained), which is still valid.
+    }
+
+    let mut out = String::with_capacity(n - (cut_end - cut_start));
+    out.push_str(&json[..cut_start]);
+    out.push_str(&json[cut_end..]);
+    Some(out)
+}
+
+/// Given `bytes` and the index of an opening `"`, return the index ONE PAST the matching closing
+/// quote, honoring `\`-escapes. `None` if the string is unterminated.
+fn scan_json_string_end(bytes: &[u8], open_quote: usize) -> Option<usize> {
+    debug_assert_eq!(bytes[open_quote], b'"');
+    let n = bytes.len();
+    let mut i = open_quote + 1;
+    while i < n {
+        match bytes[i] {
+            b'\\' => i += 2, // skip the escaped byte
+            b'"' => return Some(i + 1),
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+/// Given `bytes` and the index of the first byte of a JSON value (after any whitespace), return the
+/// index ONE PAST the value, respecting nested objects/arrays and strings. `None` if the value is
+/// malformed/unterminated. Leading whitespace before the value is tolerated.
+fn scan_json_value_end(bytes: &[u8], start: usize) -> Option<usize> {
+    let n = bytes.len();
+    let mut i = start;
+    while i < n && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    if i >= n {
+        return None;
+    }
+    match bytes[i] {
+        b'"' => scan_json_string_end(bytes, i),
+        b'{' | b'[' => {
+            // Balanced-nesting scan that skips over strings so a `}`/`]` inside a string never closes
+            // the structure.
+            let mut depth = 0usize;
+            while i < n {
+                match bytes[i] {
+                    b'"' => i = scan_json_string_end(bytes, i)?,
+                    b'{' | b'[' => {
+                        depth += 1;
+                        i += 1;
+                    }
+                    b'}' | b']' => {
+                        depth -= 1;
+                        i += 1;
+                        if depth == 0 {
+                            return Some(i);
+                        }
+                    }
+                    _ => i += 1,
+                }
+            }
+            None
+        }
+        _ => {
+            // A scalar: number / true / false / null. It ends at the next structural byte
+            // (`,`, `}`, `]`) or whitespace at this level.
+            let value_start = i;
+            while i < n {
+                match bytes[i] {
+                    b',' | b'}' | b']' => break,
+                    c if c.is_ascii_whitespace() => break,
+                    _ => i += 1,
+                }
+            }
+            if i == value_start {
+                None
+            } else {
+                Some(i)
+            }
+        }
+    }
+}
+
+/// Truncate `stop` to the egress vendor's published cap. Vendors 400 on an over-length
+/// stop-sequence array and the IR carries an unbounded `Vec` (no protocol enforces a cap on
+/// ingress), so a cross-protocol request can always exceed a smaller target's cap. NON-SILENT:
+/// warns only when it actually truncates, naming `proto`, the cap, and how many sequences were
+/// dropped.
+pub(crate) fn clamp_stop(stop: &[String], cap: usize, proto: &'static str) -> Vec<String> {
+    if stop.len() <= cap {
+        return stop.to_vec();
+    }
+    let provided = stop.len();
+    // `stop.len() > cap` is guaranteed by the early return above, so this cannot underflow;
+    // `saturating_sub` would only imply a doubt that isn't there.
+    let dropped = provided - cap;
+    tracing::warn!(
+        proto,
+        cap,
+        provided,
+        dropped,
+        "truncating stop sequences to {proto}'s documented cap of {cap}; the request carried \
+         {provided}, so {dropped} were dropped"
+    );
+    stop[..cap].to_vec()
+}
+
+/// Append an IR-derived `(event_type, data)` to `out` as INGRESS SSE bytes. A non-empty
+/// `event_type` yields Anthropic-style `event:`/`data:` frames; an empty one yields OpenAI-style
+/// bare `data:`. Writes THROUGH the caller's buffer, not into a returned `String`: this is the
+/// per-chunk streaming path (`stream.rs`'s `emit_ir_event`), and every call site immediately threw
+/// the returned `String` away into its own `out: &mut Vec<u8>` — one allocation per translated
+/// frame for nothing. Serializes via `crate::json::to_vec` (the sonic seam), not `Value`'s
+/// `Display`-via-`format!`: this function used to bypass that seam even though `json.rs`'s own
+/// module doc claims every body-JSON path, including the SSE-event paths, goes through it.
+fn write_sse_frame(out: &mut Vec<u8>, event_type: &str, data: &serde_json::Value) {
+    if !event_type.is_empty() {
+        out.extend_from_slice(b"event: ");
+        out.extend_from_slice(event_type.as_bytes());
+        out.push(b'\n');
+    }
+    out.extend_from_slice(b"data: ");
+    // `unwrap_or_default()` matches the identical decision already made one call site up
+    // (`stream.rs`'s `crate::json::to_vec(&out_data).unwrap_or_default()`): a `Value` that fails to
+    // serialise is not a condition this emitter can report, and diverging here would be gratuitous.
+    out.extend_from_slice(&crate::json::to_vec(data).unwrap_or_default());
+    out.extend_from_slice(b"\n\n");
 }
 
 /// Anthropic reader implementation.
@@ -1540,3 +1874,7 @@ mod stop_reason_matrix_tests;
 #[cfg(test)]
 #[path = "tests/image_source_matrix_tests.rs"]
 mod image_source_matrix_tests;
+
+#[cfg(test)]
+#[path = "tests/translate_parity_golden_tests.rs"]
+mod translate_parity_golden_tests;

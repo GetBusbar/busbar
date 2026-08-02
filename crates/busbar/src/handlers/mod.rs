@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The protocol handlers — the design's middle, in one module (design-operations-oop.md §6/§7):
+//! The protocol handlers — the design's middle, in one module:
 //!
 //! `Router → RequestHandler → OperationHandler → IR`
 //!
@@ -19,7 +19,6 @@
 //!
 //! Adding a protocol: a Router ID line, a `RequestHandler` impl here, its OperationHandlers. Adding an
 //! operation: an OperationHandler + a line in each `RequestHandler` that speaks it. Nothing else moves.
-#![allow(dead_code)]
 
 pub(crate) mod anthropic;
 pub(crate) mod bedrock;
@@ -91,7 +90,7 @@ impl WireBody {
 
 /// A request that could not be parsed into this operation's IR — rendered as a caller-dialect 4xx
 /// (via the existing `proxy::ingress_error`). `UnsupportedSubOp` is the m3 second 404 site
-/// (`ImageIr.op` unsupported for the model) — distinct from handler-absence (§3), same terminal.
+/// (`ImageIr.op` unsupported for the model) — distinct from handler-absence, same terminal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum IngressReject {
     BadRequest(String),
@@ -218,11 +217,16 @@ pub(crate) trait OperationHandler: Send + Sync {
 
 /// A protocol's dialect + its OperationHandlers (one impl per protocol).
 pub(crate) trait RequestHandler: Send + Sync {
-    /// Stable protocol identity (matches `proto::Protocol::name()`).
+    /// Stable protocol identity (matches `proto::Protocol::name()`). Called only from this crate's
+    /// own tests (`contract_tests.rs`, `registry_tests.rs`) — it is the registry-key/impl-identity
+    /// binding that `registry_tests.rs` asserts (`request_handler()` is a string-keyed registry;
+    /// nothing in the type system otherwise binds an impl to the key it is filed under). A
+    /// legitimate test hook whose purpose is being a test hook.
+    #[cfg_attr(not(test), allow(dead_code))]
     fn protocol_name(&self) -> &'static str;
 
     /// This protocol's row of the support matrix. `None` ⇒ the protocol does not serve the operation
-    /// ⇒ the no-handler 404 (§3). The OperationHandler, when present, is a pure codec.
+    /// ⇒ the no-handler 404. The OperationHandler, when present, is a pure codec.
     fn operation_handler(&self, op: Operation) -> Option<&dyn OperationHandler>;
 
     /// WHICH operation this request asks for — the RequestHandler knows its protocol and reads the

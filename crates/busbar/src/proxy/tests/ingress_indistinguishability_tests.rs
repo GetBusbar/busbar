@@ -8,7 +8,7 @@ use reqwest::StatusCode;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-/// REGRESSION (R15 MEDIUM, conformance): every egress request must carry a native-SDK `Accept`
+/// Every egress request must carry a native-SDK `Accept`
 /// header — a native SDK always sends one, so its absence is a backend-side proxy fingerprint.
 /// The headline bedrock egress must mirror botocore: `application/vnd.amazon.eventstream` for a
 /// ConverseStream (stream) call, `application/json` for the unary Converse call.
@@ -30,7 +30,7 @@ fn test_egress_accept_matches_native_sdk() {
     assert_eq!(egress_accept("mystery", false), "application/json");
 }
 
-/// REGRESSION (R17 MEDIUM/technique): every egress request must carry a native-SDK `User-Agent`
+/// Every egress request must carry a native-SDK `User-Agent`
 /// (a UA-less request is the most distinctive backend-side proxy fingerprint), and each per-protocol
 /// UA embeds a PINNED SDK version that silently drifts from the real SDK over time. This test pins
 /// each protocol to its `EGRESS_UA_*` constant so the version strings cannot be edited or drift
@@ -40,16 +40,48 @@ fn test_egress_accept_matches_native_sdk() {
 /// returns a non-empty, plausibly-versioned UA.
 #[test]
 fn test_egress_ua_versions_are_pinned_and_present() {
-    // Each known egress protocol maps to its named constant — drift can only happen by editing
-    // the constant (which trips this assertion), never silently.
-    assert_eq!(egress_user_agent("anthropic"), super::EGRESS_UA_ANTHROPIC);
-    assert_eq!(egress_user_agent("openai"), super::EGRESS_UA_OPENAI);
-    assert_eq!(egress_user_agent("responses"), super::EGRESS_UA_OPENAI);
-    assert_eq!(egress_user_agent("gemini"), super::EGRESS_UA_GEMINI);
-    assert_eq!(egress_user_agent("bedrock"), super::EGRESS_UA_BEDROCK);
-    assert_eq!(egress_user_agent("cohere"), super::EGRESS_UA_COHERE);
+    // GOLDEN WIRE LITERALS — the exact bytes a native SDK sends. Comparing against the
+    // `EGRESS_UA_*` constants themselves is a tautology (both sides move together when the
+    // constant is edited); pinning the literal here means changing a constant is a deliberate,
+    // reviewed act that must touch BOTH this table and the constant, so it can never happen
+    // silently. Copied verbatim from the current `EGRESS_UA_*` values in egress.rs — this fix pins
+    // the status quo, it does not change any wire value.
+    assert_eq!(
+        egress_user_agent("anthropic"),
+        "Anthropic/Python 0.39.0",
+        "anthropic egress UA drifted from the pinned native-SDK string"
+    );
+    assert_eq!(
+        egress_user_agent("openai"),
+        "OpenAI/Python 1.54.0",
+        "openai egress UA drifted from the pinned native-SDK string"
+    );
+    assert_eq!(
+        egress_user_agent("responses"),
+        "OpenAI/Python 1.54.0",
+        "responses egress UA drifted from the pinned native-SDK string"
+    );
+    assert_eq!(
+        egress_user_agent("gemini"),
+        "google-genai-sdk/0.8.0 gl-python/3.11",
+        "gemini egress UA drifted from the pinned native-SDK string"
+    );
+    assert_eq!(
+        egress_user_agent("bedrock"),
+        "Boto3/1.35.0 md/Botocore#1.35.0",
+        "bedrock egress UA drifted from the pinned native-SDK string"
+    );
+    assert_eq!(
+        egress_user_agent("cohere"),
+        "cohere-python/5.11.0",
+        "cohere egress UA drifted from the pinned native-SDK string"
+    );
     // Foreign/unknown egress still gets a present, plausible UA (never empty / never absent).
-    assert_eq!(egress_user_agent("mystery"), super::EGRESS_UA_DEFAULT);
+    assert_eq!(
+        egress_user_agent("mystery"),
+        "okhttp/4.12.0",
+        "mystery/default egress UA drifted from the pinned literal"
+    );
     for p in [
         "anthropic",
         "openai",
@@ -86,7 +118,7 @@ fn test_egress_ua_versions_are_pinned_and_present() {
 }
 
 /// CANONICAL status→kind mapping shared by the main and degraded cross-protocol error shaping.
-/// REGRESSION (R7 MEDIUM, forward_once): a 401/403 must map to authentication_error/
+/// A 401/403 must map to authentication_error/
 /// permission_error, NOT invalid_request_error (the degraded-path bug). Exhaustive over the
 /// status arms the mapping distinguishes.
 #[test]
@@ -111,7 +143,7 @@ fn test_cross_protocol_error_kind_mapping() {
         cross_protocol_error_kind(StatusCode::BAD_GATEWAY),
         "api_error" // golden wire-contract literal (kept bare on purpose)
     );
-    // REGRESSION (R15 MEDIUM): a genuine upstream 503 must map to `overloaded`, NOT `api_error`.
+    // A genuine upstream 503 must map to `overloaded`, NOT `api_error`.
     // Collapsing it into `api_error` would emit, on a bedrock ingress, the
     // 503/InternalServerException pairing the real AWS runtime never produces (503 pairs with
     // ServiceUnavailableException). `overloaded` is the kind busbar already uses for its own 503s.
@@ -162,7 +194,7 @@ async fn test_shape_cross_protocol_error_auth_kinds() {
     }
 }
 
-/// REGRESSION (R7 HIGH, proxy engine ingress_error): a Bedrock-ingress forward-layer error must
+/// A Bedrock-ingress forward-layer error must
 /// carry BOTH `x-amzn-RequestId` and `x-amzn-errortype` (mirroring the body `__type`), exactly
 /// like a real AWS Bedrock runtime error and like ingress/auth.rs. Non-bedrock ingress must NOT
 /// carry them.
@@ -202,7 +234,7 @@ fn test_ingress_error_bedrock_amzn_headers() {
 /// A forward-layer error returned to the CLIENT must carry the INGRESS protocol's native JSON
 /// error envelope (not `text/plain`), with the status code preserved. For an Anthropic ingress
 /// the shape is `{"type":"error","error":{"type",...,"message"}}` — what `anthropic.APIStatusError`
-/// decodes. (§8.1)
+/// decodes.
 #[tokio::test]
 async fn test_ingress_error_emits_native_envelope_with_status() {
     use http_body_util::BodyExt as _;
@@ -292,7 +324,7 @@ async fn test_anthropic_ingress_error_request_id_header_matches_body() {
 }
 
 /// The streaming response Content-Type is driven by the ingress protocol, not the upstream:
-/// SSE protocols → `text/event-stream`; bedrock → `application/vnd.amazon.eventstream`. (§8.4)
+/// SSE protocols → `text/event-stream`; bedrock → `application/vnd.amazon.eventstream`.
 #[test]
 fn test_ingress_stream_content_type_by_protocol() {
     for p in ["openai", "anthropic", "gemini", "cohere", "responses"] {
@@ -309,7 +341,7 @@ fn test_ingress_stream_content_type_by_protocol() {
 /// Cross-protocol non-stream response: an OpenAI backend whose body carries a `chatcmpl-` id
 /// must NOT leak that foreign id to an Anthropic client. The translation seam strips the IR
 /// identity before the ingress writer runs, so the writer mints a NATIVE `msg_` id, and the
-/// response is served with the INGRESS Content-Type (`application/json`). (§8.2, §8.4)
+/// response is served with the INGRESS Content-Type (`application/json`).
 #[tokio::test]
 async fn test_cross_protocol_response_carries_ingress_ct_and_native_id() {
     crate::metrics::init();
@@ -400,7 +432,7 @@ async fn test_cross_protocol_response_carries_ingress_ct_and_native_id() {
     server.shutdown().await;
 }
 
-/// REGRESSION (MED #2, forward_with_pool): a cross-protocol non-stream 2xx whose `usage` block
+/// A cross-protocol non-stream 2xx whose `usage` block
 /// PARSES but whose content shape is UNMODELED (here an empty `choices` array, on which the OpenAI
 /// reader's `read_response` returns `Err`) must NOT charge the virtual key's token budget. The body
 /// is untranslatable, so the client receives a 500 with NO completion; billing it (the old code
@@ -409,7 +441,7 @@ async fn test_cross_protocol_response_carries_ingress_ct_and_native_id() {
 /// response is the ingress-native 500 AND that the gov budget recorded ZERO spend.
 #[tokio::test]
 async fn test_untranslatable_2xx_does_not_charge_tokens() {
-    use crate::governance::{GovState, NewKeySpec, SqliteStore};
+    use crate::governance::{GovState, MemoryStore, NewKeySpec};
     crate::metrics::init();
     let state = Arc::new(MockServerState::new());
     // OpenAI-shaped 2xx: a real `usage` block (so the tap WOULD count 7+3=10 tokens) but an EMPTY
@@ -427,19 +459,19 @@ async fn test_untranslatable_2xx_does_not_charge_tokens() {
     });
     let server = MockServer::new(state.clone()).await;
 
-    // Gov + a virtual key: 0c/request, 100c/1k tokens, so 10 tokens would cost 1c if (wrongly)
-    // charged. A zero post-call spend proves no token billing happened.
-    let store = Arc::new(SqliteStore::open_in_memory().expect("in-memory store"));
-    let gov = Arc::new(GovState::new(store, 0, 100, None).expect("gov"));
+    // Gov + a virtual key. Spend is DERIVED now, so the "no token billing" intent is asserted on
+    // the token ledger itself: a zero post-call token count proves no token billing happened (the
+    // tap WOULD have ledgered 7+3=10 tokens if it wrongly ran).
+    let store = Arc::new(MemoryStore::new());
+    let gov = Arc::new(GovState::new(store, None).expect("gov"));
+    let cost = Arc::new(crate::cost::CostModel::flat(0));
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
                 name: "k".to_string(),
-                allowed_pools: vec![],
-                max_budget_cents: Some(1_000_000),
-                budget_period: "daily".to_string(),
-                rpm_limit: None,
-                tpm_limit: None,
+                allowed_pools: None,
+                group: None,
+                labels: Default::default(),
             },
             1_700_000_000,
         )
@@ -447,9 +479,11 @@ async fn test_untranslatable_2xx_does_not_charge_tokens() {
     let charged_at: u64 = 1_700_000_000;
     let sink = Some(UsageSink {
         gov: gov.clone(),
-        key_id: key.id.clone(),
-        period: key.budget_period.clone(),
+        cost: cost.clone(),
+        key: std::sync::Arc::new(key.clone()),
+        pool: std::sync::Arc::from(""),
         charged_at,
+        admit: None,
     });
 
     // Lane speaks OpenAI; ingress is Anthropic → cross-protocol translation hop.
@@ -494,20 +528,119 @@ async fn test_untranslatable_2xx_does_not_charge_tokens() {
         "an untranslatable cross-protocol 2xx must surface an ingress-native 500"
     );
 
-    // ...and the key's token budget must be UNTOUCHED (the bug charged 10 tokens here).
-    let spend = gov
-        .usage_for(&key.id, charged_at)
+    // ...and the key's token ledger must be UNTOUCHED (the bug ledgered 10 tokens here).
+    let tokens = gov
+        .usage_for(&cost, &key.id, charged_at)
         .expect("usage read")
-        .map(|u| u.spend_cents)
+        .map(|u| u.tokens)
         .unwrap_or(0);
     assert_eq!(
-        spend, 0,
+        tokens, 0,
         "an undelivered (untranslatable) completion must NOT charge the token budget"
     );
     server.shutdown().await;
 }
 
-/// REGRESSION (MED #1, proxy engine `FirstByteBody`): a SAME-PROTOCOL NON-STREAM 2xx
+/// The untranslatable-2xx fallthrough must ALSO refund the headers-time lane budget unit AND record
+/// a breaker transient (the BREAKER half matters more than the budget half: today a lane returning
+/// undecodable 200s forever never trips). Same MockServer shape as
+/// `test_untranslatable_2xx_does_not_charge_tokens` (empty `choices`, so the OpenAI reader's
+/// `read_response` rejects it), but the lane is budget-limited to 1 and the pool's breaker is
+/// configured to trip on a single consecutive failure, so ONE untranslatable response must both
+/// return the unit and flip the cell to Open.
+#[tokio::test]
+async fn test_untranslatable_2xx_refunds_budget_and_trips_breaker() {
+    use crate::store::{BreakerCfg, BreakerState, TripConfig, TripMode};
+    crate::metrics::init();
+    let state = Arc::new(MockServerState::new());
+    state.push(MockResponse::Ok {
+        status: StatusCode::OK,
+        body: json!({
+            "id": "chatcmpl-EMPTY",
+            "object": "chat.completion",
+            "created": 1234567890,
+            "model": "glm-4.5",
+            "choices": [],
+            "usage": {"prompt_tokens": 7, "completion_tokens": 3}
+        }),
+    });
+    let server = MockServer::new(state.clone()).await;
+
+    let app = TestApp::new()
+        .lane(
+            LaneSpec::new(
+                "glm-4.5",
+                crate::proto::Protocol::openai(),
+                &server.base_url(),
+            )
+            .provider("zai")
+            .budget(1),
+        )
+        .pool("pa", &[(0, 1)])
+        .pool_runtime(
+            "pa",
+            crate::state::PoolRuntime {
+                breaker: Some(BreakerCfg {
+                    trip: TripConfig {
+                        mode: TripMode::Consecutive,
+                        consecutive_n: 1,
+                        ..TripConfig::default()
+                    },
+                    ..BreakerCfg::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .build();
+
+    assert_eq!(app.store.lane_budget_remaining(0), Some(1));
+    // A prior optimistic success, exactly as the 2xx-headers path records before this arm runs, so
+    // the pool cell has something for the compensating transient to reverse.
+    app.store.record_success_in("pa", 0);
+    assert!(matches!(
+        app.store.breaker_state_in("pa", 0),
+        BreakerState::Closed
+    ));
+
+    let body = serde_json::to_vec(
+        &json!({"model": "pa", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 50}),
+    )
+    .unwrap();
+    let resp = forward_with_pool(
+        app.clone(),
+        vec![crate::state::WeightedLane {
+            reasoning: None,
+            idx: 0,
+            weight: 1,
+            attempt_timeout_ms: None,
+        }],
+        body.into(),
+        None,
+        "pa",
+        None,
+        "anthropic",
+        crate::handlers::CHAT,
+        None,
+    )
+    .await;
+
+    assert_eq!(resp.status().as_u16(), 500);
+    assert_eq!(
+        app.store.lane_budget_remaining(0),
+        Some(1),
+        "the untranslatable-2xx fallthrough must refund the headers-time spend_budget unit"
+    );
+    assert!(
+        matches!(
+            app.store.breaker_state_in("pa", 0),
+            BreakerState::Open { .. }
+        ),
+        "one consecutive untranslatable 2xx (consecutive_n=1) must trip the pool cell to Open"
+    );
+    server.shutdown().await;
+}
+
+/// A SAME-PROTOCOL NON-STREAM 2xx
 /// `application/json` body whose top-level object splits across transport frames BEFORE its
 /// trailing `usage` must STILL be token-counted. The streaming per-poll `tap.feed` scanner keeps
 /// no cross-chunk state — it only parses complete JSON objects within a single chunk — so the old
@@ -520,24 +653,23 @@ async fn test_untranslatable_2xx_does_not_charge_tokens() {
 #[tokio::test]
 async fn test_same_protocol_nonstream_multichunk_counts_usage() {
     use super::FirstByteBody;
-    use crate::governance::{GovState, NewKeySpec, SqliteStore};
+    use crate::governance::{GovState, MemoryStore, NewKeySpec};
     use bytes::Bytes;
     use http_body_util::BodyExt as _;
     crate::metrics::init();
 
-    // Gov + virtual key: 0c/request, 100c/1k tokens → a 1000-token response costs 100c. A nonzero
-    // post-drain spend proves the reassembled body's `usage` was counted.
-    let store = Arc::new(SqliteStore::open_in_memory().expect("in-memory store"));
-    let gov = Arc::new(GovState::new(store, 0, 100, None).expect("gov"));
+    // Gov + virtual key. Spend is DERIVED now, so "the tail usage was counted" is asserted on the
+    // token ledger: a 1000-token post-drain ledger proves the reassembled body's `usage` ran.
+    let store = Arc::new(MemoryStore::new());
+    let gov = Arc::new(GovState::new(store, None).expect("gov"));
+    let cost = Arc::new(crate::cost::CostModel::flat(0));
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
                 name: "k".to_string(),
-                allowed_pools: vec![],
-                max_budget_cents: Some(1_000_000),
-                budget_period: "daily".to_string(),
-                rpm_limit: None,
-                tpm_limit: None,
+                allowed_pools: None,
+                group: None,
+                labels: Default::default(),
             },
             1_700_000_000,
         )
@@ -545,9 +677,11 @@ async fn test_same_protocol_nonstream_multichunk_counts_usage() {
     let charged_at: u64 = 1_700_000_000;
     let sink = Some(UsageSink {
         gov: gov.clone(),
-        key_id: key.id.clone(),
-        period: key.budget_period.clone(),
+        cost: cost.clone(),
+        key: std::sync::Arc::new(key.clone()),
+        pool: std::sync::Arc::from(""),
         charged_at,
+        admit: None,
     });
 
     // An OpenAI chat.completion 2xx with 600 input + 400 output = 1000 tokens, with `usage` at the
@@ -607,29 +741,183 @@ async fn test_same_protocol_nonstream_multichunk_counts_usage() {
         "the client must still receive the complete body verbatim"
     );
 
-    // The reassembled body's 1000 tokens → 100c must have been charged (old code: 0). Inside a
-    // Tokio runtime `record_tokens` offloads the SQLite write to the blocking pool, so drain it
-    // by polling until the usage row appears (bounded retries) before asserting.
-    let mut spend = 0;
+    // The reassembled body's 1000 tokens must have been ledgered (old code: 0). Accrual may land
+    // off the polling task, so poll until the tokens appear (bounded retries) before asserting.
+    let mut tokens = 0;
     for _ in 0..200 {
         tokio::task::yield_now().await;
-        spend = gov
-            .usage_for(&key.id, charged_at)
+        tokens = gov
+            .usage_for(&cost, &key.id, charged_at)
             .expect("usage read")
-            .map(|u| u.spend_cents)
+            .map(|u| u.tokens)
             .unwrap_or(0);
-        if spend == 100 {
+        if tokens == 1000 {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(1)).await;
     }
     assert_eq!(
-            spend, 100,
-            "a multi-chunk same-protocol non-stream body's tail usage MUST be counted (1000 tokens → 100c)"
-        );
+        tokens, 1000,
+        "a multi-chunk same-protocol non-stream body's tail usage MUST be counted (1000 tokens)"
+    );
 }
 
-/// audit H3 (CHARACTERIZATION, FULL PATH): terminal token usage MUST reach the client on a
+/// MEDIUM/correctness (M8): the non-stream usage-tap reassembly decision at
+/// `response_body.rs`'s `if this.nonstream_buf.len() < max_translated_body_bytes() { let remaining
+/// = max_translated_body_bytes() - ... }` reads the live-reloadable
+/// `crate::limits::translate_body_max_bytes()` TWICE. `InstallGuard::install` (`limits.rs:74`)
+/// mutates that `RwLock` under a still-running gateway (a config apply/rollback), so a write
+/// landing in the gap between the two reads makes the first read's `if` pass on a HIGH cap while
+/// the second read subtracts against a freshly-LOWERED one — an underflow (`remaining = lo - buf`)
+/// that panics in debug and wraps to ~2^64 in release (silently disabling the cap).
+///
+/// This is a genuine two-statement TOCTOU with NO await point between the reads (`poll_next` is
+/// synchronous), so there is no way to deterministically interleave a config apply between them
+/// without instrumenting production code. This test instead applies RACE PRESSURE: a background
+/// thread hammers `crate::limits::install` between a cap comfortably above `CHUNK1_LEN` and one
+/// below it, at the highest rate the toggling loop can sustain, while the foreground repeatedly
+/// drives a fresh `FirstByteBody` through the exact vulnerable decision (buffer `CHUNK1_LEN` bytes
+/// under the current cap, then poll a second chunk that re-reads the cap). Over enough attempts
+/// the race window is hit. After the fix (`cap` read once into a local) this can NEVER panic
+/// regardless of scheduling, so a passing run after the fix is not luck — it is deterministic.
+///
+/// `#[ignore]`: `crate::limits::install` (test-only escape hatch) mutates the SAME process-global
+/// `RwLock` every other test reads through `max_translated_body_bytes()`/`translate_body_max_bytes()`
+/// with no cross-test serialization (see `limits.rs`'s own doc — this is a bare test-only setter,
+/// not scoped). Hammering it from a background thread — required to have any chance of landing the
+/// TOCTOU window — corrupted a concurrently-running sibling
+/// (`test_cross_protocol_nonstream_over_cap_body_returns_500_uncharged`) under the default parallel
+/// `cargo test` runner. Run explicitly and alone to reproduce the RED/GREEN proof:
+/// `cargo test -p busbar --bin busbar -- --ignored --test-threads=1 nonstream_tap_cap_is_read_once_per_decision`.
+#[test]
+#[ignore = "hammers the global limits RwLock; run alone (see doc comment) to avoid corrupting sibling tests"]
+fn nonstream_tap_cap_is_read_once_per_decision() {
+    use super::FirstByteBody;
+    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+    use bytes::Bytes;
+    use futures::StreamExt;
+    use std::panic::AssertUnwindSafe;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    crate::metrics::init();
+    const CHUNK1_LEN: usize = 4096;
+    const ATTEMPTS: usize = 20_000;
+
+    let app = TestApp::new()
+        .lane(LaneSpec::new(
+            "m",
+            crate::proto::Protocol::openai(),
+            "http://127.0.0.1:1",
+        ))
+        .pool("pa", &[(0, 1)])
+        .build();
+
+    // A real UsageSink (not just `Some(..)`) so the decision runs the exact production condition
+    // (`taps_nonstream_usage() && usage_sink.is_some()`) that gates this branch — never reached
+    // to completion here (only 2 chunks are polled, never draining to the billing arm), so no
+    // background flush task is required.
+    let store = Arc::new(MemoryStore::new());
+    let gov = Arc::new(GovState::new(store, None).expect("gov"));
+    let cost = Arc::new(crate::cost::CostModel::flat(0));
+    let (key, _secret) = gov
+        .create_key(
+            NewKeySpec {
+                name: "k".to_string(),
+                allowed_pools: None,
+                group: None,
+                labels: Default::default(),
+            },
+            1_700_000_000,
+        )
+        .expect("create key");
+    let sink = Some(UsageSink {
+        gov: gov.clone(),
+        cost: cost.clone(),
+        key: std::sync::Arc::new(key.clone()),
+        pool: std::sync::Arc::from(""),
+        charged_at: 1_700_000_000,
+        admit: None,
+    });
+
+    let chunk1 = Bytes::from(vec![b'a'; CHUNK1_LEN]);
+    let chunk2 = Bytes::from(vec![b'b'; 64]);
+
+    // Race pressure: flip the live cap as fast as possible between a value that lets the first
+    // read's `if` pass (comfortably above CHUNK1_LEN) and one the second read's subtraction cannot
+    // survive (below CHUNK1_LEN) — the exact live-reload race `limits.rs`'s own header documents.
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop2 = stop.clone();
+    let toggler = std::thread::spawn(move || {
+        let hi = crate::config::LimitsResolved {
+            request_body_max_bytes: CHUNK1_LEN * 10,
+            ..crate::config::LimitsResolved::default()
+        };
+        let lo = crate::config::LimitsResolved {
+            request_body_max_bytes: CHUNK1_LEN / 2,
+            ..crate::config::LimitsResolved::default()
+        };
+        while !stop2.load(Ordering::Relaxed) {
+            crate::limits::install(&hi);
+            crate::limits::install(&lo);
+        }
+    });
+
+    let waker = futures::task::noop_waker();
+    let mut cx = std::task::Context::from_waker(&waker);
+    let mut hit = false;
+    for _ in 0..ATTEMPTS {
+        let inner = futures::stream::iter(vec![
+            Ok::<Bytes, reqwest::Error>(chunk1.clone()),
+            Ok::<Bytes, reqwest::Error>(chunk2.clone()),
+        ]);
+        let mut fbb = FirstByteBody::new(
+            inner,
+            false, // is_sse: same-protocol NON-STREAM application/json
+            "openai",
+            crate::handlers::CHAT,
+            (),
+            app.clone(),
+            0,
+            Arc::new(crate::store::BreakerCfg::default()),
+            "pa",
+            None,
+            None,
+            sink.clone(),
+            false,
+        );
+        // Drive chunk 1 to completion (buffers CHUNK1_LEN bytes, whatever the cap happens to be at
+        // that instant — retried by the outer loop if it lands unlucky and truncates early).
+        loop {
+            match fbb.poll_next_unpin(&mut cx) {
+                std::task::Poll::Ready(Some(_)) => break,
+                std::task::Poll::Ready(None) => break,
+                std::task::Poll::Pending => continue,
+            }
+        }
+        // The vulnerable decision: chunk 2 re-reads the cap while the toggler hammers it.
+        let result = std::panic::catch_unwind(AssertUnwindSafe(|| loop {
+            match fbb.poll_next_unpin(&mut cx) {
+                std::task::Poll::Ready(_) => break,
+                std::task::Poll::Pending => continue,
+            }
+        }));
+        if result.is_err() {
+            hit = true;
+            break;
+        }
+    }
+    stop.store(true, Ordering::Relaxed);
+    toggler.join().unwrap();
+
+    assert!(
+        !hit,
+        "the cap decision must read `max_translated_body_bytes()` ONCE: a second read landing \
+         after a concurrent config apply lowered the cap underflowed `remaining` and panicked \
+         (attempt to subtract with overflow) within {ATTEMPTS} attempts under race pressure"
+    );
+}
+
+/// CHARACTERIZATION, FULL PATH: terminal token usage MUST reach the client on a
 /// cross-protocol STREAM even when the egress reports usage in a SEPARATE trailing chunk (the OpenAI
 /// `include_usage` convention). This drives the REAL `FirstByteBody` translate → finish → json-array
 /// framer path for a gemini-ingress / openai-egress stream — the level the isolated translator tests
@@ -706,7 +994,7 @@ async fn test_cross_protocol_stream_delivers_trailing_usage_gemini_json_array() 
     );
 }
 
-/// audit H3 (CHARACTERIZATION, plain-SSE sibling): the terminal-usage fold must also deliver on the
+/// CHARACTERIZATION, plain-SSE sibling: the terminal-usage fold must also deliver on the
 /// PLAIN SSE path (no json-array framer), not just gemini json-array — find-1-solve-6 across the two
 /// delivery paths. anthropic ingress / openai egress with include_usage: the client's terminal
 /// `message_delta` must carry the real `usage.output_tokens` (400), not 0.
@@ -786,22 +1074,22 @@ async fn test_cross_protocol_stream_delivers_trailing_usage_anthropic_sse() {
 #[tokio::test]
 async fn test_mid_stream_transport_error_does_not_bill_partial_usage() {
     use super::FirstByteBody;
-    use crate::governance::{GovState, NewKeySpec, SqliteStore};
+    use crate::governance::{GovState, MemoryStore, NewKeySpec};
     use bytes::Bytes;
     use http_body_util::BodyExt as _;
     crate::metrics::init();
 
-    let store = Arc::new(SqliteStore::open_in_memory().expect("store"));
-    let gov = Arc::new(GovState::new(store, 0, 100, None).expect("gov")); // 0c/req, 100c/1k tokens
+    let store = Arc::new(MemoryStore::new());
+    let gov = Arc::new(GovState::new(store, None).expect("gov"));
+    // Spend is DERIVED now; the no-bill intent is asserted on the token ledger directly.
+    let cost = Arc::new(crate::cost::CostModel::flat(0));
     let (key, _s) = gov
         .create_key(
             NewKeySpec {
                 name: "k".to_string(),
-                allowed_pools: vec![],
-                max_budget_cents: Some(1_000_000),
-                budget_period: "daily".to_string(),
-                rpm_limit: None,
-                tpm_limit: None,
+                allowed_pools: None,
+                group: None,
+                labels: Default::default(),
             },
             1_700_000_000,
         )
@@ -809,9 +1097,11 @@ async fn test_mid_stream_transport_error_does_not_bill_partial_usage() {
     let charged_at: u64 = 1_700_000_000;
     let sink = Some(UsageSink {
         gov: gov.clone(),
-        key_id: key.id.clone(),
-        period: key.budget_period.clone(),
+        cost: cost.clone(),
+        key: std::sync::Arc::new(key.clone()),
+        pool: std::sync::Arc::from(""),
         charged_at,
+        admit: None,
     });
 
     let app = TestApp::new()
@@ -862,28 +1152,28 @@ async fn test_mid_stream_transport_error_does_not_bill_partial_usage() {
     // Drain (emits the mid-stream error frame then None), then the body drops → Drop billing gate runs.
     let _ = fbb.into_body().collect().await;
 
-    // Poll briefly: a pre-fix Drop would offload record_tokens(150) to the blocking pool and spend
-    // becomes 15c; the fixed gate records nothing, so spend stays 0.
-    let mut spend = 0;
+    // Poll briefly: a pre-fix Drop would ledger the 150 partial tokens; the fixed gate records
+    // nothing, so the token ledger stays 0.
+    let mut tokens = 0;
     for _ in 0..150 {
         tokio::task::yield_now().await;
-        spend = gov
-            .usage_for(&key.id, charged_at)
+        tokens = gov
+            .usage_for(&cost, &key.id, charged_at)
             .expect("usage read")
-            .map(|u| u.spend_cents)
+            .map(|u| u.tokens)
             .unwrap_or(0);
-        if spend != 0 {
+        if tokens != 0 {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(1)).await;
     }
     assert_eq!(
-        spend, 0,
-        "a mid-stream transport error must NOT bill the partial usage (pre-fix billed 150 tokens = 15c)"
+        tokens, 0,
+        "a mid-stream transport error must NOT bill the partial usage (pre-fix ledgered 150 tokens)"
     );
 }
 
-/// REGRESSION (LOW #15 SECURITY, proxy engine key selection): in `Passthrough` mode, a caller that
+/// In `Passthrough` mode, a caller that
 /// presents NO credential must fall back to an EMPTY credential, NOT the lane operator's
 /// `api_key`. Borrowing the operator key would let an unauthenticated caller silently spend on the
 /// operator's upstream account. With the empty-credential fallback the upstream returns its own
@@ -929,7 +1219,7 @@ async fn test_passthrough_no_caller_token_selects_empty_not_lane_key() {
             .api_key("sk-operator-secret"),
         )
         .pool("pa", &[(0, 1)])
-        .auth(Arc::new(AuthMiddleware::new(&passthrough)))
+        .auth(Arc::new(AuthMiddleware::new_builtin(&passthrough)))
         .build();
 
     let body = serde_json::to_vec(
@@ -1138,7 +1428,7 @@ async fn test_bedrock_ingress_success_carries_amzn_request_id() {
     );
     // UUID-v4 shaped: 36 chars, 8-4-4-4-12.
     assert_eq!(amzn.len(), 36, "x-amzn-RequestId is a UUID; got {amzn}");
-    // Regression (duplicate-header): the header must appear EXACTLY ONCE. The collapsed
+    // The header must appear EXACTLY ONCE. The collapsed
     // maybe_attach_response_request_id was briefly called twice at this cross-protocol site,
     // appending two distinct x-amzn-RequestId values (axum `header()` appends). `.get()` masks it;
     // count all values.
@@ -1213,7 +1503,7 @@ async fn test_anthropic_ingress_success_carries_request_id_header() {
         "anthropic-ingress 2xx MUST carry a synthesized `request-id` header in the native req_ \
              shape; got {rid:?}"
     );
-    // Regression (duplicate-header): exactly ONE `request-id` (no duplicate from a double attach).
+    // Exactly ONE `request-id` (no duplicate from a double attach).
     assert_eq!(
         resp.headers().get_all("request-id").iter().count(),
         1,
@@ -1379,7 +1669,7 @@ async fn test_cross_protocol_client_fault_reshapes_error_envelope() {
 }
 
 /// A forward error path through the real `forward_with_pool` (empty candidate pool → exhaustion)
-/// returns the ingress protocol's native JSON envelope with the right status. (§8.1)
+/// returns the ingress protocol's native JSON envelope with the right status.
 #[tokio::test]
 async fn test_forward_error_path_returns_native_envelope() {
     use http_body_util::BodyExt as _;
@@ -1515,7 +1805,7 @@ async fn test_forward_once_cross_protocol_strips_source_only_extra_keys() {
     server.shutdown().await;
 }
 
-/// Regression (MEDIUM, conformance): the `forward_once` degraded
+/// The `forward_once` degraded
 /// (LeastBad/FallbackPool) cross-protocol path must apply the SAME tool-id native remap the main
 /// forward path does. Before the fix it stripped identity + stamped `created` but omitted
 /// `ToolIdRemap::remap_response`, so a tool-call response emitted the egress backend's RAW native
@@ -1614,7 +1904,7 @@ async fn test_forward_once_cross_protocol_remaps_tool_call_id() {
     server.shutdown().await;
 }
 
-/// Regression (indistinguishability): the `forward_once` degraded
+/// The `forward_once` degraded
 /// (LeastBad/FallbackPool) SAME-protocol Bedrock error relay must forward BOTH `x-amzn-requestid`
 /// and `x-amzn-errortype` verbatim, mirroring the main path. Before the fix it captured neither on
 /// this path — a native AWS SDK's `request_id()` would return None and typed-exception dispatch
@@ -1818,7 +2108,7 @@ async fn test_anthropic_same_proto_passthrough_401_relays_request_id_verbatim_on
             .provider("anthropic"),
         )
         .pool("pa", &[(0, 1)])
-        .auth(Arc::new(AuthMiddleware::new(&passthrough)))
+        .auth(Arc::new(AuthMiddleware::new_builtin(&passthrough)))
         .build();
 
     let resp = forward_with_pool(
@@ -1993,6 +2283,80 @@ async fn test_bedrock_converse_stream_buffered_cross_protocol_emits_binary_event
     assert!(names.contains(&"contentBlockDelta"), "frames: {names:?}");
     assert!(names.contains(&"messageStop"), "frames: {names:?}");
     assert!(names.contains(&"metadata"), "frames: {names:?}");
+    server.shutdown().await;
+}
+
+/// HIGH/test-coverage (cargo-mutants gap, proxy engine `forward_with_pool_parsed_inner`):
+/// `client_include_usage` (`wants_stream && <client body opted into stream_options.include_usage>`)
+/// gates whether Busbar force-injects `stream_options.include_usage:true` onto the OUTGOING OpenAI
+/// egress request (`&& !client_include_usage` at the injection site) — cargo-mutants: `&&` -> `||`.
+/// Under the `||` mutant, `wants_stream` ALONE would make `client_include_usage` true for every
+/// streaming request, so this injection would be wrongly SKIPPED for the common case (a client
+/// that streams but never mentions `stream_options`) — busbar would then bill the completion at
+/// ZERO tokens, since the upstream never emits the trailing usage chunk without the opt-in. Assert
+/// the real, currently-mandatory injection actually happens on the wire.
+#[tokio::test]
+async fn test_streaming_openai_egress_without_client_opt_in_still_gets_include_usage_injected() {
+    crate::metrics::init();
+    let state = Arc::new(MockServerState::new());
+    state.push(MockResponse::Sse {
+        events: vec![
+            r#"data: {"id":"chatcmpl-x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"Hi"},"finish_reason":null}]}"#
+                .to_string(),
+            r#"data: {"id":"chatcmpl-x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#
+                .to_string(),
+            "data: [DONE]".to_string(),
+        ],
+        abort_at_index: None,
+    });
+    let server = MockServer::new(state.clone()).await;
+    let app = TestApp::new()
+        .lane(
+            LaneSpec::new(
+                "gpt-4o",
+                crate::proto::Protocol::openai(),
+                &server.base_url(),
+            )
+            .provider("openai"),
+        )
+        .pool("po", &[(0, 1)])
+        .build();
+    // Same-protocol OpenAI stream; the client body carries NO `stream_options` at all — the common
+    // case `client_include_usage` must read `false` for.
+    let body = serde_json::to_vec(&json!({
+        "model": "po",
+        "messages": [{"role": "user", "content": "hi"}],
+        "stream": true
+    }))
+    .unwrap();
+    let resp = forward_with_pool(
+        app.clone(),
+        vec![crate::state::WeightedLane {
+            reasoning: None,
+            idx: 0,
+            weight: 1,
+            attempt_timeout_ms: None,
+        }],
+        body.into(),
+        None,
+        "po",
+        None,
+        "openai",
+        crate::handlers::CHAT,
+        None,
+    )
+    .await;
+    assert_eq!(resp.status().as_u16(), 200);
+    let egress = state
+        .get_last_request_body()
+        .expect("backend received a request body");
+    let ev: Value = serde_json::from_slice(&egress).expect("egress body is JSON");
+    assert_eq!(
+        ev.pointer("/stream_options/include_usage"),
+        Some(&Value::Bool(true)),
+        "busbar must force stream_options.include_usage on the outgoing OpenAI stream request \
+             even when the client didn't opt in (or billing sees zero tokens): {ev}"
+    );
     server.shutdown().await;
 }
 
@@ -2250,7 +2614,75 @@ async fn test_cross_protocol_nonstream_over_cap_body_returns_500_uncharged() {
     server.shutdown().await;
 }
 
-/// REGRESSION (R18 LOW, perf): `read_capped` now pre-reserves a bounded initial buffer capacity
+/// REGRESSION (passes before and after the `BudgetSpendGuard` change, not a RED test): the
+/// `ReadEnd::Truncated` arm is a DELIBERATE no-refund policy — the upstream genuinely succeeded, so
+/// the lane DID serve a request and the budget unit must NOT be returned even though the client
+/// gets a 500. Pins that the guard's `disarm()` before this branch's `return` preserves that policy
+/// (a refund-by-default guard would invert it, exactly the mistake ruled out for this class).
+#[tokio::test]
+async fn test_truncated_body_does_not_refund_budget() {
+    crate::metrics::init();
+    let state = Arc::new(MockServerState::new());
+    let huge = "x".repeat(super::max_translated_body_bytes() + 1024);
+    state.push(MockResponse::Ok {
+        status: StatusCode::OK,
+        body: json!({
+            "id": "chatcmpl-huge",
+            "object": "chat.completion",
+            "created": 1234567890,
+            "model": "gpt-4o",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": huge}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 999999}
+        }),
+    });
+    let server = MockServer::new(state.clone()).await;
+    let app = TestApp::new()
+        .lane(
+            LaneSpec::new(
+                "gpt-4o",
+                crate::proto::Protocol::openai(),
+                &server.base_url(),
+            )
+            .provider("openai")
+            .budget(1),
+        )
+        .pool("pc", &[(0, 1)])
+        .build();
+    assert_eq!(app.store.lane_budget_remaining(0), Some(1));
+    let body = serde_json::to_vec(&json!({
+        "model": "pc",
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 16
+    }))
+    .unwrap();
+    let resp = forward_with_pool(
+        app.clone(),
+        vec![crate::state::WeightedLane {
+            reasoning: None,
+            idx: 0,
+            weight: 1,
+            attempt_timeout_ms: None,
+        }],
+        body.into(),
+        None,
+        "pc",
+        None,
+        "anthropic",
+        crate::handlers::CHAT,
+        None,
+    )
+    .await;
+    assert_eq!(resp.status().as_u16(), 500);
+    assert_eq!(
+        app.store.lane_budget_remaining(0),
+        Some(0),
+        "an over-cap (Truncated) body is OUR cap, not an upstream fault, so the headers-time \
+             spend must NOT be refunded"
+    );
+    server.shutdown().await;
+}
+
+/// `read_capped` now pre-reserves a bounded initial buffer capacity
 /// to cut the per-chunk reallocation churn as the buffer grows toward `cap`. The pre-reserve must
 /// NOT change cap ENFORCEMENT: a body that exceeds `cap` is still rejected — the returned buffer
 /// holds exactly `cap` bytes (the admitted prefix) and the end reason is `ReadEnd::Truncated`,
@@ -2289,7 +2721,7 @@ async fn test_read_capped_enforces_cap_exactly_and_reports_truncated() {
     server.shutdown().await;
 }
 
-/// REGRESSION (R18 LOW, public-scrub): the client-facing 400 body for an unparseable JSON request
+/// The client-facing 400 body for an unparseable JSON request
 /// must carry ONLY the generic, vendor-plausible message — never serde_json's Display detail
 /// (line/column/expectation), which is a busbar-internal tell and can echo fragments of the
 /// malformed body. Sends a body that is valid UTF-8 but invalid JSON containing a recognizable
@@ -2350,7 +2782,7 @@ async fn test_unparseable_json_400_carries_no_serde_internals() {
     }
 }
 
-/// REGRESSION (R20 MED #3, budget symmetry): on the STREAMING (`is_sse`) path the 2xx headers
+/// On the STREAMING (`is_sse`) path the 2xx headers
 /// already spent one `max_requests` budget unit, but a PRE-FIRST-BYTE upstream body transport
 /// failure delivers no usable response. The buffered `ReadEnd::TransportError` paths refund that
 /// unit (#21); the streaming path previously refunded NOTHING — every streaming transport failure
@@ -2359,6 +2791,7 @@ async fn test_unparseable_json_400_carries_no_serde_internals() {
 #[tokio::test]
 async fn test_streaming_pre_first_byte_transport_error_refunds_budget() {
     use super::FirstByteBody;
+    use crate::store::{BreakerCfg, BreakerState, TripConfig, TripMode};
     use bytes::Bytes;
     use futures::StreamExt as _;
 
@@ -2398,6 +2831,23 @@ async fn test_streaming_pre_first_byte_transport_error_refunds_budget() {
     let inner = Box::pin(futures::stream::once(async move {
         Err::<Bytes, reqwest::Error>(reqwest_err)
     }));
+    // The 2xx headers recorded an optimistic breaker SUCCESS; simulate that so the pre-first-byte
+    // failure below has something to reverse (P2 #2). A consecutive n:1 trip config makes one
+    // recorded transient observable as Closed→Open.
+    app.store.record_success_in("p", 0);
+    let breaker_cfg = std::sync::Arc::new(BreakerCfg {
+        trip: TripConfig {
+            mode: TripMode::Consecutive,
+            consecutive_n: 1,
+            ..TripConfig::default()
+        },
+        ..BreakerCfg::default()
+    });
+    assert!(
+        matches!(app.store.breaker_state_in("p", 0), BreakerState::Closed),
+        "precondition: the pool cell is Closed after the optimistic success"
+    );
+
     let body = FirstByteBody::new(
         inner,
         true, // is_sse: streaming path
@@ -2406,7 +2856,7 @@ async fn test_streaming_pre_first_byte_transport_error_refunds_budget() {
         (), // permit: a unit placeholder is sufficient for the Stream bounds
         app.clone(),
         0,
-        std::sync::Arc::new(crate::store::BreakerCfg::default()),
+        breaker_cfg,
         "p",
         None,
         None,
@@ -2428,9 +2878,104 @@ async fn test_streaming_pre_first_byte_transport_error_refunds_budget() {
         app.store.spend_budget(0),
         "streaming pre-first-byte transport failure must refund the spent budget unit (MED #3)"
     );
+
+    // P2 #2: the pre-first-byte transport failure must ALSO record a breaker transient, reversing
+    // the optimistic 2xx success and tripping the cell Closed→Open. Before the fix the transient
+    // was gated on `had_first` and this stayed Closed - a lane that always fails before the first
+    // byte would never trip.
+    assert!(
+        matches!(
+            app.store.breaker_state_in("p", 0),
+            BreakerState::Open { .. }
+        ),
+        "pre-first-byte transport failure must record a breaker transient (P2 #2)"
+    );
 }
 
-/// REGRESSION (R25 MED #1, breaker symmetry): on a NON-SSE same-protocol passthrough (e.g.
+/// A lane whose upstream connects and returns 2xx headers but then dies BEFORE
+/// the first streamed byte on EVERY attempt must still trip its circuit breaker. Each pre-first-byte
+/// transport failure now records a breaker transient (no longer gated on `had_first`), so REPEATED
+/// pre-first-byte failures accumulate toward the trip threshold instead of silently recording
+/// nothing. This drives a cell to Open after the configured number of consecutive pre-first-byte
+/// failures. (Isolating the transient count - no intervening headers-success - so the consecutive
+/// streak reflects exactly the pre-first-byte failures: the point is that they ARE counted at all,
+/// which before the fix they were not.)
+#[tokio::test]
+async fn test_repeated_pre_first_byte_failures_trip_breaker() {
+    use super::FirstByteBody;
+    use crate::store::{BreakerCfg, BreakerState, TripConfig, TripMode};
+    use bytes::Bytes;
+    use futures::StreamExt as _;
+
+    let app = TestApp::new()
+        .lane(LaneSpec::new(
+            "m",
+            crate::proto::Protocol::anthropic(),
+            "http://127.0.0.1:1",
+        ))
+        .pool("p", &[(0, 1)])
+        .build();
+
+    // Trip only after 3 consecutive failures, so we can watch the cell stay Closed for the first
+    // two pre-first-byte failures and flip to Open on the third - proving each one is counted.
+    let breaker_cfg = std::sync::Arc::new(BreakerCfg {
+        trip: TripConfig {
+            mode: TripMode::Consecutive,
+            consecutive_n: 3,
+            ..TripConfig::default()
+        },
+        ..BreakerCfg::default()
+    });
+
+    for attempt in 1..=3u32 {
+        // The upstream dies before the first byte. A fresh connect-refused error is the pre-first-
+        // byte failure shape.
+        let reqwest_err = reqwest::Client::new()
+            .get("http://127.0.0.1:1/never")
+            .send()
+            .await
+            .expect_err("connect to a closed port must fail");
+        let inner = Box::pin(futures::stream::once(async move {
+            Err::<Bytes, reqwest::Error>(reqwest_err)
+        }));
+        let body = FirstByteBody::new(
+            inner,
+            true, // is_sse
+            "anthropic",
+            crate::handlers::CHAT,
+            (),
+            app.clone(),
+            0,
+            breaker_cfg.clone(),
+            "p",
+            None,
+            None,
+            None,
+            false, // no budget spent on this unlimited lane
+        );
+        futures::pin_mut!(body);
+        let item = body.next().await;
+        assert!(
+            matches!(item, Some(Err(_))),
+            "attempt {attempt}: pre-first-byte failure terminates the body with an error"
+        );
+
+        if attempt < 3 {
+            assert!(
+                matches!(app.store.breaker_state_in("p", 0), BreakerState::Closed),
+                "attempt {attempt}: below the threshold the cell stays Closed but the failure is \
+                 counted"
+            );
+        } else {
+            assert!(
+                matches!(app.store.breaker_state_in("p", 0), BreakerState::Open { .. }),
+                "the 3rd consecutive pre-first-byte failure must trip the breaker Closed→Open (P2 #2)"
+            );
+        }
+    }
+}
+
+/// On a NON-SSE same-protocol passthrough (e.g.
 /// OpenAI→OpenAI `/chat/completions`, content-type `application/json`) the 2xx headers recorded
 /// an optimistic breaker SUCCESS, but a mid-BODY transport failure AFTER the first byte delivers
 /// an incomplete response. `FirstByteBody`'s non-SSE `else` arm previously refunded budget but
@@ -2539,7 +3084,7 @@ async fn test_streaming_nonsse_mid_body_transport_error_records_transient() {
     );
 }
 
-/// REGRESSION (R26 MED #1 + LOW #7, CLASS-COMPLETION of the R25 forward fix): a CROSS-PROTOCOL
+/// A CROSS-PROTOCOL
 /// stream whose `StreamTranslate` ABORTS after the first byte — its reassembly buffer overran
 /// `MAX_BUF` (>16MiB without a frame terminator) or it hit a malformed egress prelude — sets NO
 /// `tap.terminal_error` (no in-band `{"type":"error"}` frame was ever scanned). R25 made the
@@ -2551,7 +3096,7 @@ async fn test_streaming_nonsse_mid_body_transport_error_records_transient() {
 #[tokio::test]
 async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
     use super::FirstByteBody;
-    use crate::governance::{GovState, NewKeySpec, SqliteStore};
+    use crate::governance::{GovState, MemoryStore, NewKeySpec};
     use crate::store::{BreakerCfg, BreakerState, TripConfig, TripMode};
     use bytes::Bytes;
     use futures::StreamExt as _;
@@ -2586,29 +3131,30 @@ async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
         "pool cell must start Closed before the translate abort"
     );
 
-    // A usage sink over a real GovState priced at 100c per 1k tokens, so any `record_tokens`
-    // call with nonzero tokens leaves an observable spend in the key's window.
-    let store = Arc::new(SqliteStore::open_in_memory().expect("in-memory store"));
-    let gov = Arc::new(GovState::new(store, 0, 100, None).expect("gov"));
+    // A usage sink over a real GovState: any accrual call with nonzero tokens leaves an
+    // observable token ledger in the key's window (spend derives; tokens are the ledger).
+    let store = Arc::new(MemoryStore::new());
+    let gov = Arc::new(GovState::new(store, None).expect("gov"));
+    let cost = Arc::new(crate::cost::CostModel::flat(0));
     let charged_at: u64 = 1_700_000_000;
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
                 name: "k".to_string(),
-                allowed_pools: vec![],
-                max_budget_cents: Some(1_000_000),
-                budget_period: "daily".to_string(),
-                rpm_limit: None,
-                tpm_limit: None,
+                allowed_pools: None,
+                group: None,
+                labels: Default::default(),
             },
             charged_at,
         )
         .expect("create key");
     let sink = Some(UsageSink {
         gov: gov.clone(),
-        key_id: key.id.clone(),
-        period: key.budget_period.clone(),
+        cost: cost.clone(),
+        key: std::sync::Arc::new(key.clone()),
+        pool: std::sync::Arc::from(""),
         charged_at,
+        admit: None,
     });
 
     // Cross-protocol translator: openai EGRESS SSE → anthropic INGRESS SSE. The tap scans the
@@ -2670,22 +3216,22 @@ async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
              (cell Closed→Open), not stand as the optimistic 2xx success (R26 MED #1)"
     );
 
-    // (2) BILLING: a captured-nonzero-token aborted stream must NOT be token-billed. With the
-    // 100c/1k price, the old code's `record_tokens(.., 1000)` would have left 100c of spend in
-    // the key's window; the fix skips the call entirely, so the window stays at 0.
-    let spent = gov
-        .usage_for(&key.id, charged_at)
+    // (2) BILLING: a captured-nonzero-token aborted stream must NOT be token-billed. The old
+    // code's accrual of the captured 1000 tokens would show in the key's window ledger; the fix
+    // skips the call entirely, so the window stays at 0 tokens.
+    let ledgered = gov
+        .usage_for(&cost, &key.id, charged_at)
         .expect("usage read")
-        .map(|u| u.spend_cents)
+        .map(|u| u.tokens)
         .unwrap_or(0);
     assert_eq!(
-        spent, 0,
+        ledgered, 0,
         "an aborted cross-protocol stream must NOT charge a token fee \
-             (record_tokens must not be called) — R26 LOW #7"
+             (record_usage must not be called) - R26 LOW #7"
     );
 }
 
-/// Regression (cancel-Drop billing): a client that disconnects MID-STREAM (drops the body before
+/// A client that disconnects MID-STREAM (drops the body before
 /// the natural `Poll::Ready(None)` end) must still have the tokens generated+delivered so far
 /// billed — via `impl Drop for FirstByteBody`. Drives a CLEAN cross-protocol stream (no abort, no
 /// terminal error), polls it ONCE so the usage chunk is consumed (usage tapped, `usage_sink` still
@@ -2695,7 +3241,7 @@ async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
 #[tokio::test]
 async fn test_cancel_drop_bills_partial_tokens() {
     use super::FirstByteBody;
-    use crate::governance::{GovState, NewKeySpec, SqliteStore};
+    use crate::governance::{GovState, MemoryStore, NewKeySpec};
     use crate::store::BreakerCfg;
     use bytes::Bytes;
     use futures::StreamExt as _;
@@ -2709,27 +3255,29 @@ async fn test_cancel_drop_bills_partial_tokens() {
         .pool("p", &[(0, 1)])
         .build();
 
-    let store = Arc::new(SqliteStore::open_in_memory().expect("in-memory store"));
-    let gov = Arc::new(GovState::new(store, 0, 100, None).expect("gov")); // 100c per 1k tokens
+    let store = Arc::new(MemoryStore::new());
+    let gov = Arc::new(GovState::new(store, None).expect("gov"));
+    // Spend derives; token-billing intent is asserted on the token ledger.
+    let cost = Arc::new(crate::cost::CostModel::flat(0));
     let charged_at: u64 = 1_700_000_000;
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
                 name: "k".to_string(),
-                allowed_pools: vec![],
-                max_budget_cents: Some(1_000_000),
-                budget_period: "daily".to_string(),
-                rpm_limit: None,
-                tpm_limit: None,
+                allowed_pools: None,
+                group: None,
+                labels: Default::default(),
             },
             charged_at,
         )
         .expect("create key");
     let sink = Some(UsageSink {
         gov: gov.clone(),
-        key_id: key.id.clone(),
-        period: key.budget_period.clone(),
+        cost: cost.clone(),
+        key: std::sync::Arc::new(key.clone()),
+        pool: std::sync::Arc::from(""),
         charged_at,
+        admit: None,
     });
 
     let translate = crate::proto::StreamTranslate::new("anthropic", "openai")
@@ -2766,23 +3314,23 @@ async fn test_cancel_drop_bills_partial_tokens() {
                                    // body dropped here (cancel before stream end) → Drop bills the captured tokens.
     }
 
-    // The Drop's record_tokens offloads the store write; drain it with a bounded poll.
-    let mut spent = 0;
+    // The Drop's accrual may land off this task; drain it with a bounded poll.
+    let mut ledgered = 0;
     for _ in 0..200 {
-        spent = gov
-            .usage_for(&key.id, charged_at)
+        ledgered = gov
+            .usage_for(&cost, &key.id, charged_at)
             .expect("usage read")
-            .map(|u| u.spend_cents)
+            .map(|u| u.tokens)
             .unwrap_or(0);
-        if spent > 0 {
+        if ledgered > 0 {
             break;
         }
         tokio::task::yield_now().await;
     }
     assert_eq!(
-        spent, 100,
+        ledgered, 1000,
         "a mid-stream-cancelled stream must bill the captured tokens via Drop \
-             (1000 tokens * 100c/1k = 100c)"
+             (600 input + 400 output = 1000 tokens ledgered)"
     );
 }
 
@@ -2796,7 +3344,7 @@ async fn test_cancel_drop_bills_partial_tokens() {
 #[tokio::test]
 async fn test_cancel_drop_skips_billing_on_aborted_translate() {
     use super::FirstByteBody;
-    use crate::governance::{GovState, NewKeySpec, SqliteStore};
+    use crate::governance::{GovState, MemoryStore, NewKeySpec};
     use crate::store::BreakerCfg;
     use bytes::Bytes;
     use futures::StreamExt as _;
@@ -2810,27 +3358,29 @@ async fn test_cancel_drop_skips_billing_on_aborted_translate() {
         .pool("p", &[(0, 1)])
         .build();
 
-    let store = Arc::new(SqliteStore::open_in_memory().expect("in-memory store"));
-    let gov = Arc::new(GovState::new(store, 0, 100, None).expect("gov")); // 100c per 1k tokens
+    let store = Arc::new(MemoryStore::new());
+    let gov = Arc::new(GovState::new(store, None).expect("gov"));
+    // Spend derives; token-billing intent is asserted on the token ledger.
+    let cost = Arc::new(crate::cost::CostModel::flat(0));
     let charged_at: u64 = 1_700_000_000;
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
                 name: "k".to_string(),
-                allowed_pools: vec![],
-                max_budget_cents: Some(1_000_000),
-                budget_period: "daily".to_string(),
-                rpm_limit: None,
-                tpm_limit: None,
+                allowed_pools: None,
+                group: None,
+                labels: Default::default(),
             },
             charged_at,
         )
         .expect("create key");
     let sink = Some(UsageSink {
         gov: gov.clone(),
-        key_id: key.id.clone(),
-        period: key.budget_period.clone(),
+        cost: cost.clone(),
+        key: std::sync::Arc::new(key.clone()),
+        pool: std::sync::Arc::from(""),
         charged_at,
+        admit: None,
     });
 
     let translate = crate::proto::StreamTranslate::new("anthropic", "openai")
@@ -2872,18 +3422,167 @@ async fn test_cancel_drop_skips_billing_on_aborted_translate() {
                                    // body dropped here → Drop's aborted() guard must skip billing.
     }
 
-    // Give any (erroneous) offloaded store write a chance to land, then confirm spend is still 0.
+    // Give any (erroneous) deferred accrual a chance to land, then confirm the ledger is still 0.
     for _ in 0..200 {
         tokio::task::yield_now().await;
     }
-    let spent = gov
-        .usage_for(&key.id, charged_at)
+    let ledgered = gov
+        .usage_for(&cost, &key.id, charged_at)
         .expect("usage read")
-        .map(|u| u.spend_cents)
+        .map(|u| u.tokens)
         .unwrap_or(0);
     assert_eq!(
-        spent, 0,
+        ledgered, 0,
         "a mid-stream drop after a translate ABORT must NOT bill (the Drop's aborted() guard \
              suppresses the charge), inverse of test_cancel_drop_bills_partial_tokens"
     );
+}
+
+/// Cancellation must refund the headers-time `spend_budget` unit. Unlike
+/// `test_streaming_pre_first_byte_transport_error_refunds_budget` (a TERMINAL error arm, which
+/// already refunds at :396 and sets `ended`), this drops the body mid-stream WITHOUT ever reaching
+/// a terminal poll arm — the shape a client disconnect or LB reset produces. Before the fix, `Drop`
+/// never read `budget_spent`, so the unit was gone forever.
+#[tokio::test]
+async fn test_cancel_drop_mid_stream_refunds_budget() {
+    use super::FirstByteBody;
+    use crate::store::BreakerCfg;
+    use bytes::Bytes;
+    use futures::StreamExt as _;
+
+    // Lane 0: budget-limited with a single remaining unit.
+    let app = TestApp::new()
+        .lane(
+            LaneSpec::new(
+                "m",
+                crate::proto::Protocol::anthropic(),
+                "http://127.0.0.1:1",
+            )
+            .budget(1),
+        )
+        .pool("p", &[(0, 1)])
+        .build();
+
+    // Spend the one unit, exactly as the 2xx-headers path does before streaming.
+    let budget_spent = app.store.spend_budget(0);
+    assert!(budget_spent, "the headers-spend must decrement the unit");
+    assert_eq!(app.store.lane_budget_remaining(0), Some(0));
+
+    // A normal in-band SSE chunk (no error, no terminator) — the stream never reaches a terminal
+    // poll arm before it is dropped, mirroring a client disconnect mid-response.
+    let chunk = b"data: {\"type\":\"content_block_delta\"}\n\n".to_vec();
+    let inner = Box::pin(futures::stream::iter(vec![Ok::<Bytes, reqwest::Error>(
+        Bytes::from(chunk),
+    )]));
+
+    {
+        let body = FirstByteBody::new(
+            inner,
+            true, // is_sse
+            "anthropic",
+            crate::handlers::CHAT,
+            (),
+            app.clone(),
+            0,
+            Arc::new(BreakerCfg::default()),
+            "p",
+            None,
+            None,
+            None,
+            budget_spent,
+        );
+        futures::pin_mut!(body);
+        let _ = body.next().await; // poll once: consume the chunk, no terminal arm reached
+                                   // body dropped here (cancel before stream end) → must refund.
+    }
+
+    assert_eq!(
+        app.store.lane_budget_remaining(0),
+        Some(1),
+        "a mid-stream cancel must refund the headers-time spend_budget unit"
+    );
+}
+
+/// HIGH/test-coverage (cargo-mutants gap, proxy engine `translate_response_cross_protocol`): the
+/// gemini JSON-array wrap (`if gemini_json_array && wants_stream`) is gated on BOTH conditions,
+/// not just `wants_stream` alone (cargo-mutants: `&&` -> `||`). `test_gemini_json_array_buffered_
+/// cross_protocol_emits_one_element_array` above proves the TRUE&&TRUE case (gemini ingress,
+/// stream shim present); this proves the far more common divergent case an `||` mutant would
+/// wrongly array-wrap: a NON-gemini streaming ingress (`gemini_json_array` is always false here —
+/// `uses_array_stream_shim()` is gemini-only) whose upstream answers buffered (non-SSE), which
+/// must fall through to the plain single-object response every non-Gemini client expects.
+#[tokio::test]
+async fn test_non_gemini_stream_buffered_cross_protocol_stays_a_plain_object_not_an_array() {
+    use http_body_util::BodyExt as _;
+    crate::metrics::init();
+    let state = Arc::new(MockServerState::new());
+    // NON-SSE buffered anthropic 2xx to a cross-protocol OpenAI-ingress streaming request.
+    state.push(MockResponse::Ok {
+        status: StatusCode::OK,
+        body: json!({
+            "id": "msg_buf",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "Hi"}],
+            "model": "claude-3",
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 7, "output_tokens": 3}
+        }),
+    });
+    let server = MockServer::new(state.clone()).await;
+    let app = TestApp::new()
+        .lane(
+            LaneSpec::new(
+                "claude-3",
+                crate::proto::Protocol::anthropic(),
+                &server.base_url(),
+            )
+            .provider("anthropic"),
+        )
+        .pool("pn", &[(0, 1)])
+        .build();
+    // OpenAI ingress, `stream: true`, NO gemini shim key — gemini_json_array must be false
+    // regardless (OpenAI's writer doesn't implement `uses_array_stream_shim`).
+    let body = serde_json::to_vec(&json!({
+        "model": "pn",
+        "messages": [{"role": "user", "content": "hi"}],
+        "stream": true
+    }))
+    .unwrap();
+    let resp = forward_with_pool(
+        app.clone(),
+        vec![crate::state::WeightedLane {
+            reasoning: None,
+            idx: 0,
+            weight: 1,
+            attempt_timeout_ms: None,
+        }],
+        body.into(),
+        None,
+        "pn",
+        None,
+        "openai",
+        crate::handlers::CHAT,
+        None,
+    )
+    .await;
+    assert_eq!(resp.status().as_u16(), 200);
+    assert_eq!(
+        resp.headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
+        Some("application/json"),
+        "buffered cross-protocol non-stream fallback is application/json"
+    );
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let parsed: Value = serde_json::from_slice(&bytes).expect("body must be JSON");
+    assert!(
+        parsed.is_object(),
+        "an `||` mutant would wrongly array-wrap this non-gemini buffered response: {parsed}"
+    );
+    assert!(
+        parsed.get("choices").is_some(),
+        "must be a native OpenAI chat-completion object: {parsed}"
+    );
+    server.shutdown().await;
 }

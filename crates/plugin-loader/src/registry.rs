@@ -1,0 +1,1286 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! Plugin **discovery, three-phase load validation, and the name/alias registry** - the single
+//! pipeline behind boot, `--validate`, and `--list-plugins`, so the pre-flight gate can never
+//! drift from real boot behavior.
+//!
+//! Phases (in order, fail-closed):
+//!
+//! 1. **STRUCTURAL** (trust-independent): the tarball unpacks, the manifest parses, every required
+//!    field is present and well-formed, `sha256(lib) == manifest.sha256`, and the `abi_version` is
+//!    supported for the `kind`. A failure here is INVALID - at boot/`--validate` it is a HARD
+//!    error naming the file and the reason (never a partial boot).
+//! 2. **TRUST**: the signature verifies against the embedded busbar release key (first-party) or an
+//!    allowlisted publisher - else the plugin loads only under the matching explicit opt-in flag
+//!    (`allow_unsigned` / `allow_third_party`), otherwise it is logged and SKIPPED (never
+//!    `dlopen`ed). Anti-downgrade floors are hard rejects inside this phase.
+//! 3. **CONFLICT** (over the loadable set): no two plugins share a `name`, no two share an `alias`,
+//!    and no alias collides with another plugin's `name`. Any collision is a HARD error naming
+//!    both plugins - "you can't use redis and a third-party redis".
+//!
+//! Only after all three phases does a plugin enter the [`PluginRegistry`], addressable by BOTH its
+//! canonical name and its alias. Identity comes exclusively from the signed manifest - the tarball
+//! filename is irrelevant.
+
+use crate::tarball;
+use busbar_plugin_sign::{
+    evaluate, validate_structure, Manifest, TrustPolicy, Verdict, HOST_IDENTITY,
+};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+/// The per-kind PAYLOAD schema versions this binary supports — a CONTIGUOUS `[floor, max]` inclusive
+/// range of manifest `abi_version` values the engine can speak for `kind` (empty = unknown/unsupported
+/// kind, rejected at scan). This is the PAYLOAD axis (the manifest `abi_version`), NOT the transport
+/// axis: every kind exports the SAME six kind-neutral C symbols at `busbar_abi() == TRANSPORT_VERSION`;
+/// `kind` only selects which payload schema (and engine seam) the cdylib speaks. The range is its
+/// endpoints; contiguity is the contract (every value between is speakable), so an additive schema
+/// bump stays in range and an old plugin of the same kind keeps loading. Store's PAYLOAD starts at
+/// `[1, 1]` (1.5.0 is the first release to carry it) until an additive bump widens the floor.
+pub fn supported_abi(kind: &str) -> &'static [u32] {
+    match kind {
+        "store" => &[
+            busbar_plugin_abi::ABI_VERSION,
+            busbar_plugin_abi::ABI_VERSION,
+        ],
+        // A `kind: secret` plugin resolves a secret reference's settings to bytes.
+        "secret" => &[
+            busbar_plugin_abi::SECRET_ABI_VERSION,
+            busbar_plugin_abi::SECRET_ABI_VERSION,
+        ],
+        // A `kind: auth` plugin is a first-class identity provider (the engine's auth chain consumes
+        // `Box<dyn AuthModule>` via `open_auth`). Payload schema v1.
+        "auth" => &[
+            busbar_plugin_abi::AUTH_ABI_VERSION,
+            busbar_plugin_abi::AUTH_ABI_VERSION,
+        ],
+        // A `kind: hook` plugin is an in-process routing policy (the engine's routing/hook chains
+        // consume `Arc<dyn RoutingPolicy>` via `open_hook`). The 1.5.0 replacement for the retired
+        // out-of-process socket/webhook hook transport. Payload schema v1.
+        "hook" => &[
+            busbar_plugin_abi::hook::HOOK_ABI_VERSION,
+            busbar_plugin_abi::hook::HOOK_ABI_VERSION,
+        ],
+        _ => &[],
+    }
+}
+
+/// A plugin that passed phases 1 + 2 and MAY load: its signed manifest, the trust verdict, and the
+/// exact verified library bytes (what the loader will map - never re-read from disk).
+pub struct LoadablePlugin {
+    /// The tarball filename (diagnostics only - identity is the manifest).
+    pub file: String,
+    pub manifest: Manifest,
+    pub verdict: Verdict,
+    pub lib_bytes: Vec<u8>,
+}
+
+/// A plugin that failed phase 2 (untrusted, no matching opt-in; or an anti-downgrade reject) and is
+/// SKIPPED: recorded for logging/`--list-plugins`, never a load candidate, never `dlopen`ed.
+pub struct SkippedPlugin {
+    pub file: String,
+    pub manifest: Manifest,
+    pub reason: String,
+    /// STRUCTURED rejection category from the trust evaluator — the authority for any label/column.
+    /// Never derive a trust label by substring-matching `reason` (it embeds plugin-controlled bytes).
+    pub kind: busbar_plugin_sign::RejectKind,
+}
+
+/// The registry of validated, loadable plugins, addressable by canonical name OR alias. Built only
+/// after all three phases pass; this is the ONLY resolution surface (`governance.store:` etc.), so
+/// nothing outside the validated set can ever be selected.
+pub struct PluginRegistry {
+    loadable: Vec<LoadablePlugin>,
+    skipped: Vec<SkippedPlugin>,
+    /// name -> index into `loadable`; alias -> index (aliases equal to the own name are fine).
+    by_name: HashMap<String, usize>,
+    by_alias: HashMap<String, usize>,
+}
+
+impl std::fmt::Debug for PluginRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PluginRegistry")
+            .field(
+                "loadable",
+                &self
+                    .loadable
+                    .iter()
+                    .map(|p| p.manifest.name.as_str())
+                    .collect::<Vec<_>>(),
+            )
+            .field(
+                "skipped",
+                &self
+                    .skipped
+                    .iter()
+                    .map(|p| p.manifest.name.as_str())
+                    .collect::<Vec<_>>(),
+            )
+            .finish()
+    }
+}
+
+impl PluginRegistry {
+    /// An empty registry (plugins disabled / empty dir).
+    pub fn empty() -> Self {
+        PluginRegistry {
+            loadable: Vec::new(),
+            skipped: Vec::new(),
+            by_name: HashMap::new(),
+            by_alias: HashMap::new(),
+        }
+    }
+
+    /// Resolve `name_or_alias` (canonical name first, then alias) to a loadable plugin.
+    pub fn resolve(&self, name_or_alias: &str) -> Option<&LoadablePlugin> {
+        self.by_name
+            .get(name_or_alias)
+            .or_else(|| self.by_alias.get(name_or_alias))
+            .map(|&i| &self.loadable[i])
+    }
+
+    /// Why a reference cannot be resolved: if a SKIPPED plugin matches it, name the skip reason -
+    /// "the plugin you asked for is here, but trust refused it" is the actionable message.
+    pub fn unresolved_reason(&self, name_or_alias: &str) -> Option<&SkippedPlugin> {
+        self.skipped
+            .iter()
+            .find(|s| s.manifest.name == name_or_alias || s.manifest.alias == name_or_alias)
+    }
+
+    /// Every loadable plugin (for logging / catalog).
+    pub fn loadable(&self) -> &[LoadablePlugin] {
+        &self.loadable
+    }
+
+    /// Every skipped plugin (for logging / catalog).
+    pub fn skipped(&self) -> &[SkippedPlugin] {
+        &self.skipped
+    }
+
+    /// Open a STORE plugin resolved by name or alias: verifies the resolved plugin's `kind` is
+    /// `store`, then loads the VERIFIED bytes over the store C ABI (memfd on Linux, private temp
+    /// staging elsewhere) and `open`s it with `cfg_json`. The one engine-facing load entrypoint.
+    pub fn open_store(
+        &self,
+        name_or_alias: &str,
+        cfg_json: &str,
+    ) -> Result<Box<dyn busbar_api::Store>, String> {
+        let Some(p) = self.resolve(name_or_alias) else {
+            return Err(match self.unresolved_reason(name_or_alias) {
+                Some(s) => format!(
+                    "plugin '{name_or_alias}' is present ({}) but was not loaded: {}",
+                    s.file, s.reason
+                ),
+                None => format!(
+                    "no plugin named or aliased '{name_or_alias}' is available (loadable plugins: \
+                     [{}])",
+                    self.loadable
+                        .iter()
+                        .map(|p| p.manifest.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            });
+        };
+        if p.manifest.kind != "store" {
+            return Err(format!(
+                "plugin '{}' has kind '{}', not 'store' - it cannot back the governance store",
+                p.manifest.name, p.manifest.kind
+            ));
+        }
+        crate::load_store_from_bytes(&p.lib_bytes, cfg_json, &p.manifest.name, &p.manifest.kind)
+    }
+
+    /// Open an AUTH plugin resolved by name or alias: verifies the resolved plugin's `kind` is `auth`,
+    /// then loads the VERIFIED bytes over the kind-neutral C ABI and `open`s it with `cfg_json`,
+    /// returning `Box<dyn AuthModule>` — the seam the engine's auth chain consumes. Same trust and
+    /// load pipeline as store/secret; only the kind (and the consuming seam) differs. FAIL-CLOSED.
+    pub fn open_auth(
+        &self,
+        name_or_alias: &str,
+        cfg_json: &str,
+    ) -> Result<Box<dyn busbar_api::AuthModule>, String> {
+        let Some(p) = self.resolve(name_or_alias) else {
+            return Err(match self.unresolved_reason(name_or_alias) {
+                Some(s) => format!(
+                    "plugin '{name_or_alias}' is present ({}) but was not loaded: {}",
+                    s.file, s.reason
+                ),
+                None => format!(
+                    "no plugin named or aliased '{name_or_alias}' is available (loadable plugins: \
+                     [{}])",
+                    self.loadable
+                        .iter()
+                        .map(|p| p.manifest.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            });
+        };
+        if p.manifest.kind != "auth" {
+            return Err(format!(
+                "plugin '{}' has kind '{}', not 'auth' - it cannot serve as an auth module",
+                p.manifest.name, p.manifest.kind
+            ));
+        }
+        crate::auth::load_auth_from_bytes(
+            &p.lib_bytes,
+            cfg_json,
+            &p.manifest.name,
+            &p.manifest.kind,
+        )
+    }
+
+    /// Open a HOOK plugin resolved by name or alias: verifies the resolved plugin's `kind` is `hook`,
+    /// then loads the VERIFIED bytes over the kind-neutral C ABI and `open`s it with `cfg_json`,
+    /// returning `Arc<dyn RoutingPolicy>` — the seam the engine's routing/hook chains consume. Same
+    /// trust and load pipeline as store/secret/auth; only the kind (and consuming seam) differs.
+    /// `name` is the hook's registry name (metrics id); `projectors` are the engine's fail-closed
+    /// projection/parse closures. FAIL-CLOSED on any resolution/kind/load failure.
+    pub fn open_hook(
+        &self,
+        name_or_alias: &str,
+        cfg_json: &str,
+        name: &str,
+        projectors: std::sync::Arc<crate::hook::HookProjectors>,
+    ) -> Result<std::sync::Arc<dyn busbar_api::RoutingPolicy>, String> {
+        let Some(p) = self.resolve(name_or_alias) else {
+            return Err(match self.unresolved_reason(name_or_alias) {
+                Some(s) => format!(
+                    "plugin '{name_or_alias}' is present ({}) but was not loaded: {}",
+                    s.file, s.reason
+                ),
+                None => format!(
+                    "no plugin named or aliased '{name_or_alias}' is available (loadable plugins: \
+                     [{}])",
+                    self.loadable
+                        .iter()
+                        .map(|p| p.manifest.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            });
+        };
+        if p.manifest.kind != "hook" {
+            return Err(format!(
+                "plugin '{}' has kind '{}', not 'hook' - it cannot serve as a routing hook",
+                p.manifest.name, p.manifest.kind
+            ));
+        }
+        crate::hook::load_hook_from_bytes(
+            &p.lib_bytes,
+            cfg_json,
+            &p.manifest.name,
+            &p.manifest.kind,
+            name,
+            projectors,
+        )
+    }
+
+    /// Open a SECRET plugin resolved by name or alias: verifies the resolved plugin's `kind` is
+    /// `secret`, then loads the VERIFIED bytes over the secret C ABI and `open`s it with
+    /// `cfg_json`. Same trust and load pipeline as a store plugin - only the kind (and the seam
+    /// consuming it) differs. FAIL-CLOSED: any resolution/kind/load failure is an error the caller
+    /// surfaces as an unresolvable secret.
+    pub fn open_secret(
+        &self,
+        name_or_alias: &str,
+        cfg_json: &str,
+    ) -> Result<Box<dyn busbar_api::SecretModule>, String> {
+        let Some(p) = self.resolve(name_or_alias) else {
+            return Err(match self.unresolved_reason(name_or_alias) {
+                Some(s) => format!(
+                    "plugin '{name_or_alias}' is present ({}) but was not loaded: {}",
+                    s.file, s.reason
+                ),
+                None => format!(
+                    "no plugin named or aliased '{name_or_alias}' is available (loadable plugins: \
+                     [{}])",
+                    self.loadable
+                        .iter()
+                        .map(|p| p.manifest.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            });
+        };
+        if p.manifest.kind != "secret" {
+            return Err(format!(
+                "plugin '{}' has kind '{}', not 'secret' - it cannot resolve config secrets",
+                p.manifest.name, p.manifest.kind
+            ));
+        }
+        crate::load_secret_from_bytes(&p.lib_bytes, cfg_json, &p.manifest.name, &p.manifest.kind)
+    }
+}
+
+/// Discover plugin tarballs (`*.tar.gz` / `*.tgz`) in `dir`, sorted by filename. A missing
+/// directory is an empty list (drop-is-inert: no dir, no plugins), an unreadable one an error.
+pub fn discover(dir: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut out = Vec::new();
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+        Err(e) => return Err(format!("cannot read plugins dir {}: {e}", dir.display())),
+    };
+    // FAIL CLOSED on a DirEntry iteration error: a per-entry `io::Error` (corrupted inode, bad NFS
+    // mount, concurrent unlink-during-readdir) must NOT be silently dropped — swallowing it could make
+    // a configured/named plugin tarball vanish from the scan while boot still SUCCEEDS with a smaller
+    // loadable set. Propagate it so the whole scan fails rather than serving with a plugin missing.
+    for entry in entries {
+        let entry =
+            entry.map_err(|e| format!("error reading plugins dir {}: {e}", dir.display()))?;
+        let path = entry.path();
+        let Some(file) = path.file_name().and_then(|f| f.to_str()) else {
+            continue;
+        };
+        if path.is_file() && tarball::is_plugin_tarball(file) {
+            out.push(path);
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// One file's outcome through phases 1 + 2 (phase 3 needs the whole set).
+enum FileOutcome {
+    Loadable(LoadablePlugin),
+    Skipped(SkippedPlugin),
+    Invalid { file: String, reason: String },
+}
+
+/// Run phases 1 (structural) + 2 (trust) over one tarball.
+fn examine(path: &Path, policy: &TrustPolicy) -> FileOutcome {
+    let file = path
+        .file_name()
+        .and_then(|f| f.to_str())
+        .unwrap_or("plugin")
+        .to_string();
+    // Check the file's size BEFORE reading it into memory: `tarball::unpack` bounds the two
+    // DECOMPRESSED members it extracts, but that check only runs after the WHOLE compressed file
+    // has already been read into a `Vec<u8>`. A huge file planted in the plugins directory (by
+    // accident or otherwise) would otherwise be read in full - unbounded - on every boot-time scan,
+    // before any validation gets a chance to reject it.
+    // Check the file's size BEFORE reading it into memory: `tarball::unpack` bounds the two
+    // DECOMPRESSED members it extracts, but that check only runs after the WHOLE compressed file
+    // has already been read into a `Vec<u8>`. A huge file planted in the plugins directory (by
+    // accident or otherwise) would otherwise be read in full - unbounded - on every boot-time scan,
+    // before any validation gets a chance to reject it.
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.len() > tarball::MAX_TARBALL_FILE_BYTES => {
+            return FileOutcome::Invalid {
+                file,
+                reason: format!(
+                    "tarball is {} bytes, exceeding the {}-byte cap",
+                    meta.len(),
+                    tarball::MAX_TARBALL_FILE_BYTES
+                ),
+            };
+        }
+        Ok(_) => {}
+        Err(e) => {
+            return FileOutcome::Invalid {
+                file,
+                reason: format!("cannot stat: {e}"),
+            };
+        }
+    }
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) => {
+            return FileOutcome::Invalid {
+                file,
+                reason: format!("cannot read: {e}"),
+            }
+        }
+    };
+    // Phase 1a: unpack in memory (bounded).
+    let unpacked = match tarball::unpack(&bytes) {
+        Ok(u) => u,
+        Err(reason) => return FileOutcome::Invalid { file, reason },
+    };
+    // Phase 1b: structural completeness + well-formedness + integrity + abi.
+    if let Err(reason) = validate_structure(
+        &unpacked.manifest,
+        &unpacked.lib_bytes,
+        &supported_abi,
+        HOST_IDENTITY,
+    ) {
+        return FileOutcome::Invalid { file, reason };
+    }
+    // Phase 2: trust. A rejection here is a SKIP (logged, never dlopen'ed) - unless the plugin is
+    // actually referenced, in which case resolution fails loudly with this reason attached.
+    match evaluate(&unpacked.lib_bytes, &unpacked.manifest, policy) {
+        Ok(verdict) => FileOutcome::Loadable(LoadablePlugin {
+            file,
+            manifest: unpacked.manifest,
+            verdict,
+            lib_bytes: unpacked.lib_bytes,
+        }),
+        Err(rejected) => FileOutcome::Skipped(SkippedPlugin {
+            file,
+            manifest: unpacked.manifest,
+            reason: rejected.reason,
+            kind: rejected.kind,
+        }),
+    }
+}
+
+/// Phase 3: cross-plugin conflict detection over the LOADABLE set. Any name/alias collision is a
+/// hard error naming BOTH plugins and the colliding identifier.
+fn conflicts(loadable: &[LoadablePlugin]) -> Vec<String> {
+    let mut errors = Vec::new();
+    let mut name_owner: HashMap<&str, &LoadablePlugin> = HashMap::new();
+    for p in loadable {
+        if let Some(prev) = name_owner.get(p.manifest.name.as_str()) {
+            errors.push(format!(
+                "plugin name conflict: '{}' is claimed by both {} and {} - remove one \
+                 (\"you can't use redis and a third-party redis\")",
+                p.manifest.name, prev.file, p.file
+            ));
+        } else {
+            name_owner.insert(&p.manifest.name, p);
+        }
+    }
+    let mut alias_owner: HashMap<&str, &LoadablePlugin> = HashMap::new();
+    for p in loadable {
+        if let Some(prev) = alias_owner.get(p.manifest.alias.as_str()) {
+            errors.push(format!(
+                "plugin alias conflict: '{}' is claimed by both {} ({}) and {} ({}) - remove one",
+                p.manifest.alias, prev.file, prev.manifest.name, p.file, p.manifest.name
+            ));
+        } else {
+            alias_owner.insert(&p.manifest.alias, p);
+        }
+        // An alias colliding with ANOTHER plugin's canonical name is equally ambiguous.
+        if let Some(other) = name_owner.get(p.manifest.alias.as_str()) {
+            if other.manifest.name != p.manifest.name {
+                errors.push(format!(
+                    "plugin alias/name conflict: alias '{}' of {} ({}) collides with the canonical \
+                     name of {} ({}) - remove one",
+                    p.manifest.alias, p.file, p.manifest.name, other.file, other.manifest.name
+                ));
+            }
+        }
+    }
+    errors
+}
+
+/// The full boot/validate pipeline: discover -> phase 1 -> phase 2 -> phase 3 -> registry.
+/// FAIL-CLOSED: any unreadable/invalid tarball (phase 1) or any conflict (phase 3) returns
+/// `Err(errors)` with every problem named - the caller (boot / `--validate`) aborts; there is no
+/// partial result. Untrusted plugins (phase 2) are SKIPPED into the registry's skip list (the
+/// caller logs them); they only become fatal if actually referenced.
+pub fn scan_and_validate(dir: &Path, policy: &TrustPolicy) -> Result<PluginRegistry, Vec<String>> {
+    let files = discover(dir).map_err(|e| vec![e])?;
+    let mut errors = Vec::new();
+    let mut loadable = Vec::new();
+    let mut skipped = Vec::new();
+    for path in &files {
+        match examine(path, policy) {
+            FileOutcome::Loadable(p) => loadable.push(p),
+            FileOutcome::Skipped(s) => skipped.push(s),
+            FileOutcome::Invalid { file, reason } => errors.push(format!(
+                "invalid plugin '{}': {reason}",
+                dir.join(file).display()
+            )),
+        }
+    }
+    errors.extend(conflicts(&loadable));
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    let mut by_name = HashMap::new();
+    let mut by_alias = HashMap::new();
+    for (i, p) in loadable.iter().enumerate() {
+        by_name.insert(p.manifest.name.clone(), i);
+        by_alias.insert(p.manifest.alias.clone(), i);
+    }
+    Ok(PluginRegistry {
+        loadable,
+        skipped,
+        by_name,
+        by_alias,
+    })
+}
+
+/// One row of the MANIFEST-ONLY inventory behind `busbar --list-plugins` and the admin catalog:
+/// every tarball in the directory with its identity (when decodable) and its trust/status verdict.
+/// NEVER `dlopen`s anything - untrusted code cannot run from listing the directory.
+pub struct InventoryEntry {
+    pub file: String,
+    /// `None` when the tarball/manifest is invalid (see `status`).
+    pub manifest: Option<Manifest>,
+    /// The signature column: `first-party` / `publisher:<name>` / `unsigned (allowed)` /
+    /// `third-party (allowed)` / `unsigned` / `unknown-publisher` / `tampered` / `INVALID`.
+    pub signature: String,
+    /// The status column: `ready` / `SKIPPED: <reason>` / `REJECTED: <reason>` / `INVALID: <reason>`.
+    pub status: String,
+}
+
+/// Build the manifest-only inventory of `dir` under `policy`. Never errors, never loads: every
+/// tarball yields a row, including invalid ones (with the exact reason). Conflicts across loadable
+/// plugins are appended to the affected rows' status.
+pub fn inventory(dir: &Path, policy: &TrustPolicy) -> Vec<InventoryEntry> {
+    let files = match discover(dir) {
+        Ok(f) => f,
+        Err(e) => {
+            return vec![InventoryEntry {
+                file: dir.display().to_string(),
+                manifest: None,
+                signature: "-".into(),
+                status: format!("INVALID: {e}"),
+            }]
+        }
+    };
+    let mut loadable = Vec::new();
+    let mut rows = Vec::new();
+    for path in &files {
+        match examine(path, policy) {
+            FileOutcome::Loadable(p) => {
+                let signature = match &p.verdict {
+                    Verdict::Trusted {
+                        first_party: true, ..
+                    } => "first-party".to_string(),
+                    Verdict::Trusted { publisher, .. } => format!("publisher:{publisher}"),
+                    Verdict::Allowed {
+                        allow: busbar_plugin_sign::AllowReason::Unsigned,
+                        ..
+                    } => "unsigned (allowed)".to_string(),
+                    Verdict::Allowed { .. } => "third-party (allowed)".to_string(),
+                };
+                rows.push(InventoryEntry {
+                    file: p.file.clone(),
+                    manifest: Some(p.manifest.clone()),
+                    signature,
+                    status: "ready".to_string(),
+                });
+                loadable.push(p);
+            }
+            FileOutcome::Skipped(s) => {
+                // Derive the signature label from the STRUCTURED verdict (`s.kind`), NEVER by
+                // substring-matching `s.reason` — the reason embeds plugin-author-controlled bytes
+                // (`manifest.publisher`), so a crafted publisher like "anti-downgrade-bypass" could
+                // otherwise mislabel an unknown-publisher reject as "trusted (below floor)".
+                use busbar_plugin_sign::RejectKind;
+                let signature = match s.kind {
+                    RejectKind::AntiDowngrade => "trusted (below floor)",
+                    // A floored artifact that could NOT prove trust: labeled as the UNTRUSTED artifact
+                    // it is, never mislabeled "trusted (below floor)" (the round-1 regression).
+                    RejectKind::UntrustedFloored => "untrusted (below floor)",
+                    RejectKind::UnknownPublisher => "unknown-publisher",
+                    RejectKind::Tampered => "tampered",
+                    RejectKind::Unsigned => "unsigned",
+                }
+                .to_string();
+                let status = match s.kind {
+                    // Only a TRUSTED-but-below-floor artifact is a hard REJECTED row; every untrusted
+                    // reject (including a floored untrusted one) is a SKIP.
+                    RejectKind::AntiDowngrade => format!("REJECTED: {}", s.reason),
+                    _ => format!("SKIPPED: {}", s.reason),
+                };
+                rows.push(InventoryEntry {
+                    file: s.file,
+                    manifest: Some(s.manifest),
+                    signature,
+                    status,
+                });
+            }
+            FileOutcome::Invalid { file, reason } => rows.push(InventoryEntry {
+                file,
+                manifest: None,
+                signature: "INVALID".to_string(),
+                status: format!("INVALID: {reason}"),
+            }),
+        }
+    }
+    // Surface phase-3 conflicts on the affected loadable rows.
+    for conflict in conflicts(&loadable) {
+        for row in rows.iter_mut() {
+            if let Some(m) = &row.manifest {
+                if conflict.contains(&format!("'{}'", m.name))
+                    || conflict.contains(&format!("'{}'", m.alias))
+                {
+                    row.status = format!("CONFLICT: {conflict}");
+                }
+            }
+        }
+    }
+    rows
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use busbar_plugin_sign::{sign, SigningKey};
+
+    fn key(seed: u8) -> SigningKey {
+        SigningKey::from_bytes(&[seed; 32])
+    }
+
+    fn manifest(name: &str, alias: &str, publisher: &str) -> Manifest {
+        Manifest {
+            name: name.into(),
+            alias: alias.into(),
+            kind: "store".into(),
+            version: "1.5.0".into(),
+            publisher: publisher.into(),
+            abi_version: busbar_plugin_abi::ABI_VERSION,
+            sha256: String::new(),
+            signature: String::new(),
+            description: String::new(),
+            homepage: String::new(),
+            license: String::new(),
+            needs: Default::default(),
+            settings_schema: None,
+            schema_derived: false,
+            host: None,
+        }
+    }
+
+    fn policy(first_party: &SigningKey) -> TrustPolicy {
+        TrustPolicy {
+            first_party_key: Some(first_party.verifying_key()),
+            binary_version: "1.5.0".into(),
+            first_party_floors: Default::default(),
+            publishers: Default::default(),
+            allow_unsigned: false,
+            allow_third_party: false,
+            min_versions: Default::default(),
+        }
+    }
+
+    fn tmpdir(tag: &str) -> PathBuf {
+        // `pid + tag` is already unique across today's 13 call sites (each passes a distinct
+        // literal tag), but a clock read is not a monotonic ticket — two threads on two cores can
+        // observe the same `SystemTime::now()` value, and routinely do on a coarse-clock platform.
+        // `crate::stage::next_seq()` is the in-tree fix for exactly this shape (already applied to
+        // `stage.rs`'s own staging-file naming); reuse it here instead of a second, weaker idiom.
+        let d = std::env::temp_dir().join(format!(
+            "busbar-registry-{}-{tag}-{}",
+            std::process::id(),
+            crate::stage::next_seq()
+        ));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn write_tarball(dir: &Path, file: &str, m: &Manifest, lib: &[u8]) {
+        let bytes = tarball::package(m, "lib.so", lib).unwrap();
+        std::fs::write(dir.join(file), bytes).unwrap();
+    }
+
+    /// The full happy path: two signed first-party plugins scan into a registry addressable by
+    /// name AND alias, with identity from the MANIFEST (the filenames are deliberately wrong).
+    #[test]
+    fn scan_registers_by_name_and_alias_from_manifest_not_filename() {
+        let release = key(1);
+        let dir = tmpdir("happy");
+        let redis = sign(
+            &release,
+            manifest("busbar-store-redis", "redis", "busbar"),
+            b"redis lib",
+        );
+        let pg = sign(
+            &release,
+            manifest("busbar-store-postgres", "postgres", "busbar"),
+            b"pg lib",
+        );
+        // Filenames lie on purpose - identity must come from the signed manifest.
+        write_tarball(&dir, "totally-not-redis.tar.gz", &redis, b"redis lib");
+        write_tarball(&dir, "misc.tgz", &pg, b"pg lib");
+
+        let reg = scan_and_validate(&dir, &policy(&release)).expect("scan");
+        assert_eq!(reg.loadable().len(), 2);
+        assert!(reg.resolve("redis").is_some(), "alias resolves");
+        assert!(reg.resolve("busbar-store-redis").is_some(), "name resolves");
+        assert!(reg.resolve("postgres").is_some());
+        assert_eq!(
+            reg.resolve("redis").unwrap().manifest.name,
+            "busbar-store-redis"
+        );
+        assert!(reg.resolve("no-such").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// FAIL-CLOSED: one invalid tarball in the dir fails the WHOLE scan with a named reason -
+    /// never a partial registry.
+    #[test]
+    fn one_invalid_tarball_fails_the_whole_scan() {
+        let release = key(1);
+        let dir = tmpdir("invalid");
+        let good = sign(
+            &release,
+            manifest("busbar-store-redis", "redis", "busbar"),
+            b"lib",
+        );
+        write_tarball(&dir, "good.tar.gz", &good, b"lib");
+        std::fs::write(dir.join("junk.tar.gz"), b"this is not a tarball").unwrap();
+
+        let errs = scan_and_validate(&dir, &policy(&release)).unwrap_err();
+        assert_eq!(errs.len(), 1);
+        assert!(
+            errs[0].contains("junk.tar.gz"),
+            "names the file: {}",
+            errs[0]
+        );
+        assert!(errs[0].contains("invalid plugin"), "got {}", errs[0]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A file over `tarball::MAX_TARBALL_FILE_BYTES` is rejected by its SIZE, before `fs::read`
+    /// ever runs - not by a later gzip/tar decode failure. We prove this by making the oversize
+    /// file a SPARSE all-zeros file (cheap to create, costs no real disk or memory): `fs::read`
+    /// would happily succeed on it (it is valid, if enormous, input), so if the rejection reason
+    /// names the byte cap rather than some gzip/tar decode error, the size check - not the
+    /// decoder - is what caught it, and it caught it before the whole file was read into memory.
+    #[test]
+    fn oversize_tarball_file_is_rejected_by_size_before_being_read() {
+        let release = key(1);
+        let dir = tmpdir("oversize");
+        let path = dir.join("huge.tar.gz");
+        let f = std::fs::File::create(&path).unwrap();
+        f.set_len(tarball::MAX_TARBALL_FILE_BYTES + 1).unwrap();
+        drop(f);
+
+        let errs = scan_and_validate(&dir, &policy(&release)).unwrap_err();
+        assert_eq!(errs.len(), 1);
+        assert!(
+            errs[0].contains("huge.tar.gz"),
+            "names the file: {}",
+            errs[0]
+        );
+        assert!(
+            errs[0].contains("exceeding") && errs[0].contains("byte cap"),
+            "rejected by size, not by decode: {}",
+            errs[0]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A structurally-broken manifest (bad kind) fails the scan even though it is validly signed.
+    #[test]
+    fn signed_but_malformed_manifest_is_invalid() {
+        let release = key(1);
+        let dir = tmpdir("malformed");
+        let mut m = manifest("busbar-store-x", "x", "busbar");
+        m.kind = "widget".into();
+        let m = sign(&release, m, b"lib");
+        write_tarball(&dir, "x.tar.gz", &m, b"lib");
+        let errs = scan_and_validate(&dir, &policy(&release)).unwrap_err();
+        assert!(errs[0].contains("kind"), "got {}", errs[0]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Phase 2: an untrusted (third-party, no opt-in) plugin is SKIPPED - the scan succeeds, the
+    /// plugin is not loadable, and referencing it fails with the skip reason.
+    #[test]
+    fn untrusted_is_skipped_not_fatal_but_reference_fails_loud() {
+        let release = key(1);
+        let acme = key(2);
+        let dir = tmpdir("untrusted");
+        let third = sign(
+            &acme,
+            manifest("acme-store-dynamo", "dynamo", "acme"),
+            b"lib3",
+        );
+        write_tarball(&dir, "dynamo.tar.gz", &third, b"lib3");
+
+        let reg = scan_and_validate(&dir, &policy(&release)).expect("scan succeeds");
+        assert!(reg.loadable().is_empty());
+        assert_eq!(reg.skipped().len(), 1);
+        assert!(
+            reg.resolve("dynamo").is_none(),
+            "a skipped plugin never resolves"
+        );
+        let err = reg.open_store("dynamo", "{}").map(|_| ()).unwrap_err();
+        assert!(err.contains("was not loaded"), "got {err}");
+        assert!(err.contains("allowlist"), "carries the trust reason: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Phase 3: two loadable plugins claiming the same ALIAS is a hard error naming both - the
+    /// "can't use redis and a third-party redis" case (third-party allowed via opt-in).
+    #[test]
+    fn alias_conflict_is_a_hard_error_naming_both() {
+        let release = key(1);
+        let acme = key(2);
+        let dir = tmpdir("conflict");
+        let first = sign(
+            &release,
+            manifest("busbar-store-redis", "redis", "busbar"),
+            b"lib1",
+        );
+        let third = sign(
+            &acme,
+            manifest("acme-store-redis", "redis", "acme"),
+            b"lib2",
+        );
+        write_tarball(&dir, "first.tar.gz", &first, b"lib1");
+        write_tarball(&dir, "third.tar.gz", &third, b"lib2");
+
+        let mut pol = policy(&release);
+        pol.allow_third_party = true; // both become loadable -> the conflict must fire
+        let errs = scan_and_validate(&dir, &pol).unwrap_err();
+        assert_eq!(errs.len(), 1, "got {errs:?}");
+        assert!(errs[0].contains("alias conflict"), "got {}", errs[0]);
+        assert!(
+            errs[0].contains("busbar-store-redis"),
+            "names first: {}",
+            errs[0]
+        );
+        assert!(
+            errs[0].contains("acme-store-redis"),
+            "names second: {}",
+            errs[0]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Phase 3: duplicate NAME, and an alias colliding with another plugin's NAME, both hard-error.
+    #[test]
+    fn name_and_alias_vs_name_conflicts_are_hard_errors() {
+        let release = key(1);
+        let dir = tmpdir("nameconflict");
+        let a = sign(
+            &release,
+            manifest("busbar-store-redis", "redis", "busbar"),
+            b"a",
+        );
+        let b = sign(
+            &release,
+            manifest("busbar-store-redis", "redis2", "busbar"),
+            b"b",
+        );
+        write_tarball(&dir, "a.tar.gz", &a, b"a");
+        write_tarball(&dir, "b.tar.gz", &b, b"b");
+        let errs = scan_and_validate(&dir, &policy(&release)).unwrap_err();
+        assert!(
+            errs.iter().any(|e| e.contains("name conflict")),
+            "got {errs:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // Alias colliding with another plugin's canonical name.
+        let dir = tmpdir("aliasvsname");
+        let a = sign(
+            &release,
+            manifest("busbar-store-redis", "redis", "busbar"),
+            b"a",
+        );
+        let b = sign(
+            &release,
+            manifest("acme-store-x", "busbar-store-redis", "busbar"),
+            b"b",
+        );
+        write_tarball(&dir, "a.tar.gz", &a, b"a");
+        write_tarball(&dir, "b.tar.gz", &b, b"b");
+        let errs = scan_and_validate(&dir, &policy(&release)).unwrap_err();
+        assert!(
+            errs.iter().any(|e| e.contains("alias/name conflict")),
+            "got {errs:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A missing plugins dir is an EMPTY registry (drop-is-inert), not an error.
+    #[test]
+    fn missing_dir_is_empty_registry() {
+        let reg = scan_and_validate(Path::new("/no/such/busbar/plugins/dir"), &policy(&key(1)))
+            .expect("missing dir is fine");
+        assert!(reg.loadable().is_empty() && reg.skipped().is_empty());
+    }
+
+    /// Kind gating: a non-store plugin resolves but cannot back the governance store.
+    #[test]
+    fn open_store_refuses_non_store_kind() {
+        let release = key(1);
+        let dir = tmpdir("kind");
+        let mut m = manifest("busbar-hook-ranker", "ranker", "busbar");
+        m.kind = "hook".into();
+        // Stamp the hook-supported ABI version so the scan admits it and the KIND gate (not the
+        // ABI gate) is what rejects.
+        m.abi_version = busbar_plugin_abi::hook::HOOK_ABI_VERSION;
+        let m = sign(&release, m, b"hook lib");
+        write_tarball(&dir, "hook.tar.gz", &m, b"hook lib");
+        let reg = scan_and_validate(&dir, &policy(&release)).expect("scan");
+        let err = reg.open_store("ranker", "{}").map(|_| ()).unwrap_err();
+        assert!(err.contains("kind 'hook'"), "got {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Kind gating for SECRETS (P2): a `kind: secret` plugin passes the SAME scan/trust pipeline
+    /// as a store plugin (a plugin is a plugin), and the kind gate is symmetric - a store plugin
+    /// cannot resolve config secrets, and a secret plugin cannot back the store. FAIL-CLOSED both
+    /// ways.
+    #[test]
+    fn open_secret_refuses_non_secret_kind_and_vice_versa() {
+        let release = key(1);
+        let dir = tmpdir("secretkind");
+        // A trusted secret plugin (abi_version stamped to the secret ABI so the scan admits it).
+        let mut m = manifest("busbar-secret-vault", "vault", "busbar");
+        m.kind = "secret".into();
+        m.abi_version = busbar_plugin_abi::SECRET_ABI_VERSION;
+        let m = sign(&release, m, b"secret lib");
+        write_tarball(&dir, "vault.tar.gz", &m, b"secret lib");
+        // And a trusted store plugin beside it.
+        let st = sign(
+            &release,
+            manifest("busbar-store-redis", "redis", "busbar"),
+            b"store lib",
+        );
+        write_tarball(&dir, "redis.tar.gz", &st, b"store lib");
+        let reg = scan_and_validate(&dir, &policy(&release)).expect("scan admits both kinds");
+        assert_eq!(reg.loadable().len(), 2, "one secret + one store validated");
+        // The kind gates: a store referenced as a secret module fails naming the kind...
+        let err = reg.open_secret("redis", "{}").map(|_| ()).unwrap_err();
+        assert!(err.contains("kind 'store'"), "got {err}");
+        // ...and a secret plugin cannot back the store.
+        let err = reg.open_store("vault", "{}").map(|_| ()).unwrap_err();
+        assert!(err.contains("kind 'secret'"), "got {err}");
+        // An unknown secret module name is fail-closed with the loadable set named.
+        let err = reg.open_secret("nope", "{}").map(|_| ()).unwrap_err();
+        assert!(err.contains("no plugin named or aliased"), "got {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Kind gating: a non-auth plugin resolves but cannot serve as an auth module. Mirrors
+    /// `open_store_refuses_non_store_kind`: a store-kind manifest passes phase 1/2/3 (its default
+    /// `kind`/`abi_version` from `manifest()` are already store-admissible) and is then handed to
+    /// `open_auth`, which must reject on the KIND gate before ever attempting to load it.
+    #[test]
+    fn open_auth_refuses_non_auth_kind() {
+        let release = key(1);
+        let dir = tmpdir("authkind");
+        let m = sign(
+            &release,
+            manifest("busbar-store-redis", "redis", "busbar"),
+            b"store lib",
+        );
+        write_tarball(&dir, "redis.tar.gz", &m, b"store lib");
+        let reg = scan_and_validate(&dir, &policy(&release)).expect("scan");
+        let err = reg.open_auth("redis", "{}").map(|_| ()).unwrap_err();
+        assert!(err.contains("kind 'store'"), "got {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Kind gating: a non-hook plugin resolves but cannot serve as a routing hook. Mirrors
+    /// `open_store_refuses_non_store_kind`: a store-kind manifest passes phase 1/2/3 and is then
+    /// handed to `open_hook`, which must reject on the KIND gate before ever attempting to load it
+    /// (the dummy projectors below are never invoked - the kind check short-circuits first).
+    #[test]
+    fn open_hook_refuses_non_hook_kind() {
+        let release = key(1);
+        let dir = tmpdir("hookkind");
+        let m = sign(
+            &release,
+            manifest("busbar-store-redis", "redis", "busbar"),
+            b"store lib",
+        );
+        write_tarball(&dir, "redis.tar.gz", &m, b"store lib");
+        let reg = scan_and_validate(&dir, &policy(&release)).expect("scan");
+        let projectors = std::sync::Arc::new(crate::hook::HookProjectors {
+            decide: Box::new(|_req, _cands, _ctx| serde_json::Value::Null),
+            transform: Box::new(|_req| serde_json::Value::Null),
+            normalize: Box::new(|_v, _cands| unreachable!("kind gate must short-circuit first")),
+            transform_outcome: Box::new(|_v| unreachable!("kind gate must short-circuit first")),
+            status: Box::new(|_v| None),
+            describe_schema: Box::new(|_v| None),
+        });
+        let err = reg
+            .open_hook("redis", "{}", "redis", projectors)
+            .map(|_| ())
+            .unwrap_err();
+        assert!(err.contains("kind 'store'"), "got {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The inventory is MANIFEST-ONLY and covers every row class: ready, skipped (unknown
+    /// publisher), and invalid - with the exact reason.
+    #[test]
+    fn inventory_reports_every_row_class_without_loading() {
+        let release = key(1);
+        let acme = key(2);
+        let dir = tmpdir("inventory");
+        let good = sign(
+            &release,
+            manifest("busbar-store-redis", "redis", "busbar"),
+            b"g",
+        );
+        let third = sign(&acme, manifest("acme-store-dynamo", "dynamo", "acme"), b"t");
+        write_tarball(&dir, "good.tar.gz", &good, b"g");
+        write_tarball(&dir, "third.tar.gz", &third, b"t");
+        std::fs::write(dir.join("junk.tar.gz"), b"garbage").unwrap();
+
+        let rows = inventory(&dir, &policy(&release));
+        assert_eq!(rows.len(), 3);
+        let by_file = |f: &str| rows.iter().find(|r| r.file == f).unwrap();
+        assert_eq!(by_file("good.tar.gz").signature, "first-party");
+        assert_eq!(by_file("good.tar.gz").status, "ready");
+        assert_eq!(by_file("third.tar.gz").signature, "unknown-publisher");
+        assert!(by_file("third.tar.gz").status.starts_with("SKIPPED:"));
+        assert_eq!(by_file("junk.tar.gz").signature, "INVALID");
+        assert!(by_file("junk.tar.gz").status.starts_with("INVALID:"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Locate the REAL `busbar-store-sqlite-plugin` cdylib built from a SIBLING checkout of
+    /// `GetBusbar/store-sqlite` (mirrors the loader tests' `store_fixture_plugin_path` in
+    /// `crate::tests` exactly — see that function's doc comment for the full sibling-checkout
+    /// rationale). Used here purely to prove the tarball PIPELINE's mechanics (sign, package, scan,
+    /// resolve-by-alias, open), never sqlite-specific behavior (which is that repo's own job).
+    fn store_fixture_cdylib() -> Option<PathBuf> {
+        let candidate = {
+            let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")); // .../busbarAI/crates/plugin-loader
+            let sibling_root = manifest_dir.join("../../../store-sqlite"); // sibling of busbarAI
+            let name = crate::plugin_library_filename("busbar_store_sqlite_plugin");
+            let candidate = sibling_root.join("target/release").join(&name);
+            candidate.exists().then_some(candidate)
+        };
+        if candidate.is_none()
+            && std::env::var_os("CI").is_some()
+            && std::env::var_os("DEV_GATE").is_some()
+        {
+            panic!(
+                "the store-sqlite-plugin cdylib is not built from the ../store-sqlite sibling \
+                 checkout under dev-gate.yml: refusing to silently skip the end-to-end tarball \
+                 pipeline coverage"
+            );
+        }
+        candidate
+    }
+
+    /// END-TO-END, REAL CODE: package the real store-sqlite-plugin cdylib into a SIGNED tarball, run
+    /// the full three-phase pipeline, resolve by ALIAS, and open a live `dyn Store` through the
+    /// memfd (Linux) / private-temp loader - exercising put/get over the C ABI. This is the exact
+    /// seam the engine sees: verified bytes in, `Box<dyn Store>` out, indistinguishable from a
+    /// compiled-in backend.
+    #[test]
+    fn end_to_end_open_store_from_signed_tarball() {
+        let Some(path) = store_fixture_cdylib() else {
+            eprintln!(
+                "skip: store-sqlite-plugin cdylib not built (run `cargo build --release -p \
+                 busbar-store-sqlite-plugin` in a sibling ../store-sqlite checkout)"
+            );
+            return;
+        };
+        let lib = std::fs::read(&path).expect("read sibling store-sqlite-plugin cdylib");
+        let acme = key(3);
+        let dir = tmpdir("e2e");
+        let m = sign(&acme, manifest("acme-store-sqlite", "sqlite", "acme"), &lib);
+        let bytes = tarball::package(&m, "libbusbar_store_sqlite_plugin.so", &lib).unwrap();
+        std::fs::write(dir.join("sqlite.tar.gz"), bytes).unwrap();
+
+        let mut pol = policy(&key(1));
+        pol.publishers
+            .insert("acme".to_string(), acme.verifying_key());
+        let reg = scan_and_validate(&dir, &pol).expect("scan");
+        let store = reg
+            .open_store("sqlite", r#"{"db_path": ":memory:"}"#)
+            .expect("open the real store through the full pipeline");
+        let key = busbar_api::VirtualKey {
+            id: "vk_pipeline".into(),
+            generation_hash: "h".into(),
+            name: "pipeline".into(),
+            allowed_scopes: Some(vec![busbar_api::ScopeRef::pool("p")]),
+            enabled: true,
+            created_at: 1,
+            group: Some("growth".into()),
+            labels: std::collections::BTreeMap::new(),
+            expires_at: None,
+            deleted_at: None,
+            revision: 1,
+        };
+        store.put_key(&key).expect("put over the ABI");
+        let got = store.get_key("vk_pipeline").unwrap().unwrap();
+        assert_eq!(got.group.as_deref(), Some("growth"));
+        assert_eq!(
+            got.allowed_scopes,
+            Some(vec![busbar_api::ScopeRef::pool("p")])
+        );
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// First-party anti-downgrade in the pipeline: an old (validly signed) first-party plugin is
+    /// REJECTED (inventory shows below-floor; scan skips it with the anti-downgrade reason).
+    #[test]
+    fn first_party_downgrade_is_rejected_in_pipeline() {
+        let release = key(1);
+        let dir = tmpdir("downgrade");
+        let mut m = manifest("busbar-store-redis", "redis", "busbar");
+        m.version = "1.0.0".into();
+        let m = sign(&release, m, b"old lib");
+        write_tarball(&dir, "old.tar.gz", &m, b"old lib");
+        let reg = scan_and_validate(&dir, &policy(&release)).expect("scan");
+        assert!(reg.resolve("redis").is_none());
+        assert!(reg.skipped()[0].reason.contains("anti-downgrade"));
+        let rows = inventory(&dir, &policy(&release));
+        assert!(
+            rows[0].status.starts_with("REJECTED:"),
+            "got {}",
+            rows[0].status
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// class-12 D2: a malformed `min_versions` floor SKIPS just the one floored plugin — the boot is
+    /// NOT killed — and the graduated escalation ladder (`registry.rs:374-389`'s "a rejection here is
+    /// a SKIP, unless referenced") already surfaces it: `skipped()` names the reason, and
+    /// `--list-plugins`/the admin catalog show a `REJECTED:` row. All four asserted in one test
+    /// because the graduated escalation IS the design. RED: before the fix the floor is a no-op, so
+    /// the plugin loads, `skipped()` is empty, and the index panics.
+    #[test]
+    fn a_malformed_floor_skips_the_plugin_and_keeps_the_boot_alive() {
+        let release = key(1);
+        let dir = tmpdir("malformed-floor");
+        let m = sign(
+            &release,
+            manifest("busbar-store-redis", "redis", "busbar"),
+            b"lib",
+        );
+        write_tarball(&dir, "redis.tar.gz", &m, b"lib");
+
+        let mut pol = policy(&release);
+        pol.min_versions
+            .insert("busbar-store-redis".to_string(), "v9.9.9".to_string());
+
+        let reg =
+            scan_and_validate(&dir, &pol).expect("scan must succeed — the boot is not killed");
+        assert!(
+            reg.resolve("redis").is_none(),
+            "the malformed-floor plugin must not be loadable"
+        );
+        assert!(
+            reg.skipped()[0].reason.contains("v9.9.9"),
+            "the skip reason must name the malformed floor: {}",
+            reg.skipped()[0].reason
+        );
+        let rows = inventory(&dir, &pol);
+        assert!(
+            rows[0].status.starts_with("REJECTED:"),
+            "--list-plugins / the admin catalog must show the rejection: {}",
+            rows[0].status
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// class-12 D2: the escalation's top rung — a REFERENCED plugin (e.g. `store.module`) with a
+    /// malformed floor fails the boot LOUDLY, with the reason attached, via `unresolved_reason` (the
+    /// same string `main.rs`'s hard boot error interpolates for a referenced module). Proves the
+    /// reason is available and correct; the `main.rs` interpolation itself is verified by reading
+    /// source, not by a test (no in-tree harness boots the binary).
+    #[test]
+    fn a_referenced_plugin_with_a_malformed_floor_fails_the_boot_loudly() {
+        let release = key(1);
+        let dir = tmpdir("malformed-floor-referenced");
+        let m = sign(
+            &release,
+            manifest("busbar-store-redis", "redis", "busbar"),
+            b"lib",
+        );
+        write_tarball(&dir, "redis.tar.gz", &m, b"lib");
+
+        let mut pol = policy(&release);
+        pol.min_versions
+            .insert("busbar-store-redis".to_string(), "v9.9.9".to_string());
+
+        let reg = scan_and_validate(&dir, &pol).expect("scan");
+        let reason = reg
+            .unresolved_reason("redis")
+            .expect("a malformed-floor plugin must be reportable as unresolved")
+            .reason
+            .clone();
+        assert!(
+            reason.contains("v9.9.9"),
+            "the reason `main.rs` interpolates into its hard boot error must name the floor: {reason}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// AUDIT REGRESSION (LOW): the `--list-plugins` signature label is derived from the STRUCTURED
+    /// reject verdict (`SkippedPlugin.kind`), NOT a substring of the plugin-controlled reason. A
+    /// third-party plugin whose author crafts `publisher: "anti-downgrade-bypass"` (so the rejection
+    /// reason text contains "anti-downgrade") must still be labeled `unknown-publisher`, never
+    /// mislabeled `trusted (below floor)`. Load decisions never used this text; the fix is the label.
+    #[test]
+    fn crafted_publisher_cannot_forge_signature_label() {
+        let release = key(1);
+        let attacker = key(9);
+        let dir = tmpdir("label-forge");
+        // Validly signed by the attacker, but the publisher is NOT allowlisted → unknown-publisher.
+        // The crafted publisher name is chosen so the reason string contains "anti-downgrade".
+        let m = sign(
+            &attacker,
+            manifest("acme-store-x", "acme", "anti-downgrade-bypass"),
+            b"lib",
+        );
+        write_tarball(&dir, "acme.tar.gz", &m, b"lib");
+
+        // Default posture (no allow_third_party) → skipped as unknown-publisher.
+        let reg = scan_and_validate(&dir, &policy(&release)).expect("scan");
+        assert!(reg.resolve("acme").is_none());
+        assert_eq!(
+            reg.skipped()[0].kind,
+            busbar_plugin_sign::RejectKind::UnknownPublisher
+        );
+
+        let rows = inventory(&dir, &policy(&release));
+        assert_eq!(
+            rows[0].signature, "unknown-publisher",
+            "the crafted publisher must NOT forge a 'trusted (below floor)' label; got {}",
+            rows[0].signature
+        );
+        assert!(
+            rows[0].status.starts_with("SKIPPED:"),
+            "an unknown-publisher reject is a SKIP, not a REJECTED row: {}",
+            rows[0].status
+        );
+
+        // AUDIT REGRESSION (round 2): the SAME untrusted artifact but with a configured `min_versions`
+        // floor on its name must NEVER be labeled `trusted (below floor)`. The floor is trust-relative:
+        // `AntiDowngrade` is reserved for artifacts that proved trust. An untrusted+floored artifact is
+        // categorized as `UntrustedFloored` and labeled `untrusted (below floor)` — a hard SKIP, never
+        // a "trusted" surface. (Regression: the floor check fired BEFORE trust resolution and returned
+        // `AntiDowngrade` for this case, mislabeling it "trusted (below floor)".)
+        let mut floored = policy(&release);
+        floored
+            .min_versions
+            .insert("acme-store-x".to_string(), "2.0.0".to_string());
+        let reg = scan_and_validate(&dir, &floored).expect("scan");
+        assert!(reg.resolve("acme").is_none());
+        assert_eq!(
+            reg.skipped()[0].kind,
+            busbar_plugin_sign::RejectKind::UntrustedFloored,
+            "a floored untrusted artifact must resolve to UntrustedFloored, not AntiDowngrade"
+        );
+        let rows = inventory(&dir, &floored);
+        assert_eq!(
+            rows[0].signature, "untrusted (below floor)",
+            "a floored untrusted artifact must NOT be mislabeled 'trusted (below floor)'; got {}",
+            rows[0].signature
+        );
+        assert!(
+            rows[0].status.starts_with("SKIPPED:"),
+            "a floored untrusted reject is a SKIP, not REJECTED: {}",
+            rows[0].status
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// class-13/14 F4: `supported_abi("auth")` now reads `busbar_plugin_abi::AUTH_ABI_VERSION`
+    /// instead of the bare literal `&[1, 1]`, matching `"secret"`/`"hook"`. COMPILE-TIME GUARD, not a
+    /// RED test — see the identical note on `plugin-sdk`'s `auth_abi_version_reads_the_shared_const`.
+    #[test]
+    fn auth_supported_abi_reads_the_shared_const() {
+        assert_eq!(
+            supported_abi("auth"),
+            &[
+                busbar_plugin_abi::AUTH_ABI_VERSION,
+                busbar_plugin_abi::AUTH_ABI_VERSION
+            ]
+        );
+    }
+}

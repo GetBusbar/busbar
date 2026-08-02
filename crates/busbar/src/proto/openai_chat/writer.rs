@@ -269,7 +269,10 @@ impl ProtocolWriter for OpenAiWriter {
             out.insert("top_p".to_string(), serde_json::json!(top_p));
         }
         if !req.stop.is_empty() {
-            out.insert("stop".to_string(), serde_json::json!(req.stop));
+            out.insert(
+                "stop".to_string(),
+                serde_json::json!(crate::proto::clamp_stop(&req.stop, 4, "OpenAI")),
+            );
         }
 
         // Phase 0 first-class sampling/output controls. Emitted in OpenAI's native top-level shape and
@@ -377,16 +380,29 @@ impl ProtocolWriter for OpenAiWriter {
 
         // Emit `tool_choice` in OpenAI's native shape when present so a forced/targeted tool
         // directive translated from another protocol round-trips instead of degrading to `auto`.
+        // OpenAI's own 400 is `"tool_choice" is only allowed when "tools" are specified` (the same
+        // reason the parallelism-carry guard just above already checks `!req.tools.is_empty()`), so
+        // a tool_choice with no accompanying tools — e.g. a cross-protocol request whose hosted
+        // tools `prepare_for_egress` stripped (`ir/variant.rs`) — must degrade with a warn, not ship
+        // a guaranteed 400.
         if let Some(tc) = &req.tool_choice {
-            let v = match tc {
-                crate::ir::IrToolChoice::Auto => serde_json::json!("auto"),
-                crate::ir::IrToolChoice::None => serde_json::json!("none"),
-                crate::ir::IrToolChoice::Required => serde_json::json!("required"),
-                crate::ir::IrToolChoice::Tool { name } => {
-                    serde_json::json!({"type": TOOL_TYPE_FUNCTION, "function": {"name": name}})
-                }
-            };
-            out.insert("tool_choice".to_string(), v);
+            if req.tools.is_empty() {
+                tracing::warn!(
+                    "dropping tool_choice on OpenAI egress: \"tool_choice\" is only allowed when \
+                     \"tools\" are specified (likely because the hosted tools that carried it were \
+                     stripped on the cross-protocol seam)"
+                );
+            } else {
+                let v = match tc {
+                    crate::ir::IrToolChoice::Auto => serde_json::json!("auto"),
+                    crate::ir::IrToolChoice::None => serde_json::json!("none"),
+                    crate::ir::IrToolChoice::Required => serde_json::json!("required"),
+                    crate::ir::IrToolChoice::Tool { name } => {
+                        serde_json::json!({"type": TOOL_TYPE_FUNCTION, "function": {"name": name}})
+                    }
+                };
+                out.insert("tool_choice".to_string(), v);
+            }
         }
 
         // Add extra fields
@@ -447,10 +463,16 @@ impl ProtocolWriter for OpenAiWriter {
             IrStreamEvent::BlockStart { index, block } => match block {
                 crate::ir::IrBlockMeta::Text => None,
                 crate::ir::IrBlockMeta::ToolUse { id, name } => {
-                    // Use the IR block index (canonical) so parallel tool calls keep distinct,
-                    // stable indices. OpenAI SDKs route streaming argument fragments by
-                    // `tool_calls[n].index`; the BlockStart and its BlockDeltas must carry the
-                    // same value or the reconstructed arguments collide at index 0.
+                    // Stamp the CANONICAL IR block index here so parallel tool calls keep distinct,
+                    // stable keys and each call's BlockStart + BlockDeltas share ONE value. This is
+                    // NOT necessarily 0-based (a source stream can open the first tool_use at a
+                    // non-zero block index, e.g. text at block 0 then tool_use at block 1). OpenAI's
+                    // streaming contract requires `tool_calls[].index` to ENUMERATE the calls from 0,
+                    // so the OpenAI-ingress framing seam (`OpenAiStreamFraming::remap_tool_call_index`)
+                    // remaps each distinct raw index to its 0-based ordinal on egress — keyed on the
+                    // value emitted here. The writer stays 1:1 and stateless; the per-stream ordinal
+                    // assignment lives in the framing, which is the only seam that sees the whole
+                    // stream. (Finding 1.)
                     let delta_obj = serde_json::json!({
                         "tool_calls": [{
                             "index": index,
@@ -485,8 +507,9 @@ impl ProtocolWriter for OpenAiWriter {
                     Some(("".to_string(), chunk_obj))
                 }
                 crate::ir::IrDelta::InputJsonDelta(json) => {
-                    // Mirror the index emitted by the matching BlockStart so argument
-                    // fragments are routed to the correct parallel tool call.
+                    // Mirror the CANONICAL raw index emitted by the matching BlockStart so argument
+                    // fragments route to the correct parallel tool call; the framing seam remaps this
+                    // to the same 0-based ordinal it assigned the BlockStart (Finding 1).
                     let delta_obj = serde_json::json!({
                         "tool_calls": [{
                             "index": index,
@@ -813,6 +836,29 @@ impl ProtocolWriter for OpenAiWriter {
         // Add tool_calls only if present
         if !tool_calls_arr.is_empty() {
             message_obj["tool_calls"] = serde_json::Value::Array(tool_calls_arr);
+        }
+
+        // Grounding sources. Chat joins every text block into ONE content string, so a citation's
+        // offsets are shifted by where its block starts in that join. Emitted only when non-empty:
+        // an absent `annotations` key is what OpenAI returns for a completion with no sources, so a
+        // hardcoded `[]` would be a proxy tell in the other direction.
+        let mut base = 0usize;
+        let mut annotations: Vec<serde_json::Value> = Vec::new();
+        for block in &resp.content {
+            if let crate::ir::IrBlock::Text {
+                text, citations, ..
+            } = block
+            {
+                annotations.extend(super::url_annotations(text, base, citations));
+                // CHARACTERS, not bytes: the IR citation contract (`IrCitation::start_index`/
+                // `end_index`, `ir/mod.rs`) is characters. `text.len()` is a byte length — every
+                // citation in block 2+ would be shifted by that block's byte-vs-char delta on any
+                // non-ASCII text (class-6 6e1, site 1).
+                base += text.chars().count();
+            }
+        }
+        if !annotations.is_empty() {
+            message_obj["annotations"] = serde_json::Value::Array(annotations);
         }
 
         let mut choices_array: Vec<serde_json::Value> = Vec::new();

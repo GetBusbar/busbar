@@ -23,8 +23,9 @@
 //!   an ASYNC refresh (stale-while-revalidate) — a slow or dead hook yields stale-then-absent series
 //!   (fail-open), never a stalled `/metrics/hooks`. Zero work when nobody scrapes; self-tunes to the
 //!   scrape rate.
-//! * BOUNDED. `parse_status_metrics` already caps entries (64) + labels (8) and sanitizes every name/
-//!   label/value, so a hostile hook cannot flood or exfiltrate through the scrape.
+//! * BOUNDED. `parse_status_metrics` already caps entries (64) + labels (8) + quantiles (8) +
+//!   buckets (64) and sanitizes every name/label/value, so a hostile hook cannot flood or
+//!   exfiltrate through the scrape.
 
 use super::wire::HookMetric;
 use std::collections::HashMap;
@@ -46,6 +47,41 @@ struct Cached {
 /// Process-wide hook-metrics cache, keyed by hook name. Populated by the stale-while-revalidate
 /// refresh fired from the scrape handler; read (never blocked) by the renderer.
 static CACHE: RwLock<Option<HashMap<String, Cached>>> = RwLock::new(None);
+
+/// The hooks with a refresh ALREADY IN FLIGHT. Without this, staleness alone gates the spawn -- and
+/// staleness does not clear until the refresh COMPLETES, so every scrape that lands while one is
+/// running spawns another. A refresh is not cheap: it stages a copy of the plugin to disk, `dlopen`s
+/// it, and runs its constructor. A scrape interval shorter than a slow hook's status round-trip
+/// therefore compounds without bound -- N monitoring replicas x every scrape x every hook, each
+/// loading a fresh copy of the library -- exactly when the hook is already struggling.
+///
+/// Membership is the admission ticket: a hook not in the set is claimed and refreshed, one in the
+/// set is skipped and picked up on a later scrape. Released by [`InFlight`] on the way out,
+/// including on panic, so a failed refresh cannot wedge a hook out of ever refreshing again.
+static IN_FLIGHT: RwLock<Option<std::collections::HashSet<String>>> = RwLock::new(None);
+
+/// RAII claim on a hook's refresh slot. `Drop` releases it, so an early return or a panic inside the
+/// spawned task cannot leak the claim.
+struct InFlight(String);
+
+impl InFlight {
+    /// Claim `name`, or `None` if a refresh for it is already running.
+    fn claim(name: &str) -> Option<InFlight> {
+        let mut guard = IN_FLIGHT.write().unwrap_or_else(|e| e.into_inner());
+        let set = guard.get_or_insert_with(std::collections::HashSet::new);
+        set.insert(name.to_string())
+            .then(|| InFlight(name.to_string()))
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        let mut guard = IN_FLIGHT.write().unwrap_or_else(|e| e.into_inner());
+        if let Some(set) = guard.as_mut() {
+            set.remove(&self.0);
+        }
+    }
+}
 
 /// True iff `name`'s cache is missing or older than the TTL — i.e. the scrape should fire an async
 /// refresh for it. Read-only; the refresh itself writes the cache.
@@ -69,6 +105,21 @@ fn store(name: &str, metrics: Vec<HookMetric>, now: u64) {
     );
 }
 
+/// Evict cache entries for hooks no longer in the current registry (removed/renamed on a config
+/// reload). Without this, the process-global `CACHE` retains a dead `(name, Cached)` entry for the
+/// process lifetime for every hook name ever configured — an unbounded (operator-driven) retention
+/// under frequent hook churn, and dead series would keep rendering in `/metrics/hooks`. `keep` is the
+/// set of currently-configured hook names. Skips the lock entirely when nothing needs pruning.
+fn prune_absent<'a>(keep: impl Iterator<Item = &'a str>) {
+    let keep: std::collections::HashSet<&str> = keep.collect();
+    let mut guard = CACHE.write().unwrap_or_else(|e| e.into_inner());
+    if let Some(m) = guard.as_mut() {
+        if m.keys().any(|k| !keep.contains(k.as_str())) {
+            m.retain(|k, _| keep.contains(k.as_str()));
+        }
+    }
+}
+
 /// Snapshot the current cache as `(hook_name, metrics)` pairs for rendering. Clones the small parsed
 /// metric structs (≤64 per hook) so the render never holds the lock across formatting.
 fn snapshot() -> Vec<(String, Vec<HookMetric>)> {
@@ -87,12 +138,15 @@ fn snapshot() -> Vec<(String, Vec<HookMetric>)> {
 /// (never inline). Reuses the exact same [`super::fetch_status`] path the admin API uses, so the
 /// scrape and the live admin read see the identical hook data (just at different freshness).
 async fn refresh(
-    name: String,
+    claim: InFlight,
     hook: crate::config::HookCfg,
     settings_version: u64,
-    client: reqwest::Client,
+    env: super::HookEnv,
 ) {
-    let metrics = match super::fetch_status(&name, &hook, settings_version, &client).await {
+    // The claim is held for the WHOLE refresh and dropped on the way out (including on panic), so no
+    // second refresh for this hook can start while this one is still loading the plugin.
+    let name = claim.0.clone();
+    let metrics = match super::fetch_status(&name, &hook, settings_version, &env).await {
         Some(status) => status
             .metrics
             .as_ref()
@@ -111,16 +165,25 @@ async fn refresh(
 /// (the NEXT scrape sees it) and render the current cache now. The handler never awaits a hook.
 pub(crate) fn render(app: &Arc<crate::state::App>) -> String {
     let now = crate::store::now();
+    // Evict cache entries for hooks removed/renamed in a config reload so stale series stop
+    // rendering and the process-global cache can't grow unbounded across reloads.
+    prune_absent(app.hook_registry.keys().map(String::as_str));
     // Fire async refreshes for stale hooks; never block the scrape on them.
     for (name, hook) in app.hook_registry.iter() {
-        if is_stale(name, now) {
-            tokio::spawn(refresh(
-                name.clone(),
-                hook.clone(),
-                app.config_version,
-                app.client.clone(),
-            ));
+        // Stale AND not already being refreshed. Staleness alone is not enough: it does not clear
+        // until the refresh lands, so it would re-arm on every scrape in the meantime.
+        if !is_stale(name, now) {
+            continue;
         }
+        let Some(claim) = InFlight::claim(name) else {
+            continue;
+        };
+        tokio::spawn(refresh(
+            claim,
+            hook.clone(),
+            app.config_version,
+            app.hook_env.clone(),
+        ));
     }
     render_text(&snapshot())
 }
@@ -256,8 +319,12 @@ fn render_summary(out: &mut String, name: &str, hook: &str, m: &HookMetric) {
 
 /// Build the `{hook="...",k="v",...,extra="..."}` label set: the automatic `hook` label first, then
 /// the hook's own labels (sorted for determinism), then any renderer-added labels (e.g. `quantile`).
-/// Values are Prometheus-escaped. The wire already charset-restricts names/keys, so escaping here is
-/// belt-and-suspenders on the values.
+/// Values are Prometheus-escaped.
+///
+/// A hook label that would SHADOW one this renderer emits is dropped: charset validity (all the
+/// wire checks) is not uniqueness, and a duplicate label name is a parse error that costs the whole
+/// scrape, not just the sample. The forbidden set is derived from `extra` rather than listed, so it
+/// cannot drift from what the renderer actually emits.
 fn render_labels(
     hook: &str,
     labels: Option<&std::collections::BTreeMap<String, String>>,
@@ -267,6 +334,9 @@ fn render_labels(
     parts.push(format!("hook=\"{}\"", escape_label(hook)));
     if let Some(m) = labels {
         for (k, v) in m {
+            if k == "hook" || extra.iter().any(|(ek, _)| ek == k) {
+                continue; // would duplicate a label this renderer emits; keep ours, drop theirs
+            }
             parts.push(format!("{k}=\"{}\"", escape_label(v)));
         }
     }

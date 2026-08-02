@@ -31,6 +31,39 @@ const MIN_SLEEP_SECS: u64 = 30;
 pub(crate) struct CachedToken {
     pub(crate) token: String,
     pub(crate) expires_at: u64,
+    /// The `Authorization: Bearer <token>` header value, pre-built ONCE here (at mint time) rather
+    /// than on every `headers_for` call — `headers_for` runs inline on the egress hot path for every
+    /// outbound request, while a token only changes on the background refresh loop (roughly hourly),
+    /// so re-`format!`ing and re-validating the same bytes per request was pure waste (1.4.0 audit,
+    /// egress-auth, performance lens). `None` when `token` is empty (the pre-first-mint sentinel) or
+    /// contains bytes invalid for an HTTP header value — both cases mean "emit no auth header",
+    /// exactly as before.
+    header: Option<HeaderValue>,
+}
+
+impl CachedToken {
+    /// Construct a `CachedToken`, building its `header` once here so no caller has to remember to.
+    pub(crate) fn new(token: String, expires_at: u64) -> Self {
+        let header = if token.is_empty() {
+            None
+        } else {
+            match HeaderValue::from_str(&format!("Bearer {token}")) {
+                Ok(v) => Some(v),
+                Err(_) => {
+                    tracing::warn!(
+                        "minted an OAuth token with bytes invalid for an HTTP header value; omitting \
+                         the auth header — upstream will reject with 401"
+                    );
+                    None
+                }
+            }
+        };
+        Self {
+            token,
+            expires_at,
+            header,
+        }
+    }
 }
 
 /// The future a [`Minter`] returns — a fresh token or a human-readable error.
@@ -49,24 +82,17 @@ impl CredentialProvider for BearerToken {
     fn headers_for(&self, _key: &str, _ctx: &SigningContext) -> Vec<(HeaderName, HeaderValue)> {
         // A self-minting credential ignores the per-request `key`. Read the current cached token; if
         // it is empty (the boot window before the first mint) or un-encodable, emit NO auth header
-        // (upstream 401 — the same fail-closed shape as an un-encodable static key).
+        // (upstream 401 — the same fail-closed shape as an un-encodable static key). The header value
+        // was already built once, at mint time, by `CachedToken::new` — clone it (cheap: `HeaderValue`
+        // wraps refcounted bytes) rather than re-`format!`+re-validate on every request.
         // Recover from a poisoned lock rather than panic: the guarded value is always a valid
         // `Arc<CachedToken>`, and this runs inline on the request hot path — a panic here would 500 a
         // request over a lock another thread poisoned. (The critical sections are a trivial Arc clone
         // and an Arc assignment, neither of which can panic, so poisoning is effectively unreachable.)
         let cached = self.token.read().unwrap_or_else(|e| e.into_inner()).clone();
-        if cached.token.is_empty() {
-            return Vec::new();
-        }
-        match HeaderValue::from_str(&format!("Bearer {}", cached.token)) {
-            Ok(v) => vec![(HeaderName::from_static("authorization"), v)],
-            Err(_) => {
-                tracing::warn!(
-                    "minted an OAuth token with bytes invalid for an HTTP header value; omitting the \
-                     auth header — upstream will reject with 401"
-                );
-                Vec::new()
-            }
+        match &cached.header {
+            Some(v) => vec![(HeaderName::from_static("authorization"), v.clone())],
+            None => Vec::new(),
         }
     }
 
@@ -87,10 +113,7 @@ impl CredentialProvider for BearerToken {
 /// (e.g. a sync construction test) the refresher is skipped and the credential simply holds no token.
 pub(crate) fn spawn(minter: Minter) -> CredentialProviderArc {
     let provider = Arc::new(BearerToken {
-        token: RwLock::new(Arc::new(CachedToken {
-            token: String::new(),
-            expires_at: 0,
-        })),
+        token: RwLock::new(Arc::new(CachedToken::new(String::new(), 0))),
     });
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
         let weak = Arc::downgrade(&provider);
@@ -185,17 +208,14 @@ mod tests {
     impl BearerToken {
         pub(crate) fn with_token_for_test(token: &str) -> Self {
             BearerToken {
-                token: RwLock::new(Arc::new(CachedToken {
-                    token: token.to_string(),
-                    expires_at: 0,
-                })),
+                token: RwLock::new(Arc::new(CachedToken::new(token.to_string(), 0))),
             }
         }
     }
 
     fn ctx() -> SigningContext<'static> {
         SigningContext {
-            host: "example.com".to_string(),
+            host: "example.com",
             canonical_uri: "/x".to_string(),
             body: b"{}",
             timestamp_epoch: 0,
@@ -210,6 +230,42 @@ mod tests {
         assert_eq!(h.len(), 1);
         assert_eq!(h[0].0.as_str(), "authorization");
         assert_eq!(h[0].1.to_str().unwrap(), "Bearer tok-abc");
+    }
+
+    // Performance fix (1.4.0 audit, egress-auth, perf lens): the `Authorization` header value is now
+    // built ONCE by `CachedToken::new` (mint time) rather than re-`format!`+re-validated on every
+    // `headers_for` call. Simulate the background refresh loop's store step directly (swap in a fresh
+    // `CachedToken`, as `refresh_loop` does via `*p.token.write()... = Arc::new(fresh)`) and assert
+    // `headers_for` picks up the newly pre-built header — proving the cache-once, clone-on-read path
+    // stays correct across a refresh, not just at construction.
+    #[test]
+    fn headers_for_reflects_prebuilt_header_after_a_refresh() {
+        let c = BearerToken::with_token_for_test("tok-old");
+        assert_eq!(
+            c.headers_for("k", &ctx())[0].1.to_str().unwrap(),
+            "Bearer tok-old"
+        );
+
+        *c.token.write().unwrap() = Arc::new(CachedToken::new("tok-new".to_string(), 0));
+
+        let h = c.headers_for("k", &ctx());
+        assert_eq!(h.len(), 1);
+        assert_eq!(h[0].1.to_str().unwrap(), "Bearer tok-new");
+    }
+
+    // `CachedToken::new` must reject-to-`None` the same bytes `HeaderValue::from_str` always rejected
+    // (e.g. a raw newline), so a token endpoint returning header-invalid bytes still degrades to "no
+    // auth header" (fail-closed, same as before this change) rather than panicking or emitting a
+    // malformed header.
+    #[test]
+    fn cached_token_new_omits_header_for_bytes_invalid_in_a_header_value() {
+        let bad = BearerToken {
+            token: RwLock::new(Arc::new(CachedToken::new(
+                "tok\nwith-newline".to_string(),
+                0,
+            ))),
+        };
+        assert!(bad.headers_for("k", &ctx()).is_empty());
     }
 
     #[test]
@@ -269,5 +325,26 @@ mod tests {
         let h = c.headers_for("k", &ctx());
         assert_eq!(h.len(), 1, "poisoned lock must still yield the auth header");
         assert_eq!(h[0].1.to_str().unwrap(), "Bearer tok-poison");
+    }
+
+    /// `now_epoch()` returns the REAL current unix time, not a stub. A mutant collapsing the body
+    /// to `0` would silently make `next_refresh_secs`'s "how long until expiry" math always see
+    /// 1970, i.e. every token permanently "already expired" — bracket against a wall-clock read
+    /// taken immediately before/after the call so this stays robust to real (sub-second) timing.
+    #[test]
+    fn now_epoch_returns_the_real_current_time() {
+        let before = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let got = now_epoch();
+        let after = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert!(
+            got >= before && got <= after,
+            "now_epoch() = {got}, expected within [{before}, {after}]"
+        );
     }
 }

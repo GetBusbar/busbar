@@ -57,7 +57,7 @@ impl ProtocolWriter for ResponsesWriter {
                                 }));
                             }
                             crate::ir::IrBlock::Image { source, .. } => match source {
-                                // L5: a Responses-produced vendor reference is a `file_id` — re-emit
+                                // A Responses-produced vendor reference is a `file_id` — re-emit
                                 // the native `input_image.file_id` form (a data URI would corrupt it).
                                 crate::ir::IrImageSource::Vendor { vendor, value }
                                     if *vendor == VENDOR_NAME =>
@@ -149,12 +149,19 @@ impl ProtocolWriter for ResponsesWriter {
                             // egress. Mirrors the `write_response` reasoning item shape: a REDACTED
                             // reasoning block holds opaque encrypted bytes with no plaintext analog
                             // on the Responses surface, so it is dropped rather than leaked.
+                            // ROLE GUARD: a `reasoning` input item asserts to the model "this is my
+                            // own prior reasoning". Only an Assistant message can truthfully carry
+                            // that — a Thinking block attached to a User message (possible from an
+                            // upstream reader that does not check role, e.g. the Gemini reader's
+                            // `thought: true` parts) must NOT be re-emitted as the model's own past
+                            // reasoning, or the caller's content is presented back to the model
+                            // with false provenance.
                             crate::ir::IrBlock::Thinking {
                                 text,
                                 signature,
                                 redacted,
                                 ..
-                            } if !*redacted => {
+                            } if !*redacted && msg.role == crate::ir::IrRole::Assistant => {
                                 let emit_sig = signature.as_deref();
                                 // A wholly-empty reasoning block (no text, no signature) emits no item.
                                 if !text.is_empty() || emit_sig.is_some() {
@@ -185,6 +192,17 @@ impl ProtocolWriter for ResponsesWriter {
                                     }
                                     reasoning_items.push(serde_json::Value::Object(item));
                                 }
+                            }
+                            // Non-Assistant Thinking (role guard above) — drop-with-warn, the
+                            // file's convention for a block with no analog on the target surface
+                            // (see the foreign-vendor-image and json-tool-result arms above), so
+                            // the loss is visible rather than silent.
+                            crate::ir::IrBlock::Thinking { redacted, .. } if !*redacted => {
+                                tracing::warn!(
+                                    "dropping non-Assistant Thinking block on Responses egress: a \
+                                     `reasoning` input item asserts it is the model's own prior \
+                                     reasoning, which only an Assistant-role message can carry"
+                                );
                             }
                             // A REDACTED reasoning block (opaque encrypted bytes, no plaintext
                             // analog on Responses) is dropped rather than leaked as `reasoning_text`.
@@ -263,6 +281,17 @@ impl ProtocolWriter for ResponsesWriter {
         if !req.tools.is_empty() {
             let mut tools_arr: Vec<serde_json::Value> = Vec::new();
             for tool in &req.tools {
+                // HOSTED-TOOL PASSTHROUGH (Finding 5). A hosted/built-in Responses tool
+                // (`web_search`/`file_search`/`code_interpreter`/`computer_use_preview`/`mcp`/...) is a
+                // complete tool spec discriminated by its top-level `type`; it carries no
+                // `name`/`parameters` and has no function-tool equivalent. The reader stored its raw
+                // JSON in `hosted`, so re-emit it VERBATIM — wrapping it as a function tool (the prior
+                // behavior) produced an empty `{"type":"function","name":""}` that a Responses backend
+                // 400s on and is a detectable proxy tell.
+                if let Some(hosted) = &tool.hosted {
+                    tools_arr.push(hosted.clone());
+                    continue;
+                }
                 let mut tool_obj = serde_json::Map::new();
                 tool_obj.insert("type".to_string(), serde_json::json!("function"));
                 tool_obj.insert("name".to_string(), serde_json::json!(tool.name));
@@ -285,8 +314,37 @@ impl ProtocolWriter for ResponsesWriter {
 
         // Emit `tool_choice` (PF-H1) in the Responses native shape when present so a forced/targeted
         // directive translated from another protocol does not silently degrade to `auto`.
+        // `/v1/responses` rejects it tool-less identically to Chat Completions — the reachable case
+        // is a cross-protocol request whose hosted tools `prepare_for_egress` stripped
+        // (`ir/variant.rs`) while the tool_choice directive survived.
         if let Some(tc) = &req.tool_choice {
-            out.insert("tool_choice".to_string(), write_responses_tool_choice(tc));
+            if req.tools.is_empty() {
+                tracing::warn!(
+                    "dropping tool_choice on Responses egress: tool_choice is only allowed when \
+                     tools are specified (likely because the hosted tools that carried it were \
+                     stripped on the cross-protocol seam)"
+                );
+            } else {
+                out.insert("tool_choice".to_string(), write_responses_tool_choice(tc));
+            }
+        }
+        // `parallel_tool_calls` (class-6 6c1 egress): `/v1/responses` documents it the same way as
+        // Chat — meaningless (and, empirically, rejected) with no tools. The `is_some()` gate means
+        // this can only fire on a request that actually carried the flag, so it never fires as
+        // per-request noise on the common tool-less case.
+        if let Some(parallel) = req.parallel_tool_calls {
+            if req.tools.is_empty() {
+                tracing::warn!(
+                    "dropping parallel_tool_calls on Responses egress: it has no accompanying \
+                     tools (likely because the hosted tools that carried it were stripped on the \
+                     cross-protocol seam), so the backend's default parallelism applies"
+                );
+            } else {
+                out.insert(
+                    "parallel_tool_calls".to_string(),
+                    serde_json::json!(parallel),
+                );
+            }
         }
 
         if let Some(max_tokens) = req.max_tokens {
@@ -606,11 +664,14 @@ impl ProtocolWriter for ResponsesWriter {
                 &crate::ir::IrDelta::ThinkingDelta(_)
                 | crate::ir::IrDelta::SignatureDelta(_)
                 | crate::ir::IrDelta::RedactedReasoningDelta(_) => None,
-                // L2-5: the Responses streaming surface has no confirmable citation/annotation
-                // delta shape to map this onto, so suppress rather than synthesize one (the
-                // citation stays in the IR and is re-emitted by protocols that model streaming
-                // citations). No panic on this otherwise-unhandled variant.
-                crate::ir::IrDelta::CitationsDelta(_) => None,
+                // Responses carries citations as `annotations` on the assembled `output_text`
+                // part, not as a standalone delta frame — so there is nothing to emit HERE, but the
+                // citations must survive until `BlockStop` builds that part. Buffer them; dropping
+                // them lost every grounding source on a cross-protocol stream into Responses.
+                crate::ir::IrDelta::CitationsDelta(cits) => {
+                    self.append_citations(*index, cits);
+                    None
+                }
                 // Responses streaming logprobs (inside `output_text` events) are out of the 1.2
                 // OpenAI<->Gemini scope; dropped rather than emitted in a non-native shape.
                 crate::ir::IrDelta::LogprobsDelta(_) => None,
@@ -705,13 +766,22 @@ impl ProtocolWriter for ResponsesWriter {
                     // empty content array.
                     let item_id = self.item_id_for(ITEM_ID_PREFIX_MSG, *index);
                     let text = self.take_text_accum(*index);
+                    let annotations = crate::proto::openai_chat::url_annotations(
+                        &text,
+                        0,
+                        &self.take_citation_accum(*index),
+                    );
                     let item = serde_json::json!({
                         "type": ITEM_TYPE_MESSAGE,
                         "id": item_id,
                         "role": "assistant",
                         "status": STATUS_COMPLETED,
                         "content": [
-                            { "type": CONTENT_TYPE_OUTPUT_TEXT, "text": text, "annotations": [] }
+                            {
+                                "type": CONTENT_TYPE_OUTPUT_TEXT,
+                                "text": text,
+                                "annotations": annotations,
+                            }
                         ]
                     });
                     // Record the finalized message item so the terminal event emits the fully
@@ -796,30 +866,11 @@ impl ProtocolWriter for ResponsesWriter {
                     );
                 }
 
-                // RECONSTRUCT the native WIRE shape from the normalized IR: the IR stores UNCACHED
-                // input, but the Responses API's `input_tokens` is a TOTAL that includes the cached
-                // prefix, so add `cache_read` back.
-                let input_total = usage
-                    .input_tokens
-                    .saturating_add(usage.cache_read_input_tokens.unwrap_or(0))
-                    .saturating_add(usage.cache_creation_input_tokens.unwrap_or(0));
-                let mut usage_map = serde_json::Map::new();
-                usage_map.insert("input_tokens".to_string(), serde_json::json!(input_total));
-                usage_map.insert(
-                    "output_tokens".to_string(),
-                    serde_json::json!(usage.output_tokens),
-                );
-                // H6: surface the IR read-side cache count on the streaming terminal as the
-                // Responses-native `usage.input_tokens_details.cached_tokens` (only when present), so a
-                // cross-protocol stream carrying a cache hit reports it to a Responses client just as
-                // the non-stream body does. Omitted when absent (no `cached_tokens: 0`).
-                if let Some(cached) = usage.cache_read_input_tokens {
-                    usage_map.insert(
-                        "input_tokens_details".to_string(),
-                        serde_json::json!({ "cached_tokens": cached }),
-                    );
-                }
-                resp_obj.insert("usage".to_string(), serde_json::Value::Object(usage_map));
+                // Build the SDK-required Responses `usage` object (Finding 6): the streaming terminal
+                // event's inner `response.usage` must carry the SAME complete shape as the non-stream
+                // body — `total_tokens` plus the required `input_tokens_details`/`output_tokens_details`
+                // objects — so the shared builder produces it (as 0 where nothing to report).
+                resp_obj.insert("usage".to_string(), build_responses_usage(usage));
                 // The native terminal `response.completed`/`response.incomplete` event carries the
                 // FULLY assembled inner `response` object: the official Python/Node SDK reads
                 // `event.response.output` to finalize the assembled `Response`, and `output` is a
@@ -887,7 +938,7 @@ impl ProtocolWriter for ResponsesWriter {
                 // `code` MUST be a valid Responses enum, never the free-form human `provider_signal`
                 // (a cross-protocol / transport-abort path carries a sentence like "The response
                 // stream was interrupted." there). A recognized code round-trips; otherwise it is
-                // derived from the error class. `message` keeps the human text. (found: audit c2r2.)
+                // derived from the error class. `message` keeps the human text.
                 let code = responses_error_code(err);
                 // Replay the stream's captured `response.id` so `response.failed` correlates with
                 // the opening `response.created` (the SDK reads `event.response.id` on the failure
@@ -966,10 +1017,14 @@ impl ProtocolWriter for ResponsesWriter {
         let mut output_arr: Vec<serde_json::Value> = Vec::new();
         for block in &resp.content {
             match block {
-                crate::ir::IrBlock::Text { text, .. } => {
+                crate::ir::IrBlock::Text {
+                    text, citations, ..
+                } => {
                     if text.is_empty() {
                         continue;
                     }
+                    let annotations =
+                        crate::proto::openai_chat::url_annotations(text, 0, citations);
                     // Match the native message-item shape the STREAMING `output_item.done` emits: an
                     // item-level `id` (`msg_…`), a `status`, and `annotations: []` on the `output_text`
                     // content part. Omitting them is a proxy tell — a typed SDK reading `item.id` /
@@ -984,7 +1039,7 @@ impl ProtocolWriter for ResponsesWriter {
                         "content": [{
                             "type": CONTENT_TYPE_OUTPUT_TEXT,
                             "text": text,
-                            "annotations": []
+                            "annotations": annotations
                         }]
                     }));
                 }
@@ -1055,31 +1110,11 @@ impl ProtocolWriter for ResponsesWriter {
             }
         }
 
-        // RECONSTRUCT the native WIRE shape from the normalized IR: the IR stores UNCACHED input,
-        // but the Responses API's `input_tokens` is a TOTAL that includes the cached prefix, so add
-        // `cache_read` back.
-        let input_total = resp
-            .usage
-            .input_tokens
-            .saturating_add(resp.usage.cache_read_input_tokens.unwrap_or(0))
-            .saturating_add(resp.usage.cache_creation_input_tokens.unwrap_or(0));
-        let mut usage_map = serde_json::Map::new();
-        usage_map.insert("input_tokens".to_string(), serde_json::json!(input_total));
-        usage_map.insert(
-            "output_tokens".to_string(),
-            serde_json::json!(resp.usage.output_tokens),
-        );
-        // H6: write the IR read-side cache count back as the Responses-native
-        // `usage.input_tokens_details.cached_tokens` (ONLY when present), so a cross-protocol response
-        // that carried a cache hit (e.g. from a Bedrock backend) surfaces it to a Responses client.
-        // Omitted entirely when the IR carries no cache-read value — a real Responses body without
-        // cache hits omits the details object rather than emitting `cached_tokens: 0`.
-        if let Some(cached) = resp.usage.cache_read_input_tokens {
-            usage_map.insert(
-                "input_tokens_details".to_string(),
-                serde_json::json!({ "cached_tokens": cached }),
-            );
-        }
+        // Build the SDK-required Responses `usage` object (Finding 6): `total_tokens` plus the
+        // `input_tokens_details`/`output_tokens_details` objects are REQUIRED by the official SDKs, so
+        // the shared builder always emits them (as 0 when nothing to report) and reconstructs the
+        // cache-inclusive `input_tokens` TOTAL from the normalized IR.
+        let usage_value = build_responses_usage(&resp.usage);
 
         let mut obj = serde_json::Map::new();
         // Emit the SDK-required top-level identity. Same-protocol passthrough carries the captured
@@ -1101,7 +1136,7 @@ impl ProtocolWriter for ResponsesWriter {
             serde_json::json!(resp.model.as_deref().unwrap_or(DEFAULT_MODEL)),
         );
         obj.insert("output".to_string(), serde_json::Value::Array(output_arr));
-        obj.insert("usage".to_string(), serde_json::Value::Object(usage_map));
+        obj.insert("usage".to_string(), usage_value);
         // The official SDK types `Response.error` as a REQUIRED nullable field present on EVERY
         // Response object: `null` on success/incomplete, a populated object on failure. The
         // streaming `response.created` skeleton already emits `error: null`; the non-streaming body

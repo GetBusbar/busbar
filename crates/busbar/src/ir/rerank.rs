@@ -7,7 +7,6 @@
 //! thin normalization; OpenAI/Anthropic/Gemini/Responses have no surface and 404 via the standard
 //! no-handler rule. Search-unit metered → `Billing::Flat` (Cohere bills per search unit, carried
 //! for the response echo; the pricing engine lands in 1.3).
-#![allow(dead_code)]
 
 use crate::billing::Billing;
 use crate::lossless::SourceScopedExtra;

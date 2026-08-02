@@ -70,11 +70,19 @@ async fn sticky_affinity_never_selects_zero_weight_drained_member() {
         attempt_timeout_ms: None,
     }];
     let mut rc = RequestCtx::new(60);
-    let picked = pick_among(&app, &drained_only, &mut rc, Some("session-abc"), "p", None).await;
+    let picked = pick_among(
+        &app,
+        &drained_only,
+        &mut rc,
+        Some(crate::proxy::stable_hash("session-abc")),
+        "p",
+        None,
+    )
+    .await;
     assert!(
         picked.is_none(),
         "a drained (weight 0) member must never be stickily selected; got {:?}",
-        picked.map(|(i, _)| i)
+        picked.map(|(i, _, _)| i)
     );
 
     // Realistic drain: lane 0 drained, lane 1 healthy. For EVERY affinity key the result is lane 1
@@ -96,9 +104,16 @@ async fn sticky_affinity_never_selects_zero_weight_drained_member() {
     ];
     for key in ["s1", "s2", "session-xyz", "abc", "00000", "user-42"] {
         let mut rc = RequestCtx::new(60);
-        let (idx, _permit) = pick_among(&app, &drained_and_healthy, &mut rc, Some(key), "p", None)
-            .await
-            .expect("the healthy lane is selectable");
+        let (idx, _permit, _probe_epoch) = pick_among(
+            &app,
+            &drained_and_healthy,
+            &mut rc,
+            Some(crate::proxy::stable_hash(key)),
+            "p",
+            None,
+        )
+        .await
+        .expect("the healthy lane is selectable");
         assert_eq!(
             idx, 1,
             "key {key:?} must route to the healthy lane, never the drained (weight 0) one"
@@ -112,7 +127,7 @@ async fn ordered_walk_picks_first_preferred_when_healthy() {
     let app = three_lane_app();
     let mut rc = RequestCtx::new(60);
     let order = [2usize, 0, 1];
-    let (idx, _permit) = pick_among(&app, &cands(), &mut rc, None, "p", Some(&order))
+    let (idx, _permit, _probe_epoch) = pick_among(&app, &cands(), &mut rc, None, "p", Some(&order))
         .await
         .expect("a healthy preferred lane is selected");
     assert_eq!(idx, 2, "the #1 ranked healthy lane must be chosen");
@@ -129,7 +144,7 @@ async fn ordered_walk_skips_tripped_preferred_to_next() {
         .force_open_in("p", 2, crate::state::now() + 1_000_000);
     let mut rc = RequestCtx::new(60);
     let order = [2usize, 0, 1];
-    let (idx, _permit) = pick_among(&app, &cands(), &mut rc, None, "p", Some(&order))
+    let (idx, _permit, _probe_epoch) = pick_among(&app, &cands(), &mut rc, None, "p", Some(&order))
         .await
         .expect("falls to the next ranked lane");
     assert_eq!(
@@ -145,7 +160,7 @@ async fn ordered_walk_skips_excluded_preferred() {
     let mut rc = RequestCtx::new(60);
     rc.exclude(2); // lane 2 already tried
     let order = [2usize, 0, 1];
-    let (idx, _permit) = pick_among(&app, &cands(), &mut rc, None, "p", Some(&order))
+    let (idx, _permit, _probe_epoch) = pick_among(&app, &cands(), &mut rc, None, "p", Some(&order))
         .await
         .expect("excluded #1 falls to next");
     assert_eq!(idx, 0, "an excluded #1 preference is skipped");
@@ -160,7 +175,7 @@ async fn ordered_walk_falls_through_to_swrr_when_no_preferred_ready() {
         .force_open_in("p", 2, crate::state::now() + 1_000_000); // the only ranked lane is tripped
     let mut rc = RequestCtx::new(60);
     let order = [2usize]; // ranked subset of one, now unhealthy
-    let (idx, _permit) = pick_among(&app, &cands(), &mut rc, None, "p", Some(&order))
+    let (idx, _permit, _probe_epoch) = pick_among(&app, &cands(), &mut rc, None, "p", Some(&order))
         .await
         .expect("SWRR finds an unranked healthy lane");
     assert!(
@@ -176,7 +191,7 @@ async fn ordered_walk_empty_order_is_swrr() {
     let app = three_lane_app();
     let mut rc = RequestCtx::new(60);
     let order: [usize; 0] = [];
-    let (idx, _permit) = pick_among(&app, &cands(), &mut rc, None, "p", Some(&order))
+    let (idx, _permit, _probe_epoch) = pick_among(&app, &cands(), &mut rc, None, "p", Some(&order))
         .await
         .expect("empty order behaves as SWRR");
     assert!(idx <= 2);
@@ -212,7 +227,7 @@ async fn ordered_walk_skips_weight_zero_drained_preferred() {
     let mut rc = RequestCtx::new(60);
     // Policy ranks the drained lane #1.
     let order = [2usize, 0, 1];
-    let (idx, _permit) = pick_among(&app, &cands, &mut rc, None, "p", Some(&order))
+    let (idx, _permit, _probe_epoch) = pick_among(&app, &cands, &mut rc, None, "p", Some(&order))
         .await
         .expect("a non-drained ranked lane is selected");
     assert_ne!(
@@ -257,6 +272,6 @@ async fn ordered_walk_all_weight_zero_selects_none() {
     assert!(
         picked.is_none(),
         "a fully-drained candidate set must select no lane, got {:?}",
-        picked.map(|(i, _)| i)
+        picked.map(|(i, _, _)| i)
     );
 }

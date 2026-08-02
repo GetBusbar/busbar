@@ -1,13 +1,16 @@
 [package]
 name = "busbar"
-version = "1.4.1"
+version = "1.5.0"
 publish = false            # internal workspace crate; never goes to crates.io
 edition = "2021"
-# Effective MSRV: governance.rs uses `u32::is_multiple_of` (stabilized in Rust 1.87), and clippy's
-# `manual_is_multiple_of` lint rewrites `% N == 0` back to it, so 1.87 is the genuine minimum. Declare
-# it so a build on an older toolchain fails fast with a clear message instead of a cryptic
-# "method not found", and so MSRV-aware tooling resolves compatible deps.
-rust-version = "1.87"
+# `governance.rs` uses `u32::is_multiple_of` (stabilized in Rust 1.87), and clippy's
+# `manual_is_multiple_of` lint rewrites `% N == 0` back to it, so 1.87 is the language-feature
+# floor. The declared version is higher (1.97): unlike this repo's CI, which floats on
+# `dtolnay/rust-toolchain@stable`, `rust-version` is a single pinned number, so it's set to what
+# CI actually verifies rather than the older, narrower feature floor — a build below either number
+# fails fast with a clear message instead of a cryptic "method not found", and MSRV-aware tooling
+# resolves compatible deps against the real number.
+rust-version = "1.97"
 description = "Native-protocol LLM gateway: lossless cross-protocol translation, weighted pools, per-(pool,lane) circuit breaking, and governance — in one static Rust binary."
 license = "Apache-2.0"
 
@@ -24,9 +27,22 @@ path = "src/main.rs"
 # The plugin CONTRACTS (auth-module trait, routing-policy trait, projections) — the one crate both
 # the engine and every plugin build against. See api/.
 busbar-api = { path = "../api" }
+busbar-store-memory = { path = "../store-memory" }
+# The durable SQLite store is NO LONGER compiled in — it is a dynamic-library plugin loaded at boot
+# from the plugins directory (see busbar-plugin-loader). Dropping the bundled rusqlite `bundled`
+# amalgamation (~4.7 MB of C) is what makes the default binary lean; `store: memory` needs nothing,
+# `store: sqlite` loads the dropped-in plugin.
+busbar-plugin-loader = { path = "../plugin-loader" }
+# Plugin signature VERIFICATION + trust posture (pure crypto/policy, no unsafe): verifies a plugin's
+# signed manifest against the configured trust policy at boot-load and admin-install.
+busbar-plugin-sign = { path = "../plugin-sign" }
+# The SecretRef reference type ({module, settings} + env/file sugar) — extracted out of this
+# crate's own config::secret module so busbar-plugin-pack (and future schema-generation tooling)
+# can derive the x-busbar-secret oneOf shape from the SAME type this engine deserializes, rather
+# than a hand-written parallel copy that can drift (plugin-settings-schema-SPEC.md checklist #1).
+busbar-secret-ref = { path = "../secret-ref" }
 # The built-in plugins, each its own workspace crate under auth/<name>/ or hooks/<name>/ — optional
 # so the matching feature (below) compiles each IN or OUT of the binary.
-busbar-auth-tokens = { path = "../auth-tokens", optional = true }
 busbar-auth-admin-tokens = { path = "../auth-admin-tokens", optional = true }
 busbar-hooks-ranking = { path = "../hooks-ranking", optional = true }
 axum = "0.8"
@@ -42,7 +58,7 @@ tower = { version = "0.5", features = ["limit"] }
 # none referenced in src/ — so it is dropped to shrink the request-path binary's compile + attack
 # surface.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "http2"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # CI-ONLY, feature-gated (`openapi-schema`). Derives JSON Schema from the admin-API response VIEW
@@ -52,6 +68,12 @@ serde_json = "1"
 # `cargo build -p busbar --release` and from the runtime dependency graph. `optional = true` +
 # `dep:schemars` keep it out of the default build entirely.
 schemars = { version = "1", optional = true }
+# Exhaustive thread-interleaving model checker, used ONLY by the targeted model of the
+# config-mutation swap invariant (`admin/v1/json/tests/txn_loom.rs`, feature `loom-model`,
+# `scripts/loom.sh`). OPTIONAL, so a normal build/test never compiles it — and deliberately gated by
+# a cargo FEATURE rather than loom's usual `--cfg loom`, because RUSTFLAGS is global and
+# `--cfg loom` makes tokio compile out `tokio::net` (which the server needs).
+loom = { version = "0.7", optional = true }
 # RS256 JWT signing for the `jwt-bearer` egress auth (OAuth 2.0 JWT-bearer grant, RFC 7523 — Vertex et
 # al.). Both crates are ALREADY in the graph (ring is reqwest's rustls crypto backend; base64 rides in
 # transitively), so promoting them to direct deps adds NO new external crate to the tree. `ring` does
@@ -70,6 +92,11 @@ sonic-rs = "0.5"
 serde_yaml = { package = "serde_yaml_ng", version = "0.10" }
 futures = "0.3"
 bytes = "1"
+# The `http_body::Body` trait, so the TLS/plain serve loops can wrap the inbound request body in a
+# per-frame read timeout (`tls::TimeoutBody`) - the slow-loris body defense the header-read timeout
+# does not cover. Already in the graph transitively (hyper/http-body-util); named directly here so we
+# can `impl Body`.
+http-body = "1"
 http-body-util = "0.1"
 metrics = "0.24.6"
 # busbar uses this purely as an in-process recorder: `PrometheusBuilder::new().install_recorder()`
@@ -79,6 +106,9 @@ metrics = "0.24.6"
 # second crypto backend (aws-lc-rs). Dropped for the same reason tokio/reqwest/otlp are hand-trimmed:
 # shrink the request-path binary's compile + attack surface.
 metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
+# Only for `MetricKindMask`, naming which metric kinds the recorder's idle timeout may reap. Already
+# in the graph as the exporter's own dependency, so this adds no new external crate.
+metrics-util = { version = "0.20.4", default-features = false }
 opentelemetry = "0.32.0"
 opentelemetry_sdk = "0.32.1"
 # Pin OTLP to the HTTP/proto trace path busbar uses (`SpanExporter::builder().with_http()`). The
@@ -114,8 +144,11 @@ tracing-opentelemetry = "0.33.0"
 sha2 = "0.11.0"
 hmac = "0.13.0"
 hex = "0.4.3"
-rusqlite = { version = "0.40.0", features = ["bundled"] }
 getrandom = "0.3"
+# ed25519 for the busbar-signed virtual-key TOKENS (P3): the same primitive the plugin-signing
+# path uses, already in the graph. Mint signs a compact `{sub, exp, kid}` token; verify checks the
+# signature statelessly. `rand_core` is pulled for keypair generation on first boot.
+ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
 # CRC32 for the AWS `application/vnd.amazon.eventstream` encoder (Bedrock ingress streaming): AWS
 # SDK clients validate both the prelude and message CRC32 on every frame, so the encoder needs a
 # correct, fast CRC32. `crc32fast` is small, dependency-light, and the de-facto standard.
@@ -139,6 +172,9 @@ async-trait = "0.1"
 # auto::Builder, mirroring exactly what `axum::serve` does internally. `GracefulShutdown` reproduces
 # `.with_graceful_shutdown(...)`'s drain semantics. Both crates are already in the graph (axum/server
 # stack); they're named here only to pull the `server-auto`/`server-graceful` surface directly.
+# Parses the HTTP-date form of `Retry-After` (RFC 9110 §10.2.3), which the integer-only parse used
+# to silently drop. Zero new supply-chain surface: already in the lock as a `hyper` dependency.
+httpdate = "1.0"
 hyper = { version = "1", default-features = false, features = ["server", "http1"] }
 hyper-util = { version = "0.1", default-features = false, features = [
     "server-auto",
@@ -170,13 +206,10 @@ tikv-jemalloc-ctl = "0.6"
 tikv-jemallocator = { version = "0.6", features = ["disable_initial_exec_tls"] }
 
 [features]
-# The built-in `tokens` auth plugin is a DEFAULT-ON, REMOVABLE feature — compliance by compilation.
-# A `--no-default-features` build contains NO client-token auth code at all (the module, its
-# constant-time fold, and the allowlist are absent from the binary, provable by attestation +
-# symbols). `auth.chain: [tokens]` then BOOT-ERRORS instead of silently opening. A regulated
-# deployment ships tokens OUT and wires its own auth module (SAML/AD/OIDC) in the private repo.
-default = ["auth-tokens", "auth-admin-tokens", "hooks-ranking"]
-auth-tokens = ["dep:busbar-auth-tokens"]
+# 1.5.0 (S8): the static-token allowlist module is REMOVED entirely - data-plane auth is the
+# built-in `keys` signed-token verifier plus IdP auth modules. Nothing static-token-shaped is
+# compiled into any build.
+default = ["auth-admin-tokens", "hooks-ranking"]
 # The built-in `admin-tokens` ADMIN auth plugin (the single operator admin token) — same
 # default-on, removable, compliance-by-compilation stance. Removed, `admin_auth: [admin-tokens]`
 # (the default) boot-errors and an external admin module must be wired.
@@ -190,8 +223,23 @@ hooks-ranking = ["dep:busbar-hooks-ranking"]
 # test. NOT in `default` — a normal or `--release` build never pulls schemars, and the runtime
 # `GET /openapi.json` handler serves the committed static file regardless of this feature.
 openapi-schema = ["dep:schemars"]
+# §5.5: compile + run the targeted loom model of the config-mutation swap ordering. Not in
+# `default`; `scripts/loom.sh` is the front door. Loom explores interleavings exhaustively, so this
+# is minutes of CPU and stays out of `cargo test --workspace`.
+loom-model = ["dep:loom"]
+# §5.3.4: compile the NEGATIVE compile-fence module (`admin/v1/json/tests/txn_fence.rs`), which must
+# FAIL to type-check. `scripts/txn-fence.sh` enables this and asserts the build is rejected — a
+# successful build under this feature is the test failing. Never in `default`.
+txn-fence-red = []
 
 [dev-dependencies]
+# The durable-audit (#17) tests exercise busbar-store-memory's append_audit/list_audit over a
+# simulated restart (a fresh AuditLog against the SAME Arc<dyn Store> handle, simulating "process 2"
+# restoring from where "process 1" left off) — busbar-store-memory is already a normal dependency
+# above (the built-in default store), so no separate dev-only entry is needed here.
+# `test-util` gives the health-schedule test a PAUSED clock, so it can drive 20 simulated seconds of
+# swap churn against a 10s probe interval without sleeping for 20 real ones.
+tokio = { version = "1", features = ["test-util"] }
 # In-crate #[cfg(test)] harness needs reqwest's json feature + axum http1 server.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
 axum = { version = "0.8", features = ["http1"] }
@@ -201,3 +249,4 @@ bytes = "1"
 # Generates self-signed server certs + a CA/leaf pair at test runtime so the TLS/mTLS integration
 # tests exercise a real rustls handshake without checked-in key material.
 rcgen = "0.14"
+

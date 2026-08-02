@@ -118,6 +118,310 @@ fn test_all_protocols_stream_write_read_roundtrip_preserves_text_and_terminal() 
     }
 }
 
+/// Encode one IR-derived `(event_type, json)` frame as wire bytes for the given protocol's
+/// transport: binary AWS event-stream framing (bedrock) or blank-line-terminated SSE (everyone
+/// else) — the two transports `StreamTranslate::feed` actually decodes on the egress side, and the
+/// two shapes `StreamTranslate`'s own output takes on the ingress side.
+fn encode_wire_frame(
+    is_eventstream: bool,
+    event_type: &str,
+    data: &serde_json::Value,
+    out: &mut Vec<u8>,
+) {
+    if is_eventstream {
+        let payload = serde_json::to_vec(data).unwrap_or_default();
+        out.extend_from_slice(&crate::eventstream::encode_frame(event_type, &payload));
+    } else {
+        write_sse_frame(out, event_type, data);
+    }
+}
+
+/// Serialize a canonical IR event stream through `proto`'s OWN writer into realistic native wire
+/// bytes for that protocol — used to build EGRESS-shaped input for `StreamTranslate::feed`. Routes
+/// every emitted chunk through `proto`'s OWN `StreamFraming` seams — the SAME vtable
+/// `StreamTranslate` itself drives when `proto` is the INGRESS — so the fixture reproduces each
+/// protocol's genuine multi-frame wire quirks instead of the single-frame shape the 1:1
+/// `write_response_event` trait can express on its own:
+///   - `on_combined_stop_delta`: fans a combined terminal `MessageDelta{stop_reason: Some, usage}`
+///     into Bedrock's native two-frame `messageStop`+`metadata` split. Without it, feeding a
+///     Bedrock-egress translator only a lone `messageStop` (no `metadata`) would never satisfy
+///     `BedrockReader`'s deferred-emit-on-metadata contract and the terminal event would never
+///     surface — a self-inflicted false negative, not a real protocol gap.
+///   - `on_egress_chunk` (with `client_include_usage(true)`, matching busbar's own upstream
+///     behavior of always forcing `include_usage` to bill): un-folds OpenAI's writer-folded
+///     terminal usage back into the genuine SEPARATE trailing `{choices:[], usage:{...}}` chunk a
+///     real OpenAI-compatible upstream sends. Without this the fixture only ever exercises
+///     `StreamTranslate`'s SINGLE-message_delta terminal path, never the trailing-usage-only
+///     `MessageDelta` merge branch (`on_usage_only_delta` / `folds_terminal_usage`'s
+///     `merge_trailing_usage`) that a real OpenAI-egress stream drives on every request (an
+///     adversarial review of this exact test caught that gap; this closes it for OpenAI, the only
+///     protocol besides Bedrock whose `new_stream_framing()` isn't the inert
+///     `PassthroughFraming`).
+///
+/// For every protocol where both seams are no-ops (`PassthroughFraming`), the event is written
+/// as-is, unchanged from the diagonal test's plain `write_response_event` loop.
+fn emit_via_framing(
+    framing: &mut dyn StreamFraming,
+    is_es: bool,
+    et: &str,
+    mut data: serde_json::Value,
+    out: &mut Vec<u8>,
+) {
+    if let Some(trailing) = framing.on_egress_chunk(&mut data) {
+        encode_wire_frame(is_es, et, &data, out);
+        encode_wire_frame(is_es, et, &trailing, out);
+    } else {
+        encode_wire_frame(is_es, et, &data, out);
+    }
+}
+
+fn encode_ir_events_as_wire(proto: &Protocol, events: &[crate::ir::IrStreamEvent]) -> Vec<u8> {
+    let is_es = proto.writer().ingress_is_eventstream();
+    let mut framing = proto.writer().new_stream_framing();
+    framing.set_client_include_usage(true);
+    let mut out = Vec::new();
+    for ev in events {
+        if let crate::ir::IrStreamEvent::MessageDelta {
+            stop_reason: Some(reason),
+            usage,
+            stop_sequence,
+        } = ev
+        {
+            if let Some(sub_events) =
+                framing.on_combined_stop_delta(*reason, stop_sequence.clone(), usage)
+            {
+                for sub in &sub_events {
+                    if let Some((et, data)) = proto.writer().write_response_event(sub) {
+                        emit_via_framing(framing.as_mut(), is_es, &et, data, &mut out);
+                    }
+                }
+                continue;
+            }
+        }
+        if let Some((et, data)) = proto.writer().write_response_event(ev) {
+            emit_via_framing(framing.as_mut(), is_es, &et, data, &mut out);
+        }
+    }
+    if let Some(flush) = framing.on_finish() {
+        if let Some((et, data)) = proto.writer().write_response_event(&flush) {
+            emit_via_framing(framing.as_mut(), is_es, &et, data, &mut out);
+        }
+    }
+    out
+}
+
+/// Decode wire bytes (as produced by a protocol's own writer, OR by `StreamTranslate::feed`/
+/// `finish` on the INGRESS side) back into `(event_type, json)` frames, for both transports.
+fn decode_wire_frames(is_eventstream: bool, bytes: &[u8]) -> Vec<(String, serde_json::Value)> {
+    if is_eventstream {
+        let mut buf = bytes.to_vec();
+        crate::eventstream::drain_frames(&mut buf)
+            .into_iter()
+            .filter_map(|(et, payload)| {
+                serde_json::from_slice::<serde_json::Value>(&payload)
+                    .ok()
+                    .map(|d| (et, d))
+            })
+            .collect()
+    } else {
+        let mut frames = Vec::new();
+        let mut consumed = 0usize;
+        while let Some((rel, term_len)) = find_frame_terminator(&bytes[consumed..]) {
+            let end = consumed + rel + term_len;
+            let frame = &bytes[consumed..end];
+            consumed = end;
+            let Some((event_type, data_str)) = parse_sse_frame(frame) else {
+                continue;
+            };
+            if data_str.is_empty() || data_str == SSE_DONE_SENTINEL {
+                continue;
+            }
+            if let Ok(data) = serde_json::from_str::<serde_json::Value>(&data_str) {
+                frames.push((event_type, data));
+            }
+        }
+        frames
+    }
+}
+
+/// FULL CROSS-PRODUCT STRUCTURAL TRANSLATION MATRIX: for every DIRECTED (ingress, egress) pair
+/// with ingress != egress — all 30 of them — genuinely drive a `StreamTranslate::new(ingress,
+/// egress)` translator (the exact production seam: `egress.reader()` → IR → `ingress.writer()`,
+/// including every framing/fan-out quirk) with EGRESS-shaped wire bytes, and assert THREE
+/// invariants survive on the INGRESS-shaped output: (1) the streamed text content, (2) a terminal
+/// signal (`MessageStop` / a stop-reason-bearing `MessageDelta`), and (3) block-index consistency
+/// (every decoded text delta's index was actually opened by a preceding `BlockStart`, so an
+/// off-by-N or cross-wired block index — which would desync a real streaming SDK's content
+/// accumulator even though the concatenated text still matched — cannot hide behind a naive
+/// concatenation check). Unlike the diagonal round-trip test above (same protocol on both sides of
+/// `write`/`read`, which cannot exercise `StreamTranslate` at all), this is genuine cross-protocol
+/// translation: the input bytes are native EGRESS wire shape (routed through the egress protocol's
+/// OWN `StreamFraming` seams — `on_combined_stop_delta` for Bedrock's two-frame stop/metadata
+/// split, `on_egress_chunk` for OpenAI's separate trailing-usage chunk — so multi-frame native
+/// quirks are reproduced, not just the single-frame shape `write_response_event` alone can
+/// express), the output bytes are native INGRESS wire shape, and the two never match syntactically
+/// for any tested pair. A regression confined to text, terminal, or block-index handling on one
+/// specific directed pair cannot hide behind an untested pair or an untested framing seam for
+/// THESE three properties; every one of the 30 pairs gets its own independent assertion, counted
+/// below to prove none was silently skipped. (Byte-exact golden-parity coverage remains a
+/// narrower, separately tracked gap — see `translate_parity_golden_tests.rs`.)
+#[test]
+fn test_all_protocol_pairs_stream_translate_roundtrip_preserves_text_and_terminal() {
+    let text = "Hello, world";
+    let events = [
+        crate::ir::IrStreamEvent::MessageStart {
+            role: crate::ir::IrRole::Assistant,
+            usage: None,
+            id: None,
+            created: None,
+            model: Some("test-model".to_string()),
+        },
+        crate::ir::IrStreamEvent::BlockStart {
+            index: 0,
+            block: crate::ir::IrBlockMeta::Text,
+        },
+        crate::ir::IrStreamEvent::BlockDelta {
+            index: 0,
+            delta: crate::ir::IrDelta::TextDelta(text.to_string()),
+        },
+        crate::ir::IrStreamEvent::BlockStop { index: 0 },
+        crate::ir::IrStreamEvent::MessageDelta {
+            stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+            stop_sequence: None,
+            usage: crate::ir::IrUsage {
+                input_tokens: 7,
+                output_tokens: 3,
+                cache_creation_input_tokens: None,
+                cache_read_input_tokens: None,
+            },
+        },
+        crate::ir::IrStreamEvent::MessageStop,
+    ];
+
+    let protocol_names = [
+        "anthropic",
+        "openai",
+        "gemini",
+        "bedrock",
+        "responses",
+        "cohere",
+    ];
+
+    let mut pairs_tested: usize = 0;
+    for &ingress in &protocol_names {
+        for &egress in &protocol_names {
+            if ingress == egress {
+                // Same-protocol identity is the diagonal test above's job (and `StreamTranslate::new`
+                // itself returns `None` for it — there is no translator to drive here).
+                continue;
+            }
+            let ingress_proto = protocol_for(ingress).expect("known ingress protocol");
+            let egress_proto = protocol_for(egress).expect("known egress protocol");
+            let ingress_is_es = ingress_proto.writer().ingress_is_eventstream();
+
+            let wire = encode_ir_events_as_wire(&egress_proto, &events);
+            assert!(
+                !wire.is_empty(),
+                "{ingress}<-{egress}: egress writer produced no wire bytes for a normal text stream"
+            );
+
+            let mut st = StreamTranslate::new(ingress, egress)
+                .unwrap_or_else(|| panic!("{ingress}<-{egress}: StreamTranslate::new returned None for a genuinely different pair"));
+            let mut out = st.feed(&wire);
+            out.extend_from_slice(&st.finish());
+            assert!(
+                !st.aborted(),
+                "{ingress}<-{egress}: translator aborted on a normal text stream; out so far: {out:?}"
+            );
+
+            let mut state = crate::ir::StreamDecodeState::default();
+            let mut decoded: Vec<crate::ir::IrStreamEvent> = Vec::new();
+            for (et, data) in decode_wire_frames(ingress_is_es, &out) {
+                // Same header-folding the diagonal test performs: on the wire, a non-SSE (event-
+                // stream) transport carries its event type in the frame header, not the JSON body;
+                // simulate the production decoder's fold of `:event-type` into `data["type"]`.
+                let mut data = data;
+                if !et.is_empty() {
+                    if let Some(obj) = data.as_object_mut() {
+                        obj.entry("type")
+                            .or_insert_with(|| serde_json::Value::String(et.clone()));
+                    }
+                }
+                decoded.extend(
+                    ingress_proto
+                        .reader()
+                        .read_response_events(&et, &data, &mut state),
+                );
+            }
+
+            let got: String = decoded
+                .iter()
+                .filter_map(|e| match e {
+                    crate::ir::IrStreamEvent::BlockDelta {
+                        delta: crate::ir::IrDelta::TextDelta(t),
+                        ..
+                    } => Some(t.as_str()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                got, text,
+                "{ingress}<-{egress}: streamed text must survive cross-protocol translation; got {got:?} from {decoded:?}"
+            );
+
+            // BLOCK-INDEX CONSISTENCY: every text delta's index must have been opened by a
+            // preceding BlockStart at the same index — an off-by-N or cross-wired index (e.g. a
+            // real production bug that mis-tags `contentBlockIndex`) would still pass the plain
+            // text-concatenation check above (the text still arrives, just under the wrong index),
+            // desyncing a real streaming SDK's per-block accumulator. Catches what the
+            // concatenation-only check cannot.
+            let mut open_indices = std::collections::BTreeSet::new();
+            for ev in &decoded {
+                match ev {
+                    crate::ir::IrStreamEvent::BlockStart { index, .. } => {
+                        open_indices.insert(*index);
+                    }
+                    crate::ir::IrStreamEvent::BlockStop { index } => {
+                        open_indices.remove(index);
+                    }
+                    crate::ir::IrStreamEvent::BlockDelta {
+                        index,
+                        delta: crate::ir::IrDelta::TextDelta(_),
+                    } => {
+                        assert!(
+                            open_indices.contains(index),
+                            "{ingress}<-{egress}: a text delta at index {index} arrived with no \
+                             matching open BlockStart — index corruption in translation; got {decoded:?}"
+                        );
+                    }
+                    _ => {}
+                }
+            }
+
+            let has_terminal = decoded.iter().any(|e| {
+                matches!(e, crate::ir::IrStreamEvent::MessageStop)
+                    || matches!(
+                        e,
+                        crate::ir::IrStreamEvent::MessageDelta {
+                            stop_reason: Some(_),
+                            ..
+                        }
+                    )
+            });
+            assert!(
+                has_terminal,
+                "{ingress}<-{egress}: a terminal (MessageStop / stop_reason MessageDelta) must survive cross-protocol translation; got {decoded:?}"
+            );
+
+            pairs_tested += 1;
+        }
+    }
+    assert_eq!(
+        pairs_tested, 30,
+        "must genuinely drive all 6*5 = 30 directed cross-protocol pairs, got {pairs_tested}"
+    );
+}
+
 /// NON-STREAMING round-trip matrix (the class the responses `write_response` bug fell in): for
 /// every protocol, an assistant text response written by `write_response` and read back by
 /// `read_response` must preserve the text. A writer that emits a non-conformant body its own
@@ -396,9 +700,19 @@ fn a2_roundtrip_usage_fidelity_no_cache_emits_no_cache_object() {
         assert_eq!(ir.usage.cache_read_input_tokens, None);
         let out = p.writer().write_response(&ir);
         assert_eq!(out["usage"]["input_tokens"], json!(12));
-        assert!(
-            out["usage"].get("input_tokens_details").is_none(),
-            "no spurious details: {out}"
+        // Finding 6: unlike Chat Completions (where `prompt_tokens_details` is optional), the Responses
+        // API SDKs type `input_tokens_details`/`output_tokens_details` and `total_tokens` as REQUIRED,
+        // so they are ALWAYS emitted — `cached_tokens`/`reasoning_tokens` are 0 with no cache, not
+        // omitted.
+        assert_eq!(
+            out["usage"]["input_tokens_details"]["cached_tokens"],
+            json!(0),
+            "required details present with 0 when no cache: {out}"
+        );
+        assert_eq!(
+            out["usage"]["total_tokens"],
+            json!(16),
+            "total_tokens required: {out}"
         );
     }
     // Anthropic
@@ -787,7 +1101,7 @@ fn test_gemini_json_array_surfaces_upstream_translate_abort() {
     );
 }
 
-/// Regression (`StreamTranslate::feed` egress eventstream path): a MALFORMED Bedrock EGRESS
+/// A MALFORMED Bedrock EGRESS
 /// prelude (an out-of-range `total_len`) must ABORT the stream — surfacing the ingress protocol's
 /// native terminal error from `finish()` — not be silently swallowed. Before the wiring `feed`
 /// used the discarding `drain_frames` wrapper, which cleared the buffer on a malformed prelude with
@@ -830,7 +1144,7 @@ fn test_egress_eventstream_malformed_prelude_aborts_and_surfaces_error() {
     );
 }
 
-/// Regression (same-proto verbatim emit): on a SAME-PROTOCOL
+/// On a SAME-PROTOCOL
 /// bedrock→bedrock stream, a malformed prelude must NOT splice the cleared garbage tail into the
 /// client stream ahead of the synthesized exception frame. The verbatim emit uses
 /// `drain_frames_checked`'s `consumed_sink` (which collects exactly the complete valid frame
@@ -1234,6 +1548,8 @@ fn test_duplicate_terminal_message_delta_after_stop_is_dropped() {
 #[test]
 fn openai_egress_chunk_identity_and_trailing_usage_byte_shape() {
     let mut st = StreamTranslate::new("openai", "anthropic").expect("translator");
+    // The client opted into streaming usage, so the un-fold surfaces the native trailing usage chunk.
+    st.set_client_include_usage(true);
     let mut raw: Vec<u8> = Vec::new();
     for frame in [
             "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_x\",\"role\":\"assistant\"}}\n\n",
@@ -1289,6 +1605,157 @@ fn openai_egress_chunk_identity_and_trailing_usage_byte_shape() {
             "no single chunk may carry BOTH finish_reason=stop AND usage (un-fold); got:\n{line}"
         );
     }
+}
+
+/// FINDING 2 (unsolicited trailing usage chunk): a client that did NOT send
+/// `stream_options.include_usage` must receive a stream with NO usage anywhere — no trailing
+/// `{choices:[], usage}` chunk (which would `choices[0]` IndexError) and no folded usage on the finish
+/// chunk. This is the default (opt-out) framing state. Billing is unaffected: it reads the IR-side
+/// usage A-tap, which this test also confirms still holds the real token counts.
+#[test]
+fn openai_egress_without_include_usage_emits_no_usage_chunk() {
+    let mut st = StreamTranslate::new("openai", "anthropic").expect("translator");
+    // Client did NOT opt in (default), but the upstream Anthropic backend still reports usage.
+    st.set_client_include_usage(false);
+    let mut raw: Vec<u8> = Vec::new();
+    for frame in [
+            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_x\",\"role\":\"assistant\"}}\n\n",
+            "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\"}}\n\n",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hi\"}}\n\n",
+            "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+            "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":5,\"output_tokens\":2}}\n\n",
+            "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+        ] {
+            raw.extend(st.feed(frame.as_bytes()));
+        }
+    raw.extend(st.finish());
+    let out = String::from_utf8(raw).expect("utf8 SSE");
+
+    // (a) The finish chunk is still present.
+    assert!(
+        out.contains("\"finish_reason\":\"end_turn\"")
+            || out.contains("\"finish_reason\":\"stop\""),
+        "a terminal finish chunk must still be emitted; got\n{out}"
+    );
+    // (b) NO chunk carries a `usage` object, and NO chunk carries an EMPTY choices array (the tell of
+    // an unsolicited trailing usage chunk). An opted-out client sees exactly what native OpenAI emits.
+    for data in out.lines().filter_map(|l| l.strip_prefix("data: ")) {
+        if data.trim() == "[DONE]" {
+            continue;
+        }
+        let v: serde_json::Value =
+            crate::json::parse(data.as_bytes()).expect("each SSE chunk is valid JSON");
+        assert!(
+            v.get("usage").is_none(),
+            "an opted-out client must receive NO usage object; got:\n{data}"
+        );
+        assert!(
+            v.pointer("/choices")
+                .and_then(|c| c.as_array())
+                .map(|a| !a.is_empty())
+                .unwrap_or(true),
+            "an opted-out client must receive NO empty-choices trailing usage chunk; got:\n{data}"
+        );
+    }
+
+    // (c) Billing is unaffected: the IR usage A-tap the streaming billing path reads STILL holds the
+    // real upstream token counts, even though the client-facing stream carried none.
+    let billed = st
+        .usage()
+        .expect("the A-tap must capture usage for billing");
+    assert_eq!(
+        billed.input_tokens, 5,
+        "billing keeps the real input tokens"
+    );
+    assert_eq!(
+        billed.output_tokens, 2,
+        "billing keeps the real output tokens"
+    );
+}
+
+/// FINDING 1 (0-based streaming tool_calls index): an Anthropic backend stream with a leading text
+/// block (block 0) followed by TWO tool_use blocks (blocks 1 and 2) must translate to an OpenAI
+/// ingress stream whose `tool_calls[].index` starts at 0 and increments per tool call — NOT the raw
+/// IR block indices 1 and 2. OpenAI's SDK argument accumulators key on that index; a first tool call
+/// arriving at index 1 lands in a never-flushed slot and is dropped. This exercises the full
+/// anthropic→openai translate path (the framing seam does the remap).
+#[test]
+fn openai_egress_multi_tool_stream_uses_0_based_tool_call_indices() {
+    let mut st = StreamTranslate::new("openai", "anthropic").expect("translator");
+    let mut raw: Vec<u8> = Vec::new();
+    for frame in [
+            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_x\",\"role\":\"assistant\"}}\n\n",
+            // Block 0: leading text (this is what pushes the first tool_use off index 0).
+            "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\"}}\n\n",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Let me look those up.\"}}\n\n",
+            "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+            // Block 1: FIRST tool_use — must become tool_calls[].index == 0 on the wire.
+            "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_a\",\"name\":\"get_weather\"}}\n\n",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"city\\\":\\\"NYC\\\"}\"}}\n\n",
+            "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\n",
+            // Block 2: SECOND tool_use — must become tool_calls[].index == 1 on the wire.
+            "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":2,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_b\",\"name\":\"get_time\"}}\n\n",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":2,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"tz\\\":\\\"ET\\\"}\"}}\n\n",
+            "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":2}\n\n",
+            "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"input_tokens\":5,\"output_tokens\":9}}\n\n",
+            "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+        ] {
+            raw.extend(st.feed(frame.as_bytes()));
+        }
+    raw.extend(st.finish());
+    let out = String::from_utf8(raw).expect("utf8 SSE");
+
+    // Collect the (tool name, tool_call_index) pairs from the OPEN chunks (the only ones carrying
+    // `function.name`), plus every tool_call index seen anywhere. The cross-protocol tool-id remap
+    // rewrites the anthropic `toolu_…` id to a native `call_…` shape, so we key on the stable
+    // function NAME rather than the id.
+    let mut opens: Vec<(String, i64)> = Vec::new();
+    let mut all_indices: Vec<i64> = Vec::new();
+    for data in out.lines().filter_map(|l| l.strip_prefix("data: ")) {
+        let Ok(v) = crate::json::parse::<serde_json::Value>(data.as_bytes()) else {
+            continue;
+        };
+        let Some(calls) = v
+            .pointer("/choices/0/delta/tool_calls")
+            .and_then(|c| c.as_array())
+        else {
+            continue;
+        };
+        for c in calls {
+            let idx = c
+                .get("index")
+                .and_then(|i| i.as_i64())
+                .expect("tool_call index");
+            all_indices.push(idx);
+            if let Some(name) = c.pointer("/function/name").and_then(|n| n.as_str()) {
+                opens.push((name.to_string(), idx));
+            }
+        }
+    }
+
+    // The FIRST tool call (get_weather, raw block index 1) must be tool_calls index 0.
+    let first = opens
+        .iter()
+        .find(|(name, _)| name == "get_weather")
+        .expect("first tool call open chunk");
+    assert_eq!(
+        first.1, 0,
+        "the FIRST tool call must be tool_calls index 0 (raw IR block index 1); got\n{out}"
+    );
+    // The SECOND tool call (get_time, raw block index 2) must be tool_calls index 1.
+    let second = opens
+        .iter()
+        .find(|(name, _)| name == "get_time")
+        .expect("second tool call open chunk");
+    assert_eq!(
+        second.1, 1,
+        "the SECOND tool call must be tool_calls index 1 (raw IR block index 2); got\n{out}"
+    );
+    // No chunk may carry the raw block index 2 — the un-remapped tell that drops the second call.
+    assert!(
+        all_indices.iter().all(|idx| *idx == 0 || *idx == 1),
+        "tool_calls indices must be the 0-based ordinals {{0,1}}, never the raw block indices; got {all_indices:?}\n{out}"
+    );
 }
 
 /// BYTE-IDENTITY GUARD: locks the wire shape of the Bedrock messageStop/metadata two-frame
@@ -1519,7 +1986,7 @@ fn test_translate_anthropic_egress_to_bedrock_ingress_tool_call() {
         Some("get_weather"),
         "toolUse name round-trips; got {v}"
     );
-    // §Finding-2 (cross-protocol tool-id native remap): the egress Anthropic `toolu_abc` id is NO
+    // Cross-protocol tool-id native remap: the egress Anthropic `toolu_abc` id is NO
     // LONGER emitted verbatim to the Bedrock client — that would leak a foreign id shape. It is
     // reshaped to the Bedrock-native `tooluse_` form at the seam, and the reshaped id must decode
     // back to the original `toolu_abc` so the round-trip (client → request path → backend) stays
@@ -1549,6 +2016,350 @@ fn test_translate_anthropic_egress_to_bedrock_ingress_tool_call() {
         dv.pointer("/delta/toolUse/input").is_some(),
         "tool input delta round-trips through the binary encoder; got {dv}"
     );
+}
+
+/// INV-A: a Cohere stream truncated after `tool-call-start`/`tool-call-delta` (no `tool-call-end`),
+/// followed directly by `message-end`, must still close the tool block on the Anthropic-ingress
+/// wire BEFORE `message_delta`/`message_stop`. Cohere's `message-end` arm (`cohere/reader.rs`) only
+/// force-closes a still-open TEXT block — `open_tools` is deliberately never drained (so a tool's IR
+/// index stays stable for the stream), which means `message-end` cannot tell an already-closed tool
+/// from a still-open one. Without the `StreamTranslate`-level drain this leaves a
+/// `content_block_start` with no matching `content_block_stop` — an unbalanced Anthropic stream.
+#[test]
+fn cohere_stream_truncated_tool_call_is_closed_before_message_stop() {
+    let mut t = StreamTranslate::new("anthropic", "cohere").expect("anthropic ingress translator");
+    let mut out = String::new();
+    for frame in [
+        serde_json::json!({"type": "message-start", "id": "run-1"}),
+        serde_json::json!({
+            "type": "tool-call-start",
+            "index": 0,
+            "delta": {"message": {"tool_calls": {
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "get_weather", "arguments": ""}
+            }}}
+        }),
+        serde_json::json!({
+            "type": "tool-call-delta",
+            "index": 0,
+            "delta": {"message": {"tool_calls": {
+                "function": {"arguments": "{\"city\":\"SF\"}"}
+            }}}
+        }),
+        // Upstream truncates here: NO tool-call-end, straight to message-end.
+        serde_json::json!({
+            "type": "message-end",
+            "delta": {"finish_reason": "COMPLETE", "usage": {"tokens": {"input_tokens": 3, "output_tokens": 4}}}
+        }),
+    ] {
+        out.push_str(&String::from_utf8_lossy(
+            &t.feed(
+                format!(
+                    "event: {}\ndata: {}\n\n",
+                    frame["type"].as_str().unwrap(),
+                    frame
+                )
+                .as_bytes(),
+            ),
+        ));
+    }
+    out.push_str(&String::from_utf8_lossy(&t.finish()));
+
+    let payloads = data_payloads(&out);
+    let types: Vec<&str> = payloads
+        .iter()
+        .filter_map(|p| p.get("type").and_then(|t| t.as_str()))
+        .collect();
+
+    let stop_pos = types.iter().position(|t| *t == "content_block_stop");
+    let message_delta_pos = types.iter().position(|t| *t == "message_delta");
+    let message_stop_pos = types.iter().position(|t| *t == "message_stop");
+
+    assert!(
+        stop_pos.is_some(),
+        "the truncated tool block must be closed with a content_block_stop; got types {types:?}\n{out}"
+    );
+    assert!(
+        stop_pos < message_delta_pos,
+        "content_block_stop must precede message_delta; got types {types:?}\n{out}"
+    );
+    assert!(
+        stop_pos < message_stop_pos,
+        "content_block_stop must precede message_stop; got types {types:?}\n{out}"
+    );
+}
+
+/// INV-A: the same truncation hole exists in every reader's terminal branch when the terminal frame
+/// never arrives at all — `finishReason` never fires, so the per-reader terminal close never runs.
+/// A gemini→anthropic stream that sends text chunks and then simply ENDS (connection drop, no
+/// `finishReason`) must still close every open block when `finish()` is called.
+#[test]
+fn gemini_stream_truncated_before_finish_reason_closes_blocks() {
+    let mut t = StreamTranslate::new("anthropic", "gemini").expect("anthropic ingress translator");
+    let mut out = String::new();
+    out.push_str(&String::from_utf8_lossy(&t.feed(
+        b"data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Hello\"}]}}]}\n\n",
+    )));
+    // Upstream connection drops here: no `finishReason` chunk ever arrives.
+    out.push_str(&String::from_utf8_lossy(&t.finish()));
+
+    let payloads = data_payloads(&out);
+    let starts: Vec<u64> = payloads
+        .iter()
+        .filter(|p| p.get("type").and_then(|t| t.as_str()) == Some("content_block_start"))
+        .filter_map(|p| p.get("index").and_then(|i| i.as_u64()))
+        .collect();
+    let stops: Vec<u64> = payloads
+        .iter()
+        .filter(|p| p.get("type").and_then(|t| t.as_str()) == Some("content_block_stop"))
+        .filter_map(|p| p.get("index").and_then(|i| i.as_u64()))
+        .collect();
+
+    assert!(
+        !starts.is_empty(),
+        "expected at least one content_block_start; got\n{out}"
+    );
+    assert_eq!(
+        starts, stops,
+        "every content_block_start must have a matching content_block_stop even with no finishReason; got\n{out}"
+    );
+}
+
+/// INV-A: same truncation hole in the OpenAI reader — a tool_calls stream that never reaches its
+/// `finish_reason` chunk (the only place the OpenAI reader closes tool blocks) must still be closed
+/// by `finish()`.
+#[test]
+fn openai_stream_truncated_tool_call_is_closed() {
+    let mut t = StreamTranslate::new("anthropic", "openai").expect("anthropic ingress translator");
+    let mut out = String::new();
+    out.push_str(&String::from_utf8_lossy(&t.feed(
+        b"data: {\"id\":\"x\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"\"}}]}}]}\n\n",
+    )));
+    out.push_str(&String::from_utf8_lossy(&t.feed(
+        b"data: {\"id\":\"x\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"city\\\":\\\"SF\\\"}\"}}]}}]}\n\n",
+    )));
+    // Connection drops here: no finish_reason chunk ever arrives.
+    out.push_str(&String::from_utf8_lossy(&t.finish()));
+
+    let payloads = data_payloads(&out);
+    let starts: Vec<u64> = payloads
+        .iter()
+        .filter(|p| p.get("type").and_then(|t| t.as_str()) == Some("content_block_start"))
+        .filter_map(|p| p.get("index").and_then(|i| i.as_u64()))
+        .collect();
+    let stops: Vec<u64> = payloads
+        .iter()
+        .filter(|p| p.get("type").and_then(|t| t.as_str()) == Some("content_block_stop"))
+        .filter_map(|p| p.get("index").and_then(|i| i.as_u64()))
+        .collect();
+
+    assert!(
+        !starts.is_empty(),
+        "expected at least one content_block_start; got\n{out}"
+    );
+    assert_eq!(
+        starts, stops,
+        "every content_block_start must have a matching content_block_stop even with no finish_reason; got\n{out}"
+    );
+}
+
+/// INV-A, and the specific guard against the fatal v1 bug: tracking must happen on the IR event
+/// BEFORE the writer runs. `gemini/writer.rs`'s ToolUse `BlockStart` arm returns `None` on purpose
+/// (it buffers `(name, args)` and flushes the whole native `functionCall` part on `BlockStop`). If
+/// tracking were placed AFTER the writer's let-else, a gemini-ingress tool block would never be
+/// recorded as open, the terminal drain would never emit its synthetic `BlockStop`, and the buffered
+/// tool call would NEVER FLUSH — silently deleting it. Drive a truncated Cohere tool call through a
+/// GEMINI ingress and assert the tool call survives in the output.
+#[test]
+fn cohere_truncated_tool_call_survives_gemini_ingress() {
+    let mut t = StreamTranslate::new("gemini", "cohere").expect("gemini ingress translator");
+    let mut out = String::new();
+    for frame in [
+        serde_json::json!({"type": "message-start", "id": "run-1"}),
+        serde_json::json!({
+            "type": "tool-call-start",
+            "index": 0,
+            "delta": {"message": {"tool_calls": {
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "get_weather", "arguments": "{\"city\":\"SF\"}"}
+            }}}
+        }),
+        // Truncated: no tool-call-end, straight to message-end.
+        serde_json::json!({
+            "type": "message-end",
+            "delta": {"finish_reason": "COMPLETE", "usage": {"tokens": {"input_tokens": 3, "output_tokens": 4}}}
+        }),
+    ] {
+        out.push_str(&String::from_utf8_lossy(
+            &t.feed(
+                format!(
+                    "event: {}\ndata: {}\n\n",
+                    frame["type"].as_str().unwrap(),
+                    frame
+                )
+                .as_bytes(),
+            ),
+        ));
+    }
+    out.push_str(&String::from_utf8_lossy(&t.finish()));
+
+    // Gemini's JSON-array framer wraps every emitted object; scan for a `functionCall` part with
+    // the tool's name anywhere in the output rather than parsing the full array shape.
+    assert!(
+        out.contains("functionCall") && out.contains("get_weather"),
+        "the truncated tool call must still surface as a functionCall part on gemini ingress; got\n{out}"
+    );
+}
+
+/// Every `IrBlockMeta` variant, with a witness value. The no-catch-all `match` is the point: a
+/// fifth variant makes THIS a compile error rather than a silently-unexercised table row.
+fn all_block_metas() -> Vec<IrBlockMeta> {
+    let witnesses = vec![
+        IrBlockMeta::Text,
+        IrBlockMeta::Thinking,
+        IrBlockMeta::Image,
+        IrBlockMeta::ToolUse {
+            id: "toolu_x".into(),
+            name: "f".into(),
+        },
+    ];
+    for w in &witnesses {
+        match w {
+            IrBlockMeta::Text
+            | IrBlockMeta::Thinking
+            | IrBlockMeta::Image
+            | IrBlockMeta::ToolUse { .. } => {}
+        }
+    }
+    witnesses
+}
+
+/// INV-B, exhaustively: for every registered protocol's writer and every `IrBlockMeta` variant, a
+/// suppressed `BlockStart` (writer returns `None`) must be followed by a suppressed `BlockStop`
+/// (also `None`) — otherwise a client receives a close for a block it never saw opened (7.2's
+/// class). The gemini ToolUse row is the ONE declared exception: `gemini/writer.rs`'s `BlockStart`
+/// arm returns `None` for ToolUse DELIBERATELY (it buffers `(name, args)` and flushes the whole
+/// native `functionCall` part on `BlockStop`), so `Some` on the stop there is correct — suppressing
+/// it would silently delete the tool call.
+///
+/// A FRESH writer is constructed for EVERY (name, meta) row via `protocol_for(name)` INSIDE the
+/// loop body, not hoisted: cohere/responses/gemini writers carry per-stream `Mutex` state, so
+/// reusing one writer across rows would make a later `None`/`None` row a statement about the
+/// PREVIOUS row's writer having cleaned up after itself, not a property of a virgin stream.
+///
+/// The two protocol-axis assertions below are GATES, not RED proofs for THIS test — each is
+/// independently provable-to-fail per the design doc (§3B): deleting the `PROTO_COHERE` arm from
+/// `protocol_for` trips the first; appending a 7th name to `KNOWN_PROTOCOLS` trips the second. A
+/// naive `assert_eq!(rows.len(), KNOWN_PROTOCOLS.len())` would be a TAUTOLOGY (both sides move
+/// together, since rows are built BY iterating `KNOWN_PROTOCOLS`) and is deliberately not used.
+#[test]
+fn every_writer_that_suppresses_a_block_start_suppresses_its_stop() {
+    assert_eq!(
+        KNOWN_PROTOCOLS.len(),
+        6,
+        "a 7th protocol was added — extend this table's expectations, then bump this count"
+    );
+
+    for &name in KNOWN_PROTOCOLS {
+        assert!(
+            protocol_for(name).is_some(),
+            "KNOWN_PROTOCOLS lists {name} but protocol_for has no arm for it"
+        );
+
+        for meta in all_block_metas() {
+            let protocol = protocol_for(name).expect("checked above");
+            let writer = protocol.writer();
+
+            let start_index = 0usize;
+            let start_emitted = writer
+                .write_response_event(&IrStreamEvent::BlockStart {
+                    index: start_index,
+                    block: meta.clone(),
+                })
+                .is_some();
+            let stop_emitted = writer
+                .write_response_event(&IrStreamEvent::BlockStop { index: start_index })
+                .is_some();
+
+            // The declared exception: gemini's ToolUse BlockStart returns None on purpose
+            // (`gemini/writer.rs`'s buffered-flush-on-stop idiom), so its BlockStop legitimately
+            // returns Some. Every other (writer, meta) pair must agree: suppressed start implies
+            // suppressed stop.
+            let is_declared_exception =
+                name == PROTO_GEMINI && matches!(meta, IrBlockMeta::ToolUse { .. });
+
+            if is_declared_exception {
+                assert!(
+                    !start_emitted && stop_emitted,
+                    "gemini ToolUse is the declared exception: BlockStart must stay None (buffered) \
+                     and BlockStop must stay Some (the flush point); got start={start_emitted} stop={stop_emitted}"
+                );
+            } else if !start_emitted {
+                assert!(
+                    !stop_emitted,
+                    "writer {name:?} suppressed BlockStart for {meta:?} but emitted a BlockStop \
+                     for the same index — orphan close for a block never opened"
+                );
+            }
+        }
+    }
+}
+
+/// An Anthropic `content_block_start{type:"image"}` streamed block has no Bedrock ConverseStream
+/// projection (`BedrockWriter`'s `BlockStart` arm maps `IrBlockMeta::Image` to `None`), but the
+/// `BlockStop` arm previously emitted `contentBlockStop` unconditionally regardless of whether the
+/// start was suppressed — an orphan close for an index a real ConverseStream client never saw
+/// opened (finding 7.2). Must NOT assert contiguity: index 0 gets no `contentBlockStart` on this
+/// path either before or after the fix (§3F declines a wire-density claim); the fix only removes
+/// the invalid orphan STOP frame.
+#[test]
+fn anthropic_image_stream_to_bedrock_ingress_has_no_orphan_content_block_stop() {
+    let mut t = StreamTranslate::new("bedrock", "anthropic").expect("bedrock ingress translator");
+    let mut raw: Vec<u8> = Vec::new();
+    for frame in [
+            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_img\",\"role\":\"assistant\"}}\n\n",
+            "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"aGk=\"}}}\n\n",
+            "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+            "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}\n\n",
+            "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+        ] {
+            raw.extend(t.feed(frame.as_bytes()));
+        }
+    t.finish();
+
+    let mut buf = raw.clone();
+    let frames = crate::eventstream::drain_frames(&mut buf);
+    assert!(
+        buf.is_empty(),
+        "all emitted frames must decode cleanly; {} bytes left",
+        buf.len()
+    );
+
+    // No `contentBlockStop` frame may appear for an index that never had a preceding
+    // `contentBlockStart`.
+    let started: std::collections::BTreeSet<u64> = frames
+        .iter()
+        .filter(|(et, _)| et == "contentBlockStart")
+        .filter_map(|(_, payload)| serde_json::from_slice::<serde_json::Value>(payload).ok())
+        .filter_map(|v| v.get("contentBlockIndex").and_then(|i| i.as_u64()))
+        .collect();
+    for (et, payload) in frames.iter().filter(|(et, _)| et == "contentBlockStop") {
+        let v: serde_json::Value = serde_json::from_slice(payload).expect("valid JSON payload");
+        let idx = v
+            .get("contentBlockIndex")
+            .and_then(|i| i.as_u64())
+            .expect("contentBlockStop carries contentBlockIndex");
+        assert!(
+            started.contains(&idx),
+            "orphan {et} for index {idx} with no preceding contentBlockStart: {frames:?}",
+            frames = frames
+                .iter()
+                .map(|(t, p)| (t.clone(), String::from_utf8_lossy(p).to_string()))
+                .collect::<Vec<_>>()
+        );
+    }
 }
 
 /// HIGH/conformance regression: a mid-stream upstream ERROR on a Bedrock-INGRESS cross-protocol
@@ -2010,7 +2821,7 @@ fn test_translate_openai_include_usage_egress_to_bedrock_ingress_single_metadata
         "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n",
         // include_usage: terminal finish chunk carries NO usage...
         "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
-        // ...usage rides a SEPARATE trailing chunk (empty choices).
+        // ..usage rides a SEPARATE trailing chunk (empty choices).
         "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":11}}\n\n",
         "data: [DONE]\n\n",
     ] {
@@ -2168,7 +2979,7 @@ fn test_translate_split_frame_reassembly() {
 }
 
 // Cross-protocol tool-calling fidelity: openai tool_calls → anthropic tool_use survives, and the
-// foreign `call_1` id is RESHAPED to the Anthropic-native `toolu_` form at the seam (§Finding-2),
+// foreign `call_1` id is RESHAPED to the Anthropic-native `toolu_` form at the seam,
 // never leaked verbatim. (Updated from the prior verbatim-`call_1` assertion — the new contract.)
 #[test]
 fn test_translate_tool_call_fidelity() {
@@ -2230,7 +3041,7 @@ fn test_translate_same_protocol_is_none() {
     assert!(StreamTranslate::new("anthropic", "anthropic").is_none());
 }
 
-// §Finding-3 (linear SSE drain): a single `feed` carrying MANY complete SSE frames at once must
+// Linear SSE drain: a single `feed` carrying MANY complete SSE frames at once must
 // translate ALL of them (the cursor advances frame-by-frame and reclaims the prefix in one shift —
 // no per-frame `drain` re-scan, no dropped/duplicated frames, no infinite loop). Large N here would
 // be quadratic under the old `drain(..end)`-per-frame reassembly; it must complete near-instantly.
@@ -2261,7 +3072,7 @@ fn test_translate_many_frames_in_one_feed_is_linear_and_complete() {
     );
 }
 
-// §Finding-3: the same buffer split arbitrarily across many `feed` calls (frames straddling chunk
+// The same buffer split arbitrarily across many `feed` calls (frames straddling chunk
 // boundaries) must reassemble identically — the `scanned`/`consumed` cursors carry across feeds.
 #[test]
 fn test_translate_frames_split_across_chunks_reassemble() {
@@ -2290,7 +3101,7 @@ fn test_translate_frames_split_across_chunks_reassemble() {
     }
 }
 
-/// Multiple `data:` lines in one SSE frame must be concatenated with `\n` (SSE spec §9.2.6),
+/// Multiple `data:` lines in one SSE frame must be concatenated with `\n` (SSE spec),
 /// not collapsed to the last line. A leading space after the colon is stripped exactly once.
 #[test]
 fn test_parse_sse_frame_concatenates_multiple_data_lines() {
@@ -2747,7 +3558,7 @@ fn test_cross_protocol_tool_use_response() {
     );
 }
 
-// ── §Finding-2: cross-protocol tool-id native remap at the seam ──────────────────────────────
+// ── Cross-protocol tool-id native remap at the seam ──────────────────────────────
 
 #[test]
 fn test_tool_id_remap_reshapes_to_ingress_native_prefix() {
@@ -3215,4 +4026,324 @@ fn test_bedrock_and_responses_register() {
         bedrock.writer().upstream_path_for("anthropic.claude-3"),
         "/model/anthropic.claude-3/converse"
     );
+}
+
+/// R3-A-b (SAME-PROTOCOL verbatim strip, OPTED-OUT client): busbar forces
+/// `stream_options.include_usage` UPSTREAM so it can bill, so an OpenAI upstream emits a NATIVE
+/// trailing usage-only chunk (`{... "choices":[], "usage":{...}}`) even on an OpenAI->OpenAI
+/// same-protocol passthrough. The same-proto verbatim path re-emits frames byte-for-byte and never
+/// calls `on_egress_chunk`, so before the fix that unsolicited chunk reached a CLIENT that did NOT opt
+/// in - a strict SDK `choices[0]`-IndexErrors on it. With `client_include_usage == false` that ONE
+/// frame must be dropped from the client bytes while every other frame stays byte-identical AND the
+/// billing A-tap still holds the real token counts.
+#[test]
+fn same_proto_openai_opted_out_strips_trailing_usage_chunk() {
+    let mut st = StreamTranslate::new_same_proto("openai").expect("same-proto translator");
+    st.set_client_include_usage(false);
+    // Native OpenAI include_usage wire: content chunk, finish chunk (usage:null), trailing usage-only
+    // chunk (empty choices), then [DONE].
+    let frames = [
+        "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hi\"},\"finish_reason\":null}],\"usage\":null}\n\n",
+        "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":null}\n\n",
+        "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":3,\"total_tokens\":14}}\n\n",
+        "data: [DONE]\n\n",
+    ];
+    let mut raw: Vec<u8> = Vec::new();
+    for f in frames {
+        raw.extend(st.feed(f.as_bytes()));
+    }
+    raw.extend(st.finish());
+    let out = String::from_utf8(raw).expect("utf8 SSE");
+
+    // The content chunk, finish chunk, and [DONE] survive verbatim.
+    assert!(
+        out.contains("\"content\":\"Hi\""),
+        "content chunk kept:\n{out}"
+    );
+    assert!(
+        out.contains("\"finish_reason\":\"stop\""),
+        "finish chunk kept:\n{out}"
+    );
+    assert!(out.contains("[DONE]"), "terminator kept:\n{out}");
+    // The trailing usage-only chunk (empty choices + usage object) is DROPPED from the client bytes.
+    for data in out.lines().filter_map(|l| l.strip_prefix("data: ")) {
+        if data.trim() == "[DONE]" {
+            continue;
+        }
+        let v: serde_json::Value =
+            crate::json::parse(data.as_bytes()).expect("each SSE chunk is valid JSON");
+        let usage_obj = v.get("usage").is_some_and(|u| u.is_object());
+        let choices_empty = v
+            .get("choices")
+            .and_then(|c| c.as_array())
+            .is_some_and(|a| a.is_empty());
+        assert!(
+            !(usage_obj && choices_empty),
+            "opted-out client must NOT receive the trailing usage-only chunk; got:\n{data}"
+        );
+    }
+    // BILLING invariant: the A-tap still captured the upstream usage despite the client-side strip.
+    let u = st
+        .usage()
+        .expect("A-tap usage must be populated for billing");
+    assert_eq!(u.output_tokens, 3, "billing output tokens from A-tap");
+    // input_tokens = prompt_tokens minus any cached prefix (none here) = 11.
+    assert_eq!(u.input_tokens, 11, "billing input tokens from A-tap");
+}
+
+/// R3-A-b (SAME-PROTOCOL verbatim, OPTED-IN client): when the client DID send
+/// `stream_options.include_usage:true`, the native trailing usage-only chunk is exactly what it asked
+/// for, so it must reach the client verbatim - AND billing still holds the usage.
+#[test]
+fn same_proto_openai_opted_in_keeps_trailing_usage_chunk() {
+    let mut st = StreamTranslate::new_same_proto("openai").expect("same-proto translator");
+    st.set_client_include_usage(true);
+    let frames = [
+        "data: {\"id\":\"chatcmpl-2\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Yo\"},\"finish_reason\":null}],\"usage\":null}\n\n",
+        "data: {\"id\":\"chatcmpl-2\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":null}\n\n",
+        "data: {\"id\":\"chatcmpl-2\",\"object\":\"chat.completion.chunk\",\"choices\":[],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":2,\"total_tokens\":9}}\n\n",
+        "data: [DONE]\n\n",
+    ];
+    let mut raw: Vec<u8> = Vec::new();
+    for f in frames {
+        raw.extend(st.feed(f.as_bytes()));
+    }
+    raw.extend(st.finish());
+    let out = String::from_utf8(raw).expect("utf8 SSE");
+
+    // The trailing usage-only chunk IS present for the opted-in client (byte-for-byte).
+    let has_trailing = out
+        .lines()
+        .filter_map(|l| l.strip_prefix("data: "))
+        .any(|data| {
+            if data.trim() == "[DONE]" {
+                return false;
+            }
+            let v: serde_json::Value = crate::json::parse(data.as_bytes()).expect("valid JSON");
+            v.get("usage").is_some_and(|u| u.is_object())
+                && v.get("choices")
+                    .and_then(|c| c.as_array())
+                    .is_some_and(|a| a.is_empty())
+        });
+    assert!(
+        has_trailing,
+        "opted-in client MUST receive the trailing usage-only chunk verbatim:\n{out}"
+    );
+    // Billing A-tap still populated.
+    let u = st.usage().expect("A-tap usage");
+    assert_eq!(u.output_tokens, 2);
+    assert_eq!(u.input_tokens, 7);
+}
+
+/// INDISTINGUISHABILITY (same-proto OpenAI->OpenAI, OPTED-OUT client): busbar forces
+/// `stream_options.include_usage` UPSTREAM to bill, so an OpenAI upstream stamps `"usage":null` on
+/// EVERY intermediate `chat.completion.chunk` AND the finish chunk. A native OpenAI stream for a client
+/// that did NOT request `include_usage` OMITS the `usage` key entirely on those chunks, so re-emitting
+/// `"usage":null` on every chunk is a wire-shape TELL that a byte-identity test must catch. The
+/// same-proto path re-emits verbatim, so before the fix the opted-out client saw `usage:null` on every
+/// content/finish chunk. After the fix: NO `usage` key on ANY client-visible chunk (intermediate or
+/// trailing), yet the billing A-tap still holds the real token counts.
+#[test]
+fn same_proto_openai_opted_out_strips_usage_from_every_chunk() {
+    let mut st = StreamTranslate::new_same_proto("openai").expect("same-proto translator");
+    st.set_client_include_usage(false);
+    // Native forced-include_usage upstream wire: TWO content chunks (each `usage:null`), a finish
+    // chunk (`usage:null`), a trailing usage-only chunk (empty choices, real usage), then [DONE].
+    let frames = [
+        "data: {\"id\":\"chatcmpl-9\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Hel\"},\"finish_reason\":null}],\"usage\":null}\n\n",
+        "data: {\"id\":\"chatcmpl-9\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"lo\"},\"finish_reason\":null}],\"usage\":null}\n\n",
+        "data: {\"id\":\"chatcmpl-9\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":null}\n\n",
+        "data: {\"id\":\"chatcmpl-9\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt-4o\",\"choices\":[],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":3,\"total_tokens\":14}}\n\n",
+        "data: [DONE]\n\n",
+    ];
+    let mut raw: Vec<u8> = Vec::new();
+    for f in frames {
+        raw.extend(st.feed(f.as_bytes()));
+    }
+    raw.extend(st.finish());
+    let out = String::from_utf8(raw).expect("utf8 SSE");
+
+    // THE TELL CHECK: not one client-visible chunk may carry a `usage` key (present-as-null on the
+    // content/finish chunks would be the divergence a native opted-out stream never shows).
+    for data in out.lines().filter_map(|l| l.strip_prefix("data: ")) {
+        if data.trim() == "[DONE]" {
+            continue;
+        }
+        let v: serde_json::Value =
+            crate::json::parse(data.as_bytes()).expect("each SSE chunk is valid JSON");
+        assert!(
+            v.get("usage").is_none(),
+            "opted-out client must see NO `usage` key on any chunk; got:\n{data}"
+        );
+    }
+    // The raw bytes must not contain the literal tell anywhere either.
+    assert!(
+        !out.contains("\"usage\""),
+        "no `usage` key byte-substring may remain in the client stream:\n{out}"
+    );
+    // Content survived byte-for-byte and identity fields are untouched.
+    assert!(
+        out.contains("\"content\":\"Hel\""),
+        "content 1 kept:\n{out}"
+    );
+    assert!(out.contains("\"content\":\"lo\""), "content 2 kept:\n{out}");
+    assert!(
+        out.contains("\"finish_reason\":\"stop\""),
+        "finish kept:\n{out}"
+    );
+    assert!(out.contains("\"model\":\"gpt-4o\""), "model kept:\n{out}");
+    assert!(out.contains("[DONE]"), "terminator kept:\n{out}");
+
+    // BILLING invariant: the A-tap still captured the upstream usage despite the client-side strip.
+    let u = st
+        .usage()
+        .expect("A-tap usage must be populated for billing");
+    assert_eq!(u.output_tokens, 3, "billing output tokens from A-tap");
+    assert_eq!(u.input_tokens, 11, "billing input tokens from A-tap");
+}
+
+/// INDISTINGUISHABILITY (same-proto OpenAI->OpenAI, OPTED-IN client): a client that DID request
+/// `stream_options.include_usage:true` must see the native wire exactly - `usage:null` on the
+/// intermediate/finish chunks and the real `usage` object on the trailing chunk, all byte-for-byte, so
+/// nothing is stripped when the client opted in.
+#[test]
+fn same_proto_openai_opted_in_keeps_usage_on_every_chunk() {
+    let mut st = StreamTranslate::new_same_proto("openai").expect("same-proto translator");
+    st.set_client_include_usage(true);
+    let frames = [
+        "data: {\"id\":\"chatcmpl-8\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Yo\"},\"finish_reason\":null}],\"usage\":null}\n\n",
+        "data: {\"id\":\"chatcmpl-8\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":null}\n\n",
+        "data: {\"id\":\"chatcmpl-8\",\"object\":\"chat.completion.chunk\",\"choices\":[],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":2,\"total_tokens\":9}}\n\n",
+        "data: [DONE]\n\n",
+    ];
+    let mut raw: Vec<u8> = Vec::new();
+    for f in frames {
+        raw.extend(st.feed(f.as_bytes()));
+    }
+    raw.extend(st.finish());
+    let out = String::from_utf8(raw).expect("utf8 SSE");
+
+    // Every original frame reaches the opted-in client byte-for-byte: intermediate `usage:null` and the
+    // trailing usage object are BOTH present, exactly as OpenAI would send them under include_usage.
+    for f in &frames[..3] {
+        assert!(
+            out.contains(f.trim_end()),
+            "opted-in client must receive frame verbatim: {f}\nout:\n{out}"
+        );
+    }
+    // The trailing usage OBJECT chunk is present.
+    assert!(
+        out.contains("\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":2,\"total_tokens\":9}"),
+        "opted-in client MUST receive the trailing usage object verbatim:\n{out}"
+    );
+    // Billing A-tap still populated.
+    let u = st.usage().expect("A-tap usage");
+    assert_eq!(u.output_tokens, 2);
+    assert_eq!(u.input_tokens, 7);
+}
+
+/// INDISTINGUISHABILITY (byte-safety, string-content corruption guard): a content chunk whose message
+/// text literally contains the substring `"usage":null` must be re-emitted with its message text
+/// intact - the stripper only removes the TOP-LEVEL `usage` member, never the substring inside a string
+/// value. The chunk here ALSO carries a real top-level `usage:null` (forced include_usage), so the
+/// top-level key is removed while the in-string text survives byte-for-byte.
+#[test]
+fn same_proto_openai_opted_out_preserves_usage_text_in_content() {
+    let mut st = StreamTranslate::new_same_proto("openai").expect("same-proto translator");
+    st.set_client_include_usage(false);
+    let frames = [
+        "data: {\"id\":\"chatcmpl-7\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"the tell is \\\"usage\\\":null on every chunk\"},\"finish_reason\":null}],\"usage\":null}\n\n",
+        "data: {\"id\":\"chatcmpl-7\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":null}\n\n",
+        "data: [DONE]\n\n",
+    ];
+    let mut raw: Vec<u8> = Vec::new();
+    for f in frames {
+        raw.extend(st.feed(f.as_bytes()));
+    }
+    raw.extend(st.finish());
+    let out = String::from_utf8(raw).expect("utf8 SSE");
+
+    // The content string (which contains the literal `"usage":null` text) must survive intact.
+    for data in out.lines().filter_map(|l| l.strip_prefix("data: ")) {
+        if data.trim() == "[DONE]" {
+            continue;
+        }
+        let v: serde_json::Value = crate::json::parse(data.as_bytes()).expect("valid JSON");
+        // No TOP-LEVEL usage key on any client chunk.
+        assert!(
+            v.get("usage").is_none(),
+            "top-level usage stripped:\n{data}"
+        );
+    }
+    // The in-string tell text is preserved verbatim (proves no corruption of string content).
+    assert!(
+        out.contains("the tell is \\\"usage\\\":null on every chunk"),
+        "message content containing the literal `usage:null` text must survive:\n{out}"
+    );
+}
+
+/// class-6 6g: a translated cross-protocol Anthropic-INGRESS stream must emit `event: ping`
+/// immediately after `message_start` — a native Anthropic stream always does, and its absence is
+/// both a fingerprintable proxy tell and closes part of the idle-timeout gap a native stream
+/// survives. Driven with an OpenAI EGRESS so the assertion is purely about the ingress-side framing.
+#[test]
+fn anthropic_cross_protocol_stream_emits_ping_after_message_start() {
+    let mut t = StreamTranslate::new("anthropic", "openai").expect("translator");
+    let out = String::from_utf8(t.feed(
+        b"data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"hi\"}}]}\n\n",
+    ))
+    .unwrap();
+    let start_pos = out
+        .find("event: message_start")
+        .expect("a message_start frame must be emitted; got {out}");
+    let ping_pos = out
+        .find("event: ping")
+        .expect("a translated Anthropic-ingress stream must emit event: ping; got: {out}");
+    assert!(
+        ping_pos > start_pos,
+        "the ping must come AFTER message_start; got: {out}"
+    );
+    assert!(
+        out[ping_pos..].starts_with("event: ping\ndata: {\"type\":\"ping\"}\n\n"),
+        "the ping frame must be Anthropic's native shape; got: {}",
+        &out[ping_pos..]
+    );
+}
+
+/// class-11 D1': on the Anthropic same-proto verbatim path, only the two usage-bearing event types
+/// (`message_start`, `message_delta`) plus `error` may reach the `crate::json::parse_str` DOM parse —
+/// every other frame (here, five `content_block_delta`s and a `content_block_start`/`_stop` pair) must
+/// skip it entirely, because the Anthropic reader is stateless and the framing seams it would feed are
+/// constant-false defaults for this egress. Bytes must still round-trip verbatim regardless.
+#[test]
+fn same_proto_anthropic_skips_decode_for_non_usage_frames() {
+    let mut t = StreamTranslate::new_same_proto("anthropic").expect("translator");
+    let frames = concat!(
+        "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"role\":\"assistant\",\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n",
+        "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+        "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"a\"}}\n\n",
+        "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"b\"}}\n\n",
+        "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"c\"}}\n\n",
+        "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"d\"}}\n\n",
+        "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"e\"}}\n\n",
+        "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+        "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\n\n",
+    );
+    let out = t.feed(frames.as_bytes());
+    // Bytes stay verbatim regardless of which frames were decoded.
+    assert_eq!(
+        out,
+        frames.as_bytes(),
+        "same-proto Anthropic bytes must round-trip verbatim"
+    );
+    assert_eq!(
+        t.decode_calls.get(),
+        2,
+        "only message_start and message_delta should reach the DOM parse; \
+         content_block_start/delta/stop must be skipped entirely"
+    );
+    // Usage from both usage-bearing frames must still have been captured despite the skip.
+    let usage = t.usage().expect("terminal usage must still be captured");
+    assert_eq!(usage.input_tokens, 10);
+    assert_eq!(usage.output_tokens, 5);
 }
