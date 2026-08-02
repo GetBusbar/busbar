@@ -438,6 +438,26 @@ pub(crate) trait StateStore: Send + Sync + 'static {
     /// leaks the single-flight probe and never double-releases. The sole non-test callers are
     /// `pick_among`'s main selection loop and its sticky-affinity fast path.
     fn try_admit(&self, pool: &str, lane: usize, now: u64) -> Result<Admit, Unavailable>;
+
+    /// The concurrency semaphore of a BOUNDED lane, for the `on_exhausted: queue` wait to acquire a
+    /// freed permit DIRECTLY on the lane's OWN FIFO semaphore. This is the R2 wait primitive: the
+    /// semaphore STORES released permits (no lost wakeup — a permit freed in the window between a
+    /// waiter's re-poll and its next await is not dropped) and hands one permit to one waiter (no
+    /// thundering herd, FIFO fairness). `None` for an UNBOUNDED lane (`max_concurrent` omitted —
+    /// nothing is counted, so it is never `AtCapacity` and never a queue candidate).
+    fn lane_semaphore(&self, lane: usize) -> Option<Arc<Semaphore>>;
+
+    /// Run ONLY the breaker admission step of [`try_admit`] (the shared `breaker_verdict` decoder +
+    /// the single-flight probe CAS) WITHOUT acquiring a concurrency permit — for the `on_exhausted:
+    /// queue` dispatch path, which has ALREADY won a permit directly on the lane's semaphore (via
+    /// [`lane_semaphore`](Self::lane_semaphore)) and must still pass the breaker before dispatch.
+    /// `Ok(())` = the caller may dispatch: it now owns the (possibly newly-won) single-flight probe,
+    /// released via `release_probe_in` after the dispatched request records its outcome — EXACTLY the
+    /// unowned-probe contract `pick_among`'s fallback dispatch already relies on. `Err(_)` = the lane
+    /// went Dead / BudgetExhausted / BreakerOpen / lost the probe WHILE the caller was queued; the
+    /// caller must release its held permit and never dispatch onto it. No permit is touched here, so a
+    /// probe won on the `Ok` path is the caller's to release; on `Err` nothing is left armed.
+    fn try_admit_breaker(&self, pool: &str, lane: usize, now: u64) -> Result<(), Unavailable>;
     /// Release a single-flight recovery probe WON by `acquire_for_dispatch_in` but then NOT dispatched
     /// (the chosen lane couldn't get a concurrency slot before the request deadline, the semaphore
     /// closed on shutdown, etc.). The probe winner left the cell in HalfOpen with `probe_in_flight ==

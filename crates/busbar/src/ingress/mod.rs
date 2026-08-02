@@ -71,11 +71,13 @@ fn fallback_pools_authorized(
         }
         let next = match app.on_exhausted_cfgs.get(current) {
             Some(crate::config::OnExhausted::FallbackPool(fallback)) => fallback.as_str(),
-            // `Status503` and `LeastBad` stay within `current` (no new pool name is introduced), and
-            // an unconfigured pool defaults to 503 — neither can reach a different pool, so the walk
-            // ends here. Explicit arms, no `_ =>` catch-all.
+            // `Status503`, `LeastBad`, and `Queue` all stay within `current` (no new pool name is
+            // introduced — queue waits on this pool's own members then falls through to 503), and an
+            // unconfigured pool defaults to 503 — none can reach a different pool, so the walk ends
+            // here. Explicit arms, no `_ =>` catch-all.
             Some(crate::config::OnExhausted::Status503)
             | Some(crate::config::OnExhausted::LeastBad)
+            | Some(crate::config::OnExhausted::Queue { .. })
             | None => return None,
         };
         // Re-run the identical ACL gate against the fallback pool name before it could ever be

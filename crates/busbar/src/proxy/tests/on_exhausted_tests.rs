@@ -29,6 +29,41 @@ fn test_config_parsing_unknown_fails() {
 }
 
 #[test]
+fn test_config_parsing_queue() {
+    let cfg: config::OnExhaustedCfg = serde_yaml::from_str("{ queue: { max_ms: 250 } }").unwrap();
+    assert!(matches!(
+        cfg.to_runtime(),
+        config::OnExhausted::Queue { max_ms: 250 }
+    ));
+}
+
+#[test]
+fn test_config_parsing_both_fallback_and_queue_conflicts() {
+    // R7: a mapping carrying BOTH keys is an explicit "exactly one of" error, never a force-fit.
+    let result: Result<config::OnExhaustedCfg, _> =
+        serde_yaml::from_str("{ fallback_pool: cold, queue: { max_ms: 250 } }");
+    let err = format!(
+        "{}",
+        result.expect_err("both keys present must be an error")
+    );
+    assert!(
+        err.contains("exactly one of"),
+        "must reject both fallback_pool and queue; got: {err}"
+    );
+}
+
+#[test]
+fn test_config_parsing_queue_unknown_inner_key_fails() {
+    // `deny_unknown_fields` on the inner body: a typo'd `max_millis` must fail, not be ignored.
+    let result: Result<config::OnExhaustedCfg, _> =
+        serde_yaml::from_str("{ queue: { max_millis: 250 } }");
+    assert!(
+        result.is_err(),
+        "an unknown queue inner key must fail parsing"
+    );
+}
+
+#[test]
 fn test_config_parsing_bare_fallback_pool_fails() {
     // The old colon form `fallback_pool:drain` is no longer a bare keyword; only the
     // structured `{ fallback_pool: name }` map is accepted.
@@ -968,4 +1003,276 @@ async fn retry_after_has_saturation_floor_when_purely_at_capacity() {
         retry_after_secs(&resp) > 1,
         "a purely at-capacity shed must not always advertise Retry-After: 1"
     );
+}
+
+// ── on_exhausted: queue{max_ms} (Phase 3) ───────────────────────────────────────────────────────
+// The queue waits BOUNDED on the AtCapacity candidates' OWN FIFO semaphores (R2) — a permit freed on
+// a busy lane wakes exactly one waiter with the stored permit (no lost wakeup, no thundering herd) —
+// then re-checks the breaker on the won lane before dispatch. Every test saturates a REAL semaphore.
+
+/// A lane wired to a REAL mock server AND a shared 1-permit semaphore: at-capacity while the test
+/// holds the permit, dispatchable once the test frees it (so the queue can actually serve on it).
+fn busy_real_lane(model: &str, base_url: &str, sem: &Arc<tokio::sync::Semaphore>) -> LaneSpec {
+    LaneSpec::new(model, crate::proto::Protocol::anthropic(), base_url)
+        .provider("p")
+        .max(1)
+        .sem(sem.clone())
+}
+
+/// Spawn one request through the real dispatch path with `'static` literals so it can run detached
+/// while the test frees a permit / trips a breaker underneath it.
+fn spawn_request(
+    app: std::sync::Arc<crate::state::App>,
+) -> tokio::task::JoinHandle<axum::response::Response> {
+    tokio::spawn(forward_with_pool(
+        app,
+        vec![lane(0)],
+        chat_body("p").into(),
+        None,
+        "p",
+        None,
+        "anthropic",
+        crate::handlers::CHAT,
+        None,
+    ))
+}
+
+/// queue DISPATCHES when a permit frees before the deadline: the request parks on the saturated
+/// lane's semaphore, and once the held permit is released the queued waiter acquires it, passes the
+/// (Closed) breaker, and is served by THAT freed lane (200). RED before Phase 3 (no queue arm →
+/// immediate 503).
+#[tokio::test]
+async fn queue_dispatches_when_permit_frees_before_deadline() {
+    crate::metrics::init();
+    let svc = ok_server_for("svc").await;
+    let sem = Arc::new(tokio::sync::Semaphore::new(1));
+    let held = sem.clone().try_acquire_owned().unwrap();
+    let app = TestApp::new()
+        .lane(busy_real_lane("svc", &svc.base_url(), &sem))
+        .pool("p", &[(0, 1)])
+        .failover(long_failover())
+        .on_exhausted("p", crate::config::OnExhausted::Queue { max_ms: 5000 })
+        .build();
+
+    let req = spawn_request(app.clone());
+    // Let the request pick, find the lane at-capacity, and PARK on the semaphore.
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert!(
+        app.queued_depth.depth("p") >= 1,
+        "the request must be parked in the queue (busbar_pool_queued source > 0 during the wait)"
+    );
+    // Free the permit — the queued waiter acquires it and dispatches on the freed lane.
+    drop(held);
+
+    let resp = tokio::time::timeout(Duration::from_secs(5), req)
+        .await
+        .expect("queue must dispatch within the wait window, never hang")
+        .expect("request task panicked");
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "a permit freed before the deadline must let the queued request dispatch"
+    );
+    assert_eq!(
+        app.store.snapshot(0, now()).ok,
+        1,
+        "the freed lane served the queued request"
+    );
+    assert_eq!(
+        app.queued_depth.depth("p"),
+        0,
+        "the park depth returns to 0 after dispatch (RAII guard dropped)"
+    );
+    svc.shutdown().await;
+}
+
+/// queue TIMES OUT → 503 + Retry-After when no permit ever frees within `max_ms`. The wait is bounded
+/// by `max_ms` (300ms), NOT the long failover budget — it must actually wait ~max_ms (not shed
+/// immediately) and shed well before the budget. RED before Phase 3 (immediate 503, no wait at all).
+#[tokio::test]
+async fn queue_times_out_to_503_when_capacity_never_frees() {
+    crate::metrics::init();
+    let (sem, _held) = saturated(); // permit held for the whole test → never frees
+    let app = TestApp::new()
+        .lane(saturated_lane("busy", &sem))
+        .pool("p", &[(0, 1)])
+        .failover(long_failover())
+        .on_exhausted("p", crate::config::OnExhausted::Queue { max_ms: 300 })
+        .build();
+
+    let start = std::time::Instant::now();
+    let resp = tokio::time::timeout(
+        Duration::from_secs(4),
+        forward_with_pool(
+            app.clone(),
+            vec![lane(0)],
+            chat_body("p").into(),
+            None,
+            "p",
+            None,
+            "anthropic",
+            crate::handlers::CHAT,
+            None,
+        ),
+    )
+    .await
+    .expect("the queue wait must be bounded by max_ms and never hang");
+    let elapsed = start.elapsed();
+
+    assert_eq!(
+        resp.status().as_u16(),
+        503,
+        "a queue that never gets a permit must fall through to 503"
+    );
+    assert!(
+        retry_after(&resp).is_some(),
+        "the timed-out queue 503 must carry Retry-After"
+    );
+    assert!(
+        elapsed >= Duration::from_millis(250),
+        "it must actually WAIT ~max_ms before shedding, not shed immediately; waited {elapsed:?}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "the wait is bounded by max_ms (300ms), not the 300s failover budget; waited {elapsed:?}"
+    );
+    assert_eq!(
+        app.queued_depth.depth("p"),
+        0,
+        "depth returns to 0 after the timeout"
+    );
+}
+
+/// queue SKIPS the wait and rejects IMMEDIATELY when NO candidate is `AtCapacity` (all breaker-Open /
+/// dead): queuing cannot free a permit on a pool that is DOWN, not busy, so waiting `max_ms` would be
+/// pointless. Proven by the reject completing far inside `max_ms`. RED before Phase 3.
+#[tokio::test]
+async fn queue_skips_wait_and_rejects_when_no_candidate_at_capacity() {
+    crate::metrics::init();
+    let app = TestApp::new()
+        .lane(
+            LaneSpec::new(
+                "down",
+                crate::proto::Protocol::anthropic(),
+                "http://127.0.0.1:1",
+            )
+            .provider("p"),
+        )
+        .pool("p", &[(0, 1)])
+        .failover(long_failover())
+        .on_exhausted("p", crate::config::OnExhausted::Queue { max_ms: 3000 })
+        .build();
+    // Breaker Open (not expired) → the sole exclusion reason is BreakerOpen, never AtCapacity.
+    app.store.force_open_in("p", 0, now() + 300);
+
+    let start = std::time::Instant::now();
+    let resp = tokio::time::timeout(
+        Duration::from_secs(2),
+        forward_with_pool(
+            app.clone(),
+            vec![lane(0)],
+            chat_body("p").into(),
+            None,
+            "p",
+            None,
+            "anthropic",
+            crate::handlers::CHAT,
+            None,
+        ),
+    )
+    .await
+    .expect("must not hang");
+    let elapsed = start.elapsed();
+
+    assert_eq!(
+        resp.status().as_u16(),
+        503,
+        "a breaker-Open (not at-capacity) pool cannot be helped by queuing → reject"
+    );
+    assert!(
+        elapsed < Duration::from_millis(500),
+        "queuing cannot help a down pool → skip the 3000ms wait and reject now; took {elapsed:?}"
+    );
+}
+
+/// No lost wakeup: a permit freed in the SMALL window around when the waiter parks is STORED by the
+/// FIFO semaphore and still acquired — so with a SHORT `max_ms` (400ms) the request still DISPATCHES
+/// (200) rather than missing the wake and timing out to 503. This is exactly the failure a per-pool
+/// `Notify` would exhibit (a wake fired before `notified()` registered is lost); the semaphore-acquire
+/// design makes it pass.
+#[tokio::test]
+async fn queue_no_lost_wakeup_when_permit_freed_in_the_window() {
+    crate::metrics::init();
+    let svc = ok_server_for("svc").await;
+    let sem = Arc::new(tokio::sync::Semaphore::new(1));
+    let held = sem.clone().try_acquire_owned().unwrap();
+    let app = TestApp::new()
+        .lane(busy_real_lane("svc", &svc.base_url(), &sem))
+        .pool("p", &[(0, 1)])
+        .failover(long_failover())
+        // SHORT bound: if the freed-permit wake were lost, this would time out to 503 within 400ms.
+        .on_exhausted("p", crate::config::OnExhausted::Queue { max_ms: 400 })
+        .build();
+
+    let req = spawn_request(app.clone());
+    // Free the permit in the tight window right around when the waiter is registering its acquire.
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    drop(held);
+
+    let resp = tokio::time::timeout(Duration::from_secs(2), req)
+        .await
+        .expect("must not hang")
+        .expect("task panicked");
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "a permit freed in the window must not be lost — the stored permit dispatches the request"
+    );
+    assert_eq!(
+        app.store.snapshot(0, now()).ok,
+        1,
+        "the freed lane served it"
+    );
+    svc.shutdown().await;
+}
+
+/// Won-permit-but-breaker-now-Open: the waiter acquires a freed permit but the lane's breaker TRIPPED
+/// Open while it was queued. The breaker re-check on the won lane must REFUSE — the request must never
+/// dispatch onto the Open lane, and (single candidate) falls through to 503. Proves the R2 breaker
+/// composition on the won lane.
+#[tokio::test]
+async fn queue_won_permit_but_breaker_now_open_never_dispatches() {
+    crate::metrics::init();
+    let svc = ok_server_for("svc").await; // wired, but must NEVER be dispatched to
+    let sem = Arc::new(tokio::sync::Semaphore::new(1));
+    let held = sem.clone().try_acquire_owned().unwrap();
+    let app = TestApp::new()
+        .lane(busy_real_lane("svc", &svc.base_url(), &sem))
+        .pool("p", &[(0, 1)])
+        .failover(long_failover())
+        .on_exhausted("p", crate::config::OnExhausted::Queue { max_ms: 2000 })
+        .build();
+
+    let req = spawn_request(app.clone());
+    tokio::time::sleep(Duration::from_millis(150)).await; // ensure parked
+                                                          // Trip the breaker Open WHILE queued, THEN free the permit: the waiter wins capacity but the
+                                                          // breaker re-check must refuse and never dispatch onto the now-Open lane.
+    app.store.force_open_in("p", 0, now() + 300);
+    drop(held);
+
+    let resp = tokio::time::timeout(Duration::from_secs(3), req)
+        .await
+        .expect("must not hang")
+        .expect("task panicked");
+    assert_eq!(
+        resp.status().as_u16(),
+        503,
+        "a lane whose breaker opened while queued must not be dispatched to → 503"
+    );
+    assert_eq!(
+        app.store.snapshot(0, now()).ok,
+        0,
+        "the now-Open lane served nothing (never dispatched onto)"
+    );
+    svc.shutdown().await;
 }
