@@ -4010,9 +4010,9 @@ fn test_try_admit_closed_at_capacity_leaves_breaker_closed() {
 }
 
 /// `recovery_hint_ms` is the single recovery-timing definition. R5: the at-capacity floor must be
-/// ≥ the shipped 2s `AT_CAPACITY_RETRY_AFTER_SECS` (2000ms) — never regressed to 1000ms — and
-/// reuses that const. Also covers the `Shedding` variant (its only constructor is here in this
-/// phase).
+/// ≥ the neutral store-side 2s `AT_CAPACITY_RECOVERY_FLOOR_MS` (2000ms) — never regressed to 1000ms
+/// — which the proxy `Retry-After` path now derives from. Also covers the `Shedding` variant (its
+/// only constructor is here in this phase).
 #[test]
 fn test_recovery_hint_ms() {
     let now = 1000u64;

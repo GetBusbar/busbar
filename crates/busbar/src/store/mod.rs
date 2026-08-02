@@ -149,12 +149,13 @@ const PROBE_RETRY_FLOOR_MS: u64 = 250;
 /// only until the observability phase renders it.
 const SHED_RETRY_FLOOR_MS: u64 = 1000;
 
-/// At-capacity recovery FLOOR in milliseconds. R5: this MUST NOT regress below the already-shipped
-/// `AT_CAPACITY_RETRY_AFTER_SECS` (2s) that the `/stats`-visible `Retry-After` path already floors at
-/// — so it REUSES that const rather than inventing a 1000ms literal. A busy concurrency slot has no
-/// scheduled recovery the way a breaker `until` does, so absent a per-lane drain estimate this floor
-/// is the honest "back off ~2s" answer (never the deceptive `1`).
-const AT_CAPACITY_RECOVERY_FLOOR_MS: u64 = crate::proxy::AT_CAPACITY_RETRY_AFTER_SECS * 1000;
+/// At-capacity recovery FLOOR in milliseconds. R5: a busy concurrency slot has no scheduled recovery
+/// the way a breaker `until` does, so absent a per-lane drain estimate this floor is the honest "back
+/// off ~2s" answer (never the deceptive `1`). This is the NEUTRAL store-side source of truth for the
+/// 2s floor: the store must not depend on `proxy`, so the proxy `Retry-After` path
+/// (`proxy::…::AT_CAPACITY_RETRY_AFTER_SECS`) DERIVES its whole-second floor from THIS const rather
+/// than the reverse.
+pub(crate) const AT_CAPACITY_RECOVERY_FLOOR_MS: u64 = 2_000;
 
 /// Why a lane cannot accept a request right now — the ONE taxonomy every consumer speaks: selection
 /// (exclude), least_bad (rank), `Retry-After` (hint), `/stats` + `/metrics` (render), queue (wait).
