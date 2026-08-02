@@ -15,10 +15,14 @@
 name: dev-gate
 
 on:
-  push:
-    branches:
-      - dev
-      - '*-dev'
+  # TEMPORARILY disabled push-trigger while ci.yml is still red on every attempt (2026-08-02
+  # release night) -- this is a real ~2h, real-money e2e run; no point spending it on a commit
+  # that hasn't even cleared the cheaper gate yet. workflow_dispatch only for now; restore the
+  # push trigger once ci.yml is confirmed green and stays that way.
+  # push:
+  #   branches:
+  #     - dev
+  #     - '*-dev'
   workflow_dispatch: {}
 
 # release-check.sh documents up to ~2h; give real headroom before GitHub's own job timeout bites.
