@@ -242,8 +242,8 @@ jobs:
   # in-repo, the reference restructure GetBusbar/auth-oidc's "Restructure as a same-repo 2-crate
   # workspace" commit established. None of their coverage comes from an in-tree crate any more;
   # scripts/release-check.sh's sibling-checkout phases run each repo's own test suite (real dlopen
-  # ABI + a real backing service container, where applicable) instead — see that script's
-  # Phase 1/Phase 2/Phase 3/Phase 4/Phase 4.5. "Every plugin, including its logic crate, lives in
+  # ABI + a real backing service container, where applicable) instead — see that script's Phase 1
+  # and its registry-driven Phase 2 suite loop over plugins.yaml. "Every plugin, including its logic crate, lives in
   # its own repo" is no longer an aspiration — it's the current state.
   # See docs/plugins.md's "Signing and packaging" section for the corrected, current release-source
   # story per plugin kind.

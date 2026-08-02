@@ -5,9 +5,14 @@
 # design; this gate is what turns "remembered in five places" into "enforced from one".
 #
 # Checks, in order:
-#   1. Registry shape: required fields, valid kinds, unique repo/alias/crate.
-#   2. dev-gate.yml checks out every entry (by repo name or checkout_dir legacy name).
-#   3. release-check.sh has a phase touching every entry's sibling path (../<dir>).
+#   1. Registry shape: required fields, valid kinds/gates, unique repo/alias/crate.
+#   2. dev-gate.yml derives its sibling checkouts from the registry (its clone loop calls this
+#      script's --list mode) — per-plugin hand-written checkout steps are gone by design, so the
+#      check is "the registry-driven step exists", not "a literal step per plugin exists".
+#   3. release-check.sh coverage per entry's `gate` kind:
+#        suite  — the registry-driven loop exists (calls --list) AND the entry's `service` has a
+#                 handler arm in release-check.sh (a new service value needs a new container spec).
+#        binary/smoke — an explicit phase touching the entry's sibling path (../<dir>) exists.
 #   4. [network, skipped with --offline] every entry has a published GitHub release on its
 #      version_line WITH >0 assets (a tag+release with no assets is a phantom, not a release).
 #   5. [network, skipped with --offline] reverse sweep: org repos matching plugin naming
@@ -15,15 +20,24 @@
 #      excluded_repos.
 #
 # Usage: scripts/plugin-registry-check.sh [--offline]
+#        scripts/plugin-registry-check.sh --list
+#
+# --list is the machine-readable registry feed the other consumers iterate (release-check.sh's
+# suite loop, dev-gate.yml's clone loop): one tab-separated line per plugin —
+#   repo <TAB> dir <TAB> alias <TAB> kind <TAB> service <TAB> release_gate <TAB> gate <TAB> checkout_ref
+# where dir is checkout_dir (falling back to repo) and checkout_ref is "-" when unset. Shape
+# validation (check 1) still runs first, so a malformed registry fails every consumer loudly.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-OFFLINE="${1:-}"
+MODE="${1:-}"
 
-python3 - "$OFFLINE" <<'PYEOF'
+python3 - "$MODE" <<'PYEOF'
 import json, re, subprocess, sys
 
-offline = sys.argv[1] == "--offline"
+mode = sys.argv[1]
+offline = mode == "--offline"
+list_mode = mode == "--list"
 fail = []
 
 # ── Parse plugins.yaml. PyYAML when present; otherwise a minimal parser for this file's known,
@@ -63,8 +77,9 @@ plugins = doc.get("plugins") or []
 excluded = set(doc.get("excluded_repos") or [])
 
 # ── 1. Shape.
-REQUIRED = ["repo", "kind", "alias", "crate", "version_line", "service", "release_gate"]
+REQUIRED = ["repo", "kind", "alias", "crate", "version_line", "service", "release_gate", "gate"]
 KINDS = {"store", "auth", "hook", "secret"}
+GATES = {"suite", "binary", "smoke"}
 seen = {"repo": set(), "alias": set(), "crate": set()}
 for p in plugins:
     missing = [f for f in REQUIRED if f not in p or not str(p[f]).strip()]
@@ -73,6 +88,8 @@ for p in plugins:
         continue
     if p["kind"] not in KINDS:
         fail.append(f"{p['repo']}: kind '{p['kind']}' not one of {sorted(KINDS)}")
+    if p["gate"] not in GATES:
+        fail.append(f"{p['repo']}: gate '{p['gate']}' not one of {sorted(GATES)}")
     for k in seen:
         if p[k] in seen[k]:
             fail.append(f"duplicate {k} '{p[k]}' in registry")
@@ -80,19 +97,49 @@ for p in plugins:
 if not plugins:
     fail.append("plugins.yaml parsed to an empty plugin list")
 
-# ── 2. dev-gate.yml checkouts.
-devgate = open(".github/workflows/dev-gate.yml", encoding="utf-8").read()
-for p in plugins:
-    names = {p["repo"], p.get("checkout_dir") or p["repo"]}
-    if not any(f"repository: GetBusbar/{n}" in devgate for n in names):
-        fail.append(f"dev-gate.yml has no checkout for {p['repo']} (accepted names: {sorted(names)})")
+# ── --list: shape-validated machine-readable feed for the iterating consumers, then stop.
+if list_mode:
+    if fail:
+        print("PLUGIN REGISTRY GATE: RED (--list refused on a malformed registry)", file=sys.stderr)
+        for f in fail:
+            print(f"  - {f}", file=sys.stderr)
+        sys.exit(1)
+    for p in plugins:
+        print("\t".join([
+            p["repo"],
+            p.get("checkout_dir") or p["repo"],
+            p["alias"],
+            p["kind"],
+            p["service"],
+            p["release_gate"],
+            p["gate"],
+            p.get("checkout_ref") or "-",
+        ]))
+    sys.exit(0)
 
-# ── 3. release-check.sh phases.
+# ── 2. dev-gate.yml derives its checkouts from the registry (no hand-written per-plugin steps).
+devgate = open(".github/workflows/dev-gate.yml", encoding="utf-8").read()
+if "plugin-registry-check.sh --list" not in devgate:
+    fail.append("dev-gate.yml does not clone siblings via the registry "
+                "(expected a step iterating `scripts/plugin-registry-check.sh --list`)")
+
+# ── 3. release-check.sh coverage, per each entry's declared gate kind.
 relcheck = open("scripts/release-check.sh", encoding="utf-8").read()
+suite_loop_present = "plugin-registry-check.sh --list" in relcheck
 for p in plugins:
     d = p.get("checkout_dir") or p["repo"]
-    if f"../{d}" not in relcheck:
-        fail.append(f"release-check.sh has no phase touching ../{d} ({p['repo']})")
+    if p.get("gate") == "suite":
+        if not suite_loop_present:
+            fail.append(f"release-check.sh has no registry-driven suite loop "
+                        f"(expected it to iterate `plugin-registry-check.sh --list`) — {p['repo']} uncovered")
+        svc = p["service"]
+        if svc != "none" and not re.search(rf"^\s*{re.escape(svc)}\)", relcheck, re.M):
+            fail.append(f"release-check.sh's suite loop has no container-spec arm for service "
+                        f"'{svc}' ({p['repo']}) — add one to its service case block")
+    else:
+        if f"../{d}" not in relcheck:
+            fail.append(f"release-check.sh has no explicit phase touching ../{d} "
+                        f"({p['repo']}, gate: {p.get('gate')})")
 
 # ── 4 + 5. Network checks via `gh` (GITHUB_TOKEN in CI).
 if not offline:
@@ -125,6 +172,6 @@ if fail:
     for f in fail:
         print(f"  - {f}")
     sys.exit(1)
-mode = "offline (structure only)" if offline else "full (structure + releases + org sweep)"
-print(f"PLUGIN REGISTRY GATE: green — {len(plugins)} plugins, mode: {mode}")
+mode_desc = "offline (structure only)" if offline else "full (structure + releases + org sweep)"
+print(f"PLUGIN REGISTRY GATE: green — {len(plugins)} plugins, mode: {mode_desc}")
 PYEOF

@@ -10,12 +10,20 @@
 #   out" comment in .github/workflows/release.yml) load into a REAL busbar binary, that busbar
 #   serves REAL HTTP traffic through each backend exactly the way docs/getting-started.md and
 #   docs/configuration.md tell an operator to configure it, and that keys/usage genuinely
-#   SURVIVE A PROCESS RESTART, driven against store-postgres's own real-Postgres test suite (Phase
-#   2, a required sibling checkout). It builds real artifacts, mints a real virtual key over the
-#   real admin API, drives a real chat-completion request through a real (if minimal) mock
-#   upstream, and asserts real response bodies and real usage counters — not just exit codes.
-#   (SQLite's, Redis's, and OIDC's own real-ABI + real-persistence proofs now live in their own
-#   repos too — see Phase 1/Phase 3/Phase 4 below.)
+#   SURVIVE A PROCESS RESTART, driven against store-postgres's own real-Postgres test suite (the
+#   registry-driven suite loop, Phase 2 — a required sibling checkout). It builds real artifacts,
+#   mints a real virtual key over the real admin API, drives a real chat-completion request
+#   through a real (if minimal) mock upstream, and asserts real response bodies and real usage
+#   counters — not just exit codes. (SQLite's, Redis's, and OIDC's own real-ABI +
+#   real-persistence proofs now live in their own repos too — see Phase 1 and the registry-driven
+#   suite loop in Phase 2 below.)
+#
+#   WHICH plugins get WHICH phase is not decided here: plugins.yaml (repo root) is the single
+#   source of truth. Every `gate: suite` entry is covered by Phase 2's ONE uniform loop (service
+#   container from the entry's `service` field + BUSBAR_TEST_* env + `cargo test --workspace
+#   --release` in the sibling checkout); the genuinely-special phases — sqlite's full-binary
+#   Phase 1 (`gate: binary`) and the hook --validate smokes in Phase 5 (`gate: smoke`) — stay
+#   explicit, and scripts/plugin-registry-check.sh enforces that no registry entry lacks coverage.
 #
 # WHAT THIS DOES NOT TEST
 #   - Store-sqlite's hermetic in-process dlopen path — that's a separate, parallel test, and now
@@ -28,17 +36,17 @@
 #     a same-repo 2-crate workspace bringing 100% of its own logic + adapter). That repo's own test
 #     suite already stands up a real local JWKS server + a real minted JWT and drives the plugin
 #     through the real ABI. This script sibling-checks-out that repo and runs its suite as a gate
-#     (Phase 4 below) rather than reinventing a second, lower-quality fake-IdP proof.
+#     (the Phase 2 suite loop below) rather than reinventing a second, lower-quality fake-IdP proof.
 #   - hashicorp-vault's real-ABI plugin proof — busbar-hashicorp-vault / busbar-hashicorp-vault-plugin
-#     no longer live in this workspace (extracted to GetBusbar/hashicorp-vault). Phase 4.5 below runs
-#     THAT repo's own test suite (a sibling checkout) against a real Vault dev-mode container,
+#     no longer live in this workspace (extracted to GetBusbar/hashicorp-vault). The Phase 2 suite
+#     loop below runs THAT repo's own test suite (a sibling checkout) against a real Vault dev-mode container,
 #     rather than duplicating the proof in-tree.
 #   - Redis's real-ABI + real-persistence proof — store-redis now lives entirely in its own repo
 #     (GetBusbar/store-redis, a same-repo 2-crate workspace bringing 100% of its own logic +
 #     adapter). That repo's own tests/e2e.rs already dlopens the real cdylib against a real
 #     redis:7, writes through it, closes + reopens the plugin, and independently verifies via the
 #     plain busbar-store-redis lib crate — genuine, hermetic, real-Redis coverage. This script
-#     sibling-checks-out that repo and runs its suite as a gate (Phase 3 below) rather than
+#     sibling-checks-out that repo and runs its suite as a gate (the Phase 2 suite loop below) rather than
 #     reinventing a second, lower-quality proof in-tree.
 #   - Postgres's full-busbar-binary + real-HTTP-traffic + process-restart-durability proof —
 #     store-postgres was likewise extracted to its own repo (GetBusbar/store-postgres); Phase 2
@@ -53,15 +61,16 @@
 #
 # PREREQUISITES
 #   - A working Rust toolchain (`cargo build --release` must succeed for this workspace).
-#   - Docker running locally (`docker ps` must succeed) — needed for the Postgres and Redis
-#     phases. If Docker is unavailable those two phases are skipped loudly (not silently) and
-#     the script still exits non-zero, because "gate incomplete" must never look like "gate green".
+#   - Docker running locally (`docker ps` must succeed) — needed for every `service`-backed suite
+#     phase (postgres/mysql/redis/vault per plugins.yaml). If Docker is unavailable the gate fails
+#     loudly up front, because "gate incomplete" must never look like "gate green".
 #   - python3 (stdlib only) — used for a tiny local mock upstream server. No network access
 #     beyond localhost and the Docker daemon is required.
 #   - A sibling checkout `../store-postgres` (GetBusbar/store-postgres) next to this repo — REQUIRED
 #     (not optional): Phase 2 runs that repo's own `cargo test --workspace` as the Postgres gate.
-#   - Optionally, sibling checkouts `../store-sqlite`, `../store-redis`, `../headroom-hook`, and
-#     `../webrequest-hook` next to this repo. Each of these plugins has been fully extracted — its
+#   - Optionally, sibling checkouts for every other plugins.yaml entry (`../store-sqlite`,
+#     `../store-mysql`, `../store-redis`, `../hashicorp-vault`, `../auth-oidc`, `../headroom-hook`,
+#     `../webrequest-hook`) next to this repo. Each of these plugins has been fully extracted — its
 #     own repo now owns 100% of its logic + release-gate proof (see that repo's own CI). If a
 #     sibling is present, its phase below runs the real proof against it; if absent, that phase is
 #     skipped loudly and does not fail the gate (documented — matches the task's explicit
@@ -69,8 +78,8 @@
 #
 # USAGE
 #   scripts/release-check.sh                # run every phase
-#   scripts/release-check.sh --skip-docker   # skip Postgres/Redis (fast local iteration only;
-#                                             # NEVER treat this as a green release gate)
+#   scripts/release-check.sh --skip-docker   # skip service-backed suite phases (fast local
+#                                             # iteration only; NEVER a green release gate)
 #
 # FAILURE POLICY
 #   Fail-fast: `set -euo pipefail` plus an ERR trap that names the failing command. Every
@@ -230,8 +239,9 @@ ok "busbar-plugin-pack: $PACK_BIN"
 #    GetBusbar/auth-oidc, GetBusbar/hashicorp-vault; each a same-repo 2-crate workspace, the pattern
 #    auth-oidc's own extraction established) — busbarAI's release.yml itself no longer builds or
 #    packs any of them; it only ships the busbar binary + the bundled hook plugins now (see the
-#    "Store/auth plugin releases moved out" comment there). Phase 1/Phase 2/Phase 3/Phase 4/Phase
-#    4.5 below each gate on their respective repo's own test suite via a sibling checkout instead.
+#    "Store/auth plugin releases moved out" comment there). Phase 1 and the registry-driven
+#    Phase 2 suite loop below each gate on their respective repo's own test suite via a sibling
+#    checkout instead.
 phase "Phase 0b: nothing in-tree to build (every store/auth/secret plugin is fully extracted)"
 ok "no in-tree plugin tarballs to pack"
 
@@ -417,215 +427,182 @@ else
   SQLITE_SKIPPED=1
 fi
 
+# ── Phase 2: the registry-driven sibling-suite loop ───────────────────────────────────────────────
+#
+# Every fully-extracted plugin whose release-gate proof is its own repo's test suite (`gate: suite`
+# in plugins.yaml — postgres, mysql, redis, vault, oidc today) follows ONE uniform pattern:
+#   1. if the entry's `service` is not "none", boot that service's real backend container and
+#      poll its real readiness probe (no fixed sleeps),
+#   2. export that service's BUSBAR_TEST_* connection env,
+#   3. run `cargo test --workspace --release` in the sibling checkout ../<dir>.
+# Each such repo's own e2e suite already dlopens its REAL built cdylib against the REAL backend —
+# genuine, hermetic, real-ABI coverage. Running that suite here (rather than reinventing a second,
+# lower-quality proof in-tree) is the correct release-gate check; see each repo's own tests/e2e.rs.
+#
+# The loop iterates `plugin-registry-check.sh --list` (plugins.yaml, the single source of truth),
+# so ADDING a suite-gated plugin = one plugins.yaml entry, zero edits here — unless it introduces
+# a brand-new `service` value, in which case the case block below needs one new container-spec arm
+# (and the registry gate goes RED until it gets one). `release_gate: required` entries hard-fail
+# the whole gate when their sibling checkout is missing; `optional` entries loud-skip instead.
+#
+# Genuinely-special phases stay explicit and OUT of this loop: sqlite's full-busbar-binary +
+# real-HTTP + restart-durability phase above (`gate: binary`), and the hook plugins' --validate
+# dlopen smoke tests below (`gate: smoke`). plugin-registry-check.sh enforces that those still
+# cover every non-suite registry entry.
+phase "Phase 2: registry-driven sibling-suite gates (gate: suite in plugins.yaml)"
+
 if [ "$SKIP_DOCKER" = "1" ]; then
-  note "SKIP_DOCKER set — skipping Postgres and Redis phases. This is NOT a valid release gate run."
+  note "SKIP_DOCKER set — suites needing a service container will be skipped. This is NOT a valid release gate run."
 else
   if ! docker ps >/dev/null 2>&1; then
-    echo "Docker is not available/running (docker ps failed). Postgres/Redis phases cannot run." >&2
+    echo "Docker is not available/running (docker ps failed). Service-backed suite phases cannot run." >&2
     echo "This is a REQUIRED part of the release gate — fix Docker and re-run, or pass --skip-docker" >&2
     echo "only for fast local iteration (never as a substitute for a real green gate)." >&2
     exit 1
   fi
+fi
 
-  # ── Phase 2: Postgres — proof now lives in GetBusbar/store-postgres's own test suite ────────────
-  # store-postgres was extracted to its own repo (a same-repo 2-crate workspace, same pattern as
-  # auth-oidc's extraction): the logic crate + the plugin adapter both left busbarAI entirely. There
-  # is no more in-tree busbar-store-postgres-plugin to build/pack/drive through a local busbar
-  # binary here. Instead of reinventing that coverage, this phase stands up the SAME real
-  # postgres:16 container + readiness probe as before and runs THAT repo's own `cargo test
-  # --workspace` against it — which already includes real dlopen-ABI + real-Postgres coverage
-  # (store-postgres-plugin/tests/e2e.rs: dlopen the built cdylib, write through it, close it, then
-  # prove the data survived two independent ways — a fresh dlopen'd instance AND a direct
-  # PostgresStore connection that never touches the cdylib/ABI/loader at all) plus the logic
-  # crate's own live-DB regression tests (store-postgres/src/tests.rs).
-  #
-  # This trades the full busbar-binary + real-HTTP-traffic + process-restart-durability proof
-  # `run_store_backend_e2e` gives sqlite/redis for the plugin repo's own (still real-ABI,
-  # still real-Postgres, just not full-binary-driven) coverage — the same trade-off Phase 4 below
-  # already makes for auth-oidc. Requires a sibling checkout `../store-postgres`
-  # (GetBusbar/store-postgres) next to this repo; unlike the headroom/webrequest hook-plugin phase
-  # (Phase 5), this is NOT optional — Postgres coverage is a required part of the release gate, so a
-  # missing sibling checkout hard-fails here rather than silently skipping.
-  phase "Phase 2: store-postgres — real postgres:16 container, sibling repo's own test suite as the gate"
-  STORE_POSTGRES_SRC="${REPO_ROOT}/../store-postgres"
-  if [ ! -d "$STORE_POSTGRES_SRC" ]; then
-    echo "../store-postgres (GetBusbar/store-postgres) is not checked out as a sibling of this repo." >&2
-    echo "This is a REQUIRED part of the release gate (Postgres coverage now lives in that repo's" >&2
-    echo "own test suite) — clone GetBusbar/store-postgres to ${STORE_POSTGRES_SRC} and re-run." >&2
-    exit 1
-  fi
-  PG_CONTAINER="busbar-release-check-pg-$$"
-  DOCKER_CONTAINERS+=("$PG_CONTAINER")
-  docker run -d --rm --name "$PG_CONTAINER" \
-    -e POSTGRES_USER=busbar -e POSTGRES_PASSWORD=busbar -e POSTGRES_DB=busbar_release_check \
-    -p 15432:5432 \
-    postgres:16 >/dev/null
-  echo "  waiting for postgres to accept connections (pg_isready inside the container)..."
-  waited=0
-  until docker exec "$PG_CONTAINER" pg_isready -U busbar >/dev/null 2>&1; do
-    waited=$((waited + 1))
-    if [ "$waited" -ge 60 ]; then
-      echo "postgres did not become ready within 60s" >&2
-      docker logs "$PG_CONTAINER" || true
+SUITE_PASSED=()
+SUITE_SKIPPED=()
+
+# Capture the registry feed up front (NOT via process substitution into the loop): a parse/shape
+# failure must fail THIS gate loudly under set -e, never degrade to an empty loop that looks green.
+REGISTRY_LIST="$(./scripts/plugin-registry-check.sh --list)"
+[ -n "$REGISTRY_LIST" ] || { echo "plugin-registry-check.sh --list returned an empty registry" >&2; exit 1; }
+
+# feed fields: repo dir alias kind service release_gate gate checkout_ref — the suite loop only
+# needs repo, dir, service, release_gate, and gate.
+while IFS=$'\t' read -r P_REPO P_DIR _ _ P_SERVICE P_RELGATE P_GATE _; do
+  [ "$P_GATE" = "suite" ] || continue
+  SUITE_SRC="${REPO_ROOT}/../${P_DIR}"
+
+  if [ ! -d "$SUITE_SRC" ]; then
+    if [ "$P_RELGATE" = "required" ]; then
+      echo "../${P_DIR} (GetBusbar/${P_REPO}) is not checked out as a sibling of this repo." >&2
+      echo "This is a REQUIRED part of the release gate (release_gate: required in plugins.yaml —" >&2
+      echo "its coverage lives in that repo's own test suite) — clone GetBusbar/${P_REPO} to" >&2
+      echo "${SUITE_SRC} and re-run." >&2
       exit 1
     fi
-    sleep 1
-  done
-  ok "postgres ready after ${waited}s"
-  echo "  running GetBusbar/store-postgres's own cargo test --workspace against it..."
+    echo "SKIP: ../${P_DIR} not present as a sibling checkout on this machine." >&2
+    echo "Gate incomplete — ${P_REPO} coverage could not run. Check out ../${P_DIR} for full" >&2
+    echo "coverage before tagging, or confirm that repo's own CI is green." >&2
+    SUITE_SKIPPED+=("${P_REPO}")
+    continue
+  fi
+
+  if [ "$P_SERVICE" != "none" ] && [ "$SKIP_DOCKER" = "1" ]; then
+    note "SKIP (--skip-docker): ${P_REPO} needs a real ${P_SERVICE} container. NOT a valid gate run."
+    SUITE_SKIPPED+=("${P_REPO}")
+    continue
+  fi
+
+  phase "suite gate: ${P_REPO} — sibling repo's own test suite (service: ${P_SERVICE})"
+  SUITE_CONTAINER=""
+  SUITE_ENV=()
+  case "$P_SERVICE" in
+    none) ;;
+    postgres)
+      SUITE_CONTAINER="busbar-release-check-pg-$$"
+      DOCKER_CONTAINERS+=("$SUITE_CONTAINER")
+      docker run -d --rm --name "$SUITE_CONTAINER" \
+        -e POSTGRES_USER=busbar -e POSTGRES_PASSWORD=busbar -e POSTGRES_DB=busbar_release_check \
+        -p 15432:5432 \
+        postgres:16 >/dev/null
+      echo "  waiting for postgres to accept connections (pg_isready inside the container)..."
+      waited=0
+      until docker exec "$SUITE_CONTAINER" pg_isready -U busbar >/dev/null 2>&1; do
+        waited=$((waited + 1))
+        if [ "$waited" -ge 60 ]; then
+          echo "postgres did not become ready within 60s" >&2
+          docker logs "$SUITE_CONTAINER" || true
+          exit 1
+        fi
+        sleep 1
+      done
+      ok "postgres ready after ${waited}s"
+      SUITE_ENV=(BUSBAR_TEST_POSTGRES_URL="postgres://busbar:busbar@127.0.0.1:15432/busbar_release_check")
+      ;;
+    mysql)
+      SUITE_CONTAINER="busbar-release-check-mysql-$$"
+      DOCKER_CONTAINERS+=("$SUITE_CONTAINER")
+      docker run -d --rm --name "$SUITE_CONTAINER" \
+        -e MYSQL_ROOT_PASSWORD=busbar -e MYSQL_USER=busbar -e MYSQL_PASSWORD=busbar \
+        -e MYSQL_DATABASE=busbar_release_check \
+        -p 13306:3306 \
+        mysql:8 >/dev/null
+      echo "  waiting for mysql to accept connections (mysqladmin ping inside the container)..."
+      waited=0
+      # MySQL 8's first boot initializes the datadir and restarts once — allow a longer window than
+      # postgres, and ping as the busbar user so "ready" means "ready for OUR credentials".
+      until docker exec "$SUITE_CONTAINER" mysqladmin ping -h localhost -ubusbar -pbusbar >/dev/null 2>&1; do
+        waited=$((waited + 1))
+        if [ "$waited" -ge 120 ]; then
+          echo "mysql did not become ready within 120s" >&2
+          docker logs "$SUITE_CONTAINER" || true
+          exit 1
+        fi
+        sleep 1
+      done
+      ok "mysql ready after ${waited}s"
+      SUITE_ENV=(BUSBAR_TEST_MYSQL_URL="mysql://busbar:busbar@127.0.0.1:13306/busbar_release_check")
+      ;;
+    redis)
+      SUITE_CONTAINER="busbar-release-check-redis-$$"
+      DOCKER_CONTAINERS+=("$SUITE_CONTAINER")
+      docker run -d --rm --name "$SUITE_CONTAINER" -p 16379:6379 redis:7 >/dev/null
+      echo "  waiting for redis to accept connections (redis-cli ping inside the container)..."
+      waited=0
+      until [ "$(docker exec "$SUITE_CONTAINER" redis-cli ping 2>/dev/null)" = "PONG" ]; do
+        waited=$((waited + 1))
+        if [ "$waited" -ge 60 ]; then
+          echo "redis did not become ready within 60s" >&2
+          docker logs "$SUITE_CONTAINER" || true
+          exit 1
+        fi
+        sleep 1
+      done
+      ok "redis ready after ${waited}s"
+      SUITE_ENV=(REDIS_URL="redis://127.0.0.1:16379")
+      ;;
+    vault)
+      SUITE_CONTAINER="busbar-release-check-vault-$$"
+      DOCKER_CONTAINERS+=("$SUITE_CONTAINER")
+      docker run -d --rm --name "$SUITE_CONTAINER" --cap-add=IPC_LOCK \
+        -e VAULT_DEV_ROOT_TOKEN_ID=root -p 18200:8200 hashicorp/vault >/dev/null
+      echo "  waiting for vault to report healthy (/v1/sys/health)..."
+      waited=0
+      until curl -fsS "http://127.0.0.1:18200/v1/sys/health" >/dev/null 2>&1; do
+        waited=$((waited + 1))
+        if [ "$waited" -ge 60 ]; then
+          echo "vault did not become ready within 60s" >&2
+          docker logs "$SUITE_CONTAINER" || true
+          exit 1
+        fi
+        sleep 1
+      done
+      ok "vault ready after ${waited}s"
+      SUITE_ENV=(BUSBAR_TEST_VAULT_ADDR="http://127.0.0.1:18200" BUSBAR_TEST_VAULT_TOKEN="root")
+      ;;
+    *)
+      echo "plugins.yaml declares service '${P_SERVICE}' (${P_REPO}) but release-check.sh has no" >&2
+      echo "container spec for it — add a case arm to the suite loop's service block." >&2
+      exit 1
+      ;;
+  esac
+
+  echo "  running GetBusbar/${P_REPO}'s own cargo test --workspace --release in ../${P_DIR}..."
   (
-    cd "$STORE_POSTGRES_SRC"
-    BUSBAR_TEST_POSTGRES_URL="postgres://busbar:busbar@127.0.0.1:15432/busbar_release_check" \
-      cargo test --workspace --release
+    cd "$SUITE_SRC"
+    env ${SUITE_ENV[@]+"${SUITE_ENV[@]}"} cargo test --workspace --release
   )
-  ok "store-postgres real-ABI + real-Postgres tests passed (sibling checkout)"
-  ok "Postgres phase complete: elapsed=${SECONDS}s"
-  docker rm -f "$PG_CONTAINER" >/dev/null 2>&1 || true
-
-  # ── Phase 2.6: MySQL — sibling checkout; same shape as the Postgres phase ──────────────────────
-  # store-mysql (GetBusbar/store-mysql, same-repo 2-crate workspace) was the one store plugin this
-  # gate never covered at all — found during the 1.5.0 ship, when the "full plugin gate" turned out
-  # to run 6 of the 8 first-party plugins. Same trade-off as Phase 2: the sibling repo's own
-  # workspace suite (real dlopen ABI + real MySQL 8) is the proof; this phase just supplies the
-  # container and runs it.
-  phase "Phase 2.6: store-mysql — real mysql:8 container, sibling repo's own test suite as the gate"
-  STORE_MYSQL_SRC="${REPO_ROOT}/../store-mysql"
-  if [ -d "$STORE_MYSQL_SRC" ]; then
-    MYSQL_CONTAINER="busbar-release-check-mysql-$$"
-    DOCKER_CONTAINERS+=("$MYSQL_CONTAINER")
-    docker run -d --rm --name "$MYSQL_CONTAINER" \
-      -e MYSQL_ROOT_PASSWORD=busbar -e MYSQL_USER=busbar -e MYSQL_PASSWORD=busbar \
-      -e MYSQL_DATABASE=busbar_release_check \
-      -p 13306:3306 \
-      mysql:8 >/dev/null
-    echo "  waiting for mysql to accept connections (mysqladmin ping inside the container)..."
-    waited=0
-    # MySQL 8's first boot initializes the datadir and restarts once — allow a longer window than
-    # postgres, and ping as the busbar user so "ready" means "ready for OUR credentials".
-    until docker exec "$MYSQL_CONTAINER" mysqladmin ping -h localhost -ubusbar -pbusbar >/dev/null 2>&1; do
-      waited=$((waited + 1))
-      if [ "$waited" -ge 120 ]; then
-        echo "mysql did not become ready within 120s" >&2
-        docker logs "$MYSQL_CONTAINER" || true
-        exit 1
-      fi
-      sleep 1
-    done
-    ok "mysql ready after ${waited}s"
-    echo "  running GetBusbar/store-mysql's own cargo test --workspace against it..."
-    (
-      cd "$STORE_MYSQL_SRC"
-      BUSBAR_TEST_MYSQL_URL="mysql://busbar:busbar@127.0.0.1:13306/busbar_release_check" \
-        cargo test --workspace --release
-    )
-    ok "store-mysql real-ABI + real-MySQL tests passed (sibling checkout)"
-    docker rm -f "$MYSQL_CONTAINER" >/dev/null 2>&1 || true
-  else
-    echo "SKIP: ../store-mysql not present as a sibling checkout on this machine." >&2
-    echo "Gate incomplete — MySQL coverage could not run. Check out ../store-mysql for full" >&2
-    echo "coverage before tagging, or confirm that repo's own CI is green." >&2
-    STORE_MYSQL_SKIPPED=1
+  ok "${P_REPO}: sibling repo's own suite passed (real ABI, service: ${P_SERVICE})"
+  ok "suite gate complete for ${P_REPO}: elapsed=${SECONDS}s"
+  SUITE_PASSED+=("${P_REPO}")
+  if [ -n "$SUITE_CONTAINER" ]; then
+    docker rm -f "$SUITE_CONTAINER" >/dev/null 2>&1 || true
   fi
-
-  # ── Phase 3: Redis — sibling checkout; store-redis now owns 100% of its own logic + real-ABI
-  #    + real-persistence proof ───────────────────────────────────────────────────────────────────
-  phase "Phase 3: store-redis — sibling checkout: real dlopen ABI + real-Redis proof via its own test suite"
-  STORE_REDIS_SRC="${REPO_ROOT}/../store-redis"
-  if [ -d "$STORE_REDIS_SRC" ]; then
-    note "store-redis no longer lives in-tree — it brings 100% of what it needs in its own repo, a"
-    note "same-repo 2-crate workspace (busbar-store-redis + busbar-store-redis-plugin). Its own"
-    note "store-redis-plugin/tests/e2e.rs dlopens the REAL cdylib against a REAL redis:7, writes"
-    note "through it over the C ABI, closes + reopens the plugin, and independently re-verifies via"
-    note "the plain busbar-store-redis lib crate — genuine, hermetic, real-Redis coverage. Running"
-    note "its own workspace test suite here (rather than reinventing a second, lower-quality proof"
-    note "in this repo) is the correct release-gate check for this plugin."
-    REDIS_CONTAINER="busbar-release-check-redis-$$"
-    DOCKER_CONTAINERS+=("$REDIS_CONTAINER")
-    docker run -d --rm --name "$REDIS_CONTAINER" -p 16379:6379 redis:7 >/dev/null
-    echo "  waiting for redis to accept connections (redis-cli ping inside the container)..."
-    waited=0
-    until [ "$(docker exec "$REDIS_CONTAINER" redis-cli ping 2>/dev/null)" = "PONG" ]; do
-      waited=$((waited + 1))
-      if [ "$waited" -ge 60 ]; then
-        echo "redis did not become ready within 60s" >&2
-        docker logs "$REDIS_CONTAINER" || true
-        exit 1
-      fi
-      sleep 1
-    done
-    ok "redis ready after ${waited}s"
-    REDIS_URL="redis://127.0.0.1:16379" cargo test --release \
-      --manifest-path "${STORE_REDIS_SRC}/Cargo.toml" --workspace -- --nocapture
-    ok "Redis real-ABI + real-persistence plugin tests passed (sibling checkout)"
-    docker rm -f "$REDIS_CONTAINER" >/dev/null 2>&1 || true
-  else
-    echo "SKIP: ../store-redis not present as a sibling checkout on this machine." >&2
-    echo "Gate incomplete — Redis coverage could not run. Check out ../store-redis for full" >&2
-    echo "coverage before tagging, or confirm that repo's own CI is green." >&2
-    STORE_REDIS_SKIPPED=1
-  fi
-fi
-
-# ── Phase 4: OIDC — sibling checkout; auth-oidc now owns 100% of its own logic + real-ABI proof ──
-phase "Phase 4: auth-oidc — sibling checkout: real dlopen ABI proof via its own test suite"
-AUTH_OIDC_SRC="${REPO_ROOT}/../auth-oidc"
-if [ -d "$AUTH_OIDC_SRC" ]; then
-  note "auth-oidc no longer lives in-tree — it brings 100% of what it needs in its own repo, a"
-  note "same-repo 2-crate workspace (busbar-auth-oidc + busbar-auth-oidc-plugin). Its own"
-  note "auth-oidc-plugin/tests/e2e.rs stands up a REAL local mock JWKS server over real TLS, mints"
-  note "a REAL JWT, and drives the built cdylib through the REAL dlopen ABI — genuine, hermetic,"
-  note "real-crypto coverage. Running its own workspace test suite here (rather than reinventing a"
-  note "second, lower-quality proof in this repo) is the correct release-gate check for this plugin."
-  cargo test --release --manifest-path "${AUTH_OIDC_SRC}/Cargo.toml" --workspace -- --nocapture
-  ok "OIDC real-ABI plugin tests passed (sibling checkout)"
-else
-  echo "SKIP: ../auth-oidc not present as a sibling checkout on this machine." >&2
-  echo "Gate incomplete — OIDC coverage could not run. Check out ../auth-oidc for full coverage" >&2
-  echo "before tagging, or confirm that repo's own CI is green." >&2
-  AUTH_OIDC_SKIPPED=1
-fi
-
-# ── Phase 4.5: hashicorp-vault — real-ABI proof via a sibling checkout's own test suite ──────────
-#
-# busbar-hashicorp-vault / busbar-hashicorp-vault-plugin no longer live in this workspace (extracted
-# to GetBusbar/hashicorp-vault, same-repo 2-crate workspace, mirroring busbar-auth-oidc's own
-# extraction; formerly named secret-vault, renamed to match the plugin's actual identity). Like
-# Phase 4's OIDC coverage (also fully extracted, see that phase above), there is no in-tree cdylib
-# to dlopen here any more — the real-Vault ABI-crossing proof now lives entirely in that repo's own
-# test suite (its
-# `hashicorp-vault-plugin/tests/e2e.rs`, dlopen-ing its own real-built cdylib). Running THAT suite,
-# against a real `hashicorp/vault` dev-mode container, is the correct release-gate check: it proves
-# the actual released artifact works, not a duplicate in-tree reimplementation of the same proof.
-phase "Phase 4.5: hashicorp-vault-plugin — real-ABI proof via sibling checkout (real Vault container)"
-SECRET_VAULT_SRC="${REPO_ROOT}/../hashicorp-vault"
-if [ -d "$SECRET_VAULT_SRC" ]; then
-  VAULT_CONTAINER="busbar-release-check-vault-$$"
-  DOCKER_CONTAINERS+=("$VAULT_CONTAINER")
-  docker run -d --rm --name "$VAULT_CONTAINER" --cap-add=IPC_LOCK \
-    -e VAULT_DEV_ROOT_TOKEN_ID=root -p 18200:8200 hashicorp/vault >/dev/null
-  echo "  waiting for vault to report healthy (/v1/sys/health)..."
-  waited=0
-  until curl -fsS "http://127.0.0.1:18200/v1/sys/health" >/dev/null 2>&1; do
-    waited=$((waited + 1))
-    if [ "$waited" -ge 60 ]; then
-      echo "vault did not become ready within 60s" >&2
-      docker logs "$VAULT_CONTAINER" || true
-      exit 1
-    fi
-    sleep 1
-  done
-  ok "vault ready after ${waited}s"
-  ( cd "$SECRET_VAULT_SRC" && \
-    BUSBAR_TEST_VAULT_ADDR="http://127.0.0.1:18200" BUSBAR_TEST_VAULT_TOKEN="root" \
-    cargo test --workspace )
-  ok "hashicorp-vault real-ABI plugin tests passed (sibling checkout: ${SECRET_VAULT_SRC})"
-  docker rm -f "$VAULT_CONTAINER" >/dev/null 2>&1 || true
-else
-  note "SKIP: ../hashicorp-vault not present as a sibling checkout on this machine."
-  note "Clone GetBusbar/hashicorp-vault as a sibling of this repo to run this phase locally; CI runs"
-  note "it via that repo's own ci.yml (service: vault), not from here."
-  SECRET_VAULT_SKIPPED=1
-fi
+done <<<"$REGISTRY_LIST"
 
 # ── Phase 5: Headroom / Webrequest — local --validate dlopen smoke test ────────────────────────────
 phase "Phase 5: headroom-hook / webrequest-hook — local busbar --validate dlopen smoke test"
@@ -692,41 +669,20 @@ fi
 
 phase "RELEASE GATE PASSED"
 echo "Total elapsed: ${SECONDS}s"
-echo "Postgres phase passed with real assertions (required sibling checkout)."
+for p in ${SUITE_PASSED[@]+"${SUITE_PASSED[@]}"}; do
+  echo "${p} suite phase passed with real assertions (sibling checkout, registry-driven)."
+done
+for p in ${SUITE_SKIPPED[@]+"${SUITE_SKIPPED[@]}"}; do
+  echo "NOTE: ${p}'s sibling checkout was not present (or --skip-docker suppressed its service) —"
+  echo "its coverage was SKIPPED, not passed. Run on a machine with the sibling checked out (and"
+  echo "Docker up) for full coverage before tagging, or confirm that repo's own CI is green."
+done
 if [ -n "${SQLITE_SKIPPED:-}" ]; then
   echo "NOTE: ../store-sqlite was not present locally — SQLite coverage was skipped, not passed. Run"
   echo "on a machine with ../store-sqlite checked out for full coverage before tagging, or confirm"
   echo "that repo's own CI is green."
 else
   echo "SQLite phase passed with real assertions (sibling checkout)."
-fi
-if [ -n "${AUTH_OIDC_SKIPPED:-}" ]; then
-  echo "NOTE: ../auth-oidc was not present locally — OIDC coverage was skipped, not passed. Run on"
-  echo "a machine with ../auth-oidc checked out for full coverage before tagging, or confirm that"
-  echo "repo's own CI is green."
-else
-  echo "OIDC phase passed with real assertions (sibling checkout)."
-fi
-if [ -n "${STORE_MYSQL_SKIPPED:-}" ]; then
-  echo "NOTE: ../store-mysql was not present locally — MySQL coverage was skipped, not passed. Run"
-  echo "on a machine with ../store-mysql checked out for full coverage before tagging, or confirm"
-  echo "that repo's own CI is green."
-else
-  echo "MySQL phase passed with real assertions (sibling checkout)."
-fi
-if [ -n "${STORE_REDIS_SKIPPED:-}" ]; then
-  echo "NOTE: ../store-redis was not present locally — Redis coverage was skipped, not passed. Run"
-  echo "on a machine with ../store-redis checked out for full coverage before tagging, or confirm"
-  echo "that repo's own CI is green."
-else
-  echo "Redis phase passed with real assertions (sibling checkout)."
-fi
-if [ -n "${SECRET_VAULT_SKIPPED:-}" ]; then
-  echo "NOTE: ../hashicorp-vault was not present locally — Vault coverage was skipped, not passed. Run"
-  echo "on a machine with ../hashicorp-vault checked out for full coverage before tagging, or confirm"
-  echo "that repo's own CI is green."
-else
-  echo "Secret-vault phase passed with real assertions (sibling checkout)."
 fi
 if [ ! -d "$HEADROOM_SRC" ] || [ ! -d "$WEBREQUEST_SRC" ]; then
   echo "NOTE: one or both hook-plugin sibling repos were not present locally — that phase was"
