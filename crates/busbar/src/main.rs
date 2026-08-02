@@ -3340,7 +3340,7 @@ fn apply_inbound_concurrency_limit(router: Router, max_inbound_concurrent: usize
                         // so if a future fallible layer (or a broadened error type) is ever added inside
                         // this stack, a genuine internal fault is not masked behind the generic
                         // "at capacity" 503 with no trace of its cause.
-                        tracing::debug!(error = %err, "inbound concurrency layer shed a request");
+                        tracing::warn!(error = %err, "inbound concurrency layer shed a request");
                         inbound_overloaded_response()
                     },
                 ))

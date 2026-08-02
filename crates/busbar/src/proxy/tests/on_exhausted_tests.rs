@@ -1575,9 +1575,11 @@ async fn queue_won_permit_but_breaker_now_open_never_dispatches() {
         .build();
 
     let req = spawn_request(app.clone());
-    tokio::time::sleep(Duration::from_millis(150)).await; // ensure parked
-                                                          // Trip the breaker Open WHILE queued, THEN free the permit: the waiter wins capacity but the
-                                                          // breaker re-check must refuse and never dispatch onto the now-Open lane.
+    // Poll until the request has actually PARKED in the queue (deterministic; not a fixed sleep that is
+    // flaky under CI load), matching the sibling queue tests.
+    wait_until_queued(&app, "p", 1).await;
+    // Trip the breaker Open WHILE queued, THEN free the permit: the waiter wins capacity but the
+    // breaker re-check must refuse and never dispatch onto the now-Open lane.
     app.store.force_open_in("p", 0, now() + 300);
     drop(held);
 

@@ -518,16 +518,24 @@ fn invariant_rejects_park_then_serve_primary_witness() {
     assert_served_by_fallback_not_primary(200, /*primary_ok*/ 0, /*fallback_ok*/ 1);
 }
 
-/// HARNESS teeth (closes the gap the witness above cannot): the witness proves the assertion FUNCTION
-/// rejects a bad triple, but not that `run_world`'s Policy::Fallback / fb_elig plumbing actually REACHES
-/// it on a real dispatch. Drive a targeted `World` shaped exactly for the fb_elig branch — a
-/// breaker-healthy but SATURATED primary (so `elig_primary` is empty and the Bug-1 park-then-serve
-/// temptation is live) with an eligible (Closed, free) fallback — through the REAL `run_world` harness,
-/// and assert it took the `FallbackSpill` branch. That branch is where `assert_served_by_fallback_not_primary`
-/// runs, so a wiring bug that short-circuited before it (a shadowed `if`, an early return) would make
-/// this return something other than `FallbackSpill` and fail here.
+/// HARNESS teeth, via a TARGETED (hand-constructed) shape — NOT the proptest generator. The witness
+/// above proves the assertion FUNCTION rejects a bad triple, but not that `run_world`'s
+/// Policy::Fallback / fb_elig plumbing actually REACHES it on a real dispatch. This drives one `World`
+/// shaped exactly for the fb_elig branch — a breaker-healthy but SATURATED primary (so `elig_primary`
+/// is empty and the Bug-1 park-then-serve temptation is live) with an eligible (Closed, free) fallback
+/// — through the REAL `run_world` harness, and asserts it took the `FallbackSpill` branch. That branch
+/// is where `assert_served_by_fallback_not_primary` runs, so a wiring bug that short-circuited before
+/// it (a shadowed `if`, an early return) would make this return something other than `FallbackSpill`
+/// and fail here.
+///
+/// Scope honesty: this shape is HAND-BUILT, not drawn from `world_strat()`. The generator's coverage of
+/// this exact branch is exercised by the main `strengthened_lane_availability_invariant` proptest, which
+/// runs `run_world` over 128 generated worlds and whose `world_strat()` can produce this
+/// healthy-saturated-primary + eligible-fallback shape — there, reaching the branch runs the same
+/// in-`run_world` `assert_served_by_fallback_not_primary`. So this test's job is narrow and named for it:
+/// prove the fb_elig branch is REACHABLE on the real dispatch path for a concrete targeted shape.
 #[tokio::test]
-async fn run_world_reaches_fallback_spill_assertion_on_a_generated_shape() {
+async fn run_world_reaches_fallback_spill_assertion_on_targeted_shape() {
     let world = World {
         primary: vec![Member {
             dead: false,
