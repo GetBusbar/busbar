@@ -1277,13 +1277,16 @@ mod tests {
     /// jemalloc housekeeping — never subtract below the true uncontended cost of the drain. So the
     /// MINIMUM across several independent trials converges toward that true cost regardless of how
     /// loaded the machine is, while a single sample has no such guarantee and can land on an
-    /// arbitrarily contended instant for `t(8000)`, `t(32000)`, or both, skewing the ratio in either
+    /// arbitrarily contended instant for either data point, skewing the ratio in either
     /// direction. This is a structural hardening of the MEASUREMENT, not a widened tolerance: the
     /// asserted ratio, its rationale, and the floor check are all unchanged.
     #[test]
     fn drain_frames_checked_scales_linearly_in_frame_count() {
-        /// Independent trials per data point; the reported duration is the minimum observed.
-        const TRIALS: u32 = 7;
+        /// Independent trials per data point; the reported duration is the minimum observed. Three
+        /// (not more) because at 1M/4M frames each measurement is hundreds of milliseconds of
+        /// DRAM-bound work — scheduler blips that dominate a microsecond sample are relative
+        /// rounding error here, and min-of-N only needs ONE uncontended trial to converge.
+        const TRIALS: u32 = 3;
 
         fn bench(n: usize) -> std::time::Duration {
             let mut best: Option<std::time::Duration> = None;
@@ -1304,20 +1307,28 @@ mod tests {
             }
             best.expect("TRIALS is a nonzero constant, so the loop runs at least once")
         }
-        let t1000 = bench(8000);
+        // 1M and 4M frames (~30 MB and ~120 MB of buffer): BOTH data points are far past every
+        // cache level, so the whole measurement lives in one memory regime (DRAM). The earlier
+        // 8k/32k sizing straddled the L2→L3 boundary, which made genuinely linear code measure
+        // 6.4–8.9x on real CI runners and forced arbitrary threshold tuning; at these sizes the
+        // linear prediction really is ~4x and quadratic really is ~16x, with nothing in between
+        // to hand-wave about.
+        let t1m = bench(1_000_000);
         assert!(
-            t1000 >= std::time::Duration::from_millis(1),
-            "min-of-{TRIALS} t(8000) = {t1000:?} is too fast to be above timer-granularity noise; \
+            t1m >= std::time::Duration::from_millis(1),
+            "min-of-{TRIALS} t(1M) = {t1m:?} is too fast to be above timer-granularity noise; \
              the ratio below would be meaningless — WITHDRAWN rather than tuned, per the design \
              doc's own guidance"
         );
-        let t4000 = bench(32000);
+        let t4m = bench(4_000_000);
+        // < 8x: the log-scale midpoint of linear's ~4x and quadratic's ~16x — equal headroom to
+        // both hypotheses, not a constant tuned to any particular runner's measurement.
         assert!(
-            t4000 < t1000 * 6,
-            "drain_frames_checked scaled worse than linear: min-of-{TRIALS} t(8000)={t1000:?} \
-             min-of-{TRIALS} t(32000)={t4000:?} (ratio {:.1}x, quadratic predicts ~16x, linear \
+            t4m < t1m * 8,
+            "drain_frames_checked scaled worse than linear: min-of-{TRIALS} t(1M)={t1m:?} \
+             min-of-{TRIALS} t(4M)={t4m:?} (ratio {:.1}x, quadratic predicts ~16x, linear \
              predicts ~4x)",
-            t4000.as_secs_f64() / t1000.as_secs_f64()
+            t4m.as_secs_f64() / t1m.as_secs_f64()
         );
     }
 }

@@ -2,8 +2,15 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
+
+# Without this, every push queues a fully independent run that competes for the same runners
+# instead of cancelling the one it superseded -- dev-gate.yml already has this; ci.yml never did,
+# so a burst of rapid pushes (e.g. iterating on a CI fix) pays for N full runs instead of 1.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always

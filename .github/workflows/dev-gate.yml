@@ -15,10 +15,13 @@
 name: dev-gate
 
 on:
-  push:
-    branches:
-      - dev
-      - '*-dev'
+  # Runs AFTER ci.yml succeeds, not on every push directly -- this is a real ~2h, real-money e2e
+  # run; no point spending it on a commit that hasn't even cleared the cheaper gate yet. Only
+  # fires when the CI run that just finished was itself triggered by a push to dev/*-dev (see the
+  # `if:` on the job below), and only on conclusion == success.
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
   workflow_dispatch: {}
 
 # release-check.sh documents up to ~2h; give real headroom before GitHub's own job timeout bites.
@@ -29,6 +32,12 @@ concurrency:
 jobs:
   release-check:
     name: release-check.sh (full plugin gate)
+    # Only run for a REAL CI success on dev/*-dev (never on a failed/cancelled CI run, and never
+    # for CI runs from other branches/PRs) -- workflow_dispatch always runs regardless.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       contains(fromJSON('["dev"]'), github.event.workflow_run.head_branch))
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
@@ -36,6 +45,10 @@ jobs:
         uses: actions/checkout@v7
         with:
           path: busbarAI
+          # workflow_run doesn't check out the triggering commit by default (it defaults to the
+          # default branch) -- pin explicitly to the exact SHA that CI just passed. Falls through
+          # to the normal ref resolution on workflow_dispatch (no workflow_run event present).
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
 
       # Same first-party hook plugin sources release.yml/docker.yml already check out as siblings,
       # so release-check.sh's Phase 5 (headroom/webrequest --validate) runs for real here instead

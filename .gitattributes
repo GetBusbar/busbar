@@ -1,0 +1,9 @@
+# Force LF line endings on checkout, regardless of the runner/developer platform's git config
+# (core.autocrlf). Without this, git's default Windows checkout behavior (autocrlf=true on
+# GitHub-hosted windows-latest runners) silently converts LF -> CRLF in every text file --
+# including committed golden/fixture files compared byte-for-byte in tests, and raw multi-line
+# string literals (r#"..."#) embedded directly in .rs source, whose literal content is whatever
+# line ending the SOURCE FILE itself was checked out with. Confirmed root cause of 3 Windows-only
+# CI test failures (keys_error_surface_is_byte_stable, declared_error_set_is_exactly_what_the_
+# handlers_emit, load_config_from_disk_refuses_a_real_legacy_config_file_loudly) via real CI logs.
+* text=auto eol=lf

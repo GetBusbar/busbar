@@ -102,10 +102,15 @@ fn write_tarball(dir: &Path, file: &str, name: &str, alias: &str, lib: &[u8]) {
     std::fs::write(dir.join("plugins").join(file), bytes).unwrap();
 }
 
-/// The plugins block pointing at this fixture's dir (yaml-escaped path).
+/// The plugins block pointing at this fixture's dir. Single-quoted: a double-quoted YAML scalar
+/// interprets backslash escapes, and a Windows path's `.display()` output is backslash-separated
+/// (e.g. `C:\Users\runneradmin\...`) -- `\U` alone parses as the start of an 8-hex-digit unicode
+/// escape and hard-fails immediately, which is exactly what broke every plugins-block test on
+/// Windows CI. Single-quoted YAML scalars never process backslashes at all; the temp paths here
+/// are generated (pid + nanos), so they can't contain a literal `'` that would need escaping.
 fn plugins_block(dir: &Path, enabled: bool, allow_unsigned: bool) -> String {
     format!(
-        "plugins:\n  enabled: {enabled}\n  dir: \"{}\"\n  trust:\n    allow_unsigned: {allow_unsigned}\n",
+        "plugins:\n  enabled: {enabled}\n  dir: '{}'\n  trust:\n    allow_unsigned: {allow_unsigned}\n",
         dir.join("plugins").display()
     )
 }

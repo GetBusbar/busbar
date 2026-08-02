@@ -29,7 +29,10 @@ use std::path::Path;
 pub(crate) struct DurableOpts {
     /// Unix file mode for the temp (and therefore the published) file. `None` = OS/umask default.
     /// The signing key sets `Some(0o600)` so the plaintext key is never briefly world-readable
-    /// (mode set AT OPEN, never via a later `chmod` TOCTOU window).
+    /// (mode set AT OPEN, never via a later `chmod` TOCTOU window). Only ever READ under
+    /// `#[cfg(unix)]` below, but call sites (main.rs, config/overlay.rs) construct this struct
+    /// unconditionally on every platform, so the field itself can't be `#[cfg(unix)]`-gated away.
+    #[cfg_attr(not(unix), allow(dead_code))]
     pub(crate) mode: Option<u32>,
     /// Refuse to adopt a pre-existing temp (`O_CREAT | O_EXCL`) — the signing-key anti-pre-plant
     /// posture. When set, the primitive still PRE-REMOVES a stale temp of its OWN about-to-use name

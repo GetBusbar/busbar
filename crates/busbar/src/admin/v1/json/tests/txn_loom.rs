@@ -20,6 +20,25 @@
 
 use loom::sync::{Arc, Mutex, RwLock};
 
+/// `loom::thread::Builder::stack_size` forwards, unconverted, straight through to `generator`'s
+/// `Gn::new_opt(size, f)` -> `Stack::new(size)`, which computes `bytes = size *
+/// size_of::<usize>()` -- i.e. this parameter counts 8-byte WORDS, not bytes, despite the "in
+/// bytes" wording in loom's own public doc comment. The default (`generator::DEFAULT_STACK_SIZE
+/// = 0x1000` words = 32 KiB real) overflowed on the real Linux CI runner's debug-build call depth
+/// (RUST_MIN_STACK has NO effect here -- that's the unrelated OS-thread-stack knob, not this
+/// green-thread mechanism).
+///
+/// KNOWN UNRESOLVED: an earlier value here (6_291_456 words = 48 MiB real) ALSO still overflowed
+/// on the real Linux CI runner (confirmed via a genuine fresh rebuild, not a stale cache -- ruled
+/// out by checking the run's own log for "Compiling busbar v1.5.0" immediately before the
+/// failure), despite passing clean locally every time. macOS's own default hard `ulimit -s`
+/// (~64 MiB) makes anything much bigger untestable on a dev machine -- `generator::Stack::new`
+/// hard-fails past it locally with a DIFFERENT error ("ExceedsMaximumSize"), so this value is
+/// large specifically BECAUSE it cannot be locally validated end-to-end; only a real CI run
+/// proves it. If this ALSO overflows, the words-vs-bytes theory itself needs to be re-examined
+/// (e.g. by instrumenting the actual byte count generator receives), not just increased again.
+const LOOM_STACK_WORDS: usize = 67_108_864; // 512 MiB real, if the words-not-bytes theory holds
+
 /// The `AppHandle` shape under test: a swappable snapshot behind an `RwLock`, read by `load` and
 /// replaced wholesale by `swap` — `crate::state::AppHandle` in miniature, with `config_version`
 /// standing in for the whole `App`.
@@ -48,11 +67,15 @@ fn transaction_never_loses_a_swap() {
         let ths: Vec<_> = (0..2)
             .map(|_| {
                 let (handle, section) = (handle.clone(), section.clone());
-                loom::thread::spawn(move || {
-                    let _guard = section.lock().unwrap();
-                    let current = handle.load(); // the FRESH post-lock snapshot
-                    handle.swap(Arc::new(*current + 1)); // build + swap, still under the guard
-                })
+                // See LOOM_STACK_WORDS's doc comment for why this is needed and what it's in units of.
+                loom::thread::Builder::new()
+                    .stack_size(LOOM_STACK_WORDS)
+                    .spawn(move || {
+                        let _guard = section.lock().unwrap();
+                        let current = handle.load(); // the FRESH post-lock snapshot
+                        handle.swap(Arc::new(*current + 1)); // build + swap, still under the guard
+                    })
+                    .unwrap()
             })
             .collect();
         for t in ths {
@@ -82,10 +105,14 @@ fn unsectioned_read_build_swap_loses_an_update() {
         let ths: Vec<_> = (0..2)
             .map(|_| {
                 let handle = handle.clone();
-                loom::thread::spawn(move || {
-                    let current = handle.load(); // NO section: the read and the swap can interleave
-                    handle.swap(Arc::new(*current + 1));
-                })
+                // See LOOM_STACK_WORDS's doc comment for why this is needed and what it's in units of.
+                loom::thread::Builder::new()
+                    .stack_size(LOOM_STACK_WORDS)
+                    .spawn(move || {
+                        let current = handle.load(); // NO section: the read and the swap can interleave
+                        handle.swap(Arc::new(*current + 1));
+                    })
+                    .unwrap()
             })
             .collect();
         for t in ths {
