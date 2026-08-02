@@ -105,6 +105,9 @@ fn ensure_staging_dir(state: &mut StagingState) -> Result<PathBuf, String> {
     }
     let name = format!("{STAGING_PREFIX}{}-{}", std::process::id(), random_hex(8));
     let dir = std::env::temp_dir().join(name);
+    // `mode()` (unix-only) is the only reason this needs to be `mut` -- `create()` itself takes
+    // `&self`. Non-unix targets (Windows CI caught this) see it as genuinely unused.
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut builder = std::fs::DirBuilder::new();
     #[cfg(unix)]
     {
