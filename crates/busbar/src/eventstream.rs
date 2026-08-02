@@ -1312,8 +1312,11 @@ mod tests {
              doc's own guidance"
         );
         let t4000 = bench(32000);
+        // < 8x, the geometric midpoint of linear's predicted 4x and quadratic's predicted 16x: a
+        // real Windows CI runner measured 6.4x (min-of-7) on genuinely linear code, so 6x was
+        // inside runner noise. 8x still separates the two hypotheses this test exists to tell apart.
         assert!(
-            t4000 < t1000 * 6,
+            t4000 < t1000 * 8,
             "drain_frames_checked scaled worse than linear: min-of-{TRIALS} t(8000)={t1000:?} \
              min-of-{TRIALS} t(32000)={t4000:?} (ratio {:.1}x, quadratic predicts ~16x, linear \
              predicts ~4x)",
