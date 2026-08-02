@@ -1217,6 +1217,27 @@ pub(crate) fn validate_with_unset(
                 ));
             }
         }
+        // S2 (1.5.1): busbar NO LONGER auto-generates a signing key at boot (the 1.5.0 behavior
+        // wrote `busbar-signing.key` beside the config, which boot-looped a read-only config mount
+        // with a misleading Permission-denied). When the deployment actually VERIFIES busbar-signed
+        // keys - the built-in `keys` module is in the data-plane chain - `auth.signing_key` is
+        // REQUIRED. Fail CLOSED here (at `--validate`/boot) with an actionable message instead of a
+        // runtime failure. A deployment that never puts `keys` in the chain issues no signed tokens
+        // and needs no signing key.
+        let verifies_signed_keys = auth
+            .chain
+            .iter()
+            .any(|e| e.module == crate::config::KEYS_MODULE);
+        if verifies_signed_keys && auth.signing_key.is_none() {
+            errors.push(
+                "auth.signing_key is required for signed-token auth (auth.chain names the \
+                 built-in `keys` verifier), but none is set - and busbar no longer auto-generates \
+                 one. Generate a key with `busbar --generate-signing-key`, then set auth.signing_key \
+                 to a secret reference for it ({file: /path} or {env: VAR} - a SHARED secret across \
+                 nodes for a fleet)."
+                    .to_string(),
+            );
+        }
         // `upstream_credentials: passthrough` with a NON-EMPTY configured api_key on a provider is a
         // configuration foot-gun: under passthrough the configured key is NEVER forwarded - the
         // caller's own credential (or an empty one) goes upstream. WARN (not hard-reject): a legit

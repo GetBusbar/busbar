@@ -623,6 +623,11 @@ fn make_auth_chain(modules: &[&str], upstream: crate::auth::UpstreamCreds) -> co
         .map(|m| config::AuthChainEntry::bare(*m))
         .collect();
     auth.upstream_credentials = upstream;
+    // S2 (1.5.1): the built-in `keys` verifier REQUIRES a signing key (config_validate fails closed
+    // otherwise). Attach a reference so a `[keys]` chain validates, matching a real deployment.
+    if modules.contains(&crate::config::KEYS_MODULE) {
+        auth.signing_key = Some(config::SecretRef::env("BUSBAR_SIGNING_KEY"));
+    }
     auth
 }
 
@@ -4083,6 +4088,7 @@ listen: "0.0.0.0:8080"
 auth:
   chain:
     - keys
+  signing_key: { env: BUSBAR_SIGNING_KEY }
   role_bindings:
     keys:
       platform:

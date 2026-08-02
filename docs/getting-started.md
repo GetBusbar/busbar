@@ -237,6 +237,7 @@ Once the single-provider setup is working, extend the config to introduce a pool
 auth:
   chain:
     - keys                                 # callers present minted signed keys
+  signing_key: { env: BUSBAR_SIGNING_KEY } # required with `keys`; `busbar --generate-signing-key`
   admin_auth:
     - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }
 

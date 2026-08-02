@@ -607,9 +607,12 @@ pub(crate) type RoleBindings =
 #[serde(deny_unknown_fields)]
 pub(crate) struct AuthCfg {
     /// The key-signing key (S2): a SECRET REFERENCE resolving to the ed25519 signing key busbar
-    /// mints virtual-key tokens with. Fleet-shared (every node verifying the same tokens resolves
-    /// the same key). Absent ⇒ busbar GENERATES a keypair on first boot and persists it 0600
-    /// (dev zero-config). Rotating it revokes every outstanding key.
+    /// mints + verifies virtual-key tokens with. Fleet-shared (every node verifying the same tokens
+    /// resolves the same key). REQUIRED when the data-plane chain names the built-in `keys` verifier
+    /// (signed-token auth); `config_validate` fails closed if it is missing there. 1.5.1 BREAKING:
+    /// busbar NO LONGER auto-generates one when absent (the 1.5.0 generate-and-persist-beside-config
+    /// behavior boot-looped a read-only config mount) - generate one with
+    /// `busbar --generate-signing-key`. Rotating it revokes every outstanding key.
     #[serde(default)]
     pub(crate) signing_key: Option<SecretRef>,
     /// Upstream-credential mode: `own` (default — busbar's configured lane key) or `passthrough`

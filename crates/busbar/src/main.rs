@@ -187,6 +187,7 @@ fn handle_cli_flags() -> Option<i32> {
             Some(0)
         }
         Some("--validate") => Some(validate_config_command()),
+        Some("--generate-signing-key") => Some(generate_signing_key_command()),
         Some("--list-plugins") => Some(list_plugins_command()),
         Some("--migrate-config") => Some(migrate_config_command(args.next())),
         Some("--help" | "-h") => {
@@ -208,6 +209,10 @@ USAGE:
                         mechanically convert a 1.4.x config to the 1.5.0 shape: prints the new
                         YAML to stdout (with TODO/WARNING comments where a human must decide)
                         and a change summary to stderr; ZERO side effects, nothing is written
+    busbar --generate-signing-key
+                        mint a fresh ed25519 signing key (64 hex chars) to stdout with a paste-
+                        ready auth.signing_key snippet on stderr; ZERO side effects, nothing is
+                        written — you place it in config.yaml (or wire it as a shared secret)
     busbar --print-metadata-blocklist
                         print the effective cloud-metadata SSRF denylist and exit
 
@@ -1858,15 +1863,6 @@ pub(crate) fn plugins_preflight(
     Ok(registry)
 }
 
-/// Resolve the KEY-SIGNING key (S2, 1.5.0). When `auth.signing_key` is set, resolve it via the
-/// secret seam to the ed25519 secret material (32 raw bytes, or 64 hex chars). When ABSENT,
-/// GENERATE a keypair on first boot and PERSIST it 0600 beside the config (dev zero-config), so a
-/// restart reuses the same key and previously-minted tokens keep verifying. Fleet deployments set
-/// `auth.signing_key` to a shared secret so every node shares the key. Returns `None` only when
-/// governance itself is not going to sign (there is no auth block AND no generated-key path is
-/// desired) - in practice a signer is always produced so mint works out of the box.
-///
-/// FAIL-CLOSED: a configured-but-unresolvable / malformed signing key refuses boot.
 /// Resolve the operator ADMIN credential — the `admin-tokens` chain entry's `token:` secret ref —
 /// with the BLANK-TOKEN guard. Shared by boot and the apply/reload path so the two cannot drift.
 ///
@@ -1901,108 +1897,106 @@ fn resolve_admin_token(
     Ok(Some(token))
 }
 
+/// Parse resolved bytes into a 32-byte ed25519 secret: accept RAW 32 bytes or 64 hex chars. Shared
+/// by the signing-key resolver and the `--generate-signing-key` self-check.
+fn parse_signing_secret(bytes: &[u8]) -> Result<[u8; 32], String> {
+    if bytes.len() == 32 {
+        let mut out = [0u8; 32];
+        out.copy_from_slice(bytes);
+        return Ok(out);
+    }
+    if let Ok(s) = std::str::from_utf8(bytes) {
+        let s = s.trim();
+        if s.len() == 64 {
+            if let Ok(v) = hex::decode(s) {
+                let mut out = [0u8; 32];
+                out.copy_from_slice(&v);
+                return Ok(out);
+            }
+        }
+    }
+    Err(
+        "auth.signing_key must resolve to a 32-byte ed25519 secret key (raw 32 bytes or 64 hex \
+         characters)"
+            .to_string(),
+    )
+}
+
+/// Resolve the KEY-SIGNING key (S2). `auth.signing_key` is a reference to an EXISTING secret
+/// (env/file/plugin) resolving to the ed25519 secret material (32 raw bytes, or 64 hex chars) busbar
+/// mints + verifies virtual-key tokens with. Fleet-shared: every node resolves the SAME secret so
+/// they verify each other's tokens.
+///
+/// 1.5.1 BREAKING CHANGE: busbar NO LONGER auto-generates and persists a signing key at boot (the
+/// 1.5.0 behavior wrote `busbar-signing.key` beside the config, which boot-looped a read-only config
+/// mount with a misleading Permission-denied). When `auth.signing_key` is absent this returns `None`;
+/// `config_validate` fails CLOSED at `--validate`/boot if the deployment actually uses signed-token
+/// auth (the `keys` verifier in the chain), and the mint path fails closed with a clear message
+/// otherwise. Generate a key with `busbar --generate-signing-key`.
+///
+/// FAIL-CLOSED: a configured-but-unresolvable / malformed signing key refuses boot.
 fn resolve_signing_key(
     auth: Option<&config::AuthCfg>,
     resolver: &config::secret::SecretResolver,
-    config_path: Option<&std::path::Path>,
 ) -> Result<Option<governance::signing::TokenSigner>, String> {
     use governance::signing::{TokenSigner, DEFAULT_KID};
 
-    // Parse resolved bytes into a 32-byte ed25519 secret: accept RAW 32 bytes or 64 hex chars.
-    fn parse_secret(bytes: &[u8]) -> Result<[u8; 32], String> {
-        if bytes.len() == 32 {
-            let mut out = [0u8; 32];
-            out.copy_from_slice(bytes);
-            return Ok(out);
-        }
-        if let Ok(s) = std::str::from_utf8(bytes) {
-            let s = s.trim();
-            if s.len() == 64 {
-                if let Ok(v) = hex::decode(s) {
-                    let mut out = [0u8; 32];
-                    out.copy_from_slice(&v);
-                    return Ok(out);
-                }
-            }
-        }
-        Err(
-            "auth.signing_key must resolve to a 32-byte ed25519 secret key (raw 32 bytes or 64 hex \
-             characters)"
-                .to_string(),
+    let Some(sk) = auth.and_then(|a| a.signing_key.as_ref()) else {
+        // No configured key: busbar does not generate one (1.5.1). A deployment that verifies
+        // busbar-signed keys is REQUIRED to provide it (enforced fail-closed by config_validate);
+        // one that never issues signed tokens simply has no signer.
+        return Ok(None);
+    };
+    let bytes = resolver.resolve(sk).map_err(|e| {
+        format!(
+            "auth.signing_key did not resolve: {e}. auth.signing_key is a reference to an EXISTING \
+             secret (env/file/plugin) - it does NOT generate a key. Provide the key first (a \
+             32-byte raw or 64-hex-char ed25519 secret: `busbar --generate-signing-key`, or \
+             `openssl rand -hex 32`), or OMIT auth.signing_key entirely if this deployment never \
+             issues busbar-signed keys."
         )
-    }
-
-    if let Some(sk) = auth.and_then(|a| a.signing_key.as_ref()) {
-        let bytes = resolver
-            .resolve(sk)
-            .map_err(|e| format!("auth.signing_key did not resolve: {e}"))?;
-        let secret = parse_secret(&bytes)?;
-        return Ok(Some(TokenSigner::from_secret_bytes(&secret, DEFAULT_KID)));
-    }
-
-    // No configured signing key: generate-and-persist 0600 for dev zero-config. The persistence
-    // path sits beside the config file (or the CWD when running ephemerally) so a restart reuses
-    // it. If the file already exists (a prior boot generated it), LOAD it instead of regenerating -
-    // otherwise every restart would invalidate every outstanding token.
-    let key_path = config_path
-        .and_then(|p| p.parent())
-        .unwrap_or_else(|| std::path::Path::new("."))
-        .join("busbar-signing.key");
-    match std::fs::read(&key_path) {
-        Ok(bytes) => {
-            let secret = parse_secret(&bytes).map_err(|e| {
-                format!(
-                    "the persisted signing key at '{}' is invalid: {e}. Remove it to regenerate \
-                     (this invalidates every outstanding key), or provide auth.signing_key.",
-                    key_path.display()
-                )
-            })?;
-            tracing::info!(path = %key_path.display(), "loaded the persisted signing key");
-            Ok(Some(TokenSigner::from_secret_bytes(&secret, DEFAULT_KID)))
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            let signer = TokenSigner::generate(DEFAULT_KID)
-                .map_err(|e| format!("could not generate a signing key: {e}"))?;
-            persist_signing_key(&key_path, &signer.secret_bytes())?;
-            tracing::warn!(
-                path = %key_path.display(),
-                "no auth.signing_key configured - GENERATED an ed25519 signing key and persisted it \
-                 0600 (dev zero-config). For a fleet, set auth.signing_key to a shared secret so \
-                 every node shares the key."
-            );
-            Ok(Some(signer))
-        }
-        Err(e) => Err(format!(
-            "cannot read the persisted signing key '{}': {e}",
-            key_path.display()
-        )),
-    }
+    })?;
+    let secret = parse_signing_secret(&bytes)?;
+    Ok(Some(TokenSigner::from_secret_bytes(&secret, DEFAULT_KID)))
 }
 
-/// Persist a generated signing key 0600 (owner read/write only) via a temp-file + rename so a
-/// concurrent reader never sees a torn key. On Unix the temp file is CREATED 0600 atomically (mode set
-/// at open, never briefly world-readable — L4); on other platforms the OS default applies (best-effort).
-/// The bytes are hex-encoded (64 chars) so the file is a plain text secret an operator can also drop in
-/// via `auth.signing_key: { file: ... }`.
-fn persist_signing_key(path: &std::path::Path, secret: &[u8; 32]) -> Result<(), String> {
-    let hex = hex::encode(secret);
-    // Publish via the crate's ONE durable-write choke point ([`crate::durable::write_with`]) with the
-    // signing-key posture carried in `DurableOpts`:
-    // * `mode: Some(0o600)` — L4: the temp (and therefore the published key) is created 0600 AT
-    // OPEN, so the plaintext ed25519 key — the 1.5.0 key-minting root of trust — is NEVER briefly
-    // world-readable between write and a later chmod (the old TOCTOU window). On non-unix the OS
-    // default applies (the sensitive-key concern is the multi-user unix host).
-    // * `exclusive: true` — anti-pre-plant (O_EXCL refuses to adopt a temp we did not just create)
-    // AND anti-wedge (the primitive pre-removes a stale temp of its own name first, so a leftover
-    // from a crashed first-boot run never permanently wedges retry). The parent-dir fsync (so the
-    // rename's directory entry survives power loss — a lost entry silently invalidates every minted
-    // key) is done by the primitive too. No bespoke code here: the posture is entirely in the opts.
-    let opts = crate::durable::DurableOpts {
-        mode: Some(0o600),
-        exclusive: true,
+/// `--generate-signing-key`: mint a fresh ed25519 signing secret from the OS RNG and PRINT it (as 64
+/// hex chars) plus a paste-ready `auth.signing_key` snippet + a fleet note. ZERO side effects - like
+/// `--validate`/`--migrate-config`, it writes nothing; the operator PLACES the key (busbar never
+/// edits their config). Exit 0 on success, 1 if the OS entropy source is unavailable.
+fn generate_signing_key_command() -> i32 {
+    use governance::signing::{TokenSigner, DEFAULT_KID};
+    let signer = match TokenSigner::generate(DEFAULT_KID) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("busbar: could not generate a signing key: {e}");
+            return 1;
+        }
     };
-    crate::durable::write_with(path, hex.as_bytes(), opts)
-        .map_err(|e| format!("cannot install signing key '{}': {e}", path.display()))
+    let hex = hex::encode(signer.secret_bytes());
+    // The secret (64 hex chars) goes to STDOUT so it is pipeable/captureable
+    // (`busbar --generate-signing-key > /run/secrets/busbar-signing.key`); the guidance goes to
+    // STDERR so a capture gets ONLY the key. `auth.signing_key` is a secret REFERENCE (never an
+    // inline literal - busbar rejects that), so the snippets wire the key via `{ file }` / `{ env }`.
+    println!("{hex}");
+    eprintln!(
+        "\n# ed25519 signing key for busbar-signed virtual keys (64 hex chars, printed above).\n\
+         # auth.signing_key is a secret REFERENCE, not an inline value - wire the key like so:\n\
+         #\n\
+         #   # write it to a file, then reference the file:\n\
+         #   busbar --generate-signing-key > /run/secrets/busbar-signing.key\n\
+         #   auth:\n\
+         #     signing_key: {{ file: /run/secrets/busbar-signing.key }}\n\
+         #\n\
+         #   # or export it and reference the env var (fleet: SAME value on every node):\n\
+         #   export BUSBAR_SIGNING_KEY={hex}\n\
+         #   auth:\n\
+         #     signing_key: {{ env: BUSBAR_SIGNING_KEY }}\n\
+         #\n\
+         # Fleet-shared so every node verifies the same tokens; rotating it REVOKES every \
+         outstanding virtual key."
+    );
+    0
 }
 
 /// Validate ONE `secrets:` block key against the plugin registry and return the plugin's CANONICAL
@@ -2871,11 +2865,7 @@ pub(crate) fn build_app_from_config(
                 None
             };
             let signer = match auth.and_then(|a| a.signing_key.as_ref()) {
-                Some(_) => Some(resolve_signing_key(
-                    auth,
-                    &secret_resolver,
-                    config_paths.0.as_deref(),
-                )?),
+                Some(_) => Some(resolve_signing_key(auth, &secret_resolver)?),
                 None => None,
             };
             if admin_token.is_some() || signer.is_some() {
@@ -2920,13 +2910,10 @@ pub(crate) fn build_app_from_config(
         // token would lock the admin API while the operator believes it is guarded).
         let admin_token: Option<String> = resolve_admin_token(cfg.auth.as_ref(), &secret_resolver)?;
         // The KEY-SIGNING key (S2): resolve `auth.signing_key` (a secret ref) to 32 ed25519 secret
-        // bytes; ABSENT => GENERATE a keypair on first boot and persist it 0600 (dev zero-config).
-        // Fleet deployments provide it (shared) so every node verifies the same tokens.
-        let signer = resolve_signing_key(
-            cfg.auth.as_ref(),
-            &secret_resolver,
-            config_paths.0.as_deref(),
-        )?;
+        // bytes. ABSENT => no signer (1.5.1: busbar no longer auto-generates one; config_validate
+        // has already failed closed if the `keys` verifier is in the chain). Fleet deployments
+        // provide it (shared) so every node verifies the same tokens.
+        let signer = resolve_signing_key(cfg.auth.as_ref(), &secret_resolver)?;
         match governance::GovState::new_with_signer(store, admin_token.clone(), signer) {
             Ok(gs) => {
                 let gs = Arc::new(gs);

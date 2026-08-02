@@ -56,8 +56,8 @@ auth:
   #   ad:
   #     growth-eng: { allowed_pools: [fast], group: growth }
   #     platform:   { group: acme, admin_scope: full }       # allowed_pools omitted = ALL pools
-  # signing_key: { file: /var/lib/busbar/signing.key }       # fleet-shared key-signing key; absent
-  #                                                          # = generated on first boot (0600)
+  signing_key: { file: /var/lib/busbar/signing.key }        # REQUIRED with `keys` above; fleet-shared
+  #                                                          # key. Generate: `busbar --generate-signing-key`.
 
 # ── Providers ────────────────────────────────────────────────────────────────────────────────────
 # Reference a provider NAME from providers.yaml and give a secret reference for its key. protocol /
