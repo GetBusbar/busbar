@@ -33,6 +33,11 @@
 //!   same fixture-cost tradeoff the design doc names for live-curl execution. Left unmarked with an
 //!   HTML-comment note in the doc itself pointing at the plugin-free substitute example.
 
+// The shipped/marked examples this file validates assume the DEFAULT feature set (what a real
+// user's copy-pasted config targets) -- an admin-tokens block in an example fails closed under
+// `--no-default-features` (correct production behavior, not a bug this file should catch).
+#![cfg(feature = "auth-admin-tokens")]
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
