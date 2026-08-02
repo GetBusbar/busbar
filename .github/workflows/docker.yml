@@ -128,6 +128,11 @@ jobs:
       # which the verification step below asserts, so a non-PGO binary can never ship green.
       - name: Build static binary (PGO, required/fail-closed)
         env:
+          # The busbar release ed25519 PUBLIC key, embedded at build time (plugin-sign's
+          # option_env!) so the IMAGE binary verifies first-party signed plugins exactly like the
+          # release.yml binaries do. Omitting it here was the gap that shipped Docker images unable
+          # to verify any plugin (headroom-hook bundled-image smoke test, 2026-08-02).
+          BUSBAR_RELEASE_PUBKEY: ${{ vars.BUSBAR_RELEASE_PUBKEY }}
           PGO_TARGET: ${{ matrix.target }}
           # musl-gcc drives both the C compiles (bundled SQLite) and the final link.
           CC: musl-gcc
