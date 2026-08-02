@@ -79,7 +79,7 @@ pub(crate) async fn handle_exhaustion_for_pool(
         .cloned()
         .unwrap_or(OnExhausted::Status503);
 
-    match mode {
+    let resp = match mode {
         OnExhausted::Status503 => handle_status_503(&app, cands, now, pool_name, ingress_protocol),
         OnExhausted::FallbackPool(ref fallback_pool) => {
             handle_fallback_pool(
@@ -127,7 +127,15 @@ pub(crate) async fn handle_exhaustion_for_pool(
             )
             .await
         }
-    }
+    };
+
+    // R6/§5 budget contract, asserted at the on_exhausted DISPOSITION (the one convergence point every
+    // policy's shed/spill/queue outcome flows through). Under saturation every disposition here is
+    // bounded — reject sheds now, queue waits ≤ max_ms, fallback spills — so the wall clock from
+    // ingress must be within the failover budget + ε. A regression that blocks past the budget (the
+    // Bug-1 park) trips this in dev/CI. No-op in release.
+    request_ctx.debug_assert_within_budget(pool_name);
+    resp
 }
 
 /// Queue mode: when a pool is exhausted with `on_exhausted: { queue: { max_ms } }`, wait a BOUNDED
@@ -216,8 +224,17 @@ pub(crate) async fn handle_queue(
         let (lane, permit_res) = match won {
             Some(v) => v,
             // Deadline: shed with an honest Retry-After (`retry_after_secs` reads the same capacity /
-            // cooldown axes `recovery_hint_ms` does).
-            None => return handle_status_503(app, cands, now(), pool, ingress_protocol),
+            // cooldown axes `recovery_hint_ms` does). R6/§5: the ONE blocking await in the whole
+            // dispatch path must never resume past its bounded `deadline` — assert it (dev/CI only).
+            None => {
+                debug_assert!(
+                    tokio::time::Instant::now()
+                        <= deadline + std::time::Duration::from_millis(250),
+                    "queue wait overran its bounded deadline — the on_exhausted queue blocked past \
+                     min(max_ms, failover budget) (R6/§5)"
+                );
+                return handle_status_503(app, cands, now(), pool, ingress_protocol);
+            }
         };
         let owned = match permit_res {
             Ok(p) => p,

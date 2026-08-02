@@ -249,4 +249,9 @@ bytes = "1"
 # Generates self-signed server certs + a CA/leaf pair at test runtime so the TLS/mTLS integration
 # tests exercise a real rustls handshake without checked-in key material.
 rcgen = "0.14"
+# Property-based testing for the lane-availability invariant (design §6, R4): generates a world
+# (topology × policy × cause) and asserts the STRENGTHENED disposition-matches-policy invariant + the
+# failover budget bound (§5, R6) over the REAL selection + on_exhausted dispatch. Test-only; never in
+# the shipped binary. Config (cases/timeout) is set inline via `proptest!` `ProptestConfig`.
+proptest = "1"
 
