@@ -48,11 +48,20 @@ fn transaction_never_loses_a_swap() {
         let ths: Vec<_> = (0..2)
             .map(|_| {
                 let (handle, section) = (handle.clone(), section.clone());
-                loom::thread::spawn(move || {
-                    let _guard = section.lock().unwrap();
-                    let current = handle.load(); // the FRESH post-lock snapshot
-                    handle.swap(Arc::new(*current + 1)); // build + swap, still under the guard
-                })
+                // Explicit stack_size: loom's generator-backed coroutines default to a bare 4 KiB
+                // stack (`generator::DEFAULT_STACK_SIZE`), which is NOT the OS thread stack
+                // RUST_MIN_STACK controls -- it overflowed on Linux CI (larger debug-build frames
+                // than this happened to need locally on macOS) even at RUST_MIN_STACK=512MiB,
+                // because that env var never reaches this mechanism at all. 4 MiB is comfortably
+                // above anything this model's call depth needs.
+                loom::thread::Builder::new()
+                    .stack_size(4 * 1024 * 1024)
+                    .spawn(move || {
+                        let _guard = section.lock().unwrap();
+                        let current = handle.load(); // the FRESH post-lock snapshot
+                        handle.swap(Arc::new(*current + 1)); // build + swap, still under the guard
+                    })
+                    .unwrap()
             })
             .collect();
         for t in ths {
@@ -82,10 +91,15 @@ fn unsectioned_read_build_swap_loses_an_update() {
         let ths: Vec<_> = (0..2)
             .map(|_| {
                 let handle = handle.clone();
-                loom::thread::spawn(move || {
-                    let current = handle.load(); // NO section: the read and the swap can interleave
-                    handle.swap(Arc::new(*current + 1));
-                })
+                // See the sibling test's comment: explicit stack_size against generator's tiny
+                // 4 KiB default, the real fix for the CI-only overflow (not RUST_MIN_STACK).
+                loom::thread::Builder::new()
+                    .stack_size(4 * 1024 * 1024)
+                    .spawn(move || {
+                        let current = handle.load(); // NO section: the read and the swap can interleave
+                        handle.swap(Arc::new(*current + 1));
+                    })
+                    .unwrap()
             })
             .collect();
         for t in ths {
