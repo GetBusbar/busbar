@@ -667,6 +667,24 @@ else
   note "SKIP: ../webrequest-hook not present as a sibling checkout on this machine."
 fi
 
+# ── busbar-admin (busbarctl) — the REVERSE of the plugin phases ────────────────────────────────
+# The plugin phases prove "a plugin works against busbar". This proves the other client of the
+# admin contract still works against the busbar WE JUST BUILT: build the busbar-admin CLI from its
+# sibling checkout and run its own scripts/integration.sh (every command, real-effect assertions)
+# against the freshly-built engine binary. Catches an admin-API change that would break busbarctl
+# BEFORE it ships — bidirectional testing, the same discipline the plugins get.
+BUSBAR_ADMIN_SRC="${REPO_ROOT}/../busbar-admin"
+if [ -d "$BUSBAR_ADMIN_SRC" ]; then
+  phase "Phase: busbar-admin CLI — every command driven against the freshly-built busbar"
+  cargo build --release --manifest-path "${BUSBAR_ADMIN_SRC}/Cargo.toml"
+  ADMIN_BIN="${BUSBAR_ADMIN_SRC}/target/release/busbar-admin"
+  [ -x "$ADMIN_BIN" ] || { echo "busbar-admin did not build at $ADMIN_BIN" >&2; exit 1; }
+  bash "${BUSBAR_ADMIN_SRC}/scripts/integration.sh" "$BUSBAR_BIN" "$ADMIN_BIN"
+  ok "busbar-admin: every command drove the freshly-built busbar end to end"
+else
+  note "SKIP: ../busbar-admin not present as a sibling checkout — busbarctl reverse-direction coverage skipped."
+fi
+
 phase "RELEASE GATE PASSED"
 echo "Total elapsed: ${SECONDS}s"
 for p in ${SUITE_PASSED[@]+"${SUITE_PASSED[@]}"}; do
