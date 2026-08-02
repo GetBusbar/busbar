@@ -229,16 +229,26 @@ pub(crate) fn load_library_from_bytes(
 #[cfg(target_os = "linux")]
 fn load_via_memfd(bytes: &[u8], display: &str) -> Result<(Library, Staged), String> {
     use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
+    // Raw `syscall(SYS_memfd_create, ...)` rather than the named `libc::memfd_create` wrapper:
+    // the wrapper is only a LINK-time convenience symbol some libc.so/cross-sysroots omit even
+    // though the underlying syscall (present on any real Linux 3.17+ kernel, glibc has offered
+    // the wrapper since 2.27) always exists. Verified: `taiki-e/upload-rust-binary-action`'s
+    // aarch64-unknown-linux-gnu cross toolchain failed to LINK `libc::memfd_create` ("undefined
+    // reference to `memfd_create'") while a native x86_64 build and an independent apt-installed
+    // aarch64 cross toolchain (Ubuntu 24.04, gcc-aarch64-linux-gnu + libc6-dev-arm64-cross) both
+    // linked it fine -- the syscall route sidesteps this stub-symbol gap entirely, on any sysroot.
     // SAFETY: plain syscall; the name is a debugging label (NUL-terminated, no user input).
-    let raw = unsafe { libc::memfd_create(c"busbar-plugin".as_ptr(), libc::MFD_CLOEXEC) };
+    let raw = unsafe { libc::syscall(libc::SYS_memfd_create, c"busbar-plugin".as_ptr(), libc::MFD_CLOEXEC) };
     if raw < 0 {
         return Err(format!(
             "memfd_create failed: {}",
             std::io::Error::last_os_error()
         ));
     }
-    // SAFETY: `raw` is a freshly created, owned fd.
-    let fd: OwnedFd = unsafe { OwnedFd::from_raw_fd(raw) };
+    // SAFETY: `raw` is a freshly created, owned fd. `libc::syscall` returns `c_long`; a real fd
+    // from a successful memfd_create always fits in `RawFd` (i32) -- checked, not assumed.
+    let raw_fd = i32::try_from(raw).map_err(|_| format!("memfd_create returned out-of-range fd: {raw}"))?;
+    let fd: OwnedFd = unsafe { OwnedFd::from_raw_fd(raw_fd) };
     {
         let mut f = std::fs::File::from(fd.try_clone().map_err(|e| format!("memfd dup: {e}"))?);
         f.write_all(bytes)
