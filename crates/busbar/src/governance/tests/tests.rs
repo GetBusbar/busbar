@@ -2409,21 +2409,28 @@ fn test_hydrate_budgets_propagates_store_error() {
     );
 }
 
-/// The pre-split-migration seed: a persisted `UsageLedger` with `billable_requests == 0` but a
-/// nonzero `requests` (the two counters used to be one field) must have `hydrate_budgets` seed the
-/// restored cell's `billable_requests` from `requests`, not leave it at 0 — otherwise a key's fee
-/// base (and therefore its budget spend) silently resets to zero on the first post-upgrade boot. A
-/// row that's ALREADY split (billable_requests > 0, however small) must NOT be re-seeded — it's
-/// real post-split data, not a legacy row.
+/// `hydrate_budgets` must trust the persisted `billable_requests` EXACTLY as stored, never
+/// re-derive it from `requests`. An earlier version of this function tried to detect a "pre-split
+/// legacy row" via `billable_requests == 0 && requests > 0` and re-seeded `billable_requests` from
+/// `requests` — a REAL billing bug, since that exact counter shape is ALSO what a bucket looks
+/// like when every request in the window was legitimately REFUNDED (`refund_bucket` decrements
+/// `billable_requests` but deliberately never touches `requests`, by design). Every restart would
+/// silently re-bill correctly-refunded fees. Fixed by moving the one-time legacy backfill into
+/// each durable store backend's own versioned `migrate()` (a real schema-version crossing, not a
+/// per-boot value guess) and having this function trust the ledger unconditionally from then on.
+/// This test proves the FIX: a row shaped exactly like a refunded-to-zero window
+/// (`billable_requests: 0, requests: 7`) must hydrate to `billable_requests == 0`, NOT be
+/// re-seeded to 7 — the opposite of what the old (buggy) behavior asserted.
 #[test]
-fn test_hydrate_budgets_seeds_billable_requests_from_a_pre_split_row() {
+fn test_hydrate_budgets_trusts_billable_requests_even_when_it_looks_like_a_refunded_window() {
     let store: Arc<dyn Store> = Arc::new(MemoryStore::new());
-    let k = sample_key("vk_presplit", "presplit_h");
+    let k = sample_key("vk_refunded", "refunded_h");
     store.put_key(&k).unwrap();
-    // Simulate a legacy persisted row: 7 admitted requests, billable_requests never split out.
+    // Shaped exactly like "7 requests admitted, all 7 refunded" (a real, legitimate state) — NOT
+    // like a pre-split legacy row, even though the counter values are identical either way.
     store
         .put_usage(
-            "vk_presplit",
+            "vk_refunded",
             budget_window(WINDOW_TOTAL, 0),
             &UsageLedger {
                 requests: 7,
@@ -2434,22 +2441,20 @@ fn test_hydrate_budgets_seeds_billable_requests_from_a_pre_split_row() {
         .unwrap();
     let gov = GovState::new(store, None).unwrap();
     gov.hydrate_budgets(&flat_cost(1), 0).expect("hydrate");
-    let cell_billable = gov
-        .budget
-        .read("vk_presplit")
-        .get("vk_presplit")
-        .expect("hydrated cell exists")
-        .billable_requests;
+    let cell = gov.budget.read("vk_refunded");
+    let cell = cell.get("vk_refunded").expect("hydrated cell exists");
     assert_eq!(
-        cell_billable, 7,
-        "a pre-split row's billable_requests must be seeded from requests, not left at 0"
+        cell.requests, 7,
+        "requests is always trusted verbatim from the ledger"
+    );
+    assert_eq!(
+        cell.billable_requests, 0,
+        "billable_requests must be trusted verbatim too - re-deriving it from requests here is \
+         exactly the bug this test guards against (it would silently re-bill a refunded window \
+         on every restart)"
     );
 
-    // The other half of the boundary: an ALREADY-split row (billable_requests > 0, however far
-    // below requests — e.g. some were non-2xx refunds) must NOT be re-seeded from requests. A
-    // mutated `&&` -> `||` here would re-seed ANY row with requests > 0 regardless of whether
-    // billable_requests is already meaningfully set, silently inflating a key's billed count on
-    // every restart.
+    // A normal, non-zero billable_requests row is also trusted verbatim, unchanged from before.
     let store2: Arc<dyn Store> = Arc::new(MemoryStore::new());
     let k2 = sample_key("vk_split", "split_h");
     store2.put_key(&k2).unwrap();
@@ -2474,7 +2479,7 @@ fn test_hydrate_budgets_seeds_billable_requests_from_a_pre_split_row() {
         .billable_requests;
     assert_eq!(
         cell2_billable, 3,
-        "an already-split row must keep its own billable_requests, never re-seeded from requests"
+        "a normal partially-billable row must keep its own billable_requests, verbatim"
     );
 }
 

@@ -936,14 +936,20 @@ impl GovState {
             if ledger.requests == 0 && ledger.models.is_empty() {
                 continue;
             }
-            // A pre-split persisted row has `billable_requests == 0` but a nonzero `requests`
-            // (the two counters were one field); seed billable from `requests` so its fee base is
-            // not silently zeroed on the first post-upgrade boot.
-            let billable = if ledger.billable_requests == 0 && ledger.requests > 0 {
-                ledger.requests
-            } else {
-                ledger.billable_requests
-            };
+            // `billable_requests` is trusted UNCONDITIONALLY from the persisted ledger — it is
+            // NEVER re-derived from `requests` here. An earlier version of this function tried to
+            // detect a "pre-split legacy row" (from when the two counters were one field) via
+            // `billable_requests == 0 && requests > 0` and re-seeded it from `requests` — but that
+            // exact shape is ALSO what a bucket looks like when every request in the window was
+            // legitimately REFUNDED (`refund_bucket` decrements `billable_requests` but
+            // deliberately never touches `requests`, by design), so every restart silently
+            // re-billed correctly-refunded fees, with no way to tell the two cases apart from the
+            // counter values alone. Real fix: each durable store backend's own `migrate()` now
+            // performs this exact backfill ONCE, ever, at its SCHEMA_VERSION 5->6 crossing (gated
+            // on the schema version, not a per-boot value guess) — done while 1.5.0 had no real
+            // production data yet, so there was no live refunded-to-zero row that migration could
+            // have mis-fired against. From v6 onward every row is written correctly from the
+            // start, so this function has nothing left to infer.
             let mut cell = BudgetCell::fresh(window);
             // Stamp as touched NOW, not 0: an unstamped hydrated cell is instantly older than any
             // TTL, so the first post-boot sweep would discard every restored key's history before
@@ -951,8 +957,8 @@ impl GovState {
             cell.last_touch = now;
             cell.requests = ledger.requests;
             cell.flushed_requests = ledger.requests;
-            cell.billable_requests = billable;
-            cell.flushed_billable_requests = billable;
+            cell.billable_requests = ledger.billable_requests;
+            cell.flushed_billable_requests = ledger.billable_requests;
             cell.models = ledger
                 .models
                 .iter()
