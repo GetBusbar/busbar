@@ -1173,9 +1173,42 @@ mod tests {
     /// itself failed outright with a real SQLite `disk I/O error` under lock contention between
     /// concurrent opens. Confirmed by hand: this reproduced consistently under `dev-gate.yml`'s
     /// `DEV_GATE=1 cargo test --release -p busbar-plugin-loader` and locally.
+    ///
+    /// These files are deliberately NOT deleted by the test that creates them — a test can't know
+    /// when it's safe to remove its own db file (the store may still be open, or a sibling process
+    /// under `-j`-parallel `cargo test` invocations may share the same `$TMPDIR`), and CI runners
+    /// are ephemeral (wiped between runs) so this never accumulates there. On a long-lived local
+    /// dev machine it CAN accumulate across many `cargo test` invocations (observed: 174 files,
+    /// ~14MB, via adversarial review) — self-cleans that by opportunistically sweeping this
+    /// process's OWN prior runs' files (matched by name pattern, not PID liveness — simpler and
+    /// good enough for a `$TMPDIR` nuisance, not a correctness concern) older than an hour, once
+    /// per test-binary invocation.
     fn unique_sqlite_cfg(name: &str) -> String {
         use std::sync::atomic::{AtomicU64, Ordering};
+        use std::sync::Once;
         static COUNTER: AtomicU64 = AtomicU64::new(0);
+        static SWEEP_ONCE: Once = Once::new();
+        SWEEP_ONCE.call_once(|| {
+            let cutoff = std::time::Duration::from_secs(3600);
+            let now = std::time::SystemTime::now();
+            let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let Some(name) = name.to_str() else { continue };
+                if !name.starts_with("busbar-plugin-loader-test-") || !name.ends_with(".db") {
+                    continue;
+                }
+                let Ok(meta) = entry.metadata() else { continue };
+                let Ok(modified) = meta.modified() else {
+                    continue;
+                };
+                if now.duration_since(modified).unwrap_or_default() > cutoff {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        });
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
             "busbar-plugin-loader-test-{}-{name}-{n}.db",
@@ -1256,6 +1289,20 @@ mod tests {
         assert!(!is_library_file("libfoo.txt"));
         assert!(!is_library_file("libfoo"));
         assert!(!is_library_file("README.md"));
+        // The "only" in this test's name wasn't actually proven before: an implementation
+        // accepting every platform's library extension everywhere (e.g. `.dylib` on Linux too)
+        // would have passed the assertions above unchanged. Explicitly assert the OTHER platforms'
+        // extensions are rejected on THIS platform.
+        for other_ext in [".dll", ".dylib", ".so"] {
+            if other_ext == expected_ext {
+                continue;
+            }
+            assert!(
+                !is_library_file(&format!("libfoo{other_ext}")),
+                "a foreign platform's library extension ({other_ext}) must be rejected on this \
+                 platform (expects {expected_ext})"
+            );
+        }
     }
 
     /// `list_plugin_files` lists only library-extension files, sorted, and NEVER dlopens anything
@@ -1351,10 +1398,17 @@ mod tests {
         let bytes = std::fs::read(&store_plugin).expect("read sibling store-sqlite-plugin cdylib");
 
         // Seam mismatch: a real STORE library loaded through the SECRET entry point (expected_kind
-        // = secret, exported_kind = store) must be refused, naming both kinds.
-        let Err(err) =
-            load_secret_from_bytes(&bytes, r#"{}"#, "kind-mismatch-seam", abi_kind::STORE)
-        else {
+        // = secret, exported_kind = store) must be refused, naming both kinds. Both kind-check
+        // guards run BEFORE `busbar_open`/real backing construction, so an empty `"{}"` config here
+        // never actually reaches sqlite today — but `unique_sqlite_cfg` costs nothing and removes
+        // the latent risk of this test starting to collide with sibling tests on the shared
+        // `busbar-governance.db` default path if that check ordering ever changes.
+        let Err(err) = load_secret_from_bytes(
+            &bytes,
+            &unique_sqlite_cfg("kind-mismatch-seam"),
+            "kind-mismatch-seam",
+            abi_kind::STORE,
+        ) else {
             panic!("a store library must not load as a secret module");
         };
         assert!(err.contains("store"), "must name the exported kind: {err}");
@@ -1362,8 +1416,12 @@ mod tests {
 
         // Manifest mismatch: expected_kind matches exported_kind (both store), but the signed
         // manifest_kind lies about it — must still be refused.
-        let Err(err) = load_store_from_bytes(&bytes, r#"{}"#, "kind-mismatch-manifest", "secret")
-        else {
+        let Err(err) = load_store_from_bytes(
+            &bytes,
+            &unique_sqlite_cfg("kind-mismatch-manifest"),
+            "kind-mismatch-manifest",
+            "secret",
+        ) else {
             panic!("an exported-store/manifest-secret disagreement must be refused");
         };
         assert!(
@@ -1630,10 +1688,15 @@ mod tests {
             );
             assert_ne!(op, np, "each generation stages its OWN file");
         }
-        // The NEW instance is a DISTINCT backend (a fresh in-memory store): it does NOT see the old key.
+        // The NEW instance is a DISTINCT on-disk SQLite backend (each generation gets its own
+        // unique_sqlite_cfg() db_path — NOT a fresh in-memory store, that was the pre-isolation-fix
+        // wording): it does NOT see the old key. Before the per-test sqlite isolation fix, OLD and
+        // NEW shared one file, so this assertion mostly just proved their two `db_path` configs
+        // differ; now that each generation has a genuinely separate backing file, it's real proof
+        // this is a second, independent load — not a cached alias of the first.
         assert!(
             new.get_key("vk_old").expect("new get").is_none(),
-            "the new instance is a separate backend, proving a real second load — not an alias"
+            "the new instance's own db_path must be a real, separate backend — not aliasing OLD's"
         );
 
         // Drop the OLD instance (the old snapshot drained): its library unmaps, its staged file
