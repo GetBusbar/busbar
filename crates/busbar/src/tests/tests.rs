@@ -1920,3 +1920,34 @@ async fn serve_listener_actually_serves_real_http_traffic() {
         .expect("serve_listener must actually stop once shutdown fires")
         .unwrap();
 }
+
+/// SECURITY (signing-key stdout-only contract): `--generate-signing-key` prints the secret ONLY on
+/// stdout; the stderr guidance must be secret-free so a stderr capture (systemd journal, CI/build log,
+/// terminal scrollback) can never leak the master signing key. Enforced here, not merely commented.
+/// RED before the fix: the stderr guidance embedded `export BUSBAR_SIGNING_KEY={hex}`.
+#[test]
+fn signing_key_guidance_omits_secret() {
+    use governance::signing::{TokenSigner, DEFAULT_KID};
+    // A real generated key (64 hex chars), so the assertion is against actual secret material.
+    let signer = TokenSigner::generate(DEFAULT_KID).expect("generate a signing key");
+    let hex = hex::encode(signer.secret_bytes());
+    assert_eq!(hex.len(), 64, "sanity: an ed25519 secret is 64 hex chars");
+
+    let (stdout, stderr) = signing_key_command_output(&hex);
+
+    // STDOUT carries the secret verbatim (and ONLY the secret).
+    assert_eq!(
+        stdout, hex,
+        "the secret must be printed verbatim on stdout for `> /run/secrets/...` capture"
+    );
+    // STDERR guidance must NOT contain the secret anywhere.
+    assert!(
+        !stderr.contains(&hex),
+        "the stderr guidance must be secret-free — it must never embed the generated key"
+    );
+    // And it must point the operator at the stdout value with a non-secret placeholder.
+    assert!(
+        stderr.contains("export BUSBAR_SIGNING_KEY=<paste-the-64-hex-key-printed-above>"),
+        "the guidance must use a non-secret placeholder pointing at the stdout key"
+    );
+}
