@@ -1562,6 +1562,12 @@ pub(crate) struct FailoverCfg {
 
 /// Default failover wall-clock budget (seconds) when a pool doesn't set `failover.timeout_secs`.
 pub(crate) const DEFAULT_FAILOVER_DEADLINE_SECS: u64 = 120;
+/// Upper bound (seconds) on a pool's `failover.timeout_secs`. 24h is already absurdly long for a
+/// per-request failover budget — anything larger is a fat-finger typo (extra zeros). Enforced at
+/// `--validate`/boot so a merely-oversized value fails CLOSED with an actionable message instead of
+/// being accepted and later feeding `RequestCtx::new` a duration large enough to overflow the
+/// monotonic-clock `Instant` math (see `RequestCtx::new`).
+pub(crate) const MAX_FAILOVER_DEADLINE_SECS: u64 = 86_400;
 /// Default maximum failover hops per request when a pool doesn't set `failover.max_hops`.
 pub(crate) const DEFAULT_FAILOVER_CAP: usize = 3;
 
