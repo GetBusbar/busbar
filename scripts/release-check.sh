@@ -482,6 +482,51 @@ else
   ok "Postgres phase complete: elapsed=${SECONDS}s"
   docker rm -f "$PG_CONTAINER" >/dev/null 2>&1 || true
 
+  # ── Phase 2.6: MySQL — sibling checkout; same shape as the Postgres phase ──────────────────────
+  # store-mysql (GetBusbar/store-mysql, same-repo 2-crate workspace) was the one store plugin this
+  # gate never covered at all — found during the 1.5.0 ship, when the "full plugin gate" turned out
+  # to run 6 of the 8 first-party plugins. Same trade-off as Phase 2: the sibling repo's own
+  # workspace suite (real dlopen ABI + real MySQL 8) is the proof; this phase just supplies the
+  # container and runs it.
+  phase "Phase 2.6: store-mysql — real mysql:8 container, sibling repo's own test suite as the gate"
+  STORE_MYSQL_SRC="${REPO_ROOT}/../store-mysql"
+  if [ -d "$STORE_MYSQL_SRC" ]; then
+    MYSQL_CONTAINER="busbar-release-check-mysql-$$"
+    DOCKER_CONTAINERS+=("$MYSQL_CONTAINER")
+    docker run -d --rm --name "$MYSQL_CONTAINER" \
+      -e MYSQL_ROOT_PASSWORD=busbar -e MYSQL_USER=busbar -e MYSQL_PASSWORD=busbar \
+      -e MYSQL_DATABASE=busbar_release_check \
+      -p 13306:3306 \
+      mysql:8 >/dev/null
+    echo "  waiting for mysql to accept connections (mysqladmin ping inside the container)..."
+    waited=0
+    # MySQL 8's first boot initializes the datadir and restarts once — allow a longer window than
+    # postgres, and ping as the busbar user so "ready" means "ready for OUR credentials".
+    until docker exec "$MYSQL_CONTAINER" mysqladmin ping -h localhost -ubusbar -pbusbar >/dev/null 2>&1; do
+      waited=$((waited + 1))
+      if [ "$waited" -ge 120 ]; then
+        echo "mysql did not become ready within 120s" >&2
+        docker logs "$MYSQL_CONTAINER" || true
+        exit 1
+      fi
+      sleep 1
+    done
+    ok "mysql ready after ${waited}s"
+    echo "  running GetBusbar/store-mysql's own cargo test --workspace against it..."
+    (
+      cd "$STORE_MYSQL_SRC"
+      BUSBAR_TEST_MYSQL_URL="mysql://busbar:busbar@127.0.0.1:13306/busbar_release_check" \
+        cargo test --workspace --release
+    )
+    ok "store-mysql real-ABI + real-MySQL tests passed (sibling checkout)"
+    docker rm -f "$MYSQL_CONTAINER" >/dev/null 2>&1 || true
+  else
+    echo "SKIP: ../store-mysql not present as a sibling checkout on this machine." >&2
+    echo "Gate incomplete — MySQL coverage could not run. Check out ../store-mysql for full" >&2
+    echo "coverage before tagging, or confirm that repo's own CI is green." >&2
+    STORE_MYSQL_SKIPPED=1
+  fi
+
   # ── Phase 3: Redis — sibling checkout; store-redis now owns 100% of its own logic + real-ABI
   #    + real-persistence proof ───────────────────────────────────────────────────────────────────
   phase "Phase 3: store-redis — sibling checkout: real dlopen ABI + real-Redis proof via its own test suite"
@@ -661,6 +706,13 @@ if [ -n "${AUTH_OIDC_SKIPPED:-}" ]; then
   echo "repo's own CI is green."
 else
   echo "OIDC phase passed with real assertions (sibling checkout)."
+fi
+if [ -n "${STORE_MYSQL_SKIPPED:-}" ]; then
+  echo "NOTE: ../store-mysql was not present locally — MySQL coverage was skipped, not passed. Run"
+  echo "on a machine with ../store-mysql checked out for full coverage before tagging, or confirm"
+  echo "that repo's own CI is green."
+else
+  echo "MySQL phase passed with real assertions (sibling checkout)."
 fi
 if [ -n "${STORE_REDIS_SKIPPED:-}" ]; then
   echo "NOTE: ../store-redis was not present locally — Redis coverage was skipped, not passed. Run"
