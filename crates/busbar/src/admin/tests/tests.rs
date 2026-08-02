@@ -9854,6 +9854,18 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_corrupt() {
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
 
+    // Bracket by seq, not just by action/resource: `AUDIT` is a process-wide ring, and
+    // `resource: "overlay:root"` is a FIXED literal every overlay-reset test shares (see the
+    // sibling `..._is_too_new` test right below, which resets the same `overlay:root` resource) --
+    // so a concurrently-running sibling's legitimate APPLIED reset can land between this test's own
+    // two REJECTED rows and fail the "never APPLIED" assertion. Same pattern as
+    // `test_admin_v1_restart_refuses_when_it_cannot_restart`'s baseline_seq bracketing.
+    let baseline_seq = crate::admin::audit::AUDIT
+        .list(1)
+        .first()
+        .map(|e| e.seq)
+        .unwrap_or(0);
+
     admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
         .header("content-type", "application/json")
         .body(serde_json::json!({ "per_request_fee": 42 }).to_string())
@@ -9880,12 +9892,16 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_corrupt() {
         reset.text().await
     );
 
-    let rows = crate::admin::audit::AUDIT.list_filtered(
-        0,
-        crate::admin::audit::MAX_AUDIT_ENTRIES,
-        None,
-        Some("overlay:root"),
-    );
+    let rows: Vec<_> = crate::admin::audit::AUDIT
+        .list_filtered(
+            0,
+            crate::admin::audit::MAX_AUDIT_ENTRIES,
+            None,
+            Some("overlay:root"),
+        )
+        .into_iter()
+        .filter(|e| e.seq > baseline_seq)
+        .collect();
     assert!(
         rows.iter()
             .any(|e| e.action == "overlay.reset"
@@ -11428,6 +11444,15 @@ async fn drive_admin_error_surface() {
             "not_found",
         ),
         (
+            "plugins_schema_unknown",
+            "GET",
+            "/plugins/ghost/schema",
+            None,
+            None,
+            404,
+            "not_found",
+        ),
+        (
             "group_unknown",
             "GET",
             "/groups/ghost",
@@ -11471,6 +11496,46 @@ async fn drive_admin_error_surface() {
             None,
             400,
             "invalid_request",
+        ),
+        // ── POST /restart's 3 declared conditions ─────────────────────────────────────────────
+        // These 3 have their own dedicated behavioral test (`test_admin_v1_restart_refuses_when_
+        // it_cannot_restart`, which also asserts the exact refusal MESSAGE distinguishing the two
+        // 409s) -- but that test's witnesses must not be this audit's only source of them, per
+        // this function's own doc comment ("independent of whether they [other tests] ran"). Under
+        // parallel `cargo test` scheduling there is no guarantee that test's HTTP calls land before
+        // this function's caller takes its `observed::snapshot()`, so relying on it alone is a real
+        // race, not just a theoretical one -- these 3 rows close it. `can_restart()` is backed by a
+        // `OnceLock` never populated in a test binary, so `confirm: true` deterministically reaches
+        // the NotRestartable gate regardless of environment; `restart_no_supervisor` forces the
+        // unsupervised environment deterministically (see `restart::with_forced_unsupervised`'s doc
+        // comment) rather than assuming the real env lacks the supervisor markers -- CI runners were
+        // found to genuinely set INVOCATION_ID themselves, which broke that original assumption.
+        (
+            "restart_malformed_body",
+            "POST",
+            "/restart",
+            None,
+            Some(r#"{"confrim": true}"#),
+            400,
+            "invalid_request",
+        ),
+        (
+            "restart_no_supervisor",
+            "POST",
+            "/restart",
+            None,
+            None,
+            409,
+            "conflict",
+        ),
+        (
+            "restart_not_restartable",
+            "POST",
+            "/restart",
+            None,
+            Some(r#"{"confirm": true}"#),
+            409,
+            "conflict",
         ),
         // ── Hook definition lifecycle ─────────────────────────────────────────────────────────
         (
@@ -11693,7 +11758,17 @@ async fn drive_admin_error_surface() {
             if let Some(b) = body {
                 req = req.header("content-type", "application/json").body(*b);
             }
-            let resp = req.send().await.unwrap();
+            // `restart_no_supervisor` needs a deterministically-unsupervised environment to reach
+            // the real NoSupervisor 409 through the real handler -- CI runners were found to
+            // genuinely set INVOCATION_ID themselves, so the env alone can't be trusted. See
+            // `restart::with_forced_unsupervised`'s doc comment for why this is thread-local, not
+            // an env var.
+            let resp = if *label == "restart_no_supervisor" {
+                crate::admin::restart::with_forced_unsupervised(|| req.send()).await
+            } else {
+                req.send().await
+            }
+            .unwrap();
             let status = resp.status().as_u16();
             let parsed: serde_json::Value = resp.json().await.unwrap();
             assert_eq!(
@@ -12255,25 +12330,27 @@ async fn test_admin_v1_restart_refuses_when_it_cannot_restart() {
     );
 
     // No supervisor detected and no confirmation: refuse rather than risk leaving busbar down.
-    let unsupervised = std::env::var_os("INVOCATION_ID").is_none()
-        && std::env::var_os("KUBERNETES_SERVICE_HOST").is_none();
-    if unsupervised {
-        let resp = admin(client.post(&url)).send().await.unwrap();
-        assert_eq!(
-            resp.status().as_u16(),
-            409,
-            "an unsupervised restart must be refused unless confirmed"
-        );
-        let body: serde_json::Value = resp.json().await.unwrap();
-        assert_eq!(body["error"]["code"], "conflict");
-        assert!(
-            body["error"]["message"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("confirm"),
-            "the refusal must tell the operator how to proceed: {body}"
-        );
-    }
+    // Forced deterministically unsupervised (see `restart::with_forced_unsupervised`'s doc comment)
+    // rather than gated on an env-var guess -- CI runners were found to genuinely set INVOCATION_ID
+    // themselves, which silently skipped this whole assertion block under the old `if unsupervised`
+    // env check.
+    let resp = crate::admin::restart::with_forced_unsupervised(|| admin(client.post(&url)).send())
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status().as_u16(),
+        409,
+        "an unsupervised restart must be refused unless confirmed"
+    );
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "conflict");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("confirm"),
+        "the refusal must tell the operator how to proceed: {body}"
+    );
 
     // Confirmed, so the supervisor check passes — but a test binary published no shutdown channel,
     // so the process genuinely cannot restart itself and says so. There are TWO distinct 409 exits

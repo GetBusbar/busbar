@@ -44,6 +44,38 @@ pub(crate) fn begin_drain() {
 /// literal-list assertion instead of needing a matching hand-edit in a re-implementation.
 const SUPERVISOR_MARKERS: [&str; 2] = ["INVOCATION_ID", "KUBERNETES_SERVICE_HOST"];
 
+// TEST-ONLY escape hatch for the real HTTP-level `POST /restart` driver
+// (`drive_admin_error_surface`'s `restart_no_supervisor` case), which needs a deterministic
+// unsupervised environment to reach the `NoSupervisor` 409 through the real handler -- process env
+// vars are not a safe way to force that (a real, reproduced cross-test hazard: `INVOCATION_ID`/
+// `KUBERNETES_SERVICE_HOST` are read by other tests sharing this binary, and CI runners were found
+// to genuinely set `INVOCATION_ID` themselves, making the driver's original "confirmed true on this
+// repo's CI runners" assumption false). A `thread_local` is safe here specifically because the
+// tests that exercise this run on the DEFAULT (single-OS-thread) `#[tokio::test]` flavor, where the
+// test body and the request it drives through the spawned server both execute on the same thread --
+// unlike `set_var`, this is invisible to every other test's own OS thread.
+// Only used by admin::tests, which itself requires `auth-admin-tokens` (see that module's own
+// `mod tests;` gate) -- under --no-default-features, plain `cfg(test)` compiled these in with no
+// caller, tripping -D dead-code (same class of gap as taxonomy.rs's earlier fix tonight).
+#[cfg(all(test, feature = "auth-admin-tokens"))]
+thread_local! {
+    static FORCE_UNSUPERVISED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Scope-guard: forces `supervisor_detected()` to `false` for the duration of `f` on THIS thread
+/// only, restoring the prior value afterward even if `f` panics.
+#[cfg(all(test, feature = "auth-admin-tokens"))]
+pub(crate) async fn with_forced_unsupervised<F, Fut, T>(f: F) -> T
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = T>,
+{
+    let prior = FORCE_UNSUPERVISED.with(|c| c.replace(true));
+    let result = f().await;
+    FORCE_UNSUPERVISED.with(|c| c.set(prior));
+    result
+}
+
 /// Whether a process supervisor will bring busbar back up.
 ///
 /// Exiting is only a RESTART if something restarts it. systemd stamps `INVOCATION_ID` and Kubernetes
@@ -51,6 +83,10 @@ const SUPERVISOR_MARKERS: [&str; 2] = ["INVOCATION_ID", "KUBERNETES_SERVICE_HOST
 /// of absence — which is why an undetected supervisor asks for confirmation rather than refusing
 /// outright.
 pub(crate) fn supervisor_detected() -> bool {
+    #[cfg(all(test, feature = "auth-admin-tokens"))]
+    if FORCE_UNSUPERVISED.with(std::cell::Cell::get) {
+        return false;
+    }
     supervisor_detected_in(|k| std::env::var_os(k).is_some())
 }
 

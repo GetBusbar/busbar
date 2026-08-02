@@ -1485,6 +1485,7 @@ fn test_validate_accepts_known_failover_exclusion() {
 /// The `admin-tokens` operator credential is a SECRET REFERENCE now; `validate()` checks the
 /// MODULE resolves (env | file) without resolving the value, and a malformed built-in ref
 /// (env without settings.key) fails loud, replacing the 1.4.x blank-admin_token lockout guard.
+#[cfg(feature = "auth-admin-tokens")]
 #[test]
 fn test_validate_admin_tokens_secret_module_checked() {
     let build = |token: config::SecretRef| -> Result<(), Vec<String>> {
