@@ -100,7 +100,7 @@ use auth::AuthMiddleware;
 
 use proto::ProtocolRegistry;
 use state::{App, Lane, WeightedLane};
-use store::{InMemoryStore, LaneData};
+use store::{HealthState, LaneData};
 
 // The upstream-request timeout, pool-idle, and request-body caps that used to live here as `const`s
 // are now operator-tunable (`limits.upstream_request_timeout_secs` / `pool_max_idle_per_host` /
@@ -2583,14 +2583,14 @@ pub(crate) fn build_app_from_config(
     // (both default to their historical const at the config layer).
     // D1 carry-over: an APPLY/RELOAD (prior = Some) restores every surviving lane's learned
     // health state BY STABLE IDENTITY from the prior store; boot (None) starts fresh.
-    let store: Arc<dyn crate::store::StateStore> = match prior {
-        Some(p) => Arc::new(InMemoryStore::new_with_limits_restored(
+    let store: Arc<dyn crate::store::LaneRuntime> = match prior {
+        Some(p) => Arc::new(HealthState::new_with_limits_restored(
             lanes_data.clone(),
             cfg.limits.hard_down_cooldown_secs,
             cfg.limits.max_honored_retry_after_secs,
             &p.store.export_health(),
         )),
-        None => Arc::new(InMemoryStore::new_with_limits(
+        None => Arc::new(HealthState::new_with_limits(
             lanes_data.clone(),
             cfg.limits.hard_down_cooldown_secs,
             cfg.limits.max_honored_retry_after_secs,

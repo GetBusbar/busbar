@@ -86,7 +86,7 @@ pub(crate) struct BreakerCell {
     pub(crate) transition_lock: std::sync::Mutex<()>,
 }
 
-impl InMemoryStore {
+impl HealthState {
     /// The identity-keyed restore shared by the state-carrying constructor (config apply) and the
     /// in-place boot restore (D3): apply each matching snapshot's lane-global fields and recreate
     /// its per-pool breaker cells eagerly (a restored Open cell blocks dispatch from request one).
@@ -310,7 +310,7 @@ pub(crate) fn fnv1a_u64(s: &str) -> u64 {
 pub(crate) const SWRR_SHARDS: usize = 64;
 
 /// Wraps the per-lane atomics/semaphores with per-(pool, lane) FSM breaker logic, populated lazily.
-pub(crate) struct InMemoryStore {
+pub(crate) struct HealthState {
     pub(crate) lanes: Vec<Arc<LaneState>>,
     /// Per-(pool, lane) breaker cells, created lazily on first access. The lane-global fields
     /// (sem/budget/dead/ok) always live on `lanes[lane]`; only the breaker FSM is isolated per pool.
@@ -401,7 +401,7 @@ pub(crate) struct LaneState {
 /// `fastest` ranking on a single slow outlier. Cheap, bounded, allocation-free.
 pub(crate) const LATENCY_EWMA_ALPHA: f64 = 0.2;
 
-impl InMemoryStore {
+impl HealthState {
     /// Read a (pool, lane) cell's cumulative error counter — for concurrency/isolation tests.
     #[cfg(test)]
     pub(crate) fn cell_err_for_test(&self, pool: &str, lane: usize) -> u64 {
@@ -1410,7 +1410,7 @@ impl Default for TripConfig {
 // Pool-aware breaker operations, shared by the lane-default trait methods (pool "") and the
 // `_in(pool, …)` trait methods. The lane-global checks (dead / budget) always read `lanes[lane]`;
 // the breaker FSM runs against the resolved (pool, lane) cell.
-impl InMemoryStore {
+impl HealthState {
     #[cfg(test)]
     pub(crate) fn now_secs() -> u64 {
         crate::store::now_for_test()
@@ -1435,7 +1435,7 @@ impl InMemoryStore {
     }
 
     /// Side-effect-FREE readiness check (lane-global gates + a non-mutating breaker peek). Shared
-    /// body for both `is_ready` (test-gated) and `ready_in` (the non-test `StateStore` trait method,
+    /// body for both `is_ready` (test-gated) and `ready_in` (the non-test `LaneRuntime` trait method,
     /// production-wired via `proxy::decide_policy_order`/`pick_among`), so it is production-live.
     pub(crate) fn ready_for(&self, pool: &str, lane: usize, now: u64) -> bool {
         if !self.lane_admissible(lane) {
@@ -1541,7 +1541,7 @@ impl InMemoryStore {
     }
 
     /// READ-ONLY lane-GLOBAL classification over the shared [`Unavailable`] taxonomy — the `/stats`
-    /// (per-lane, pool-agnostic) analogue of the per-(pool, lane) [`classify`](StateStore::classify).
+    /// (per-lane, pool-agnostic) analogue of the per-(pool, lane) [`classify`](LaneRuntime::classify).
     /// Same lane-global gates read SEPARATELY (R3: `Dead` vs `BudgetExhausted`), the SAME
     /// `breaker_verdict` decoder aggregated across routed cells via
     /// [`lane_breaker_verdict`](Self::lane_breaker_verdict), then the SAME lane-global permit peek —
@@ -1825,7 +1825,7 @@ impl InMemoryStore {
     }
 }
 
-impl StateStore for InMemoryStore {
+impl LaneRuntime for HealthState {
     #[cfg(test)]
     fn usable(&self, lane: usize, now: u64) -> bool {
         self.usable_for("", lane, now)
@@ -1857,7 +1857,7 @@ impl StateStore for InMemoryStore {
     }
 
     fn lane_admissible(&self, lane: usize) -> bool {
-        InMemoryStore::lane_admissible(self, lane)
+        HealthState::lane_admissible(self, lane)
     }
 
     fn lane_budget_remaining(&self, lane: usize) -> Option<i64> {
@@ -2565,7 +2565,7 @@ impl StateStore for InMemoryStore {
 // Test-only helpers: release code records outcomes via the cell-core fns; these give the unit
 // tests a lane-indexed handle to seed the default cell's outcome window directly.
 #[cfg(test)]
-impl InMemoryStore {
+impl HealthState {
     /// Record an error outcome in the sliding window with explicit time.
     pub(crate) fn record_outcome_error_with_time(&self, lane: usize, now_time: u64) {
         let ls = self.get_lane(lane);

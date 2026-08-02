@@ -1008,7 +1008,7 @@ pub(crate) async fn handler(crate::state::CurrentApp(app): crate::state::Current
 mod tests {
     use super::*;
     use crate::governance::{GovState, MemoryStore, Store, VirtualKey};
-    use crate::store::StateStore;
+    use crate::store::LaneRuntime;
     use crate::test_support::{LaneSpec, TestApp};
     use std::sync::Arc;
 

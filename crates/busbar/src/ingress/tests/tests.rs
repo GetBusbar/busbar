@@ -28,7 +28,7 @@ fn minimal_app() -> Arc<App> {
             &std::collections::HashMap::new(),
         )),
         lanes: vec![],
-        store: Arc::new(crate::store::InMemoryStore::new(vec![])),
+        store: Arc::new(crate::store::HealthState::new(vec![])),
         by_model: std::collections::HashMap::new(),
         pools: std::collections::HashMap::new(),
         client: crate::state::UpstreamClients::build(1, reqwest::Client::new),

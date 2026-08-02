@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Governance persistence. A durable `Store` seam — SEPARATE from the hot in-memory `StateStore`
+//! Governance persistence. A durable `Store` seam — SEPARATE from the hot in-memory `LaneRuntime`
 //! (breaker/lane health) — holding only bounded ENFORCEMENT state: virtual keys + config, and
 //! per-key usage counters (spend/tokens/requests) per budget window. Historical request logs are
 //! NOT stored here (they go to the observability pipeline). The `Store` CONTRACT lives in

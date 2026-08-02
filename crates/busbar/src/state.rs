@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 pub(crate) use crate::proto::Protocol;
 pub(crate) use crate::store::now;
-pub(crate) use crate::store::StateStore;
+pub(crate) use crate::store::LaneRuntime;
 
 use reqwest::Client;
 
@@ -244,7 +244,7 @@ pub(crate) struct App {
     /// enforcement counts never go through the bank.
     pub(crate) tslots: Arc<crate::telemetry::AppSlots>,
     pub(crate) lanes: Vec<Lane>,
-    pub(crate) store: Arc<dyn StateStore>,
+    pub(crate) store: Arc<dyn LaneRuntime>,
     /// The health-probe schedule, shared by every clone-derived snapshot of this lineage so a swap
     /// does not reset the probe phase. See [`crate::health::ProbeSchedule`].
     pub(crate) probe_schedule: Arc<crate::health::ProbeSchedule>,

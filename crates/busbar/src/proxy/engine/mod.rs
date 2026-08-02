@@ -204,7 +204,7 @@ pub(crate) async fn forward_with_pool_parsed(
 /// through it — replacing the old inline `if budget_spent { refund_budget(i) }` calls, not
 /// supplementing them (calling both would double-refund).
 struct BudgetSpendGuard<'a> {
-    store: &'a dyn crate::store::StateStore,
+    store: &'a dyn crate::store::LaneRuntime,
     lane: usize,
     armed: bool,
 }
