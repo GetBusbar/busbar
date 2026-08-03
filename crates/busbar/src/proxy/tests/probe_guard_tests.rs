@@ -5,7 +5,7 @@
 //! cell reverts HalfOpen→Open and is re-probeable); DISARMING it (the live-permit dispatch paths)
 //! must LEAVE the probe held for the owning request.
 use super::ProbeGuard;
-use crate::store::{BreakerState, InMemoryStore, LaneData, StateStore};
+use crate::store::{BreakerState, HealthState, LaneData, LaneRuntime};
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
@@ -33,7 +33,7 @@ fn lane(max: usize) -> LaneData {
 
 /// Park the default ("") cell as a WON probe (HalfOpen + probe_in_flight), exactly the state
 /// `acquire_for_dispatch_in` leaves after winning the single-flight race.
-fn win_probe(store: &Arc<InMemoryStore>) {
+fn win_probe(store: &Arc<HealthState>) {
     // Expired-Open → the mutating acquisition transitions Open→HalfOpen and CAS-wins the probe.
     store.force_open_in("", 0, 0);
     assert!(
@@ -50,7 +50,7 @@ fn win_probe(store: &Arc<InMemoryStore>) {
 /// (the implicit future-drop-while-parked path).
 #[test]
 fn dropping_armed_guard_releases_probe() {
-    let store = Arc::new(InMemoryStore::new(vec![lane(1)]));
+    let store = Arc::new(HealthState::new(vec![lane(1)]));
     win_probe(&store);
     {
         let _guard = ProbeGuard {
@@ -72,7 +72,7 @@ fn dropping_armed_guard_releases_probe() {
 /// request now owns it and will release it via its recorded outcome.
 #[test]
 fn disarmed_guard_leaves_probe_held() {
-    let store = Arc::new(InMemoryStore::new(vec![lane(1)]));
+    let store = Arc::new(HealthState::new(vec![lane(1)]));
     win_probe(&store);
     {
         let mut guard = ProbeGuard {
@@ -97,7 +97,7 @@ fn disarmed_guard_leaves_probe_held() {
 /// superseded the release is a strict no-op and the current probe owner keeps its HalfOpen cell.
 #[test]
 fn stalled_guard_does_not_release_a_newer_probe() {
-    let store = Arc::new(InMemoryStore::new(vec![lane(1)]));
+    let store = Arc::new(HealthState::new(vec![lane(1)]));
     // Guard A wins the first probe and captures its (older) epoch.
     win_probe(&store);
     let guard_a = ProbeGuard {

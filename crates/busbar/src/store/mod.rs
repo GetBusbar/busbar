@@ -12,7 +12,7 @@ const COOLDOWN_TRANSIENT_SECS: u64 = 10;
 // A hard-down fault (bad key / billing / hard quota) gets a long sticky cooldown and recovers via
 // the half-open probe — NOT a permanent `dead` kill. A human likely has to fix the key, so fast
 // re-probes are pointless; default 30 min. Now operator-tunable via `limits.hard_down_cooldown_secs`
-// (threaded onto `InMemoryStore`); this const is the DEFAULT (== the config default) and is retained
+// (threaded onto `HealthState`); this const is the DEFAULT (== the config default) and is retained
 // only as the expected value in tests that exercise the default-configured store.
 #[cfg(test)]
 const HARD_DOWN_COOLDOWN_SECS: u64 = crate::config::DEFAULT_HARD_DOWN_COOLDOWN_SECS;
@@ -22,7 +22,7 @@ const HARD_DOWN_COOLDOWN_SECS: u64 = crate::config::DEFAULT_HARD_DOWN_COOLDOWN_S
 // cap — but never past this ceiling (default 24h), so a hostile/buggy upstream sending a near-
 // `u64::MAX` `Retry-After` cannot overflow `now + duration` (breaker bypass in release / panic in
 // debug) or bench a lane for millennia. Now operator-tunable via `limits.max_honored_retry_after_secs`
-// (threaded onto `InMemoryStore`); this const is the DEFAULT, retained only for default-config tests.
+// (threaded onto `HealthState`); this const is the DEFAULT, retained only for default-config tests.
 #[cfg(test)]
 const MAX_HONORED_RETRY_AFTER_SECS: u64 = crate::config::DEFAULT_MAX_HONORED_RETRY_AFTER_SECS;
 
@@ -134,6 +134,103 @@ pub(crate) enum BreakerState {
     HalfOpen,
 }
 
+// ── Lane availability taxonomy (design §1, R5) ──────────────────────────────────────────────────
+//
+// The advisory recovery FLOORS below are consumed ONLY by `Unavailable::recovery_hint_ms`, the single
+// definition of "when could this lane plausibly be usable again". They are floors — honest lower
+// bounds — not fabricated exact times.
+
+/// Advisory recovery floor for a lost single-flight probe race: the peer's probe resolves the cell
+/// within roughly one request, so "come back very shortly". Advisory only (not yet wired to the
+/// production `Retry-After`, which is repointed at `recovery_hint_ms` in a later phase).
+const PROBE_RETRY_FLOOR_MS: u64 = 250;
+
+/// Advisory recovery floor for an inbound-shed request (`limits.max_inbound_concurrent`). Advisory
+/// only until the observability phase renders it.
+const SHED_RETRY_FLOOR_MS: u64 = 1000;
+
+/// At-capacity recovery FLOOR in milliseconds. R5: a busy concurrency slot has no scheduled recovery
+/// the way a breaker `until` does, so absent a per-lane drain estimate this floor is the honest "back
+/// off ~2s" answer (never the deceptive `1`). This is the NEUTRAL store-side source of truth for the
+/// 2s floor: the store must not depend on `proxy`, so the proxy `Retry-After` path
+/// (`proxy::…::AT_CAPACITY_RETRY_AFTER_SECS`) DERIVES its whole-second floor from THIS const rather
+/// than the reverse.
+pub(crate) const AT_CAPACITY_RECOVERY_FLOOR_MS: u64 = 2_000;
+
+/// Why a lane cannot accept a request right now — the ONE taxonomy every consumer speaks: selection
+/// (exclude), least_bad (rank), `Retry-After` (hint), `/stats` + `/metrics` (render), queue (wait).
+/// Add a future reason (e.g. `RateLimited { until }`) in ONE place and every consumer inherits it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Unavailable {
+    /// Administratively down. Does not self-recover (until config change).
+    Dead,
+    /// Lifetime request budget (`max_requests`) spent. Does not self-recover.
+    BudgetExhausted,
+    /// Circuit breaker Open (or a Closed cell still inside a pending soft cooldown). `until` is EXACT
+    /// (epoch secs) — recovery time is known, not estimated.
+    BreakerOpen { until: u64 },
+    /// Lost the HalfOpen single-flight probe race to a peer. Transient; the peer's probe resolves the
+    /// cell within one request. Recovery is "next tick", carried as [`PROBE_RETRY_FLOOR_MS`].
+    ProbeInFlight,
+    /// All concurrency permits held. `drain_hint_ms` is an ESTIMATE (see design §4), NOT exact —
+    /// capacity has no scheduled recovery the way a breaker does. `None` when there is no basis to
+    /// estimate, in which case `recovery_hint_ms` falls back to [`AT_CAPACITY_RECOVERY_FLOOR_MS`].
+    AtCapacity { drain_hint_ms: Option<u64> },
+    /// Inbound backpressure shed this request before lane selection (`limits.max_inbound_concurrent`).
+    //
+    // Constructed only by the observability/shed wiring landed in a later phase; the variant is part
+    // of the taxonomy vocabulary now (and exercised by the unit tests). `#[cfg(test)]`-scoped
+    // construction means the release build has no constructor yet, so silence the lint there only.
+    #[cfg_attr(not(test), allow(dead_code))]
+    Shedding,
+}
+
+impl Unavailable {
+    /// Single definition of "when could this lane plausibly be usable again", in ms from `now`. This
+    /// is what `Retry-After`, least_bad ranking, and queue budgeting ALL consume — one function, so
+    /// those consumers can never disagree about recovery timing. As of Phase 2 it is ALSO the source
+    /// of the `/stats` `recovery_hint_ms` field and the `busbar_lane_recovery_hint_ms` gauge.
+    pub(crate) fn recovery_hint_ms(&self, now: u64) -> Option<u64> {
+        match self {
+            Unavailable::Dead | Unavailable::BudgetExhausted => None, // no self-recovery
+            Unavailable::BreakerOpen { until } => {
+                Some(until.saturating_sub(now).saturating_mul(1000))
+            }
+            Unavailable::ProbeInFlight => Some(PROBE_RETRY_FLOOR_MS), // ~one request
+            // Honest floor when there is no drain estimate — R5 forbids regressing this below 2s.
+            Unavailable::AtCapacity { drain_hint_ms } => {
+                Some(drain_hint_ms.unwrap_or(AT_CAPACITY_RECOVERY_FLOOR_MS))
+            }
+            Unavailable::Shedding => Some(SHED_RETRY_FLOOR_MS),
+        }
+    }
+
+    /// The stable, snake_case name of this variant — the SINGLE rendering used by both `/stats`
+    /// (`availability` field) and any operator-facing surface, so the string an operator reads is
+    /// derived from the same taxonomy routing dispatches on (design §8). The `Ok` side of a
+    /// classification renders as the sentinel `"available"`, owned by the caller.
+    pub(crate) fn variant_name(&self) -> &'static str {
+        match self {
+            Unavailable::Dead => "dead",
+            Unavailable::BudgetExhausted => "budget_exhausted",
+            Unavailable::BreakerOpen { .. } => "breaker_open",
+            Unavailable::ProbeInFlight => "probe_in_flight",
+            Unavailable::AtCapacity { .. } => "at_capacity",
+            Unavailable::Shedding => "shedding",
+        }
+    }
+}
+
+/// The held resources a successful [`LaneRuntime::try_admit`] transfers to the caller: the concurrency
+/// permit (held for the request's lifetime) and the single-flight probe owner token (`probe_epoch`),
+/// which the dispatched request later releases via `release_probe_owned_in` once it records an
+/// outcome. Ownership of the probe transfers OUT of `try_admit` on success; on failure `try_admit`
+/// releases it internally (exactly, owner-checked), so no `Admit` ever leaks a probe.
+pub(crate) struct Admit {
+    pub(crate) permit: Permit,
+    pub(crate) probe_epoch: u64,
+}
+
 /// RAII concurrency permit, held for the request's lifetime and released on drop.
 ///
 /// A lane with `max_concurrent` SET holds a real slot on its semaphore (`Bounded`) — the cap is
@@ -157,6 +254,31 @@ pub(crate) struct LaneSnapshot {
     pub(crate) max_concurrent: usize,
     pub(crate) inflight: i64,
     pub(crate) free_slots: usize,
+    /// Available concurrency permits for a BOUNDED lane (`Some(n)`); `None` for an unbounded lane
+    /// (`max_concurrent` omitted — nothing is counted). Distinct from `free_slots` only in that it
+    /// makes "unbounded" explicit rather than reporting an effectively-infinite number. (Bug 1: a
+    /// saturated lane must be externally distinguishable — `Some(0)` — from an idle or unbounded one.)
+    pub(crate) available: Option<usize>,
+    /// True iff this lane is BOUNDED and has zero available permits — i.e. at its `max_concurrent`
+    /// limit. Post the at-capacity-exhaustion fix, such a lane sheds/spills rather than queueing, so
+    /// this flag is the external signal that a pool is oversubscribed (not merely slow). This is the
+    /// CAPACITY axis, deliberately kept INDEPENDENT of `availability`/`breaker_state` (R9): a lane can
+    /// be both breaker-Open AND at-capacity, and an operator must see both facts to understand why an
+    /// Open lane's breaker never recovers (its recovery probe needs a dispatch it can never win).
+    pub(crate) at_capacity: bool,
+    /// Lane-GLOBAL availability over the shared [`Unavailable`] taxonomy (Phase 2): the SAME
+    /// classification `classify`/routing speaks, aggregated across the cells production routes through.
+    /// `Ok(())` = the lane would admit; `Err(_)` carries the reason (and its `recovery_hint_ms`). This
+    /// is the ONE source `/stats` and (per-pool) `/metrics` render from, so observability cannot drift
+    /// from behaviour. Breaker-first: an Open-and-at-capacity lane classifies `BreakerOpen`, while the
+    /// orthogonal `at_capacity`/`breaker_state` fields still expose each axis independently (R9).
+    pub(crate) availability: Result<(), Unavailable>,
+    /// Lane-GLOBAL aggregate breaker FSM state (best-case across the routed cells, matching `usable`),
+    /// surfaced as its own field so the BREAKER axis is legible independently of `availability` and
+    /// `at_capacity` (R9). An expired-Open cell still reports `Open` here even though it would win a
+    /// recovery probe (so `availability` may read `at_capacity` while this reads `open`) — that pairing
+    /// is exactly the Open+AtCapacity operators need to see.
+    pub(crate) breaker_state: BreakerState,
     pub(crate) ok: u64,
     pub(crate) err: u64,
     pub(crate) client_fault: u64,
@@ -172,7 +294,7 @@ pub(crate) struct LaneSnapshot {
     pub(crate) last_trip_at: u64,
 }
 
-/// StateStore trait - the seam for lane state access.
+/// LaneRuntime trait - the seam for lane state access.
 /// Operations, NOT field access. `lane: usize` identifies a member.
 /// One lane's PORTABLE health state, keyed by its STABLE IDENTITY (model + provider) instead of
 /// its array position (D1). This is the carrier that lets learned reliability state survive the
@@ -225,7 +347,7 @@ pub(crate) struct PoolCellHealthSnapshot {
     pub(crate) err: u64,
 }
 
-pub(crate) trait StateStore: Send + Sync + 'static {
+pub(crate) trait LaneRuntime: Send + Sync + 'static {
     // ── Health queries ─────────────────────────────────────────────────────────────────────────
     // The bare `lane` methods operate on the lane-default cell (direct/ad-hoc routes, `/stats`);
     // the `_in(pool, …)` variants operate on the per-(pool, lane) breaker cell so a lane shared
@@ -238,6 +360,9 @@ pub(crate) trait StateStore: Send + Sync + 'static {
     // binary entirely rather than merely silenced.
     #[cfg(test)]
     fn usable(&self, lane: usize, now: u64) -> bool;
+    // As of the lane-availability refactor, `pick_among`'s sticky fast path uses `try_admit` instead
+    // of `usable_in`, so this has no non-test caller left; retained as a tested primitive.
+    #[cfg_attr(not(test), allow(dead_code))]
     fn usable_in(&self, pool: &str, lane: usize, now: u64) -> bool;
     /// Side-effect-FREE readiness check: would this lane admit a request right now, WITHOUT
     /// transitioning an expired-Open lane to HalfOpen or CAS-acquiring its single-flight probe. The
@@ -289,7 +414,53 @@ pub(crate) trait StateStore: Send + Sync + 'static {
     /// Mutating admission for a lane selection is about to DISPATCH to: performs the Open→HalfOpen
     /// transition + single-flight probe CAS exactly once. Returns false if the probe was already
     /// taken (lost the race) so the caller can pick another lane.
+    ///
+    /// R1: `pick_among` now admits via `try_admit`, so `acquire_for_dispatch_in` has no non-test
+    /// caller left — but it is deliberately RETAINED (not deleted) as the tested breaker-acquisition
+    /// primitive the ~15 probe-race/epoch regression tests drive directly. `try_admit` performs the
+    /// equivalent breaker CAS via `cell_acquire_breaker` internally.
+    #[cfg_attr(not(test), allow(dead_code))]
     fn acquire_for_dispatch_in(&self, pool: &str, lane: usize, now: u64) -> bool;
+
+    /// READ-ONLY availability classification over the shared [`Unavailable`] taxonomy. Side-effect
+    /// free: peeks the breaker (no probe CAS via the single `breaker_verdict` decoder), peeks permits,
+    /// and reads `dead`/`budget` SEPARATELY (R3 — NOT the bool-collapsing `lane_admissible`) so it can
+    /// distinguish `Dead` from `BudgetExhausted`. Returns `Ok(())` if the lane WOULD admit right now
+    /// (best-effort; racy by nature — advisory). For observability, least_bad reads, and the queue
+    /// pre-check. As of Phase 2 the `/metrics` scrape renders the per-(pool, lane) availability
+    /// gauges directly from this (production-live); least_bad/queue consumers land in later phases.
+    fn classify(&self, pool: &str, lane: usize, now: u64) -> Result<(), Unavailable>;
+
+    /// MUTATING admission attempt — a thin COMPOSITION (R1) over the SAME `breaker_verdict` decoder
+    /// `classify` uses (R3), the existing `acquire_for_dispatch_in`/breaker CAS, and `try_acquire`.
+    /// Wins-or-loses the single-flight probe and grabs-or-fails the permit, returning the held
+    /// resources ([`Admit`]) on success or the SAME [`Unavailable`] taxonomy on failure. On the
+    /// at-capacity path it releases the won-but-undispatched probe EXACTLY (owner-checked) so it never
+    /// leaks the single-flight probe and never double-releases. The sole non-test callers are
+    /// `pick_among`'s main selection loop and its sticky-affinity fast path.
+    fn try_admit(&self, pool: &str, lane: usize, now: u64) -> Result<Admit, Unavailable>;
+
+    /// The concurrency semaphore of a BOUNDED lane, for the `on_exhausted: queue` wait to acquire a
+    /// freed permit DIRECTLY on the lane's OWN FIFO semaphore. This is the R2 wait primitive: the
+    /// semaphore STORES released permits (no lost wakeup — a permit freed in the window between a
+    /// waiter's re-poll and its next await is not dropped) and hands one permit to one waiter (no
+    /// thundering herd, FIFO fairness). `None` for an UNBOUNDED lane (`max_concurrent` omitted —
+    /// nothing is counted, so it is never `AtCapacity` and never a queue candidate).
+    fn lane_semaphore(&self, lane: usize) -> Option<Arc<Semaphore>>;
+
+    /// Run ONLY the breaker admission step of [`try_admit`] (the shared `breaker_verdict` decoder +
+    /// the single-flight probe CAS) WITHOUT acquiring a concurrency permit — for the `on_exhausted:
+    /// queue` dispatch path, which has ALREADY won a permit directly on the lane's semaphore (via
+    /// [`lane_semaphore`](Self::lane_semaphore)) and must still pass the breaker before dispatch.
+    /// `Ok(epoch)` = the caller may dispatch: it now owns the (possibly newly-won) single-flight probe,
+    /// released OWNER-CHECKED via `release_probe_owned_in(pool, lane, epoch)` after the dispatched
+    /// request records its outcome — the SAME `Admit.probe_epoch` discipline `try_admit` uses, so the
+    /// queue path no longer relies on the weaker unowned `release_probe_in` (a stale unowned release
+    /// could revert a NEWER probe won by a peer). `Err(_)` = the lane went Dead / BudgetExhausted /
+    /// BreakerOpen / lost the probe WHILE the caller was queued; the caller must release its held permit
+    /// and never dispatch onto it. No permit is touched here, so a probe won on the `Ok` path is the
+    /// caller's to release; on `Err` nothing is left armed.
+    fn try_admit_breaker(&self, pool: &str, lane: usize, now: u64) -> Result<u64, Unavailable>;
     /// Release a single-flight recovery probe WON by `acquire_for_dispatch_in` but then NOT dispatched
     /// (the chosen lane couldn't get a concurrency slot before the request deadline, the semaphore
     /// closed on shutdown, etc.). The probe winner left the cell in HalfOpen with `probe_in_flight ==
@@ -306,6 +477,10 @@ pub(crate) trait StateStore: Send + Sync + 'static {
     /// Read a (pool, lane) cell's current single-flight probe epoch (owner token). A probe winner
     /// captures this immediately after `acquire_for_dispatch_in` succeeds and later passes it to
     /// `release_probe_owned_in` so a STALLED, late release cannot revert a newer probe (P2 #4).
+    //
+    // `try_admit`/`Admit` now surface the epoch to `pick_among` directly, so the standalone accessor
+    // has no non-test caller left; retained for the probe-epoch regression tests.
+    #[cfg_attr(not(test), allow(dead_code))]
     fn probe_epoch_in(&self, pool: &str, lane: usize) -> u64;
     /// OWNER-CHECKED variant of `release_probe_in`: reverts the undispatched probe ONLY when the cell's
     /// probe epoch still equals `owned_epoch`. Used by the `ProbeGuard` drop path (the one release site
@@ -457,9 +632,6 @@ pub(crate) trait StateStore: Send + Sync + 'static {
 
     // concurrency + budget — lane-global (shared across every pool fronting the lane).
     fn try_acquire(&self, lane: usize) -> Option<Permit>;
-    /// The lane's concurrency semaphore, for a bounded async (`timeout`) acquire on the dispatch
-    /// path — the task parks instead of busy-spinning when permits are saturated.
-    fn lane_semaphore(&self, lane: usize) -> Arc<Semaphore>;
     /// Atomically consume one unit of the lane's lifetime request budget. Returns `false` when the
     /// budget was already exhausted (the spend was a no-op — the budget is never driven negative).
     /// `#[must_use]`: the bool is the over-spend signal; a silent discard hid the prior concurrent

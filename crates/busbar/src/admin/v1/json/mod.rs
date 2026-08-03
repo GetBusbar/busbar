@@ -20,7 +20,10 @@ use serde::Serialize;
 use serde_json::json;
 
 use super::contract::taxonomy::Cond;
-use super::contract::{AdminError, PATH_ADMIN_AUTH, PATH_CONFIG_VALIDATE, PATH_GROUPS, PATH_HOOKS};
+use super::contract::{
+    AdminError, PATH_ADMIN_AUTH, PATH_CONFIG_VALIDATE, PATH_GROUPS, PATH_HOOKS,
+    PATH_PLUGINS_INSPECT,
+};
 use super::service::{
     build_with_group, build_with_hook, build_with_registry, build_without_group,
     build_without_hook, AdminService,
@@ -88,7 +91,7 @@ impl AdminTransport for JsonV1 {
                 axum::routing::delete(reset_overlay_section),
             )
             .route("/plugins", get(list_plugins).post(install_plugin))
-            .route("/plugins/inspect", post(inspect_plugin))
+            .route(PATH_PLUGINS_INSPECT, post(inspect_plugin))
             .route("/plugins/reload", post(reload_plugins))
             .route("/plugins/rollback", post(rollback_plugin))
             .route("/plugins/{file}", axum::routing::delete(remove_plugin))

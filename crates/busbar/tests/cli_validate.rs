@@ -592,6 +592,90 @@ fn validate_fails_when_store_module_resolves_to_a_non_store_plugin_kind() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// BUG #2 (1.5.1): busbar no longer auto-generates a signing key at boot. When the data-plane chain
+/// names the built-in `keys` verifier, `auth.signing_key` is REQUIRED and its absence FAILS
+/// `--validate` (fail-closed) with an actionable message — and NOTHING is ever written to disk.
+#[test]
+fn validate_fails_when_keys_chain_lacks_signing_key() {
+    let dir = fixture_dir("sk-missing");
+    write_configs(&dir, "auth:\n  chain:\n    - keys\n");
+    let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(
+        code, 1,
+        "a `keys` chain with no signing key must fail --validate: {stderr}"
+    );
+    assert!(
+        stderr.contains("auth.signing_key is required")
+            && stderr.contains("--generate-signing-key"),
+        "the error must be actionable (name the key + the generate command): {stderr}"
+    );
+    // FAIL-CLOSED, not generate-into-a-read-only-dir: no key file may be written anywhere.
+    assert!(
+        !dir.join("busbar-signing.key").exists(),
+        "busbar must NOT write a signing key (the boot-loop bug being fixed)"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A `keys` chain WITH an `auth.signing_key` secret reference validates clean — and `--validate`
+/// never generates or persists a key (the secret is resolved at BOOT, not here).
+#[test]
+fn validate_ok_when_keys_chain_has_signing_key_and_writes_no_file() {
+    let dir = fixture_dir("sk-ok");
+    write_configs(
+        &dir,
+        "auth:\n  chain:\n    - keys\n  signing_key: { env: BUSBAR_SIGNING_KEY }\n",
+    );
+    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(
+        code, 0,
+        "a `keys` chain WITH a signing_key ref validates clean: {stderr}"
+    );
+    assert!(stdout.contains("ok: config valid"), "got {stdout}");
+    assert!(
+        !dir.join("busbar-signing.key").exists(),
+        "--validate must never generate/persist a signing key"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `busbar --generate-signing-key` mints a fresh 64-hex ed25519 secret to STDOUT (guidance to
+/// stderr), writes NOTHING, and the key — once written to a file and referenced from
+/// `auth.signing_key` — makes a `keys`-chain config validate clean.
+#[test]
+fn generate_signing_key_emits_a_usable_referenced_key() {
+    let dir = fixture_dir("sk-gen");
+    let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
+        .args(["--generate-signing-key"])
+        .output()
+        .expect("run busbar --generate-signing-key");
+    assert_eq!(out.status.code(), Some(0));
+    let hex = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    assert_eq!(hex.len(), 64, "the key is 64 hex chars on stdout: {hex:?}");
+    assert!(
+        hex.chars().all(|c| c.is_ascii_hexdigit()),
+        "the key is hex only: {hex}"
+    );
+    // Write it to a file and REFERENCE it (auth.signing_key is a ref, never inline); the config
+    // must then validate clean.
+    let keyfile = dir.join("signing.key");
+    std::fs::write(&keyfile, &hex).unwrap();
+    write_configs(
+        &dir,
+        &format!(
+            "auth:\n  chain:\n    - keys\n  signing_key: {{ file: '{}' }}\n",
+            keyfile.display()
+        ),
+    );
+    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(
+        code, 0,
+        "a generated key, written to a file and referenced, must validate: {stderr}"
+    );
+    assert!(stdout.contains("ok: config valid"), "got {stdout}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Run busbar with an ADDITIONAL `BUSBAR_CONFIG_OVERLAY` pointing at a fixture overlay file — the
 /// 1.5.0 full-config-coverage persistence path a real deployment uses.
 fn run_busbar_with_overlay(dir: &Path, overlay: &Path, args: &[&str]) -> (i32, String, String) {

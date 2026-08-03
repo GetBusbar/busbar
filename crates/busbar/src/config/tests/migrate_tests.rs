@@ -284,6 +284,269 @@ fn migrate_14x_round_trips_into_deploy_cfg() {
     );
 }
 
+/// Small helper: migrate `raw` and return the parsed output document (panics if migrate fails).
+fn migrate_to_value(raw: &str) -> (MigrateOutput, serde_yaml::Value) {
+    let out = migrate_config(raw).expect("migrates");
+    let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("output is valid YAML");
+    (out, doc)
+}
+
+/// Path-getter over a parsed migrated document.
+fn dig<'a>(doc: &'a serde_yaml::Value, path: &[&str]) -> Option<&'a serde_yaml::Value> {
+    let mut cur = doc;
+    for k in path {
+        cur = cur.as_mapping()?.get(serde_yaml::Value::from(*k))?;
+    }
+    Some(cur)
+}
+
+/// THE user-reported seed bug (and every 1.4.x `on_exhausted` spelling): a pool's
+/// `on_exhausted: { action: … }` is rewritten to the 1.5.0 shape (bare `reject` / `least_bad`, or
+/// `{ fallback_pool: <pool> }`). Before the fix the `action:` wrapper passed straight through and
+/// `deny_unknown_fields` rejected it at `--validate` with "unknown field `action`" - a migrate that
+/// reported changes but emitted an unbootable config. The migrated document must BOOT-PARSE.
+#[test]
+fn migrate_on_exhausted_all_arms_round_trip() {
+    let raw = r#"
+providers: {}
+models: {}
+pools:
+  primary:
+    members: [ { target: a } ]
+    on_exhausted: { action: "fallback_pool:overflow" }   # the exact user case
+  overflow:
+    members: [ { target: b } ]
+    on_exhausted: { action: least_bad }
+  strict:
+    members: [ { target: c } ]
+    on_exhausted: { action: reject }
+  legacy503:
+    members: [ { target: d } ]
+    on_exhausted: { action: status_503 }
+  nameless:
+    members: [ { target: e } ]
+    on_exhausted: { action: "fallback_pool:" }            # no pool named -> TODO, safe reject
+  bogus:
+    members: [ { target: f } ]
+    on_exhausted: { action: explode }                     # unknown -> TODO, safe reject
+"#;
+    let (out, doc) = migrate_to_value(raw);
+
+    // fallback_pool:<name> -> { fallback_pool: <name> }.
+    assert_eq!(
+        dig(&doc, &["pools", "primary", "on_exhausted", "fallback_pool"]).and_then(|v| v.as_str()),
+        Some("overflow"),
+        "fallback_pool:<name> must become the structured 1.5.0 form"
+    );
+    // bare keywords stay bare.
+    assert_eq!(
+        dig(&doc, &["pools", "overflow", "on_exhausted"]).and_then(|v| v.as_str()),
+        Some("least_bad")
+    );
+    assert_eq!(
+        dig(&doc, &["pools", "strict", "on_exhausted"]).and_then(|v| v.as_str()),
+        Some("reject")
+    );
+    // status_503 (a 1.4.x alias) -> bare `reject`.
+    assert_eq!(
+        dig(&doc, &["pools", "legacy503", "on_exhausted"]).and_then(|v| v.as_str()),
+        Some("reject")
+    );
+    // the `action:` wrapper is GONE everywhere.
+    for pool in [
+        "primary",
+        "overflow",
+        "strict",
+        "legacy503",
+        "nameless",
+        "bogus",
+    ] {
+        assert!(
+            dig(&doc, &["pools", pool, "on_exhausted", "action"]).is_none(),
+            "pool {pool} still carries the 1.4.x on_exhausted.action wrapper"
+        );
+    }
+    // the two undecidable arms are FLAGGED, never silently wrong.
+    assert!(
+        out.todos.iter().any(|t| t.contains("nameless")),
+        "an empty fallback_pool must raise a TODO: {:?}",
+        out.todos
+    );
+    assert!(
+        out.todos.iter().any(|t| t.contains("bogus")),
+        "an unknown action must raise a TODO: {:?}",
+        out.todos
+    );
+    // THE round-trip: the migrated config boot-parses (the user's failure is gone).
+    assert!(
+        serde_yaml::from_str::<crate::config::DeployCfg>(&out.yaml).is_ok(),
+        "on_exhausted-bearing config must boot-parse: {:?}",
+        serde_yaml::from_str::<crate::config::DeployCfg>(&out.yaml).err()
+    );
+}
+
+/// The REAL shipped 1.4.x (`v1.4.1`) `DeployCfg` put `group_map:` / `admin_auth:` at the TOP LEVEL
+/// (not under `auth:`), used `auth.chain: [tokens]` with `auth.client_tokens`, and could carry
+/// per-module `auth.modules:` caps. Before the fix the migrator only knew the NESTED `auth.group_map`
+/// shape, so a real config passed group_map / admin_auth / modules / `tokens` straight through to a
+/// `deny_unknown_fields` rejection. Everything must now migrate into the 1.5.0 auth shape and
+/// boot-parse.
+#[test]
+fn migrate_real_14x_top_level_auth_surfaces() {
+    let raw = r#"
+auth:
+  chain: [tokens, oidc]
+  upstream_credentials: own
+  client_tokens: [ "${BUSBAR_CLIENT_TOKEN}" ]
+  modules:
+    oidc:
+      allowed_groups: [growth]
+      max_admin_scope: full
+admin_auth: [admin-tokens]
+group_map:
+  growth-eng:
+    allowed_pools: [fast]
+    rpm_limit: 120
+providers: {}
+models: {}
+pools: {}
+"#;
+    let (out, doc) = migrate_to_value(raw);
+
+    // chain: tokens -> keys (deduped), oidc carries its folded max_admin_scope.
+    let chain = dig(&doc, &["auth", "chain"])
+        .unwrap()
+        .as_sequence()
+        .unwrap();
+    assert_eq!(chain[0].as_str(), Some("keys"), "tokens -> keys");
+    assert_eq!(
+        dig(&chain[1], &["oidc", "max_admin_scope"]).and_then(|v| v.as_str()),
+        Some("full"),
+        "auth.modules.oidc.max_admin_scope must fold onto the chain entry"
+    );
+    // top-level group_map -> auth.role_bindings nested under the ONE external module (oidc).
+    assert_eq!(
+        dig(
+            &doc,
+            &[
+                "auth",
+                "role_bindings",
+                "oidc",
+                "growth-eng",
+                "allowed_pools"
+            ]
+        )
+        .and_then(|v| v.as_sequence())
+        .map(|s| s.len()),
+        Some(1),
+        "top-level group_map must migrate to auth.role_bindings.<module>"
+    );
+    // top-level admin_auth -> auth.admin_auth (nested).
+    assert!(
+        dig(&doc, &["auth", "admin_auth"])
+            .and_then(|v| v.as_sequence())
+            .is_some(),
+        "top-level admin_auth must move under auth"
+    );
+    // nothing auth-shaped survives at the ROOT (all would be deny_unknown_fields rejections).
+    for k in ["group_map", "admin_auth", "modules"] {
+        assert!(
+            doc.as_mapping()
+                .unwrap()
+                .get(serde_yaml::Value::from(k))
+                .is_none(),
+            "top-level `{k}` must be gone after migration"
+        );
+    }
+    // allowed_groups has no 1.5.0 home -> an explicit TODO, never a silent drop.
+    assert!(
+        out.todos.iter().any(|t| t.contains("allowed_groups")),
+        "dropping auth.modules.*.allowed_groups must raise a TODO: {:?}",
+        out.todos
+    );
+    // boot-parses.
+    assert!(
+        serde_yaml::from_str::<crate::config::DeployCfg>(&out.yaml).is_ok(),
+        "real top-level 1.4.x auth surfaces must migrate to a bootable config: {:?}",
+        serde_yaml::from_str::<crate::config::DeployCfg>(&out.yaml).err()
+    );
+}
+
+/// The 1.4.x TOP-LEVEL `global_hooks: [<name>]` was a list of REGISTRY names; 1.5.0 wants inline
+/// refs. A registry name must resolve to its inline ref, and a hook that is BOTH named in
+/// global_hooks AND flagged `global: true` must appear exactly ONCE (no duplicate, no leftover bare
+/// name that `--validate` would reject).
+#[test]
+fn migrate_global_hooks_names_resolve_and_dedup() {
+    let raw = r#"
+providers: {}
+models: {}
+pools: {}
+hooks:
+  audit-tap:
+    kind: tap
+    webhook: "https://sidecar.internal/audit"
+    global: true
+global_hooks: [audit-tap]
+"#;
+    let (out, doc) = migrate_to_value(raw);
+    let gh = dig(&doc, &["global_hooks"]).unwrap().as_sequence().unwrap();
+    assert_eq!(
+        gh.len(),
+        1,
+        "the doubly-named global hook must not duplicate: {gh:?}"
+    );
+    assert_eq!(
+        dig(&gh[0], &["module"]).and_then(|v| v.as_str()),
+        Some("webhook"),
+        "the registry name must resolve to its inline module ref"
+    );
+    // no leftover BARE string (a non-strategy bare name is not a valid 1.5.0 global-hook ref).
+    assert!(
+        gh[0].as_str().is_none(),
+        "a bare registry name must not survive"
+    );
+    assert!(
+        serde_yaml::from_str::<crate::config::DeployCfg>(&out.yaml).is_ok(),
+        "global_hooks must migrate to a bootable config: {:?}",
+        serde_yaml::from_str::<crate::config::DeployCfg>(&out.yaml).err()
+    );
+}
+
+/// The detector must NAME every real 1.4.x marker so boot/`--validate` refuse the old format loudly
+/// (P9): the top-level group_map / admin_auth, per-module `auth.modules`, an `auth.chain: [tokens]`,
+/// and a pool `on_exhausted.action`.
+#[test]
+fn detect_real_14x_top_level_and_on_exhausted_markers() {
+    let raw = r#"
+auth:
+  chain: [tokens]
+  modules: { oidc: { max_admin_scope: full } }
+group_map: { r1: { allowed_pools: [fast] } }
+admin_auth: [admin-tokens]
+providers: {}
+models: {}
+pools:
+  primary:
+    members: [ { target: a } ]
+    on_exhausted: { action: "fallback_pool:overflow" }
+"#;
+    let doc: serde_yaml::Value = serde_yaml::from_str(raw).unwrap();
+    let joined = detect_legacy_markers(&doc).join("\n");
+    for expect in [
+        "top-level `group_map:`",
+        "top-level `admin_auth:`",
+        "`auth.modules:`",
+        "`auth.chain: [tokens]`",
+        "on_exhausted.action",
+    ] {
+        assert!(
+            joined.contains(expect),
+            "marker '{expect}' missing from:\n{joined}"
+        );
+    }
+}
+
 /// `price_per_1k_tokens_cents` synthesizes a flagged rate_card entry per model (N cents/1k =
 /// 10N micro-units/token on every tier).
 #[test]

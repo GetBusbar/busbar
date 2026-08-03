@@ -271,6 +271,12 @@ pub(crate) struct HookSchemaView {
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct PluginSchemaView {
     pub(crate) name: String,
+    /// The plugin's semantic version from its manifest. Present on `POST /plugins/inspect` (which
+    /// previews an on-disk candidate's manifest); `null`/absent on `GET /plugins/{file}/schema`, which
+    /// does not surface the version. Declared here so a codegen'd client keeps the field the inspect
+    /// handler always sends, rather than silently dropping it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) version: Option<String>,
     /// The plugin's settings JSON Schema verbatim, or `null` — either because the manifest never
     /// set `settings_schema`, or (distinctly, see `schema_error`) because it did but the value
     /// failed to parse.
@@ -289,6 +295,16 @@ pub(crate) struct PluginSchemaView {
     /// implementing the describe/manifest precedence rule itself (question #3, round-4
     /// correction).
     pub(crate) source: String,
+    /// The plugin's `kind` (`hook` | `secret` | …) from its manifest. Both `GET /plugins/{file}/schema`
+    /// and `POST /plugins/inspect` emit it (`null` only when the plugin cannot be resolved to a
+    /// manifest). Declared so codegen'd clients keep it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) kind: Option<String>,
+    /// The kind-derived restart-scoping default (`busbar_plugin_sign::kind_restart_default`), so
+    /// busbar-ui need not hardcode the kind→default table. Emitted by both schema endpoints (`null`
+    /// only when the plugin has no resolvable manifest/kind). Declared so codegen'd clients keep it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) restart_required_default: Option<bool>,
 }
 
 /// The DESIRED settings side of `hooks/{name}/status`: busbar's registry copy of the hook's settings

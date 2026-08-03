@@ -1,5 +1,11 @@
 use super::*;
 
+/// Slack ε for the [`RequestCtx::debug_assert_within_budget`] failover-budget guard (R6/§5). Generous
+/// on purpose: the guard is a regression tripwire for a path that blocks PAST the whole failover
+/// budget (seconds), so a multi-second ε cannot mask that class of bug while it does absorb scheduler
+/// jitter / a slow CI box. The meaningful, tight bound lives in the property + budget TESTS.
+const BUDGET_ASSERT_EPSILON: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// A compliance restrict captured on the PRIMARY pool that must persist across every failover hop —
 /// including a `fallback_pool` spill to an independent pool. `tags_any` is the eligible tag set,
 /// `on_empty` decides what happens when a hop's candidates carry none of them (fail-closed reject vs
@@ -16,6 +22,11 @@ pub(crate) struct RestrictConstraint {
 pub(crate) struct RequestCtx {
     /// Computed once at start; each hop checks remaining time against this.
     deadline: u64,
+    /// The SAME failover deadline as `deadline`, captured as a monotonic wall-clock instant so the
+    /// `on_exhausted: queue` bound has MILLISECOND precision (R8). `deadline`/`remaining()` are whole
+    /// EPOCH SECONDS — a 250ms `max_ms` is unrepresentable there and a near-second-boundary
+    /// `remaining()` collapses to 0 — so the queue wait budgets against `remaining_ms()` instead.
+    deadline_wall: std::time::Instant,
     /// Accumulated excluded lane indices across hops (already tried).
     pub(crate) excluded: std::collections::HashSet<usize>,
     /// Visited pool names for loop prevention in fallback chains (e.g., A→B→A).
@@ -24,6 +35,18 @@ pub(crate) struct RequestCtx {
     /// reconcile). Re-applied on every downstream hop so a `Restrict` gate's "only these lanes,
     /// ever" guarantee holds across a `fallback_pool` spill — see [`RequestCtx::enforce_restricts`].
     pub(crate) active_restricts: Vec<RestrictConstraint>,
+    /// Why each lane was excluded on the MOST RECENT `pick_among` attempt, in the shared
+    /// [`Unavailable`] taxonomy — recorded by the single exclusion arm (and the sticky fast path) so
+    /// `on_exhausted` dispatch can see the REAL reasons a pool exhausted (queue pre-check, honest
+    /// `Retry-After`). Advisory/observational: it never influences selection (that is the separate
+    /// `local_excluded` set inside `pick_among`), so writing it does not violate the within-pick
+    /// "don't mutate the caller's exclusion set" rule. Cleared at the start of every `pick_among` call
+    /// so it reflects that hop's exhaustion, not a stale earlier one.
+    //
+    // Consumed by the queue/least_bad/Retry-After wiring in a later phase; populated and asserted by
+    // the taxonomy/refactor unit tests now — silence the release-build dead-code lint meanwhile.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) excluded_reasons: Vec<(usize, crate::store::Unavailable)>,
 }
 
 impl RequestCtx {
@@ -31,9 +54,27 @@ impl RequestCtx {
         let start = now();
         Self {
             deadline: start.saturating_add(deadline_secs),
+            // Overflow-safe: `Instant`'s `Add` impl PANICS on overflow (it `.expect()`s internally, in
+            // release too). `deadline_secs` is operator-controlled (`failover.timeout_secs`), so a huge
+            // value would panic the serving task on every request. `checked_add` + a defensive fallback
+            // keeps the data plane crash-free even if config_validate's upper bound is ever bypassed; the
+            // sibling `deadline` above is already saturating for the same reason.
+            //
+            // The fallback is UNREACHABLE in practice — `config_validate` caps `failover.timeout_secs` at
+            // `MAX_FAILOVER_DEADLINE_SECS` (86_400s), far below the `Instant` overflow point — so it is a
+            // pure defensive floor. It is set to the SAME cap (not a smaller stopgap like 3600s) so that
+            // if a huge value ever DID reach here, the fallback never SHORTENS the real budget below what
+            // a valid config could legitimately request.
+            deadline_wall: std::time::Instant::now()
+                .checked_add(std::time::Duration::from_secs(deadline_secs))
+                .unwrap_or_else(|| {
+                    std::time::Instant::now()
+                        + std::time::Duration::from_secs(crate::config::MAX_FAILOVER_DEADLINE_SECS)
+                }),
             excluded: std::collections::HashSet::new(),
             visited_pools: std::collections::HashSet::new(),
             active_restricts: Vec::new(),
+            excluded_reasons: Vec::new(),
         }
     }
 
@@ -84,6 +125,32 @@ impl RequestCtx {
         self.deadline.saturating_sub(now)
     }
 
+    /// Remaining failover budget in MILLISECONDS until the deadline (R8). Used by the `on_exhausted:
+    /// queue` wait so a sub-second `max_ms` is representable and a near-second-boundary budget does not
+    /// collapse to 0 the way `remaining(now) * 1000` would. Saturates to 0 once the deadline passes.
+    pub(crate) fn remaining_ms(&self) -> u64 {
+        self.deadline_wall
+            .saturating_duration_since(std::time::Instant::now())
+            .as_millis() as u64
+    }
+
+    /// R6 / §5 budget contract, as an asserted invariant. `deadline_wall` is captured at ingress as
+    /// `ingress + failover.timeout`, so requiring the wall clock at THIS disposition to be within
+    /// `deadline_wall` plus ε is exactly "wall-clock ingress→disposition ≤ failover.timeout + ε". A
+    /// `debug_assert!` so it runs in dev/CI (test + debug builds) and is compiled out of the release
+    /// request path — it exists to CATCH a selection / queue path that regresses to blocking past the
+    /// failover budget (the exact Bug-1 park pathology), never to change production behaviour. ε is
+    /// deliberately generous ([`BUDGET_ASSERT_EPSILON`]) so the guard never false-fires on scheduler
+    /// jitter or a slow CI box; the property/budget TESTS assert a tighter, meaningful bound.
+    pub(crate) fn debug_assert_within_budget(&self, context: &str) {
+        debug_assert!(
+            std::time::Instant::now() <= self.deadline_wall + BUDGET_ASSERT_EPSILON,
+            "failover budget exceeded at `{context}`: disposition landed more than {}ms past the \
+             failover deadline — a selection/queue path blocked past the budget (R6/§5)",
+            BUDGET_ASSERT_EPSILON.as_millis(),
+        );
+    }
+
     /// Add a lane to the exclusion set (mark as already tried).
     pub(crate) fn exclude(&mut self, idx: usize) {
         self.excluded.insert(idx);
@@ -110,27 +177,40 @@ impl RequestCtx {
     }
 }
 
-/// RAII release for a WON-but-UNDISPATCHED single-flight recovery probe.
+/// RAII release for a WON single-flight recovery probe, covering an async DISPATCH window.
 ///
-/// Once `acquire_for_dispatch_in` wins the probe the cell is HalfOpen + `probe_in_flight == true`; the
-/// flag is normally cleared only when a request records an outcome. Every path between winning the
-/// probe and actually dispatching a request must release it, INCLUDING the implicit path where the
-/// `pick_among` future is DROPPED (client disconnect) while parked at the `timeout(sem.acquire_owned())`
-/// await — no early-return runs on drop, so without this guard the cell stays HalfOpen+probe_in_flight
-/// and the lane is benched until the slow out-of-band prober resets it (the HIGH this fixes).
+/// Once a probe is won the cell is HalfOpen + `probe_in_flight == true`; the flag is normally cleared
+/// only when a request records an outcome. If the future holding the probe is DROPPED mid-dispatch
+/// (client disconnect while the upstream call is in flight) no early-return cleanup runs, so without a
+/// Drop guard the cell stays HalfOpen + probe_in_flight and the lane is benched until the slow
+/// out-of-band prober resets it (the HIGH this fixes).
 ///
-/// `Drop` calls the idempotent `release_probe_in` (CAS HalfOpen→Open + clear flag) while `armed`. The
-/// two paths that hand a LIVE permit to a dispatched request DISARM the guard first, because the
-/// dispatched request now owns the probe and releases it via its recorded outcome.
+/// `Drop` calls the owner-checked `release_probe_owned_in` (CAS HalfOpen→Open + clear flag) while
+/// `armed`. A path that hands the probe to a dispatched request that will record its own outcome
+/// DISARMS the guard (sets `armed = false`) first, because that request now owns the probe.
+///
+/// Where it is used: the on_exhausted degraded dispatch, `engine::walk::forward_once`, constructs one
+/// covering its whole dispatch window — but ONLY when that dispatch actually WON a probe (its
+/// `probe_epoch` arg is `Some`: the `pick_among`/`try_admit_breaker` paths). The least-bad path bypasses
+/// the breaker and owns no probe, so it passes `None` and NO guard is built — it can therefore never
+/// release/revert a probe (in particular, never a probe a concurrent peer won on the same cell). When
+/// built, the guard is armed across every early-return error path (each records a transient first, which
+/// already transitions the cell, so the guard's release is a safe owner-checked no-op) and disarmed the
+/// moment the request records a legitimate SUCCESS (`record_success_in`). Its
+/// only OTHER exerciser is `probe_guard_tests`, the canonical statement of the release/disarm/
+/// owner-check semantics. (The pre-refactor `pick_among` parking loop that once constructed this guard
+/// is gone — `try_admit` is now a single non-async admission that releases a won-but-undispatched probe
+/// internally, with no await between winning the probe and returning.)
 pub(crate) struct ProbeGuard<'a> {
-    pub(crate) store: &'a dyn crate::store::StateStore,
+    pub(crate) store: &'a dyn crate::store::LaneRuntime,
     pub(crate) pool: &'a str,
     pub(crate) lane: usize,
     pub(crate) armed: bool,
-    /// The probe-epoch (owner token) captured when this guard won the probe. Because a guard can be
-    /// dropped LATE - after parking on the permit-wait await while the cell moved on - the drop uses
-    /// the OWNER-CHECKED `release_probe_owned_in` so a stale release cannot revert a NEWER probe (P2
-    /// #4). It is a strict no-op unless the cell's epoch still matches this captured value.
+    /// The probe-epoch (owner token) captured when the probe was won. Because a guard can be dropped
+    /// LATE — after the dispatched request already recorded an outcome and a peer won a NEWER probe on
+    /// the same cell — the drop uses the OWNER-CHECKED `release_probe_owned_in` so a stale release
+    /// cannot revert that newer probe (P2 #4). It is a strict no-op unless the cell's epoch still
+    /// matches this captured value.
     pub(crate) probe_epoch: u64,
 }
 
@@ -175,6 +255,10 @@ pub(crate) async fn pick_among(
 ) -> Option<(usize, Permit, u64)> {
     let t = now();
 
+    // Fresh exclusion reasons for THIS pick attempt (advisory; fed to `on_exhausted`). Cleared here so
+    // a fallback-pool hop that re-runs `pick_among` reports its OWN exhaustion, not a stale earlier one.
+    request_ctx.excluded_reasons.clear();
+
     // Session affinity preference - try sticky lane first if usable (in this pool's breaker view).
     // The hash was taken with `stable_hash` (NOT DefaultHasher, whose seed is randomized per process)
     // at the ingress boundary, so a session pins to the same lane across restarts.
@@ -187,34 +271,19 @@ pub(crate) async fn pick_among(
             // decommission. SWRR (`select_weighted_for`) and the routing-policy preferred walk both
             // already exclude a 0-weight candidate; this sticky fast-path must too, else a session
             // whose hash lands on a drained-but-breaker-healthy member keeps pinning to it on the
-            // NORMAL path — silently defeating drain. `usable_in`/`lane_admissible` only consult
-            // dead/budget/breaker, never weight, so gate on the candidate's weight here.
-            if cands[pos].weight != 0
-                && !request_ctx.excluded.contains(&sticky)
-                && app.store.usable_in(pool_name, sticky, t)
-            {
-                // CLASS GUARD (single-flight recovery probe), sticky fast path: `usable_in` →
-                // `cell_acquire_breaker` transitions an expired-Open lane to HalfOpen and CAS-wins
-                // the single-flight `probe_in_flight` flag as a SIDE EFFECT. If we then fail to get a
-                // concurrency permit, NO request is dispatched on this lane, so neither
-                // `record_success` (→ cell_closed) nor a failure (→ cell_open) ever runs to clear the
-                // probe. Falling through to the SWRR loop without releasing it would leave the lane
-                // wedged HalfOpen + probe_in_flight, benching it until the slow out-of-band prober
-                // resets it — the SAME leak the main loop guards below. So: keep the probe only on the
-                // dispatch (try_acquire success); release it on every other exit before falling through.
-                //
-                // Capture the owner token NOW, synchronously right after `usable_in` (the only place
-                // on this path that could have won a probe), before any await — same discipline as
-                // `ProbeGuard`'s own capture — so a caller releasing after a later yield point can use
-                // the owner-checked release. No `.await` occurs anywhere on this sticky span itself
-                // (`release_probe_in` at the `else` below is safe unowned exactly because of that), but
-                // the returned epoch still needs to be correct for the CALLER's later, post-await
-                // release sites.
-                let epoch = app.store.probe_epoch_in(pool_name, sticky);
-                if let Some(p) = app.store.try_acquire(sticky) {
-                    return Some((sticky, p, epoch));
-                } else {
-                    app.store.release_probe_in(pool_name, sticky);
+            // NORMAL path — silently defeating drain. `try_admit`/`lane_admissible` only consult
+            // dead/budget/breaker/permits, never weight, so gate on the candidate's weight (and the
+            // caller's cross-hop exclusion set) here — those are selection-policy skips, NOT
+            // `Unavailable` reasons, so they are not recorded.
+            if cands[pos].weight != 0 && !request_ctx.excluded.contains(&sticky) {
+                // R6: the sticky fast path uses the SAME admission primitive as the main loop —
+                // `try_admit` wins-or-releases the single-flight probe and grabs-or-fails the permit
+                // atomically (probe ownership transfers via `Admit.probe_epoch` on success; on failure
+                // it releases the probe internally, EXACTLY, so nothing wedges HalfOpen). On
+                // fall-through we RECORD the `Unavailable` reason instead of dropping it silently.
+                match app.store.try_admit(pool_name, sticky, t) {
+                    Ok(admit) => return Some((sticky, admit.permit, admit.probe_epoch)),
+                    Err(reason) => request_ctx.excluded_reasons.push((sticky, reason)),
                 }
             }
         }
@@ -321,82 +390,26 @@ pub(crate) async fn pick_among(
             },
         };
 
-        // The dispatched lane does the breaker probe acquisition exactly once here (Open→HalfOpen
-        // CAS). If it lost the single-flight probe race, drop it locally and re-select another lane.
-        if !app
-            .store
-            .acquire_for_dispatch_in(pool_name, picked_lane_idx, now())
-        {
-            local_excluded.insert(picked_lane_idx);
-            continue;
-        }
-
-        // CLASS GUARD (single-flight recovery probe): from here on we have WON the probe
-        // (`acquire_for_dispatch_in` returned true, leaving the cell HalfOpen + `probe_in_flight ==
-        // true`). The probe is normally released only when an outcome is recorded (`record_success`
-        // → cell_closed, or a failure → cell_open). EVERY abandon of the probe below — explicit early
-        // return OR an IMPLICIT future-drop while parked on the permit await — must release it, else
-        // the flag stays `true`, the cell stays HalfOpen, and `usable_for` benches the lane until the
-        // slow out-of-band prober resets it (the HIGH this fixes). `ProbeGuard` enforces that on Drop;
-        // the only paths that legitimately keep the probe are the two that actually DISPATCH a request
-        // (the immediate `try_acquire` hit and the `Ok(Ok(permit))` permit-wait success), which DISARM
-        // the guard before returning the live permit — the dispatched request then owns the probe and
-        // releases it via its recorded outcome.
-        let mut probe_guard = ProbeGuard {
-            store: app.store.as_ref(),
-            pool: pool_name,
-            lane: picked_lane_idx,
-            armed: true,
-            // Capture the owner token NOW - synchronously right after winning, before any await, so the
-            // read sees exactly the probe we won (the cell is HalfOpen, single-flight; no peer can win a
-            // new one in between). A late guard-drop then only reverts THIS probe, never a successor.
-            probe_epoch: app.store.probe_epoch_in(pool_name, picked_lane_idx),
-        };
-
-        // Try to acquire the concurrency permit immediately.
-        if let Some(p) = app.store.try_acquire(picked_lane_idx) {
-            // Live permit → dispatched request owns the probe; disarm so Drop is a no-op.
-            let epoch = probe_guard.probe_epoch;
-            probe_guard.armed = false;
-            return Some((picked_lane_idx, p, epoch));
-        }
-
-        // Permits saturated: park (not busy-spin) until a slot frees OR the deadline passes. A
-        // bounded `timeout` acquire yields the task efficiently and guarantees we never block past
-        // the request deadline (unbounded spinning here was a head-of-line-blocking DoS surface).
-        let remaining = request_ctx.remaining(now());
-        if remaining == 0 {
-            // Deadline already passed before we could even park — `probe_guard` drops here and
-            // releases the won-but-undispatched probe so the lane stays re-probeable.
-            return None;
-        }
-        let sem = app.store.lane_semaphore(picked_lane_idx);
-        // If this future is DROPPED while parked on the await below (client disconnect), `probe_guard`
-        // drops with it and releases the probe — the leak A1 fixes.
-        match tokio::time::timeout(
-            tokio::time::Duration::from_secs(remaining),
-            sem.acquire_owned(),
-        )
-        .await
-        {
-            // Got a permit before the deadline — a genuine dispatch; disarm the guard (the request
-            // itself will record the success/failure that releases the probe). Only BOUNDED lanes
-            // ever park here: an unbounded lane's `try_acquire` above always succeeds.
-            Ok(Ok(permit)) => {
-                let epoch = probe_guard.probe_epoch;
-                probe_guard.armed = false;
-                return Some((
-                    picked_lane_idx,
-                    crate::store::Permit::Bounded(permit),
-                    epoch,
-                ));
+        // ONE admission path, ONE exclusion arm (design §2). `try_admit` is the thin composition over
+        // the breaker check + `try_acquire`: it wins-or-loses the single-flight probe and
+        // grabs-or-fails the permit atomically, handing back the held resources on success or the
+        // shared `Unavailable` taxonomy on failure. The two former `insert;continue` sites
+        // (breaker-lost @ the old ~330, at-capacity @ the old ~379) are now the SAME `Err(reason)` arm
+        // — they were always the same kind of thing (a lane that can't take this request), differing
+        // only in the reason carried forward. `try_admit` also owns the probe lifecycle: on the
+        // at-capacity path it releases the won-but-undispatched probe EXACTLY (owner-checked, no leak,
+        // no double-release), and on success the probe ownership transfers out via `admit.probe_epoch`
+        // (the dispatched request releases it after recording its outcome). So no `ProbeGuard` is
+        // needed here anymore — there is no await between winning the probe and returning/excluding,
+        // and the release that `ProbeGuard::drop` used to perform now happens inside `try_admit`.
+        match app.store.try_admit(pool_name, picked_lane_idx, now()) {
+            Ok(admit) => return Some((picked_lane_idx, admit.permit, admit.probe_epoch)),
+            Err(reason) => {
+                local_excluded.insert(picked_lane_idx);
+                // Record WHY (fed to `on_exhausted`); does not affect selection.
+                request_ctx.excluded_reasons.push((picked_lane_idx, reason));
+                continue;
             }
-            // Semaphore closed (shutdown) — no request dispatched; `probe_guard` drops and releases.
-            Ok(Err(_)) => return None,
-            // Deadline hit while waiting for a permit — no request dispatched; `probe_guard` drops and
-            // releases so the recovered lane isn't permanently benched, then give up so the caller can
-            // 503/failover.
-            Err(_) => return None,
         }
     }
 }

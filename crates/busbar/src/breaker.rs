@@ -41,7 +41,7 @@ pub(crate) enum StatusClass {
     ContextLength,
 }
 
-/// Final disposition that drives the StateStore write path.
+/// Final disposition that drives the LaneRuntime write path.
 /// Per ADR-0002 +:
 ///   - ClientFault: caller's bad input → relay verbatim, record NOTHING
 ///   - TransientUpstream: transient failure → cooldown + err counter

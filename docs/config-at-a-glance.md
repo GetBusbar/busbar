@@ -57,7 +57,8 @@ auth:
   admin_auth:                   # chain gating /api/v1/admin/*
     - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }   # the operator credential (secret ref)
   upstream_credentials: own     # own (default) | passthrough (forward the caller's key upstream)
-  # signing_key: { file: /run/secrets/busbar-signing.key }   # signs virtual keys; absent = gen 0600
+  signing_key: { file: /run/secrets/busbar-signing.key }     # REQUIRED with keys; no auto-gen
+  #                                                          # (`busbar --generate-signing-key`)
   role_bindings:                # role → policy, NESTED BY MODULE (for kind:auth / IdP modules)
     oidc:
       platform: { group: acme, admin_scope: full }   # admin_scope: read-only|hooks-register|mint|full
@@ -147,7 +148,7 @@ limits:                         # global operational caps  → #limits
 health:                         # process-wide probe fallbacks  → #health-probing
   { default_probe_interval_secs: 30, default_probe_timeout_secs: 5 }
 metrics:                        # OPT-IN — omit the block and metrics are OFF  → #metrics
-  { buffer_seconds: 60, key_gauge_limit: 2000 }   # buffer_seconds is REQUIRED
+  { buffer_seconds: 60, key_gauge_limit: 2000 }   # buffer_seconds REQUIRED when the metrics block is present
 routing: { default_policy_timeout_ms: 1 }
 advanced:                       # internal tuning (normally omitted)
   { rate_sweep_interval: 256, usage_flush_interval_ms: 100 }

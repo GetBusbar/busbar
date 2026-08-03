@@ -2,10 +2,14 @@ use super::*;
 use crate::config::{PoolCfg, PoolMember};
 
 /// The inbound-concurrency cap is added as a layer ONLY when `max_inbound_concurrent > 0`. This
-/// drives `apply_inbound_concurrency_limit` over a minimal router whose handler PARKS on a barrier
-/// (held until we release it), so two requests are genuinely concurrent. With cap = 1 the second
-/// request cannot complete until the first releases its permit (the layer is present); with cap =
-/// 0 both complete immediately (NO layer — today's behavior).
+/// drives `apply_inbound_concurrency_limit` over a minimal router whose handler PARKS on a barrier of
+/// size 2 (released only once BOTH requests arrive). With cap = 1 the second request is SHED (Bug 4:
+/// load-shed) rather than admitted, so it never reaches the barrier — the first handler waits out its
+/// 300ms timeout ALONE and the run takes ≥ 300ms. With cap = 0 (NO layer) both requests reach the
+/// barrier concurrently and release immediately (< 250ms). The dedicated shed semantics (the 503 the
+/// second request receives) are asserted separately by
+/// [`test_inbound_over_capacity_sheds_503_not_queued`]; this test only pins the add-layer-when-`>0`
+/// rule via the timing difference.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_inbound_concurrency_layer_added_only_when_positive() {
     use std::sync::Arc;
@@ -58,8 +62,8 @@ async fn test_inbound_concurrency_layer_added_only_when_positive() {
     );
     let uncapped_elapsed = run_router(uncapped).await;
 
-    // Capped (cap = 1): the layer serializes admission, so the two requests can NOT both reach the
-    // barrier at once → the first handler waits out its 300ms timeout before the second is admitted.
+    // Capped (cap = 1): the layer admits one and SHEDS the other, so the two requests can NOT both
+    // reach the barrier at once → the first handler waits out its 300ms timeout alone.
     let capped = apply_inbound_concurrency_limit(
         make_router(Arc::new(Barrier::new(2)), Arc::new(Notify::new())),
         1,
@@ -76,6 +80,79 @@ async fn test_inbound_concurrency_layer_added_only_when_positive() {
         "cap=1 must serialize admission: the first request waits out its timeout before the \
              second is admitted, got {capped_elapsed:?}"
     );
+}
+
+/// Bug 4 — `limits.max_inbound_concurrent` must SHED excess inbound requests with a 503, not queue
+/// them behind the cap. With cap = 1 and one request in-flight holding the only admission permit, a
+/// second concurrent request must return 503 + Retry-After IMMEDIATELY — not block until the first
+/// completes. On the unfixed code (`GlobalConcurrencyLimitLayer` alone) the second request QUEUES for
+/// a permit, so the `timeout` wrapper fires (RED); after the load-shed fix it sheds fast (GREEN).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_inbound_over_capacity_sheds_503_not_queued() {
+    use std::sync::Arc;
+    use tokio::sync::Notify;
+
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let router = {
+        let started = started.clone();
+        let release = release.clone();
+        Router::new().route(
+            "/block",
+            axum::routing::get(move || {
+                let started = started.clone();
+                let release = release.clone();
+                async move {
+                    // Signal that the (only) admission permit is now held, then hold it until released.
+                    started.notify_one();
+                    release.notified().await;
+                    "ok"
+                }
+            }),
+        )
+    };
+    let router = apply_inbound_concurrency_limit(router, 1);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let url = format!("http://{addr}/block");
+
+    // Request 1 acquires the single admission permit and parks in the handler.
+    let url1 = url.clone();
+    let req1 = tokio::spawn(async move { reqwest::Client::new().get(&url1).send().await });
+    started.notified().await; // permit is now held
+
+    // Request 2 arrives with the cap full. It MUST be shed (503) immediately, not queued. The
+    // `timeout` is the shed-not-queued assertion: on the unfixed (queueing) code this hangs until
+    // request 1 releases, so the timeout fires and `.expect` panics (RED).
+    let resp = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        reqwest::Client::new().get(&url).send(),
+    )
+    .await
+    .expect("excess inbound request must be shed immediately, not queued behind the cap (Bug 4)")
+    .expect("send completes");
+
+    assert_eq!(
+        resp.status().as_u16(),
+        503,
+        "an over-capacity inbound request must be shed with 503, not queued"
+    );
+    assert!(
+        resp.headers().get(reqwest::header::RETRY_AFTER).is_some(),
+        "the inbound-shed 503 must carry a Retry-After header"
+    );
+
+    // Let request 1 finish so the server task drains cleanly.
+    release.notify_one();
+    let r1 = req1.await.unwrap().expect("request 1 completes");
+    assert_eq!(
+        r1.status().as_u16(),
+        200,
+        "the admitted request still succeeds"
+    );
+    server.abort();
 }
 
 fn pool(members: Vec<PoolMember>) -> PoolCfg {
@@ -1842,4 +1919,35 @@ async fn serve_listener_actually_serves_real_http_traffic() {
         .await
         .expect("serve_listener must actually stop once shutdown fires")
         .unwrap();
+}
+
+/// SECURITY (signing-key stdout-only contract): `--generate-signing-key` prints the secret ONLY on
+/// stdout; the stderr guidance must be secret-free so a stderr capture (systemd journal, CI/build log,
+/// terminal scrollback) can never leak the master signing key. Enforced here, not merely commented.
+/// RED before the fix: the stderr guidance embedded `export BUSBAR_SIGNING_KEY={hex}`.
+#[test]
+fn signing_key_guidance_omits_secret() {
+    use governance::signing::{TokenSigner, DEFAULT_KID};
+    // A real generated key (64 hex chars), so the assertion is against actual secret material.
+    let signer = TokenSigner::generate(DEFAULT_KID).expect("generate a signing key");
+    let hex = hex::encode(signer.secret_bytes());
+    assert_eq!(hex.len(), 64, "sanity: an ed25519 secret is 64 hex chars");
+
+    let (stdout, stderr) = signing_key_command_output(&hex);
+
+    // STDOUT carries the secret verbatim (and ONLY the secret).
+    assert_eq!(
+        stdout, hex,
+        "the secret must be printed verbatim on stdout for `> /run/secrets/...` capture"
+    );
+    // STDERR guidance must NOT contain the secret anywhere.
+    assert!(
+        !stderr.contains(&hex),
+        "the stderr guidance must be secret-free — it must never embed the generated key"
+    );
+    // And it must point the operator at the stdout value with a non-secret placeholder.
+    assert!(
+        stderr.contains("export BUSBAR_SIGNING_KEY=<paste-the-64-hex-key-printed-above>"),
+        "the guidance must use a non-secret placeholder pointing at the stdout key"
+    );
 }

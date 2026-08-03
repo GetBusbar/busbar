@@ -807,7 +807,8 @@ pub(crate) async fn create_key(
             who,
             &AdminError::Conflict(
                 "signed-token minting is unavailable: no signing key is configured (set \
-             auth.signing_key, or let busbar generate one on first boot)"
+             auth.signing_key - busbar no longer auto-generates one; run \
+             `busbar --generate-signing-key`)"
                     .into(),
             ),
             Cond::NoSigningKey,

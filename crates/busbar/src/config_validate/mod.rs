@@ -716,6 +716,20 @@ pub(crate) fn validate_with_unset(
                     "pool '{}' failover.timeout_secs must be >= 1; a 0 budget rejects the primary attempt before it runs (every request 503s)",
                     pool_name
                 ));
+            } else if failover.timeout_secs > crate::config::MAX_FAILOVER_DEADLINE_SECS {
+                // Upper bound: an operator-controlled `timeout_secs` feeds `RequestCtx::new`, which
+                // builds an `Instant` deadline; a value near `u64::MAX` (a plausible extra-zeros typo,
+                // syntactically valid YAML) would otherwise overflow that math. 24h is already far
+                // beyond any sane per-request failover budget, so fail CLOSED here rather than accept a
+                // value that can only be a mistake. (`RequestCtx::new` is also overflow-safe as a
+                // belt-and-braces second line of defence.)
+                errors.push(format!(
+                    "pool '{}' failover.timeout_secs ({}) exceeds the maximum of {} s (24h); a per-request failover budget larger than a day is a fat-finger typo. Lower it to <= {} s",
+                    pool_name,
+                    failover.timeout_secs,
+                    crate::config::MAX_FAILOVER_DEADLINE_SECS,
+                    crate::config::MAX_FAILOVER_DEADLINE_SECS
+                ));
             }
             // Rule 6c: Each `failover.exclusions` entry is a MEMBER MODEL NAME removed from this
             // pool's candidate set at runtime (the selector benches it; primary and failover never
@@ -772,6 +786,33 @@ pub(crate) fn validate_with_unset(
                         ));
                     }
                 }
+            }
+        }
+        // Rule 7c: `on_exhausted: { queue: { max_ms } }` bounds the queue wait. A `max_ms` of 0 is a
+        // no-wait queue (degenerates to reject with extra machinery), and a `max_ms` LONGER than the
+        // whole failover budget can never be reached — the wait is already clamped to the remaining
+        // budget at runtime (`min(max_ms, budget_remaining)`), so a value above it is a silent
+        // dead-letter the operator meant as a real bound. Validate against the RESOLVED per-pool
+        // timeout (the pool's own `failover.timeout_secs`, else the global default) — the same value
+        // the runtime clamps against — so `--validate` catches both foot-guns with an actionable
+        // message rather than shipping a queue that never waits or never reaches its ceiling.
+        if let Some(crate::config::OnExhaustedCfg::Queue { max_ms }) = &pool_cfg.on_exhausted {
+            let resolved_timeout_secs = pool_cfg
+                .failover
+                .as_ref()
+                .map(|f| f.timeout_secs)
+                .unwrap_or(crate::config::DEFAULT_FAILOVER_DEADLINE_SECS);
+            let budget_ms = resolved_timeout_secs.saturating_mul(1000);
+            if *max_ms == 0 {
+                errors.push(format!(
+                    "pool '{}' on_exhausted.queue.max_ms must be > 0; a 0 wait never queues (it is just `reject` with extra machinery)",
+                    pool_name
+                ));
+            } else if *max_ms > budget_ms {
+                errors.push(format!(
+                    "pool '{}' on_exhausted.queue.max_ms ({} ms) exceeds the resolved failover budget ({} s = {} ms); a queue longer than the whole failover budget is clamped to it at runtime and never reaches its ceiling. Lower max_ms to <= {} ms or raise failover.timeout_secs",
+                    pool_name, max_ms, resolved_timeout_secs, budget_ms, budget_ms
+                ));
             }
         }
         // Any other well-formed action (reject / least_bad) needs no dangling-target check.
@@ -1216,6 +1257,27 @@ pub(crate) fn validate_with_unset(
                      chain:\n        - keys\n"
                 ));
             }
+        }
+        // S2 (1.5.1): busbar NO LONGER auto-generates a signing key at boot (the 1.5.0 behavior
+        // wrote `busbar-signing.key` beside the config, which boot-looped a read-only config mount
+        // with a misleading Permission-denied). When the deployment actually VERIFIES busbar-signed
+        // keys - the built-in `keys` module is in the data-plane chain - `auth.signing_key` is
+        // REQUIRED. Fail CLOSED here (at `--validate`/boot) with an actionable message instead of a
+        // runtime failure. A deployment that never puts `keys` in the chain issues no signed tokens
+        // and needs no signing key.
+        let verifies_signed_keys = auth
+            .chain
+            .iter()
+            .any(|e| e.module == crate::config::KEYS_MODULE);
+        if verifies_signed_keys && auth.signing_key.is_none() {
+            errors.push(
+                "auth.signing_key is required for signed-token auth (auth.chain names the \
+                 built-in `keys` verifier), but none is set - and busbar no longer auto-generates \
+                 one. Generate a key with `busbar --generate-signing-key`, then set auth.signing_key \
+                 to a secret reference for it ({file: /path} or {env: VAR} - a SHARED secret across \
+                 nodes for a fleet)."
+                    .to_string(),
+            );
         }
         // `upstream_credentials: passthrough` with a NON-EMPTY configured api_key on a provider is a
         // configuration foot-gun: under passthrough the configured key is NEVER forwarded - the
