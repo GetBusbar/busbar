@@ -34,6 +34,11 @@ Per-lane fields in the response:
 | `max_concurrent` | Lane's concurrency cap. |
 | `inflight` | Currently executing requests. |
 | `free_slots` | `max_concurrent - inflight`. |
+| `available` | Free concurrency permits for a bounded lane, or the string `"unbounded"` when `max_concurrent` is omitted. |
+| `at_capacity` | `true` when a bounded lane is at its `max_concurrent` limit and is therefore shedding/spilling rather than queueing. |
+| `availability` | Unified availability from the shared `classify` taxonomy: `"available"` when the lane would admit a request, or the reason it can't — `"breaker_open"`, `"at_capacity"`, `"dead"`, `"budget_exhausted"`, `"probe_in_flight"`, or `"shedding"`. |
+| `recovery_hint_ms` | Honest lower bound (ms) on when an unavailable lane could next serve (`null` when available or the reason has no self-recovery, e.g. dead/budget). |
+| `breaker_state` | `"closed"`, `"half_open"`, or `"open"` — the independent breaker axis (can be `"open"` and `at_capacity: true` at the same time). |
 | `ok` | Lifetime successful upstream responses. |
 | `err` | Lifetime recorded upstream failures. |
 | `client_fault` | Lifetime 4xx responses attributed to callers (not counted against breaker). |
@@ -96,6 +101,10 @@ Scraping is not required for correctness. A gateway with metrics enabled and not
 | `busbar_bucket_spend_cents` | gauge | `bucket` | Derived spend per BUDGET-GROUP bucket (tokens x current rate card; the flat fee counts against key buckets) for its current window. |
 | `busbar_bucket_budget_remaining_cents` | gauge | `bucket` | Budget-group cap minus derived spend. The external-alerting hook: point Alertmanager at 80% burn - Busbar ships the hard 100% stop only, alerts live outside the core. |
 | `busbar_lane_state` | gauge | `pool`, `lane` | Per-(pool, lane-index) circuit-breaker health: `0` = Closed (healthy), `1` = HalfOpen (cooling, probe admitted), `2` = Open (tripped). Side-effect-free at scrape time. |
+| `busbar_lane_available` | gauge | `pool`, `lane` | Unified availability from the shared `classify` taxonomy (the same one routing dispatches on): `1` = the lane would admit a request right now, `0` = unavailable for ANY reason (breaker Open, at-capacity, dead, budget, probe-in-flight). Pair with `busbar_lane_state` (breaker) and `busbar_lane_available_permits` (capacity) to see which axis is the cause. Replaces the former `busbar_lane_at_capacity`. Side-effect-free. |
+| `busbar_lane_recovery_hint_ms` | gauge | `pool`, `lane` | Honest lower bound (ms) on when an unavailable lane could next serve, from the same `recovery_hint_ms` that feeds `Retry-After`: breaker `until` for an Open lane, the at-capacity floor (2000ms) for a saturated one. `0` when available or the reason has no self-recovery (dead/budget). Side-effect-free. |
+| `busbar_lane_available_permits` | gauge | `pool`, `lane` | Free concurrency permits for a bounded lane (`0` = saturated) — the independent capacity axis. Unbounded lanes emit no sample. Side-effect-free. |
+| `busbar_pool_queued` | gauge | `pool` | Requests currently parked in the `on_exhausted: queue` bounded wait, per pool. Reads `0` until the queue policy is wired. Side-effect-free. |
 | `busbar_route_policy_selections_total` | counter | `pool`, `policy` | Requests where a routing policy produced a usable ranked order. Only incremented on a successful `Order` outcome; abstains and on-error fallbacks are not counted. |
 | `busbar_route_policy_rejections_total` | counter | `pool`, `policy`, `status` | Requests deliberately rejected by a routing hook's `reject` verb (a 4xx to the caller, no upstream dispatched). A guardrail saying no, not a failure. |
 | `busbar_billing_truncated_total` | counter | none | A same-protocol non-stream response whose billing-side buffer hit the translate-body cap before the terminal `usage` block, so tokens could not be parsed and the request billed zero. The client response is unaffected; only the billing side-channel was capped. Alert on a non-zero rate to catch an over-cap billing gap. |

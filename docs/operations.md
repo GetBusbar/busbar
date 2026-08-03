@@ -208,6 +208,11 @@ Three things are worth understanding before you scale out:
   continuing to audit to its in-memory ring and state snapshot rather than corrupting
   the shared log. Point at most one node at a durable audit store; `GET /audit` is
   per-instance either way (it serves that node's in-memory ring, never the store).
+- **The signing key (`auth.signing_key`) must be the SAME secret on every node.**
+  It is fleet-shared: every node verifying the same virtual-key tokens must resolve
+  the same ed25519 signing key. A token minted on one instance fails verification on
+  another if they disagree, so point every node's `auth.signing_key` at the identical
+  secret reference (never let each instance generate or resolve its own).
 
 So: for a gateway without group limits, scale out freely behind an LB. With limits,
 either accept the per-node cap semantics over a shared store, or keep enforcement on
