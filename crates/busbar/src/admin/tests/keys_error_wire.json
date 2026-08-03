@@ -65,7 +65,7 @@
     "status": 409
   },
   "mint_no_signing_key": {
-    "body": "{\"error\":{\"code\":\"conflict\",\"message\":\"signed-token minting is unavailable: no signing key is configured (set auth.signing_key, or let busbar generate one on first boot)\"}}",
+    "body": "{\"error\":{\"code\":\"conflict\",\"message\":\"signed-token minting is unavailable: no signing key is configured (set auth.signing_key - busbar no longer auto-generates one; run `busbar --generate-signing-key`)\"}}",
     "content_type": "application/json",
     "status": 409
   },

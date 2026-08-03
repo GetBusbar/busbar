@@ -79,12 +79,50 @@ pub(crate) async fn stats(
         .filter(|&i| lane_visible(i))
         .map(|i| {
             let snap = app.store.snapshot(i, t);
+            // Phase 2: `availability` is rendered from the SHARED `Unavailable` taxonomy (the same
+            // `classify` routing dispatches on), so /stats can't drift from behaviour. `Ok` → the
+            // sentinel "available"; `Err` → the variant name + its `recovery_hint_ms` (null when the
+            // reason has no self-recovery, e.g. dead/budget). `breaker_state` and `at_capacity` remain
+            // SEPARATE, orthogonal axes (R9): a saturated Open lane shows breaker_state="open" AND
+            // at_capacity=true AND availability="breaker_open", so operators can see why its recovery
+            // probe (which needs a dispatch it can't win) never fires — not collapsed into one string.
+            let (availability, recovery_hint_ms) = match snap.availability {
+                Ok(()) => ("available", Value::Null),
+                Err(reason) => (
+                    reason.variant_name(),
+                    match reason.recovery_hint_ms(t) {
+                        Some(ms) => json!(ms),
+                        None => Value::Null,
+                    },
+                ),
+            };
+            let breaker_state = match snap.breaker_state {
+                crate::store::BreakerState::Closed => "closed",
+                crate::store::BreakerState::Open { .. } => "open",
+                crate::store::BreakerState::HalfOpen => "half_open",
+            };
             json!({
                 "model": snap.model,
                 "provider": snap.provider,
                 "max_concurrent": snap.max_concurrent,
+                // Alias of `max_concurrent` under the design §8 field name (the lane's concurrency
+                // limit). Kept alongside `max_concurrent` for backward compatibility.
+                "limit": snap.max_concurrent,
                 "inflight": snap.inflight,
                 "free_slots": snap.free_slots,
+                // Bug 1 capacity signal: a saturated lane is now externally distinguishable from an
+                // idle or unbounded one. `available` is the free permit count for a bounded lane, or
+                // the string "unbounded" when `max_concurrent` is omitted; `at_capacity` is true iff
+                // a bounded lane is at its limit (available == 0) and is therefore shedding/spilling.
+                "available": match snap.available {
+                    Some(n) => json!(n),
+                    None => json!("unbounded"),
+                },
+                "at_capacity": snap.at_capacity,
+                // Phase 2 unified availability signal + independent breaker axis (R9).
+                "availability": availability,
+                "recovery_hint_ms": recovery_hint_ms,
+                "breaker_state": breaker_state,
                 "ok": snap.ok,
                 "err": snap.err,
                 "client_fault": snap.client_fault,
@@ -361,6 +399,136 @@ mod tests {
         let pools = body["pools"].as_object().expect("pools object");
         assert!(pools.contains_key("pool-a") && pools.contains_key("pool-b"));
         assert_eq!(body["lanes"].as_array().expect("lanes array").len(), 3);
+    }
+
+    /// Bug 1 capacity signal: `/stats` must externally distinguish a saturated (at-capacity) lane
+    /// from an idle one. A bounded lane's `available`/`at_capacity` flip when its last permit is
+    /// held; an unbounded lane reports `available: "unbounded"` and is never at capacity.
+    #[tokio::test]
+    async fn test_stats_reports_at_capacity_when_lane_saturated() {
+        let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+        let app = TestApp::new()
+            .lane(
+                LaneSpec::new("bounded", crate::proto::Protocol::openai(), "http://b")
+                    .max(1)
+                    .sem(sem.clone()),
+            )
+            .lane(
+                LaneSpec::new("unbounded", crate::proto::Protocol::openai(), "http://u")
+                    .max(tokio::sync::Semaphore::MAX_PERMITS),
+            )
+            .pool("p", &[(0, 1), (1, 1)])
+            .build();
+
+        // Idle: the bounded lane has its one permit free; the unbounded lane reports "unbounded".
+        let body = stats_json(app.clone(), GovCtx::default()).await;
+        let lane = |b: &Value, model: &str| -> Value {
+            b["lanes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|l| l["model"] == model)
+                .cloned()
+                .unwrap_or_else(|| panic!("lane {model} missing from /stats"))
+        };
+        let bounded = lane(&body, "bounded");
+        assert_eq!(
+            bounded["available"],
+            json!(1),
+            "idle bounded lane: 1 permit free"
+        );
+        assert_eq!(bounded["at_capacity"], json!(false));
+        // Phase 2: the unified availability signal is rendered from `classify` — an idle, healthy
+        // bounded lane reads "available" with a null recovery hint and a closed breaker.
+        assert_eq!(bounded["availability"], json!("available"));
+        assert_eq!(bounded["recovery_hint_ms"], Value::Null);
+        assert_eq!(bounded["breaker_state"], json!("closed"));
+        let unbounded = lane(&body, "unbounded");
+        assert_eq!(unbounded["available"], json!("unbounded"));
+        assert_eq!(unbounded["at_capacity"], json!(false));
+        assert_eq!(unbounded["availability"], json!("available"));
+
+        // Saturate the bounded lane by holding its only permit; the signal must flip.
+        let _held = sem
+            .clone()
+            .try_acquire_owned()
+            .expect("hold the bounded lane's only permit");
+        let body = stats_json(app, GovCtx::default()).await;
+        let bounded = lane(&body, "bounded");
+        assert_eq!(
+            bounded["available"],
+            json!(0),
+            "a saturated bounded lane reports 0 available permits"
+        );
+        assert_eq!(
+            bounded["at_capacity"],
+            json!(true),
+            "a saturated bounded lane must be flagged at_capacity in /stats"
+        );
+        // Phase 2: the same saturation the `at_capacity` flag reports now ALSO flows through the
+        // unified `availability` signal (breaker healthy, so the reason is at-capacity), with the
+        // honest at-capacity recovery floor (2s) instead of a deceptive Retry-After=1. The breaker
+        // axis stays independently "closed" — the two are orthogonal (R9).
+        assert_eq!(
+            bounded["availability"],
+            json!("at_capacity"),
+            "a saturated lane's availability must classify at_capacity"
+        );
+        assert_eq!(
+            bounded["recovery_hint_ms"],
+            json!(2000),
+            "at-capacity recovery hint floors at the shipped 2s, never a deceptive 1"
+        );
+        assert_eq!(bounded["breaker_state"], json!("closed"));
+    }
+
+    /// R9: a lane that is BOTH breaker-Open AND at capacity can never close its breaker (its recovery
+    /// probe needs a dispatch it cannot win). `/stats` must make that combination legible — the
+    /// breaker axis and the capacity axis are exposed INDEPENDENTLY, never collapsed into one string.
+    #[tokio::test]
+    async fn test_stats_surfaces_open_and_at_capacity_independently() {
+        let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+        let app = TestApp::new()
+            .lane(
+                LaneSpec::new("wedged", crate::proto::Protocol::openai(), "http://w")
+                    .max(1)
+                    .sem(sem.clone()),
+            )
+            .pool("p", &[(0, 1)])
+            .build();
+
+        // Trip the pool cell Open (cooldown far in the future) AND hold the only permit.
+        let t = now();
+        app.store.force_open_in("p", 0, t + 60);
+        let _held = sem
+            .clone()
+            .try_acquire_owned()
+            .expect("hold the only permit");
+
+        let body = stats_json(app, GovCtx::default()).await;
+        let lane = body["lanes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|l| l["model"] == "wedged")
+            .cloned()
+            .expect("wedged lane present");
+
+        // Breaker axis: Open. Capacity axis: at capacity, 0 permits. BOTH visible independently.
+        assert_eq!(
+            lane["breaker_state"],
+            json!("open"),
+            "the Open breaker must be visible so operators see why recovery never fires; got {lane}"
+        );
+        assert_eq!(lane["at_capacity"], json!(true), "capacity axis: saturated");
+        assert_eq!(lane["available"], json!(0), "0 free permits");
+        // Breaker-first collapse: `availability` classifies BreakerOpen (checked before capacity),
+        // but the operator still learns about the saturation from the independent `at_capacity` flag.
+        assert_eq!(
+            lane["availability"],
+            json!("breaker_open"),
+            "availability classifies breaker-open (breaker-first); got {lane}"
+        );
     }
 
     async fn models_ids(app: Arc<App>, gov: GovCtx) -> Vec<String> {

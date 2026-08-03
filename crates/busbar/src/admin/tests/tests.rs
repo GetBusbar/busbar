@@ -11981,6 +11981,55 @@ async fn drive_plugin_rollback_errors() {
 
 /// THE CONDITION-WITNESS DEBT LEDGER — a ratchet, not a suppression.
 ///
+/// Witness driver for `POST /plugins/inspect`'s declared 400 (`Validation`): a body whose
+/// `tarball_b64` is not valid base64 is rejected with `invalid_request`. The wire behavior itself is
+/// also asserted in `test_admin_v1_plugins_inspect_previews_without_installing`; this driver exists
+/// so `declared_error_set_is_exactly_what_the_handlers_emit` witnesses the emission through the v1
+/// router's recording layer without depending on test order.
+async fn drive_plugin_inspect_errors() {
+    crate::metrics::init();
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-admin-inspect-witness-{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let overlay = dir.join("overlay.yaml");
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let app = TestApp::new()
+        .governance(gov)
+        .plugins_dir(dir.clone())
+        .plugins_cfg(crate::config::PluginsCfg::default())
+        .overlay_path(overlay)
+        .build();
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+
+    // tarball_b64 that is not valid base64 → AdminError::Validation → 400 invalid_request. This is the
+    // witness for the operation's declared 400.
+    let r = client
+        .post(format!("http://{addr}/api/v1/admin/plugins/inspect"))
+        .header("x-admin-token", "admintok")
+        .header("content-type", "application/json")
+        .body(r#"{"file":"witness-1.0.0.tar.gz","tarball_b64":"not-base64!!"}"#.to_string())
+        .send()
+        .await
+        .unwrap();
+    let status = r.status().as_u16();
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(status, 400, "invalid base64 tarball_b64: {body}");
+    assert_eq!(body["error"]["code"], "invalid_request");
+
+    server.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// `declared_error_set_is_exactly_what_the_handlers_emit` requires every declared `(operation,
 /// ErrKind, Cond)` to be witness-backed. Where an operation declares the SAME `ErrKind` under two or
 /// more conditions, an untagged emission proves only that SOME condition fired -- so the emission
@@ -12086,6 +12135,7 @@ async fn declared_error_set_is_exactly_what_the_handlers_emit() {
     drive_keys_error_surface().await;
     drive_plugin_rollback_errors().await;
     drive_plugin_reload_errors().await;
+    drive_plugin_inspect_errors().await;
     drive_hook_escalation_errors().await;
     drive_key_cap_and_delegation_errors().await;
 

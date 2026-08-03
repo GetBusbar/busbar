@@ -232,6 +232,38 @@ const BUCKET_BUDGET_REMAINING_CENTS: &str = "busbar_bucket_budget_remaining_cent
 /// matches the proxy engine counter sites so the gauge and counters can be PromQL-joined on `lane`).
 const LANE_STATE: &str = "busbar_lane_state";
 
+/// Per-(pool, lane-model) availability gauge (Phase 2 — the UNIFIED capacity+breaker signal). `1` =
+/// the lane's per-(pool, lane) `classify` returns `Ok` (it would admit a request right now); `0` = it
+/// returns `Err(_)` for ANY reason (breaker Open, at-capacity, dead, budget, probe-in-flight). This
+/// is rendered from the SAME `classify` taxonomy routing dispatches on, so the gauge cannot drift from
+/// behaviour. The ORTHOGONAL axes stay separately legible (R9): `busbar_lane_state` exposes the
+/// breaker and `busbar_lane_available_permits` exposes capacity, so an Open+at-capacity lane is not
+/// hidden behind this one collapsed bool. Replaces the ad-hoc `busbar_lane_at_capacity`. Same
+/// `pool`/`lane` label convention as `busbar_lane_state`.
+const LANE_AVAILABLE: &str = "busbar_lane_available";
+
+/// Per-(pool, lane-model) recovery hint in milliseconds (Phase 2), rendered from the SAME
+/// `Unavailable::recovery_hint_ms` that feeds `Retry-After`/least_bad. `0` when the lane is available
+/// or the reason has no self-recovery basis (dead/budget); otherwise the honest lower bound on when
+/// the lane could next serve (breaker `until`, the at-capacity floor, etc.). Same label convention.
+const LANE_RECOVERY_HINT_MS: &str = "busbar_lane_recovery_hint_ms";
+
+/// Per-(pool, lane-model) in-flight request count (held concurrency permits) — the depth companion to
+/// `busbar_lane_available`. Emitted for every lane. Same label convention as the gauges above.
+const LANE_INFLIGHT: &str = "busbar_lane_inflight";
+
+/// Per-(pool, lane-model) available concurrency permits, for BOUNDED lanes only (an unbounded lane
+/// counts nothing, so it emits no sample here). The capacity depth signal (`0` = saturated), kept
+/// INDEPENDENT of `busbar_lane_available` so the capacity axis stays legible (R9). Same label
+/// convention as the gauges above.
+const LANE_AVAILABLE_PERMITS: &str = "busbar_lane_available_permits";
+
+/// Per-pool count of requests currently PARKED in the `on_exhausted: queue` bounded wait. Phase 2
+/// DEFINES and wires this gauge (rendered at scrape time, reading 0 for every pool) so Phase 3's queue
+/// implementation only has to increment/decrement a counter — it need not touch `metrics.rs`. Label
+/// `pool` = configured pool name (bounded), the same convention as the lane gauges.
+const POOL_QUEUED: &str = "busbar_pool_queued";
+
 /// Prometheus text exposition format content-type (version 0.0.4), returned by the `/metrics`
 /// scrape handler. Defined as a constant so the string is not duplicated across handler and tests.
 const PROMETHEUS_CONTENT_TYPE: &str = "text/plain; version=0.0.4";
@@ -471,6 +503,31 @@ fn describe() {
         LANE_STATE,
         Unit::Count,
         "Per-(pool,lane) circuit-breaker health: 0=healthy, 1=half-open, 2=tripped (scrape-time)"
+    );
+    describe_gauge!(
+        LANE_AVAILABLE,
+        Unit::Count,
+        "Per-(pool,lane) availability from the shared classify taxonomy: 1 = would admit, 0 = unavailable for any reason (breaker/capacity/dead/budget) (scrape-time)"
+    );
+    describe_gauge!(
+        LANE_RECOVERY_HINT_MS,
+        Unit::Milliseconds,
+        "Per-(pool,lane) honest lower bound (ms) on when an unavailable lane could next serve; 0 when available or no self-recovery basis (scrape-time)"
+    );
+    describe_gauge!(
+        LANE_INFLIGHT,
+        Unit::Count,
+        "Per-(pool,lane) in-flight requests (held concurrency permits) (scrape-time)"
+    );
+    describe_gauge!(
+        LANE_AVAILABLE_PERMITS,
+        Unit::Count,
+        "Per-(pool,lane) available concurrency permits for a BOUNDED lane (scrape-time; unbounded lanes emit no sample)"
+    );
+    describe_gauge!(
+        POOL_QUEUED,
+        Unit::Count,
+        "Per-pool requests currently parked in the on_exhausted queue bounded wait (scrape-time; 0 until Phase 3 wires the queue)"
     );
 }
 
@@ -799,10 +856,25 @@ fn refresh_scrape_gauges(app: &App) {
     //   dead || (!usable && cooldown > 0) → 2 (hard-down or all cells Open)
     //   usable && cooldown > 0            → 1 (some cells admit but aggregate cooling down)
     //   usable && cooldown == 0           → 0 (healthy / all cells Closed)
+    //
+    // `snapshot()` is LANE-GLOBAL (indexed by lane, not scoped to a pool) and `now` is fixed for the
+    // whole scrape, so a lane shared across K pools would otherwise recompute the identical (now-2x)
+    // breaker-cell fold K times. Memoize it per lane_idx here and reuse across every pool that shares
+    // the lane (and across the by_model loop below). Per-POOL facts (`classify(pool, …)`,
+    // `cooldown_remaining_in(pool, …)`) stay per-iteration — only the lane-global snapshot is cached.
+    let mut snap_cache: std::collections::HashMap<usize, crate::store::LaneSnapshot> =
+        std::collections::HashMap::new();
     for (pool_name, weighted_lanes) in &app.pools {
+        // Phase 3: render the LIVE per-pool `on_exhausted: queue` park depth. `queued_depth` is the
+        // RAII-maintained source incremented while a request waits on a candidate lane's semaphore
+        // (see `walk.rs` `handle_queue` + `state::QueuedDepth`); a pool that never queues reads 0.
+        metrics::gauge!(POOL_QUEUED, "pool" => pool_name.clone())
+            .set(app.queued_depth.depth(pool_name) as f64);
         for wl in weighted_lanes {
             let lane_idx = wl.idx;
-            let snap = app.store.snapshot(lane_idx, now);
+            let snap = snap_cache
+                .entry(lane_idx)
+                .or_insert_with(|| app.store.snapshot(lane_idx, now));
             // Per-pool cooldown check: use `cooldown_remaining_in` for this specific (pool, lane)
             // cell, not the lane-wide aggregate from the snapshot (which may reflect a different
             // pool's cell). This gives per-pool accuracy without touching the FSM.
@@ -821,9 +893,13 @@ fn refresh_scrape_gauges(app: &App) {
             metrics::gauge!(
                 LANE_STATE,
                 "pool" => pool_name.clone(),
-                "lane" => lane_label
+                "lane" => lane_label.clone()
             )
             .set(state_val);
+            // Phase 2: render the lane's availability from the SAME per-(pool, lane) `classify`
+            // routing dispatches on — this IS the pool cell the pool routes through.
+            let avail = app.store.classify(pool_name, lane_idx, now);
+            emit_lane_gauges(pool_name, &lane_label, snap, &avail, now);
         }
     }
 
@@ -836,7 +912,11 @@ fn refresh_scrape_gauges(app: &App) {
     // 2026-07-09). The breaker cell is the lane-default `""` cell, matching model-routed
     // fault attribution.
     for (model, &lane_idx) in &app.by_model {
-        let snap = app.store.snapshot(lane_idx, now);
+        // Reuse the lane-global snapshot cached in the pool loop above (or compute+cache on miss for a
+        // pool-less lane) — same lane_idx, same fixed `now`.
+        let snap = snap_cache
+            .entry(lane_idx)
+            .or_insert_with(|| app.store.snapshot(lane_idx, now));
         let cooldown = app.store.cooldown_remaining_in("", lane_idx, now);
         let state_val: f64 = if snap.dead || (cooldown > 0 && !snap.usable) {
             2.0
@@ -851,6 +931,50 @@ fn refresh_scrape_gauges(app: &App) {
             "lane" => app.lanes[lane_idx].model.clone()
         )
         .set(state_val);
+        // Direct-model lane: classify against the lane-default (`""`) cell, matching model-routed
+        // fault attribution (the same cell `LANE_STATE` reads via `cooldown_remaining_in("", ...)`).
+        let avail = app.store.classify("", lane_idx, now);
+        emit_lane_gauges(model, &app.lanes[lane_idx].model.clone(), snap, &avail, now);
+    }
+}
+
+/// Emit the per-(pool, lane) availability + depth gauges (Phase 2). `avail` is the SAME
+/// `classify(pool, lane, now)` verdict routing dispatches on, so `busbar_lane_available` (1=Ok/0=Err)
+/// and `busbar_lane_recovery_hint_ms` (from `Unavailable::recovery_hint_ms`, 0 when available or no
+/// self-recovery basis) can never drift from behaviour. `busbar_lane_inflight` is always emitted;
+/// `busbar_lane_available_permits` only for BOUNDED lanes (an unbounded lane has no meaningful permit
+/// count, so it emits no sample rather than a misleading infinite one). The breaker (`LANE_STATE`) and
+/// capacity (`available_permits`) axes stay INDEPENDENT of the collapsed `LANE_AVAILABLE` bool (R9).
+/// Shared by the pool loop and the by_model loop so the two label conventions (`pool`=pool name /
+/// `pool`=model name) stay identical to `LANE_STATE`.
+fn emit_lane_gauges(
+    pool_label: &str,
+    lane_label: &str,
+    snap: &crate::store::LaneSnapshot,
+    avail: &Result<(), crate::store::Unavailable>,
+    now: u64,
+) {
+    // Build the `pool`/`lane` labels ONCE per lane (the two `to_string()` allocations) and clone the
+    // pair per gauge, instead of re-allocating both Strings on each of the 3-4 gauge emits (was a
+    // closure called every time). The two label values are identical across every gauge here.
+    let pool_l = metrics::Label::new("pool", pool_label.to_string());
+    let lane_l = metrics::Label::new("lane", lane_label.to_string());
+    metrics::gauge!(LANE_AVAILABLE, vec![pool_l.clone(), lane_l.clone()]).set(if avail.is_ok() {
+        1.0
+    } else {
+        0.0
+    });
+    // Honest recovery hint: 0 when available (Ok) or the reason has no self-recovery basis (None).
+    let hint_ms = avail
+        .as_ref()
+        .err()
+        .and_then(|u| u.recovery_hint_ms(now))
+        .unwrap_or(0);
+    metrics::gauge!(LANE_RECOVERY_HINT_MS, vec![pool_l.clone(), lane_l.clone()])
+        .set(hint_ms as f64);
+    metrics::gauge!(LANE_INFLIGHT, vec![pool_l.clone(), lane_l.clone()]).set(snap.inflight as f64);
+    if let Some(available) = snap.available {
+        metrics::gauge!(LANE_AVAILABLE_PERMITS, vec![pool_l, lane_l]).set(available as f64);
     }
 }
 
@@ -884,7 +1008,7 @@ pub(crate) async fn handler(crate::state::CurrentApp(app): crate::state::Current
 mod tests {
     use super::*;
     use crate::governance::{GovState, MemoryStore, Store, VirtualKey};
-    use crate::store::StateStore;
+    use crate::store::LaneRuntime;
     use crate::test_support::{LaneSpec, TestApp};
     use std::sync::Arc;
 
@@ -1257,6 +1381,237 @@ mod tests {
         assert!(
             out.contains("pool=\"pool-x\""),
             "pool label must appear; got:\n{out}"
+        );
+    }
+
+    /// Find the trailing numeric value of the exposition line for `metric` labeled with `pool`.
+    fn gauge_value(out: &str, metric: &str, pool: &str) -> Option<f64> {
+        // Match the metric name at an EXACT boundary (`name{`), not a bare prefix: `busbar_lane_available`
+        // is a prefix of `busbar_lane_available_permits`, so a `starts_with(metric)` match picked
+        // whichever of the two happened to render first — and prometheus group order is non-deterministic
+        // (recorder HashMap iteration), which made every prefix-of-another-metric assertion flaky. All
+        // these gauges carry labels, so requiring the `{` after the name is exact and stable.
+        let needle = format!("{metric}{{");
+        out.lines()
+            .find(|l| {
+                !l.starts_with('#')
+                    && l.starts_with(&needle)
+                    && l.contains(&format!("pool=\"{pool}\""))
+            })
+            .and_then(|l| l.rsplit(' ').next())
+            .and_then(|v| v.trim().parse::<f64>().ok())
+    }
+
+    /// Phase 2 (was `test_scrape_gauges_lane_at_capacity_flips_on_saturation`): `/metrics` renders
+    /// per-lane availability from the UNIFIED `classify` taxonomy. On saturation, `busbar_lane_available`
+    /// flips 1→0 (the renamed, inverted successor to the ad-hoc `busbar_lane_at_capacity`),
+    /// `busbar_lane_available_permits` drops 1→0, `busbar_lane_inflight` rises 0→1, and
+    /// `busbar_lane_recovery_hint_ms` reports the honest at-capacity floor (2000ms).
+    #[test]
+    fn test_scrape_gauges_lane_available_flips_on_saturation() {
+        init();
+
+        let sem = Arc::new(tokio::sync::Semaphore::new(1));
+        let app = TestApp::new()
+            .lane(
+                LaneSpec::new("cap-model", crate::proto::Protocol::openai(), "http://c")
+                    .max(1)
+                    .sem(sem.clone()),
+            )
+            .pool("cap-pool", &[(0, 1)])
+            .build();
+
+        // Idle: available, one permit, no inflight, no recovery hint.
+        refresh_scrape_gauges(&app);
+        let out = render();
+        assert_eq!(
+            gauge_value(&out, LANE_AVAILABLE, "cap-pool"),
+            Some(1.0),
+            "an idle bounded lane must report available=1; got:\n{out}"
+        );
+        assert_eq!(
+            gauge_value(&out, LANE_AVAILABLE_PERMITS, "cap-pool"),
+            Some(1.0),
+            "an idle max_concurrent=1 lane has 1 available permit; got:\n{out}"
+        );
+        assert_eq!(
+            gauge_value(&out, LANE_INFLIGHT, "cap-pool"),
+            Some(0.0),
+            "an idle lane has 0 inflight; got:\n{out}"
+        );
+        assert_eq!(
+            gauge_value(&out, LANE_RECOVERY_HINT_MS, "cap-pool"),
+            Some(0.0),
+            "an available lane has recovery_hint_ms=0; got:\n{out}"
+        );
+
+        // The renamed gauge fully replaces the ad-hoc one — the old series must be gone.
+        assert!(
+            !out.contains("busbar_lane_at_capacity"),
+            "the ad-hoc busbar_lane_at_capacity gauge must be removed; got:\n{out}"
+        );
+
+        // Saturate by holding the only permit → the unified gauges must flip.
+        let _held = sem
+            .clone()
+            .try_acquire_owned()
+            .expect("hold the only permit");
+        refresh_scrape_gauges(&app);
+        let out = render();
+        assert_eq!(
+            gauge_value(&out, LANE_AVAILABLE, "cap-pool"),
+            Some(0.0),
+            "a saturated bounded lane must report available=0; got:\n{out}"
+        );
+        assert_eq!(
+            gauge_value(&out, LANE_AVAILABLE_PERMITS, "cap-pool"),
+            Some(0.0),
+            "a saturated bounded lane must report 0 available permits; got:\n{out}"
+        );
+        assert_eq!(
+            gauge_value(&out, LANE_INFLIGHT, "cap-pool"),
+            Some(1.0),
+            "the held permit is 1 inflight; got:\n{out}"
+        );
+        assert_eq!(
+            gauge_value(&out, LANE_RECOVERY_HINT_MS, "cap-pool"),
+            Some(2000.0),
+            "an at-capacity lane's recovery hint floors at 2000ms; got:\n{out}"
+        );
+    }
+
+    /// The doc contract: an UNBOUNDED lane (no `max_concurrent`) emits NO `busbar_lane_available_permits`
+    /// sample (rather than a misleading infinite/zero one), so PromQL rules can treat the gauge's mere
+    /// PRESENCE as "this lane is bounded". The lane is still scraped (`busbar_lane_available` is present),
+    /// but the permits gauge must be absent for it.
+    #[test]
+    fn test_scrape_gauges_unbounded_lane_omits_available_permits() {
+        init();
+
+        // `max >= Semaphore::MAX_PERMITS` is the store's unbounded sentinel (no `max_concurrent`).
+        let app = TestApp::new()
+            .lane(
+                LaneSpec::new("unb-model", crate::proto::Protocol::openai(), "http://u")
+                    .max(tokio::sync::Semaphore::MAX_PERMITS),
+            )
+            .pool("unb-pool", &[(0, 1)])
+            .build();
+
+        refresh_scrape_gauges(&app);
+        let out = render();
+        // The lane IS scraped (availability present)…
+        assert_eq!(
+            gauge_value(&out, LANE_AVAILABLE, "unb-pool"),
+            Some(1.0),
+            "an unbounded lane is still scraped and reports available=1; got:\n{out}"
+        );
+        // …but its available-permits gauge must be ABSENT (no meaningful count for an unbounded lane).
+        assert_eq!(
+            gauge_value(&out, LANE_AVAILABLE_PERMITS, "unb-pool"),
+            None,
+            "an unbounded lane must emit NO busbar_lane_available_permits sample; got:\n{out}"
+        );
+    }
+
+    /// R9 in `/metrics`: a breaker-Open lane reports `busbar_lane_available=0` with a breaker-derived
+    /// `busbar_lane_recovery_hint_ms`, while the INDEPENDENT `busbar_lane_state` breaker gauge reads
+    /// tripped and `busbar_lane_available_permits` still exposes the capacity axis — the two are never
+    /// collapsed into a single signal.
+    #[test]
+    fn test_scrape_gauges_breaker_open_lane_unavailable() {
+        init();
+
+        let app = TestApp::new()
+            .lane(LaneSpec::new(
+                "brk-model",
+                crate::proto::Protocol::openai(),
+                "http://b",
+            ))
+            .pool("brk-pool", &[(0, 1)])
+            .build();
+
+        // Trip the pool cell Open with a cooldown 30s out.
+        let t = crate::state::now();
+        app.store.force_open_in("brk-pool", 0, t + 30);
+
+        refresh_scrape_gauges(&app);
+        let out = render();
+        assert_eq!(
+            gauge_value(&out, LANE_AVAILABLE, "brk-pool"),
+            Some(0.0),
+            "a breaker-Open lane must classify unavailable; got:\n{out}"
+        );
+        // Independent breaker axis: LANE_STATE reads tripped (2).
+        assert_eq!(
+            gauge_value(&out, LANE_STATE, "brk-pool"),
+            Some(2.0),
+            "the independent breaker gauge must read tripped; got:\n{out}"
+        );
+        // Breaker-derived recovery hint (~30s = 30000ms), NOT the at-capacity floor.
+        assert_eq!(
+            gauge_value(&out, LANE_RECOVERY_HINT_MS, "brk-pool"),
+            Some(30000.0),
+            "recovery hint must be the breaker's until, ~30000ms; got:\n{out}"
+        );
+    }
+
+    /// Phase 2 defines `busbar_pool_queued{pool}` so Phase 3's queue never touches metrics.rs. It must
+    /// appear (reading 0) for every configured pool on the very first scrape.
+    #[test]
+    fn test_scrape_gauges_pool_queued_defined_reads_zero() {
+        init();
+        let app = TestApp::new()
+            .lane(LaneSpec::new(
+                "q-model",
+                crate::proto::Protocol::openai(),
+                "http://q",
+            ))
+            .pool("q-pool", &[(0, 1)])
+            .build();
+        refresh_scrape_gauges(&app);
+        let out = render();
+        assert_eq!(
+            gauge_value(&out, POOL_QUEUED, "q-pool"),
+            Some(0.0),
+            "busbar_pool_queued must be defined and read 0 for each pool; got:\n{out}"
+        );
+    }
+
+    /// Phase 3 wiring: `busbar_pool_queued` now renders the LIVE `queued_depth` source. Park a request
+    /// (via the same RAII `QueuedDepth::park` guard `handle_queue` holds while waiting) and the gauge
+    /// must read the real depth, not the literal 0 Phase 2 defined.
+    #[test]
+    fn test_scrape_gauges_pool_queued_reads_live_depth() {
+        init();
+        // Unique pool/model labels: the `metrics` recorder is process-global, so sharing a label with
+        // another test would cross-contaminate this gauge across tests.
+        let app = TestApp::new()
+            .lane(LaneSpec::new(
+                "q-live-model",
+                crate::proto::Protocol::openai(),
+                "http://q",
+            ))
+            .pool("q-live-pool", &[(0, 1)])
+            .build();
+
+        // Hold a park guard, as a real queued request would for the duration of its wait.
+        let guard = app.queued_depth.park("q-live-pool");
+        refresh_scrape_gauges(&app);
+        let out = render();
+        assert_eq!(
+            gauge_value(&out, POOL_QUEUED, "q-live-pool"),
+            Some(1.0),
+            "busbar_pool_queued must reflect the live park depth (1 while parked); got:\n{out}"
+        );
+
+        // Dropping the guard (request left the queue) returns the depth to 0.
+        drop(guard);
+        refresh_scrape_gauges(&app);
+        let out = render();
+        assert_eq!(
+            gauge_value(&out, POOL_QUEUED, "q-live-pool"),
+            Some(0.0),
+            "busbar_pool_queued must return to 0 once the parked request leaves; got:\n{out}"
         );
     }
 

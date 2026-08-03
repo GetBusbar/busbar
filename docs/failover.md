@@ -99,11 +99,12 @@ pools:
     on_exhausted: least_bad    # degraded but not a hard error
 ```
 
-Three actions are available:
+Four actions are available:
 
-- **`reject`** (default) — return `503` with `Retry-After` set to the soonest member's cooldown expiry.
-- **`least_bad`** — select the member whose cooldown expires soonest and send the request anyway, even though its breaker is Open, with a loud degraded-service warning.
+- **`reject`** (default) — return `503` with `Retry-After`. When a member is in breaker cooldown, `Retry-After` is the soonest genuine cooldown expiry; when exhaustion is pure saturation (every member at its `max_concurrent` limit, breakers closed), it is a small saturation floor rather than the misleading `1`.
+- **`least_bad`** — select the least-bad member — the one whose cooldown expires soonest that still has a free concurrency permit — and send the request anyway, even though its breaker is Open, with a loud degraded-service warning. A soonest member that is itself at capacity is skipped in favour of a servable sibling rather than returning a hard `503`.
 - **`{ fallback_pool: <name> }`** — route to another named pool. Loop-guarded: cycles through the fallback chain are detected and broken.
+- **`{ queue: { max_ms: <ms> } }`** — wait a **bounded** time for a concurrency permit to free on an at-capacity member, then dispatch on the freed lane. The waiter acquires directly on the candidate lanes' own FIFO semaphores, so a freed permit wakes **exactly one** waiter (no lost wakeup, no thundering herd). The wait is bounded by `min(max_ms, remaining failover budget)` — it can never block past `failover.timeout_secs` — and the moment it wins a permit it **re-checks the breaker** on that lane (which may have tripped Open while queued); a lane whose breaker opened while waiting is dropped and the wait continues on the rest. On deadline, a closed semaphore, or no remaining candidates it falls through to `reject` (`503` + `Retry-After`). Queueing only helps **at-capacity** (saturation) exhaustion: if every excluded member is dead / budget-exhausted / breaker-open, nothing will free a slot, so the wait is skipped and it sheds immediately. `max_ms` is validated `> 0` and `<=` the resolved failover budget (`failover.timeout_secs × 1000`). Live park depth is exported as `busbar_pool_queued{pool}`.
 
 The full value reference, including the accepted alias spellings for each keyword, lives in **[Configuration → `on_exhausted`](/docs/configuration/#on_exhausted)**.
 

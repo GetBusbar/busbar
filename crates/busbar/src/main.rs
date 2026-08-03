@@ -100,7 +100,7 @@ use auth::AuthMiddleware;
 
 use proto::ProtocolRegistry;
 use state::{App, Lane, WeightedLane};
-use store::{InMemoryStore, LaneData};
+use store::{HealthState, LaneData};
 
 // The upstream-request timeout, pool-idle, and request-body caps that used to live here as `const`s
 // are now operator-tunable (`limits.upstream_request_timeout_secs` / `pool_max_idle_per_host` /
@@ -187,6 +187,7 @@ fn handle_cli_flags() -> Option<i32> {
             Some(0)
         }
         Some("--validate") => Some(validate_config_command()),
+        Some("--generate-signing-key") => Some(generate_signing_key_command()),
         Some("--list-plugins") => Some(list_plugins_command()),
         Some("--migrate-config") => Some(migrate_config_command(args.next())),
         Some("--help" | "-h") => {
@@ -208,6 +209,10 @@ USAGE:
                         mechanically convert a 1.4.x config to the 1.5.0 shape: prints the new
                         YAML to stdout (with TODO/WARNING comments where a human must decide)
                         and a change summary to stderr; ZERO side effects, nothing is written
+    busbar --generate-signing-key
+                        mint a fresh ed25519 signing key (64 hex chars) to stdout with a paste-
+                        ready auth.signing_key snippet on stderr; ZERO side effects, nothing is
+                        written — you place it in config.yaml (or wire it as a shared secret)
     busbar --print-metadata-blocklist
                         print the effective cloud-metadata SSRF denylist and exit
 
@@ -1858,15 +1863,6 @@ pub(crate) fn plugins_preflight(
     Ok(registry)
 }
 
-/// Resolve the KEY-SIGNING key (S2, 1.5.0). When `auth.signing_key` is set, resolve it via the
-/// secret seam to the ed25519 secret material (32 raw bytes, or 64 hex chars). When ABSENT,
-/// GENERATE a keypair on first boot and PERSIST it 0600 beside the config (dev zero-config), so a
-/// restart reuses the same key and previously-minted tokens keep verifying. Fleet deployments set
-/// `auth.signing_key` to a shared secret so every node shares the key. Returns `None` only when
-/// governance itself is not going to sign (there is no auth block AND no generated-key path is
-/// desired) - in practice a signer is always produced so mint works out of the box.
-///
-/// FAIL-CLOSED: a configured-but-unresolvable / malformed signing key refuses boot.
 /// Resolve the operator ADMIN credential — the `admin-tokens` chain entry's `token:` secret ref —
 /// with the BLANK-TOKEN guard. Shared by boot and the apply/reload path so the two cannot drift.
 ///
@@ -1901,108 +1897,121 @@ fn resolve_admin_token(
     Ok(Some(token))
 }
 
+/// Parse resolved bytes into a 32-byte ed25519 secret: accept RAW 32 bytes or 64 hex chars. Shared
+/// by the signing-key resolver and the `--generate-signing-key` self-check.
+fn parse_signing_secret(bytes: &[u8]) -> Result<[u8; 32], String> {
+    if bytes.len() == 32 {
+        let mut out = [0u8; 32];
+        out.copy_from_slice(bytes);
+        return Ok(out);
+    }
+    if let Ok(s) = std::str::from_utf8(bytes) {
+        let s = s.trim();
+        if s.len() == 64 {
+            if let Ok(v) = hex::decode(s) {
+                let mut out = [0u8; 32];
+                out.copy_from_slice(&v);
+                return Ok(out);
+            }
+        }
+    }
+    Err(
+        "auth.signing_key must resolve to a 32-byte ed25519 secret key (raw 32 bytes or 64 hex \
+         characters)"
+            .to_string(),
+    )
+}
+
+/// Resolve the KEY-SIGNING key (S2). `auth.signing_key` is a reference to an EXISTING secret
+/// (env/file/plugin) resolving to the ed25519 secret material (32 raw bytes, or 64 hex chars) busbar
+/// mints + verifies virtual-key tokens with. Fleet-shared: every node resolves the SAME secret so
+/// they verify each other's tokens.
+///
+/// 1.5.1 BREAKING CHANGE: busbar NO LONGER auto-generates and persists a signing key at boot (the
+/// 1.5.0 behavior wrote `busbar-signing.key` beside the config, which boot-looped a read-only config
+/// mount with a misleading Permission-denied). When `auth.signing_key` is absent this returns `None`;
+/// `config_validate` fails CLOSED at `--validate`/boot if the deployment actually uses signed-token
+/// auth (the `keys` verifier in the chain), and the mint path fails closed with a clear message
+/// otherwise. Generate a key with `busbar --generate-signing-key`.
+///
+/// FAIL-CLOSED: a configured-but-unresolvable / malformed signing key refuses boot.
 fn resolve_signing_key(
     auth: Option<&config::AuthCfg>,
     resolver: &config::secret::SecretResolver,
-    config_path: Option<&std::path::Path>,
 ) -> Result<Option<governance::signing::TokenSigner>, String> {
     use governance::signing::{TokenSigner, DEFAULT_KID};
 
-    // Parse resolved bytes into a 32-byte ed25519 secret: accept RAW 32 bytes or 64 hex chars.
-    fn parse_secret(bytes: &[u8]) -> Result<[u8; 32], String> {
-        if bytes.len() == 32 {
-            let mut out = [0u8; 32];
-            out.copy_from_slice(bytes);
-            return Ok(out);
-        }
-        if let Ok(s) = std::str::from_utf8(bytes) {
-            let s = s.trim();
-            if s.len() == 64 {
-                if let Ok(v) = hex::decode(s) {
-                    let mut out = [0u8; 32];
-                    out.copy_from_slice(&v);
-                    return Ok(out);
-                }
-            }
-        }
-        Err(
-            "auth.signing_key must resolve to a 32-byte ed25519 secret key (raw 32 bytes or 64 hex \
-             characters)"
-                .to_string(),
+    let Some(sk) = auth.and_then(|a| a.signing_key.as_ref()) else {
+        // No configured key: busbar does not generate one (1.5.1). A deployment that verifies
+        // busbar-signed keys is REQUIRED to provide it (enforced fail-closed by config_validate);
+        // one that never issues signed tokens simply has no signer.
+        return Ok(None);
+    };
+    let bytes = resolver.resolve(sk).map_err(|e| {
+        format!(
+            "auth.signing_key did not resolve: {e}. auth.signing_key is a reference to an EXISTING \
+             secret (env/file/plugin) - it does NOT generate a key. Provide the key first (a \
+             32-byte raw or 64-hex-char ed25519 secret: `busbar --generate-signing-key`, or \
+             `openssl rand -hex 32`), or OMIT auth.signing_key entirely if this deployment never \
+             issues busbar-signed keys."
         )
-    }
-
-    if let Some(sk) = auth.and_then(|a| a.signing_key.as_ref()) {
-        let bytes = resolver
-            .resolve(sk)
-            .map_err(|e| format!("auth.signing_key did not resolve: {e}"))?;
-        let secret = parse_secret(&bytes)?;
-        return Ok(Some(TokenSigner::from_secret_bytes(&secret, DEFAULT_KID)));
-    }
-
-    // No configured signing key: generate-and-persist 0600 for dev zero-config. The persistence
-    // path sits beside the config file (or the CWD when running ephemerally) so a restart reuses
-    // it. If the file already exists (a prior boot generated it), LOAD it instead of regenerating -
-    // otherwise every restart would invalidate every outstanding token.
-    let key_path = config_path
-        .and_then(|p| p.parent())
-        .unwrap_or_else(|| std::path::Path::new("."))
-        .join("busbar-signing.key");
-    match std::fs::read(&key_path) {
-        Ok(bytes) => {
-            let secret = parse_secret(&bytes).map_err(|e| {
-                format!(
-                    "the persisted signing key at '{}' is invalid: {e}. Remove it to regenerate \
-                     (this invalidates every outstanding key), or provide auth.signing_key.",
-                    key_path.display()
-                )
-            })?;
-            tracing::info!(path = %key_path.display(), "loaded the persisted signing key");
-            Ok(Some(TokenSigner::from_secret_bytes(&secret, DEFAULT_KID)))
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            let signer = TokenSigner::generate(DEFAULT_KID)
-                .map_err(|e| format!("could not generate a signing key: {e}"))?;
-            persist_signing_key(&key_path, &signer.secret_bytes())?;
-            tracing::warn!(
-                path = %key_path.display(),
-                "no auth.signing_key configured - GENERATED an ed25519 signing key and persisted it \
-                 0600 (dev zero-config). For a fleet, set auth.signing_key to a shared secret so \
-                 every node shares the key."
-            );
-            Ok(Some(signer))
-        }
-        Err(e) => Err(format!(
-            "cannot read the persisted signing key '{}': {e}",
-            key_path.display()
-        )),
-    }
+    })?;
+    let secret = parse_signing_secret(&bytes)?;
+    Ok(Some(TokenSigner::from_secret_bytes(&secret, DEFAULT_KID)))
 }
 
-/// Persist a generated signing key 0600 (owner read/write only) via a temp-file + rename so a
-/// concurrent reader never sees a torn key. On Unix the temp file is CREATED 0600 atomically (mode set
-/// at open, never briefly world-readable — L4); on other platforms the OS default applies (best-effort).
-/// The bytes are hex-encoded (64 chars) so the file is a plain text secret an operator can also drop in
-/// via `auth.signing_key: { file: ... }`.
-fn persist_signing_key(path: &std::path::Path, secret: &[u8; 32]) -> Result<(), String> {
-    let hex = hex::encode(secret);
-    // Publish via the crate's ONE durable-write choke point ([`crate::durable::write_with`]) with the
-    // signing-key posture carried in `DurableOpts`:
-    // * `mode: Some(0o600)` — L4: the temp (and therefore the published key) is created 0600 AT
-    // OPEN, so the plaintext ed25519 key — the 1.5.0 key-minting root of trust — is NEVER briefly
-    // world-readable between write and a later chmod (the old TOCTOU window). On non-unix the OS
-    // default applies (the sensitive-key concern is the multi-user unix host).
-    // * `exclusive: true` — anti-pre-plant (O_EXCL refuses to adopt a temp we did not just create)
-    // AND anti-wedge (the primitive pre-removes a stale temp of its own name first, so a leftover
-    // from a crashed first-boot run never permanently wedges retry). The parent-dir fsync (so the
-    // rename's directory entry survives power loss — a lost entry silently invalidates every minted
-    // key) is done by the primitive too. No bespoke code here: the posture is entirely in the opts.
-    let opts = crate::durable::DurableOpts {
-        mode: Some(0o600),
-        exclusive: true,
+/// `--generate-signing-key`: mint a fresh ed25519 signing secret from the OS RNG and PRINT it (as 64
+/// hex chars) plus a paste-ready `auth.signing_key` snippet + a fleet note. ZERO side effects - like
+/// `--validate`/`--migrate-config`, it writes nothing; the operator PLACES the key (busbar never
+/// edits their config). Exit 0 on success, 1 if the OS entropy source is unavailable.
+fn generate_signing_key_command() -> i32 {
+    use governance::signing::{TokenSigner, DEFAULT_KID};
+    let signer = match TokenSigner::generate(DEFAULT_KID) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("busbar: could not generate a signing key: {e}");
+            return 1;
+        }
     };
-    crate::durable::write_with(path, hex.as_bytes(), opts)
-        .map_err(|e| format!("cannot install signing key '{}': {e}", path.display()))
+    let hex = hex::encode(signer.secret_bytes());
+    let (secret_line, guidance) = signing_key_command_output(&hex);
+    // The secret (64 hex chars) goes to STDOUT ONLY so it is pipeable/captureable
+    // (`busbar --generate-signing-key > /run/secrets/busbar-signing.key`); the guidance goes to
+    // STDERR so a capture gets ONLY the key — the guidance itself must therefore be secret-free
+    // (SECURITY: it must never embed `hex`, or the master key leaks into any sink that captures stderr:
+    // systemd journal, CI/build logs, terminal scrollback). See `signing_key_command_output`.
+    println!("{secret_line}");
+    eprintln!("{guidance}");
+    0
+}
+
+/// Split the `--generate-signing-key` output into (STDOUT secret line, STDERR guidance). The secret
+/// `hex` appears ONLY in the stdout line; the stderr guidance uses a NON-SECRET placeholder that points
+/// at the stdout value, so a stderr capture never leaks the master signing key. Pure (no I/O) so the
+/// stdout-only-secret contract is unit-testable (see `signing_key_guidance_omits_secret`), not merely
+/// asserted in a comment. `auth.signing_key` is a secret REFERENCE (never an inline literal — busbar
+/// rejects that), so the snippets wire the key via `{ file }` / `{ env }`.
+fn signing_key_command_output(hex: &str) -> (String, String) {
+    let secret_line = hex.to_string();
+    let guidance = "\n# ed25519 signing key for busbar-signed virtual keys (64 hex chars, printed above on stdout).\n\
+         # auth.signing_key is a secret REFERENCE, not an inline value - wire the key like so:\n\
+         #\n\
+         #   # write it to a file, then reference the file:\n\
+         #   busbar --generate-signing-key > /run/secrets/busbar-signing.key\n\
+         #   auth:\n\
+         #     signing_key: { file: /run/secrets/busbar-signing.key }\n\
+         #\n\
+         #   # or export it and reference the env var (fleet: SAME value on every node).\n\
+         #   # paste the 64-hex key printed above on stdout (NOT shown here, so this guidance stays\n\
+         #   # secret-free and safe to capture in a journal/CI log):\n\
+         #   export BUSBAR_SIGNING_KEY=<paste-the-64-hex-key-printed-above>\n\
+         #   auth:\n\
+         #     signing_key: { env: BUSBAR_SIGNING_KEY }\n\
+         #\n\
+         # Fleet-shared so every node verifies the same tokens; rotating it REVOKES every \
+         outstanding virtual key."
+        .to_string();
+    (secret_line, guidance)
 }
 
 /// Validate ONE `secrets:` block key against the plugin registry and return the plugin's CANONICAL
@@ -2574,14 +2583,14 @@ pub(crate) fn build_app_from_config(
     // (both default to their historical const at the config layer).
     // D1 carry-over: an APPLY/RELOAD (prior = Some) restores every surviving lane's learned
     // health state BY STABLE IDENTITY from the prior store; boot (None) starts fresh.
-    let store: Arc<dyn crate::store::StateStore> = match prior {
-        Some(p) => Arc::new(InMemoryStore::new_with_limits_restored(
+    let store: Arc<dyn crate::store::LaneRuntime> = match prior {
+        Some(p) => Arc::new(HealthState::new_with_limits_restored(
             lanes_data.clone(),
             cfg.limits.hard_down_cooldown_secs,
             cfg.limits.max_honored_retry_after_secs,
             &p.store.export_health(),
         )),
-        None => Arc::new(InMemoryStore::new_with_limits(
+        None => Arc::new(HealthState::new_with_limits(
             lanes_data.clone(),
             cfg.limits.hard_down_cooldown_secs,
             cfg.limits.max_honored_retry_after_secs,
@@ -2871,11 +2880,7 @@ pub(crate) fn build_app_from_config(
                 None
             };
             let signer = match auth.and_then(|a| a.signing_key.as_ref()) {
-                Some(_) => Some(resolve_signing_key(
-                    auth,
-                    &secret_resolver,
-                    config_paths.0.as_deref(),
-                )?),
+                Some(_) => Some(resolve_signing_key(auth, &secret_resolver)?),
                 None => None,
             };
             if admin_token.is_some() || signer.is_some() {
@@ -2920,13 +2925,10 @@ pub(crate) fn build_app_from_config(
         // token would lock the admin API while the operator believes it is guarded).
         let admin_token: Option<String> = resolve_admin_token(cfg.auth.as_ref(), &secret_resolver)?;
         // The KEY-SIGNING key (S2): resolve `auth.signing_key` (a secret ref) to 32 ed25519 secret
-        // bytes; ABSENT => GENERATE a keypair on first boot and persist it 0600 (dev zero-config).
-        // Fleet deployments provide it (shared) so every node verifies the same tokens.
-        let signer = resolve_signing_key(
-            cfg.auth.as_ref(),
-            &secret_resolver,
-            config_paths.0.as_deref(),
-        )?;
+        // bytes. ABSENT => no signer (1.5.1: busbar no longer auto-generates one; config_validate
+        // has already failed closed if the `keys` verifier is in the chain). Fleet deployments
+        // provide it (shared) so every node verifies the same tokens.
+        let signer = resolve_signing_key(cfg.auth.as_ref(), &secret_resolver)?;
         match governance::GovState::new_with_signer(store, admin_token.clone(), signer) {
             Ok(gs) => {
                 let gs = Arc::new(gs);
@@ -3138,6 +3140,7 @@ pub(crate) fn build_app_from_config(
         pool_runtime,
         fallback_pools,
         on_exhausted_cfgs,
+        queued_depth: std::sync::Arc::new(crate::state::QueuedDepth::default()),
         governance,
         secret_resolver,
         cost,
@@ -3317,18 +3320,60 @@ fn build_split_routers_with_limits(
 /// OUTERMOST inbound-concurrency cap. `max_inbound_concurrent == 0` disables the layer entirely (a
 /// true no-op) — but `0` is NOT the default; `DEFAULT_MAX_INBOUND_CONCURRENT` is `8192`, so the layer
 /// IS installed out of the box and an operator opts OUT with `0`, not in. When `> 0` (including the
-/// default), a tower `GlobalConcurrencyLimitLayer` (ONE shared semaphore across ALL requests) wraps
-/// the whole router: requests beyond the cap queue for a permit rather than overrunning. Applied as
-/// the last `.layer()` so it is outermost (it must admission-control before any inner work, including
-/// body buffering). Factored out so the add-only-when-`>0` rule is unit-testable in isolation.
+/// default), a tower `GlobalConcurrencyLimitLayer` (ONE shared semaphore across ALL requests) bounds
+/// in-flight inbound work, wrapped in `LoadShed` so a request that arrives with the cap FULL is SHED
+/// with a 503 immediately rather than queued for a permit (Bug 4). Applied as the last `.layer()` so
+/// it is outermost (it must admission-control before any inner work, including body buffering).
+/// Factored out so the add-only-when-`>0` rule is unit-testable in isolation.
+///
+/// Layer order (outer→inner): `HandleError` maps the shed `Overloaded` error back into a 503 response
+/// so the whole stack keeps axum's `Error = Infallible` contract; `LoadShed` turns "inner not ready"
+/// (permit unavailable) into that error instead of parking; `GlobalConcurrencyLimit` is the semaphore.
 fn apply_inbound_concurrency_limit(router: Router, max_inbound_concurrent: usize) -> Router {
     if max_inbound_concurrent > 0 {
-        router.layer(tower::limit::GlobalConcurrencyLimitLayer::new(
-            max_inbound_concurrent,
-        ))
+        router.layer(
+            tower::ServiceBuilder::new()
+                .layer(axum::error_handling::HandleErrorLayer::new(
+                    |err: tower::BoxError| async move {
+                        // Today LoadShed only ever emits its own `Overloaded` here, so mapping to a
+                        // capacity 503 is correct — but LOG the real error first rather than swallow it,
+                        // so if a future fallible layer (or a broadened error type) is ever added inside
+                        // this stack, a genuine internal fault is not masked behind the generic
+                        // "at capacity" 503 with no trace of its cause.
+                        tracing::warn!(error = %err, "inbound concurrency layer shed a request");
+                        inbound_overloaded_response()
+                    },
+                ))
+                .layer(tower::load_shed::LoadShedLayer::new())
+                .layer(tower::limit::GlobalConcurrencyLimitLayer::new(
+                    max_inbound_concurrent,
+                )),
+        )
     } else {
         router
     }
+}
+
+/// The 503 returned when an inbound request is SHED because `max_inbound_concurrent` is saturated
+/// (Bug 4). This admission control sits OUTSIDE protocol routing, so it uses a generic JSON envelope
+/// (the request's ingress dialect is not yet known here) with a `Retry-After` so rate-aware clients
+/// back off instead of hammering the full gateway.
+fn inbound_overloaded_response() -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let mut resp = (
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        [(
+            axum::http::header::CONTENT_TYPE,
+            axum::http::HeaderValue::from_static(crate::proxy::APPLICATION_JSON),
+        )],
+        r#"{"error":{"type":"overloaded","message":"The gateway is at capacity. Please retry shortly."}}"#,
+    )
+        .into_response();
+    resp.headers_mut().insert(
+        axum::http::header::RETRY_AFTER,
+        axum::http::HeaderValue::from_static("1"),
+    );
+    resp
 }
 
 #[cfg(test)]

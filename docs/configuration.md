@@ -253,7 +253,7 @@ key or an IdP credential a chain module verifies.
 
 ```yaml
 auth:
-  signing_key: { file: /run/secrets/busbar-signing.key }  # optional; generated 0600 on first boot
+  signing_key: { file: /run/secrets/busbar-signing.key }  # REQUIRED with `keys`; busbar --generate-signing-key
   upstream_credentials: own
   chain:
     - keys                                                # built-in signed-key verifier (no config)
@@ -268,7 +268,7 @@ auth:
 
 | Field | Type | Required | Default | Notes |
 |---|---|---|---|---|
-| `signing_key` | secret reference | no | generated on first boot | The ed25519 key Busbar signs virtual-key tokens with. Fleet-shared (every node verifying the same tokens resolves the same key). Absent: Busbar generates a keypair on first boot and persists it with mode 0600 (dev zero-config). Rotating it revokes every outstanding key. |
+| `signing_key` | secret reference | **when `keys` is in the chain** | none | The ed25519 key Busbar signs + verifies virtual-key tokens with, as a secret reference (`{ file: … }` / `{ env: … }` / a secret plugin — never an inline literal). Fleet-shared (every node verifying the same tokens resolves the same key). **Required whenever the data-plane chain names the built-in `keys` verifier**; its absence there fails `--validate`/boot. Busbar does **not** auto-generate one (1.5.1: the earlier generate-and-persist-beside-config behavior boot-looped read-only config mounts) — generate a key with `busbar --generate-signing-key`. Rotating it revokes every outstanding key. |
 | `upstream_credentials` | string | no | `own` | Whose key hits the provider: `own` (Busbar's configured lane credential) or `passthrough` (forward the caller's own token upstream; Busbar holds no keys). |
 | `chain` | list of module entries | no | `[]` | The ordered DATA-PLANE authentication chain. Each entry is a bare module name (`- keys`) or a single-key map `- <module>: { max_admin_scope?, settings? }` where `settings` is the module's own opaque config. `keys` is the built-in signed-key verifier; **any other name loads a `kind: auth` plugin** from the plugins directory (see [auth plugins](#auth-plugins) below). `[]` (default) is the open front door: development only, loud startup warning. A configured auth plugin that cannot be loaded — missing/untrusted tarball, wrong kind, `plugins.enabled: false`, or an ABI failure — is a **hard startup error** (fail-closed: the front door never silently opens). |
 | `admin_auth` | list of module entries | no | `[admin-tokens]` | The chain gating `/api/v1/admin/*`. The built-in `admin-tokens` module carries the operator credential as a secret reference (`token:`). `[]` = OPEN admin (dev only; loud warning). |
@@ -920,11 +920,14 @@ A keyword stays bare; a reference is structured (the 1.5.0 `on_X` convention):
 
 | Value | Behavior |
 |---|---|
-| `reject` | Return `503 Service Unavailable` with a `Retry-After` header set to the soonest member cooldown expiry. This is the default when `on_exhausted` is omitted. Accepted aliases: `status_503`, `status503`, `503`. |
-| `least_bad` | Route to the member whose cooldown expires soonest, even though it is Open. The request is likely to fail, but degraded service is preferred over a hard 503. This is logged as a degraded dispatch. Accepted aliases: `least-bad`, `leastbad`. |
+| `reject` | Return `503 Service Unavailable` with a `Retry-After` header. When a member is in breaker cooldown, `Retry-After` is the soonest genuine cooldown expiry; when exhaustion is pure saturation (every member at its `max_concurrent` limit, breakers closed), it is a small saturation floor instead of `1`. This is the default when `on_exhausted` is omitted. Accepted aliases: `status_503`, `status503`, `503`. |
+| `least_bad` | Route to the member whose cooldown expires soonest **that still has a free concurrency permit**, even though it is Open. A soonest member that is itself at capacity is skipped in favour of a servable sibling (rather than a hard 503); only when no admissible member has a free permit does it fall through to `reject`. The request is likely to fail, but degraded service is preferred over a hard 503. This is logged as a degraded dispatch. Accepted aliases: `least-bad`, `leastbad`. |
 | `{ fallback_pool: <name> }` | Route the request to another named pool and run its full selection logic. Cycles (`primary` to `overflow` back to `primary`) and self-references are detected at startup and are errors. |
+| `{ queue: { max_ms: <ms> } }` | Wait a **bounded** time for a concurrency permit to free on an at-capacity member, then dispatch on the freed lane. The waiter acquires directly on the candidate lanes' own FIFO semaphores, so a freed permit wakes **exactly one** waiter (no lost wakeup, no thundering herd). The wait is bounded by `min(max_ms, remaining failover budget)` and can never block past `failover.timeout_secs`; on winning a permit the lane's breaker is **re-checked** (a lane that tripped Open while queued is dropped and the wait continues on the rest). On deadline, a closed semaphore, or no remaining candidates it falls through to `reject`. Queueing only helps **saturation** (at-capacity) exhaustion — if every excluded member is dead / budget-exhausted / breaker-open it sheds immediately without waiting. `max_ms` is a required inner key. No alias spellings. Live park depth: `busbar_pool_queued{pool}`. |
 
-`reject` and `least_bad` each accept the alias spellings noted above (hyphen/underscore/joined and, for reject, the bare `503` status). **Unknown keywords or a malformed structure are a fatal startup error** (not a runtime 503).
+`reject` and `least_bad` each accept the alias spellings noted above (hyphen/underscore/joined and, for reject, the bare `503` status). `fallback_pool` and `queue` are structured mappings with no alias spellings, and take exactly one of `fallback_pool` / `queue` (both present is an error). **Unknown keywords or a malformed structure are a fatal startup error** (not a runtime 503).
+
+`queue.max_ms` is validated at `--validate`/boot: it must be `> 0` (a `0` wait never queues — that is just `reject` with extra machinery) and `<=` the resolved failover budget (`failover.timeout_secs × 1000`, else the global default `120000` ms). A `max_ms` larger than the whole failover budget is clamped to it at runtime and would never reach its ceiling, so it is rejected at boot with an actionable message rather than shipped as a silent dead-letter. Exactly `max_ms == budget` is accepted (only a value strictly greater is rejected).
 
 ---
 
@@ -981,7 +984,7 @@ Optional. Exposes thirteen operational limits (mostly previously hardcoded, plus
 
 ```yaml
 limits:
-  max_inbound_concurrent: 8192    # 0 = unlimited; > 0 adds a global concurrency cap
+  max_inbound_concurrent: 8192    # 0 = unlimited; > 0 caps in-flight inbound and sheds excess (503)
   request_body_max_bytes: 33554432  # 32 MiB
   upstream_request_timeout_secs: 300
   tls_handshake_timeout_secs: 10
@@ -998,7 +1001,7 @@ limits:
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `max_inbound_concurrent` | integer | `8192` | Global inbound concurrency cap, applied outermost (before request bodies are buffered), so it is the global bound on peak request memory: worst case is this limit times `request_body_max_bytes`. `0` = unlimited (no cap layer installed, the pre-1.5.0 posture). **Restart-to-apply**: it is captured once in `main()` and baked into a `tower::limit::GlobalConcurrencyLimitLayer` on the router at process start; a config apply swaps only the `App`, never the router, so the semaphore's permit count cannot change live — `reload_to_apply` flags `limits.max_inbound_concurrent` when set. |
+| `max_inbound_concurrent` | integer | `8192` | Global inbound concurrency cap, applied outermost (before request bodies are buffered), so it is the global bound on peak request memory: worst case is this limit times `request_body_max_bytes`. A request that arrives while the cap is full is **shed** — returned a `503` with `Retry-After` immediately — rather than queued behind the cap (the layer is a `tower::limit::GlobalConcurrencyLimitLayer` wrapped in `tower::load_shed`). `0` = unlimited (no cap layer installed, the pre-1.5.0 posture). **Restart-to-apply**: it is captured once in `main()` and baked into the router at process start; a config apply swaps only the `App`, never the router, so the semaphore's permit count cannot change live — `reload_to_apply` flags `limits.max_inbound_concurrent` when set. |
 | `request_body_max_bytes` | integer | `33554432` | Maximum inbound request body size (bytes). Exceeding this returns a protocol-native 413. **Partially restart-to-apply, undocumented in the API today (known gap, tracked for post-1.5.0):** the inbound 413 threshold (`axum::extract::DefaultBodyLimit`) is boot-frozen the same way as `max_inbound_concurrent` above, but the coupled egress translate/buffer cap (`limits::translate_body_max_bytes()`) reads a live snapshot re-installed on every apply. A live `PUT` therefore only half-applies: **lowering** this value moves the egress cap down immediately while the inbound 413 threshold stays at the boot value, so a request body can land in the gap between the two — accepted inbound, but no longer buffer-translatable on a cross-protocol hop, breaking the "accepted implies translatable" invariant. `reload_to_apply` does not flag this field: flagging it dotted would mis-state that the whole field is stored-not-live when three of its four consumers are in fact live. The fix (make the inbound limit read the live snapshot, or otherwise pin the coupling) is deferred past 1.5.0 because it touches the request path and the router layer stack. |
 | `upstream_request_timeout_secs` | integer | `300` | Per-upstream-request wall-clock timeout. Applies to both the connect and the full response. **Restart-to-apply**: the upstream `reqwest::Client` is built once at boot and reused across config applies (warm connection pools are kept deliberately), so a live `PUT` changes the stored value but not the running client — `reload_to_apply` flags `limits.upstream_request_timeout_secs` when set. |
 | `tls_handshake_timeout_secs` | integer | `10` | Wall-clock cap on each inbound TLS handshake; prevents slowloris / handshake-flood. Ignored when `tls:` is absent. |
@@ -1191,7 +1194,8 @@ admin_listen: "127.0.0.1:8081"      # the admin API always runs on its own liste
 # verifier); the admin API is gated by the admin-tokens operator credential.
 # ---------------------------------------------------------------------------
 auth:
-  # signing_key: { file: /run/secrets/busbar-signing.key }  # absent = generated on first boot
+  signing_key: { file: /run/secrets/busbar-signing.key }  # REQUIRED with `keys`; no auto-gen
+  #                                                        # (`busbar --generate-signing-key`)
   chain:
     - keys
   admin_auth:
@@ -1333,7 +1337,8 @@ observability:
 
 # ---------------------------------------------------------------------------
 # Prometheus metrics — OPT-IN. Omit this block entirely and busbar records
-# nothing and does not mount /metrics. `buffer_seconds` is REQUIRED: it is how
+# nothing and does not mount /metrics. When the block IS present, `buffer_seconds`
+# is REQUIRED (omit the whole block and no buffer_seconds is needed): it is how
 # many seconds of observations to retain (quantiles cover that window; _sum and
 # _count stay cumulative), and it bounds the memory metrics cost.
 # ---------------------------------------------------------------------------
@@ -1384,11 +1389,14 @@ Busbar validates the merged config before accepting any traffic. Fatal errors ab
 | `weight: 0` | Pool member weight of 0 is invalid |
 | `model` reference missing | A pool member's `model` does not name a configured model |
 | `failover.timeout_secs: 0` | Zero failover deadline |
+| `failover.timeout_secs` too large | Greater than the maximum of `86400` s (24 h); a per-request failover budget over a day is a fat-finger typo |
 | `failover.exclusions` dangling | An exclusion names a model not in the pool |
 | Fallback pool cycle | `on_exhausted: fallback_pool:<X>` where following the chain creates a cycle |
 | Fallback pool self-reference | `on_exhausted: fallback_pool:<self>` |
 | Fallback pool unknown | `on_exhausted: fallback_pool:<name>` where `name` is not a configured pool |
-| `on_exhausted` malformed | Not `reject`, `least_bad`, or `{ fallback_pool: <pool> }` |
+| `on_exhausted` malformed | Not `reject`, `least_bad`, `{ fallback_pool: <pool> }`, or `{ queue: { max_ms: <ms> } }` (or a mapping naming both `fallback_pool` and `queue`) |
+| `on_exhausted.queue.max_ms: 0` | A `0` wait never queues (it is just `reject` with extra machinery) |
+| `on_exhausted.queue.max_ms` too large | Greater than the resolved failover budget (`failover.timeout_secs × 1000` ms); a queue longer than the whole budget never reaches its ceiling |
 | `affinity.mode` unknown | Any value other than `session` |
 | Pool `hooks:` names more than one ordering strategy | A pool has one base ordering |
 | Pool `hooks:` bare name not a built-in strategy | An out-of-process hook is an inline `{ module: ... }` ref; bare names are only `weighted`/`cheapest`/`fastest`/`least_busy`/`usage` |

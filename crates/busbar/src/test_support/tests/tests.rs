@@ -6042,18 +6042,20 @@ fn test_lanespec_sem_override_is_shared() {
         .build();
 
     // The lane's runtime semaphore is the SAME handle we passed in: acquiring a permit through
-    // our clone must be visible to the lane (and vice-versa).
+    // our clone must be visible to the store's view of the lane (and vice-versa). Observed via the
+    // store's `available_permits` (the shared semaphore's live free count).
     let permit = sem.clone().try_acquire_owned();
     assert!(permit.is_ok(), "our clone should hold the only permit");
-    // With our clone holding the single permit, the lane's store-side semaphore is exhausted.
-    let lane_sem = app.store.lane_semaphore(0);
-    assert!(
-        lane_sem.try_acquire().is_err(),
+    // With our clone holding the single permit, the lane's store-side view shows zero available.
+    assert_eq!(
+        app.store.available_permits(0),
+        0,
         "lane semaphore must be the shared handle (already exhausted by our clone)"
     );
     drop(permit);
-    assert!(
-        lane_sem.try_acquire().is_ok(),
+    assert_eq!(
+        app.store.available_permits(0),
+        1,
         "releasing our clone's permit must free the shared lane semaphore"
     );
 }

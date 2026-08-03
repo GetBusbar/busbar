@@ -26,8 +26,9 @@ admin_insecure: false                         # waive exposed-admin mTLS guard (
 
 # ── AUTH: identity (roles) + signed keys ──
 auth:
-  # signing_key: { file: /run/secrets/busbar-signing.key }   # rotate = revoke-all; fleet-shared;
-  #                                                          # absent = generated 0600 on first boot
+  signing_key: { file: /run/secrets/busbar-signing.key }    # REQUIRED with `keys` below; rotate =
+  #                                                          # revoke-all; fleet-shared. Generate one
+  #                                                          # with `busbar --generate-signing-key`.
   upstream_credentials: own
   chain:
     - keys                                                   # built-in signed-key verifier (no config)

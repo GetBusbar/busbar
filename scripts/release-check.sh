@@ -485,12 +485,19 @@ mock:
   base_url: "http://127.0.0.1:${mock_port}"
 EOF
 
+  # 1.5.1: the built-in `keys` verifier requires an explicit signing key — busbar no longer
+  # auto-generates one. Mint a real ed25519 secret via the shipping command (secret -> stdout,
+  # guidance -> stderr) into a file and reference it as a secret {file:} ref, exactly as an operator would.
+  "$BUSBAR_BIN" --generate-signing-key >"${work}/signing.key" 2>/dev/null
+  [ -s "${work}/signing.key" ] || { echo "  --generate-signing-key produced no key" >&2; exit 1; }
+
   cat >"${work}/config.yaml" <<EOF
 listen: "127.0.0.1:${listen_port}"
 admin_listen: "127.0.0.1:${admin_port}"
 auth:
   chain:
     - keys
+  signing_key: { file: "${work}/signing.key" }
   admin_auth:
     - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }
 plugins:
@@ -801,6 +808,16 @@ while IFS=$'\t' read -r P_REPO P_DIR _ _ P_SERVICE P_RELGATE P_GATE _; do
       ;;
   esac
 
+  # Build FIRST, then test — mirroring the canonical plugin-ci.yml (`cargo build --all-targets`
+  # before `cargo test`). `cargo test` alone builds the rlib for the harness but NOT the crate's
+  # cdylib artifact, so a plugin's own e2e suite that dlopens `target/release/<plugin>.{so,dylib}`
+  # (discovered relative to the test binary) hard-fails its "cdylib not built under CI" guard.
+  # `--all-targets` forces the cdylib crate-type output into target/release/ where the suite looks.
+  echo "  building GetBusbar/${P_REPO}'s workspace (cdylib artifacts) before its suite in ../${P_DIR}..."
+  (
+    cd "$SUITE_SRC"
+    cargo build --release --workspace --all-targets
+  )
   echo "  running GetBusbar/${P_REPO}'s own cargo test --workspace --release in ../${P_DIR}..."
   (
     cd "$SUITE_SRC"

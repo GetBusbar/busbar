@@ -3970,6 +3970,18 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             }
         }),
     );
+    paths.insert(
+        ap(PATH_PLUGINS_INSPECT),
+        json!({
+            "post": {
+                "summary": "Stateless read-only preview of a candidate plugin tarball — verify its signature, parse its manifest, and report its settings schema WITHOUT installing anything",
+                "security": [{"adminToken": []}],
+                "responses": {
+                    "200": {"description": "`{name, version, kind, schema, schema_error, trust, source, restart_required_default}` — the same shape `GET /plugins/{file}/schema` carries, plus `name`/`version`/`kind`; an untrusted/rejected candidate is reported (`trust`), never refused"},
+                }
+            }
+        }),
+    );
 
     // Virtual-key management (mounted in the v1 router like everything else; handlers live in
     // crate::admin while they migrate into the service). The secret is shown ONCE at create/rotate
@@ -4478,6 +4490,11 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         "200",
         sview::PluginSchemaView
     );
+    // `POST /plugins/inspect` returns the SAME shape `GET /plugins/{file}/schema` carries (plus
+    // `name`/`version`/`kind`), so it reuses the existing `PluginSchemaView` model — exactly as the
+    // schema endpoint above, whose live handler also emits `kind`/`restart_required_default` beyond
+    // the view's declared fields.
+    typed!(PATH_PLUGINS_INSPECT, "post", "200", sview::PluginSchemaView);
     typed!(
         "/plugins/rollback",
         "post",
@@ -4579,6 +4596,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     body!(PATH_ADMIN_AUTH, "put", PutAuthBody);
     body!("/auth/cache/flush", "post", FlushCacheReq);
     body!("/plugins", "post", InstallPluginReq);
+    body!(PATH_PLUGINS_INSPECT, "post", InspectPluginReq);
     body!("/plugins/rollback", "post", PluginRollbackReq);
     body!("/config/rollback", "post", RollbackReq);
     body_optional!("/restart", "post", RestartReq);

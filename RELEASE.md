@@ -1,6 +1,15 @@
 # Releasing Busbar
 
-Cutting a release is **one dispatch**. Everything downstream is automated or self-healing.
+The branch model is **dev → qa → main**, and each arrow means one thing:
+
+| Push to | What runs | Cost |
+|---|---|---|
+| **`dev`** | `ci.yml` — fmt, clippy, `cargo test` | cheap; push often |
+| **`qa`** | `qa-gate.yml` — `release-check.sh`, the real all-plugins end-to-end gate | ~2h; the pre-release soak |
+| **`main`** | `tag-on-main.yml` — auto-tags `crates/busbar/Cargo.toml`'s version → the release | the BOOM |
+
+`dev` is always release-ready because every push is fully CI'd. Promoting to `qa` proves the exact
+commit works against every plugin together. Promoting to `main` **is** the release.
 
 ## The one human step
 
@@ -10,16 +19,18 @@ to "Maintenance and dependency updates."
 
 ## Cut the release
 
-Run the **Cut release** workflow (Actions → *Cut release* → Run workflow → enter e.g. `1.4.2`).
-It does everything that used to be a fiddly manual checklist:
-
-1. Bumps `crates/busbar/Cargo.toml` + `Cargo.lock`.
-2. **Regenerates the committed OpenAPI schema** (`UPDATE_OPENAPI=1`) — the CI drift gate that
-   fails the build if this is stale.
-3. Promotes `CHANGELOG [Unreleased]` → `[version]` with today's date.
-4. Commits, tags `vX.Y.Z`, pushes.
-
-Cutting the tag is the sign-off — nothing releases without you dispatching this.
+1. **Prepare the bump on `dev`.** Run the **Prepare release (on dev)** workflow (Actions →
+   *Prepare release (on dev)* → Run workflow from `dev` → enter e.g. `1.5.1`). It bumps
+   `crates/busbar/Cargo.toml` + `Cargo.lock`, **regenerates the committed OpenAPI schema**
+   (`UPDATE_OPENAPI=1` — the CI drift gate that fails the build if stale), promotes
+   `CHANGELOG [Unreleased]` → `[version]` with today's date, and commits + pushes to `dev`. It does
+   **not** tag.
+2. **Promote `dev` → `qa`.** The ~2h `qa-gate.yml` full-plugin gate runs. A green run means the
+   bumped commit is release-ready.
+3. **Promote `qa` → `main`.** Landing on `main` runs `tag-on-main.yml`, which tags `vX.Y.Z` (the
+   version now in `Cargo.toml`) — and that tag is the sign-off. It is **idempotent**: if the tag
+   already exists (e.g. a docs hotfix landing on main without a version bump), it is a safe no-op,
+   so only a *new* version cuts a release.
 
 ## What the tag triggers (automatic)
 

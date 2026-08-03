@@ -153,9 +153,24 @@ directly exposed to untrusted networks is not recommended.
 | `GET /metrics` | virtual key | Prometheus exposition. OPT-IN: mounted only when a `metrics:` block is configured (with its required `buffer_seconds`); otherwise the path 404s like any other. Requires a valid key with a non-empty `auth.chain`, open under `chain: []`. Restrict at the network layer if unauthenticated scraping is needed. |
 | `GET /stats` | virtual key | Per-lane health snapshot + pool membership, JSON. |
 
-`/stats` returns, per lane: `model`, `provider`, `max_concurrent`, `inflight`,
-`free_slots`, `ok`, `err`, `usable`, `dead`, `dead_reason`, `cooldown_remaining_s`,
-`streak`, and `budget`. It is the first place to look when a pool is degraded.
+`/stats` returns, per lane: `model`, `provider`, `max_concurrent`, `limit` (alias of
+`max_concurrent`), `inflight`, `free_slots`, `available` (free permits for a bounded lane,
+or `"unbounded"`), `at_capacity` (`true` when a bounded lane is at its `max_concurrent`
+limit and is therefore shedding/spilling rather than queueing), `availability`,
+`recovery_hint_ms`, `breaker_state`, `ok`, `err`, `usable`, `dead`, `dead_reason`,
+`cooldown_remaining_s`, `streak`, and `budget`. It is the first place to look when a pool
+is degraded.
+
+`availability` renders the shared `classify` taxonomy — the same one routing dispatches on,
+so `/stats` cannot drift from behaviour. It is `"available"` when the lane would admit a
+request, or the reason it can't: `"breaker_open"`, `"at_capacity"`, `"dead"`,
+`"budget_exhausted"`, `"probe_in_flight"`, or `"shedding"`. `recovery_hint_ms` is the honest
+lower bound (ms) on when that lane could next serve (`null` when available or the reason has
+no self-recovery, e.g. dead/budget). The breaker (`breaker_state`: `"closed"`/`"open"`/
+`"half_open"`) and capacity (`at_capacity`) axes are exposed INDEPENDENTLY: a saturated Open
+lane shows `breaker_state: "open"` AND `at_capacity: true` — so you can see why such a lane's
+breaker never recovers (its recovery probe needs a dispatch it can never win), rather than the
+signal being collapsed into one string.
 
 ## Running multiple instances (HA)
 
@@ -216,7 +231,12 @@ All metrics are Prometheus counters/histograms exposed at `/metrics`, which is o
 | `busbar_bucket_spend_cents` | gauge | `bucket`, `group`, `window` | Derived spend per (group, window) enforcement bucket (`bucket` = `group:<name>@<window>`). |
 | `busbar_bucket_budget_remaining_cents` | gauge | `bucket`, `group`, `window` | Budget cap minus derived spend, only for buckets carrying a `budget` limit. Enables Prometheus burn-rate alerting per group. |
 | `busbar_bucket_tokens` | gauge | `bucket`, `group`, `window`, `model`, `tier` | Per-(bucket, model, tier) token counters (the raw material for external cost dashboards). |
-| `busbar_lane_state` | gauge | `pool`, `lane` | Circuit-breaker health per lane: `0` = Closed, `1` = HalfOpen, `2` = Open (tripped). Side-effect-free at scrape. |
+| `busbar_lane_state` | gauge | `pool`, `lane` | Circuit-breaker health per lane (the independent breaker axis): `0` = Closed, `1` = HalfOpen, `2` = Open (tripped). Side-effect-free at scrape. |
+| `busbar_lane_available` | gauge | `pool`, `lane` | Unified availability from the shared `classify` taxonomy (the same one routing dispatches on): `1` = the lane would admit a request right now, `0` = unavailable for ANY reason (breaker Open, at-capacity, dead, budget, probe-in-flight). Pair with `busbar_lane_state` (breaker) and `busbar_lane_available_permits` (capacity) to see which axis is the cause. Replaces the former `busbar_lane_at_capacity`. Side-effect-free. |
+| `busbar_lane_recovery_hint_ms` | gauge | `pool`, `lane` | Honest lower bound (ms) on when an unavailable lane could next serve, from the same `recovery_hint_ms` that feeds `Retry-After`: breaker `until` for an Open lane, the at-capacity floor (2000ms) for a saturated one. `0` when available or the reason has no self-recovery (dead/budget). Side-effect-free. |
+| `busbar_lane_inflight` | gauge | `pool`, `lane` | In-flight requests (held concurrency permits) per lane — the depth companion to `busbar_lane_available`. Side-effect-free. |
+| `busbar_lane_available_permits` | gauge | `pool`, `lane` | Free concurrency permits for a bounded lane (`0` = saturated) — the independent capacity axis. Unbounded lanes emit no sample. Side-effect-free. |
+| `busbar_pool_queued` | gauge | `pool` | Requests currently parked in the `on_exhausted: queue` bounded wait, per pool. Reads `0` until the queue policy is wired. Side-effect-free. |
 | `busbar_route_policy_selections_total` | counter | `pool`, `policy` | Requests where a selection strategy (a native strategy or a gate hook) produced a usable ranked order. Only incremented on a successful `Order` outcome; abstains and on-error fallbacks are not counted. |
 | `busbar_route_policy_rejections_total` | counter | `pool`, `policy`, `status` | Requests deliberately rejected by a routing hook's `reject` verb (a 4xx to the caller, no upstream dispatched). A guardrail saying no, not a failure. |
 | `busbar_webhook_logs_dropped_total` | counter | n/a | Request-log webhook deliveries shed because the in-flight delivery pool was saturated (a slow/unreachable webhook endpoint). A non-zero rate means request logs are being silently dropped, scale the endpoint or alert. |
@@ -354,10 +374,11 @@ and the client must retry.
 
 When all members are unusable, the pool's `on_exhausted` action decides:
 
-- `reject` / `status_503` (default): `503` with `Retry-After` = soonest member's
-  cooldown expiry.
-- `least_bad`, serve the member whose cooldown expires soonest (degraded, logged
-  loudly).
+- `reject` / `status_503` (default): `503` with `Retry-After` — the soonest genuine
+  member cooldown, or a small saturation floor when exhaustion is pure at-capacity
+  (not the misleading `1`).
+- `least_bad`, serve the soonest-cooldown member that still has a free permit
+  (skipping a saturated one), degraded and logged loudly.
 - `{ fallback_pool: <name> }`, route to another pool (loop-guarded).
 
 If `outcome="exhausted"` (503) is climbing in `busbar_requests_total`, check

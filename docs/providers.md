@@ -4,7 +4,7 @@ Busbar's thesis is **protocols, not providers**. It implements six wire protocol
 
 ## What a provider entry is
 
-Providers live in `providers.yaml` as a map of name → definition. The shipped catalog is a verified starting set; you add your own entries exactly the same way (or define one inline in `config.yaml`).
+Providers live in `providers.yaml` as a map of name → definition. The shipped catalog is a verified starting set; you add your own entries exactly the same way. A `config.yaml` provider entry does not *define* a provider — it references an existing `providers.yaml` catalog entry by name (supplying its key) and may override that entry's fields; a name with no catalog entry fails to resolve.
 
 | Field | Required | What it is |
 |---|---|---|

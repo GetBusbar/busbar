@@ -7,7 +7,7 @@ impl GovState {
     }
 
     /// Construct a `GovState` with an optional TOKEN SIGNER (1.5.0 signed-token keys). `Some` at
-    /// boot (a signing key resolved from `auth.signing_key` or generated on first boot); `None` in
+    /// boot (a signing key resolved from `auth.signing_key`; 1.5.1 no longer generates one); `None` in
     /// tests that exercise the SigV4 path only (1.5.0 has exactly one credential shape for bearer
     /// auth — a signed token — so a signer is required for any real bearer verification). Hydrates
     /// the revocation denylist set from the store so a restart resumes with every revoked subject

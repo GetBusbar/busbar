@@ -879,16 +879,16 @@ impl TestApp {
         self.build_with_store().0
     }
 
-    /// As [`build`], but also hands back the concrete `Arc<InMemoryStore>` — `App::store` is a
-    /// `dyn StateStore` trait object with no downcast support, so a test that needs to reach
-    /// test-only breaker-cell manipulation (`InMemoryStore::cell`/`cell_open`, real Open/HalfOpen
+    /// As [`build`], but also hands back the concrete `Arc<HealthState>` — `App::store` is a
+    /// `dyn LaneRuntime` trait object with no downcast support, so a test that needs to reach
+    /// test-only breaker-cell manipulation (`HealthState::cell`/`cell_open`, real Open/HalfOpen
     /// state, not achievable through the trait's own methods) needs the typed handle to the SAME
     /// store instance the built `App` uses, not a second independent one.
     pub(crate) fn build_with_store(
         self,
     ) -> (
         std::sync::Arc<crate::state::App>,
-        std::sync::Arc<crate::store::InMemoryStore>,
+        std::sync::Arc<crate::store::HealthState>,
     ) {
         let mut by_model = std::collections::HashMap::new();
         let mut lanes = Vec::with_capacity(self.lanes.len());
@@ -908,7 +908,7 @@ impl TestApp {
             &self.pools,
             &by_model,
         ));
-        let store = std::sync::Arc::new(crate::store::InMemoryStore::new(lane_data));
+        let store = std::sync::Arc::new(crate::store::HealthState::new(lane_data));
         let app = std::sync::Arc::new(crate::state::App {
             tslots,
             probe_schedule: std::sync::Arc::new(crate::health::ProbeSchedule::new(lanes.len())),
@@ -959,6 +959,7 @@ impl TestApp {
             pool_runtime: self.pool_runtime,
             fallback_pools: self.fallback_pools,
             on_exhausted_cfgs: self.on_exhausted_cfgs,
+            queued_depth: std::sync::Arc::new(crate::state::QueuedDepth::default()),
             governance: self.governance,
             secret_resolver: std::sync::Arc::new(
                 crate::config::secret::SecretResolver::builtins_only(),

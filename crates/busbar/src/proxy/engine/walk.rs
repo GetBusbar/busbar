@@ -1,29 +1,63 @@
 use super::*;
 
-/// Find the lane index with the soonest cooldown expiry among candidates.
-pub(crate) fn find_soonest_cooldown(
-    store: &Arc<dyn crate::store::StateStore>,
-    cands: &[WeightedLane],
-    now: u64,
-    pool: &str,
-) -> Option<usize> {
-    let mut soonest_idx = None;
-    let mut soonest_remaining = u64::MAX;
+/// Saturation Retry-After floor (whole seconds) for a 503 shed whose ONLY exhaustion cause is
+/// at-capacity members (no genuine breaker cooldown). A busy concurrency slot typically frees on the
+/// order of one in-flight request — there is no fixed breaker window to quote — but advertising the
+/// bare 1s floor reads to a rate-aware client as "retry immediately", which just re-collides with the
+/// saturation. A small non-trivial floor asks the client to back off briefly instead. (Bug 1 Finding
+/// 3: post-fix, an at-capacity 503 is the COMMON shed shape, so this must not always be 1.)
+// DERIVED (R5) from the neutral store-side floor `store::AT_CAPACITY_RECOVERY_FLOOR_MS` (2000ms) so
+// there is exactly one owner of the 2s value and the store never has to depend UP on `proxy`. This
+// path floors the whole-second `Retry-After` at that same value rather than a separate — and
+// regressing — literal.
+pub(crate) const AT_CAPACITY_RETRY_AFTER_SECS: u64 =
+    crate::store::AT_CAPACITY_RECOVERY_FLOOR_MS / 1000;
 
-    for wl in cands {
-        // A dead or budget-exhausted lane reports a cooldown of 0 (deadness lives outside the cell
-        // FSM), so without this it sorts FIRST and beats a lane that genuinely recovers in seconds.
-        if !store.lane_admissible(wl.idx) {
-            continue;
-        }
-        let remaining = store.cooldown_remaining_in(pool, wl.idx, now);
-        if remaining < soonest_remaining {
-            soonest_remaining = remaining;
-            soonest_idx = Some(wl.idx);
-        }
+/// Slack ε (milliseconds) for the `handle_queue` deadline-overrun `debug_assert`. Like
+/// `select::BUDGET_ASSERT_EPSILON` this is a dev/CI regression tripwire, not a runtime bound: the
+/// queue wait is a single `tokio::select!` against `sleep_until(deadline)`, so a healthy resume lands
+/// within a few ms of the deadline, but scheduler jitter / a slow CI box can add a small overshoot. A
+/// 250ms tolerance absorbs that without ever masking a real "blocked past the whole budget" regression
+/// (which overshoots by seconds). Named + documented rather than an inline literal so a future tune for
+/// CI-machine speed does not have to reverse-engineer where `250` came from.
+const QUEUE_WAIT_ASSERT_EPSILON_MS: u64 = 250;
+
+/// Compute the `Retry-After` (whole seconds) for a 503 shed, reflecting the ACTUAL backpressure axis.
+///
+/// Exhaustion has two distinct causes that want different backoff, and the pre-fix code conflated
+/// them: it took the MINIMUM cooldown across admissible members, but an at-capacity-but-Closed member
+/// reports cooldown 0 — so under saturation (now the common 503 shape) Retry-After always collapsed to
+/// 1, badly under-serving backoff when siblings were in a long cooldown. Instead:
+///   * If any admissible member has a GENUINE breaker cooldown (> 0), advertise the SOONEST such
+///     cooldown — the client should retry when a benched lane is due to re-probe. An at-capacity
+///     member's spurious 0 is ignored here, so a long-cooldown sibling is no longer masked by it.
+///   * Else (no genuine cooldown) advertise the [`AT_CAPACITY_RETRY_AFTER_SECS`] floor. This covers
+///     the SATURATION case (some candidate at-capacity, bounded lane, no free permit) AND, per the
+///     next bullet, the empty/unknown-candidate case — both want the honest floor, never a bare 1.
+///   * Else (no cooldown, nothing at-capacity — e.g. an EMPTY/unknown candidate set, reachable via a
+///     fallback loop A→B→A or an unconfigured `fallback_pool` target, both of which call
+///     `handle_status_503` with `&[]`) advertise the same [`AT_CAPACITY_RETRY_AFTER_SECS`] floor. An
+///     empty/unknown candidate set is exactly where we know LEAST about when a slot frees, so it must
+///     get the honest ≥2s floor — never the deceptive bare `1` (which reads as "retry immediately"),
+///     the very signal the "never 1" rule was introduced to eliminate.
+///
+/// Always floored at 1 (a 0 Retry-After is meaningless).
+fn retry_after_secs(app: &Arc<App>, cands: &[WeightedLane], now: u64, pool: &str) -> u64 {
+    let soonest_genuine_cooldown = cands
+        .iter()
+        // Deadness lives outside the cell FSM (a dead/budget-exhausted lane reports cooldown 0), so
+        // filter to admissible members exactly as the old `find_soonest_cooldown` did.
+        .filter(|wl| app.store.lane_admissible(wl.idx))
+        .map(|wl| app.store.cooldown_remaining_in(pool, wl.idx, now))
+        .filter(|&r| r > 0)
+        .min();
+    match soonest_genuine_cooldown {
+        Some(secs) => secs,
+        // Both the at-capacity case AND the empty/unknown-candidate case get the ≥2s floor: never the
+        // deceptive bare `1`. See the doc comment's third bullet.
+        None => AT_CAPACITY_RETRY_AFTER_SECS,
     }
-
-    soonest_idx
+    .max(1)
 }
 
 /// Handle pool exhaustion based on configured mode for a specific pool.
@@ -58,7 +92,7 @@ pub(crate) async fn handle_exhaustion_for_pool(
         .cloned()
         .unwrap_or(OnExhausted::Status503);
 
-    match mode {
+    let resp = match mode {
         OnExhausted::Status503 => handle_status_503(&app, cands, now, pool_name, ingress_protocol),
         OnExhausted::FallbackPool(ref fallback_pool) => {
             handle_fallback_pool(
@@ -90,6 +124,208 @@ pub(crate) async fn handle_exhaustion_for_pool(
             )
             .await
         }
+        OnExhausted::Queue { max_ms } => {
+            handle_queue(
+                &app,
+                cands,
+                max_ms,
+                &body,
+                caller_token,
+                request_ctx,
+                pool_name,
+                ingress_protocol,
+                op,
+                req_content_type,
+                usage_sink,
+            )
+            .await
+        }
+    };
+
+    // R6/§5 budget contract, asserted at the on_exhausted DISPOSITION (the one convergence point every
+    // policy's shed/spill/queue outcome flows through). Under saturation every disposition here is
+    // bounded — reject sheds now, queue waits ≤ max_ms, fallback spills — so the wall clock from
+    // ingress must be within the failover budget + ε. A regression that blocks past the budget (the
+    // Bug-1 park) trips this in dev/CI. No-op in release.
+    request_ctx.debug_assert_within_budget(pool_name);
+    resp
+}
+
+/// Queue mode: when a pool is exhausted with `on_exhausted: { queue: { max_ms } }`, wait a BOUNDED
+/// time for a concurrency permit to free on an at-capacity member, dispatch on the freed lane, else
+/// fall through to a 503 + Retry-After. Lives HERE in on_exhausted dispatch, never inside `pick_among`
+/// — selection stays non-blocking, so the "no unbounded await in the pick path" rule holds
+/// structurally.
+///
+/// R2 wait mechanism: the waiter acquires DIRECTLY on the candidate lanes' OWN FIFO semaphores (a
+/// `select_all` over `sem.acquire_owned()`), RACED against `sleep_until(deadline)`. The semaphore
+/// STORES a released permit (no lost wakeup — a permit freed in the small window between two polls is
+/// not dropped) and hands one permit to one waiter (no thundering herd, FIFO fairness) — this is why
+/// the design killed the earlier per-pool `Notify`.
+///
+/// R2 breaker composition: winning a permit proves capacity, NOT breaker admission. The won lane's
+/// breaker is re-checked via `try_admit_breaker` (it may have TRIPPED Open while we were queued);
+/// only on success do we dispatch. A lane whose breaker opened while queued can no longer be served by
+/// waiting — it is dropped from the candidate set (same rationale as the entry pre-check) and we keep
+/// waiting on the rest, never dispatching onto an Open lane and never blocking past the deadline.
+#[allow(clippy::too_many_arguments)] // plumbing: each arg is an independent request input
+pub(crate) async fn handle_queue(
+    app: &Arc<App>,
+    cands: &[WeightedLane],
+    max_ms: u64,
+    body: &Bytes,
+    caller_token: Option<&str>,
+    request_ctx: &RequestCtx,
+    pool: &str,
+    ingress_protocol: &str,
+    op: crate::handlers::Op,
+    req_content_type: &str,
+    usage_sink: Option<UsageSink>,
+) -> Response {
+    use crate::store::Unavailable;
+
+    // R2 pre-check: queue only helps if SOME excluded candidate is `AtCapacity` — a held permit can
+    // drop. If every exclusion is Dead / BudgetExhausted / BreakerOpen / ProbeInFlight, nothing will
+    // free a slot, so waiting is pointless (waiting 250ms for a pool that's DOWN, not busy). Skip the
+    // wait and shed now. Dedup by lane (the sticky fast path may record a lane the main loop also did).
+    let mut at_cap_lanes: Vec<usize> = Vec::new();
+    for (lane, reason) in &request_ctx.excluded_reasons {
+        if matches!(reason, Unavailable::AtCapacity { .. }) && !at_cap_lanes.contains(lane) {
+            at_cap_lanes.push(*lane);
+        }
+    }
+    if at_cap_lanes.is_empty() {
+        return handle_status_503(app, cands, now(), pool, ingress_protocol);
+    }
+
+    // R8 ms-precision deadline: bound the wait by `min(max_ms, failover_budget_remaining)` in MS so a
+    // sub-second `max_ms` is representable and a near-second-boundary budget does not collapse to 0.
+    // Captured ONCE as an absolute instant so it survives the re-wait loop (a won-but-breaker-Open
+    // permit re-enters the wait against the SAME deadline — it can never extend the budget).
+    let wait_ms = max_ms.min(request_ctx.remaining_ms());
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(wait_ms);
+
+    // `busbar_pool_queued` depth accounting — RAII, decremented on EVERY exit (dispatch, shed, or a
+    // dropped future on client disconnect), so the gauge can never leak a phantom waiter.
+    let _depth = app.queued_depth.park(pool);
+
+    loop {
+        // Build one `acquire_owned()` future per still-viable AtCapacity candidate. An unbounded lane
+        // has no semaphore (never AtCapacity), so `lane_semaphore` returns `None` and it is skipped —
+        // it would never be in `at_cap_lanes` anyway.
+        //
+        // Perf: the full `sems` + `select_all` set is rebuilt on each loop re-entry rather than
+        // incrementally patched. This is deliberate and cheaply bounded: re-entry happens ONLY when a
+        // won permit's lane turned out to have tripped its breaker while queued (an off-common-path race
+        // window, and the tripped lane is `retain`-dropped so `at_cap_lanes` STRICTLY shrinks — at most
+        // `at_cap_lanes.len()` re-entries total for the whole wait). A freed permit that simply gets
+        // re-acquired does not re-enter (it dispatches). Given the small, monotonically shrinking
+        // candidate set, an incremental future-set patch would add complexity for no measurable win.
+        let sems: Vec<(usize, std::sync::Arc<tokio::sync::Semaphore>)> = at_cap_lanes
+            .iter()
+            .filter_map(|&idx| app.store.lane_semaphore(idx).map(|s| (idx, s)))
+            .collect();
+        if sems.is_empty() {
+            return handle_status_503(app, cands, now(), pool, ingress_protocol);
+        }
+        let acquires = sems
+            .into_iter()
+            .map(|(idx, s)| Box::pin(async move { (idx, s.acquire_owned().await) }))
+            .collect::<Vec<_>>();
+
+        // Race the freed-permit acquisitions against the deadline. `biased` + deadline-first: if the
+        // deadline has elapsed we shed even when a permit is simultaneously ready — NEVER block past
+        // the budget.
+        let won = tokio::select! {
+            biased;
+            _ = tokio::time::sleep_until(deadline) => None,
+            (res, _idx, _rest) = futures::future::select_all(acquires) => Some(res),
+        };
+
+        let (lane, permit_res) = match won {
+            Some(v) => v,
+            // Deadline: shed with an honest Retry-After (`retry_after_secs` reads the same capacity /
+            // cooldown axes `recovery_hint_ms` does). R6/§5: the ONE blocking await in the whole
+            // dispatch path must never resume past its bounded `deadline` — assert it (dev/CI only).
+            None => {
+                debug_assert!(
+                    tokio::time::Instant::now()
+                        <= deadline
+                            + std::time::Duration::from_millis(QUEUE_WAIT_ASSERT_EPSILON_MS),
+                    "queue wait overran its bounded deadline — the on_exhausted queue blocked past \
+                     min(max_ms, failover budget) (R6/§5)"
+                );
+                return handle_status_503(app, cands, now(), pool, ingress_protocol);
+            }
+        };
+        let owned = match permit_res {
+            Ok(p) => p,
+            // The semaphore was closed (shutdown) — no permit is coming; shed.
+            Err(_) => return handle_status_503(app, cands, now(), pool, ingress_protocol),
+        };
+        let permit = crate::store::Permit::Bounded(owned);
+
+        // We hold capacity but have NOT passed the breaker. Run ONLY the breaker admission step on the
+        // won lane (R2) — the dispatched request owns the probe it wins (`forward_once` releases it
+        // via `release_probe_in`, exactly like the fallback dispatch path).
+        match app.store.try_admit_breaker(pool, lane, now()) {
+            Ok(probe_epoch) => {
+                let reasoning_override = cands
+                    .iter()
+                    .find(|w| w.idx == lane)
+                    .and_then(|w| w.reasoning);
+                return match forward_once(
+                    app,
+                    lane,
+                    permit,
+                    body,
+                    caller_token,
+                    request_ctx.remaining(now()),
+                    ingress_protocol,
+                    // The queued waiter selected this member against THIS pool's cell (it was an
+                    // AtCapacity exclusion recorded by `pick_among` on the pool cell), so record its
+                    // breaker outcome against the pool cell — mirrors the fallback/least_bad dispatch.
+                    pool,
+                    // The probe `try_admit_breaker` won, released OWNER-CHECKED by `forward_once`'s
+                    // `ProbeGuard` (consistent with the `Admit.probe_epoch` discipline everywhere else).
+                    // `Some(_)` = this dispatch owns a probe, so the guard IS built.
+                    Some(probe_epoch),
+                    op,
+                    req_content_type,
+                    usage_sink,
+                    reasoning_override,
+                )
+                .await
+                {
+                    Ok(resp) => resp,
+                    Err(()) => handle_status_503(app, cands, now(), pool, ingress_protocol),
+                };
+            }
+            Err(reason) => {
+                // The lane's breaker tripped Open (or it went dead / lost the probe race) while we were
+                // queued. The disposition is correct (drop this lane, keep waiting or shed), but the
+                // reason is a real diagnostic for an operator debugging a flapping queue-mode lane — log
+                // it before dropping the lane rather than swallowing it.
+                tracing::debug!(
+                    pool = %pool,
+                    lane = %app.lanes[lane].model,
+                    reason = reason.variant_name(),
+                    "on_exhausted queue: won a freed permit but the lane's breaker denied dispatch; \
+                     dropping it from the wait set"
+                );
+                // RELEASE the permit (never hold a slot on a lane we won't dispatch to) and
+                // drop this lane from the candidate set. Waiting cannot make an Open lane serveable
+                // (same rationale as the entry pre-check); dropping it also prevents a tight
+                // re-acquire spin on the permit we just released. Keep waiting on the remaining
+                // candidates; if none remain, shed.
+                drop(permit);
+                at_cap_lanes.retain(|&l| l != lane);
+                if at_cap_lanes.is_empty() {
+                    return handle_status_503(app, cands, now(), pool, ingress_protocol);
+                }
+                continue;
+            }
+        }
     }
 }
 
@@ -103,11 +339,7 @@ pub(crate) fn handle_status_503(
     pool: &str,
     ingress_protocol: &str,
 ) -> Response {
-    let soonest_remaining = find_soonest_cooldown(&app.store, cands, now, pool)
-        .map(|idx| app.store.cooldown_remaining_in(pool, idx, now))
-        .unwrap_or(1);
-
-    let retry_after = soonest_remaining.max(1); // Ensure at least 1 second
+    let retry_after = retry_after_secs(app, cands, now, pool);
 
     let mut resp = ingress_error(
         ingress_protocol,
@@ -151,6 +383,14 @@ pub(crate) async fn forward_once(
     // a single-flight HalfOpen probe on it, so recording on `""` left the pool cell wedged HalfOpen +
     // `probe_in_flight` forever. An empty `pool` means the lane-default cell (direct/ad-hoc routes).
     pool: &str,
+    // Owner token for the single-flight recovery probe this dispatch owns on the `(pool, i)` cell.
+    // `Some(epoch)` = this dispatch WON a probe (captured at the win: `Admit.probe_epoch` from
+    // `pick_among`, or the epoch from `try_admit_breaker`); a RAII `ProbeGuard` is armed to release
+    // that probe OWNER-CHECKED if this future is DROPPED mid-dispatch (client disconnect) — see the
+    // guard construction. `None` = this dispatch OWNS NO PROBE (the least-bad path bypasses the breaker
+    // and wins nothing), so NO guard is built and this call can never release/revert any probe — in
+    // particular it can never revert a probe a concurrent PEER legitimately won on the same cell.
+    probe_epoch: Option<u64>,
     op: crate::handlers::Op,
     req_content_type: &str,
     usage_sink: Option<UsageSink>,
@@ -160,6 +400,32 @@ pub(crate) async fn forward_once(
     // (mirrors the hot path's `effective_reasoning`).
     reasoning_override: Option<bool>,
 ) -> Result<Response, ()> {
+    // RAII probe release covering the WHOLE dispatch window (HIGH concurrency finding), built ONLY when
+    // this dispatch actually won a probe (`probe_epoch == Some`). The caller won a single-flight
+    // recovery probe on the `(pool, i)` cell before entering here; if THIS future is dropped mid-`.await`
+    // (client disconnects while the upstream call is in flight) none of the explicit early-return paths
+    // below run, so without a Drop guard the cell would stay HalfOpen + `probe_in_flight` forever and the
+    // lane would be benched until the slow out-of-band prober reset it. `ProbeGuard::drop` releases it
+    // OWNER-CHECKED (keyed on the captured `epoch`, so a stale drop never reverts a NEWER probe won by a
+    // peer). It stays ARMED across every early-return error path (those paths record a transient first,
+    // which already transitions the cell, making the guard's release a safe no-op) and is DISARMED
+    // exactly once the request records a legitimate SUCCESS outcome (`record_success_in` below) — from
+    // that point the dispatched request/stream owns the probe through its recorded outcome, so the guard
+    // must not also release it. Idempotent, owner-checked: never a double-release. This supersedes the
+    // previous scattered unowned `release_probe_in` calls.
+    //
+    // `probe_epoch == None` (the least-bad path, which bypasses the breaker and owns NO probe) builds NO
+    // guard at all: there is nothing to release, so this dispatch can never revert a probe a concurrent
+    // PEER legitimately won on the same cell. Representing "no probe" as `None` — rather than passing the
+    // cell's CURRENT epoch to an armed guard — is what closes that HIGH: an epoch-equality release keyed
+    // on a peer's live epoch would otherwise revert the peer's in-flight probe on a dropped future.
+    let mut probe_guard = probe_epoch.map(|epoch| crate::proxy::select::ProbeGuard {
+        store: app.store.as_ref(),
+        pool,
+        lane: i,
+        armed: true,
+        probe_epoch: epoch,
+    });
     // Re-parse body for per-lane model rewriting. An OPAQUE (non-JSON) body — multipart/binary
     // operations — parses to `None` and relays/translates at the byte level, exactly like the main
     // path; only a JSON-Content-Type body that FAILS to parse is the caller's 400.
@@ -171,13 +437,9 @@ pub(crate) async fn forward_once(
             // error (with sonic-rs it embeds a fragment of the input body — secrets/PII) nor leak it
             // into the client 400 body.
             tracing::debug!(detail = %crate::json::parse_err_log(body.len()), "request body JSON parse failed");
-            // Probe-leak guard (HIGH #1): a fallback-pool caller CAS-won a single-flight HalfOpen
-            // probe on the POOL cell in `pick_among` before entering here, and the contract is that
-            // EVERY early return out of `forward_once` releases it. This is a pre-dispatch bail (no
-            // breaker outcome recorded), so without an explicit release the cell stays HalfOpen +
-            // `probe_in_flight`, benching the lane forever. `release_probe_in` is idempotent and a
-            // no-op on the default `""` cell / a non-HalfOpen cell, so it is safe on every path.
-            app.store.release_probe_in(pool, i);
+            // Pre-dispatch bail (no breaker outcome recorded): the armed `probe_guard` above releases
+            // the POOL-cell single-flight probe on drop (owner-checked, idempotent, a no-op on the
+            // default `""` / a non-HalfOpen cell), so the cell never wedges HalfOpen on this early exit.
             return Ok(ingress_error(
                 ingress_protocol,
                 StatusCode::BAD_REQUEST,
@@ -235,10 +497,8 @@ pub(crate) async fn forward_once(
     ) {
         Ok(p) => p,
         Err(resp) => {
-            // Probe-leak guard (HIGH #1): release the POOL-cell single-flight probe this
-            // fallback attempt CAS-won before bailing on a translation failure (a pre-dispatch
-            // early return — no breaker outcome recorded). Idempotent; no-op off a HalfOpen cell.
-            app.store.release_probe_in(pool, i);
+            // Pre-dispatch bail on a translation failure (no breaker outcome recorded): the armed
+            // `probe_guard` releases the POOL-cell single-flight probe on drop (owner-checked).
             return Ok(*resp);
         }
     };
@@ -264,9 +524,8 @@ pub(crate) async fn forward_once(
         Some(p) => p,
         None => {
             // Unreachable for chat; the router filters unsupported lanes before the degraded path
-            // is reached. Bail safely, releasing any single-flight probe this lane won (same probe
-            // contract as forward_once's other pre-dispatch guards).
-            app.store.release_probe_in(pool, i);
+            // is reached. Bail safely — the armed `probe_guard` releases any single-flight probe this
+            // lane won on drop (same probe contract as forward_once's other pre-dispatch exits).
             return Ok(ingress_error(
                 ingress_protocol,
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -353,7 +612,9 @@ pub(crate) async fn forward_once(
                     if tripped {
                         emit_breaker_trip(app, pool, i);
                     }
-                    app.store.release_probe_in(pool, i);
+                    // `record_transient_in` above already transitioned the cell; the armed `probe_guard`
+                    // releases the probe on drop (owner-checked no-op after the transient). Record
+                    // BEFORE release preserved (the guard drops at return, after this recording).
                     crate::telemetry::upstream_failure(app, pool, i, DISPOSITION_ATTEMPT_TIMEOUT);
                     // Parity with the organic path: a degraded-path attempt-timeout is a failover
                     // (the caller tries the next candidate), so count it under FAILOVERS_TOTAL too.
@@ -428,7 +689,8 @@ pub(crate) async fn forward_once(
                     if tripped {
                         emit_breaker_trip(app, pool, i);
                     }
-                    app.store.release_probe_in(pool, i);
+                    // `record_transient_in` above transitioned the cell (cooldown-backoff preserved);
+                    // the armed `probe_guard` releases the probe on drop (owner-checked no-op after).
                     return Ok(shape_cross_protocol_error(ingress_protocol, status, &bytes));
                 }
                 // Same-protocol degraded path: relay the upstream error verbatim (no classification).
@@ -480,7 +742,8 @@ pub(crate) async fn forward_once(
                 if tripped {
                     emit_breaker_trip(app, pool, i);
                 }
-                app.store.release_probe_in(pool, i);
+                // `record_transient_in` above transitioned the cell (cooldown-backoff preserved); the
+                // armed `probe_guard` releases the probe on drop (owner-checked no-op after).
                 return Ok(rb
                     .body(Body::from(bytes))
                     .unwrap_or_else(|_| status.into_response()));
@@ -493,6 +756,14 @@ pub(crate) async fn forward_once(
             // lifetime request budget. The degraded callers select via the pool cell, so recording on
             // the default `""` cell left the pool cell wedged HalfOpen + probe_in_flight forever.
             app.store.record_success_in(pool, i);
+            // DISARM the probe guard: `record_success_in` recorded this dispatch's legitimate outcome
+            // (HalfOpen→Closed, probe cleared), so the request now owns the probe through to that
+            // outcome. From here the streamed/buffered success body (or its own mid-stream failure
+            // recording) is responsible for the cell, and the guard must NOT also release on drop. No-op
+            // when no guard was built (least-bad path, `probe_epoch == None`).
+            if let Some(g) = probe_guard.as_mut() {
+                g.armed = false;
+            }
             // Mirror the main path: fold time-to-headers into the lane's latency EWMA (routing
             // `fastest` signal). Lane-global; off the selection path.
             app.store
@@ -741,15 +1012,14 @@ pub(crate) async fn handle_fallback_pool(
             );
         }
 
-        let Some((i, permit, _probe_epoch)) =
+        let Some((i, permit, probe_epoch)) =
             // Fallback-pool selection uses plain SWRR by design: routing POLICY applies to the PRIMARY
             // pool (where it shapes the normal-path lane choice); the fallback pool is the
             // already-degraded overflow path, so it deliberately selects with the unchanged inline SWRR
             // (`policy_order == None`) rather than re-running a policy over the spillover candidates.
-            // The epoch is unused here: this function delegates to `forward_once` (a separate
-            // single-attempt call), whose own `release_probe_in` sites are unowned by design — each
-            // is preceded by an unowned `record_transient_in` that already transitions the cell, so
-            // switching those to owned would change nothing observable (see M6's audit notes).
+            // The probe epoch is threaded into `forward_once` so its `ProbeGuard` releases the
+            // single-flight probe OWNER-CHECKED (a dropped dispatch future no longer wedges the cell
+            // HalfOpen), consistent with the `Admit.probe_epoch` discipline everywhere else.
             pick_among(&app, &fallback_cands, request_ctx, None, pool_name, None).await
         else {
             // Fallback pool itself exhausted — consult ITS on_exhausted config (multi-level
@@ -784,6 +1054,8 @@ pub(crate) async fn handle_fallback_pool(
             // CAS-won the single-flight HalfOpen probe on) — record this attempt's breaker outcome
             // against THAT cell, not the default `""` cell.
             pool_name,
+            // `pick_among` CAS-won a single-flight probe for this dispatch, so the guard IS built.
+            Some(probe_epoch),
             op,
             req_content_type,
             // Clone per attempt: a transient transport failure retries the next member, so the sink
@@ -822,8 +1094,38 @@ pub(crate) async fn handle_least_bad(
     req_content_type: &str,
     usage_sink: Option<UsageSink>,
 ) -> Response {
-    let Some(soonest_idx) = find_soonest_cooldown(&app.store, cands, now, pool) else {
-        // No candidates at all - fall back to Status503.
+    // Rank admissible members by soonest cooldown (the "least bad" order), then dispatch to the FIRST
+    // that ALSO has a free concurrency permit. Bug 1 Finding 2: the soonest-cooldown member may itself
+    // be AT-CAPACITY, and `least_bad` exists precisely to serve a degraded response when everything is
+    // tripped — refusing with a hard 503 because the single best member is momentarily busy, while a
+    // slightly-worse sibling has a free slot, defeats its purpose. The prior code did one `try_acquire`
+    // on the single soonest member and 503'd on failure, so a saturated soonest member masked a serving
+    // sibling. Admissibility (dead/budget) is filtered here too, so a dead lane's spurious cooldown-0
+    // never sorts first. Sort is by the SAME `cooldown_remaining_in(pool, …)` the old single-pick used.
+    //
+    // Perf: this is an O(n log n) sort + per-candidate lock-guarded cooldown lookup, but least_bad is
+    // an EXHAUSTION-PATH-ONLY degraded route (every member tripped/at-capacity) — not the steady-state
+    // hot path — and a single-pass min would still need the same per-candidate cooldown lookups to
+    // break ties, so the sort is left as-is for legibility on this cold path.
+    let mut ranked: Vec<usize> = cands
+        .iter()
+        .map(|wl| wl.idx)
+        .filter(|&idx| app.store.lane_admissible(idx))
+        .collect();
+    ranked.sort_by_key(|&idx| app.store.cooldown_remaining_in(pool, idx, now));
+
+    // Bypass breaker usability for the last-resort path; grab the first free concurrency permit in
+    // least-bad order. An at-capacity candidate (no permit) is SKIPPED to the next, not a 503.
+    let mut dispatch = None;
+    for idx in ranked {
+        if let Some(permit) = app.store.try_acquire(idx) {
+            dispatch = Some((idx, permit));
+            break;
+        }
+    }
+    let Some((soonest_idx, permit)) = dispatch else {
+        // No admissible candidate at all, or EVERY admissible candidate is at-capacity — no degraded
+        // dispatch is possible, so shed with 503 (+ Retry-After).
         return handle_status_503(app, cands, now, pool, ingress_protocol);
     };
 
@@ -834,11 +1136,6 @@ pub(crate) async fn handle_least_bad(
         "least-bad mode: routing to a degraded member (pool exhausted)"
     );
 
-    // Bypass breaker usability for the last-resort path; grab the concurrency permit directly.
-    let Some(permit) = app.store.try_acquire(soonest_idx) else {
-        return handle_status_503(app, cands, now, pool, ingress_protocol);
-    };
-
     match forward_once(
         app,
         soonest_idx,
@@ -847,9 +1144,17 @@ pub(crate) async fn handle_least_bad(
         caller_token,
         request_ctx.remaining(now),
         ingress_protocol,
-        // The least-bad member was selected via this pool's cell (`find_soonest_cooldown` /
-        // `cooldown_remaining_in(pool, …)`), so record its breaker outcome against the POOL cell.
+        // The least-bad member was ranked via this pool's cell (`cooldown_remaining_in(pool, …)`), so
+        // record its breaker outcome against the POOL cell.
         pool,
+        // least_bad BYPASSES the breaker: it dispatches to an Open member via `try_acquire` and wins NO
+        // probe, so it OWNS NO PROBE to guard — pass `None`. `forward_once` then builds NO `ProbeGuard`
+        // at all, so a dropped least-bad future can NEVER release/revert a probe. Passing the cell's
+        // CURRENT epoch here instead (as an armed guard) would be UNSAFE: if the cell is HalfOpen because
+        // a concurrent PEER legitimately won the probe, that current epoch is the PEER's live epoch, and
+        // an owner-checked release keyed on it would match and revert the peer's in-flight probe on drop
+        // — breaking single-flight. `None` is the type-enforced statement of "owns no probe".
+        None,
         op,
         req_content_type,
         usage_sink,

@@ -1196,6 +1196,22 @@
         ],
         "type": "object"
       },
+      "InspectPluginReq": {
+        "description": "`POST /api/v1/admin/plugins/inspect` request body. SAME shape as [`InstallPluginReq`] (question\n#7 — \"same request body shape as `POST /plugins`\") — `file` is accepted for shape parity with\nthe install flow a UI composes around the same upload, but is otherwise UNUSED here: inspect\nnever writes anything to disk, so there is no filename to bind an install would need.",
+        "properties": {
+          "file": {
+            "type": "string"
+          },
+          "tarball_b64": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "file",
+          "tarball_b64"
+        ],
+        "type": "object"
+      },
       "InstallPluginReq": {
         "description": "The `POST /api/v1/admin/plugins` request body: install a SIGNED plugin tarball. The tarball\nbytes ride as base64 (`tarball_b64`) — a plugin artifact is opaque binary, so base64 keeps it a\nclean JSON field. The engine RE-VERIFIES the contained signed manifest server-side against the\nrunning `plugins.*` trust posture (the client is never trusted). `file` is the bare `.tar.gz`\nfilename to store it under (storage only — identity comes from the signed manifest inside).",
         "properties": {
@@ -1821,8 +1837,22 @@
       "PluginSchemaView": {
         "description": "`GET /plugins/{name}/schema` — the generalized, all-kinds sibling of [`HookSchemaView`]\n(plugin-settings-schema-SPEC.md). Carries `trust`/`source`/`schema_error` on top of\n`{name, schema}` so busbar-ui never has to infer trust state or the describe/manifest\nprecedence rule from context — the server always picks exactly one source and reports which.",
         "properties": {
+          "kind": {
+            "description": "The plugin's `kind` (`hook` | `secret` | …) from its manifest. Both `GET /plugins/{file}/schema`\nand `POST /plugins/inspect` emit it (`null` only when the plugin cannot be resolved to a\nmanifest). Declared so codegen'd clients keep it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "name": {
             "type": "string"
+          },
+          "restart_required_default": {
+            "description": "The kind-derived restart-scoping default (`busbar_plugin_sign::kind_restart_default`), so\nbusbar-ui need not hardcode the kind→default table. Emitted by both schema endpoints (`null`\nonly when the plugin has no resolvable manifest/kind). Declared so codegen'd clients keep it.",
+            "type": [
+              "boolean",
+              "null"
+            ]
           },
           "schema": {
             "description": "The plugin's settings JSON Schema verbatim, or `null` — either because the manifest never\nset `settings_schema`, or (distinctly, see `schema_error`) because it did but the value\nfailed to parse."
@@ -1841,6 +1871,13 @@
           "trust": {
             "description": "`\"trusted\" | \"unverified\" | \"rejected\"` — the same vocabulary the plugin catalog already\nuses (never `\"verified\"`; question #8, round-4 correction).",
             "type": "string"
+          },
+          "version": {
+            "description": "The plugin's semantic version from its manifest. Present on `POST /plugins/inspect` (which\npreviews an on-disk candidate's manifest); `null`/absent on `GET /plugins/{file}/schema`, which\ndoes not surface the version. Declared here so a codegen'd client keeps the field the inspect\nhandler always sends, rather than silently dropping it.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -2490,7 +2527,7 @@
   "info": {
     "description": "The frozen, additive-only /api/v1/admin surface. Errors use the stable envelope {\"error\":{\"code\",\"message\"}}; tooling branches on `code`.",
     "title": "Busbar Admin API",
-    "version": "1.5.0"
+    "version": "1.5.1"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -6709,6 +6746,93 @@
         ],
         "summary": "Install a dynamic-library store plugin: upload the library (base64) + optional signed manifest; the engine RE-VERIFIES against the running trust posture, validates the store ABI, and writes it atomically into the plugins directory. Takes effect on the next store (re)load",
         "x-busbar-required-scope": "full"
+      }
+    },
+    "/api/v1/admin/plugins/inspect": {
+      "post": {
+        "operationId": "PostPluginsInspect",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InspectPluginReq"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PluginSchemaView"
+                }
+              }
+            },
+            "description": "`{name, version, kind, schema, schema_error, trust, source, restart_required_default}` — the same shape `GET /plugins/{file}/schema` carries, plus `name`/`version`/`kind`; an untrusted/rejected candidate is reported (`trust`), never refused"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`invalid_request`: malformed body / unknown field"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated but under-scoped: requires `read-only` (error code `forbidden`)"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Per-principal mutation budget exhausted (error code `rate_limited`; `Retry-After` header)"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Internal failure (error code `internal`); the detail is logged server-side, never returned"
+          }
+        },
+        "security": [
+          {
+            "adminToken": []
+          },
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Stateless read-only preview of a candidate plugin tarball — verify its signature, parse its manifest, and report its settings schema WITHOUT installing anything",
+        "x-busbar-required-scope": "read-only"
       }
     },
     "/api/v1/admin/plugins/reload": {

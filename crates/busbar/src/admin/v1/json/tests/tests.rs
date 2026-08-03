@@ -124,14 +124,14 @@ fn openapi_paths_annotate_required_scope() {
     // function is a tautology: editing the matrix moves both sides together and can never fail.
     fn expected_scope(method: &str, path: &str) -> &'static str {
         use crate::admin::v1::contract::{
-            ADMIN_PREFIX, PATH_CONFIG_VALIDATE, PATH_HOOKS, PATH_KEYS,
+            ADMIN_PREFIX, PATH_CONFIG_VALIDATE, PATH_HOOKS, PATH_KEYS, PATH_PLUGINS_INSPECT,
         };
         if method == "get" || method == "head" {
             return "read-only";
         }
         let is_mutation = matches!(method, "post" | "put" | "patch" | "delete");
         let rel = path.strip_prefix(ADMIN_PREFIX).unwrap_or(path);
-        if rel == PATH_CONFIG_VALIDATE {
+        if rel == PATH_CONFIG_VALIDATE || rel == PATH_PLUGINS_INSPECT {
             return "read-only";
         }
         if is_mutation && (rel == PATH_HOOKS || rel.starts_with("/hooks/")) {
@@ -200,7 +200,7 @@ fn openapi_operations_carry_stable_operation_ids() {
             checked += 1;
         }
     }
-    assert_eq!(checked, 55, "expected exactly 55 admin operations");
+    assert_eq!(checked, 56, "expected exactly 56 admin operations");
     // Spot-check the exact naming scheme against a few representative paths.
     assert_eq!(
         doc["paths"]["/api/v1/admin/keys"]["get"]["operationId"],
@@ -638,8 +638,8 @@ fn openapi_every_mutating_operation_declares_a_request_body() {
         "every BODYLESS entry must name a real operation; saw {bodyless_seen:?}"
     );
     assert_eq!(
-        declared, 17,
-        "17 mutating operations take a body; a change here is a deliberate API change"
+        declared, 18,
+        "18 mutating operations take a body; a change here is a deliberate API change"
     );
 }
 

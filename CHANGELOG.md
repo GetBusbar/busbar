@@ -11,10 +11,69 @@ item under **Changed**.
 
 ## [Unreleased]
 
+## [1.5.1], 2026-08-02
+
 <!-- Release notes accumulate here. Per .github/workflows/cut-release.yml, cutting a release runs
      roll_changelog.py, which promotes this section to `## [X.Y.Z], <cut-date>` and stamps the
      real date. Do NOT hard-code a dated version header here — that collides with the
      auto-promotion at tag time. -->
+
+### Added
+
+- **`/stats` and `/metrics` capacity signal.** Each lane now reports whether it is at its
+  `max_concurrent` limit, so a saturated lane is externally distinguishable from an idle one (and, in
+  Prometheus, from a merely slow upstream). `/stats` lanes gain `available` (free permits, or
+  `"unbounded"`) and `at_capacity` (bool). `/metrics` gains `busbar_lane_available_permits{pool,lane}`
+  (bounded lanes only), using the same `pool`/`lane` labels as `busbar_lane_state` so they PromQL-join.
+
+- **Unified lane-availability signal on `/stats` and `/metrics`, rendered from the shared
+  `Unavailable` taxonomy.** `/stats` lanes gain `availability` (`"available"`, or the reason a lane
+  can't take a request — `at_capacity`, `breaker_open`, `dead`, `budget_exhausted`, …),
+  `recovery_hint_ms` (when it could plausibly recover, or `null` for reasons that don't self-recover),
+  and `breaker_state` — a breaker axis kept ORTHOGONAL to `at_capacity` so an Open, saturated lane is
+  legible on both axes at once. `/metrics` gains `busbar_lane_available{pool,lane}` (`1` = the lane
+  would admit, `0` = it wouldn't — the successor to, and replacement for, the earlier
+  `busbar_lane_at_capacity`), `busbar_lane_recovery_hint_ms{pool,lane}`, and
+  `busbar_pool_queued{pool}` (live `on_exhausted: queue` park depth). Because operators, `/metrics`,
+  and the router all read the SAME `classify` verdict, the observed signal cannot drift from routing
+  behavior.
+
+- **`on_exhausted: { queue: { max_ms } }` policy.** A pool whose members are all at capacity can now
+  hold an excess request for a BOUNDED wait (`max_ms`, validated `> 0` and `<= failover.timeout_secs *
+  1000`) for a permit to free, then dispatch it — or, on timeout, fall through to `reject` (503 +
+  `Retry-After`). The wait is capped at `min(max_ms, failover-budget-remaining)`, so it can never
+  block past the failover deadline; a pool that is down rather than merely busy skips the wait
+  entirely. Complements the existing `reject`, `least_bad`, and `fallback_pool` actions.
+
+### Changed
+
+- **A saturated pool now spills/sheds per `on_exhausted` instead of silently queueing to the failover
+  deadline.** A pool member at its `max_concurrent` limit is treated as an exhaustion condition at
+  selection time, matching the documented "unavailable, tripped, excluded, or **at-capacity**"
+  contract. Previously an at-capacity member was not an exhaustion trigger: requests that found every
+  member busy were queued FIFO until a slot freed or `failover.timeout_secs` expired, so
+  `on_exhausted` never fired — `fallback_pool` never spilled and `reject` never shed, and latency grew
+  linearly with burst depth. Now `fallback_pool` spills to the overflow pool immediately (including
+  through multi-level chains), and `reject`/default returns a 503 with `Retry-After`. This changes the
+  observable behavior of a burst against a small local lane + cloud-overflow pool — the "cheap primary,
+  spill on burst" shape — from silent serialization to an immediate spill.
+
+### Fixed
+
+- **`on_exhausted` never fired on `max_concurrent` saturation (requests queued unboundedly).** The
+  root cause was `pick_among` parking on the lane semaphore until the deadline instead of treating an
+  at-capacity lane as unavailable. See **Changed** above.
+- **`on_exhausted: least_bad` returned a hard 503 when the soonest-cooldown member was at-capacity**
+  even if a sibling had a free permit. `least_bad` now ranks admissible members by cooldown and
+  dispatches to the first with a free permit, skipping saturated ones, instead of a single try on the
+  single best member.
+- **`Retry-After` on an exhaustion 503 no longer collapses to `1` under saturation.** It now reflects
+  the soonest genuine breaker cooldown when a member is tripped (ignoring an at-capacity member's
+  spurious cooldown-of-0), and a small saturation floor when exhaustion is purely at-capacity.
+- **`limits.max_inbound_concurrent` now sheds excess inbound requests with a 503 + `Retry-After`
+  instead of queueing them behind the cap.** The global inbound concurrency limit previously used a
+  plain queueing semaphore, so a burst beyond the cap was admitted FIFO as slots freed rather than
+  rejected — no backpressure to the client. It is now wrapped in a load-shed layer.
 
 ## [1.5.0], 2026-08-01
 
