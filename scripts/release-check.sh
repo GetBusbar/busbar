@@ -808,6 +808,16 @@ while IFS=$'\t' read -r P_REPO P_DIR _ _ P_SERVICE P_RELGATE P_GATE _; do
       ;;
   esac
 
+  # Build FIRST, then test — mirroring the canonical plugin-ci.yml (`cargo build --all-targets`
+  # before `cargo test`). `cargo test` alone builds the rlib for the harness but NOT the crate's
+  # cdylib artifact, so a plugin's own e2e suite that dlopens `target/release/<plugin>.{so,dylib}`
+  # (discovered relative to the test binary) hard-fails its "cdylib not built under CI" guard.
+  # `--all-targets` forces the cdylib crate-type output into target/release/ where the suite looks.
+  echo "  building GetBusbar/${P_REPO}'s workspace (cdylib artifacts) before its suite in ../${P_DIR}..."
+  (
+    cd "$SUITE_SRC"
+    cargo build --release --workspace --all-targets
+  )
   echo "  running GetBusbar/${P_REPO}'s own cargo test --workspace --release in ../${P_DIR}..."
   (
     cd "$SUITE_SRC"
