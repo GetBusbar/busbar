@@ -264,9 +264,12 @@ pools:
         weight: 1
 ```
 
-Set the additional environment variables, restart Busbar, and mint a caller key (shown once):
+Generate the signing key `auth.signing_key` points at (busbar no longer auto-generates one), set the additional environment variables, restart Busbar, and mint a caller key (shown once):
 
 ```bash
+# Prints the secret (64 hex chars) to stdout, guidance to stderr; capture just the secret:
+export BUSBAR_SIGNING_KEY=$(./busbar --generate-signing-key)
+
 export ANTHROPIC_KEY=sk-ant-...
 export OPENAI_KEY=sk-...
 export BUSBAR_ADMIN_TOKEN=your-admin-token

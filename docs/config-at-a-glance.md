@@ -129,7 +129,7 @@ pools:                                      # a pool is weighted lanes with shar
     breaker:                                # per-(pool, lane) circuit breaking  → #breaker
       trip: { mode: error_rate, window_secs: 30, threshold: 0.5, min_requests: 5 }
     failover: { timeout_secs: 30, max_hops: 3 }   # per-request retry budget  → #failover
-    on_exhausted: { fallback_pool: overflow }     # reject | least_bad | fallback_pool  → #on_exhausted
+    on_exhausted: { fallback_pool: overflow }     # reject | least_bad | fallback_pool | { queue: { max_ms } }  → #on_exhausted
     affinity: { mode: session }                   # session pinning  → #affinity
 
 global_hooks:                               # hook instances firing on EVERY request, ordered  → hooks.md

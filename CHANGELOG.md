@@ -47,6 +47,28 @@ item under **Changed**.
 
 ### Changed
 
+- **Migration: busbar no longer auto-generates a signing key at boot.** 1.5.0 wrote a fresh
+  `busbar-signing.key` (0600) beside the config the first time `auth.signing_key` was absent; on a
+  read-only config mount that write fails and busbar boot-loops with a misleading Permission-denied.
+  1.5.1 removes the auto-generate: if the data-plane chain names the built-in `keys` verifier
+  (signed-token auth), `auth.signing_key` is now **required** and `config_validate` fails closed at
+  `--validate`/boot with an actionable message when it's missing; the mint path also fails closed if
+  somehow reached without one. Generate a key once with `busbar --generate-signing-key` (prints 64
+  hex chars to stdout, guidance to stderr, zero side effects — it never writes anything), save it to
+  a file, and point config at it:
+
+  ```yaml
+  auth:
+    signing_key: { file: /run/secrets/busbar-signing.key }
+    # or: { env: BUSBAR_SIGNING_KEY }
+  ```
+
+  This is a **fleet-shared** secret — every node that verifies busbar-signed keys must resolve the
+  SAME secret, so generate it once and distribute it to every node, don't run
+  `--generate-signing-key` per-node. Rotating it revokes every outstanding key. A deployment that
+  never puts `keys` in `auth.chain` issues no signed tokens and needs no signing key at all. See
+  `docs/migration-1.5.md`.
+
 - **A saturated pool now spills/sheds per `on_exhausted` instead of silently queueing to the failover
   deadline.** A pool member at its `max_concurrent` limit is treated as an exhaustion condition at
   selection time, matching the documented "unavailable, tripped, excluded, or **at-capacity**"
@@ -74,6 +96,16 @@ item under **Changed**.
   instead of queueing them behind the cap.** The global inbound concurrency limit previously used a
   plain queueing semaphore, so a burst beyond the cap was admitted FIFO as slots freed rather than
   rejected — no backpressure to the client. It is now wrapped in a load-shed layer.
+
+### Security
+
+- **No more auto-created, auto-persisted signing key on disk.** 1.5.0's first-boot behavior wrote an
+  ed25519 secret to `busbar-signing.key` beside the config file with no operator action or awareness;
+  that on-disk secret's permissions, backup/retention, and distribution were entirely outside
+  operator control. 1.5.1 never creates it — the operator explicitly generates it
+  (`busbar --generate-signing-key`) and places it wherever their own secret-management practice
+  dictates (a mounted file, an env var from a vault injector, etc.), so its lifecycle is fully
+  operator-owned.
 
 ## [1.5.0], 2026-08-01
 
@@ -139,8 +171,9 @@ working on its own.
   key with no group is authed + unlimited (access only). Mint body:
   `{ name, group?, allowed_pools?, labels?, expires_in|expires_at?, issue_aws_credential? }`
   (default lifetime 90 days). Revoke = denylist entry, live across every store backend. The
-  signing key is `auth.signing_key` (a secret reference, fleet-shared); absent, busbar generates
-  one 0600 on first boot. Rotating it revokes every outstanding key.
+  signing key is `auth.signing_key` (a secret reference, fleet-shared); in 1.5.0, if absent, busbar
+  generated one 0600 on first boot (**changed in 1.5.1 — see above: this auto-generation was
+  removed**). Rotating it revokes every outstanding key.
 - **Secrets are plugins (`kind: secret`).** Every secret value in config is a secret **reference**:
   `{ env: VAR }`, `{ file: /path }` (the built-in secret modules), or
   `{ module: <secret-plugin>, settings: {...} }` for third-party sources (vault, cloud secret

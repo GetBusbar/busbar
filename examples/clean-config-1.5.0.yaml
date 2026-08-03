@@ -97,7 +97,7 @@ pools:
     breaker:  { base_cooldown_secs: 15, max_cooldown_secs: 120,
                 trip: { mode: error_rate, window_secs: 30, threshold: 0.5, min_requests: 5, consecutive_n: 3 } }
     failover: { timeout_secs: 120, max_hops: 3, exclusions: [] }       # no deadline_secs/cap aliases
-    on_exhausted: reject                                     # | { fallback_pool: cold } | least_bad
+    on_exhausted: reject                                     # | { fallback_pool: cold } | least_bad | { queue: { max_ms } }
     affinity: { mode: session }
 
 # ── HOOKS: inline refs, no registry block ──

@@ -214,3 +214,82 @@ Along with the above, these one-name-each renames are enforced (unknown keys fai
 
 If Busbar starts and `--validate` passes, the migration is complete. There are no silent fallbacks,
 so a clean boot means a fully migrated config.
+
+---
+
+# Migrating from 1.5.0 to 1.5.1
+
+1.5.1 is a small, targeted breaking change on top of 1.5.0: **busbar no longer auto-generates a
+signing key at boot.**
+
+## What changed, and why
+
+In 1.5.0, if `auth.signing_key` was absent, busbar generated an ed25519 secret on first boot and
+wrote it to `busbar-signing.key` (mode `0600`) beside the config file. That write-on-first-boot
+behavior boot-loops any deployment where the config directory is a read-only mount (the common case
+for config delivered via a container image, a ConfigMap, or a read-only bind mount): busbar fails
+the write, exits, and — because nothing was persisted — tries to generate and write the key again on
+the very next boot, forever, with a Permission-denied error that doesn't obviously point at the
+signing key as the cause.
+
+1.5.1 removes the auto-generation entirely. `auth.signing_key` is now a plain secret **reference**
+like any other (`{ env: VAR }` / `{ file: /path }`) — busbar only ever resolves it, never creates it.
+
+## Do you need to do anything?
+
+Only if your deployment verifies busbar-signed keys, i.e. `auth.chain` names the built-in `keys`
+module. If it does, and `auth.signing_key` was relying on the old auto-generated
+`busbar-signing.key`, you must now generate and provide the key explicitly — `config_validate` fails
+closed at `--validate`/boot with an actionable error if `keys` is in the chain and
+`auth.signing_key` is unset.
+
+If `auth.chain` never names `keys` (no signed-token verification), nothing changes for you.
+
+## Migration steps
+
+1. Generate a key. `--generate-signing-key` has zero side effects — it mints a fresh ed25519 secret
+   from the OS RNG and prints it; it does not write any file or touch your config.
+
+   ```sh
+   busbar --generate-signing-key > /run/secrets/busbar-signing.key
+   ```
+
+   (The 64-hex-char secret goes to stdout only, so it's safe to redirect straight to a file; guidance
+   goes to stderr and never contains the secret.)
+
+2. Point `auth.signing_key` at it:
+
+   ```yaml
+   # 1.5.0 (implicit — no auth.signing_key set, busbar generated one on first boot)
+   auth:
+     chain: [keys]
+
+   # 1.5.1
+   auth:
+     chain: [keys]
+     signing_key: { file: /run/secrets/busbar-signing.key }   # or { env: BUSBAR_SIGNING_KEY }
+   ```
+
+3. If you already have an existing `busbar-signing.key` file that busbar auto-generated under
+   1.5.0, you can keep using it — copy/mount its bytes to wherever you now point
+   `auth.signing_key`, so upgrading doesn't invalidate outstanding minted keys. There's nothing
+   special about a freshly-generated key versus the old auto-generated one; both are just 32
+   raw bytes (or 64 hex chars) of ed25519 secret material.
+
+## Fleet note
+
+`auth.signing_key` is a **shared secret**: every node that verifies busbar-signed keys must resolve
+the exact same bytes, or nodes will reject each other's tokens. Generate the key **once**, then
+distribute that same value to every node in the fleet (a shared secrets file, the same env var
+sourced from a central vault, etc.) — do not run `busbar --generate-signing-key` separately on each
+node. Rotating the key revokes every outstanding key fleet-wide, since every node stops being able to
+verify tokens signed with the old secret.
+
+## Quick checklist
+
+- [ ] Does `auth.chain` name `keys`? If not, no action needed.
+- [ ] `busbar --generate-signing-key > /path/to/secret` (or capture the stdout value into your
+      secret manager / env var)
+- [ ] Set `auth.signing_key: { file: /path/to/secret }` or `{ env: VAR }`
+- [ ] Distribute the same secret value to every node in the fleet
+- [ ] `busbar --validate`

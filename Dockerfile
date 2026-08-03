@@ -24,7 +24,7 @@
 #     getbusbar/busbar
 #
 # Governance (optional) needs a writable volume for the SQLite file, e.g.
-#   -v busbar-data:/var/lib/busbar   with governance.db_path: /var/lib/busbar/governance.db
+#   -v busbar-data:/var/lib/busbar   with store.settings.db_path: /var/lib/busbar/governance.db
 FROM scratch
 
 ARG TARGETARCH
