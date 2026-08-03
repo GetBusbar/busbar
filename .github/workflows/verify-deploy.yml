@@ -1,0 +1,272 @@
+name: Verify deploy
+
+# INDEPENDENT post-deploy verifier. release.yml and docker.yml each report their OWN step success —
+# neither one proves the release actually shipped end-to-end as a user would experience it. This
+# workflow re-derives the truth from the outside, straight from the same sources a user/build would
+# hit, and fails loud (non-zero exit, one echoed PASS/FAIL line per check) if anything is off.
+#
+# The bug this exists to catch: hub.docker.com's tags/search API (and by extension anything that
+# trusts it) can lag hours behind a real push. The OCI REGISTRY (registry-1.docker.io) is updated
+# synchronously and is what `docker pull` actually reads — so every registry assertion here goes
+# straight at registry-1.docker.io / ghcr.io's Distribution API, never hub.docker.com's index.
+#
+# Checks (each independently PASS/FAIL, ANY failure -> exit 1):
+#   (a) registry-1.docker.io has the vX.Y.Z tag, AND `latest` resolves to the SAME manifest digest
+#       as vX.Y.Z (i.e. `latest` was actually retagged onto the new release, not left stale).
+#   (b) ghcr.io/getbusbar/busbar:vX.Y.Z resolves to the SAME digest as the Docker Hub version tag
+#       (docker.yml copies the manifest cross-registry; they must be byte-for-byte the same image).
+#   (c) the GitHub Release vX.Y.Z exists and carries every expected asset (5 platform tarballs/zip,
+#       the CycloneDX SBOM, the OpenAPI document).
+#   (d) the actually-running image's `org.opencontainers.image.version` OCI label equals the
+#       version (pull the real image and inspect it — not just trust the tag name).
+#   (e) the terraform-provider-busbar version is published on registry.terraform.io (its own
+#       release-on-upstream workflow bumps + publishes off the `upstream-release` dispatch; this
+#       re-derives from the registry's own public API, not from that workflow's own success report).
+#   (f) GetBusbar/helm-charts has published the busbar chart with `appVersion` == the release version
+#       (again, read from the published chart index, not the publishing workflow's own claim).
+#   (g) getbusbar.com is actually serving the new version (the live site, not the build log).
+#
+# Triggers:
+#   - workflow_run: fires when release.yml ("Release") or docker.yml ("Docker") completes on a tag
+#     push. The two run in parallel off the same tag push (tag-on-main.yml), so there is no fixed
+#     ordering — each check below retries with backoff for a few minutes to ride out the race
+#     instead of false-failing because the OTHER workflow hasn't finished publishing yet.
+#   - workflow_dispatch: manual re-check of an already-shipped version.
+on:
+  workflow_run:
+    workflows: ["Release", "Docker"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to verify (e.g. 1.5.2, no leading v)"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       startsWith(github.event.workflow_run.head_branch, 'v'))
+    env:
+      DOCKERHUB_IMAGE: getbusbar/busbar
+      GHCR_IMAGE: ghcr.io/getbusbar/busbar
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Resolve version under test
+        id: ver
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            V="${{ inputs.version }}"
+          else
+            V="${{ github.event.workflow_run.head_branch }}"
+            V="${V#v}"
+          fi
+          echo "$V" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "::error::not a plain X.Y.Z version: '$V'"; exit 1; }
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "tag=v$V" >> "$GITHUB_OUTPUT"
+          echo "Verifying busbar v$V"
+
+      - name: Registry token + digest helpers
+        id: helpers
+        run: |
+          cat > /tmp/reg-digest.sh <<'SH'
+          #!/usr/bin/env bash
+          # reg-digest.sh <auth-host> <registry-host> <repo> <tag>
+          # Anon pull-token flow (works identically against auth.docker.io and ghcr.io's token
+          # endpoint) -> HEAD the manifest -> print the Docker-Content-Digest response header.
+          set -euo pipefail
+          auth_host="$1"; reg_host="$2"; repo="$3"; tag="$4"
+          if [ "$auth_host" = "auth.docker.io" ]; then
+            token_url="https://auth.docker.io/token?service=registry.docker.io&scope=repository:${repo}:pull"
+          else
+            token_url="https://${auth_host}/token?service=${auth_host}&scope=repository:${repo}:pull"
+          fi
+          token="$(curl -fsS "$token_url" | jq -r '.token // .access_token')"
+          [ -n "$token" ] && [ "$token" != "null" ] || { echo "no token from $token_url" >&2; exit 1; }
+          accept='application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.v2+json,application/vnd.oci.image.manifest.v1+json'
+          curl -fsS -I \
+            -H "Authorization: Bearer $token" \
+            -H "Accept: $accept" \
+            "https://${reg_host}/v2/${repo}/manifests/${tag}" \
+          | tr -d '\r' | grep -i '^docker-content-digest:' | awk '{print $2}'
+          SH
+          chmod +x /tmp/reg-digest.sh
+
+      - name: "(a) registry-1.docker.io: version tag exists, latest == same digest"
+        id: dockerhub
+        run: |
+          set -euo pipefail
+          V="${{ steps.ver.outputs.version }}"
+          fail=0
+          ver_digest="" latest_digest=""
+          for i in $(seq 1 20); do
+            ver_digest="$(/tmp/reg-digest.sh auth.docker.io registry-1.docker.io "$DOCKERHUB_IMAGE" "$V" || true)"
+            [ -n "$ver_digest" ] && break
+            echo "  ...docker.io:${V} not resolvable yet (attempt $i/20), retrying in 15s"
+            sleep 15
+          done
+          if [ -n "$ver_digest" ]; then
+            echo "PASS: registry-1.docker.io ${DOCKERHUB_IMAGE}:${V} resolves ($ver_digest)"
+          else
+            echo "FAIL: registry-1.docker.io ${DOCKERHUB_IMAGE}:${V} did not resolve after retries"
+            fail=1
+          fi
+          for i in $(seq 1 20); do
+            latest_digest="$(/tmp/reg-digest.sh auth.docker.io registry-1.docker.io "$DOCKERHUB_IMAGE" latest || true)"
+            [ -n "$latest_digest" ] && [ "$latest_digest" = "$ver_digest" ] && break
+            echo "  ...docker.io:latest not yet == :${V} digest (attempt $i/20), retrying in 15s"
+            sleep 15
+          done
+          if [ -n "$latest_digest" ] && [ "$latest_digest" = "$ver_digest" ]; then
+            echo "PASS: registry-1.docker.io ${DOCKERHUB_IMAGE}:latest digest == :${V} digest ($latest_digest)"
+          else
+            echo "FAIL: registry-1.docker.io ${DOCKERHUB_IMAGE}:latest digest ($latest_digest) != :${V} digest ($ver_digest)"
+            fail=1
+          fi
+          echo "ver_digest=$ver_digest" >> "$GITHUB_OUTPUT"
+          [ "$fail" = 0 ]
+
+      - name: "(b) ghcr.io carries the SAME digest as the Docker Hub version tag"
+        run: |
+          set -euo pipefail
+          V="${{ steps.ver.outputs.version }}"
+          want="${{ steps.dockerhub.outputs.ver_digest }}"
+          ghcr_digest=""
+          for i in $(seq 1 20); do
+            ghcr_digest="$(/tmp/reg-digest.sh ghcr.io ghcr.io "getbusbar/busbar" "$V" || true)"
+            [ -n "$ghcr_digest" ] && [ "$ghcr_digest" = "$want" ] && break
+            echo "  ...ghcr.io:${V} not yet == docker.io digest (attempt $i/20), retrying in 15s"
+            sleep 15
+          done
+          if [ -n "$ghcr_digest" ] && [ "$ghcr_digest" = "$want" ]; then
+            echo "PASS: ghcr.io/getbusbar/busbar:${V} digest == Docker Hub digest ($ghcr_digest)"
+          else
+            echo "FAIL: ghcr.io/getbusbar/busbar:${V} digest ($ghcr_digest) != Docker Hub digest ($want)"
+            exit 1
+          fi
+
+      - name: "(c) GitHub Release vX.Y.Z exists with expected assets"
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.ver.outputs.tag }}"
+          fail=0
+          got=""
+          for i in $(seq 1 20); do
+            got="$(gh release view "$TAG" --repo GetBusbar/busbar --json assets --jq '.assets[].name' 2>/dev/null || true)"
+            [ -n "$got" ] && break
+            echo "  ...Release ${TAG} not found yet (attempt $i/20), retrying in 15s"
+            sleep 15
+          done
+          if [ -z "$got" ]; then
+            echo "FAIL: GitHub Release ${TAG} does not exist (or has no assets) after retries"
+            exit 1
+          fi
+          echo "PASS: GitHub Release ${TAG} exists"
+          expected=(
+            "busbar-x86_64-unknown-linux-gnu.tar.gz"
+            "busbar-aarch64-unknown-linux-gnu.tar.gz"
+            "busbar-x86_64-apple-darwin.tar.gz"
+            "busbar-aarch64-apple-darwin.tar.gz"
+            "busbar-x86_64-pc-windows-msvc.zip"
+            "busbar-${TAG}.cdx.json"
+            "busbar-openapi-${TAG}.json"
+          )
+          for a in "${expected[@]}"; do
+            if echo "$got" | grep -qxF "$a"; then
+              echo "PASS: Release asset present: $a"
+            else
+              echo "FAIL: Release asset MISSING: $a"
+              fail=1
+            fi
+          done
+          [ "$fail" = 0 ]
+
+      - name: "(d) running image's org.opencontainers.image.version label == version"
+        run: |
+          set -euo pipefail
+          V="${{ steps.ver.outputs.version }}"
+          docker pull "${DOCKERHUB_IMAGE}:${V}"
+          label="$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "${DOCKERHUB_IMAGE}:${V}")"
+          if [ "$label" = "$V" ]; then
+            echo "PASS: running image label org.opencontainers.image.version == ${V}"
+          else
+            echo "FAIL: running image label org.opencontainers.image.version == '${label}', expected '${V}'"
+            exit 1
+          fi
+
+      - name: "(e) terraform-provider-busbar vX.Y.Z published on registry.terraform.io"
+        run: |
+          set -euo pipefail
+          V="${{ steps.ver.outputs.version }}"
+          fail=0
+          got=""
+          for i in $(seq 1 20); do
+            # Public Terraform Registry API, no auth required. Namespace/provider match
+            # GetBusbar/terraform-provider-busbar's published listing (registry.terraform.io/providers/getbusbar/busbar).
+            got="$(curl -fsS "https://registry.terraform.io/v1/providers/getbusbar/busbar/versions" 2>/dev/null \
+              | jq -r --arg v "$V" '.versions[]?.version | select(. == $v)' || true)"
+            [ -n "$got" ] && break
+            echo "  ...registry.terraform.io getbusbar/busbar ${V} not published yet (attempt $i/20), retrying in 15s"
+            sleep 15
+          done
+          if [ "$got" = "$V" ]; then
+            echo "PASS: registry.terraform.io provider getbusbar/busbar has version ${V}"
+          else
+            echo "FAIL: registry.terraform.io provider getbusbar/busbar does NOT list version ${V} after retries"
+            fail=1
+          fi
+          [ "$fail" = 0 ]
+
+      - name: "(f) GetBusbar/helm-charts busbar chart appVersion == vX.Y.Z"
+        run: |
+          set -euo pipefail
+          V="${{ steps.ver.outputs.version }}"
+          fail=0
+          appver=""
+          for i in $(seq 1 20); do
+            # GetBusbar/helm-charts publishes its index via GitHub Pages (the standard Helm repo
+            # layout: index.yaml at the repo's Pages root). Read appVersion straight from the
+            # published index, not from helm-charts' own workflow output. Plain grep/awk (no extra
+            # YAML tooling dependency): entries are newest-first under `entries.busbar`, so the
+            # FIRST `appVersion:` line after the `name: busbar` block is the current release's.
+            appver="$(curl -fsS "https://getbusbar.github.io/helm-charts/index.yaml" 2>/dev/null \
+              | awk '/^  busbar:/{f=1} f && /appVersion:/{print $2; exit}' | tr -d '"' || true)"
+            [ "$appver" = "$V" ] && break
+            echo "  ...helm-charts busbar appVersion not yet == ${V} (got '${appver:-<none>}', attempt $i/20), retrying in 15s"
+            sleep 15
+          done
+          if [ "$appver" = "$V" ]; then
+            echo "PASS: GetBusbar/helm-charts busbar chart appVersion == ${V}"
+          else
+            echo "FAIL: GetBusbar/helm-charts busbar chart appVersion == '${appver:-<none>}', expected '${V}'"
+            fail=1
+          fi
+          [ "$fail" = 0 ]
+
+      - name: "(g) getbusbar.com is serving vX.Y.Z"
+        run: |
+          set -euo pipefail
+          V="${{ steps.ver.outputs.version }}"
+          fail=0
+          found=0
+          for i in $(seq 1 20); do
+            if curl -fsS "https://getbusbar.com/download/" 2>/dev/null | grep -qF "v${V}"; then
+              found=1
+              break
+            fi
+            echo "  ...getbusbar.com/download/ does not yet show v${V} (attempt $i/20), retrying in 15s"
+            sleep 15
+          done
+          if [ "$found" = 1 ]; then
+            echo "PASS: getbusbar.com/download/ shows v${V}"
+          else
+            echo "FAIL: getbusbar.com/download/ does not show v${V} after retries"
+            fail=1
+          fi
+          [ "$fail" = 0 ]
