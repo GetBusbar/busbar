@@ -52,6 +52,7 @@ use std::os::raw::c_void;
 pub mod auth;
 pub mod export;
 pub mod hook;
+pub mod http_endpoint;
 
 /// The Feature-2 "decision observability" signal catalog (task #141) — re-exported wholesale from
 /// `busbar-api` (where it actually lives; see that crate's `signal` module doc comment for why) so

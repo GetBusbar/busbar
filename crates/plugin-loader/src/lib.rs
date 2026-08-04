@@ -40,6 +40,12 @@ mod stage;
 pub mod tarball;
 
 pub use auth::DynAuth;
+/// Re-export the HTTP-endpoint wire types (plugin route registration + dispatch) so the engine
+/// (`crates/busbar`) names `busbar_plugin_loader::{Route, RouteAuth, ...}` without a direct
+/// `busbar-plugin-abi` dependency — mirroring how it already reaches the loader's typed seams.
+pub use busbar_plugin_abi::http_endpoint::{
+    HttpEndpointRequest, HttpEndpointResponse, Route, RouteAuth, RouteMethod,
+};
 pub use export::{load_export_from_bytes, DynExport};
 pub use fetch::{fetch_plugins, FetchOutcome, FetchSpec};
 pub use hook::DlopenPolicy;

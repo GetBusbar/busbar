@@ -1131,6 +1131,7 @@ impl TestApp {
             request_id_counter: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(
                 crate::state::seed_request_id_counter(),
             )),
+            plugin_routes: std::sync::Arc::new(crate::plugin_routes::PluginRouteTable::empty()),
         });
         // Mirror main's boot-version floor so rollback tests have a v0 to restore.
         app.versions
