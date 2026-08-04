@@ -59,6 +59,18 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 REPO_ROOT="$PWD"
 
+# ── Defensive watchdog (defense-in-depth) ─────────────────────────────────────────────────────────
+# A command-substitution that captured a backgrounded serve_forever once wedged this gate for the
+# full 180-min CI timeout (the python held the `$(...)` stdout pipe open forever). That specific bug
+# is fixed at the launch sites below, but as a belt-and-suspenders guard we re-exec the WHOLE script
+# under `timeout`, so ANY future hang becomes a fast, diagnosable FAILURE (exit 124) instead of a
+# multi-hour `cancelled`. `timeout` cleanly kills the process tree on expiry. Guarded on availability
+# (a bare macOS may only have `gtimeout`), and self-disables on the re-exec via the env sentinel.
+if [ -z "${BUSBAR_1_5_2_WATCHDOG_ARMED:-}" ] && command -v timeout >/dev/null 2>&1; then
+  export BUSBAR_1_5_2_WATCHDOG_ARMED=1
+  exec timeout --kill-after=30 "${BUSBAR_1_5_2_WATCHDOG_SECS:-1500}" bash "$0" "$@"
+fi
+
 ONLY_PHASE=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -227,7 +239,11 @@ PYEOF
   # actually talks to (otherwise the cache-by-pin "zero hits" assertion could pass VACUOUSLY).
   local sentinel="registry-sentinel-$$-${RANDOM}"
   echo ok >"${root}/${sentinel}"
-  python3 "$script" &
+  # Redirect the SERVER's stdout/stderr to /dev/null: this function is captured via `$(...)` (see
+  # run_phase_a's `reg_pid="$(start_plugin_registry ...)"`), and a backgrounded serve_forever that
+  # inherits the command-substitution's stdout pipe holds it open forever → `$(...)` blocks on EOF
+  # for the full CI timeout. The function's own `echo "$pid"` below still reaches `$(...)`.
+  python3 "$script" >/dev/null 2>&1 &
   local pid=$!
   BG_PIDS+=("$pid")
   local waited=0
@@ -269,7 +285,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a): pass
 http.server.ThreadingHTTPServer(("127.0.0.1", ${port}), Handler).serve_forever()
 PYEOF
-  python3 "$script" &
+  # stdout/stderr → /dev/null: this function is captured via `$(...)` (mock_pid="$(start_mock_upstream ...)");
+  # a backgrounded serve_forever inheriting that pipe would block `$(...)` on EOF forever. `echo "$pid"` still returns.
+  python3 "$script" >/dev/null 2>&1 &
   local pid=$!
   BG_PIDS+=("$pid")
   echo "$pid"
@@ -528,7 +546,9 @@ srv = http.server.ThreadingHTTPServer(("127.0.0.1", ${port}), H)
 srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
 srv.serve_forever()
 PYEOF
-  python3 "$script" &
+  # stdout/stderr → /dev/null: this function is captured via `$(...)` (jwks_pid="$(oidc_start_https_jwks ...)");
+  # a backgrounded serve_forever inheriting that pipe would block `$(...)` on EOF forever. `echo "$pid"` still returns.
+  python3 "$script" >/dev/null 2>&1 &
   local pid=$!; BG_PIDS+=("$pid")
   echo "$pid"
 }
