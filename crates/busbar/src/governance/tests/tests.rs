@@ -3229,3 +3229,217 @@ mod metering_fanout {
         );
     }
 }
+
+// ── H1/H2: the self-serve mint offload wrapper + refresh's atomic rollback on a failed tombstone ──
+
+/// A `Store` that delegates everything to a `MemoryStore` except `delete_key`, which fails
+/// EXACTLY ONCE after `arm()` — the next `delete_key` call errors and every call after that
+/// delegates normally. One-shot (rather than "fail forever") so a test can arm it right before the
+/// call that should fail (the old-binding tombstone) while leaving `refresh_self`'s OWN rollback
+/// delete (of the just-written new binding) free to actually succeed against the store.
+struct FailDeleteStore {
+    inner: MemoryStore,
+    fail_next_delete: std::sync::atomic::AtomicBool,
+}
+
+impl FailDeleteStore {
+    fn new() -> Self {
+        Self {
+            inner: MemoryStore::new(),
+            fail_next_delete: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+    fn arm(&self) {
+        self.fail_next_delete.store(true, Ordering::SeqCst);
+    }
+}
+
+impl Store for FailDeleteStore {
+    fn put_key(&self, k: &VirtualKey) -> StoreResult<()> {
+        self.inner.put_key(k)
+    }
+    fn get_key(&self, id: &str) -> StoreResult<Option<VirtualKey>> {
+        self.inner.get_key(id)
+    }
+    fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
+        self.inner.list_keys()
+    }
+    fn delete_key(&self, id: &str) -> StoreResult<()> {
+        if self
+            .fail_next_delete
+            .compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            return Err(StoreError("store down: delete_key".into()));
+        }
+        self.inner.delete_key(id)
+    }
+    fn get_usage(&self, id: &str, w: u64) -> StoreResult<UsageLedger> {
+        self.inner.get_usage(id, w)
+    }
+    fn put_usage(&self, id: &str, w: u64, l: &UsageLedger) -> StoreResult<()> {
+        self.inner.put_usage(id, w, l)
+    }
+    fn add_metering(&self, d: &MeteringDelta) -> StoreResult<()> {
+        self.inner.add_metering(d)
+    }
+    fn list_metering(&self, bucket: u64) -> StoreResult<Vec<MeteringRow>> {
+        self.inner.list_metering(bucket)
+    }
+}
+
+fn self_serve_signer() -> crate::governance::signing::TokenSigner {
+    crate::governance::signing::TokenSigner::from_secret_bytes(
+        &[3u8; 32],
+        crate::governance::signing::DEFAULT_KID,
+    )
+}
+
+/// The ENABLED (live) self-serve `user:<sub>` binding among `all_keys()`, if any. `delete_key`
+/// TOMBSTONES rather than removes a row (see `MemoryStore::delete_key`), so a subject can have
+/// both a disabled/tombstoned row and a live one in the store at once — this mirrors
+/// `current_self_binding`'s own `enabled && deleted_at.is_none()` filter so the test asserts on
+/// the same "sole enabled binding" invariant the production code enforces.
+fn self_binding_for(gov: &GovState, user_sub: &str) -> Option<VirtualKey> {
+    let group = format!("{SELF_KEY_GROUP_PREFIX}{user_sub}");
+    gov.all_keys()
+        .unwrap()
+        .into_iter()
+        .find(|k| k.enabled && k.deleted_at.is_none() && k.group.as_deref() == Some(group.as_str()))
+}
+
+/// H2 — RED before the fix: `refresh_self` wrote+enabled the NEW binding, THEN tombstoned the old
+/// one; when the tombstone (`store.delete_key`) failed, the fn returned `Err` but the new binding
+/// was already live AND the old was never disabled — two valid tokens for one subject. GREEN:
+/// on a failed tombstone, `refresh_self` rolls the new binding back before returning `Err`, so
+/// exactly the OLD binding remains enabled (the caller's existing token keeps working and it can
+/// retry the refresh).
+#[test]
+fn refresh_self_rolls_back_the_new_binding_when_the_old_tombstone_fails() {
+    let store = Arc::new(FailDeleteStore::new());
+    let gov = GovState::new_with_signer(store.clone(), None, Some(self_serve_signer())).unwrap();
+    let sub = "oidc:alice";
+    let now = 1_700_000_000u64;
+
+    // First issue: mints the one binding at epoch 0.
+    let (first_binding, first_token) = gov.issue_self(sub, None, now + 3600, now).unwrap();
+    assert!(gov.verify_token(&first_token, now).is_some());
+
+    // Arm the failure: the NEXT `delete_key` call errors — that is `refresh_self`'s attempt to
+    // tombstone the epoch-0 binding (it writes the new epoch-1 binding first, successfully, then
+    // hits this). The one-shot arming means `refresh_self`'s OWN rollback delete (of the new
+    // binding it just wrote) runs against a store that is healthy again, so the rollback itself
+    // succeeds here — exercising the "rollback succeeded" arm, not the double-failure arm.
+    store.arm();
+    let err = gov
+        .refresh_self(sub, None, now + 3600, now)
+        .expect_err("a failed tombstone must surface as an Err, not a silent partial success");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("rolled back"),
+        "the error must say the new binding was rolled back: {msg}"
+    );
+
+    // Exactly ONE self-serve binding is ENABLED for the subject, and it is the ORIGINAL one — the
+    // new binding written before the failed tombstone must have been rolled back (tombstoned), not
+    // left enabled alongside the old one.
+    let enabled: Vec<VirtualKey> = gov
+        .all_keys()
+        .unwrap()
+        .into_iter()
+        .filter(|k| {
+            k.enabled
+                && k.deleted_at.is_none()
+                && k.group.as_deref() == Some(format!("{SELF_KEY_GROUP_PREFIX}{sub}").as_str())
+        })
+        .collect();
+    assert_eq!(
+        enabled.len(),
+        1,
+        "the failed refresh must leave exactly one ENABLED binding for the subject: {enabled:?}"
+    );
+    let surviving = self_binding_for(&gov, sub).expect("the original binding still exists");
+    assert_eq!(
+        surviving.id, first_binding.id,
+        "the surviving binding must be the ORIGINAL one, not a stranded new one"
+    );
+    assert!(
+        surviving.enabled,
+        "the original binding must still be enabled"
+    );
+
+    // The client's ORIGINAL token still verifies (it kept working through the failed refresh).
+    assert!(
+        gov.verify_token(&first_token, now).is_some(),
+        "the prior token must remain valid after a rolled-back refresh"
+    );
+}
+
+/// The mirror-image happy path stays intact: a SUCCESSFUL refresh still tombstones the old
+/// binding (the prior token stops verifying) and only the new one remains.
+#[test]
+fn refresh_self_tombstones_the_old_binding_on_success() {
+    let store = Arc::new(MemoryStore::new());
+    let gov = GovState::new_with_signer(store, None, Some(self_serve_signer())).unwrap();
+    let sub = "oidc:bob";
+    let now = 1_700_000_000u64;
+
+    let (_first_binding, first_token) = gov.issue_self(sub, None, now + 3600, now).unwrap();
+    let (second_binding, second_token) = gov.refresh_self(sub, None, now + 3600, now).unwrap();
+
+    assert!(
+        gov.verify_token(&first_token, now).is_none(),
+        "the prior token must stop verifying after a successful refresh"
+    );
+    assert!(gov.verify_token(&second_token, now).is_some());
+    let surviving = self_binding_for(&gov, sub).expect("the new binding exists");
+    assert_eq!(surviving.id, second_binding.id);
+}
+
+/// H1 — structural: request-path callers must go through `mint_self_offloaded` (the blocking-pool
+/// door), never call `issue_self`/`refresh_self` directly on the reactor. This proves the wrapper
+/// exists, actually runs the mint (`spawn_blocking` + `.await`), and returns the SAME outcome the
+/// sync fn would — i.e. it is a transparent async front door, not a behavior change.
+#[tokio::test]
+async fn mint_self_offloaded_issues_and_refreshes_through_the_blocking_pool() {
+    let store = Arc::new(MemoryStore::new());
+    let gov = Arc::new(GovState::new_with_signer(store, None, Some(self_serve_signer())).unwrap());
+    let sub = "oidc:offloaded";
+    let now = 1_700_000_000u64;
+
+    let (issued, issued_token) = crate::governance::mint_self_offloaded(
+        gov.clone(),
+        crate::governance::SelfMintOp::Issue,
+        sub.to_string(),
+        None,
+        now + 3600,
+        now,
+    )
+    .await
+    .expect("issue via the offloaded wrapper succeeds");
+    assert!(gov.verify_token(&issued_token, now).is_some());
+    assert_eq!(
+        issued.group.as_deref(),
+        Some(format!("user:{sub}").as_str())
+    );
+
+    let (refreshed, refreshed_token) = crate::governance::mint_self_offloaded(
+        gov.clone(),
+        crate::governance::SelfMintOp::Refresh,
+        sub.to_string(),
+        None,
+        now + 7200,
+        now,
+    )
+    .await
+    .expect("refresh via the offloaded wrapper succeeds");
+    assert_ne!(
+        issued.id, refreshed.id,
+        "refresh rotates to a new binding id"
+    );
+    assert!(
+        gov.verify_token(&issued_token, now).is_none(),
+        "the offloaded refresh still tombstones the prior token"
+    );
+    assert!(gov.verify_token(&refreshed_token, now).is_some());
+}

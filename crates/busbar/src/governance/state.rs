@@ -499,7 +499,45 @@ impl GovState {
         if let Some(old) = old_id {
             if old != out.0.id {
                 // Tombstone the prior epoch's binding — its token now fails verify (disabled).
-                self.store.delete_key(&old)?;
+                if let Err(delete_err) = self.store.delete_key(&old) {
+                    // H2: the NEW binding is already live (written above) but the OLD one could not
+                    // be tombstoned. Returning Err here as-is would leave BOTH bindings enabled — two
+                    // valid tokens for one subject, and the caller-visible 500 would suggest nothing
+                    // happened. ROLL BACK the just-written new binding (delete it + refresh the
+                    // in-memory cache) so a failed refresh leaves EXACTLY the old binding valid: the
+                    // client keeps its working token and can retry the refresh.
+                    return Err(match self.delete_key(&out.0.id) {
+                        Ok(()) => StoreError(format!(
+                            "self-serve refresh for '{user_sub}' failed to tombstone the prior \
+                             binding '{old}' ({delete_err}); rolled back the newly-minted binding \
+                             '{}' so the prior token remains the sole valid credential — retry the \
+                             refresh",
+                            out.0.id
+                        )),
+                        Err(rollback_err) => {
+                            // Best effort exhausted: loudly flag the inconsistent state (TWO
+                            // possibly-live bindings for one subject) for operator/store inspection.
+                            tracing::error!(
+                                user_sub = %user_sub,
+                                old_id = %old,
+                                new_id = %out.0.id,
+                                delete_err = %delete_err,
+                                rollback_err = %rollback_err,
+                                "refresh_self: failed to tombstone the prior self-serve binding AND \
+                                 failed to roll back the newly-written one — subject may now have \
+                                 TWO live bindings; manual store inspection required"
+                            );
+                            StoreError(format!(
+                                "self-serve refresh for '{user_sub}' left an INCONSISTENT store \
+                                 state: the prior binding '{old}' could not be tombstoned \
+                                 ({delete_err}) and the rollback of the new binding '{}' also failed \
+                                 ({rollback_err}) — both bindings may still be live; manual \
+                                 intervention required",
+                                out.0.id
+                            ))
+                        }
+                    });
+                }
                 self.refresh()?;
             }
         }
