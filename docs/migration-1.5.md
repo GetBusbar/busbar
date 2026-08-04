@@ -314,3 +314,76 @@ verify tokens signed with the old secret.
 - [ ] Set `auth.signing_key: { file: /path/to/secret }` or `{ env: VAR }`
 - [ ] Distribute the same secret value to every node in the fleet
 - [ ] `busbar --validate`
+
+---
+
+## 1.5.3 config consolidation
+
+1.5.3 moves operational config out of environment variables and **into `config.yaml`**, and makes admin-API
+config mutability explicit and **durable by default**. Every migrated env var still works for **one release**
+(each logs a deprecation warning) — this is a soft migration, not a clean cut. Move each into config.yaml at
+your convenience before the next release removes the env var.
+
+### Env var → config.yaml
+
+| Deprecated env var | New home in config.yaml |
+|---|---|
+| `BUSBAR_PROVIDERS` | `providers_file:` (top-level; relative to config.yaml; default `providers.yaml` next to it) |
+| `BUSBAR_CONFIG_OVERLAY` | `config.overlay.file` |
+| `BUSBAR_WORKER_THREADS` | `advanced.worker_threads` |
+| `BUSBAR_UPSTREAM_HTTP1_ONLY` | `advanced.upstream_http1_only` |
+| `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` | `advanced.upstream_h2_prior_knowledge` |
+
+`BUSBAR_CONFIG` (which locates config.yaml), secret `{ env: NAME }` references, `RUST_LOG`, and
+`TOKIO_WORKER_THREADS` (a standard tokio fallback) are unchanged.
+
+```yaml
+# before: env
+#   BUSBAR_PROVIDERS=/etc/busbar/providers.yaml
+#   BUSBAR_CONFIG_OVERLAY=/var/lib/busbar/overlay.json
+#   BUSBAR_WORKER_THREADS=4
+
+# after: config.yaml
+providers_file: /etc/busbar/providers.yaml
+config:
+  locked: false
+  overlay:
+    file: /var/lib/busbar/overlay.json
+advanced:
+  worker_threads: 4
+```
+
+### Behavior change: durable-by-default config mutation
+
+Before 1.5.3, admin-API config changes were **live-only unless** you set `BUSBAR_CONFIG_OVERLAY` — so a group
+or hook provisioned over the API **silently vanished on restart**. Now, with nothing configured, config is
+*mutable* and mutations persist to `busbar-overlay.json` next to config.yaml. **No action needed** for the
+common (writable config directory) case — your admin-API changes simply become durable.
+
+Two new postures:
+
+- **`config.locked: true`** — an immutable/GitOps deployment. Admin-API config mutations are refused at
+  runtime (edit config.yaml + `POST /config/reload` to change config). Set this if you never want runtime
+  mutation.
+- **Boot invariant** — a *mutable* config with no writable overlay **refuses to boot**.
+
+### Upgrade action for read-only-config deployments
+
+If your `config.yaml` lives on a **read-only mount** (e.g. `/etc/busbar` mounted read-only, or a read-only
+container layer), the default overlay path is not writable, so an unconfigured mutable busbar will now
+**refuse to boot** with a message naming the fix. Choose one:
+
+1. **Point the overlay at a writable path** (a persistent volume) so runtime mutations are durable:
+   ```yaml
+   config:
+     overlay:
+       file: /var/lib/busbar/busbar-overlay.json   # a writable, persistent location
+   ```
+2. **Declare the deployment immutable** — the natural choice for a GitOps/read-only rollout that never
+   mutates config at runtime anyway:
+   ```yaml
+   config:
+     locked: true
+   ```
+
+Either resolves the boot refusal. Busbar never silently falls back to the old lose-on-restart behavior.
