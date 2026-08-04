@@ -119,4 +119,24 @@ The `pool` label is always a configured pool name or the sentinel `unresolved` (
 
 An OTLP traces sink (`observability.otlp_url`) and a request-log webhook (`observability.request_log_webhook_url`) are available for deeper observability. Both are validated at startup against SSRF blocklists (no RFC-1918, loopback, or cloud-metadata targets, except OTLP allows plaintext `http://` to loopback for a local collector). See [configuration.md](configuration.md#observability).
 
+## Response headers
+
+Every response header Busbar itself injects (as opposed to a header it relays or translates from an upstream) is an **opt-in toggle under `advanced.response_headers`, default OFF**. Each one is, in some form, an in-band tell that the request went through Busbar rather than talking to the backend directly — so none of them ship enabled out of the box, and an operator opts in per-header only when the tradeoff (a useful diagnostic vs. a fingerprintable observable) is one they've chosen to accept. Both toggles are **restart-to-apply**: each is baked into process-wide state at boot (router middleware composition for `server_timing`, a process-wide flag for `route_policy`), so a live `PUT /config/settings` stores the new value durably but it only takes effect after a restart (`POST /restart` or a supervisor restart) — `reload_to_apply` flags `advanced.response_headers` when you change it live.
+
+```yaml
+advanced:
+  response_headers:
+    server_timing: false   # default
+    route_policy: false    # default
+```
+
+| Header | Toggle | Carries | Fires | Default |
+|---|---|---|---|---|
+| `Server-Timing: busbar;dur=<ms>` | `advanced.response_headers.server_timing` | Busbar's OWN added latency (total request wall-clock minus the upstream round-trip), at millisecond precision per the W3C `Server-Timing` spec. | On every response, once enabled — including admin/health/early-error responses that never dispatched upstream (in which case the full request time is reported). | `false` |
+| `x-busbar-route-policy` / `x-busbar-route-target` | `advanced.response_headers.route_policy` | The name of the routing policy that chose the lane, and the chosen lane's model. Values are bounded, operator-defined strings (a fixed policy enumeration + a configured model name) — never request-derived data. | Only when a non-default routing policy actually produced the order; a default `route: weighted` pool (or a policy that abstained and fell through to weighted round-robin) attaches nothing even when the toggle is on. | `false` |
+
+**Why default off.** Both headers are useful — `Server-Timing` is a standard latency probe DevTools and APM tooling already understand; the route headers are handy when debugging which policy picked a lane — but Busbar is deliberately anti-fingerprinting: an unauthenticated client should not be able to tell it's talking to a gateway rather than the backend directly from response shape alone. `Server-Timing: busbar;dur=…` and `x-busbar-route-*` are both in-band Busbar tells observable on every response, so both stay invisible until an operator explicitly accepts that tradeoff.
+
+**The composition gate (not a runtime check).** Enabling `server_timing` installs an ADDITIONAL middleware layer on the router at boot (mirroring how `limits.max_inbound_concurrent: 0` removes the inbound-concurrency layer entirely rather than checking a flag inside it); when disabled, the layer performing the actual timing (a per-request allocation, a monotonic clock read, and a task-local scope) is never installed at all, so the default-off posture costs nothing per request, not even the allocation the earlier gate used to pay even while suppressing the header. `route_policy` is gated the same way in spirit: a single process-wide decision read at the header's one injection site, not a per-response cost when off.
+
 ---

@@ -2706,12 +2706,8 @@ fn reload_to_apply_fields(req: &crate::config::overlay::RootSettings) -> Vec<Str
             "limits.max_inbound_concurrent",
         );
     }
-    // Three `observability.*` fields are boot-frozen — same class as `limits.max_inbound_concurrent`
+    // Two `observability.*` fields are boot-frozen — same class as `limits.max_inbound_concurrent`
     // above, different mechanisms:
-    //
-    // `emit_server_timing` is captured ONCE in `main()` and baked as fixed middleware state into
-    // `apply_common_layers` (via `from_fn_with_state`) when the router is built at process start; a
-    // config apply never rebuilds the router.
     //
     // `request_log_webhook_url` is captured ONCE in `main()` and seeds a process-global
     // `OnceLock<Arc<String>>` (`observability::configure_webhook`) — `OnceLock::set` silently no-ops
@@ -2730,7 +2726,6 @@ fn reload_to_apply_fields(req: &crate::config::overlay::RootSettings) -> Vec<Str
     // rather than guessed at here; see docs/configuration.md.
     if let Some(observability) = req.observability.as_ref() {
         let crate::config::patch::ObservabilityPatch {
-            emit_server_timing,
             request_log_webhook_url,
             otlp_url,
             // GENUINELY LIVE — read fresh on every call via `crate::limits::webhook_delivery_timeout_secs()`,
@@ -2740,14 +2735,28 @@ fn reload_to_apply_fields(req: &crate::config::overlay::RootSettings) -> Vec<Str
             max_inflight_webhook_deliveries: _,
         } = observability;
         push(
-            emit_server_timing.is_some(),
-            "observability.emit_server_timing",
-        );
-        push(
             request_log_webhook_url.is_some(),
             "observability.request_log_webhook_url",
         );
         push(otlp_url.is_some(), "observability.otlp_url");
+    }
+    // `advanced.response_headers` (task #139) is boot-frozen — moved out of `observability` (it used
+    // to be `observability.emit_server_timing`, one of the three fields flagged just above) into its
+    // own block alongside the brand-new `route_policy` toggle, which shares the SAME "captured once
+    // at boot" freezing as `request_log_webhook_url`: `response_headers.server_timing` is baked into
+    // router middleware state (same mechanism as the old `emit_server_timing`) and
+    // `response_headers.route_policy` seeds a process-global `OnceLock`
+    // (`proxy::configure_route_policy_headers`). DRIFT GUARD, same idiom as above: an EXHAUSTIVE
+    // destructure of `AdvancedPatch` (no `..`).
+    if let Some(advanced) = req.advanced.as_ref() {
+        let crate::config::patch::AdvancedPatch {
+            response_headers,
+            // GENUINELY LIVE — read fresh on every call via the `INSTALLED` `LimitsResolved` snapshot
+            // refreshed on every apply (see `LimitsResolved::from_sections`). Not boot-captured.
+            rate_sweep_interval: _,
+            usage_flush_interval_ms: _,
+        } = advanced;
+        push(response_headers.is_some(), "advanced.response_headers");
     }
     out
 }

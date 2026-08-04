@@ -949,8 +949,9 @@ global_hooks:                                          # fire on EVERY request, 
 | `at` | string | `request` | TAP observation stage: `request` \| `route` \| `attempt` \| `completion`. Inert on a gate. |
 
 The per-member `tier` and `tags` fields documented in [Members and weights](#members-and-weights)
-feed the ordering strategies and gate candidates. Gate observability: the
-`x-busbar-route-policy` / `x-busbar-route-target` response headers name the deciding hook and
+feed the ordering strategies and gate candidates. Gate observability: see
+[observability.md#response-headers](observability.md#response-headers) for the opt-in
+`x-busbar-route-policy` / `x-busbar-route-target` response headers, which name the deciding hook and
 chosen lane.
 
 ---
@@ -1165,16 +1166,16 @@ All sinks are opt-in. Prometheus `/metrics` is always on and needs no config ent
 observability:
   otlp_url: "http://localhost:4318/v1/traces"
   request_log_webhook_url: "https://logs.example.com/busbar"
-  emit_server_timing: true
 ```
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `otlp_url` | string | none | When set, installs an OTLP/HTTP trace exporter. Loopback `http://` is allowed (standard collector default). Remote endpoints must use `https://`. SSRF-guarded: rejects RFC-1918, link-local, CGNAT, metadata hosts. Traces are flushed on graceful shutdown. **Restart-to-apply**: fed to a one-shot `tracing_subscriber::registry().try_init()` at process start; a second call (a live `PUT`) is a structural no-op — `reload_to_apply` flags `observability.otlp_url` when set. |
 | `request_log_webhook_url` | string | none | When set, fires a fire-and-forget JSON POST per completed request: `{ts, ingress_protocol, pool, outcome, latency_ms}`. Must be `https://`. SSRF-guarded (same classes as `otlp_url` plus broadcast). At most 64 deliveries in flight; drops rather than queues. 2-second delivery timeout. **Restart-to-apply**: seeds a process-global `OnceLock` at boot; `OnceLock::set` silently no-ops on every call after the first, so a live `PUT` cannot change the target once one has been configured — `reload_to_apply` flags `observability.request_log_webhook_url` when set. The in-flight-delivery cap (default 64, tunable via `max_inflight_webhook_deliveries`) is sized from config on the FIRST webhook delivery — not necessarily at boot — and is then frozen for the rest of the process. This means a live `PUT` to `max_inflight_webhook_deliveries` sometimes takes effect (if no delivery has fired yet) and sometimes doesn't, depending on process history the API cannot observe; `reload_to_apply` does NOT flag it (flagging it unconditionally would be wrong whenever it does still apply). Known gap, tracked for post-1.5.0; `webhook_delivery_timeout_secs` has no such caching and is genuinely live on every call. |
-| `emit_server_timing` | bool | `false` | Controls whether the `Server-Timing: busbar;dur=<ms>` response header is emitted on every response. Defaults to `false`, the header is an in-band busbar fingerprint, so it is suppressed by default for backend indistinguishability. Set to `true` to enable it as a latency probe. **Restart-to-apply**: baked into router middleware state (`from_fn_with_state`) when the router is built at process start; a config apply swaps only the `App`, never the router — `reload_to_apply` flags `observability.emit_server_timing` when set. |
 
 **OTLP credential hygiene.** If your OTLP endpoint requires auth, supply credentials in the URL userinfo (`https://user:pass@collector.example.com/…`): Busbar moves them to an `Authorization: Basic` header and strips them from the URL before logging, so they do not appear in logs or spans.
+
+**Response headers moved.** `Server-Timing: busbar;dur=<ms>` (formerly `observability.emit_server_timing`) and the `x-busbar-route-policy` / `x-busbar-route-target` headers are now both `advanced.response_headers` toggles, default `false` — see [`advanced`](#advanced) below and [observability.md#response-headers](observability.md#response-headers) for the full catalogue. `busbar --migrate-config` moves an old `observability.emit_server_timing` key for you; the old key is otherwise an `unknown field` boot error.
 
 ---
 
@@ -1473,7 +1474,15 @@ pools:
 observability:
   otlp_url: "http://localhost:4318/v1/traces"
   request_log_webhook_url: "https://logs.example.com/busbar"
-  emit_server_timing: true
+
+# ---------------------------------------------------------------------------
+# Response headers — every busbar-injected header is opt-in, default OFF (see
+# observability.md#response-headers). This example opts into both.
+# ---------------------------------------------------------------------------
+advanced:
+  response_headers:
+    server_timing: true
+    route_policy: true
 
 # ---------------------------------------------------------------------------
 # Prometheus metrics — OPT-IN. Omit this block entirely and busbar records
@@ -1579,12 +1588,21 @@ advanced:
   worker_threads: 4                 # tokio worker pool size (1.5.3 ← BUSBAR_WORKER_THREADS); omit ⇒ one per core
   upstream_http1_only: false        # pin the upstream client to HTTP/1.1 (1.5.3 ← BUSBAR_UPSTREAM_HTTP1_ONLY)
   upstream_h2_prior_knowledge: false # force h2c prior-knowledge to cleartext upstreams (1.5.3 ← BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE)
+  response_headers:                 # every busbar-injected response header, opt-in, default OFF (task #139)
+    server_timing: false            # `Server-Timing: busbar;dur=<ms>` — formerly observability.emit_server_timing
+    route_policy: false             # `x-busbar-route-policy` / `x-busbar-route-target`
 ```
 
 `worker_threads`, `upstream_http1_only`, and `upstream_h2_prior_knowledge` are **boot-time** knobs (read
 once at process/client construction), so unlike `rate_sweep_interval` / `usage_flush_interval_ms` they are
 not live-mutable via `PUT /config/settings` — a change takes effect on the next restart. The corresponding
 env vars are honored for one release as a deprecated fallback.
+
+`response_headers` is likewise **restart-to-apply**: `server_timing` is baked into router middleware
+composition at boot and `route_policy` seeds a process-wide flag, so a live `PUT` stores the new value
+durably (`reload_to_apply` flags `advanced.response_headers`) but only takes effect on the next
+restart. Full catalogue, rationale for defaulting off, and exactly when each header fires:
+[observability.md#response-headers](observability.md#response-headers).
 
 ### `providers_file`
 

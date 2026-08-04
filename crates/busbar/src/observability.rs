@@ -40,7 +40,7 @@ static CLIENT: OnceLock<Client> = OnceLock::new();
 /// installed limit on first touch and falls back to the historical default (64) otherwise.
 ///
 /// KNOWN GAP, tracked for post-1.5.0 (not fixed here — see the `reload_to_apply` gap-sweep for
-/// `limits.max_inbound_concurrent` / `observability.emit_server_timing` /
+/// `limits.max_inbound_concurrent` / `advanced.response_headers.server_timing` /
 /// `observability.request_log_webhook_url`, all of which ARE flagged): unlike those three, this
 /// field is frozen on FIRST WEBHOOK DELIVERY, not necessarily at boot — so whether a live `PUT` to
 /// `max_inflight_webhook_deliveries` takes effect depends on process history (has a delivery fired

@@ -83,7 +83,6 @@ section_patch!(
         request_log_webhook_url: Option<String>,
         max_inflight_webhook_deliveries: usize,
         webhook_delivery_timeout_secs: u64,
-        emit_server_timing: bool,
     }
 );
 
@@ -92,6 +91,10 @@ section_patch!(
     AdvancedPatch => crate::config::AdvancedCfg {
         rate_sweep_interval: u32,
         usage_flush_interval_ms: u64,
+        // BOOT-TIME (restart-to-apply), same class as `emit_server_timing` was: `server_timing` is
+        // baked into router middleware state and `route_policy` seeds a process-wide `OnceLock`, so a
+        // live PUT is stored but does not take effect until a restart (see `reload_to_apply_fields`).
+        response_headers: crate::config::ResponseHeadersCfg,
     }
 );
 
@@ -176,19 +179,18 @@ mod tests {
             request_log_webhook_url,
             max_inflight_webhook_deliveries,
             webhook_delivery_timeout_secs,
-            emit_server_timing,
         } = crate::config::ObservabilityCfg::default();
         let _ = ObservabilityPatch {
             otlp_url: Some(otlp_url),
             request_log_webhook_url: Some(request_log_webhook_url),
             max_inflight_webhook_deliveries: Some(max_inflight_webhook_deliveries),
             webhook_delivery_timeout_secs: Some(webhook_delivery_timeout_secs),
-            emit_server_timing: Some(emit_server_timing),
         };
 
         let crate::config::AdvancedCfg {
             rate_sweep_interval,
             usage_flush_interval_ms,
+            response_headers,
             // 1.5.3: BOOT-TIME knobs (read once at process/client construction) — deliberately NOT in
             // the runtime-mutable `AdvancedPatch`, because a runtime PUT could not take effect without a
             // restart / client rebuild. Bound-and-ignored here so this exhaustiveness check still forces
@@ -200,6 +202,7 @@ mod tests {
         let _ = AdvancedPatch {
             rate_sweep_interval: Some(rate_sweep_interval),
             usage_flush_interval_ms: Some(usage_flush_interval_ms),
+            response_headers: Some(response_headers),
         };
 
         // `MetricsCfg` has no `Default` impl — `buffer_seconds` is deliberately REQUIRED (no serde

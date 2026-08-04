@@ -783,6 +783,16 @@ async fn run() {
 
     // Optional observability sinks; grab before `deploy` is borrowed by resolve.
     let observability_cfg = deploy.observability.clone().unwrap_or_default();
+    // task #139: the `advanced.response_headers:` toggles (BOTH default false), read here — same
+    // BOOT-ONCE spot as `observability_cfg` above, for the same reason: `server_timing` is baked into
+    // router middleware state below (`build_split_routers_with_limits`) and `route_policy` seeds a
+    // process-wide `OnceLock` (`proxy::configure_route_policy_headers`) neither of which a later
+    // config apply rebuilds — a live `PUT` is stored but restart-to-apply (see `reload_to_apply`).
+    let response_headers_cfg = deploy.advanced.response_headers.clone();
+    // `x-busbar-route-policy` / `x-busbar-route-target` are a fingerprintable observable, same class
+    // as `Server-Timing: busbar` above, so they too default off and are gated by ONE process-wide
+    // decision read at every emission site (`proxy::wire::maybe_attach_route_policy`).
+    crate::proxy::configure_route_policy_headers(response_headers_cfg.route_policy);
     // METRICS OPT-IN, read here and nowhere else: `observability.metrics` present ⇒ install the
     // recorder with the operator's REQUIRED `buffer_seconds` retention window; absent ⇒ metrics stay
     // off for the life of the process. Called before the router is built so `/metrics` mounting sees
@@ -953,7 +963,7 @@ async fn run() {
         app,
         req_body_max,
         max_inbound,
-        observability_cfg.emit_server_timing,
+        response_headers_cfg.server_timing,
     );
 
     // Graceful shutdown: on ctrl_c (SIGINT) or SIGTERM, stop accepting new connections, let
@@ -1331,6 +1341,20 @@ fn server_timing_dur_ms(total_us: u64, upstream_us: u64) -> f64 {
     internal_us as f64 / 1000.0
 }
 
+/// Always-installed OUTERMOST-ISH middleware: bumps the jemalloc idle-purge activity ticker (see
+/// `spawn_jemalloc_idle_purge_fallback`) on every request. Split out of `server_timing` (task #139)
+/// so the ticker keeps incrementing regardless of whether `advanced.response_headers.server_timing`
+/// is enabled — the `server_timing` layer itself is now COMPOSED OUT of the stack entirely when
+/// disabled (see `apply_common_layers`), so this is the one piece of its old unconditional behavior
+/// that must survive the split. One relaxed atomic add; no allocation, no `Instant::now()`.
+async fn request_activity_tick(
+    req: axum::http::Request<axum::body::Body>,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    REQUEST_ACTIVITY_TICKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    next.run(req).await
+}
+
 /// Outermost middleware: stamps a standard `Server-Timing: busbar;dur=<ms>` response header
 /// reporting the latency Busbar itself added — total request wall-clock MINUS the upstream
 /// round-trip — so operators (and browser DevTools / APM tools) can see the gateway's own cost
@@ -1338,32 +1362,29 @@ fn server_timing_dur_ms(total_us: u64, upstream_us: u64) -> f64 {
 /// recorded by the forward path into the [`proxy::UPSTREAM_RTT_US`] task-local for the duration
 /// of this scope; a request that never dispatched upstream (admin / health / early error) reports
 /// its full processing time. W3C `Server-Timing` `dur` is milliseconds; emitted at µs precision.
+///
+/// Gated by `advanced.response_headers.server_timing` (default `false`) — but NOT with an internal
+/// `if` check like the pre-task-#139 version. `apply_common_layers` installs this middleware LAYER
+/// ONLY when the flag is enabled (composition, mirroring `apply_inbound_concurrency_limit`'s
+/// `max_inbound_concurrent > 0` gate), so a disabled deployment never runs this function at all: no
+/// per-request `Arc<AtomicU64>` allocation, no `Instant::now()`, no task-local `.scope()` — the
+/// former anti-pattern where the flag only suppressed the RESPONSE HEADER after paying the full
+/// per-request cost regardless.
 async fn server_timing(
-    axum::extract::State(emit): axum::extract::State<bool>,
     req: axum::http::Request<axum::body::Body>,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     use std::sync::atomic::Ordering;
-    // Activity tick for the jemalloc idle-purge fallback (see `spawn_jemalloc_idle_purge_fallback`):
-    // one relaxed add on the outermost middleware, so the purge thread can tell "no requests this
-    // window" apart from "under load" without touching the metrics registry. Negligible cost.
-    REQUEST_ACTIVITY_TICKS.fetch_add(1, Ordering::Relaxed);
     let slot = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(NO_UPSTREAM_RTT));
     let start = std::time::Instant::now();
     let mut resp = proxy::UPSTREAM_RTT_US
         .scope(slot.clone(), next.run(req))
         .await;
-    // Gated by `observability.emit_server_timing` (default false). When disabled, NO Server-Timing
-    // header is emitted at all — the inner stack still runs unchanged, only the header is suppressed
-    // (the header is an in-band busbar fingerprint an operator may want to hide). We still scope the
-    // RTT task-local so disabling this never changes any other timing behavior.
-    if emit {
-        let total_us = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
-        let dur_ms = server_timing_dur_ms(total_us, slot.load(Ordering::Relaxed));
-        if let Ok(v) = axum::http::HeaderValue::from_str(&format!("busbar;dur={dur_ms:.3}")) {
-            resp.headers_mut()
-                .insert(axum::http::HeaderName::from_static(HEADER_SERVER_TIMING), v);
-        }
+    let total_us = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
+    let dur_ms = server_timing_dur_ms(total_us, slot.load(Ordering::Relaxed));
+    if let Ok(v) = axum::http::HeaderValue::from_str(&format!("busbar;dur={dur_ms:.3}")) {
+        resp.headers_mut()
+            .insert(axum::http::HeaderName::from_static(HEADER_SERVER_TIMING), v);
     }
     resp
 }
@@ -3454,7 +3475,7 @@ pub(crate) fn build_router(app: std::sync::Arc<state::App>) -> Router {
         app,
         limits::translate_body_max_bytes(),
         crate::config::DEFAULT_MAX_INBOUND_CONCURRENT,
-        crate::config::DEFAULT_EMIT_SERVER_TIMING,
+        crate::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
     )
     .0
 }
@@ -3470,14 +3491,19 @@ fn build_router_with_limits(
     app: std::sync::Arc<state::App>,
     request_body_max_bytes: usize,
     max_inbound_concurrent: usize,
-    emit_server_timing: bool,
+    server_timing_enabled: bool,
 ) -> (Router, std::sync::Arc<state::AppHandle>) {
     let handle = std::sync::Arc::new(state::AppHandle::new(app));
     // TEST-ONLY combined router: mount the Admin API v1 onto the DATA route table so one router
     // exercises the whole surface. Production never does this — `build_split_routers_with_limits`
     // mounts admin on its OWN router served on a separate listener.
     let router = admin::transport::mount(base_data_router(), &admin::JsonV1);
-    let router = apply_common_layers(router, &handle, request_body_max_bytes, emit_server_timing);
+    let router = apply_common_layers(
+        router,
+        &handle,
+        request_body_max_bytes,
+        server_timing_enabled,
+    );
     (
         apply_inbound_concurrency_limit(router, max_inbound_concurrent),
         handle,
@@ -3541,7 +3567,7 @@ fn apply_common_layers(
     router: Router<std::sync::Arc<state::AppHandle>>,
     handle: &std::sync::Arc<state::AppHandle>,
     request_body_max_bytes: usize,
-    emit_server_timing: bool,
+    server_timing_enabled: bool,
 ) -> Router {
     let router = router
         // The router's state is a swappable `AppHandle` (the config-apply hot-swap seam). Every
@@ -3560,15 +3586,22 @@ fn apply_common_layers(
         // envelope. Must wrap the `DefaultBodyLimit` layer above, so it is applied LAST (the last
         // `.layer()` is the outermost on the response path) and therefore sees that layer's 413.
         .layer(axum::middleware::from_fn(reshape_body_limit_413));
-    // Outermost: stamp the `Server-Timing: busbar;dur=<ms>` gateway-overhead header on every
-    // response (times the full inner stack). Must be the LAST `.layer()` so it wraps everything.
-    // Gated on `observability.emit_server_timing` (default false): when false the header is fully
-    // suppressed (see `server_timing`). The `bool` state is independent of the router's `App`
-    // state, so it is wired with its own `from_fn_with_state`.
-    let router = router.layer(axum::middleware::from_fn_with_state(
-        emit_server_timing,
-        server_timing,
-    ));
+    // Always installed (cheap: one relaxed atomic add, no allocation) — the jemalloc idle-purge
+    // activity ticker must keep incrementing whether or not `server_timing` below is installed.
+    let router = router.layer(axum::middleware::from_fn(request_activity_tick));
+    // Outermost, and COMPOSED IN ONLY WHEN ENABLED (task #139's speed fix): the pre-#139 version
+    // installed this layer UNCONDITIONALLY and gated only the response header with a runtime `if`
+    // inside `server_timing`, so every request paid an `Arc<AtomicU64>` allocation, an
+    // `Instant::now()`, and a task-local `.scope()` even with the header suppressed. Gated on
+    // `advanced.response_headers.server_timing` (default `false`): when `false` the layer is simply
+    // NOT ADDED to the stack — zero per-request cost — mirroring
+    // `apply_inbound_concurrency_limit`'s `max_inbound_concurrent > 0` composition gate below. Must
+    // stay the LAST `.layer()` when present so it wraps (and times) everything inside it.
+    let router = if server_timing_enabled {
+        router.layer(axum::middleware::from_fn(server_timing))
+    } else {
+        router
+    };
     router.with_state(handle.clone())
 }
 
@@ -3583,7 +3616,7 @@ fn build_split_routers_with_limits(
     app: std::sync::Arc<state::App>,
     request_body_max_bytes: usize,
     max_inbound_concurrent: usize,
-    emit_server_timing: bool,
+    server_timing_enabled: bool,
 ) -> (Router, Router, std::sync::Arc<state::AppHandle>) {
     let handle = std::sync::Arc::new(state::AppHandle::new(app));
     // DATA plane: protocols + health/metrics/stats, NO admin mount.
@@ -3591,7 +3624,7 @@ fn build_split_routers_with_limits(
         base_data_router(),
         &handle,
         request_body_max_bytes,
-        emit_server_timing,
+        server_timing_enabled,
     );
     let data = apply_inbound_concurrency_limit(data, max_inbound_concurrent);
     // ADMIN plane: a liveness probe (unauthenticated, like the data plane's) + the admin surface,
@@ -3601,7 +3634,12 @@ fn build_split_routers_with_limits(
         Router::new().route("/healthz", get(endpoints::healthz)),
         &admin::JsonV1,
     );
-    let admin = apply_common_layers(admin, &handle, request_body_max_bytes, emit_server_timing);
+    let admin = apply_common_layers(
+        admin,
+        &handle,
+        request_body_max_bytes,
+        server_timing_enabled,
+    );
     (data, admin, handle)
 }
 

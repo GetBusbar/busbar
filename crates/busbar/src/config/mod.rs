@@ -2474,6 +2474,16 @@ pub(crate) struct AdvancedCfg {
     /// works as a deprecated fallback for one release.
     #[serde(default)]
     pub(crate) upstream_h2_prior_knowledge: bool,
+    /// The `advanced.response_headers:` block — opt-in toggles for every busbar-INJECTED response
+    /// header (`task #139`). Every busbar-injected header is a fingerprint an unauthenticated client
+    /// can observe on every response, so each one is OFF by default and an operator opts IN
+    /// per-header. See `docs/observability.md#response-headers` for the full catalogue. BOOT-TIME
+    /// (restart-to-apply), same freezing mechanism as the rest of this struct's non-`Patch`able
+    /// fields: `server_timing` is baked into router middleware state at process start
+    /// (`main.rs::apply_common_layers`) and `route_policy` seeds a process-wide `OnceLock` read by
+    /// `proxy::wire::maybe_attach_route_policy` — neither is rebuilt by a config apply.
+    #[serde(default)]
+    pub(crate) response_headers: ResponseHeadersCfg,
 }
 
 impl Default for AdvancedCfg {
@@ -2484,8 +2494,58 @@ impl Default for AdvancedCfg {
             worker_threads: None,
             upstream_http1_only: false,
             upstream_h2_prior_knowledge: false,
+            response_headers: ResponseHeadersCfg::default(),
         }
     }
+}
+
+/// The `advanced.response_headers:` block (task #139): opt-in toggles for every busbar-INJECTED
+/// response header, unified in ONE place instead of each header having its own bespoke gate (or, as
+/// `x-busbar-route-policy`/`-target` had before this, NO gate at all). Every field defaults `false`
+/// (invisible out of the box) — see each field's doc comment for the header it controls and why it
+/// defaults off.
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ResponseHeadersCfg {
+    /// Emit the `Server-Timing: busbar;dur=<ms>` response header (default `false`). MIGRATED from
+    /// the 1.5.x `observability.emit_server_timing` (C7-style rename, task #139); the old key is now
+    /// an `unknown field` boot error (`deny_unknown_fields` on `ObservabilityCfg`) — run
+    /// `busbar --migrate-config` to move it. The header is a useful latency probe, but it is also an
+    /// in-band busbar fingerprint on an otherwise anti-fingerprinting gateway — and the one
+    /// fingerprint observable by an UNAUTHENTICATED client on every response — so it defaults OFF to
+    /// preserve backend-facing indistinguishability. Operators who want the latency probe (and accept
+    /// the product tell) opt IN by setting `true`.
+    #[serde(default = "default_response_headers_server_timing")]
+    pub(crate) server_timing: bool,
+    /// Emit the `x-busbar-route-policy` / `x-busbar-route-target` TRANSPARENCY headers on a response
+    /// whose lane was chosen by a non-default routing policy (default `false`). Previously emitted
+    /// UNCONDITIONALLY whenever a non-default policy fired (no config gate at all) — the same
+    /// fingerprinting concern as `server_timing` above: the header names apply, so it defaults OFF and
+    /// an operator opts IN by setting `true`.
+    #[serde(default = "default_response_headers_route_policy")]
+    pub(crate) route_policy: bool,
+}
+
+impl Default for ResponseHeadersCfg {
+    fn default() -> Self {
+        Self {
+            server_timing: default_response_headers_server_timing(),
+            route_policy: default_response_headers_route_policy(),
+        }
+    }
+}
+
+/// `Server-Timing: busbar` header is SUPPRESSED by default (indistinguishability); operators opt IN.
+pub(crate) const DEFAULT_RESPONSE_HEADERS_SERVER_TIMING: bool = false;
+fn default_response_headers_server_timing() -> bool {
+    DEFAULT_RESPONSE_HEADERS_SERVER_TIMING
+}
+
+/// `x-busbar-route-policy` / `x-busbar-route-target` are SUPPRESSED by default (same fingerprinting
+/// concern as `server_timing`); operators opt IN.
+pub(crate) const DEFAULT_RESPONSE_HEADERS_ROUTE_POLICY: bool = false;
+fn default_response_headers_route_policy() -> bool {
+    DEFAULT_RESPONSE_HEADERS_ROUTE_POLICY
 }
 
 /// The top-level `config:` block — config-MANAGEMENT policy (1.5.3). This is DISTINCT from the
@@ -2579,13 +2639,6 @@ pub(crate) struct ObservabilityCfg {
     /// Per-delivery webhook timeout (seconds, default 2).
     #[serde(default = "default_webhook_delivery_timeout_secs")]
     pub(crate) webhook_delivery_timeout_secs: u64,
-    /// Emit the `Server-Timing: busbar;dur=<ms>` response header (default `false`). The header is a
-    /// useful latency probe, but it is also an in-band busbar fingerprint on an otherwise
-    /// anti-fingerprinting gateway — and it is the one fingerprint observable by an UNAUTHENTICATED
-    /// client on every response — so it defaults OFF to preserve backend-facing indistinguishability.
-    /// Operators who want the latency probe (and accept the product tell) opt IN by setting `true`.
-    #[serde(default = "default_emit_server_timing")]
-    pub(crate) emit_server_timing: bool,
 }
 
 impl Default for ObservabilityCfg {
@@ -2597,15 +2650,8 @@ impl Default for ObservabilityCfg {
             request_log_webhook_url: None,
             max_inflight_webhook_deliveries: default_max_inflight_webhook_deliveries(),
             webhook_delivery_timeout_secs: default_webhook_delivery_timeout_secs(),
-            emit_server_timing: default_emit_server_timing(),
         }
     }
-}
-
-/// `Server-Timing: busbar` header is SUPPRESSED by default (indistinguishability); operators opt IN.
-pub(crate) const DEFAULT_EMIT_SERVER_TIMING: bool = false;
-fn default_emit_server_timing() -> bool {
-    DEFAULT_EMIT_SERVER_TIMING
 }
 
 // ───────────────────────────────────────────────────────────────────────────────────────────────

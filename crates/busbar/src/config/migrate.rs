@@ -206,6 +206,7 @@ pub(crate) fn migrate_config(raw: &str) -> Result<MigrateOutput, String> {
     migrate_hooks_block(&mut root, &mut changes, &mut todos);
     migrate_pools(&mut root, &mut changes, &mut todos);
     migrate_observability(&mut root, &mut changes);
+    migrate_response_headers(&mut root, &mut changes);
 
     let body = serde_yaml::to_string(&Value::Mapping(root))
         .map_err(|e| format!("could not serialize the migrated config: {e}"))?;
@@ -1204,6 +1205,34 @@ fn migrate_observability(root: &mut Mapping, changes: &mut Vec<String>) {
         obs.insert("otlp_url".into(), v);
         changes.push("observability.otlp_endpoint -> otlp_url".into());
     }
+}
+
+/// `observability.emit_server_timing` -> `advanced.response_headers.server_timing` (task #139: every
+/// busbar-injected response header unified under one opt-in `advanced.response_headers:` block).
+/// Unlike `migrate_observability`'s same-section rename, this one CROSSES top-level sections, so it
+/// removes the key from `observability` (if present) and inserts it under `advanced.response_headers`,
+/// creating either mapping if it did not already exist.
+fn migrate_response_headers(root: &mut Mapping, changes: &mut Vec<String>) {
+    let Some(Value::Mapping(obs)) = root.get_mut(Value::from("observability")) else {
+        return;
+    };
+    let Some(v) = take(obs, "emit_server_timing") else {
+        return;
+    };
+    // Take the existing `advanced:` mapping (if any) out of `root`, normalize it to a mapping (an
+    // absent or non-mapping value becomes an empty one), splice in `response_headers.server_timing`,
+    // then put it back. Avoids relying on a `Mapping::entry` API this serde_yaml version may lack.
+    let mut advanced = as_map(take(root, "advanced").unwrap_or(Value::Mapping(Mapping::new())));
+    let mut response_headers = as_map(
+        advanced
+            .remove(Value::from("response_headers"))
+            .unwrap_or(Value::Mapping(Mapping::new())),
+    );
+    response_headers.insert("server_timing".into(), v);
+    advanced.insert("response_headers".into(), Value::Mapping(response_headers));
+    root.insert("advanced".into(), Value::Mapping(advanced));
+    changes
+        .push("observability.emit_server_timing -> advanced.response_headers.server_timing".into());
 }
 
 #[cfg(test)]

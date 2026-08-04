@@ -47,6 +47,15 @@ jobs:
         run: scripts/release-script-lint.sh --selftest
       - name: Release-script lint
         run: scripts/release-script-lint.sh
+      # RESPONSE-HEADER lint (task #139): every busbar-INJECTED response header
+      # (`Server-Timing: busbar;dur=`, `x-busbar-route-policy`/`-target`) must be emitted from its ONE
+      # sanctioned, config-gated site — never a hand-rolled second emission that bypasses the
+      # `advanced.response_headers` opt-in. Self-test runs FIRST (never trust the lint's verdict before
+      # proving the scanner still catches a real bypass), then it scans crates/busbar/src.
+      - name: Response-header lint self-test
+        run: scripts/response-header-lint.sh --selftest
+      - name: Response-header lint
+        run: scripts/response-header-lint.sh
       # THE REGISTRY GATE (plugins.yaml is the single source of truth for first-party plugins):
       # red when a registered plugin lacks coverage anywhere — no qa-gate checkout, no
       # release-check phase, no published release (or a phantom release with zero assets) — or
