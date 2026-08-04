@@ -46,11 +46,13 @@ busbar-secret-ref = { path = "../secret-ref" }
 busbar-auth-admin-tokens = { path = "../auth-admin-tokens", optional = true }
 busbar-hooks-ranking = { path = "../hooks-ranking", optional = true }
 axum = "0.8"
-# Already present transitively (axum's middleware stack). Pulled in directly for the OUTERMOST
-# inbound-concurrency cap applied when the operator sets `limits.max_inbound_concurrent > 0` (the `0`
-# default adds NO layer): `limit` (the `GlobalConcurrencyLimitLayer` admission semaphore) plus
-# `load-shed` (Bug 4 — SHED excess inbound with 503 instead of queueing it behind the cap).
-tower = { version = "0.5", features = ["limit", "load-shed"] }
+# Already present transitively (axum's middleware stack). Pulled in directly for the `Layer`/`Service`
+# traits `limits::admission::InboundAdmissionLayer` implements by hand for the OUTERMOST
+# inbound-concurrency cap (applied when the operator sets `limits.max_inbound_concurrent > 0`; the `0`
+# default adds NO layer). No extra features needed — `Layer`/`Service` are in tower's default set;
+# the old `limit`/`load-shed` features (the prior `GlobalConcurrencyLimitLayer` + `LoadShedLayer`
+# stack) are gone now that admission is one hand-rolled `AdmissionGate`-backed service.
+tower = "0.5"
 # Only the subsystems busbar actually touches: the multi-thread runtime (#[tokio::main],
 # spawn/JoinHandle), macros (main/test), net (TcpListener), time (sleep/interval), sync
 # (Semaphore/OwnedSemaphorePermit), and signal (graceful-shutdown ctrl_c/SIGTERM, so OTLP spans

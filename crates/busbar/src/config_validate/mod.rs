@@ -1487,9 +1487,9 @@ fn validate_limits(limits: &crate::config::LimitsResolved, errors: &mut Vec<Stri
     // NOTE: `max_inbound_concurrent` is intentionally UNCONSTRAINED — any usize including 0 (the
     // explicit unlimited posture; the DEFAULT is 8192, not 0) is valid, EXCEPT for the
     // `Semaphore::new` panic ceiling below: `apply_inbound_concurrency_limit` (main.rs) wraps the
-    // router in a tower `GlobalConcurrencyLimitLayer::new(max_inbound_concurrent)` whenever the
-    // value is `> 0`, and that layer's constructor calls `Semaphore::new` internally with no bound
-    // of its own. See `MAX_SEMAPHORE_PERMITS`'s doc comment.
+    // router in a `limits::admission::InboundAdmissionLayer::new(max_inbound_concurrent)` whenever
+    // the value is `> 0`, and that layer's `AdmissionGate` calls `Semaphore::new` internally with no
+    // bound of its own. See `MAX_SEMAPHORE_PERMITS`'s doc comment.
     if limits.max_inbound_concurrent > MAX_SEMAPHORE_PERMITS {
         errors.push(format!(
             "limits.max_inbound_concurrent must be <= {MAX_SEMAPHORE_PERMITS} (tokio::sync::\

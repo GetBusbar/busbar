@@ -174,6 +174,16 @@ pub(crate) const WEBHOOK_LOGS_DROPPED_TOTAL: &str = "busbar_webhook_logs_dropped
 // tap endpoint). Unlabeled global backpressure. Alert on a non-zero rate.
 pub(crate) const TAP_NOTIFICATIONS_DROPPED_TOTAL: &str = "busbar_tap_notifications_dropped_total";
 
+// A request/task denied entry by a `limits::admission::AdmissionGate` because its permit cap was
+// saturated. Labeled `gate` = the gate's fixed name (`"inbound"`/`"webhook"`/`"tap"` today — one
+// per `AdmissionGate::new` call site in the binary, so the label space is bounded at compile time,
+// never client-influenced). This is the GATE-level mechanic counter shared by every admission site;
+// it does NOT replace a site's own policy-specific drop counter (e.g. `WEBHOOK_LOGS_DROPPED_TOTAL`,
+// `TAP_NOTIFICATIONS_DROPPED_TOTAL`) where one already exists — those stay, so existing dashboards
+// and alerts keep working unchanged. This counter exists so every gate (including ones with no
+// bespoke counter of their own, like the inbound cap) is uniformly observable.
+pub(crate) const ADMISSION_DENIED_TOTAL: &str = "busbar_admission_denied_total"; // labels: gate
+
 // Same-protocol non-stream responses whose billing-side buffer hit the translate-body cap before the
 // terminal `usage` block, so token usage could not be parsed and the request billed zero despite a
 // full 2xx reaching the client. Incremented once per truncated response. Unlabeled. An operator
