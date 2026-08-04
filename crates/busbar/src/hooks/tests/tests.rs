@@ -238,6 +238,7 @@ fn base_gate() -> HookCfg {
         on_empty: None,
         global: false,
         default: false,
+        signals: Vec::new(),
     }
 }
 
@@ -1388,6 +1389,7 @@ fn dreq(text: &str) -> RoutingRequest<'static> {
             messages: vec![("user".into(), text.to_string().into())],
         }),
         identity: None,
+        signals: Default::default(),
     }
 }
 
@@ -1405,6 +1407,7 @@ fn dcand(idx: usize) -> Candidate<'static> {
         available_concurrency: 1,
         budget_remaining: None,
         rate_headroom: None,
+        signals: Default::default(),
     }
 }
 

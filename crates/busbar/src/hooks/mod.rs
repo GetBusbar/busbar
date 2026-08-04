@@ -52,6 +52,69 @@ pub(crate) use busbar_api::{
     CallerIdentity, Candidate, PolicyError, PolicyResult, PromptProjection, RoutingContext,
     RoutingDecision, RoutingPolicy, RoutingRequest,
 };
+// The Feature-2 "decision observability" signal catalog (task #141) — `Signal`/`SignalValue`/
+// `SignalBag` are re-exported here for the same reason the hook contract types above are: engine-
+// internal paths reference them as `crate::hooks::Signal` etc.
+#[allow(unused_imports)]
+pub(crate) use busbar_api::{Signal, SignalBag, SignalValue};
+
+/// The per-generation, config-derived UNION of every hook's declared [`Signal`] set — a dense
+/// bitmask ("which catalog entries does ANYTHING configured on this generation want"), consulted
+/// with a single `AND`+compare BEFORE any compute fn runs (`RequestedSignals::wants`), never
+/// call-then-discard. Mirrors the 846e4931 `usage_sink.is_some()` precedent generalized from one
+/// boolean to one bit per catalog entry.
+///
+/// SCOPE (deliberate, documented simplification for this additive pass): the bitmask is built ONCE
+/// per config generation as the union across EVERY configured hook, not per-pool. A pool with zero
+/// signal-declaring hooks still consults the same (possibly non-zero) global mask, so it may
+/// compute a signal only some OTHER pool's hook actually reads — strictly cheaper than a
+/// per-consumer mask (no per-request allocation to narrow it) at the cost of that coarser sharing,
+/// which the companion design document flags as an accepted trade-off (§9.2, "recommended: accept
+/// the coarser…granularity"). A per-pool mask is a natural, purely-internal follow-up; the WIRE
+/// contract here does not change either way.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct RequestedSignals(u64);
+
+impl RequestedSignals {
+    /// A single `u64` AND + compare — the same order of magnitude as the pre-existing
+    /// `app.tap_hooks_completion.is_empty()` early-out this design generalizes.
+    #[inline]
+    pub(crate) fn wants(self, s: Signal) -> bool {
+        debug_assert!(
+            s.bit() < 64,
+            "Signal::bit() exceeded the u64 bitmask width; grow RequestedSignals to a bitset"
+        );
+        self.0 & (1u64 << s.bit()) != 0
+    }
+
+    /// True iff NOTHING is declared anywhere — the zero-cost default generation.
+    #[inline]
+    pub(crate) fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    fn insert(&mut self, s: Signal) {
+        self.0 |= 1u64 << s.bit();
+    }
+}
+
+/// Build the config generation's [`RequestedSignals`] from the UNION of every registered hook's
+/// `signals:` declaration (`HookCfg::signals`, see `config::HookCfg`'s own doc comment for the
+/// declaration surface). Called ONCE per config apply (alongside `hook_registry: cfg.hooks.clone()`
+/// in `main.rs`'s `App` construction) — never per request. A config with no hook declaring any
+/// `signals:` (the overwhelming default, and every config that predates task #141) yields the
+/// all-zero mask, so every `requested.wants(_)` check downstream is `false` for that generation.
+pub(crate) fn requested_signals(
+    hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
+) -> RequestedSignals {
+    let mut mask = RequestedSignals::default();
+    for hook in hooks.values() {
+        for &s in &hook.signals {
+            mask.insert(s);
+        }
+    }
+    mask
+}
 
 /// The plugin-resolution environment threaded through every hook-transport builder: the validated
 /// plugin registry (the ONLY resolution surface — a hook's `plugin:` ref opens a `DlopenPolicy`

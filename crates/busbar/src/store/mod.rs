@@ -390,6 +390,24 @@ pub(crate) trait LaneRuntime: Send + Sync + 'static {
     // ROUTING-POLICY SIGNAL ACCESSORS: read per-request by `proxy::decide_policy_order` (and
     // `pick_among` for `ready_in`) to build the `Candidate` projection the resolved policy ranks on.
     fn ready_in(&self, pool: &str, lane: usize, now: u64) -> bool;
+    /// PRODUCTION-SAFE, side-effect-free breaker FSM state for a (pool, lane), for the Feature-2
+    /// `Signal::CandidateBreakerState` catalog entry (task #141). Unlike `breaker_state`/
+    /// `breaker_state_in` above (both `#[cfg(test)]`-gated OUT of the release binary — see their
+    /// doc comment), this is a PURE projection of the already-maintained atomic breaker state,
+    /// released for real traffic: it performs no Open→HalfOpen transition and steals no recovery
+    /// probe (mirrors `is_ready_any_cell`/`cell_ready_breaker`'s non-mutating read discipline).
+    /// Zero new tracking — the breaker FSM already maintains this state on every request
+    /// regardless of whether any consumer declares the signal; only the READ is gated by
+    /// `RequestedSignals::wants(Signal::CandidateBreakerState)` at the call site.
+    fn breaker_state_snapshot_in(&self, pool: &str, lane: usize) -> BreakerState;
+    /// PRODUCTION-SAFE recent error rate (errors / total outcomes) for a (pool, lane) over the
+    /// breaker's existing sliding outcome window — for the Feature-2 `Signal::CandidateErrorRate`
+    /// catalog entry (task #141). `None` when the lane has served no outcomes in the window yet
+    /// (never a fabricated `0.0`, which would misread as "definitely healthy"). PURE PROJECTION:
+    /// the outcome window is the SAME state the breaker's error-rate trip mode already maintains
+    /// on every outcome regardless of whether any consumer declares this signal (see
+    /// `store::in_memory::breaker::OutcomeWindow`) — no new collection, only the read is gated.
+    fn error_rate_in(&self, pool: &str, lane: usize, now: u64) -> Option<f64>;
     /// Available (free) concurrency permits on a lane's semaphore right now — a routing-policy signal
     /// (`least_busy`). Read-only snapshot; racy by nature (permits change between read and dispatch),
     /// which is fine for a ranking hint.

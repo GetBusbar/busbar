@@ -192,6 +192,10 @@ pub(crate) fn build_rewrite_request<'a>(
         // `prompt: ro` taps is a follow-up; shape-only never OVER-shares, so the grant holds.
         prompt: with_prompt.then(|| build_prompt_projection(v, ingress_protocol)),
         identity: None,
+        // The rewrite (transform) pass is a content seam, not a decide seam — it has no candidate
+        // set to read Feature-2 candidate-phase signals from, and no request-phase compute fn is
+        // wired to this builder in this pass. Empty (never allocated).
+        signals: Default::default(),
     }
 }
 
@@ -974,13 +978,51 @@ pub(crate) async fn decide_policy_order(
         stream: wants_stream,
         prompt,
         identity,
+        // Request-phase catalog signals: none wired to the decide path in this pass (the existing
+        // core fields above already cover every request-shape signal a route policy reads today).
+        signals: Default::default(),
     };
+
+    // Feature-2 "decision observability" (task #141): the config generation's declared-signal
+    // bitmask, resolved ONCE at config apply (`hooks::requested_signals`) and read here with a
+    // single `u64` comparison — never recomputed per request. `is_empty()` short-circuits the
+    // WHOLE candidate-signal loop below on the zero-cost default (no hook anywhere declared a
+    // catalog signal): no `SignalBag` is ever pushed to, so it never spills its inline capacity.
+    let requested = app.requested_signals;
+    let now_ts = now();
 
     let candidates: Vec<Candidate> = live
         .iter()
         .map(|wl| {
             let lane = &app.lanes[wl.idx];
             let meta = member_meta.and_then(|m| m.get(&wl.idx));
+            let mut signals = busbar_api::SignalBag::new();
+            if !requested.is_empty() {
+                // Both are PURE projections of state the breaker FSM already maintains on every
+                // request/outcome regardless of declaration (see `LaneRuntime::
+                // breaker_state_snapshot_in`/`error_rate_in`'s doc comments) — the gate below is
+                // the compute-the-sliver check (846e4931 shape): the read runs ONLY when
+                // declared, never call-then-discard.
+                if requested.wants(crate::hooks::Signal::CandidateBreakerState) {
+                    let label = match app.store.breaker_state_snapshot_in(pool_name, wl.idx) {
+                        crate::store::BreakerState::Closed => "closed",
+                        crate::store::BreakerState::Open { .. } => "open",
+                        crate::store::BreakerState::HalfOpen => "half_open",
+                    };
+                    signals.push(
+                        crate::hooks::Signal::CandidateBreakerState,
+                        busbar_api::SignalValue::Str(std::borrow::Cow::Borrowed(label)),
+                    );
+                }
+                if requested.wants(crate::hooks::Signal::CandidateErrorRate) {
+                    if let Some(rate) = app.store.error_rate_in(pool_name, wl.idx, now_ts) {
+                        signals.push(
+                            crate::hooks::Signal::CandidateErrorRate,
+                            busbar_api::SignalValue::F64(rate),
+                        );
+                    }
+                }
+            }
             Candidate {
                 idx: wl.idx,
                 model: &lane.model,
@@ -994,6 +1036,7 @@ pub(crate) async fn decide_policy_order(
                 available_concurrency: app.store.available_permits(wl.idx),
                 budget_remaining: app.store.lane_budget_remaining(wl.idx),
                 rate_headroom,
+                signals,
             }
         })
         .collect();
@@ -1302,6 +1345,11 @@ pub(crate) fn fire_stage_taps(
             system: None,
             messages: None,
             user: None,
+            // Stage taps (route/attempt/completion) project no Feature-2 catalog signals in this
+            // pass (the response-phase outcome seam those signals need is a separate,
+            // not-yet-built increment — see `Signal::ResponseTokensOut`'s doc comment). Empty
+            // (never allocated), so the wire is byte-identical to before this change.
+            signals: Default::default(),
         },
         candidates: Vec::new(),
         context: crate::hooks::wire::HookContext {

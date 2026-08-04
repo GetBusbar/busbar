@@ -3131,6 +3131,7 @@ fn gate_hook(plugin: &str, timeout_ms: u64) -> config::HookCfg {
         on_empty: None,
         global: false,
         default: false,
+        signals: Vec::new(),
     }
 }
 

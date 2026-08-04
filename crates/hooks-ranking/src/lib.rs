@@ -244,6 +244,7 @@ mod tests {
             available_concurrency: conc,
             budget_remaining: budget,
             rate_headroom: rate,
+            signals: Default::default(),
         }
     }
 
@@ -262,6 +263,7 @@ mod tests {
             stream: false,
             prompt: None,
             identity: None,
+            signals: Default::default(),
         }
     }
 

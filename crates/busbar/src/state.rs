@@ -316,6 +316,12 @@ pub(crate) struct App {
     /// out-of-process transport needed.
     pub(crate) hook_env: crate::hooks::HookEnv,
     pub(crate) hook_registry: HashMap<String, crate::config::HookCfg>,
+    /// The Feature-2 "decision observability" signal catalog's (task #141) config-generation
+    /// `RequestedSignals` bitmask — the UNION of every hook's declared `signals:` — built ONCE
+    /// alongside `hook_registry` above, never per request. All-zero (the default) when no hook
+    /// anywhere declares a catalog signal, which is the zero-cost path every `requested.wants(_)`
+    /// check downstream short-circuits on.
+    pub(crate) requested_signals: crate::hooks::RequestedSignals,
     /// The `global_hooks:` list — names fired on every request (plus any hook with inline `global:
     /// true`). Carried for the hooks read surface so a definition can report whether it is globally
     /// wired. Read-only after construction.

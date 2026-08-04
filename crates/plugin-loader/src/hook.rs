@@ -457,6 +457,7 @@ mod tests {
                 messages: vec![("user".into(), text.to_string().into())],
             }),
             identity: None,
+            signals: Default::default(),
         }
     }
 
@@ -474,6 +475,7 @@ mod tests {
             available_concurrency: 1,
             budget_remaining: None,
             rate_headroom: None,
+            signals: Default::default(),
         }
     }
 

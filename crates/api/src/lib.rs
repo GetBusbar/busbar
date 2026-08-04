@@ -25,6 +25,7 @@ pub mod durable;
 mod hooks;
 mod redacted;
 mod secret;
+mod signal;
 mod store;
 
 pub use auth::{constant_time_eq, sha256_hex, AuthModule, AuthOutcome, Principal};
@@ -39,6 +40,7 @@ pub use hooks::{
 };
 pub use redacted::Redacted;
 pub use secret::{SecretError, SecretErrorKind, SecretModule, SecretResult};
+pub use signal::{Signal, SignalBag, SignalValue};
 pub use store::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, ModelTokens,
     ModelTokensDelta, ScopeRef, SecretForm, Store, StoreError, StoreResult, TierTokens,

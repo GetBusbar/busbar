@@ -599,6 +599,11 @@ pub(crate) struct TripConfig {
     pub(crate) consecutive_n: u32, // For consecutive mode
 }
 
+/// The window (seconds) the Feature-2 `Signal::CandidateErrorRate` catalog entry reads the
+/// breaker's existing outcome window over — matches [`TripConfig::default`]'s own `window_s` so
+/// the projected error rate reads over the same horizon the default breaker trip mode does.
+pub(crate) const DEFAULT_ERROR_RATE_WINDOW_S: u64 = 30;
+
 impl Default for TripConfig {
     fn default() -> Self {
         Self {
