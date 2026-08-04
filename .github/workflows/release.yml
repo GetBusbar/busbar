@@ -251,6 +251,36 @@ jobs:
   # story per plugin kind.
 
 
+  # PHANTOM-RELEASE GUARD: assert the published Release actually carries assets before we treat this
+  # as a real release. The per-target build/upload jobs run with fail-fast:false, and `create-release`
+  # always makes the (initially empty) Release up front — so a build/pack failure on EVERY target
+  # (e.g. a stale Cargo.lock tripping `--locked`) leaves a tag + Release with ZERO assets: a "phantom"
+  # that silently breaks busbar's plugin-registry-gate. This job fails the whole release run loud if
+  # assets == 0, so a phantom can never ship (or notify downstream) unnoticed. It depends on the build
+  # matrix but does NOT inherit its fail-fast:false — one green target is enough to have assets, but
+  # zero across the board must hard-fail here.
+  verify-assets:
+    needs: [upload-assets]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assert the Release has at least one asset
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          count="$(gh release view "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --json assets --jq '.assets | length')"
+          echo "Release ${GITHUB_REF_NAME} has ${count} asset(s)."
+          if [ "${count}" -eq 0 ]; then
+            echo "::error::PHANTOM RELEASE: ${GITHUB_REF_NAME} was published with 0 assets." \
+                 "Every build/pack target failed to upload a tarball. Failing the release run so this" \
+                 "tag is not mistaken for a real release by busbar's plugin-registry-gate. Fix the" \
+                 "build (check Cargo.lock freshness vs --locked and the plugin cdylib build step)," \
+                 "delete this tag+release, and re-cut." >&2
+            exit 1
+          fi
+
   # ── Fan out an instant "a real release just happened" signal to every downstream repo that
   #    self-heals off busbar's releases (Homebrew tap, Helm chart, and whatever else gets added to
   #    .github/release-notify-targets.txt). Each target already has its OWN daily-poll workflow as
@@ -259,7 +289,7 @@ jobs:
   #    new downstream consumer to the fan-out is a one-line addition to that text file, no workflow
   #    changes needed here or in this job.
   notify-downstream:
-    needs: [sbom, openapi, upload-assets]
+    needs: [sbom, openapi, upload-assets, verify-assets]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
