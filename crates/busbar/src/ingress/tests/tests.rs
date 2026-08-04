@@ -54,6 +54,9 @@ fn minimal_app() -> Arc<App> {
         idempotency_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         base_hook_names: std::collections::HashSet::new(),
         admin_chain: vec!["admin-tokens".to_string()],
+        admin_modules: Arc::new(crate::auth::AdminAuthChain::empty()),
+        login_methods: Arc::new(crate::auth::token::LoginMethods::empty()),
+        public_url: None,
         credential_cache: StdArc::new(crate::auth_cache::CredentialCache::new()),
         auth_scope_caps: std::collections::HashMap::new(),
         role_bindings: crate::config::RoleBindings::new(),
@@ -75,6 +78,7 @@ fn minimal_app() -> Arc<App> {
         plugins_cfg: crate::config::PluginsCfg::default(),
         default_max_tokens: crate::config::DEFAULT_DEFAULT_MAX_TOKENS,
         reasoning_effort_budgets: [1024, 4096, 8192, 16384],
+        self_key_ttl_secs: crate::admin::DEFAULT_KEY_TTL_SECS,
     })
 }
 
@@ -188,6 +192,7 @@ fn governed_app_with_key() -> (Arc<App>, crate::governance::VirtualKey) {
     let mut app = minimal_app();
     let inner = Arc::get_mut(&mut app).expect("sole owner");
     inner.governance = Some(gov);
+    inner.auth = crate::test_support::keys_chain_auth();
     inner.cost = std::sync::Arc::new(crate::cost::CostModel::flat(30));
     (app, key)
 }
@@ -379,6 +384,7 @@ fn test_flat_fee_charge_and_refund_use_charged_at_window() {
     {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
         inner.governance = Some(gov.clone());
+        inner.auth = crate::test_support::keys_chain_auth();
         inner.cost = cost.clone();
     }
     let govctx = crate::governance::GovCtx {
@@ -504,6 +510,7 @@ async fn test_admit_check_uses_charged_at_window_not_clock() {
     {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
         inner.governance = Some(gov.clone());
+        inner.auth = crate::test_support::keys_chain_auth();
         inner.cost = cost.clone();
     }
     let govctx = crate::governance::GovCtx {
@@ -3165,6 +3172,7 @@ fn governed_app_pool_restricted() -> (Arc<App>, crate::governance::VirtualKey) {
     let mut app = minimal_app();
     let inner = Arc::get_mut(&mut app).expect("sole owner");
     inner.governance = Some(gov);
+    inner.auth = crate::test_support::keys_chain_auth();
     // The 30c flat fee lives on the CostModel now.
     inner.cost = std::sync::Arc::new(crate::cost::CostModel::flat(30));
     (app, key)
@@ -3405,6 +3413,7 @@ fn governed_app_over_budget() -> (Arc<App>, crate::governance::VirtualKey) {
     let mut app = minimal_app();
     let inner = Arc::get_mut(&mut app).expect("sole owner");
     inner.governance = Some(gov);
+    inner.auth = crate::test_support::keys_chain_auth();
     // A ZERO-cap GROUP budget: the very first request is over budget (keys carry no caps).
     let groups = std::collections::BTreeMap::from([(
         "empty".to_string(),
@@ -3446,6 +3455,7 @@ fn governed_app_rate_limited() -> (Arc<App>, crate::governance::VirtualKey) {
     let mut app = minimal_app();
     let inner = Arc::get_mut(&mut app).expect("sole owner");
     inner.governance = Some(gov);
+    inner.auth = crate::test_support::keys_chain_auth();
     let groups = std::collections::BTreeMap::from([(
         "closed".to_string(),
         crate::config::GroupCfg {
@@ -4894,6 +4904,7 @@ async fn governed_pool_acl_router(
         )
         .unwrap();
     let app = TestApp::new()
+        .keys_chain()
         .governance(gov)
         .lane(LaneSpec::new(model, protocol, "http://127.0.0.1:1").provider(provider))
         .pool(model, &[(0, 1)])
@@ -5157,6 +5168,7 @@ async fn test_fallback_pool_acl_denies_key_not_allowed_on_fallback_target() {
 
     // Lane 0 → pool A (reachable mock). Lane 1 → pool B (the disallowed fallback target).
     let app = TestApp::new()
+        .keys_chain()
         .governance(gov)
         .lane(LaneSpec::new("A", crate::proto::Protocol::anthropic(), &a_url).provider("zai"))
         .lane(
@@ -5245,6 +5257,7 @@ async fn test_fallback_pool_acl_allows_key_permitted_on_both_pools() {
         .unwrap();
 
     let app = TestApp::new()
+        .keys_chain()
         .governance(gov)
         .lane(LaneSpec::new("A", crate::proto::Protocol::anthropic(), &a_url).provider("zai"))
         .lane(
@@ -5417,6 +5430,7 @@ async fn test_adhoc_governance_pool_acl_403_via_router() {
         )
         .unwrap();
     let app = TestApp::new()
+        .keys_chain()
         .governance(gov)
         .lane(
             LaneSpec::new(
@@ -5763,6 +5777,7 @@ async fn governed_limit_router(
         },
     )]);
     let app = TestApp::new()
+        .keys_chain()
         .governance(gov)
         .cost(crate::cost::CostModel::resolve_parts(None, 0, &groups))
         .build();
@@ -6097,6 +6112,7 @@ fn governed_app_group_blocked() -> (Arc<App>, crate::governance::VirtualKey) {
     let mut app = minimal_app();
     let inner = Arc::get_mut(&mut app).expect("sole owner");
     inner.governance = Some(gov);
+    inner.auth = crate::test_support::keys_chain_auth();
     inner.cost = std::sync::Arc::new(cost);
     (app, key)
 }
@@ -6191,6 +6207,7 @@ async fn test_unpriced_passthrough_model_rejected_when_rate_card_present() {
     {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
         inner.governance = Some(gov);
+        inner.auth = crate::test_support::keys_chain_auth();
         inner.cost = std::sync::Arc::new(cost);
     }
     let gov_ctx = crate::governance::GovCtx {
@@ -6267,6 +6284,7 @@ fn governed_app_downgrade(
     let mut app = minimal_app();
     let inner = Arc::get_mut(&mut app).expect("sole owner");
     inner.governance = Some(gov);
+    inner.auth = crate::test_support::keys_chain_auth();
     inner.cost = std::sync::Arc::new(cost);
     inner.pools.insert("frontier".to_string(), vec![]);
     inner.pools.insert("value".to_string(), vec![]);
@@ -6365,6 +6383,7 @@ async fn test_downgrade_cycle_terminates_via_the_revisit_guard() {
     let mut app = minimal_app();
     let inner = Arc::get_mut(&mut app).expect("sole owner");
     inner.governance = Some(gov);
+    inner.auth = crate::test_support::keys_chain_auth();
     inner.cost = std::sync::Arc::new(cost);
     inner.pools.insert("a".to_string(), vec![]);
     inner.pools.insert("b".to_string(), vec![]);

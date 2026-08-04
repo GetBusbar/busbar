@@ -249,7 +249,7 @@ pub(crate) async fn probe_lane(app: &Arc<App>, i: usize, timeout: Duration) {
 
     // No key, no probe — we can't authenticate (e.g. a passthrough deployment with no static key),
     // and a guaranteed 401 would only thrash the breaker.
-    if lane.api_key.is_empty() {
+    if lane.api_key.expose_secret().is_empty() {
         return;
     }
 
@@ -299,7 +299,7 @@ pub(crate) async fn probe_lane(app: &Arc<App>, i: usize, timeout: Duration) {
         // token), so the native API-key shape (Token mode) is correct here.
         upstream_creds: crate::auth::UpstreamCreds::Own,
     };
-    let auth = crate::proxy::lane_auth_headers(lane, &lane.api_key, &signing_ctx);
+    let auth = crate::proxy::lane_auth_headers(lane, lane.api_key.expose_secret(), &signing_ctx);
 
     // Send the SAME native-SDK fingerprint headers the organic forward path sends, so a probe is
     // indistinguishable from real traffic to the backend: reqwest emits no default User-Agent (its

@@ -912,6 +912,16 @@ else
   note "SKIP: ../busbar-admin not present as a sibling checkout — busbarctl reverse-direction coverage skipped."
 fi
 
+# ── 1.5.2 feature gate: plugins.fetch (hermetic) + token-exchange cross-repo matrix + admin authz ──
+# Runs the NEW-1.5.2-functionality phases as part of this gate. Reuses the busbar binary +
+# busbar-plugin-pack already built in Phase 0 (handed down via the exported BUSBAR_BIN/PACK_BIN, so
+# it does NOT rebuild). Its token-exchange phase is registry-driven over every kind:auth plugin
+# (plugins.yaml), the same single-source-of-truth this script's suite loop uses. Any failure there
+# fails the whole gate (its own set -euo pipefail + ERR trap propagate through this invocation).
+phase "1.5.2 feature gate (plugins.fetch + token-exchange matrix + admin authz matrix)"
+BUSBAR_BIN="$BUSBAR_BIN" PACK_BIN="$PACK_BIN" bash "${REPO_ROOT}/scripts/release-check-1.5.2.sh"
+ok "1.5.2 feature gate passed (see its own VERIFIED-AT-INTEGRATION notes above)"
+
 phase "RELEASE GATE PASSED"
 echo "Total elapsed: ${SECONDS}s"
 for p in ${SUITE_PASSED[@]+"${SUITE_PASSED[@]}"}; do

@@ -113,9 +113,6 @@ async fn mint_as(
     crate::admin::create_key(
         State(handle.clone()),
         axum::Extension(principal),
-        axum::Extension(crate::auth::AdminScope(
-            crate::admin::v1::contract::Grants::of(crate::admin::v1::contract::Scope::Full),
-        )),
         HeaderMap::new(),
         axum::body::Bytes::from(
             json!({ "name": name, "group": group, "parent": parent }).to_string(),

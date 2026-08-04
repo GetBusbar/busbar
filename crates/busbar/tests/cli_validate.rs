@@ -223,7 +223,7 @@ fn validate_fails_on_unresolvable_auth_chain_plugin() {
         "an auth.chain module with no matching installed plugin must fail --validate: {stderr}"
     );
     assert!(
-        stderr.contains("does not match any plugin") || stderr.contains("was not loaded"),
+        stderr.contains("no plugin matching") || stderr.contains("was not loaded"),
         "expected the registry-aware unresolved-plugin error (not the old blanket \
          pre-registry rejection), got: {stderr}"
     );
@@ -624,12 +624,12 @@ fn validate_ok_when_keys_chain_has_signing_key_and_writes_no_file() {
     let dir = fixture_dir("sk-ok");
     write_configs(
         &dir,
-        "auth:\n  chain:\n    - keys\n  signing_key: { env: BUSBAR_SIGNING_KEY }\n",
+        "auth:\n  chain:\n    - keys\n  signing_key: { env: BUSBAR_SIGNING_KEY }\n  admin_auth: []\n",
     );
     let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
     assert_eq!(
         code, 0,
-        "a `keys` chain WITH a signing_key ref validates clean: {stderr}"
+        "a `keys` chain WITH a signing_key ref (and an admin mint path) validates clean: {stderr}"
     );
     assert!(stdout.contains("ok: config valid"), "got {stdout}");
     assert!(
@@ -663,7 +663,7 @@ fn generate_signing_key_emits_a_usable_referenced_key() {
     write_configs(
         &dir,
         &format!(
-            "auth:\n  chain:\n    - keys\n  signing_key: {{ file: '{}' }}\n",
+            "auth:\n  chain:\n    - keys\n  signing_key: {{ file: '{}' }}\n  admin_auth: []\n",
             keyfile.display()
         ),
     );

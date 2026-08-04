@@ -490,7 +490,7 @@ These fields survive a cross-protocol hop because they are first-class in the IR
 
 This is not loss in the sense defined above: lossless means neither end can tell the hop happened, and these are fields that have *no place to go* on the other side of the hop. Forwarding them anyway would make the backend reject the request, which is the one thing translation must never do. So they are dropped at the seam, deliberately. On a **same-protocol** route none of this applies: every one of these fields survives byte-for-byte (see [Same-protocol note](#same-protocol-note)).
 
-The tables below are **measured, not asserted**: each field was sent through Busbar to a same-protocol and a cross-protocol backend against a capture mock, and the egress wire bodies were diffed (verified against 1.2.0).
+The tables below are **measured, not asserted**: each field was sent through Busbar to a same-protocol and a cross-protocol backend against a capture mock, and the egress wire bodies were diffed (last verified against 1.2.0; re-checked each release).
 
 Two things can happen to a field on a cross-protocol hop:
 

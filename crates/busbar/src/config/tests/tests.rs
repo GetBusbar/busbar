@@ -42,6 +42,7 @@ fn provider_deploy(env_var: &str) -> ProviderDeploy {
 fn base_deploy() -> DeployCfg {
     DeployCfg {
         listen: DEFAULT_LISTEN_ADDR.into(),
+        public_url: None,
         tls: None,
         admin_listen: DEFAULT_ADMIN_LISTEN_ADDR.into(),
         admin_tls: None,
@@ -1592,6 +1593,8 @@ fn test_debug_of_full_config_never_shows_resolved_secrets() {
             settings: serde_json::Map::new(),
         }],
         role_bindings: RoleBindings::new(),
+        methods: Default::default(),
+        key_ttl: None,
     };
     let mut deploy = base_deploy();
     deploy.auth = Some(auth);
@@ -2699,5 +2702,169 @@ fn to_policy_still_returns_ok_for_a_malformed_floor() {
     assert!(
         cfg.to_policy().is_ok(),
         "a malformed floor must not fail the boot — it is refused at the comparator instead"
+    );
+}
+
+// ─── 1.5.2 token-exchange Step 1: config surface (public_url / auth.methods / plugins.fetch) ───
+
+#[test]
+fn test_public_url_parses_top_level() {
+    let yaml = "\
+listen: 0.0.0.0:8080
+public_url: https://api.busbar.example
+providers: {}
+models: {}
+";
+    let deploy: DeployCfg = serde_yaml::from_str(yaml).expect("public_url must parse");
+    assert_eq!(
+        deploy.public_url.as_deref(),
+        Some("https://api.busbar.example")
+    );
+    // Absent ⇒ None (default).
+    let deploy2: DeployCfg =
+        serde_yaml::from_str("listen: 0.0.0.0:8080\nproviders: {}\nmodels: {}\n")
+            .expect("absent public_url ⇒ default None");
+    assert_eq!(deploy2.public_url, None);
+}
+
+#[test]
+fn test_auth_method_browser_login_parses() {
+    // The `auth.methods` MAP (decision 1): key = module name; opaque settings flattened; the reserved
+    // `browser_login` block carries the confidential-client secret as a SecretRef.
+    let yaml = "\
+methods:
+  oidc:
+    issuer: https://idp.example/
+    audience: busbar
+    browser_login:
+      client_secret: { env: BUSBAR_OIDC_SECRET }
+      client_id: busbar-web
+";
+    let auth: AuthCfg = serde_yaml::from_str(yaml).expect("auth.methods browser_login must parse");
+    let method = auth.methods.get("oidc").expect("oidc method present");
+    let bl = method
+        .browser_login
+        .as_ref()
+        .expect("browser_login present");
+    assert_eq!(bl.client_id.as_deref(), Some("busbar-web"));
+    // client_secret is an OPTIONAL SecretRef (never a bare string); it resolves through the `env`
+    // module. (Optional so a Credential method can omit it; a Redirect method requires it — enforced
+    // at build per login_kind.)
+    assert_eq!(
+        bl.client_secret.as_ref().and_then(|s| s.env_var()),
+        Some("BUSBAR_OIDC_SECRET")
+    );
+    // Opaque module settings are flattened through, NOT swallowed into browser_login.
+    assert_eq!(
+        method.settings.get("issuer").and_then(|v| v.as_str()),
+        Some("https://idp.example/")
+    );
+    assert_eq!(
+        method.settings.get("audience").and_then(|v| v.as_str()),
+        Some("busbar")
+    );
+    // browser_login is NOT leaked into the opaque settings map pushed to the module.
+    assert!(!method.settings.contains_key("browser_login"));
+}
+
+#[test]
+fn test_browser_login_deny_unknown_field() {
+    // A typo under `browser_login` must fail parse (deny_unknown_fields on BrowserLoginCfg).
+    let yaml = "\
+methods:
+  oidc:
+    browser_login:
+      client_secret: { env: X }
+      client_idd: oops
+";
+    let err = serde_yaml::from_str::<AuthCfg>(yaml)
+        .expect_err("typo under browser_login must be rejected");
+    assert!(
+        err.to_string().contains("client_idd") || err.to_string().contains("unknown field"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn test_plugins_fetch_three_shapes_parse() {
+    use crate::config::{PluginFetch, PluginsCfg};
+    let yaml = "\
+enabled: true
+dir: plugins
+fetch:
+  - github: org/repo@v1.2.3
+    sha256: abc123
+  - url: https://host/plugin.tar.gz
+  - env: BUSBAR_PLUGIN_URL
+";
+    let cfg: PluginsCfg = serde_yaml::from_str(yaml).expect("three fetch shapes must parse");
+    assert_eq!(cfg.fetch.len(), 3);
+    assert!(
+        matches!(&cfg.fetch[0], PluginFetch::Github(g) if g.github == "org/repo@v1.2.3" && g.sha256.as_deref() == Some("abc123"))
+    );
+    assert!(
+        matches!(&cfg.fetch[1], PluginFetch::Url(u) if u.url == "https://host/plugin.tar.gz" && u.sha256.is_none())
+    );
+    assert!(matches!(&cfg.fetch[2], PluginFetch::Env(e) if e.env == "BUSBAR_PLUGIN_URL"));
+
+    // A stray key matches no variant (per-variant deny_unknown_fields) ⇒ error.
+    let bad = "enabled: true\nfetch:\n  - github: org/repo@v1\n    shaa: nope\n";
+    assert!(
+        serde_yaml::from_str::<PluginsCfg>(bad).is_err(),
+        "typo'd fetch key must be rejected"
+    );
+}
+
+// ─── 1.5.2 Step 3: plugins.fetch → FetchSpec resolution ───
+
+#[test]
+fn test_fetch_specs_maps_github_and_url() {
+    use crate::config::PluginsCfg;
+    let yaml = "\
+enabled: true
+fetch:
+  - github: acme/widget@v2.0.1
+    sha256: deadbeef
+  - url: https://host/plugins/store-sqlite.tar.gz
+";
+    let cfg: PluginsCfg = serde_yaml::from_str(yaml).unwrap();
+    let specs = cfg.fetch_specs().expect("fetch_specs resolves");
+    assert_eq!(specs.len(), 2);
+    // github → release-asset url + {repo}.tar.gz filename, pin carried.
+    assert_eq!(specs[0].filename, "widget.tar.gz");
+    assert_eq!(
+        specs[0].url,
+        "https://github.com/acme/widget/releases/download/v2.0.1/widget.tar.gz"
+    );
+    assert_eq!(specs[0].sha256.as_deref(), Some("deadbeef"));
+    // url → itself, filename from basename, no pin.
+    assert_eq!(specs[1].url, "https://host/plugins/store-sqlite.tar.gz");
+    assert_eq!(specs[1].filename, "store-sqlite.tar.gz");
+    assert_eq!(specs[1].sha256, None);
+}
+
+#[test]
+fn test_fetch_env_spec_reads_var() {
+    use crate::config::PluginsCfg;
+    std::env::set_var("BUSBAR_T_FETCH_URL", "https://host/p/thing.tar.gz@abc123");
+    let cfg: PluginsCfg =
+        serde_yaml::from_str("enabled: true\nfetch:\n  - env: BUSBAR_T_FETCH_URL\n").unwrap();
+    let specs = cfg.fetch_specs().expect("env spec resolves");
+    assert_eq!(specs[0].url, "https://host/p/thing.tar.gz");
+    assert_eq!(specs[0].sha256.as_deref(), Some("abc123"));
+    assert_eq!(specs[0].filename, "thing.tar.gz");
+    std::env::remove_var("BUSBAR_T_FETCH_URL");
+}
+
+#[test]
+fn test_fetch_env_spec_unset_is_error() {
+    use crate::config::PluginsCfg;
+    std::env::remove_var("BUSBAR_T_FETCH_UNSET");
+    let cfg: PluginsCfg =
+        serde_yaml::from_str("enabled: true\nfetch:\n  - env: BUSBAR_T_FETCH_UNSET\n").unwrap();
+    let err = cfg.fetch_specs().expect_err("unset env var must error");
+    assert!(
+        err.contains("BUSBAR_T_FETCH_UNSET") && err.contains("not set"),
+        "{err}"
     );
 }

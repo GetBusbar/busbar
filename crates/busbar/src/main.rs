@@ -60,7 +60,10 @@ mod breaker;
 mod config;
 mod config_validate;
 mod cost;
-mod durable;
+// The durable-write choke point moved to the shared `busbar-api` crate so the plugin-loader
+// (plugins.fetch cache write) can route through the SAME primitive. Re-exported here so every
+// existing `crate::durable::*` call site in this binary resolves unchanged.
+pub(crate) use busbar_api::durable;
 mod egress_auth;
 mod endpoints;
 mod eventstream;
@@ -460,29 +463,30 @@ fn open_relay_banner(chain_empty: bool, auth_present: bool) -> Option<&'static s
     Some(if auth_present {
         "auth is DISABLED (auth.chain is empty) — busbar is running as an OPEN RELAY; do not run this in production"
     } else {
-        "auth is DISABLED: no `auth:` block in config — busbar is running as an OPEN RELAY (anyone can use it). Add `auth:` with `chain: [tokens]` (and `client_tokens`) before exposing it; do not run this in production"
+        "auth is DISABLED: no `auth:` block in config — busbar is running as an OPEN RELAY (anyone can use it). Add `auth:` with `chain: [keys]` (and mint virtual keys via the admin API) before exposing it; do not run this in production"
     })
 }
 
 /// Return the INERT-KEYS banner to emit when a DURABLE governance store still holds virtual keys
-/// from a prior run but NO admin token is configured. In that state the governance engine is inert
-/// (the auth middleware gates the vkey-resolution branch on `admin_token_hash().is_some()`), so the
-/// persisted keys' per-key controls (budget, RPM/TPM, allowed_pools) are silently NOT enforced —
-/// access falls through to the static `auth.chain` instead. A RAM store can never reach this state
-/// (keys are only minted through the admin API, which itself requires the admin token), so this is
-/// scoped to durable stores. Returns `None` when the state does not apply (RAM store, no keys, or an
-/// admin token IS set). `key_count` is the number of keys the store reports at boot.
+/// from a prior run but the running `auth.chain` does NOT name the `keys` verifier. Enforcement of a
+/// virtual key is now decided by the CHAIN SHAPE, not the admin token: only when `keys` is in the
+/// data-plane chain does any request resolve to (and get governed by) a stored vkey. So if `keys`
+/// is absent, the persisted keys' per-key controls (budget, RPM/TPM, allowed_pools) are silently
+/// NOT enforced — no data-plane request ever resolves them. A RAM store can never reach this state
+/// (it starts empty every boot), so this is scoped to durable stores. Returns `None` when the state
+/// does not apply (RAM store, no keys, or `keys` IS in the chain). `key_count` is the number of keys
+/// the store reports at boot; `keys_in_chain` is whether `auth.chain` names the `keys` verifier.
 fn inert_durable_keys_banner(
     store_is_durable: bool,
     key_count: usize,
-    admin_token_set: bool,
+    keys_in_chain: bool,
 ) -> Option<String> {
-    if store_is_durable && key_count > 0 && !admin_token_set {
+    if store_is_durable && key_count > 0 && !keys_in_chain {
         Some(format!(
-            "durable governance store contains {key_count} key(s) but no admin_token is set — \
-             governance is INERT and those keys are NOT enforced (per-key budget / RPM / TPM / \
-             allowed_pools are bypassed and access falls through to the static auth.chain). Set \
-             an admin token (auth.admin_auth admin-tokens module) to enforce them."
+            "durable governance store contains {key_count} key(s) but auth.chain does not name the \
+             `keys` verifier — those keys are INERT and NOT enforced (per-key budget / RPM / TPM / \
+             allowed_pools are bypassed; no data-plane request resolves them). Add `keys` to \
+             auth.chain to enforce them."
         ))
     } else {
         None
@@ -1712,6 +1716,9 @@ pub(crate) fn plugins_preflight(
     // Disabled and nothing referenced: the registry is empty and NOTHING in the directory is even
     // read (drop-is-inert).
     if !plugins_cfg.enabled {
+        tracing::info!(
+            "plugins: disabled (plugins.enabled is false; tarballs in the directory are inert)"
+        );
         return Ok(busbar_plugin_loader::PluginRegistry::empty());
     }
 
@@ -1719,6 +1726,12 @@ pub(crate) fn plugins_preflight(
     let dir = std::path::Path::new(&plugins_cfg.dir);
     let registry = busbar_plugin_loader::scan_and_validate(dir, &policy)
         .map_err(|errs| format!("plugin validation failed:\n  - {}", errs.join("\n  - ")))?;
+    tracing::info!(
+        dir = %plugins_cfg.dir,
+        loadable = registry.loadable().len(),
+        skipped = registry.skipped().len(),
+        "plugins: enabled"
+    );
     for s in registry.skipped() {
         tracing::warn!(
             plugin = %s.manifest.name,
@@ -1770,9 +1783,11 @@ pub(crate) fn plugins_preflight(
                         s.manifest.name, s.file, s.reason
                     ),
                     None => format!(
-                        "store.module: '{store_ref}' does not match any plugin in '{}' (by \
-                         alias or canonical name; loadable: [{}]). Install the store plugin \
-                         tarball, or set store.module: memory.",
+                        "no plugin matching store.module: '{store_ref}' is installed in '{}' \
+                         (plugins ARE enabled; loadable: [{}]). Two things to check: is the plugin \
+                         subsystem enabled? (it is) — and is the signed tarball actually IN the \
+                         folder? Add it to plugins.fetch or drop the signed tarball in the \
+                         directory, or set store.module: memory.",
                         plugins_cfg.dir,
                         registry
                             .loadable()
@@ -1808,9 +1823,11 @@ pub(crate) fn plugins_preflight(
                         s.manifest.name, s.file, s.reason
                     ),
                     None => format!(
-                        "auth.chain module '{auth_ref}' does not match any plugin in '{}' (by \
-                         alias or canonical name; loadable: [{}]). Install the `kind: auth` plugin \
-                         tarball, or remove it from auth.chain.",
+                        "no plugin matching auth.chain module '{auth_ref}' is installed in '{}' \
+                         (plugins ARE enabled; loadable: [{}]). Two things to check: is the plugin \
+                         subsystem enabled? (it is) — and is the signed `kind: auth` tarball \
+                         actually IN the folder? Add it to plugins.fetch or drop the signed tarball \
+                         in the directory, or remove it from auth.chain.",
                         plugins_cfg.dir,
                         registry
                             .loadable()
@@ -1845,9 +1862,11 @@ pub(crate) fn plugins_preflight(
                         s.manifest.name, s.file, s.reason
                     ),
                     None => format!(
-                        "a hook references plugin '{hook_ref}', which does not match any plugin in \
-                         '{}' (by alias or canonical name; loadable: [{}]). Install the `kind: hook` \
-                         plugin tarball, or remove the hook.",
+                        "no plugin matching the hook reference '{hook_ref}' is installed in '{}' \
+                         (plugins ARE enabled; loadable: [{}]). Two things to check: is the plugin \
+                         subsystem enabled? (it is) — and is the signed `kind: hook` tarball \
+                         actually IN the folder? Add it to plugins.fetch or drop the signed tarball \
+                         in the directory, or remove the hook.",
                         plugins_cfg.dir,
                         registry
                             .loadable()
@@ -1878,7 +1897,7 @@ pub(crate) fn plugins_preflight(
 fn resolve_admin_token(
     auth: Option<&config::AuthCfg>,
     resolver: &config::secret::SecretResolver,
-) -> Result<Option<String>, String> {
+) -> Result<Option<busbar_api::Redacted<String>>, String> {
     let Some(r) = auth.and_then(|a| a.admin_token_ref()) else {
         return Ok(None);
     };
@@ -1894,7 +1913,7 @@ fn resolve_admin_token(
                 .to_string(),
         );
     }
-    Ok(Some(token))
+    Ok(Some(busbar_api::Redacted::new(token)))
 }
 
 /// Parse resolved bytes into a 32-byte ed25519 secret: accept RAW 32 bytes or 64 hex chars. Shared
@@ -2231,6 +2250,66 @@ fn build_secret_resolver(
 /// `spawn_blocking` boundary the admin transaction (`txn.rs`) applies it on.
 pub(crate) type GovCredentialRotation = Box<dyn FnOnce() + Send>;
 
+/// The `plugins.fetch` download closure the engine hands to `busbar_plugin_loader::fetch_plugins`.
+/// Enforces the SAME cloud-metadata SSRF denylist provider URLs face (fetch is off-box, key-adjacent
+/// I/O) and requires https for a public host, then performs the GET. The GET runs on a DEDICATED
+/// std::thread with its own current-thread runtime, so it is safe whether the caller sits on a tokio
+/// worker (boot) or a `spawn_blocking` thread (reload) — a nested `block_on` on a runtime thread would
+/// otherwise panic. The loader owns cache/verify/atomic-write; this owns network + SSRF.
+fn plugin_fetch_downloader(blocked: &[String]) -> impl Fn(&str) -> Result<Vec<u8>, String> {
+    let blocked: Vec<String> = blocked.to_vec();
+    move |url: &str| -> Result<Vec<u8>, String> {
+        // Scheme: https required for a public host; plaintext http only for loopback/private (a local
+        // dev registry). Mirrors the provider base_url rule.
+        let https = config_validate::scheme_is(url, "https");
+        if !https {
+            let host_local = config_validate::extract_normalized_host(url)
+                .as_deref()
+                .map(config_validate::host_is_private_or_loopback)
+                .unwrap_or(false);
+            if !(config_validate::scheme_is(url, "http") && host_local) {
+                return Err(format!(
+                    "plugins.fetch url must use https for a public host (got '{url}')"
+                ));
+            }
+        }
+        // SSRF: never fetch from a cloud-metadata host (no per-provider carve-outs; the operator
+        // denylist still extends the built-in list).
+        if let Some(bad) = config_validate::ssrf_blocked_host(url, &[], false, &blocked) {
+            return Err(format!(
+                "plugins.fetch url '{url}' targets a blocked cloud-metadata host '{bad}'"
+            ));
+        }
+        let url = url.to_string();
+        std::thread::scope(|s| {
+            s.spawn(|| -> Result<Vec<u8>, String> {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|e| format!("fetch runtime: {e}"))?;
+                rt.block_on(async {
+                    let resp = reqwest::Client::new()
+                        .get(&url)
+                        .send()
+                        .await
+                        .map_err(|e| format!("GET {url}: {e}"))?;
+                    let status = resp.status();
+                    if !status.is_success() {
+                        return Err(format!("GET {url}: HTTP {status}"));
+                    }
+                    let bytes = resp
+                        .bytes()
+                        .await
+                        .map_err(|e| format!("read body {url}: {e}"))?;
+                    Ok(bytes.to_vec())
+                })
+            })
+            .join()
+            .map_err(|_| "plugins.fetch download thread panicked".to_string())?
+        })
+    }
+}
+
 pub(crate) fn build_app_from_config(
     cfg: config::RootCfg,
     plugins_cfg: config::PluginsCfg,
@@ -2268,6 +2347,45 @@ pub(crate) fn build_app_from_config(
         .auth
         .clone()
         .unwrap_or_else(config::AuthCfg::default_none);
+
+    // DECLARATIVE PLUGIN FETCH (`plugins.fetch:`) — download the operator-declared signed tarballs
+    // into `plugins.dir` BEFORE preflight scans it. Runs at BOOT and on `POST /plugins/reload` (both
+    // reach this construction path), NEVER in `--validate` (that path never calls
+    // `build_app_from_config`, preserving its zero-side-effect/no-network contract), and NEVER
+    // per-request. `prior.is_none()` is the boot(fatal-on-miss) vs reload(warn-on-miss) discriminator.
+    // Signature verification stays the trust gate below; fetch is integrity/cache + delivery only.
+    if plugins_cfg.enabled && !plugins_cfg.fetch.is_empty() {
+        let specs = plugins_cfg.fetch_specs()?;
+        let dir = std::path::Path::new(&plugins_cfg.dir).to_path_buf();
+        // Ensure the target dir exists so the atomic rename has a home.
+        if let Err(e) = crate::durable::create_dir_all(&dir) {
+            return Err(format!(
+                "plugins.fetch: cannot create plugins dir '{}': {e}",
+                dir.display()
+            ));
+        }
+        let downloader = plugin_fetch_downloader(&cfg.blocked_metadata_hosts);
+        let outcomes =
+            busbar_plugin_loader::fetch_plugins(&dir, &specs, prior.is_none(), &downloader)
+                .map_err(|errs| format!("plugins.fetch failed:\n  - {}", errs.join("\n  - ")))?;
+        for outcome in &outcomes {
+            match outcome {
+                busbar_plugin_loader::FetchOutcome::Cached { filename } => {
+                    tracing::info!(filename, "plugins.fetch: cached (pin match, no download)")
+                }
+                busbar_plugin_loader::FetchOutcome::Fetched { filename } => {
+                    tracing::info!(filename, "plugins.fetch: downloaded + verified")
+                }
+                busbar_plugin_loader::FetchOutcome::Warned { url, error } => {
+                    tracing::warn!(
+                        url,
+                        error,
+                        "plugins.fetch: miss on reload; keeping current artifact"
+                    )
+                }
+            }
+        }
+    }
 
     // PLUGIN PRE-FLIGHT (the ONE shared pipeline; see the fn doc). Run UP FRONT so the secret
     // resolver - and the store open below - both draw on the same validated registry. A non-memory
@@ -2503,7 +2621,7 @@ pub(crate) fn build_app_from_config(
             // path borrows it into SigningContext instead of re-parsing/allocating it per request.
             signing_host: proxy::host_from_base(&base_url),
             base_url,
-            api_key,
+            api_key: busbar_api::Redacted::new(api_key),
             credential,
             protocol,
             max: ld.max,
@@ -2578,6 +2696,23 @@ pub(crate) fn build_app_from_config(
     let auth_mw = Arc::new(
         AuthMiddleware::new(&auth_cfg, &plugin_registry, &secret_resolver)
             .map_err(|e| format!("auth chain construction failed: {e}"))?,
+    );
+    // ADMIN-plane external auth plugins (1.5.2 admin-plane OIDC): resolve every non-builtin
+    // `admin_auth:` entry as a signed `kind: auth` plugin through the SAME validated registry. Runs
+    // on boot AND reload (this whole function is `build_app_from_config`, called on both), so a
+    // reload can never leave a stale/empty admin chain. FAIL-CLOSED: an unresolvable admin module
+    // aborts the build rather than silently disabling the admin plane.
+    let admin_modules = Arc::new(
+        crate::auth::AdminAuthChain::build(&auth_cfg, &plugin_registry, &secret_resolver)
+            .map_err(|e| format!("admin auth chain construction failed: {e}"))?,
+    );
+    // HOSTED-LOGIN methods (1.5.2 Step 6): resolve every `auth.methods:` entry as a login-capable
+    // `kind: auth` plugin (ABI v2). Also runs on boot AND reload (this whole fn). FAIL-CLOSED: an
+    // unresolvable method — or a `browser_login` method backed by a pre-v2 plugin (capability gate)
+    // — aborts the build rather than surfacing a 500 at request time.
+    let login_methods = Arc::new(
+        crate::auth::token::LoginMethods::build(&auth_cfg, &plugin_registry, &secret_resolver)
+            .map_err(|e| format!("auth.methods (hosted login) construction failed: {e}"))?,
     );
     // Thread the operator-configured hard-down cooldown + honored-Retry-After ceiling into the store
     // (both default to their historical const at the config layer).
@@ -2869,7 +3004,8 @@ pub(crate) fn build_app_from_config(
             });
             // FAIL-CLOSED: a declared ref that no longer resolves ABORTS the apply. The alternative
             // — carry on serving with the old credential — is exactly the defect being fixed.
-            let admin_token: Option<Option<String>> = if declares_admin_tokens {
+            let admin_token: Option<Option<busbar_api::Redacted<String>>> = if declares_admin_tokens
+            {
                 // Declared with no token ref resolves to `None`: the admin API is credential-less
                 // BY CONFIGURATION, so fail closed and disable it rather than keep the old secret.
                 Some(
@@ -2886,7 +3022,7 @@ pub(crate) fn build_app_from_config(
             if admin_token.is_some() || signer.is_some() {
                 rotate_gov_credentials = Some(Box::new(move || {
                     if let Some(token) = admin_token {
-                        gs.set_admin_token(token.as_deref());
+                        gs.set_admin_token(token.as_ref().map(|r| r.expose_secret().as_str()));
                     }
                     if let Some(signer) = signer {
                         gs.set_signing_key(signer);
@@ -2923,13 +3059,18 @@ pub(crate) fn build_app_from_config(
         // The operator ADMIN credential: the `admin-tokens` chain entry's `token:` secret ref.
         // FAIL-CLOSED: a configured-but-unresolvable admin token refuses boot (a silently-absent
         // token would lock the admin API while the operator believes it is guarded).
-        let admin_token: Option<String> = resolve_admin_token(cfg.auth.as_ref(), &secret_resolver)?;
+        let admin_token: Option<busbar_api::Redacted<String>> =
+            resolve_admin_token(cfg.auth.as_ref(), &secret_resolver)?;
         // The KEY-SIGNING key (S2): resolve `auth.signing_key` (a secret ref) to 32 ed25519 secret
         // bytes. ABSENT => no signer (1.5.1: busbar no longer auto-generates one; config_validate
         // has already failed closed if the `keys` verifier is in the chain). Fleet deployments
         // provide it (shared) so every node verifies the same tokens.
         let signer = resolve_signing_key(cfg.auth.as_ref(), &secret_resolver)?;
-        match governance::GovState::new_with_signer(store, admin_token.clone(), signer) {
+        match governance::GovState::new_with_signer(
+            store,
+            admin_token.as_ref().map(|r| r.expose_secret().clone()),
+            signer,
+        ) {
             Ok(gs) => {
                 let gs = Arc::new(gs);
                 // BOOT-ONLY crash-recovery: hydrate the in-memory token-ledger cells (key buckets +
@@ -2969,18 +3110,19 @@ pub(crate) fn build_app_from_config(
                     }
                 }
                 // INERT-KEYS GUARD: a durable store may carry virtual keys minted in a prior run
-                // whose admin_token was later REMOVED from config — governance then goes inert and
-                // those keys' per-key controls are silently bypassed (access falls to the static
-                // auth.chain). Surface it LOUD: ERROR level (survives RUST_LOG=error) AND
-                // unconditionally on stderr, mirroring the open-relay banner so log config can't mask
-                // it. RAM stores can't reach this state, so `key_count` there is 0 (or the store is
-                // non-durable) and the banner is None. `all_keys()` failure is non-fatal — treat as 0
-                // keys (the enforcement gate is unaffected; we only lose the advisory).
+                // whose data-plane chain no longer names the `keys` verifier — no request then
+                // resolves them and their per-key controls are silently bypassed. Surface it LOUD:
+                // ERROR level (survives RUST_LOG=error) AND unconditionally on stderr, mirroring the
+                // open-relay banner so log config can't mask it. RAM stores can't reach this state,
+                // so `key_count` there is 0 (or the store is non-durable) and the banner is None.
+                // `all_keys()` failure is non-fatal — treat as 0 keys (the enforcement gate is
+                // unaffected; we only lose the advisory). Inertness is now recomputed from CHAIN
+                // SHAPE (is `keys` in the running chain?), not the admin token.
                 let store_is_durable = g.module != crate::config::GOVERNANCE_STORE_MEMORY;
                 let key_count = gs.all_keys().map(|k| k.len()).unwrap_or(0);
-                let admin_token_set = admin_token.as_deref().is_some_and(|t| !t.trim().is_empty());
+                let keys_in_chain = auth_mw.keys_in_chain;
                 if let Some(banner) =
-                    inert_durable_keys_banner(store_is_durable, key_count, admin_token_set)
+                    inert_durable_keys_banner(store_is_durable, key_count, keys_in_chain)
                 {
                     eprintln!("[error] {banner}");
                     tracing::error!("{banner}");
@@ -3106,6 +3248,9 @@ pub(crate) fn build_app_from_config(
         ),
         base_hook_names,
         admin_chain: cfg.admin_auth.clone(),
+        admin_modules,
+        login_methods,
+        public_url: cfg.public_url.clone(),
         credential_cache: prior.map_or_else(
             || Arc::new(auth_cache::CredentialCache::new()),
             |p| p.credential_cache.clone(),
@@ -3151,6 +3296,14 @@ pub(crate) fn build_app_from_config(
             let b = cfg.limits.reasoning_effort_budgets;
             [b.minimal, b.low, b.medium, b.high]
         },
+        // Where `auth.key_ttl` (Step 1) is finally READ: the self-serve mint's token lifetime.
+        // Config-validate already proved this parses; the fallback keeps a bad value from panicking.
+        self_key_ttl_secs: cfg
+            .auth
+            .as_ref()
+            .and_then(|a| a.key_ttl.as_deref())
+            .map(|s| admin::parse_duration_secs(s).unwrap_or(admin::DEFAULT_KEY_TTL_SECS))
+            .unwrap_or(admin::DEFAULT_KEY_TTL_SECS),
     };
     // The build reached its end without a single fallible step refusing: KEEP the limits installed
     // at the top. Every earlier `return Err` / `?` drops the guard instead and rolls them back.
@@ -3230,6 +3383,12 @@ fn base_data_router() -> Router<std::sync::Arc<state::AppHandle>> {
         // health/metrics/stats above, and the named/adhoc conveniences below.
         // OpenAI list-models: SDKs call `models.list()` first; UIs build pickers from it.
         // Governance-scoped like /stats (restricted keys see only their reachable names).
+        // Token exchange (1.5.2): a verified IdP identity mints its own self-serve key. DATA plane
+        // only; the auth middleware bypasses this exact path (the handler runs the chain itself).
+        .route(
+            crate::auth::exchange::AUTH_TOKEN_PATH,
+            get(crate::auth::token::browser).post(crate::auth::exchange::exchange),
+        )
         .route("/v1/models", get(endpoints::list_models))
         .route("/v1beta/models", get(endpoints::list_models_v1beta))
         .route("/{name}/v1/messages", post(ingress::named))

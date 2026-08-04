@@ -7,7 +7,10 @@
 //! plugin is FAIL-CLOSED (rejected, never admitted).
 
 use crate::{stage, wire_up_raw, RawPlugin};
-use busbar_api::{AuthModule, AuthOutcome, Principal};
+use busbar_api::{
+    AuthModule, AuthOutcome, AuthPlugin, BeginLogin, CompleteLogin, LoginKind, LoginModule,
+    LoginOutcome, Principal,
+};
 use busbar_plugin_abi::{
     auth::{AuthRequest, AuthResponse},
     kind as abi_kind,
@@ -58,6 +61,88 @@ impl AuthModule for DynAuth {
     }
 }
 
+impl LoginModule for DynAuth {
+    /// Resolve the plugin's pure classification. FAIL-CLOSED to [`LoginKind::Redirect`] (the trait
+    /// default) on a wrong-variant response or a transport/module error — e.g. an older plugin whose
+    /// ABI predates the `LoginKind` op. The chooser calls this ONCE at load, so it is side-effect-free.
+    fn login_kind(&self) -> LoginKind {
+        match self
+            .raw
+            .transport_call::<AuthRequest, AuthResponse>(&AuthRequest::LoginKind)
+        {
+            Ok(AuthResponse::LoginKind(k)) => k.into(),
+            Ok(other) => {
+                tracing::warn!(
+                    module = self.name,
+                    "auth plugin returned an unexpected response to login_kind ({other:?}); \
+                     defaulting to Redirect"
+                );
+                LoginKind::Redirect
+            }
+            Err(e) => {
+                tracing::warn!(module = self.name, error = %e, "auth plugin login_kind failed; defaulting to Redirect");
+                LoginKind::Redirect
+            }
+        }
+    }
+
+    fn begin_login(&self, req: &BeginLogin) -> LoginOutcome {
+        let wire = AuthRequest::BeginLogin(req.clone().into());
+        map_begin_login(self.name, self.raw.transport_call(&wire))
+    }
+
+    fn complete_login(&self, req: &CompleteLogin) -> LoginOutcome {
+        let wire = AuthRequest::CompleteLogin(req.clone().into());
+        map_complete_login(self.name, self.raw.transport_call(&wire))
+    }
+}
+
+/// FAIL-CLOSED mapping of a `begin_login` transport result → [`LoginOutcome`]. The two honest START
+/// shapes — `AuthorizeUrl` (redirect flow) and `Prompt` (credential flow) — plus an explicit `Reject`
+/// ride through; a wrong-variant response (a v1 / verify-only plugin that can only answer `Pass`, or
+/// any other shape) and a transport/module error both collapse to `Reject` — a misbehaving plugin
+/// never drives a login forward. Pure, so it is unit-tested without FFI.
+fn map_begin_login(name: &str, resp: Result<AuthResponse, String>) -> LoginOutcome {
+    match resp {
+        Ok(
+            r @ (AuthResponse::AuthorizeUrl(_) | AuthResponse::Prompt(_) | AuthResponse::Reject),
+        ) => r.into_login_outcome(),
+        Ok(other) => {
+            tracing::warn!(
+                module = name,
+                "auth plugin returned an unexpected response to begin_login ({other:?}); rejecting"
+            );
+            LoginOutcome::Reject
+        }
+        Err(e) => {
+            tracing::warn!(module = name, error = %e, "auth plugin begin_login failed; rejecting");
+            LoginOutcome::Reject
+        }
+    }
+}
+
+/// FAIL-CLOSED mapping of a `complete_login` transport result → [`LoginOutcome`]. `TokenExchange`
+/// (run another hop), `Identity` (done), and `Reject` are the valid verdicts; anything else, or a
+/// transport error, is `Reject`.
+fn map_complete_login(name: &str, resp: Result<AuthResponse, String>) -> LoginOutcome {
+    match resp {
+        Ok(
+            r @ (AuthResponse::TokenExchange(_) | AuthResponse::Identity(_) | AuthResponse::Reject),
+        ) => r.into_login_outcome(),
+        Ok(other) => {
+            tracing::warn!(
+                module = name,
+                "auth plugin returned an unexpected response to complete_login ({other:?}); rejecting"
+            );
+            LoginOutcome::Reject
+        }
+        Err(e) => {
+            tracing::warn!(module = name, error = %e, "auth plugin complete_login failed; rejecting");
+            LoginOutcome::Reject
+        }
+    }
+}
+
 impl std::fmt::Debug for DynAuth {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DynAuth")
@@ -67,15 +152,52 @@ impl std::fmt::Debug for DynAuth {
     }
 }
 
-/// Load an AUTH module from EXACTLY the verified library `bytes` (TOCTOU-safe). Enforces the frozen
-/// contract (transport, kind==`auth` && kind==manifest), then resolves the module's `name()` /
-/// `cacheable()` ONCE. `manifest_kind` is the trust-verified signed-manifest `kind`.
+/// Load an AUTH module from EXACTLY the verified library `bytes` (TOCTOU-safe), returning the
+/// verify-only [`AuthModule`] seam the data-plane chain consumes. The concrete [`DynAuth`] is ALSO a
+/// [`LoginModule`]; a caller that needs the login capability (the hosted browser flow) uses
+/// [`load_login_from_bytes`] instead, which returns the unified [`AuthPlugin`] box.
 pub fn load_auth_from_bytes(
     bytes: &[u8],
     cfg_json: &str,
     display: &str,
     manifest_kind: &str,
 ) -> Result<Box<dyn AuthModule>, String> {
+    Ok(Box::new(build_dyn_auth(
+        bytes,
+        cfg_json,
+        display,
+        manifest_kind,
+    )?))
+}
+
+/// Load an auth plugin as the unified [`AuthPlugin`] handle (verify + login). Same verified-bytes,
+/// same frozen contract as [`load_auth_from_bytes`]; the only difference is the boxed trait object
+/// KEEPS the [`LoginModule`] capability so the core can drive `begin_login`/`complete_login`. Used by
+/// the 1.5.2 hosted login flow (`auth.methods`). A verify-only plugin still loads here — its login
+/// methods fail closed by the module's own default/ABI behavior.
+pub fn load_login_from_bytes(
+    bytes: &[u8],
+    cfg_json: &str,
+    display: &str,
+    manifest_kind: &str,
+) -> Result<Box<dyn AuthPlugin>, String> {
+    Ok(Box::new(build_dyn_auth(
+        bytes,
+        cfg_json,
+        display,
+        manifest_kind,
+    )?))
+}
+
+/// Build the concrete [`DynAuth`] from EXACTLY the verified library `bytes` (TOCTOU-safe). Enforces
+/// the frozen contract (transport, kind==`auth` && kind==manifest), then resolves the module's
+/// `name()` / `cacheable()` ONCE. `manifest_kind` is the trust-verified signed-manifest `kind`.
+fn build_dyn_auth(
+    bytes: &[u8],
+    cfg_json: &str,
+    display: &str,
+    manifest_kind: &str,
+) -> Result<DynAuth, String> {
     let (lib, staged) = stage::load_library_from_bytes(bytes, display)?;
     let raw = wire_up_raw(
         lib,
@@ -114,9 +236,67 @@ pub fn load_auth_from_bytes(
     // `AuthModule::name` is `&'static str`. INTERN it so a repeated open of the same auth plugin
     // (per chain rebuild / reload) reuses ONE allocation rather than leaking a fresh one every time.
     let name: &'static str = crate::intern_name(&name);
-    Ok(Box::new(DynAuth {
+    Ok(DynAuth {
         raw,
         name,
         cacheable,
-    }))
+    })
+}
+
+#[cfg(test)]
+mod login_tests {
+    use super::*;
+    use busbar_plugin_abi::auth::{HttpRequest, Identity};
+
+    #[test]
+    fn dyn_auth_begin_login_wrong_variant_fail_closed() {
+        // A v1 / verify-only plugin can only answer Pass/Identity to a begin — never AuthorizeUrl.
+        // Every non-AuthorizeUrl shape (and Pass in particular) FAILS CLOSED to Reject.
+        assert_eq!(
+            map_begin_login("m", Ok(AuthResponse::Pass)),
+            LoginOutcome::Reject
+        );
+        assert_eq!(
+            map_begin_login(
+                "m",
+                Ok(AuthResponse::Identity(Identity::from(Principal::from_id(
+                    "x"
+                ))))
+            ),
+            LoginOutcome::Reject
+        );
+        // The happy path still works.
+        assert!(matches!(
+            map_begin_login("m", Ok(AuthResponse::AuthorizeUrl("https://idp".into()))),
+            LoginOutcome::Authorize(_)
+        ));
+    }
+
+    #[test]
+    fn dyn_auth_complete_login_transport_error_rejects() {
+        // A transport/module error on complete_login FAILS CLOSED.
+        assert_eq!(
+            map_complete_login("m", Err("boom".to_string())),
+            LoginOutcome::Reject
+        );
+        // A wrong-variant (AuthorizeUrl on complete) also fails closed.
+        assert_eq!(
+            map_complete_login("m", Ok(AuthResponse::AuthorizeUrl("x".into()))),
+            LoginOutcome::Reject
+        );
+        // Valid verdicts ride through.
+        assert!(matches!(
+            map_complete_login(
+                "m",
+                Ok(AuthResponse::TokenExchange(HttpRequest {
+                    method: "POST".into(),
+                    url: "https://idp/token".into(),
+                    form: vec![],
+                    secret_form_field: None,
+                    headers: vec![],
+                }))
+            ),
+            LoginOutcome::Exchange(_)
+        ));
+    }
 }

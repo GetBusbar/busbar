@@ -282,7 +282,15 @@ pub const SECRET_ABI_VERSION: u32 = 1;
 /// `plugin-loader::registry` AND `plugin-sdk`, with no compiler link between the two halves of the
 /// handshake; the other two kinds already share a named const, so a bump there is caught at compile
 /// time. This closes that gap without changing the value.
-pub const AUTH_ABI_VERSION: u32 = 1;
+///
+/// v2 (1.5.2 token-exchange): ADDITIVELY adds the browser-login primitives —
+/// [`auth::AuthRequest::BeginLogin`]/[`auth::AuthRequest::CompleteLogin`] and
+/// [`auth::AuthResponse::AuthorizeUrl`]/[`auth::AuthResponse::TokenExchange`]. `AuthRequest`/
+/// `AuthResponse` are externally-tagged with NO `deny_unknown_fields`, so the new variants are
+/// wire-additive: a v1 plugin that only ever emits `Authenticate`/`Identity` is unaffected, and the
+/// loader floor stays `[1, 2]` (v1 plugins still load — RISK 5). Bumping the const value is the v2
+/// declaration; the identity-only `Identity` invariant (its own `deny_unknown_fields`) is untouched.
+pub const AUTH_ABI_VERSION: u32 = 2;
 
 /// A [`busbar_api::SecretModule`] operation, serialized as the secret `call` request payload.
 #[derive(Debug, Serialize, Deserialize)]
@@ -559,5 +567,12 @@ mod tests {
         // Bumped 1 -> 2 for the credentials generalization (a real breaking wire change — see
         // ABI_VERSION's doc). A mismatched plugin is refused at the handshake.
         assert_eq!(ABI_VERSION, 2);
+    }
+
+    /// The auth payload schema is at v2 (1.5.2 login primitives). Pinned so the SDK/loader floor and
+    /// the wire additions can't silently drift apart.
+    #[test]
+    fn auth_abi_version_is_two() {
+        assert_eq!(AUTH_ABI_VERSION, 2);
     }
 }

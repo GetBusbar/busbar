@@ -15,9 +15,12 @@ use super::bearer_token::{now_epoch, CachedToken, CredentialProviderArc, Minter}
 use std::sync::Arc;
 
 /// The exchange material for one lane. Held in an `Arc` shared by the refresh task's mint calls.
+#[derive(Debug)]
 struct ClientCreds {
     client_id: String,
-    client_secret: String,
+    /// The confidential-client secret, held [`busbar_api::Redacted`] so it never leaks via `Debug`
+    /// (this struct derives it) and zeroizes on drop. Exposed only into the token-endpoint POST body.
+    client_secret: busbar_api::Redacted<String>,
     token_url: String,
     scope: String,
     http: reqwest::Client,
@@ -37,7 +40,7 @@ pub(crate) fn build(
     validate_token_url(token_url, ssrf)?;
     let creds = Arc::new(ClientCreds {
         client_id: client_id.to_string(),
-        client_secret: client_secret.to_string(),
+        client_secret: busbar_api::Redacted::new(client_secret.to_string()),
         token_url: token_url.to_string(),
         scope: scope.to_string(),
         http: super::minter_client()?,
@@ -119,7 +122,7 @@ impl ClientCreds {
             .form(&[
                 ("grant_type", "client_credentials"),
                 ("client_id", self.client_id.as_str()),
-                ("client_secret", self.client_secret.as_str()),
+                ("client_secret", self.client_secret.expose_secret().as_str()),
                 ("scope", self.scope.as_str()),
             ])
             .send()
@@ -173,6 +176,28 @@ mod tests {
             allow_all: false,
             blocked_hosts: &[],
         }
+    }
+
+    /// task #87: the resolved `client_secret` NEVER appears in this struct's `Debug` (it is held
+    /// `Redacted`). A `{:?}` of the exchange material must show `[REDACTED]`, not the secret.
+    #[test]
+    fn client_secret_is_redacted_in_debug() {
+        let creds = ClientCreds {
+            client_id: "id".to_string(),
+            client_secret: busbar_api::Redacted::new("super-secret-value".to_string()),
+            token_url: "https://t".to_string(),
+            scope: "s".to_string(),
+            http: super::super::minter_client().unwrap(),
+        };
+        let dbg = format!("{creds:?}");
+        assert!(
+            !dbg.contains("super-secret-value"),
+            "client_secret must not appear in Debug: {dbg}"
+        );
+        assert!(
+            dbg.contains("[REDACTED]"),
+            "expected redaction marker: {dbg}"
+        );
     }
 
     #[test]
@@ -282,7 +307,7 @@ mod tests {
 
         let creds = ClientCreds {
             client_id: "id".to_string(),
-            client_secret: "secret".to_string(),
+            client_secret: busbar_api::Redacted::new("secret".to_string()),
             token_url: server.base_url(),
             scope: "s".to_string(),
             http: super::super::minter_client().unwrap(),

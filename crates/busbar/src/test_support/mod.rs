@@ -3,6 +3,21 @@
 
 //! In-crate mock-upstream test harness (/).
 
+/// A data-plane `AuthMiddleware` whose chain is `[keys]` — the built-in signed-key verifier. Since
+/// 1.5.2 virtual-key ENFORCEMENT is driven by the chain shape, not the admin token, so any e2e
+/// fixture that mints a vkey and expects it to authenticate must run `keys` in the chain. Used by
+/// the `minimal_app()`-style governed fixtures (which set `inner.auth = keys_chain_auth()`) and,
+/// via `TestApp::keys_chain()`, by the builder fixtures.
+pub(crate) fn keys_chain_auth() -> std::sync::Arc<crate::auth::AuthMiddleware> {
+    let cfg = crate::config::AuthCfg {
+        chain: vec![crate::config::AuthChainEntry::bare(
+            crate::config::KEYS_MODULE,
+        )],
+        ..crate::config::AuthCfg::default_none()
+    };
+    std::sync::Arc::new(crate::auth::AuthMiddleware::new_builtin(&cfg))
+}
+
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Mutex;
@@ -642,7 +657,7 @@ impl LaneSpec {
             provider: self.provider.clone(),
             signing_host: crate::proxy::host_from_base(&self.base_url),
             base_url: self.base_url.clone(),
-            api_key: self.api_key.clone(),
+            api_key: busbar_api::Redacted::new(self.api_key.clone()),
             protocol: self.protocol.clone(),
             max: self.max,
             error_map: std::sync::Arc::new(self.error_map.clone()),
@@ -689,6 +704,16 @@ pub(crate) struct TestApp {
     /// `admin_auth:` chain module names for the built App. `None` = the production default
     /// (`[admin-tokens]`); `Some(vec![])` selects the explicit OPEN admin posture (dev).
     admin_chain: Option<Vec<String>>,
+    /// Resolved external admin auth modules for the built App (1.5.2 admin-plane OIDC). `None` = the
+    /// empty chain (admin-tokens-only, runs inline). A test that needs the OFFLOAD path populates
+    /// this with a boxed test module and `has_plugin: true`.
+    admin_modules: Option<crate::auth::AdminAuthChain>,
+    /// Resolved hosted-login methods (1.5.2 Step 6). `None` = empty (no hosted login). A test that
+    /// drives `GET /auth/token` populates this with a test login module.
+    login_methods: Option<crate::auth::token::LoginMethods>,
+    /// busbar's public base origin (`public_url:`) for the built App.
+    public_url: Option<String>,
+    role_bindings: Option<crate::config::RoleBindings>,
     governance: Option<std::sync::Arc<crate::governance::GovState>>,
     cost: Option<std::sync::Arc<crate::cost::CostModel>>,
     failover_cfg: Option<crate::config::FailoverCfg>,
@@ -715,6 +740,10 @@ impl TestApp {
             pools: std::collections::HashMap::new(),
             auth: None,
             admin_chain: None,
+            admin_modules: None,
+            login_methods: None,
+            public_url: None,
+            role_bindings: None,
             governance: None,
             cost: None,
             failover_cfg: None,
@@ -843,8 +872,91 @@ impl TestApp {
         self
     }
 
+    /// Inject a resolved external admin auth module under `name` (the config module name that both
+    /// `admin_chain` and `role_bindings.<name>` key off), marking the chain as plugin-backed so the
+    /// admin auth middleware OFFLOADS it off the reactor — the seam the 1.5.2 admin-plane OIDC
+    /// offload test drives. `has_plugin` is forced true.
+    pub(crate) fn admin_module(
+        mut self,
+        name: &str,
+        module: Box<dyn crate::auth::AuthModule>,
+    ) -> Self {
+        let chain = self
+            .admin_modules
+            .get_or_insert_with(|| crate::auth::AdminAuthChain {
+                modules: std::collections::HashMap::new(),
+                has_plugin: true,
+            });
+        chain.has_plugin = true;
+        chain.modules.insert(name.to_string(), module);
+        self
+    }
+
+    /// Set the built App's `public_url:` (the hosted-login base origin).
+    pub(crate) fn public_url(mut self, url: &str) -> Self {
+        self.public_url = Some(url.to_string());
+        self
+    }
+
+    /// Inject a hosted-login method (1.5.2 Step 6) keyed by `name`. `module` is a login-capable auth
+    /// plugin (test stand-in); `client_secret`/`issuer` are the CORE-held confidential-client secret
+    /// + issuer hint; `has_button` gates whether it renders on the chooser / accepts begin.
+    pub(crate) fn login_method(
+        mut self,
+        name: &str,
+        module: Box<dyn busbar_api::AuthPlugin>,
+        client_secret: Option<String>,
+        issuer: Option<String>,
+        has_button: bool,
+    ) -> Self {
+        let lm = self
+            .login_methods
+            .get_or_insert_with(|| crate::auth::token::LoginMethods {
+                methods: indexmap::IndexMap::new(),
+            });
+        let login_kind = module.login_kind();
+        // Derive the hop host-allowlist from the issuer hint (same core-side rule as production), so a
+        // test whose mock IdP host appears in `issuer` is reachable by the hop executor.
+        let allowed_hosts =
+            crate::auth::token::collect_allowed_hosts(&serde_json::Map::new(), issuer.as_deref());
+        lm.methods.insert(
+            name.to_string(),
+            crate::auth::token::LoginMethod {
+                module,
+                client_secret: client_secret.map(busbar_api::Redacted::new),
+                has_button,
+                issuer,
+                login_kind,
+                allowed_hosts,
+            },
+        );
+        self
+    }
+
     pub(crate) fn auth(mut self, a: std::sync::Arc<crate::auth::AuthMiddleware>) -> Self {
         self.auth = Some(a);
+        self
+    }
+    /// Install an `AuthMiddleware` whose data-plane chain is `[keys]` (the built-in signed-key
+    /// verifier). This is what makes a data-plane request REQUIRE and resolve a virtual key: since
+    /// 1.5.2 vkey enforcement is driven by the chain shape, not the admin token. Pair with
+    /// `.governance(gov)` for the enforcing-vkey e2e posture.
+    pub(crate) fn keys_chain(mut self) -> Self {
+        let cfg = crate::config::AuthCfg {
+            chain: vec![crate::config::AuthChainEntry::bare(
+                crate::config::KEYS_MODULE,
+            )],
+            ..crate::config::AuthCfg::default_none()
+        };
+        self.auth = Some(std::sync::Arc::new(
+            crate::auth::AuthMiddleware::new_builtin(&cfg),
+        ));
+        self
+    }
+    /// Set the `role_bindings:` table used by the built `App` (default: empty). Needed by tests that
+    /// exercise the group re-key (an IdP/test principal whose role binds a group grant).
+    pub(crate) fn role_bindings(mut self, rb: crate::config::RoleBindings) -> Self {
+        self.role_bindings = Some(rb);
         self
     }
     /// Install a resolved cost model (rate card / budget groups / flat fee) for tests exercising
@@ -946,9 +1058,18 @@ impl TestApp {
                 .admin_chain
                 .clone()
                 .unwrap_or_else(|| vec!["admin-tokens".to_string()]),
+            admin_modules: std::sync::Arc::new(
+                self.admin_modules
+                    .unwrap_or_else(crate::auth::AdminAuthChain::empty),
+            ),
+            login_methods: std::sync::Arc::new(
+                self.login_methods
+                    .unwrap_or_else(crate::auth::token::LoginMethods::empty),
+            ),
+            public_url: self.public_url,
             credential_cache: std::sync::Arc::new(crate::auth_cache::CredentialCache::new()),
             auth_scope_caps: std::collections::HashMap::new(),
-            role_bindings: crate::config::RoleBindings::new(),
+            role_bindings: self.role_bindings.unwrap_or_default(),
             config_path: self.disk_paths.as_ref().map(|(c, _)| c.clone()),
             providers_path: self.disk_paths.as_ref().map(|(_, p)| p.clone()),
             overlay_path: self.overlay_path,
@@ -973,6 +1094,7 @@ impl TestApp {
             plugins_cfg: self.plugins_cfg.unwrap_or_default(),
             default_max_tokens: crate::config::DEFAULT_DEFAULT_MAX_TOKENS,
             reasoning_effort_budgets: [1024, 4096, 8192, 16384],
+            self_key_ttl_secs: crate::admin::DEFAULT_KEY_TTL_SECS,
         });
         // Mirror main's boot-version floor so rollback tests have a v0 to restore.
         app.versions

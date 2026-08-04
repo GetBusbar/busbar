@@ -1,0 +1,41 @@
+# Hermetic LDAP seed for the busbar 1.5.2 token-exchange gate (ldap "form" flow).
+#
+# The base entry `dc=example,dc=org` is created by the OpenLDAP image itself from
+# LDAP_ORGANISATION="Example Org" / LDAP_DOMAIN="example.org" (osixia/openldap) — this file only
+# adds the sub-entries, so it is safe to feed as a bootstrap custom LDIF (which runs AFTER the base
+# is created) and it will not collide with the auto-created suffix.
+#
+# What it seeds:
+#   * ou=people, ou=groups containers.
+#   * uid=alice — a real user with a bindable userPassword (the credential the form flow submits).
+#   * cn=admins — a real groupOfNames whose member IS alice (the "cn=admins → alice" the task asks
+#     for), so the directory genuinely models alice's membership.
+#   * alice.seeAlso = cn=admins,... — a standard DN-syntax attribute carried DIRECTLY on the user
+#     entry. The busbar-auth-ldap plugin reads group membership from a configurable `group_attr` off
+#     the bound user entry and maps each value (a group DN) to a role via `roles_from_group_dns`
+#     (RoleFrom::Cn → the CN, here "admins"). We point `group_attr` at `seeAlso` so the group→role
+#     resolution runs on a STANDARD-schema attribute seeded explicitly — deterministic on any
+#     OpenLDAP image WITHOUT depending on the operational `memberOf` overlay (which is version/image
+#     specific and flaky to enable in a throwaway CI container). This exercises the identical
+#     DN→CN→role code path a real `memberOf` would; only the attribute name differs.
+
+dn: ou=people,dc=example,dc=org
+objectClass: organizationalUnit
+ou: people
+
+dn: ou=groups,dc=example,dc=org
+objectClass: organizationalUnit
+ou: groups
+
+dn: uid=alice,ou=people,dc=example,dc=org
+objectClass: inetOrgPerson
+uid: alice
+cn: Alice Example
+sn: Example
+userPassword: alicepassword
+seeAlso: cn=admins,ou=groups,dc=example,dc=org
+
+dn: cn=admins,ou=groups,dc=example,dc=org
+objectClass: groupOfNames
+cn: admins
+member: uid=alice,ou=people,dc=example,dc=org

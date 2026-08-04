@@ -15,9 +15,8 @@ fn mount_constants_are_the_frozen_wire_literals() {
     );
 }
 
-/// The authorization matrix, test-locked: reads are read-only, hook-definition mutations
-/// are hooks-register, everything else (keys, config, auth, cache) is full. Unknown methods
-/// fail closed to full.
+/// The authorization matrix, test-locked (1.5.2 scope collapse): reads (+ the two dry-run POSTs)
+/// are read-only, every mutation is full. Unknown methods fail closed to full.
 #[test]
 fn required_scope_matrix() {
     for path in [
@@ -33,59 +32,32 @@ fn required_scope_matrix() {
             "{path}"
         );
     }
+    // The two stateless dry-run POSTs stay read-only.
     assert_eq!(
-        required_scope(&Method::POST, "/api/v1/admin/hooks"),
-        Scope::HooksRegister
+        required_scope(&Method::POST, "/api/v1/admin/config/validate"),
+        Scope::ReadOnly
     );
     assert_eq!(
-        required_scope(&Method::DELETE, "/api/v1/admin/hooks/my-hook"),
-        Scope::HooksRegister
+        required_scope(&Method::POST, "/api/v1/admin/plugins/inspect"),
+        Scope::ReadOnly
     );
-    assert_eq!(
-        required_scope(&Method::PATCH, "/api/v1/admin/hooks/my-hook/settings"),
-        Scope::HooksRegister
-    );
-    // A sibling path must not inherit the hooks scope (boundary-safe prefix).
-    assert_eq!(
-        required_scope(&Method::POST, "/api/v1/admin/hooksx"),
-        Scope::Full
-    );
-    // MINTING a key (POST /keys, the collection) is the delegated `mint` scope — NOT `full` and NOT
-    // `hooks-register` (self-service D2). The auto-provision-on-mint leaf creation rides this same
-    // request, so the whole mint path is `mint`.
-    assert_eq!(
-        required_scope(&Method::POST, "/api/v1/admin/keys"),
-        Scope::Mint
-    );
-    // A sibling of /keys must NOT inherit the mint scope (boundary-safe exact match).
-    assert_eq!(
-        required_scope(&Method::POST, "/api/v1/admin/keysx"),
-        Scope::Full
-    );
-    // Per-key lifecycle verbs are NOT mint — a self-service portal mints, it does not
-    // revoke/rotate/rebind. These stay `full`.
-    assert_eq!(
-        required_scope(&Method::DELETE, "/api/v1/admin/keys/vk_123"),
-        Scope::Full
-    );
-    assert_eq!(
-        required_scope(&Method::PATCH, "/api/v1/admin/keys/vk_123"),
-        Scope::Full
-    );
-    assert_eq!(
-        required_scope(&Method::POST, "/api/v1/admin/keys/vk_123/rotate"),
-        Scope::Full
-    );
-    assert_eq!(
-        required_scope(&Method::POST, "/api/v1/admin/config/apply"),
-        Scope::Full
-    );
-    // Group CRUD stays `full` (a mint token auto-provisions a leaf via POST /keys, but cannot
-    // freely mutate arbitrary groups).
-    assert_eq!(
-        required_scope(&Method::POST, "/api/v1/admin/groups"),
-        Scope::Full
-    );
+    // Every mutation is now full — hooks, keys, config, groups alike.
+    for (method, path) in [
+        (Method::POST, "/api/v1/admin/hooks"),
+        (Method::DELETE, "/api/v1/admin/hooks/my-hook"),
+        (Method::PATCH, "/api/v1/admin/hooks/my-hook/settings"),
+        (Method::POST, "/api/v1/admin/keys"),
+        (Method::DELETE, "/api/v1/admin/keys/vk_123"),
+        (Method::POST, "/api/v1/admin/keys/vk_123/rotate"),
+        (Method::POST, "/api/v1/admin/config/apply"),
+        (Method::POST, "/api/v1/admin/groups"),
+    ] {
+        assert_eq!(
+            required_scope(&method, path),
+            Scope::Full,
+            "{method} {path}"
+        );
+    }
     assert_eq!(
         required_scope(&Method::OPTIONS, "/api/v1/admin/hooks"),
         Scope::Full,
@@ -93,73 +65,56 @@ fn required_scope_matrix() {
     );
 }
 
-/// The scope LATTICE (a diamond, not a chain): `ReadOnly` ⊂ {`HooksRegister`, `Mint`} ⊂ `Full`,
-/// with `HooksRegister` and `Mint` as INCOMPARABLE SIBLINGS. `allows` must NOT be `>=`: the whole
-/// point (self-service D2) is that a mint credential cannot register a hook and a hooks-register
-/// credential cannot mint. Also: parse round-trips every token.
+/// Every mutating verb resolves to `Full`, and the read verbs (+ the two dry-run POSTs) to
+/// `ReadOnly`. The narrower `hooks-register`/`mint` requirements are GONE.
 #[test]
-fn scope_lattice_allows() {
-    // Full is god-mode: satisfies every requirement.
-    assert!(Scope::Full.allows(Scope::ReadOnly));
-    assert!(Scope::Full.allows(Scope::HooksRegister));
-    assert!(Scope::Full.allows(Scope::Mint));
-    assert!(Scope::Full.allows(Scope::Full));
-
-    // Every grant can read.
-    assert!(Scope::ReadOnly.allows(Scope::ReadOnly));
-    assert!(Scope::HooksRegister.allows(Scope::ReadOnly));
-    assert!(Scope::Mint.allows(Scope::ReadOnly));
-
-    // Each middle rung satisfies ONLY itself (plus read) — the sibling property.
-    assert!(Scope::HooksRegister.allows(Scope::HooksRegister));
-    assert!(Scope::Mint.allows(Scope::Mint));
-
-    // THE CROSS-SIBLING PROHIBITION (the crux of D2): mint ⇏ hooks-register and vice versa. Under a
-    // naive `self >= needed` ordinal these would leak (Mint outranks HooksRegister), so this is the
-    // regression guard for the enumerated `allows`.
-    assert!(
-        !Scope::Mint.allows(Scope::HooksRegister),
-        "a mint credential must NOT be able to register hooks"
+fn required_scope_mutations_are_full() {
+    assert_eq!(
+        required_scope(&Method::POST, "/api/v1/admin/keys"),
+        Scope::Full
     );
-    assert!(
-        !Scope::HooksRegister.allows(Scope::Mint),
-        "a hooks-register credential must NOT be able to mint keys"
+    assert_eq!(
+        required_scope(&Method::POST, "/api/v1/admin/hooks"),
+        Scope::Full
     );
-
-    // Neither middle rung reaches full.
-    assert!(!Scope::HooksRegister.allows(Scope::Full));
-    assert!(!Scope::Mint.allows(Scope::Full));
-    assert!(!Scope::ReadOnly.allows(Scope::HooksRegister));
-    assert!(!Scope::ReadOnly.allows(Scope::Mint));
-    assert!(!Scope::ReadOnly.allows(Scope::Full));
-
-    // Token round-trips (incl. the new `mint` token and its wire spelling).
-    assert!(Scope::parse("bogus").is_none());
-    assert_eq!(Scope::parse("read-only"), Some(Scope::ReadOnly));
-    assert_eq!(Scope::parse("hooks-register"), Some(Scope::HooksRegister));
-    assert_eq!(Scope::parse("mint"), Some(Scope::Mint));
-    assert_eq!(Scope::parse("full"), Some(Scope::Full));
-    assert_eq!(Scope::Mint.as_str(), "mint");
+    assert_eq!(
+        required_scope(&Method::GET, "/api/v1/admin/keys"),
+        Scope::ReadOnly
+    );
+    assert_eq!(
+        required_scope(&Method::POST, "/api/v1/admin/config/validate"),
+        Scope::ReadOnly
+    );
 }
 
-/// THE CLASS TEST (not a RED test — `dominates`/`meet`/`Grants` do not exist before this design, so
-/// there is no prior behaviour to regress against). Pins the shape the whole fix rests on: a total
-/// order over `Scope` would make these properties fail, which is exactly why `Scope` has no `Ord`.
+/// `parse` drops the retired delegated tokens (they now resolve to `None`, i.e. no grant), while
+/// `read-only`/`full` still round-trip.
 #[test]
-fn scope_lattice_has_no_total_order() {
-    // HooksRegister and Mint are incomparable in BOTH directions — the crux of the whole class.
-    assert!(!Scope::HooksRegister.dominates(Scope::Mint));
-    assert!(!Scope::Mint.dominates(Scope::HooksRegister));
+fn scope_parse_drops_mint_and_hooks_register() {
+    assert!(Scope::parse("mint").is_none());
+    assert!(Scope::parse("hooks-register").is_none());
+    assert!(Scope::parse("bogus").is_none());
+    assert_eq!(Scope::parse("read-only"), Some(Scope::ReadOnly));
+    assert_eq!(Scope::parse("full"), Some(Scope::Full));
+    assert_eq!(Scope::ReadOnly.as_str(), "read-only");
+    assert_eq!(Scope::Full.as_str(), "full");
+}
 
-    // The siblings' meet is their only common authority: ReadOnly, symmetric either way — never one
-    // of the two siblings themselves (that would be the S3 defect: a ceiling picking a side).
-    assert_eq!(Scope::HooksRegister.meet(Scope::Mint), Scope::ReadOnly);
-    assert_eq!(Scope::Mint.meet(Scope::HooksRegister), Scope::ReadOnly);
+/// The two-rung chain: `ReadOnly` does not satisfy a `Full` requirement, `Full` satisfies both, and
+/// a `Full` grant capped by a `ReadOnly` ceiling collapses to read-only.
+#[test]
+fn readonly_not_allow_full_full_allows_readonly() {
+    assert!(!Scope::ReadOnly.allows(Scope::Full));
+    assert!(Scope::ReadOnly.allows(Scope::ReadOnly));
+    assert!(Scope::Full.allows(Scope::ReadOnly));
+    assert!(Scope::Full.allows(Scope::Full));
 
-    // `Grants::with` is exactly a UNION over `allows` — for every pair of scopes and every
-    // requirement, the union authorizes `n` iff EITHER operand alone would. In particular the union
-    // of the two siblings must NOT authorize `Full`: that is the lattice JOIN, not the union of
-    // authority, and conflating them is the rejected alternative (design 3.5.3).
+    // Grants: a Full grant capped by a ReadOnly ceiling authorizes reads but not mutations.
+    let capped = Grants::of(Scope::Full).capped_by(Scope::ReadOnly);
+    assert!(capped.allows(Scope::ReadOnly));
+    assert!(!capped.allows(Scope::Full));
+
+    // `with` is a union over `allows`, and `dominates`/`meet` derive from the same seam.
     for a in Scope::ALL {
         for b in Scope::ALL {
             let union = Grants::of(a).with(b);
@@ -172,9 +127,9 @@ fn scope_lattice_has_no_total_order() {
             }
         }
     }
-    assert!(!Grants::of(Scope::HooksRegister)
-        .with(Scope::Mint)
-        .allows(Scope::Full));
+    assert_eq!(Scope::Full.meet(Scope::ReadOnly), Scope::ReadOnly);
+    assert!(Scope::Full.dominates(Scope::ReadOnly));
+    assert!(!Scope::ReadOnly.dominates(Scope::Full));
 }
 
 /// The stable error taxonomy is locked: each variant's `code` + HTTP status is the frozen wire

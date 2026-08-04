@@ -93,6 +93,27 @@ The `governance:` block dissolved; its contents moved to owning top-level keys:
 Governance has no on/off switch in 1.5.0: it is inert until keys exist. Spend is derived from a
 token ledger × the `rate_card` at read time; nothing dollar-shaped is stored.
 
+### 1.5.2: the admin token no longer gates the data plane
+
+Data-plane admission is now decided **solely** by the shape of `auth.chain` (see
+[configuration.md](configuration.md#authauth) → "Three orthogonal axes"). The operator admin token
+(`auth.admin_auth`) gates only `/api/v1/admin/*`. Two behavior changes fall out:
+
+- **`chain: []` + an admin token** now means **open (anonymous) relay + protected admin API** — the
+  previously-inexpressible "admin-managed box, anonymous inference" posture. Before 1.5.2, setting an
+  admin token silently forced a virtual key onto **every** data-plane request, overriding the empty
+  chain. Deployments that set an admin token but named **no** data-plane chain change from
+  "vkey-required" to "open relay" — add `keys` to `auth.chain` if you intended the data plane to
+  require a virtual key.
+- **`chain: [keys]` with no usable admin mint path is now a boot error** (previously it booted as a
+  silent open relay that admitted anonymously). Provide a mint path: an `admin_auth` `admin-tokens`
+  entry with a `token:`, an admin module granting `mint`/`full`, or — dev only — an explicit open
+  `admin_auth: []`.
+
+The idle-RAM property is preserved: with no `keys` in the chain and no minted keys, the store stays
+idle. A durable store that still holds keys while `auth.chain` does not name `keys` now logs the
+inert-keys advisory (recomputed from the chain shape, not the admin token).
+
 ---
 
 ## 4. Per-key limits → the `groups:` limit tree

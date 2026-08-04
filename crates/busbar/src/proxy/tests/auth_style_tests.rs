@@ -19,7 +19,7 @@ fn lane_with_auth(auth: Option<&str>) -> Lane {
         provider: "azure".to_string(),
         signing_host: "res.openai.azure.com".to_string(),
         base_url: "https://res.openai.azure.com".to_string(),
-        api_key: "SECRETKEY".to_string(),
+        api_key: busbar_api::Redacted::new("SECRETKEY".to_string()),
         protocol: Arc::new(Protocol::openai()),
         max: 1,
         error_map: Arc::new(HashMap::new()),

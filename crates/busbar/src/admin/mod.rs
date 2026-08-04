@@ -116,11 +116,11 @@ pub(crate) struct CreateKeyReq {
 /// The default signed-token lifetime when the mint body specifies neither `expires_in` nor
 /// `expires_at`: 90 days. Long enough that routine use does not churn, short enough that a leaked
 /// token is not valid forever (the 1.x posture: keys never expired).
-const DEFAULT_KEY_TTL_SECS: u64 = 90 * 86_400;
+pub(crate) const DEFAULT_KEY_TTL_SECS: u64 = 90 * 86_400;
 
 /// Parse a duration string (`<n><unit>`, unit in s|m|h|d) to seconds. Bounded so an absurd value
 /// cannot overflow the `exp` computation.
-fn parse_duration_secs(s: &str) -> Result<u64, String> {
+pub(crate) fn parse_duration_secs(s: &str) -> Result<u64, String> {
     let s = s.trim();
     let (num, unit) = s.split_at(
         s.find(|c: char| !c.is_ascii_digit())
@@ -687,6 +687,15 @@ fn check_key_cap(
         .iter()
         .filter(|k| k.group.as_deref() == group)
         .filter(|k| Some(k.id.as_str()) != exclude_id)
+        // SELF-SERVE keys (`user:<sub>`) are EXCLUDED: a principal always has exactly one (the
+        // token-exchange mint is an idempotent upsert on the current epoch), so it must never
+        // consume an admin `max_keys_per_principal` ceiling. See `SELF_KEY_GROUP_PREFIX`.
+        .filter(|k| {
+            k.group
+                .as_deref()
+                .map(|g| !g.starts_with(crate::governance::SELF_KEY_GROUP_PREFIX))
+                .unwrap_or(true)
+        })
         .filter(|k| k.enabled && !gov.is_revoked(&k.id))
         .count();
     if n >= cap {
@@ -699,7 +708,6 @@ fn check_key_cap(
 pub(crate) async fn create_key(
     axum::extract::State(handle): axum::extract::State<std::sync::Arc<crate::state::AppHandle>>,
     axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
-    axum::Extension(scope): axum::Extension<crate::auth::AdminScope>,
     headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Response {
@@ -891,29 +899,9 @@ pub(crate) async fn create_key(
             Cond::ParentWithoutGroup,
         );
     }
-    // DELEGATED MINTS MUST BIND. A key with no
-    // `group` is authed + UNLIMITED: its enforcement chain is a single uncapped bucket, so it
-    // escapes the whole limit tree. That is a legitimate operator act (`full` scope — the operator
-    // owns the tree), but it must not be reachable from a DELEGATED `mint` credential, whose entire
-    // purpose is self-service issuance INSIDE the tree. Otherwise the narrowest key-issuing scope
-    // could hand out uncapped keys, and the anti-sprawl ceiling with it. Refused as a 400 naming the
-    // fix, alongside the counting cap enforced below.
-    if req.group.is_none() && !scope.0.contains(crate::admin::v1::contract::Scope::Full) {
-        return key_err(who,
-            &AdminError::Validation(
-                "`group` is required: a delegated `mint` credential may only issue keys BOUND to a \
-                 group (an unbound key carries no limits at all). Name an existing group, or pass \
-                 `parent:` to auto-provision one under it"
-                    .into(),
-            ),
-            // Its OWN condition. This used to reuse `RebindTargetMissing`, whose canonical phrase
-            // ("the rebind target group does not exist") describes a DIFFERENT refusal on a
-            // different operation — so `openapi.json` documented this 400 as a dangling-rebind
-            // error, and the cond-granular under-claim guard could not see that `POST /keys` never
-            // declared `RebindTargetMissing` at all.
-            Cond::DelegatedMintUnbound,
-        );
-    }
+    // (1.5.2 scope collapse: the delegated-mint-must-bind refusal is GONE. Only a `full` credential
+    // can reach `POST /keys` now — there is no narrower `mint` scope to hand out uncapped keys — so
+    // an operator minting an unbound key is a legitimate act by the tree's owner, no longer gated.)
     /// What the mint's blocking half produced: the key (bearer-only or with AWS credentials), or the
     /// anti-sprawl ceiling it hit.
     enum MintOutcome {

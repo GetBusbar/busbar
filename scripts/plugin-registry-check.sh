@@ -141,6 +141,33 @@ for p in plugins:
             fail.append(f"release-check.sh has no explicit phase touching ../{d} "
                         f"({p['repo']}, gate: {p.get('gate')})")
 
+# ── 3b. 1.5.2 token-exchange coverage: every kind:auth plugin must have a token-exchange flow case.
+# Mirrors how check 3 reds a plugin lacking a gate phase — a kind:auth plugin with NO arm in the
+# registry-driven token-exchange matrix (release-check-1.5.2.sh's `auth_plugin_flows()`) is RED, so a
+# new auth plugin cannot ship an untested /auth/token surface. The matrix lives in the 1.5.2 feature
+# gate, which release-check.sh invokes; the check scans BOTH files (concatenated) so it stays true
+# whether the loop lives in release-check.sh or the sourced 1.5.2 script.
+tokenx = ""
+for _f in ("scripts/release-check.sh", "scripts/release-check-1.5.2.sh"):
+    try:
+        tokenx += "\n" + open(_f, encoding="utf-8").read()
+    except FileNotFoundError:
+        pass
+tokenx_loop_present = "plugin-registry-check.sh --list" in tokenx and "auth_plugin_flows" in tokenx
+for p in plugins:
+    if p["kind"] != "auth":
+        continue
+    if not tokenx_loop_present:
+        fail.append("the 1.5.2 token-exchange gate has no registry-driven kind:auth loop "
+                    "(expected release-check(-1.5.2).sh to iterate `plugin-registry-check.sh --list` "
+                    f"with an `auth_plugin_flows()` capability map) — {p['repo']} uncovered")
+        continue
+    # A per-alias arm in auth_plugin_flows() — the same shape check 3 uses for a suite `service` arm.
+    if not re.search(rf"^\s*{re.escape(p['alias'])}\)", tokenx, re.M):
+        fail.append(f"kind:auth plugin {p['repo']} (alias {p['alias']}) has no token-exchange flow "
+                    f"case — add an `{p['alias']})` arm to auth_plugin_flows() declaring which "
+                    f"/auth/token direction(s) it supports (post/get/form)")
+
 # ── 4 + 5. Network checks via `gh` (GITHUB_TOKEN in CI).
 if not offline:
     def gh(path):
@@ -148,6 +175,12 @@ if not offline:
         return json.loads(r.stdout) if r.returncode == 0 else None
 
     for p in plugins:
+        # Pre-release entry (a new plugin whose FIRST release is cut together with the core version it
+        # targets): registered here so the dev-gate/token-exchange loops cover it, but it has no
+        # published release yet BY DESIGN. The org-repo scan below still requires it registered; only
+        # this published-release arm is deferred. Flip `released: true` (or drop the key) at the cut.
+        if str(p.get("released", "true")).strip().lower() == "false":
+            continue
         rel = gh(f"repos/GetBusbar/{p['repo']}/releases/latest")
         if rel is None:
             fail.append(f"{p['repo']}: no published release at all")

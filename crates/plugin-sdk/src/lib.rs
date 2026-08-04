@@ -171,12 +171,39 @@ pub unsafe fn store_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutco
 // (`Box<dyn AuthModule>`) and the identity-only auth wire. A denied credential is a SUCCESSFUL call
 // (`Reject`/`Pass` ride the OK payload); only a malformed request / encode failure is a protocol error.
 
-/// The auth handle behind the opaque `*mut c_void`: a boxed [`busbar_api::AuthModule`]. Named at the
-/// module level so the `export_plugin!` expansion can pass it to `close_boundary::<$ty>`.
-pub type AuthHandle = Box<dyn busbar_api::AuthModule>;
+/// The auth handle behind the opaque `*mut c_void`: a boxed [`busbar_api::AuthPlugin`] — an auth
+/// module that is BOTH a verifier ([`busbar_api::AuthModule`]) and a login provider
+/// ([`busbar_api::LoginModule`], fail-closed by default for verify-only modules). Named at the module
+/// level so the `export_plugin!` expansion can pass it to `close_boundary::<$ty>`.
+pub type AuthHandle = Box<dyn busbar_api::AuthPlugin>;
 
-/// The auth handle behind the opaque `*mut c_void`: a boxed [`busbar_api::AuthModule`].
+/// The auth handle behind the opaque `*mut c_void`: a boxed [`busbar_api::AuthPlugin`].
 type BoxedAuth = AuthHandle;
+
+/// Fail-closed login adapter: wraps a verify-only [`busbar_api::AuthModule`] as a full
+/// [`busbar_api::AuthPlugin`] by delegating the verify methods and taking [`busbar_api::LoginModule`]'s
+/// default (Reject) login behavior. This is what lets `export_auth_plugin!` keep accepting a
+/// `fn(&str) -> Result<Box<dyn AuthModule>, String>` ctor UNCHANGED while the exported handle is the
+/// unified `Box<dyn AuthPlugin>`.
+struct VerifyOnlyAuth(Box<dyn busbar_api::AuthModule>);
+impl busbar_api::AuthModule for VerifyOnlyAuth {
+    fn name(&self) -> &'static str {
+        self.0.name()
+    }
+    fn authenticate(&self, candidate: Option<&str>) -> busbar_api::AuthOutcome {
+        self.0.authenticate(candidate)
+    }
+    fn cacheable(&self) -> bool {
+        self.0.cacheable()
+    }
+}
+impl busbar_api::LoginModule for VerifyOnlyAuth {}
+
+/// Wrap a verify-only auth module into the unified [`AuthHandle`]. Used by the `export_auth_plugin!`
+/// expansion; also the boundary for future login-capable plugins (which would box directly).
+pub fn adapt_auth_handle(module: Box<dyn busbar_api::AuthModule>) -> AuthHandle {
+    Box::new(VerifyOnlyAuth(module))
+}
 
 /// The auth PAYLOAD schema version this SDK builds against (the manifest `abi_version` a `kind: auth`
 /// plugin declares). NOT the transport version — see [`transport_version`]. Mirrors
@@ -191,13 +218,15 @@ pub fn auth_abi_version() -> u32 {
 /// maps the wire enum to the trait, unit-testable without FFI. An empty `credential` (no usable
 /// credential presented) is passed to `authenticate(None)`.
 pub fn dispatch_auth(
-    module: &dyn busbar_api::AuthModule,
+    module: &dyn busbar_api::AuthPlugin,
     req: busbar_plugin_abi::auth::AuthRequest,
 ) -> busbar_plugin_abi::auth::AuthResponse {
     use busbar_plugin_abi::auth::{AuthRequest, AuthResponse};
     match req {
         AuthRequest::Name => AuthResponse::Name(module.name().to_string()),
         AuthRequest::Cacheable => AuthResponse::Cacheable(module.cacheable()),
+        // ABI v2: the pure redirect-vs-credential classification, resolved once at load.
+        AuthRequest::LoginKind => AuthResponse::LoginKind(module.login_kind().into()),
         AuthRequest::Authenticate { credential } => {
             let candidate = if credential.is_empty() {
                 None
@@ -205,6 +234,14 @@ pub fn dispatch_auth(
                 Some(credential.as_str())
             };
             AuthResponse::from_outcome(module.authenticate(candidate))
+        }
+        // ABI v2 login primitives: convert the wire request to the engine shape, run the module's
+        // LoginModule (fail-closed default for verify-only modules), map the verdict back to the wire.
+        AuthRequest::BeginLogin(begin) => {
+            AuthResponse::from_login_outcome(module.begin_login(&begin.into()))
+        }
+        AuthRequest::CompleteLogin(complete) => {
+            AuthResponse::from_login_outcome(module.complete_login(&complete.into()))
         }
     }
 }
@@ -235,10 +272,55 @@ pub unsafe fn auth_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutcom
 #[macro_export]
 macro_rules! export_auth_plugin {
     ($ctor:path) => {
+        /// Adapt the verify-only ctor into the unified `Box<dyn AuthPlugin>` handle (fail-closed
+        /// login default). Keeps `$ctor`'s `-> Result<Box<dyn AuthModule>, String>` signature valid
+        /// under the ABI-v2 handle change.
+        #[doc(hidden)]
+        fn __busbar_auth_open_adapted(
+            cfg: &str,
+        ) -> ::core::result::Result<$crate::AuthHandle, ::std::string::String> {
+            ::core::result::Result::Ok($crate::adapt_auth_handle($ctor(cfg)?))
+        }
         $crate::export_plugin!(
             kind = "auth",
             dispatch = $crate::auth_dispatch,
-            ctor = $ctor,
+            ctor = __busbar_auth_open_adapted,
+            handle = $crate::AuthHandle,
+        );
+    };
+}
+
+/// Emit an `auth`-kind cdylib plugin from `$ctor` (a
+/// `fn(&str) -> Result<Box<dyn busbar_api::AuthPlugin>, String>`) — a LOGIN-CAPABLE module that
+/// implements BOTH [`busbar_api::AuthModule`] (verify) AND [`busbar_api::LoginModule`]
+/// (BeginLogin/CompleteLogin).
+///
+/// This is the sibling of [`export_auth_plugin!`] for a plugin that also drives the hosted browser
+/// login flow (e.g. `auth-oidc`). The crucial difference: `export_auth_plugin!` routes its ctor
+/// through the verify-only `VerifyOnlyAuth` adapter, which takes [`busbar_api::LoginModule`]'s
+/// fail-closed default — so a login-capable plugin exported through it would have its login
+/// capability MASKED (every BeginLogin/CompleteLogin would return `Reject`). `export_login_plugin!`
+/// boxes the ctor's `Box<dyn AuthPlugin>` DIRECTLY (no adapter), so [`auth_dispatch`] sees the real
+/// [`busbar_api::LoginModule`] impl and the login arms work.
+///
+/// Both macros stamp `busbar_plugin_kind() == "auth"` and the same six neutral symbols, so the
+/// plugin loader treats a login plugin exactly like any other auth plugin (its `abi_version >= 2`
+/// is what the engine's capability gate reads to decide it can serve the browser flow).
+#[macro_export]
+macro_rules! export_login_plugin {
+    ($ctor:path) => {
+        /// The ctor already yields a login-capable `Box<dyn AuthPlugin>`, so it is exported DIRECTLY
+        /// — NOT through the verify-only adapter, which would mask the login capability.
+        #[doc(hidden)]
+        fn __busbar_login_open(
+            cfg: &str,
+        ) -> ::core::result::Result<$crate::AuthHandle, ::std::string::String> {
+            $ctor(cfg)
+        }
+        $crate::export_plugin!(
+            kind = "auth",
+            dispatch = $crate::auth_dispatch,
+            ctor = __busbar_login_open,
             handle = $crate::AuthHandle,
         );
     };
@@ -1110,5 +1192,153 @@ mod tests {
     #[test]
     fn auth_abi_version_reads_the_shared_const() {
         assert_eq!(auth_abi_version(), busbar_plugin_abi::AUTH_ABI_VERSION);
+    }
+
+    /// Pin the auth payload schema at v2 (1.5.2 login primitives) — the SDK builds v2.
+    #[test]
+    fn auth_abi_version_is_two() {
+        assert_eq!(auth_abi_version(), 2);
+    }
+
+    // ── ABI v2 login dispatch (SDK server side) ────────────────────────────────────────────────
+
+    use busbar_api::{
+        AuthModule, AuthOutcome, BeginLogin, CompleteLogin, LoginHop, LoginModule, LoginOutcome,
+        Principal,
+    };
+    use busbar_plugin_abi::auth::{
+        AuthRequest, AuthResponse, BeginLoginRequest, CompleteLoginRequest,
+    };
+
+    /// A verify-only module: implements AuthModule, takes LoginModule's fail-closed defaults.
+    struct VerifyOnly;
+    impl AuthModule for VerifyOnly {
+        fn name(&self) -> &'static str {
+            "verify-only"
+        }
+        fn authenticate(&self, _c: Option<&str>) -> AuthOutcome {
+            AuthOutcome::Pass
+        }
+    }
+    impl LoginModule for VerifyOnly {}
+
+    /// A login-capable module: begin → Authorize, complete → Exchange then Identify.
+    struct LoginMod;
+    impl AuthModule for LoginMod {
+        fn name(&self) -> &'static str {
+            "login-mod"
+        }
+        fn authenticate(&self, _c: Option<&str>) -> AuthOutcome {
+            AuthOutcome::Pass
+        }
+    }
+    impl LoginModule for LoginMod {
+        fn begin_login(&self, req: &BeginLogin) -> LoginOutcome {
+            LoginOutcome::Authorize(format!("https://idp/authorize?state={}", req.state))
+        }
+        fn complete_login(&self, req: &CompleteLogin) -> LoginOutcome {
+            if req.token_response.is_some() {
+                LoginOutcome::Identify(Principal::from_id("oidc:alice"))
+            } else {
+                LoginOutcome::Exchange(LoginHop {
+                    method: "POST".into(),
+                    url: "https://idp/token".into(),
+                    form: vec![("client_secret".into(), String::new())],
+                    secret_form_field: Some("client_secret".into()),
+                    headers: vec![],
+                })
+            }
+        }
+    }
+
+    fn begin_req() -> AuthRequest {
+        AuthRequest::BeginLogin(BeginLoginRequest {
+            redirect_uri: "https://busbar/auth/token".into(),
+            state: "st".into(),
+            code_challenge: "cc".into(),
+            nonce: None,
+            scopes: vec![],
+        })
+    }
+
+    #[test]
+    fn dispatch_begin_login_maps_authorize_url() {
+        let resp = dispatch_auth(&LoginMod, begin_req());
+        match resp {
+            AuthResponse::AuthorizeUrl(u) => assert!(u.contains("state=st")),
+            other => panic!("expected AuthorizeUrl, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_complete_login_token_exchange() {
+        let resp = dispatch_auth(
+            &LoginMod,
+            AuthRequest::CompleteLogin(CompleteLoginRequest {
+                code: Some("authcode".into()),
+                ..Default::default()
+            }),
+        );
+        match resp {
+            AuthResponse::TokenExchange(hop) => {
+                assert_eq!(hop.secret_form_field.as_deref(), Some("client_secret"))
+            }
+            other => panic!("expected TokenExchange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_complete_login_identity() {
+        let resp = dispatch_auth(
+            &LoginMod,
+            AuthRequest::CompleteLogin(CompleteLoginRequest {
+                token_response: Some(busbar_plugin_abi::auth::HttpResponse {
+                    status: 200,
+                    body: "{}".into(),
+                }),
+                ..Default::default()
+            }),
+        );
+        assert!(matches!(resp, AuthResponse::Identity(_)));
+    }
+
+    #[test]
+    fn login_plugin_handle_preserves_login_capability() {
+        // `export_login_plugin!` boxes the ctor's `Box<dyn AuthPlugin>` DIRECTLY as the AuthHandle.
+        // A login-capable module keeps its login capability: BeginLogin reaches the real impl.
+        let direct: AuthHandle = Box::new(LoginMod);
+        assert!(
+            matches!(
+                dispatch_auth(direct.as_ref(), begin_req()),
+                AuthResponse::AuthorizeUrl(_)
+            ),
+            "export_login_plugin! must NOT mask login: BeginLogin should reach the real LoginModule"
+        );
+        // Contrast: `export_auth_plugin!` routes through the verify-only adapter, which takes the
+        // fail-closed LoginModule default — so the SAME module exported that way is masked to Reject.
+        let adapted: AuthHandle = adapt_auth_handle(Box::new(LoginMod));
+        assert!(
+            matches!(
+                dispatch_auth(adapted.as_ref(), begin_req()),
+                AuthResponse::Reject
+            ),
+            "verify-only adapter must mask login (this is why export_login_plugin! bypasses it)"
+        );
+    }
+
+    #[test]
+    fn verify_only_module_defaults_begin_login_reject() {
+        // A verify-only module's default LoginModule fails closed on both login ops.
+        assert!(matches!(
+            dispatch_auth(&VerifyOnly, begin_req()),
+            AuthResponse::Reject
+        ));
+        assert!(matches!(
+            dispatch_auth(
+                &VerifyOnly,
+                AuthRequest::CompleteLogin(CompleteLoginRequest::default())
+            ),
+            AuthResponse::Reject
+        ));
     }
 }

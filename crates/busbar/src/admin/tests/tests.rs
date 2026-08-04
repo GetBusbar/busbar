@@ -1173,10 +1173,10 @@ async fn test_admin_v1_mutation_rate_limit_config_class() {
     handle.abort();
 }
 
-/// The scope LADDER end-to-end with group-mapped NON-full principals (via the test-only
-/// external module): read-only reads but cannot mint (403, audited); hooks-register registers
-/// hooks but cannot mint keys; an unmapped group gets nothing at all (403 even on reads);
-/// the operator token stays full.
+/// The scope CHAIN end-to-end (1.5.2 two-rung collapse) with group-mapped principals (via the
+/// test-only external module): a `read-only` role reads but cannot mutate (403, audited); a `full`
+/// role mutates; an unmapped group gets nothing at all (403 even on reads); a role bound only under
+/// a DIFFERENT module earns nothing here (S4); the operator token stays full.
 #[tokio::test]
 async fn test_admin_v1_scope_ladder_e2e_with_group_mapped_principals() {
     crate::metrics::init();
@@ -1194,16 +1194,9 @@ async fn test_admin_v1_scope_ladder_e2e_with_group_mapped_principals() {
                 ..Default::default()
             },
         );
+        // A role BOUND full — with the module ceiling lifted to full it mutates.
         table.insert(
-            "registrars".to_string(),
-            crate::config::RoleBindingCfg {
-                admin_scope: Some("hooks-register".to_string()),
-                ..Default::default()
-            },
-        );
-        // For the CAP proofs below: a role BOUND full - the module ceiling must cut it down.
-        table.insert(
-            "admins-capped".to_string(),
+            "admins".to_string(),
             crate::config::RoleBindingCfg {
                 admin_scope: Some("full".to_string()),
                 ..Default::default()
@@ -1225,12 +1218,11 @@ async fn test_admin_v1_scope_ladder_e2e_with_group_mapped_principals() {
         inner
             .role_bindings
             .insert("other-module".to_string(), other);
-        // Trust-boundary CEILING on the external module: nothing through it can exceed
-        // hooks-register regardless of what role_bindings grant.
-        inner.auth_scope_caps.insert(
-            "test-scope-module".to_string(),
-            "hooks-register".to_string(),
-        );
+        // Lift the external module's default read-only ceiling to `full` so the `admins` binding
+        // resolves un-capped.
+        inner
+            .auth_scope_caps
+            .insert("test-scope-module".to_string(), "full".to_string());
     }
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1265,7 +1257,7 @@ async fn test_admin_v1_scope_ladder_e2e_with_group_mapped_principals() {
     .send()
     .await
     .unwrap();
-    assert_eq!(r.status().as_u16(), 403, "read-only cannot mint");
+    assert_eq!(r.status().as_u16(), 403, "read-only cannot mint (Full)");
     let body: serde_json::Value = r.json().await.unwrap();
     assert_eq!(body["error"]["code"], "forbidden");
     let r = with(
@@ -1276,27 +1268,31 @@ async fn test_admin_v1_scope_ladder_e2e_with_group_mapped_principals() {
     .send()
     .await
     .unwrap();
-    assert_eq!(r.status().as_u16(), 403, "read-only cannot register hooks");
+    assert_eq!(
+        r.status().as_u16(),
+        403,
+        "read-only cannot register hooks (Full)"
+    );
 
-    // hooks-register: hook lifecycle yes, keys no (the escalation guard).
+    // full: mutations succeed.
     let r = with(
-        "grp:registrars",
+        "grp:admins",
         client.post(format!("http://{addr}/api/v1/admin/hooks")),
     )
     .body(hook_body.clone())
     .send()
     .await
     .unwrap();
-    assert_eq!(r.status().as_u16(), 201, "hooks-register registers hooks");
+    assert_eq!(r.status().as_u16(), 201, "full registers hooks");
     let r = with(
-        "grp:registrars",
+        "grp:admins",
         client.post(format!("http://{addr}/api/v1/admin/keys")),
     )
     .body(key_body.clone())
     .send()
     .await
     .unwrap();
-    assert_eq!(r.status().as_u16(), 403, "hooks-register cannot mint keys");
+    assert_eq!(r.status().as_u16(), 201, "full mints keys");
 
     // Unmapped group: authenticated but zero grants — 403 even on reads.
     let r = with(
@@ -1307,40 +1303,6 @@ async fn test_admin_v1_scope_ladder_e2e_with_group_mapped_principals() {
     .await
     .unwrap();
     assert_eq!(r.status().as_u16(), 403, "unmapped groups grant nothing");
-
-    // max_admin_scope CEILING: a group MAPPED full through the capped module lands at
-    // hooks-register — it registers hooks but still cannot mint keys.
-    let capped_hook = serde_json::json!({
-        "name": "capped-hook",
-        "config": {"kind": "tap", "plugin": "test-hook"}
-    })
-    .to_string();
-    let r = with(
-        "grp:admins-capped",
-        client.post(format!("http://{addr}/api/v1/admin/hooks")),
-    )
-    .body(capped_hook)
-    .send()
-    .await
-    .unwrap();
-    assert_eq!(
-        r.status().as_u16(),
-        201,
-        "the ceiling still allows what it grants (hooks-register)"
-    );
-    let r = with(
-        "grp:admins-capped",
-        client.post(format!("http://{addr}/api/v1/admin/keys")),
-    )
-    .body(key_body.clone())
-    .send()
-    .await
-    .unwrap();
-    assert_eq!(
-        r.status().as_u16(),
-        403,
-        "group_map said full, the module ceiling says hooks-register — the ceiling wins"
-    );
 
     // S4 NESTED-BY-MODULE: `sneaky` is bound full under `other-module` only - asserted through
     // test-scope-module it earns nothing (a role never rides another module's binding table).
@@ -1367,259 +1329,6 @@ async fn test_admin_v1_scope_ladder_e2e_with_group_mapped_principals() {
     .await
     .unwrap();
     assert_eq!(r.status().as_u16(), 201, "operator token stays full");
-
-    handle.abort();
-}
-
-/// R5 (class-8): the SIBLING ceiling case the ladder-shaped `min` got wrong in the ESCALATION
-/// direction. A role bound `mint`, ceilinged by `max_admin_scope: hooks-register` on its module.
-/// `HooksRegister` and `Mint` are INCOMPARABLE siblings, so the lattice meet is `read-only` — the
-/// principal must get NEITHER sibling's authority, only what both share. Under the old
-/// `std::cmp::min(Mint, HooksRegister)` (Mint > HooksRegister by the deleted ordinal), this used to
-/// yield `HooksRegister` and `POST /hooks` returned 201: a `mint` role inheriting hook-definition
-/// authority its role never granted, purely because the ceiling named an incomparable sibling.
-#[tokio::test]
-async fn test_admin_v1_sibling_ceiling_grants_only_read_e2e() {
-    crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let mut app = TestApp::new().governance(gov).build();
-    {
-        let inner = Arc::get_mut(&mut app).expect("sole owner");
-        inner.admin_chain = vec!["test-scope-module".to_string()];
-        let mut table = std::collections::BTreeMap::new();
-        table.insert(
-            "minters".to_string(),
-            crate::config::RoleBindingCfg {
-                admin_scope: Some("mint".to_string()),
-                ..Default::default()
-            },
-        );
-        inner
-            .role_bindings
-            .insert("test-scope-module".to_string(), table);
-        // The ceiling names the SIBLING scope, not a dominating one.
-        inner.auth_scope_caps.insert(
-            "test-scope-module".to_string(),
-            "hooks-register".to_string(),
-        );
-    }
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
-    let with = |tok: &'static str, req: reqwest::RequestBuilder| {
-        req.header("x-admin-token", tok)
-            .header("content-type", "application/json")
-    };
-
-    // The sibling meet is read-only: reads still work.
-    let r = with(
-        "grp:minters",
-        client.get(format!("http://{addr}/api/v1/admin/info")),
-    )
-    .send()
-    .await
-    .unwrap();
-    assert_eq!(r.status().as_u16(), 200, "the meet still allows reads");
-
-    // Registering a hook must be REFUSED: the role never granted hooks-register, and a ceiling
-    // naming an incomparable sibling must not invent it.
-    let hook_body = serde_json::json!({
-        "name": "sibling-ceiling-hook",
-        "config": {"kind": "tap", "plugin": "test-hook"}
-    })
-    .to_string();
-    let r = with(
-        "grp:minters",
-        client.post(format!("http://{addr}/api/v1/admin/hooks")),
-    )
-    .body(hook_body)
-    .send()
-    .await
-    .unwrap();
-    assert_eq!(
-        r.status().as_u16(),
-        403,
-        "an incomparable-sibling ceiling must not invent hook-register authority"
-    );
-    let body: serde_json::Value = r.json().await.unwrap();
-    assert_eq!(body["error"]["code"], "forbidden");
-
-    handle.abort();
-}
-
-/// ESCALATION GUARD: a hooks-register principal may register a shape-only, non-global hook
-/// but NOT one wired into a security-critical path — a `prompt: rw`/`ro` content-seeing gate, a
-/// `user: ro` identity-seeing hook, or an inline `global: true` (chain wiring is full-only). The
-/// operator (full) may register all of them.
-#[tokio::test]
-async fn test_admin_v1_hooks_register_cannot_escalate_via_grants_or_global() {
-    drive_hook_escalation_errors().await;
-}
-
-/// See the test above. Split out so the class-level over-claim test can drive it directly.
-async fn drive_hook_escalation_errors() {
-    crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let mut app = TestApp::new().governance(gov).build();
-    {
-        let inner = Arc::get_mut(&mut app).expect("sole owner");
-        inner.admin_chain = vec!["test-scope-module".to_string(), "admin-tokens".to_string()];
-        let mut table = std::collections::BTreeMap::new();
-        table.insert(
-            "registrars".to_string(),
-            crate::config::RoleBindingCfg {
-                admin_scope: Some("hooks-register".to_string()),
-                ..Default::default()
-            },
-        );
-        inner
-            .role_bindings
-            .insert("test-scope-module".to_string(), table);
-        // The module ceiling defaults to read-only; lift it so registrars actually resolves to
-        // hooks-register (admin-tokens stays full — it is ceiling-exempt).
-        inner
-            .auth_scope_caps
-            .insert("test-scope-module".to_string(), "full".to_string());
-    }
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
-    let post = |tok: &'static str, cfg: serde_json::Value| {
-        client
-            .post(format!("http://{addr}/api/v1/admin/hooks"))
-            .header("x-admin-token", tok)
-            .header("content-type", "application/json")
-            .body(serde_json::json!({"name": "h", "config": cfg}).to_string())
-            .send()
-    };
-    let base = |extra: serde_json::Value| {
-        let mut c = serde_json::json!({"kind": "gate", "plugin": "test-hook"});
-        for (k, v) in extra.as_object().unwrap() {
-            c[k] = v.clone();
-        }
-        c
-    };
-
-    // hooks-register: each escalating form is 403 (forbidden), naming full.
-    for (label, cfg) in [
-        ("prompt: rw gate", base(serde_json::json!({"prompt": "rw"}))),
-        ("prompt: ro gate", base(serde_json::json!({"prompt": "ro"}))),
-        ("user: ro hook", base(serde_json::json!({"user": "ro"}))),
-        ("global: true", base(serde_json::json!({"global": true}))),
-    ] {
-        let r = post("grp:registrars", cfg).await.unwrap();
-        assert_eq!(
-            r.status().as_u16(),
-            403,
-            "hooks-register must not register a {label}"
-        );
-        let body: serde_json::Value = r.json().await.unwrap();
-        assert_eq!(body["error"]["code"], "forbidden", "{label}");
-    }
-
-    // hooks-register CAN register a shape-only, non-global hook.
-    let r = post("grp:registrars", base(serde_json::json!({})))
-        .await
-        .unwrap();
-    assert_eq!(
-        r.status().as_u16(),
-        201,
-        "a shape-only, non-global hook is within hooks-register"
-    );
-
-    // The guard is on the SHAPE, not on the verb: REPLACING that same shape-only hook with a
-    // content-seeing one over PUT is the identical escalation and the identical 403. (POST alone
-    // would leave the PUT door open — and `openapi.json` documents the 403 on PUT for this reason.)
-    let r = client
-        .put(format!("http://{addr}/api/v1/admin/hooks/h"))
-        .header("x-admin-token", "grp:registrars")
-        .header("content-type", "application/json")
-        .body(serde_json::json!({"config": base(serde_json::json!({"prompt": "rw"}))}).to_string())
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        r.status().as_u16(),
-        403,
-        "hooks-register must not PUT a hook into a content-seeing form"
-    );
-    let body: serde_json::Value = r.json().await.unwrap();
-    assert_eq!(body["error"]["code"], "forbidden");
-
-    // The operator (full) can register a prompt: rw global gate (unique name — `h` is taken).
-    let r = client
-        .post(format!("http://{addr}/api/v1/admin/hooks"))
-        .header("x-admin-token", "admintok")
-        .header("content-type", "application/json")
-        .body(
-            serde_json::json!({
-                "name": "op-hook",
-                "config": base(serde_json::json!({"prompt": "rw", "global": true}))
-            })
-            .to_string(),
-        )
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(r.status().as_u16(), 201, "full scope registers anything");
-
-    // A hooks-register token may not RETUNE (PATCH settings) a
-    // content-seeing / global hook it can neither create nor replace — PATCH must enforce the
-    // same ceiling, keyed on the EXISTING hook's grants.
-    let patch = client
-        .patch(format!("http://{addr}/api/v1/admin/hooks/op-hook/settings"))
-        .header("x-admin-token", "grp:registrars")
-        .header("content-type", "application/json")
-        .body(serde_json::json!({"settings": {"k": "v"}}).to_string())
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        patch.status().as_u16(),
-        403,
-        "hooks-register must not PATCH settings on a prompt:rw global hook"
-    );
-    assert_eq!(
-        patch.json::<serde_json::Value>().await.unwrap()["error"]["code"],
-        "forbidden"
-    );
-
-    // A hooks-register token may not DELETE a content-seeing / global
-    // gate a full admin installed — tearing down that security gate is the same escalation
-    // register/put/patch forbid.
-    let del = client
-        .delete(format!("http://{addr}/api/v1/admin/hooks/op-hook"))
-        .header("x-admin-token", "grp:registrars")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        del.status().as_u16(),
-        403,
-        "hooks-register must not DELETE a prompt:rw global hook"
-    );
-    assert_eq!(
-        del.json::<serde_json::Value>().await.unwrap()["error"]["code"],
-        "forbidden"
-    );
-    // And the operator's gate is still there — the rejected delete did not remove it.
-    let still = client
-        .get(format!("http://{addr}/api/v1/admin/hooks/op-hook"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        still.status().as_u16(),
-        200,
-        "the gate survives the rejected delete"
-    );
 
     handle.abort();
 }
@@ -3535,10 +3244,10 @@ async fn test_admin_v1_audit_records_key_mutations() {
     handle.abort();
 }
 
-/// Base-config hooks are READ-ONLY across every mutation verb — a
-/// narrow hooks-register token must not be able to shadow/redirect (POST) or remove (DELETE) an
-/// operator's file-defined hook (e.g. a `pii-guard` gate). PUT/PATCH already guarded; this pins
-/// POST + DELETE to the same 409, matching the guard other verbs enforce.
+/// Base-config hooks are READ-ONLY across every mutation verb — not even a `full` admin may
+/// shadow/redirect (POST) or remove (DELETE) an operator's file-defined hook (e.g. a `pii-guard`
+/// gate); edit config.yaml. PUT/PATCH already guarded; this pins POST + DELETE to the same 409,
+/// matching the guard other verbs enforce.
 #[tokio::test]
 async fn test_admin_v1_base_hook_is_read_only_via_api() {
     crate::metrics::init();
@@ -3644,74 +3353,6 @@ async fn base_hook_delete_conflict_outranks_a_stale_if_match() {
     assert_eq!(
         body["error"]["code"], "conflict",
         "the terminal base-hook conflict must win over the retryable version_conflict: {body}"
-    );
-}
-
-/// The escalation guard must ALSO outrank the staleness check on DELETE: a hooks-register token
-/// that may never delete a `prompt:rw`/`global` hook must see 403, not a 409 that invites a
-/// re-read/retry against a request it can never complete.
-#[tokio::test]
-async fn hook_delete_escalation_outranks_a_stale_if_match() {
-    crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let mut app = TestApp::new().governance(gov).build();
-    {
-        let inner = Arc::get_mut(&mut app).expect("sole owner");
-        inner.admin_chain = vec!["test-scope-module".to_string(), "admin-tokens".to_string()];
-        let mut table = std::collections::BTreeMap::new();
-        table.insert(
-            "registrars".to_string(),
-            crate::config::RoleBindingCfg {
-                admin_scope: Some("hooks-register".to_string()),
-                ..Default::default()
-            },
-        );
-        inner
-            .role_bindings
-            .insert("test-scope-module".to_string(), table);
-        inner
-            .auth_scope_caps
-            .insert("test-scope-module".to_string(), "full".to_string());
-    }
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let _handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
-
-    // Full admin registers a content-seeing global gate hooks-register can never touch.
-    let created = client
-        .post(format!("http://{addr}/api/v1/admin/hooks"))
-        .header("x-admin-token", "admintok")
-        .header("content-type", "application/json")
-        .body(
-            serde_json::json!({
-                "name": "op-hook",
-                "config": {"kind": "gate", "plugin": "test-hook", "prompt": "rw", "global": true}
-            })
-            .to_string(),
-        )
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(created.status().as_u16(), 201);
-
-    let del = client
-        .delete(format!("http://{addr}/api/v1/admin/hooks/op-hook"))
-        .header("x-admin-token", "grp:registrars")
-        .header("if-match", "\"0\"")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        del.status().as_u16(),
-        403,
-        "escalation must outrank a stale If-Match, not be masked by a 409"
-    );
-    assert_eq!(
-        del.json::<serde_json::Value>().await.unwrap()["error"]["code"],
-        "forbidden"
     );
 }
 
@@ -5160,9 +4801,6 @@ fn test_create_key_warns_on_unconfigured_allowed_pool() {
             let r1 = super::create_key(
                 axum::extract::State(handle.clone()),
                 axum::Extension(crate::auth::AuthPrincipal(None)),
-                axum::Extension(crate::auth::AdminScope(
-                    crate::admin::v1::contract::Grants::of(crate::admin::v1::contract::Scope::Full),
-                )),
                 axum::http::HeaderMap::new(),
                 body1,
             )
@@ -5180,9 +4818,6 @@ fn test_create_key_warns_on_unconfigured_allowed_pool() {
             let r2 = super::create_key(
                 axum::extract::State(handle),
                 axum::Extension(crate::auth::AuthPrincipal(None)),
-                axum::Extension(crate::auth::AdminScope(
-                    crate::admin::v1::contract::Grants::of(crate::admin::v1::contract::Scope::Full),
-                )),
                 axum::http::HeaderMap::new(),
                 body2,
             )
@@ -7575,139 +7210,6 @@ async fn test_mint_parent_mismatch_is_409() {
     handle.abort();
 }
 
-/// DELEGATED MINT SCOPE (D2): a `mint`-scoped principal can MINT keys but CANNOT register hooks nor
-/// mutate groups; a `hooks-register` principal can register hooks but CANNOT mint. The two are
-/// SIBLINGS — neither confers the other. (The module ceiling is `full` so the bound scopes resolve
-/// un-capped; the operator token stays full and ceiling-exempt.)
-#[tokio::test]
-async fn test_mint_scope_is_sibling_of_hooks_register() {
-    crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let groups = std::collections::BTreeMap::from([(
-        "team".to_string(),
-        crate::config::GroupCfg {
-            limits: vec![budget_limit(1_000_000)],
-            child_default: Some(crate::config::groups::ChildDefault {
-                limits: vec![budget_limit(1000)],
-            }),
-            ..Default::default()
-        },
-    )]);
-    let mut app = TestApp::new().governance(gov).groups_tree(groups).build();
-    {
-        let inner = Arc::get_mut(&mut app).expect("sole owner");
-        inner.admin_chain = vec!["test-scope-module".to_string(), "admin-tokens".to_string()];
-        let mut table = std::collections::BTreeMap::new();
-        table.insert(
-            "minters".to_string(),
-            crate::config::RoleBindingCfg {
-                admin_scope: Some("mint".to_string()),
-                ..Default::default()
-            },
-        );
-        table.insert(
-            "registrars".to_string(),
-            crate::config::RoleBindingCfg {
-                admin_scope: Some("hooks-register".to_string()),
-                ..Default::default()
-            },
-        );
-        inner
-            .role_bindings
-            .insert("test-scope-module".to_string(), table);
-        // Ceiling `full` so `mint` / `hooks-register` resolve un-capped (default ceiling is read-only).
-        inner
-            .auth_scope_caps
-            .insert("test-scope-module".to_string(), "full".to_string());
-    }
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
-    let with = |tok: &'static str, req: reqwest::RequestBuilder| {
-        req.header("x-admin-token", tok)
-            .header("content-type", "application/json")
-    };
-    let hook_body = serde_json::json!({
-        "name": "some-hook",
-        "config": {"kind": "tap", "plugin": "test-hook"}
-    })
-    .to_string();
-
-    // MINT principal: CAN mint (into an existing group, and auto-provision a leaf).
-    let r = with(
-        "grp:minters",
-        client.post(format!("http://{addr}/api/v1/admin/keys")),
-    )
-    .body(serde_json::json!({"name": "m", "group": "user:dev", "parent": "team"}).to_string())
-    .send()
-    .await
-    .unwrap();
-    assert_eq!(
-        r.status().as_u16(),
-        201,
-        "mint scope can mint + auto-provision"
-    );
-
-    // MINT principal: CANNOT register hooks (sibling boundary).
-    let r = with(
-        "grp:minters",
-        client.post(format!("http://{addr}/api/v1/admin/hooks")),
-    )
-    .body(hook_body.clone())
-    .send()
-    .await
-    .unwrap();
-    assert_eq!(
-        r.status().as_u16(),
-        403,
-        "mint scope must NOT register hooks"
-    );
-
-    // MINT principal: CANNOT mutate groups (group CRUD stays full).
-    let r = with(
-        "grp:minters",
-        client.post(format!("http://{addr}/api/v1/admin/groups")),
-    )
-    .body(serde_json::json!({"name": "sneaky", "config": {"parent": "team"}}).to_string())
-    .send()
-    .await
-    .unwrap();
-    assert_eq!(
-        r.status().as_u16(),
-        403,
-        "mint scope must NOT mutate arbitrary groups"
-    );
-
-    // HOOKS-REGISTER principal: CAN register a (shape-only) hook, CANNOT mint.
-    let r = with(
-        "grp:registrars",
-        client.post(format!("http://{addr}/api/v1/admin/hooks")),
-    )
-    .body(hook_body)
-    .send()
-    .await
-    .unwrap();
-    assert_eq!(r.status().as_u16(), 201, "hooks-register registers hooks");
-    let r = with(
-        "grp:registrars",
-        client.post(format!("http://{addr}/api/v1/admin/keys")),
-    )
-    .body(serde_json::json!({"name": "x", "group": "team"}).to_string())
-    .send()
-    .await
-    .unwrap();
-    assert_eq!(
-        r.status().as_u16(),
-        403,
-        "hooks-register must NOT mint keys"
-    );
-
-    handle.abort();
-}
-
 /// `max_keys_per_principal`: with the cap set to 2, a group's 3rd mint is a 409 that
 /// names the cap; a DIFFERENT group is unaffected (the cap is per group = per principal). Cap `0`
 /// (default, tested elsewhere) is unlimited.
@@ -7957,9 +7459,10 @@ async fn test_admin_v1_patch_no_op_on_an_already_counted_key_is_not_an_admission
 ///    not catch it either: it compared `ErrKind` alone, and `Conflict` WAS declared.
 /// 2. **RE-ENABLE past the cap** — the same ratchet, reached through the other field. `check_key_cap` counts LIVE keys, so `disable → mint → re-enable` walks a bucket past
 ///    its ceiling with every single request passing the guard. Now gated by the same 409.
-/// 3. **`POST /keys` delegated-mint-must-bind 400** — never exercised, and its
-///    emission reused `Cond::RebindTargetMissing`, whose canonical phrase describes a DIFFERENT
-///    refusal. `openapi.json` therefore described this 400 as a dangling-rebind error.
+///
+/// (1.5.2 scope collapse removed the former case 3 — the delegated-mint-must-bind 400 — since the
+/// narrower `mint` scope that could reach it no longer exists; only a `full` operator mints, and the
+/// operator may legitimately mint an unbound key.)
 ///
 /// It also asserts the audit consequence: every one of these refusals writes a `rejected` row —
 /// a refused mint is an attempt to issue a credential, and it must leave a trace.
@@ -7987,23 +7490,6 @@ async fn drive_key_cap_and_delegation_errors() {
     {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
         inner.max_keys_per_principal = 2;
-        // A DELEGATED `mint` principal (case 3): the refusal is body-derived authorization, so it
-        // is only reachable from a non-`Full` scope. Ceiling `full` so `mint` resolves un-capped.
-        inner.admin_chain = vec!["test-scope-module".to_string(), "admin-tokens".to_string()];
-        let mut table = std::collections::BTreeMap::new();
-        table.insert(
-            "minters".to_string(),
-            crate::config::RoleBindingCfg {
-                admin_scope: Some("mint".to_string()),
-                ..Default::default()
-            },
-        );
-        inner
-            .role_bindings
-            .insert("test-scope-module".to_string(), table);
-        inner
-            .auth_scope_caps
-            .insert("test-scope-module".to_string(), "full".to_string());
     }
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -8095,23 +7581,8 @@ async fn drive_key_cap_and_delegation_errors() {
         "a no-op disable of a key in an at-cap bucket is not an admission"
     );
 
-    // ── 3. DELEGATED MINT with no `group` → 400 `invalid_request` ─────────────────────────────
-    let r = client
-        .post(&keys_url)
-        .header("x-admin-token", "grp:minters")
-        .json(&serde_json::json!({"name": "unbound"}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        r.status().as_u16(),
-        400,
-        "a delegated mint credential may not issue an unbound (uncapped) key"
-    );
-    let body: serde_json::Value = r.json().await.unwrap();
-    assert_eq!(body["error"]["code"], "invalid_request");
-    // The SAME request from the operator (`full`) is allowed — the refusal is body-derived
-    // authorization, not a body validation rule, and must not become one.
+    // The operator (`full`) may mint an UNBOUND key — the tree's owner is not gated (1.5.2 removed
+    // the delegated-mint-must-bind refusal along with the narrower `mint` scope).
     let r = client
         .post(&keys_url)
         .header("x-admin-token", "admintok")
@@ -8143,7 +7614,8 @@ async fn drive_key_cap_and_delegation_errors() {
             b["items"].as_array().cloned().unwrap_or_default()
         }
     };
-    for action in ["key.create", "key.patch"] {
+    // The cap refusals above are `key.patch` (rebind + re-enable); each must leave a `rejected` row.
+    for action in ["key.patch"] {
         let rejected = audit_rows(action)
             .await
             .iter()
@@ -12136,7 +11608,6 @@ async fn declared_error_set_is_exactly_what_the_handlers_emit() {
     drive_plugin_rollback_errors().await;
     drive_plugin_reload_errors().await;
     drive_plugin_inspect_errors().await;
-    drive_hook_escalation_errors().await;
     drive_key_cap_and_delegation_errors().await;
 
     let witnessed = crate::admin::v1::contract::taxonomy::observed::snapshot();

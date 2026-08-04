@@ -225,7 +225,7 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
 name = "busbar"
-version = "1.5.1"
+version = "1.5.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -250,6 +250,7 @@ dependencies = [
  "hyper",
  "hyper-rustls",
  "hyper-util",
+ "indexmap",
  "loom",
  "metrics",
  "metrics-exporter-prometheus",
@@ -289,6 +290,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "zeroize",
 ]
 
 [[package]]
@@ -1265,6 +1267,8 @@ checksum = "d466e9454f08e4a911e14806c24e16fba1b4c121d1ea474396f396069cf949d9"
 dependencies = [
  "equivalent",
  "hashbrown 0.17.1",
+ "serde",
+ "serde_core",
 ]
 
 [[package]]

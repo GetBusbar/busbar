@@ -424,6 +424,7 @@ async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
             .provider("zai"),
         )
         .pool("pa", &[(0, 1)])
+        .keys_chain()
         .governance(gov)
         .cost(crate::cost::CostModel::resolve_parts(None, 0, &groups))
         .build();
@@ -556,6 +557,7 @@ async fn test_cross_protocol_stream_records_tokens_for_tpm() {
             .provider("zai"),
         )
         .pool("pas", &[(0, 1)])
+        .keys_chain()
         .governance(gov)
         .cost(crate::cost::CostModel::resolve_parts(None, 0, &groups))
         .build();
@@ -954,7 +956,7 @@ async fn test_governance_vkey_auth_and_pool_acl() {
         .unwrap();
     let secret = token.as_str();
 
-    let app = TestApp::new().governance(gov).build();
+    let app = TestApp::new().keys_chain().governance(gov).build();
 
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1067,7 +1069,11 @@ async fn test_governance_budget_over_quota() {
     // store seed would be invisible to the in-memory gate and the request would be admitted.)
     gov.hydrate_budgets(&cost, 0).expect("hydrate");
 
-    let app = TestApp::new().governance(gov).cost(cost).build();
+    let app = TestApp::new()
+        .keys_chain()
+        .governance(gov)
+        .cost(cost)
+        .build();
 
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1180,7 +1186,11 @@ async fn over_budget_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<
     // boot does — so the pre-seeded over-budget spend is visible to the admission gate.
     gov.hydrate_budgets(&cost, 0).expect("hydrate");
 
-    let app = TestApp::new().governance(gov).cost(cost).build();
+    let app = TestApp::new()
+        .keys_chain()
+        .governance(gov)
+        .cost(cost)
+        .build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -1403,6 +1413,7 @@ async fn test_governance_rate_limit_429() {
         },
     )]);
     let app = TestApp::new()
+        .keys_chain()
         .governance(gov)
         .cost(crate::cost::CostModel::resolve_parts(None, 0, &groups))
         .build();
@@ -1511,6 +1522,7 @@ async fn over_rpm_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>
         },
     )]);
     let app = TestApp::new()
+        .keys_chain()
         .governance(gov)
         .cost(crate::cost::CostModel::resolve_parts(None, 0, &groups))
         .build();
@@ -1721,7 +1733,7 @@ async fn test_governance_admin_api() {
         GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
     );
 
-    let app = TestApp::new().governance(gov).build();
+    let app = TestApp::new().keys_chain().governance(gov).build();
 
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -3464,6 +3476,7 @@ mod disposition_matrix_tests {
             pools.insert("mypool".to_string(), pool.clone());
             RootCfg {
                 listen: "0.0.0.0:8080".into(),
+                public_url: None,
                 tls: None,
                 admin_listen: crate::config::DEFAULT_ADMIN_LISTEN_ADDR.to_string(),
                 admin_tls: None,

@@ -102,122 +102,11 @@ fn admin_scope_resolution() {
     );
 }
 
-/// R1 (class-8): a principal holding TWO roles bound to INCOMPARABLE sibling scopes must keep
-/// BOTH grants. Under the deleted `.max()` fold (ordinal `Mint` > `HooksRegister`), this used to
-/// collapse to `Mint` alone, and `Mint.allows(HooksRegister)` is false — a DENIAL of authority
-/// either role alone would have granted. `Grants::with` unions instead, so both survive.
-#[test]
-fn sibling_roles_union_keeps_both_grants() {
-    use crate::admin::v1::contract::Scope;
-    let rb = bindings_for(
-        "test-groups-module",
-        &[
-            ("registrar", binding(None, None, Some("hooks-register"))),
-            ("minter", binding(None, None, Some("mint"))),
-        ],
-    );
-    let p = grp_principal("test:alice", &["registrar", "minter"]);
-    let grants = admin_scope_for(Some("test-groups-module"), Some(&p), &rb);
-    assert!(
-        grants.allows(Scope::HooksRegister),
-        "the hooks-register role's grant must survive union with an incomparable sibling"
-    );
-    assert!(
-        grants.allows(Scope::Mint),
-        "the mint role's grant must survive union with an incomparable sibling"
-    );
-}
-
-/// R2 (class-8): REGRESSION PROOF, not a RED test — it passes today (there is no `.max()`/`.min()`
-/// path that could yield `Full` for this input) and exists to kill the rejected alternative of
-/// aggregating roles with the lattice JOIN (`join(HooksRegister, Mint) = Full`), which would be a
-/// genuine privilege escalation: the union of two roles' authority is not the join of the lattice.
-#[test]
-fn sibling_roles_union_is_not_full() {
-    use crate::admin::v1::contract::Scope;
-    let rb = bindings_for(
-        "test-groups-module",
-        &[
-            ("registrar", binding(None, None, Some("hooks-register"))),
-            ("minter", binding(None, None, Some("mint"))),
-        ],
-    );
-    let p = grp_principal("test:alice", &["registrar", "minter"]);
-    let grants = admin_scope_for(Some("test-groups-module"), Some(&p), &rb);
-    assert!(
-        !grants.allows(Scope::Full),
-        "the union of two sibling grants must never confer full authority"
-    );
-}
-
-/// R3 (class-8): a role bound `mint`, ceilinged by `max_admin_scope: hooks-register` — the
-/// SIBLING scope. Under the deleted `std::cmp::min(Mint, HooksRegister)` (`Mint` sorted above
-/// `HooksRegister` by the deleted ordinal), this used to yield `HooksRegister`, an ESCALATION: a
-/// mint-only role gaining hook-register authority its role never granted, purely because the
-/// ceiling named its sibling. The lattice meet of two incomparable scopes is `read-only` — neither
-/// sibling's authority survives.
-#[test]
-fn mint_capped_by_hooks_register_grants_only_read() {
-    use crate::admin::v1::contract::Scope;
-    let rb = bindings_for(
-        "test-scope-module",
-        &[("minters", binding(None, None, Some("mint")))],
-    );
-    let mut app = crate::test_support::TestApp::new().build();
-    let a = std::sync::Arc::get_mut(&mut app).expect("freshly built App Arc is unshared");
-    a.admin_chain = vec!["test-scope-module".to_string()];
-    a.role_bindings = rb;
-    a.auth_scope_caps.insert(
-        "test-scope-module".to_string(),
-        "hooks-register".to_string(),
-    );
-    let grants = dry_run_admin_scope(&app, Some("grp:minters"), None);
-    assert!(
-        !grants.allows(Scope::HooksRegister),
-        "a mint role capped by the sibling hooks-register ceiling must not gain hook authority"
-    );
-    assert!(
-        !grants.allows(Scope::Mint),
-        "the mint ceiling cut is real: the incomparable cap must not preserve mint either"
-    );
-    assert!(
-        grants.allows(Scope::ReadOnly),
-        "the siblings' only common authority (read-only) must survive"
-    );
-}
-
-/// R4 (class-8): the mirror of R3 — a role bound `hooks-register`, ceilinged by
-/// `max_admin_scope: mint`. Under the deleted `min`, this ALSO yielded `HooksRegister` (it sorts
-/// lower), so this direction is not an escalation (the result equals the role's own grant) but the
-/// ceiling FAILS TO CUT: a `mint` ceiling must not leave hooks-register authority in place. The
-/// lattice meet is still `read-only`.
-#[test]
-fn hooks_register_capped_by_mint_grants_only_read() {
-    use crate::admin::v1::contract::Scope;
-    let rb = bindings_for(
-        "test-scope-module",
-        &[("registrars", binding(None, None, Some("hooks-register")))],
-    );
-    let mut app = crate::test_support::TestApp::new().build();
-    let a = std::sync::Arc::get_mut(&mut app).expect("freshly built App Arc is unshared");
-    a.admin_chain = vec!["test-scope-module".to_string()];
-    a.role_bindings = rb;
-    a.auth_scope_caps
-        .insert("test-scope-module".to_string(), "mint".to_string());
-    let grants = dry_run_admin_scope(&app, Some("grp:registrars"), None);
-    assert!(
-        !grants.allows(Scope::HooksRegister),
-        "a mint ceiling must cut a hooks-register role's hook authority, not leave it in place"
-    );
-    assert!(
-        !grants.allows(Scope::Mint),
-        "the ceiling must not invent mint authority the role never granted"
-    );
-    assert!(
-        grants.allows(Scope::ReadOnly),
-        "the siblings' only common authority (read-only) must survive"
-    );
-}
+// (1.5.2 scope collapse deleted the four sibling/incomparable admin-scope tests — R1..R4:
+// `sibling_roles_union_keeps_both_grants`, `sibling_roles_union_is_not_full`,
+// `mint_capped_by_hooks_register_grants_only_read`, `hooks_register_capped_by_mint_grants_only_read`.
+// With only {read-only, full}, roles can no longer hold incomparable grants and a ceiling can never
+// collapse a binding to a surprising sibling meet.)
 
 /// S4 module scoping: bindings are NESTED BY MODULE, so a role asserted by module A must NOT
 /// ride module B's binding. A binding that lives only under "other-module" grants nothing to a
@@ -339,7 +228,9 @@ fn test_extract_bearer_token_malformed_no_panic() {
 fn test_chain_identifies_with_module_and_principal() {
     let mw = AuthMiddleware::new_builtin(&chain_cfg(&["test-groups-module"]));
     match mw.run_chain(Some("grp:dev")) {
-        ChainVerdict::Identified { module, principal } => {
+        ChainVerdict::Identified {
+            module, principal, ..
+        } => {
             assert_eq!(module, "test-groups-module");
             assert_eq!(principal.id, "test:dev");
             assert_eq!(principal.roles, vec!["dev".to_string()]);
@@ -1585,6 +1476,7 @@ async fn test_disabled_virtual_key_is_rejected_401() {
             .provider("zai"),
         )
         .pool("pa", &[(0, 1)])
+        .keys_chain()
         .governance(gov)
         .build();
 
@@ -1639,235 +1531,6 @@ async fn test_disabled_virtual_key_is_rejected_401() {
         200,
         "an enabled virtual key must pass auth (got {})",
         r_ena.status()
-    );
-
-    handle.abort();
-    server.shutdown().await;
-}
-
-/// `auth.mode=none` is an open relay, but governance supersedes
-/// it. With governance enabled AND auth.mode explicitly None, a request that presents NO token
-/// must still be rejected 401 — none-mode's accept-every-request semantics are NOT honoured. This
-/// pins the documented override (and the parallel one-shot operator warning the override emits)
-/// so a future refactor can't accidentally let none-mode short-circuit the governance lookup and
-/// silently re-open the relay.
-#[tokio::test]
-async fn test_none_mode_with_governance_still_requires_virtual_key() {
-    use crate::governance::{GovState, MemoryStore};
-    use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-    use serde_json::json;
-    use std::sync::Arc;
-
-    crate::metrics::init();
-
-    let state = Arc::new(MockServerState::new());
-    state.push(MockResponse::Ok {
-            status: axum::http::StatusCode::OK,
-            body: json!({
-                "model": "glm-4.5",
-                "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
-                "usage": {"prompt_tokens": 1, "completion_tokens": 1}
-            }),
-        });
-    let server = MockServer::new(state).await;
-
-    let store = Arc::new(MemoryStore::new());
-    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
-        &[7u8; 32],
-        crate::governance::signing::DEFAULT_KID,
-    );
-    // An admin token makes the governance engine ACTIVE (the vkey-resolution branch enforces). In a
-    // real deploy keys can only be minted through the admin API, which requires this token — so a
-    // store holding minted keys implies an admin token is set. Without it the engine is INERT and
-    // the static auth chain applies (see `test_governance_inert_without_admin_token_*`).
-    let gov = Arc::new(
-        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
-    );
-    let (_key, secret) = gov
-        .mint_signed(
-            crate::governance::NewKeySpec {
-                name: "k".to_string(),
-                allowed_pools: Some(vec!["pa".to_string()]),
-                group: None,
-                labels: Default::default(),
-            },
-            2_000_000_000,
-            1_000_000_000,
-        )
-        .unwrap();
-    let secret = secret.as_str();
-
-    let app = TestApp::new()
-        .lane(
-            LaneSpec::new(
-                "glm-4.5",
-                crate::proto::Protocol::openai(),
-                &server.base_url(),
-            )
-            .provider("zai"),
-        )
-        .pool("pa", &[(0, 1)])
-        .upstream_creds(crate::auth::UpstreamCreds::Own)
-        .governance(gov)
-        .build();
-
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
-    let url = format!("http://{addr}/pa/v1/messages");
-    let req =
-        json!({"model": "pa", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 16})
-            .to_string();
-
-    // No token at all → 401, even though auth.mode=none would normally admit every request.
-    let r_none = client.post(&url).body(req.clone()).send().await.unwrap();
-    assert_eq!(
-        r_none.status().as_u16(),
-        401,
-        "none-mode must NOT open the relay when governance is enabled"
-    );
-
-    // A valid enabled key still passes auth (governance is what is honoured).
-    let r_ok = client
-        .post(&url)
-        .bearer_auth(secret)
-        .body(req)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        r_ok.status().as_u16(),
-        200,
-        "a valid enabled key must pass auth under governance+none (got {})",
-        r_ok.status()
-    );
-
-    handle.abort();
-    server.shutdown().await;
-}
-
-/// `upstream_credentials: passthrough` + governance enabled is a
-/// documented UNSUPPORTED deployment. Passthrough's contract is "accept any caller credential and
-/// forward it upstream", but governance supersedes it: every request must resolve to a valid
-/// ENABLED virtual key. The middleware emits a one-shot operator warning (`WARN_ONCE` at the top
-/// of the governance branch) and then enforces the governance lookup. Following the project
-/// precedent (`test_none_mode_with_governance_still_requires_virtual_key`), the warn line itself is NOT
-/// asserted — it is a one-shot, process-global side effect emitted on a worker thread, so its
-/// documented BEHAVIOURAL consequence is the contract: passthrough's accept-and-forward semantics
-/// are NOT honoured. This pins it end-to-end through the real router so a future refactor can't
-/// accidentally let passthrough short-circuit the governance lookup and silently forward an
-/// unauthenticated caller upstream:
-///   - NO token under passthrough+governance → 401 (passthrough would otherwise admit-and-forward)
-///   - a non-virtual-key bearer (the kind passthrough would forward verbatim) → 401
-///   - a valid enabled virtual key → admitted past auth (governance is what is honoured)
-#[tokio::test]
-async fn test_passthrough_mode_with_governance_still_requires_virtual_key() {
-    use crate::governance::{GovState, MemoryStore};
-    use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-    use serde_json::json;
-    use std::sync::Arc;
-
-    crate::metrics::init();
-
-    let state = Arc::new(MockServerState::new());
-    state.push(MockResponse::Ok {
-            status: axum::http::StatusCode::OK,
-            body: json!({
-                "model": "glm-4.5",
-                "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
-                "usage": {"prompt_tokens": 1, "completion_tokens": 1}
-            }),
-        });
-    let server = MockServer::new(state).await;
-
-    let store = Arc::new(MemoryStore::new());
-    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
-        &[7u8; 32],
-        crate::governance::signing::DEFAULT_KID,
-    );
-    // An admin token makes the governance engine ACTIVE (the vkey-resolution branch enforces). In a
-    // real deploy keys can only be minted through the admin API, which requires this token — so a
-    // store holding minted keys implies an admin token is set. Without it the engine is INERT and
-    // the static auth chain applies (see `test_governance_inert_without_admin_token_*`).
-    let gov = Arc::new(
-        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
-    );
-    let (_key, secret) = gov
-        .mint_signed(
-            crate::governance::NewKeySpec {
-                name: "k".to_string(),
-                allowed_pools: Some(vec!["pa".to_string()]),
-                group: None,
-                labels: Default::default(),
-            },
-            2_000_000_000,
-            1_000_000_000,
-        )
-        .unwrap();
-    let secret = secret.as_str();
-
-    let app = TestApp::new()
-        .lane(
-            LaneSpec::new(
-                "glm-4.5",
-                crate::proto::Protocol::openai(),
-                &server.base_url(),
-            )
-            .provider("zai"),
-        )
-        .pool("pa", &[(0, 1)])
-        .upstream_creds(crate::auth::UpstreamCreds::Passthrough)
-        .governance(gov)
-        .build();
-
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
-    let url = format!("http://{addr}/pa/v1/messages");
-    let req =
-        json!({"model": "pa", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 16})
-            .to_string();
-
-    // No token at all → 401, even though auth.mode=passthrough would normally admit-and-forward.
-    let r_none = client.post(&url).body(req.clone()).send().await.unwrap();
-    assert_eq!(
-            r_none.status().as_u16(),
-            401,
-            "passthrough must NOT accept-and-forward an unauthenticated caller when governance is enabled"
-        );
-
-    // A non-virtual-key bearer — exactly the kind of caller credential passthrough would forward
-    // verbatim upstream — is rejected, because governance requires a known enabled key.
-    let r_unknown = client
-        .post(&url)
-        .bearer_auth("sk-caller-upstream-cred")
-        .body(req.clone())
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        r_unknown.status().as_u16(),
-        401,
-        "passthrough must NOT forward an arbitrary caller credential when governance is enabled"
-    );
-
-    // A valid enabled virtual key still passes auth (governance is what is honoured).
-    let r_ok = client
-        .post(&url)
-        .bearer_auth(secret)
-        .body(req)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        r_ok.status().as_u16(),
-        200,
-        "a valid enabled key must pass auth under governance+passthrough (got {})",
-        r_ok.status()
     );
 
     handle.abort();
@@ -2101,6 +1764,262 @@ async fn test_admin_token_both_carriers_or_fold_no_short_circuit() {
     handle.abort();
 }
 
+// ── 1.5.2 admin-plane OIDC: scope collapse authorization + external admin-module dispatch/offload ──
+
+/// A test-only external admin module that SLEEPS on the (blocking-pool) thread before returning —
+/// stands in for a wedged admin IdP doing blocking JWKS/introspection I/O. Returns `Pass` (so the
+/// chain fail-closed-denies) once it wakes. Injected via `TestApp::admin_module`, which forces
+/// `has_plugin`, so the admin middleware OFFLOADS it off the reactor.
+struct SleepingAdminModule(std::time::Duration);
+impl crate::auth::AuthModule for SleepingAdminModule {
+    fn name(&self) -> &'static str {
+        "slow-oidc"
+    }
+    fn authenticate(&self, _candidate: Option<&str>) -> crate::auth::AuthOutcome {
+        std::thread::sleep(self.0);
+        crate::auth::AuthOutcome::Pass
+    }
+}
+
+/// A test-only external admin module that identifies a ROLELESS principal carrying the reserved
+/// operator id `"admin"` — the privilege-escalation probe (RISK 7): an external module returning the
+/// operator id must NOT reach `Grants::of(Full)`.
+struct RolelessAdminModule;
+impl crate::auth::AuthModule for RolelessAdminModule {
+    fn name(&self) -> &'static str {
+        "ext-admin"
+    }
+    fn authenticate(&self, _candidate: Option<&str>) -> crate::auth::AuthOutcome {
+        crate::auth::AuthOutcome::Identify(Principal::from_id("admin"))
+    }
+}
+
+/// Serve `app` on an ephemeral port; returns (base_url, join handle). Caller aborts the handle.
+async fn serve_app(
+    app: std::sync::Arc<crate::state::App>,
+) -> (String, tokio::task::JoinHandle<()>) {
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    (format!("http://{addr}"), handle)
+}
+
+/// A `full` admin binding satisfies a MUTATION endpoint (now `Full` after the scope collapse): a
+/// `POST` is admitted past the authorization gate (not 401/403). The identifying module is the
+/// `test-scope-module` external-admin stand-in.
+#[tokio::test]
+async fn admin_plugin_full_binding_allows_mutation() {
+    crate::metrics::init();
+    let rb = bindings_for(
+        "test-scope-module",
+        &[("minters", binding(None, None, Some("full")))],
+    );
+    let mut app = crate::test_support::TestApp::new()
+        .admin_chain(vec!["test-scope-module".to_string()])
+        .role_bindings(rb)
+        .build();
+    // An external module defaults to a `read-only` ceiling; lift it to `full` so the full binding is
+    // not capped below the mutation scope (the cap is exercised separately).
+    let a = std::sync::Arc::get_mut(&mut app).expect("unshared App Arc");
+    a.auth_scope_caps
+        .insert("test-scope-module".to_string(), "full".to_string());
+    let (base, handle) = serve_app(app).await;
+    let client = reqwest::Client::new();
+    // A mutation endpoint (POST /hooks is now Full). Full grant ⇒ authorization passes; the empty
+    // body then 400s at the handler — anything but 401/403 proves the scope gate admitted it.
+    let r = client
+        .post(format!("{base}/api/v1/admin/hooks"))
+        .bearer_auth("grp:minters")
+        .body("{}")
+        .send()
+        .await
+        .unwrap();
+    assert_ne!(r.status().as_u16(), 401, "full binding must authenticate");
+    assert_ne!(
+        r.status().as_u16(),
+        403,
+        "full binding must satisfy the Full mutation scope, got {}",
+        r.status()
+    );
+    handle.abort();
+}
+
+/// A `read-only` admin binding: a `GET` is admitted (ReadOnly), a mutating `POST` is FORBIDDEN (403,
+/// the frozen forbidden envelope) — the 1.5.2 collapse makes every mutation `Full`, which a
+/// read-only grant never satisfies.
+#[tokio::test]
+async fn admin_plugin_readonly_binding_get_ok_post_403() {
+    crate::metrics::init();
+    let rb = bindings_for(
+        "test-scope-module",
+        &[("viewers", binding(None, None, Some("read-only")))],
+    );
+    let app = crate::test_support::TestApp::new()
+        .admin_chain(vec!["test-scope-module".to_string()])
+        .role_bindings(rb)
+        .build();
+    let (base, handle) = serve_app(app).await;
+    let client = reqwest::Client::new();
+    let get = client
+        .get(format!("{base}/api/v1/admin/keys"))
+        .bearer_auth("grp:viewers")
+        .send()
+        .await
+        .unwrap();
+    assert_ne!(
+        get.status().as_u16(),
+        403,
+        "read-only binding must satisfy a GET (ReadOnly), got {}",
+        get.status()
+    );
+    assert_ne!(
+        get.status().as_u16(),
+        401,
+        "read-only binding authenticates"
+    );
+    let post = client
+        .post(format!("{base}/api/v1/admin/hooks"))
+        .bearer_auth("grp:viewers")
+        .body("{}")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        post.status().as_u16(),
+        403,
+        "read-only binding must NOT satisfy a Full mutation, got {}",
+        post.status()
+    );
+    let body = post.text().await.unwrap();
+    assert!(
+        body.contains("\"forbidden\""),
+        "403 must carry the frozen forbidden envelope: {body}"
+    );
+    handle.abort();
+}
+
+/// The module `max_admin_scope: read-only` ceiling CAPS a `full` binding down to read-only: a `POST`
+/// (Full) is 403 even though the role binds `full`, because the identifying module's ceiling meets it
+/// down to read-only (`Grants::capped_by`).
+#[tokio::test]
+async fn admin_max_admin_scope_caps_binding() {
+    crate::metrics::init();
+    let rb = bindings_for(
+        "test-scope-module",
+        &[("ops", binding(None, None, Some("full")))],
+    );
+    let mut app = crate::test_support::TestApp::new()
+        .admin_chain(vec!["test-scope-module".to_string()])
+        .role_bindings(rb)
+        .build();
+    let a = std::sync::Arc::get_mut(&mut app).expect("unshared App Arc");
+    a.auth_scope_caps
+        .insert("test-scope-module".to_string(), "read-only".to_string());
+    let (base, handle) = serve_app(app).await;
+    let client = reqwest::Client::new();
+    let post = client
+        .post(format!("{base}/api/v1/admin/hooks"))
+        .bearer_auth("grp:ops")
+        .body("{}")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        post.status().as_u16(),
+        403,
+        "a read-only ceiling must cap a full binding below the Full mutation scope, got {}",
+        post.status()
+    );
+    handle.abort();
+}
+
+/// RISK 7: an external admin module returning the reserved operator id `"admin"` ROLELESS must fall
+/// to `Grants::default()` — denied even on a GET (never `Grants::of(Full)`, which is gated on the
+/// compiled `ADMIN_TOKENS_PRINCIPAL_ID`, not the string id). Driven through the offloaded plugin
+/// dispatch path.
+#[tokio::test]
+async fn roleless_external_admin_principal_denied() {
+    crate::metrics::init();
+    let app = crate::test_support::TestApp::new()
+        .admin_chain(vec!["ext-admin".to_string()])
+        .admin_module("ext-admin", Box::new(RolelessAdminModule))
+        .build();
+    let (base, handle) = serve_app(app).await;
+    let client = reqwest::Client::new();
+    let r = client
+        .get(format!("{base}/api/v1/admin/keys"))
+        .bearer_auth("anything")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status().as_u16(),
+        403,
+        "a roleless external principal id 'admin' must get Grants::default() (403), never Full; got {}",
+        r.status()
+    );
+    handle.abort();
+}
+
+/// RISK 4: a wedged (sleeping) external admin module must NOT stall the reactor — it is OFFLOADED to
+/// the blocking pool, so `/healthz` (and a concurrent admin request) stay responsive while it sleeps.
+#[tokio::test]
+async fn admin_offload_does_not_stall_healthz() {
+    crate::metrics::init();
+    let app = crate::test_support::TestApp::new()
+        .admin_chain(vec!["slow-oidc".to_string()])
+        .admin_module(
+            "slow-oidc",
+            Box::new(SleepingAdminModule(std::time::Duration::from_millis(800))),
+        )
+        .build();
+    let (base, handle) = serve_app(app).await;
+    let client = reqwest::Client::new();
+
+    // Kick off an admin request that will OFFLOAD and sleep 800ms on a blocking thread.
+    let admin_url = format!("{base}/api/v1/admin/keys");
+    let c2 = client.clone();
+    let admin = tokio::spawn(async move {
+        c2.get(&admin_url)
+            .bearer_auth("anything")
+            .send()
+            .await
+            .unwrap()
+    });
+    // Give it a moment to enter the offloaded blocking sleep.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // /healthz must RESPOND PROMPTLY — the reactor is NOT parked on the sleeping module. The status
+    // reflects app HEALTH (a lane-less test fixture reports 503), which is orthogonal to the offload;
+    // the invariant under test is that a response arrives at all, fast, while the admin module sleeps.
+    let start = std::time::Instant::now();
+    let hz = client.get(format!("{base}/healthz")).send().await.unwrap();
+    let elapsed = start.elapsed();
+    assert!(
+        hz.status().as_u16() == 200 || hz.status().as_u16() == 503,
+        "/healthz must return a health verdict (200/503), not hang, while an admin module sleeps; \
+         got {}",
+        hz.status()
+    );
+    assert!(
+        elapsed < std::time::Duration::from_millis(400),
+        "/healthz stalled for {elapsed:?} behind a sleeping admin module — the chain was not \
+         offloaded off the reactor"
+    );
+
+    // The offloaded admin request still completes (fail-closed 401: the sleeper returns Pass ⇒ the
+    // non-empty chain denies).
+    let r = admin.await.unwrap();
+    assert_eq!(
+        r.status().as_u16(),
+        401,
+        "a sleeping admin module that ultimately Passes fail-closed-denies (401), got {}",
+        r.status()
+    );
+    handle.abort();
+}
+
 /// Regression for the admin-surface carrier-separation invariant (HIGH/authz-boundary) promised
 /// by the comment at the top of the `is_admin` branch: the `/admin` operator surface is guarded
 /// ONLY by `Authorization: Bearer` and `x-admin-token` — NOT by the vendor-SDK client-token
@@ -2261,6 +2180,7 @@ async fn test_governance_accepts_vendor_carriers_and_native_401() {
             .api_key("busbar-upstream-key"),
         )
         .pool("pa", &[(0, 1)])
+        .keys_chain()
         .governance(gov)
         .build();
 
@@ -2383,6 +2303,7 @@ async fn test_governance_rejects_empty_token_even_if_empty_secret_key_exists() {
             .api_key("busbar-upstream-key"),
         )
         .pool("pa", &[(0, 1)])
+        .keys_chain()
         .governance(gov)
         .build();
 
@@ -2476,6 +2397,7 @@ async fn test_governance_revoked_signed_token_key_rejected() {
             .api_key("busbar-upstream-key"),
         )
         .pool("pa", &[(0, 1)])
+        .keys_chain()
         .governance(gov.clone())
         .build();
 
@@ -3264,6 +3186,7 @@ async fn test_governance_active_with_admin_token_enforces_minted_key() {
             .api_key("busbar-upstream-key"),
         )
         .pool("pa", &[(0, 1)])
+        .keys_chain()
         .governance(gov)
         .build();
 
@@ -3342,6 +3265,7 @@ async fn test_governance_active_with_admin_token_rejects_missing_vkey() {
         .pool("pa", &[(0, 1)])
         // Open static chain — but active governance supersedes it.
         .upstream_creds(crate::auth::UpstreamCreds::Own)
+        .keys_chain()
         .governance(gov)
         .build();
 
@@ -3557,6 +3481,7 @@ async fn test_active_governance_persisted_key_is_enforced() {
             .api_key("busbar-upstream-key"),
         )
         .pool("pa", &[(0, 1)])
+        .keys_chain()
         .governance(gov)
         .build();
 
@@ -3724,6 +3649,465 @@ async fn structural_sigv4_gate_rejects_without_reading_the_body() {
         "expected an immediate 403 from the structural gate: {resp}"
     );
 
+    handle.abort();
+    server.shutdown().await;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// 1.5.2 DATA-PLANE / ADMIN-TOKEN DECOUPLING — RED-before-GREEN suite (spec "RED-before-GREEN tests").
+// The admin token no longer gates the data plane; admission is decided SOLELY by the chain shape.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// Local helper: serve a router on an ephemeral port, returning (addr, join handle).
+async fn dp_serve(
+    app: std::sync::Arc<crate::state::App>,
+) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    (addr, handle)
+}
+
+/// A governance engine (admin token set) with ONE enabled, pool-`pa` virtual key. Returns (gov, secret).
+fn dp_gov_with_key() -> (std::sync::Arc<crate::governance::GovState>, String) {
+    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+    let store = std::sync::Arc::new(MemoryStore::new());
+    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+        &[7u8; 32],
+        crate::governance::signing::DEFAULT_KID,
+    );
+    let gov = std::sync::Arc::new(
+        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
+    );
+    let (_k, secret) = gov
+        .mint_signed(
+            NewKeySpec {
+                name: "vk".to_string(),
+                allowed_pools: Some(vec!["pa".to_string()]),
+                group: None,
+                labels: Default::default(),
+            },
+            2_000_000_000,
+            1_000_000_000,
+        )
+        .unwrap();
+    (gov, secret.as_str().to_string())
+}
+
+fn dp_ok_state() -> std::sync::Arc<crate::test_support::MockServerState> {
+    use crate::test_support::{MockResponse, MockServerState};
+    let state = std::sync::Arc::new(MockServerState::new());
+    for _ in 0..2 {
+        state.push(MockResponse::Ok {
+            status: axum::http::StatusCode::OK,
+            body: serde_json::json!({
+                "id": "msg_1", "type": "message", "role": "assistant", "model": "m",
+                "content": [{"type": "text", "text": "hi"}], "stop_reason": "end_turn",
+                "usage": {"input_tokens": 1, "output_tokens": 1}
+            }),
+        });
+    }
+    state
+}
+
+/// #1 — `chain:[]` + admin token + NO credential → 200 ANONYMOUS (the previously-impossible
+/// "protected admin API, open relay" posture). RED on pre-1.5.2 code: the admin token forced a vkey
+/// on every data-plane request, so a no-credential request was 401.
+#[tokio::test]
+async fn test_1_5_2_open_chain_admin_token_no_credential_admits_anon() {
+    use crate::test_support::{LaneSpec, MockServer, TestApp};
+    crate::metrics::init();
+    let server = MockServer::new(dp_ok_state()).await;
+    let (gov, _secret) = dp_gov_with_key();
+    // Default auth = empty chain (open front door). Admin token present (governance active).
+    let app = TestApp::new()
+        .lane(
+            LaneSpec::new("m", crate::proto::Protocol::anthropic(), &server.base_url())
+                .api_key("up"),
+        )
+        .pool("pa", &[(0, 1)])
+        .governance(gov)
+        .build();
+    let (addr, handle) = dp_serve(app).await;
+    let body = serde_json::json!({"model": "pa", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 8}).to_string();
+    let r = reqwest::Client::new()
+        .post(format!("http://{addr}/pa/v1/messages"))
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status().as_u16(),
+        200,
+        "chain:[] + admin token + no credential must admit ANONYMOUS (open relay, protected admin)"
+    );
+    handle.abort();
+    server.shutdown().await;
+}
+
+/// #11 — a `chain:[]` request carries a DEFAULT `GovCtx` (never a 500 MissingExtension). Same wire
+/// path as #1: a 200 (rather than a 500) through the real router proves the downstream
+/// `Extension<GovCtx>` extraction found the default GovCtx the Open arm inserts.
+#[tokio::test]
+async fn test_1_5_2_open_chain_inserts_default_govctx_no_500() {
+    use crate::test_support::{LaneSpec, MockServer, TestApp};
+    crate::metrics::init();
+    let server = MockServer::new(dp_ok_state()).await;
+    let (gov, _secret) = dp_gov_with_key();
+    let app = TestApp::new()
+        .lane(
+            LaneSpec::new("m", crate::proto::Protocol::anthropic(), &server.base_url())
+                .api_key("up"),
+        )
+        .pool("pa", &[(0, 1)])
+        .governance(gov)
+        .build();
+    let (addr, handle) = dp_serve(app).await;
+    let body = serde_json::json!({"model": "pa", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 8}).to_string();
+    let r = reqwest::Client::new()
+        .post(format!("http://{addr}/pa/v1/messages"))
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    assert_ne!(
+        r.status().as_u16(),
+        500,
+        "open chain must insert a default GovCtx (no MissingExtension 500)"
+    );
+    assert_eq!(r.status().as_u16(), 200);
+    handle.abort();
+    server.shutdown().await;
+}
+
+/// #2 — `chain:[]` + admin token + a VALID vkey voluntarily presented → 200, and the key is NOT
+/// metered (pure anonymous: an empty chain resolves NOTHING). RED on pre-1.5.2 code: the vkey path
+/// resolved and metered it.
+#[tokio::test]
+async fn test_1_5_2_open_chain_valid_vkey_ignored_not_metered() {
+    use crate::test_support::{LaneSpec, MockServer, TestApp};
+    crate::metrics::init();
+    let server = MockServer::new(dp_ok_state()).await;
+    let (gov, secret) = dp_gov_with_key();
+    let key_id = gov.all_keys().unwrap()[0].id.clone();
+    let app = TestApp::new()
+        .lane(
+            LaneSpec::new("m", crate::proto::Protocol::anthropic(), &server.base_url())
+                .api_key("up"),
+        )
+        .pool("pa", &[(0, 1)])
+        .governance(gov.clone())
+        .build();
+    let (addr, handle) = dp_serve(app).await;
+    let body = serde_json::json!({"model": "pa", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 8}).to_string();
+    let r = reqwest::Client::new()
+        .post(format!("http://{addr}/pa/v1/messages"))
+        .bearer_auth(&secret)
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status().as_u16(),
+        200,
+        "open chain admits regardless of the presented vkey"
+    );
+    // PURE ANONYMOUS: the voluntarily-presented key was ignored → its ledger recorded no spend.
+    let cost = crate::cost::CostModel::flat(1);
+    let spend = gov
+        .usage_for(&cost, &key_id, crate::store::now())
+        .unwrap()
+        .map(|u| u.spend_cents)
+        .unwrap_or(0);
+    assert_eq!(
+        spend, 0,
+        "an empty chain must NOT resolve/meter a presented vkey (pure anonymous)"
+    );
+    handle.abort();
+    server.shutdown().await;
+}
+
+/// #3 — `chain:[keys]` + admin token + a VALID enabled vkey → 200 (admitted + governed, unchanged).
+#[tokio::test]
+async fn test_1_5_2_keys_chain_valid_vkey_admits() {
+    use crate::test_support::{LaneSpec, MockServer, TestApp};
+    crate::metrics::init();
+    let server = MockServer::new(dp_ok_state()).await;
+    let (gov, secret) = dp_gov_with_key();
+    let app = TestApp::new()
+        .lane(
+            LaneSpec::new("m", crate::proto::Protocol::anthropic(), &server.base_url())
+                .api_key("up"),
+        )
+        .pool("pa", &[(0, 1)])
+        .keys_chain()
+        .governance(gov)
+        .build();
+    let (addr, handle) = dp_serve(app).await;
+    let body = serde_json::json!({"model": "pa", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 8}).to_string();
+    let r = reqwest::Client::new()
+        .post(format!("http://{addr}/pa/v1/messages"))
+        .bearer_auth(&secret)
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status().as_u16(),
+        200,
+        "chain:[keys] + valid enabled vkey must admit"
+    );
+    handle.abort();
+    server.shutdown().await;
+}
+
+/// #4 — `chain:[keys]` + a DISABLED vkey → 401 (disabled ⇒ Reject, never a synth re-admit).
+#[tokio::test]
+async fn test_1_5_2_keys_chain_disabled_vkey_rejected() {
+    use crate::test_support::{LaneSpec, MockServer, TestApp};
+    crate::metrics::init();
+    let server = MockServer::new(dp_ok_state()).await;
+    let (gov, secret) = dp_gov_with_key();
+    let key_id = gov.all_keys().unwrap()[0].id.clone();
+    gov.update_key(&key_id, Some(false), None).unwrap(); // freeze it
+    let app = TestApp::new()
+        .lane(
+            LaneSpec::new("m", crate::proto::Protocol::anthropic(), &server.base_url())
+                .api_key("up"),
+        )
+        .pool("pa", &[(0, 1)])
+        .keys_chain()
+        .governance(gov)
+        .build();
+    let (addr, handle) = dp_serve(app).await;
+    let body = serde_json::json!({"model": "pa", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 8}).to_string();
+    let r = reqwest::Client::new()
+        .post(format!("http://{addr}/pa/v1/messages"))
+        .bearer_auth(&secret)
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status().as_u16(),
+        401,
+        "a disabled vkey must be rejected (never re-admitted via synth)"
+    );
+    handle.abort();
+    server.shutdown().await;
+}
+
+/// #7 — an IdP-style principal (the `test-groups-module` stand-in) whose role BINDS a group is
+/// admitted with a SYNTHESIZED governance key: pool ACL applies (granted pool serves, ungranted 403).
+#[tokio::test]
+async fn test_1_5_2_role_bound_principal_synthesized() {
+    use crate::test_support::{LaneSpec, MockServer, TestApp};
+    crate::metrics::init();
+    let server = MockServer::new(dp_ok_state()).await;
+    let (gov, _secret) = dp_gov_with_key();
+    let rb = bindings_for(
+        "test-groups-module",
+        &[("eng", binding(Some(&["pa"]), None, None))],
+    );
+    let app = TestApp::new()
+        .lane(
+            LaneSpec::new("m", crate::proto::Protocol::anthropic(), &server.base_url())
+                .api_key("up"),
+        )
+        .pool("pa", &[(0, 1)])
+        .pool("pb", &[(0, 1)])
+        .auth(std::sync::Arc::new(AuthMiddleware::new_builtin(
+            &chain_cfg(&["test-groups-module"]),
+        )))
+        .governance(gov)
+        .role_bindings(rb)
+        .build();
+    let (addr, handle) = dp_serve(app).await;
+    let mk = |pool: &str| {
+        reqwest::Client::new()
+            .post(format!("http://{addr}/{pool}/v1/messages"))
+            .bearer_auth("grp:eng")
+            .body(serde_json::json!({"model": pool, "messages": [{"role":"user","content":"hi"}], "max_tokens": 8}).to_string())
+            .send()
+    };
+    assert_eq!(
+        mk("pa").await.unwrap().status().as_u16(),
+        200,
+        "granted pool serves (synth key)"
+    );
+    assert_eq!(
+        mk("pb").await.unwrap().status().as_u16(),
+        403,
+        "ungranted pool is pool-ACL denied"
+    );
+    handle.abort();
+    server.shutdown().await;
+}
+
+/// #8 — the ADMIN path still bypasses governance (empty GovCtx) and mint still works: the admin
+/// token authenticates `/api/v1/admin/*` and returns above the data-plane gate, unchanged.
+/// (Gated on `auth-admin-tokens`: the operator admin-token module is compiled out under
+/// `--no-default-features`, so there is no admin-token authenticator to exercise there.)
+#[cfg(feature = "auth-admin-tokens")]
+#[tokio::test]
+async fn test_1_5_2_admin_path_bypasses_governance_and_mints() {
+    use crate::test_support::TestApp;
+    crate::metrics::init();
+    let (gov, _secret) = dp_gov_with_key();
+    let app = TestApp::new().governance(gov).build();
+    let (addr, handle) = dp_serve(app).await;
+    // Mint a key through the admin API using the operator admin token.
+    let r = reqwest::Client::new()
+        .post(format!("http://{addr}/api/v1/admin/keys"))
+        .header(crate::auth::X_ADMIN_TOKEN, "admintok")
+        .header("content-type", "application/json")
+        .body(serde_json::json!({"name": "minted-via-admin"}).to_string())
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        r.status().is_success(),
+        "admin token must authenticate the admin API and mint (got {})",
+        r.status()
+    );
+    // Wrong admin token → 401 (admin gate still enforced).
+    let bad = reqwest::Client::new()
+        .post(format!("http://{addr}/api/v1/admin/keys"))
+        .header(crate::auth::X_ADMIN_TOKEN, "nope")
+        .header("content-type", "application/json")
+        .body(serde_json::json!({"name": "x"}).to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        bad.status().as_u16(),
+        401,
+        "a wrong admin token must be rejected"
+    );
+    handle.abort();
+}
+
+/// #10 — the `keys` ENGINE ARM is CACHE-EXEMPT: running a keys chain WITH a credential cache
+/// resolves the vkey (Identified{resolved:Some}) but writes NOTHING to the cache (revocation stays
+/// per-request). RED on pre-1.5.2 code: no keys engine arm / no `resolved` field existed at all.
+#[test]
+fn test_1_5_2_keys_arm_is_cache_exempt() {
+    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+    crate::metrics::init();
+    let store = std::sync::Arc::new(MemoryStore::new());
+    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+        &[9u8; 32],
+        crate::governance::signing::DEFAULT_KID,
+    );
+    let gov = GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap();
+    let (_k, secret) = gov
+        .mint_signed(
+            NewKeySpec {
+                name: "ce".to_string(),
+                allowed_pools: None,
+                group: None,
+                labels: Default::default(),
+            },
+            2_000_000_000,
+            1_000_000_000,
+        )
+        .unwrap();
+    let secret = secret.as_str();
+    let mw = AuthMiddleware::new_builtin(&chain_cfg(&["keys"]));
+    let cache = crate::auth_cache::CredentialCache::new();
+    let now = crate::store::now();
+    let verdict = mw.run_chain_cached(Some(secret), Some(&cache), Some(&gov));
+    assert!(
+        matches!(
+            verdict,
+            ChainVerdict::Identified {
+                resolved: Some(_),
+                ..
+            }
+        ),
+        "the keys arm must resolve the vkey"
+    );
+    assert!(
+        cache.get(crate::config::KEYS_MODULE, secret, now).is_none(),
+        "the keys engine arm must NOT cache vkey verdicts (revocation window unchanged)"
+    );
+}
+
+/// #9 — a correctly-signed Bedrock SigV4 ingress request under `chain:[keys]` is VERIFIED by the
+/// pre-step and admitted (GovCtx attached, routes to upstream). The SigV4 pre-step now runs because
+/// the chain names `keys`, NOT because an admin token is set.
+#[tokio::test]
+async fn test_1_5_2_sigv4_ingress_under_keys_chain_admitted() {
+    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+    use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
+    crate::metrics::init();
+    let state = std::sync::Arc::new(MockServerState::new());
+    state.push(MockResponse::Ok {
+        status: axum::http::StatusCode::OK,
+        body: serde_json::json!({
+            "id": "chatcmpl-1", "object": "chat.completion", "model": "foo",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        }),
+    });
+    let server = MockServer::new(state).await;
+
+    let store = std::sync::Arc::new(MemoryStore::new());
+    let gov = std::sync::Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
+    let (_key, _bearer, akid, secret) = gov
+        .create_key_with_aws(
+            NewKeySpec {
+                name: "bedrock".to_string(),
+                allowed_pools: None,
+                group: None,
+                labels: Default::default(),
+            },
+            crate::store::now(),
+        )
+        .unwrap();
+
+    let app = TestApp::new()
+        .lane(
+            LaneSpec::new("foo", crate::proto::Protocol::openai(), &server.base_url())
+                .provider("zai"),
+        )
+        .pool("foo", &[(0, 1)])
+        .keys_chain()
+        .governance(gov)
+        .build();
+    let (addr, handle) = dp_serve(app).await;
+
+    let path = "/model/foo/converse";
+    let body = serde_json::json!({"messages": [{"role": "user", "content": [{"text": "hi"}]}]})
+        .to_string();
+    let amzdate = {
+        let (a, _d) = crate::sigv4::format_amz_time(crate::store::now());
+        a
+    };
+    let (auth, headers) = sign_bedrock_request(
+        &secret,
+        &akid,
+        "us-east-1",
+        "bedrock",
+        path,
+        body.as_bytes(),
+        &amzdate,
+    );
+    let mut rb = reqwest::Client::new()
+        .post(format!("http://{addr}{path}"))
+        .header(AUTHORIZATION, auth)
+        .body(body);
+    for (k, v) in &headers {
+        rb = rb.header(k.as_str(), v.as_str());
+    }
+    let r = rb.send().await.unwrap();
+    assert_eq!(
+        r.status().as_u16(),
+        200,
+        "a correctly-signed Bedrock SigV4 request under chain:[keys] must verify and be admitted (got {})",
+        r.status()
+    );
     handle.abort();
     server.shutdown().await;
 }

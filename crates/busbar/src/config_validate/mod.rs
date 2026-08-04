@@ -1057,20 +1057,22 @@ pub(crate) fn validate_with_unset(
         }
     }
 
-    // Rule (admin_auth/known-modules): every name in the `admin_auth:` chain must resolve to a
-    // compiled-in admin auth module. `admin-tokens` is the only built-in; when it is compiled OUT
-    // (`--no-default-features`) the DEFAULT chain still names it — that combination simply leaves
-    // the admin API disabled (all-Pass ⇒ denied), matching the no-token posture, so it is not an
-    // error here; a CONFIGURED admin token with the module absent is rejected by
-    // `validate_governance` (a silent admin lockout must be loud). An unknown name is always a
-    // boot error — a typo must never silently drop an auth module.
-    for name in &cfg.admin_auth {
-        if name != "admin-tokens" {
-            errors.push(format!(
-                "admin_auth names unknown module '{name}'; the built-in admin module is \
-                 `admin-tokens` (external admin modules are registered at compile time)"
-            ));
-        }
+    // Rule (admin_auth/known-modules): the built-in `admin-tokens` module always resolves; any
+    // OTHER name is an EXTERNAL `kind: auth` admin plugin, resolved at LOAD (`open_auth` in
+    // `build_app_from_config`, which fails boot on a missing/untrusted/wrong-kind tarball) — exactly
+    // as the data plane defers non-builtin `auth.chain` names to the plugin-aware check. This
+    // function runs before the plugin registry exists, so it CANNOT tell a genuine admin plugin name
+    // from a typo here; a non-builtin name is therefore NOT statically rejected (the load-time gate
+    // catches an unresolvable one, fail-closed). A CONFIGURED admin token with the module absent is
+    // still rejected by `validate_governance` (a silent admin lockout must be loud).
+
+    // Rule (public_url): busbar's PUBLIC base (top-level `public_url:`) is the origin used to build
+    // `/auth/token` links and shown to devs as their BYOK `base_url`. When present it must be an
+    // absolute origin — https for a public host (plaintext would expose a login/callback URL on the
+    // wire; loopback/private http is allowed for local dev), no path/query/fragment (a bare origin;
+    // clients append their own suffix), and never a cloud-metadata host (SSRF).
+    if let Some(public_url) = cfg.public_url.as_deref() {
+        validate_public_url(public_url, &cfg.blocked_metadata_hosts, &mut errors);
     }
 
     // Rule (role_bindings): bindings are NESTED BY MODULE (S4). Every module key must appear in
@@ -1079,12 +1081,37 @@ pub(crate) fn validate_with_unset(
     // known scope token; every `group` must exist in the top-level `groups:` tree; a role name
     // must not shadow the reserved operator principal id.
     if let Some(auth) = cfg.auth.as_ref() {
+        // A module is "active" for role-binding purposes if it authenticates on either chain OR is a
+        // named login method (`auth.methods`): a method resolves an identity through the exchange,
+        // after which its `role_bindings.<module>` grant applies. So a binding under a methods-only
+        // module is NOT dead config.
         let chain_modules: std::collections::HashSet<&str> = auth
             .chain
             .iter()
             .chain(auth.admin_auth.iter())
             .map(|e| e.module.as_str())
+            .chain(auth.methods.keys().map(String::as_str))
             .collect();
+
+        // Rule (browser_login ⇒ public_url): a method that shows a hosted-login button needs a public
+        // base to build its authorize/callback URLs. Any `browser_login` with no `public_url` is a
+        // boot error naming BOTH so the operator knows what to add.
+        if cfg.public_url.is_none() && auth.methods.values().any(|m| m.browser_login.is_some()) {
+            errors.push(
+                "auth.methods has a `browser_login` method but top-level `public_url:` is unset; a \
+                 hosted login button needs busbar's public base to build the authorize/redirect \
+                 URLs — set `public_url: https://<busbar-host>`"
+                    .to_string(),
+            );
+        }
+
+        // Rule (key_ttl): the admin-set default key lifetime must parse (fail boot on garbage rather
+        // than silently falling back). Same grammar as the admin `expires_in` duration.
+        if let Some(ttl) = auth.key_ttl.as_deref() {
+            if let Err(e) = crate::admin::parse_duration_secs(ttl) {
+                errors.push(format!("auth.key_ttl '{ttl}' is not a valid duration: {e}"));
+            }
+        }
         for (module, roles) in &auth.role_bindings {
             if !chain_modules.contains(module.as_str()) {
                 errors.push(format!(
@@ -1105,7 +1132,7 @@ pub(crate) fn validate_with_unset(
                     if crate::admin::v1::contract::Scope::parse(scope).is_none() {
                         errors.push(format!(
                             "role_bindings.{module}.{role} has unknown admin_scope '{scope}': \
-                             expected read-only, hooks-register, mint, or full"
+                             expected read-only or full"
                         ));
                     }
                 }
@@ -1129,7 +1156,7 @@ pub(crate) fn validate_with_unset(
                 match crate::admin::v1::contract::Scope::parse(scope) {
                     None => errors.push(format!(
                         "auth chain entry '{}' has unknown max_admin_scope '{scope}': expected \
-                         read-only, hooks-register, mint, or full",
+                         read-only or full",
                         entry.module
                     )),
                     Some(crate::admin::v1::contract::Scope::Full) => tracing::warn!(
@@ -1151,53 +1178,10 @@ pub(crate) fn validate_with_unset(
                     entry.module
                 ));
             }
-            // Rule (ceiling/lattice cross-check): the scope model is a DIAMOND, not a ladder —
-            // `hooks-register` and `mint` are INCOMPARABLE siblings. The two loops above validate
-            // each token in ISOLATION, so a `max_admin_scope:` that is incomparable with an
-            // `admin_scope` bound under the SAME module passes both unchecked, then silently
-            // collapses that binding to `read-only` at runtime (`Grants::capped_by`'s sibling meet)
-            // — an operator writing `max_admin_scope: mint` over a `hooks-register`-bound role,
-            // intending to RAISE the ceiling, instead 403s every registrar with clean validation.
-            // Caught here instead: cross-check every bound `admin_scope` under this module against
-            // this entry's cap once both parse.
-            if let Some(cap) = entry
-                .max_admin_scope
-                .as_deref()
-                .and_then(crate::admin::v1::contract::Scope::parse)
-            {
-                if let Some(roles) = auth.role_bindings.get(&entry.module) {
-                    for (role, binding) in roles {
-                        let Some(bound) = binding
-                            .admin_scope
-                            .as_deref()
-                            .and_then(crate::admin::v1::contract::Scope::parse)
-                        else {
-                            continue;
-                        };
-                        // Incomparable iff NEITHER dominates the other — the true lattice
-                        // relation, not `bound != cap`, so a narrowing cap (e.g. `mint` capped to
-                        // `read-only`) is correctly left alone.
-                        if !cap.allows(bound) && !bound.allows(cap) {
-                            errors.push(format!(
-                                "auth chain entry '{}' sets max_admin_scope: {} which is \
-                                 INCOMPARABLE with role_bindings.{}.{}'s admin_scope: {} \
-                                 (hooks-register and mint are siblings, neither is \"more \
-                                 permissive\"); this silently collapses that role to read-only \
-                                 instead of raising or lowering its ceiling as intended - pick a \
-                                 max_admin_scope that dominates {} (mint or full), or bind {} a \
-                                 comparable admin_scope",
-                                entry.module,
-                                cap.as_str(),
-                                entry.module,
-                                role,
-                                bound.as_str(),
-                                bound.as_str(),
-                                role
-                            ));
-                        }
-                    }
-                }
-            }
+            // (1.5.2 scope collapse: the former sibling-incomparable cross-check is GONE — a
+            // two-rung chain {read-only, full} can never be incomparable, so `max_admin_scope` and a
+            // bound `admin_scope` are always ordered and `Grants::capped_by` cannot surprise-collapse
+            // a binding.)
         }
     }
 
@@ -1277,6 +1261,29 @@ pub(crate) fn validate_with_unset(
                  to a secret reference for it ({file: /path} or {env: VAR} - a SHARED secret across \
                  nodes for a fleet)."
                     .to_string(),
+            );
+        }
+        // MINT-PATH rule (1.5.2): the `keys` verifier authenticates busbar-MINTED virtual keys, and a
+        // vkey can ONLY be issued through an admin endpoint. So if `auth.chain` names `keys` but no
+        // USABLE ADMIN MINT PATH exists, no key could ever be minted and the data plane would reject
+        // EVERY request (a sealed data plane). Fail CLOSED here (fail-fast) rather than boot into a
+        // deployment that 401s everything. STRUCTURAL check (validate runs before secrets resolve):
+        // see `AuthCfg::usable_mint_path`. An explicit OPEN admin (`admin_auth: []`) counts as a mint
+        // path but is dev-only — WARN that anyone can mint. `oidc`/plugin chains never set
+        // `keys_in_chain`, so they never trigger this (their identities are externally issued).
+        if verifies_signed_keys && !auth.usable_mint_path() {
+            errors.push(
+                "auth.chain names the built-in `keys` verifier but no admin credential can mint one \
+                 — the data plane would reject every request. Configure auth.admin_auth (an \
+                 `admin-tokens` entry with a `token:`, or an admin module granting `mint`/`full`), \
+                 or remove `keys` from auth.chain."
+                    .to_string(),
+            );
+        }
+        if verifies_signed_keys && auth.admin_auth.is_empty() {
+            tracing::warn!(
+                "auth.chain names `keys` and auth.admin_auth is explicitly empty (open admin) — \
+                 ANYONE can mint virtual keys through the admin API. Acceptable only for dev."
             );
         }
         // `upstream_credentials: passthrough` with a NON-EMPTY configured api_key on a provider is a
@@ -1785,6 +1792,54 @@ fn percent_decode_host(host: &str) -> String {
 /// `observability::scheme_is` uses for webhook URLs. A raw `starts_with("https://")` rejects the
 /// valid uppercase spelling `HTTPS://host/` that reqwest's `Url::parse` lowercases and accepts, so
 /// the provider base_url scheme check must match the webhook guard's case-insensitivity. (audit c2r5.)
+/// Validate the top-level `public_url:` — busbar's public origin. Rules (see call site): absolute
+/// http/https; a PUBLIC host must use https (loopback/private http is allowed for local dev); the
+/// value must be a BARE ORIGIN (`scheme://host[:port]`, optional trailing `/`) with no path, query,
+/// or fragment; and it must not target a cloud-metadata host. Uses the SAME host normalization the
+/// provider SSRF guard uses so the check sees the authority the connecting stack will.
+pub(crate) fn validate_public_url(url: &str, blocked: &[String], errors: &mut Vec<String>) {
+    let is_https = scheme_is(url, "https");
+    let is_http = scheme_is(url, "http");
+    if !is_https && !is_http {
+        errors.push(format!(
+            "public_url must be an absolute http(s) URL (got '{url}')"
+        ));
+        return;
+    }
+    let Some(host) = extract_normalized_host(url) else {
+        errors.push(format!("public_url '{url}' has no host"));
+        return;
+    };
+    if is_http && !host_is_private_or_loopback(&host) {
+        errors.push(format!(
+            "public_url must use https for a public host (got '{url}'); plaintext http is permitted \
+             only for a loopback/private base"
+        ));
+    }
+    // No path/query/fragment: strip scheme, fold `\`→`/` (WHATWG), then the authority must be the
+    // whole remainder up to at most a single trailing `/`.
+    if let Some((_, rest)) = url.split_once("://") {
+        let rest = rest.replace('\\', "/");
+        if let Some(pos) = rest.find(['/', '?', '#']) {
+            let delim = rest.as_bytes()[pos];
+            let tail = &rest[pos + 1..];
+            if delim != b'/' || !tail.is_empty() {
+                errors.push(format!(
+                    "public_url must be a bare origin (scheme://host[:port]) with no path, query, or \
+                     fragment (got '{url}'); BYOK clients append their own suffix"
+                ));
+            }
+        }
+    }
+    // Never a cloud-metadata host (busbar's own origin is never IMDS). `allow_all=false`, no
+    // per-provider carve-outs — the operator denylist still extends it.
+    if let Some(bad) = ssrf_blocked_host(url, &[], false, blocked) {
+        errors.push(format!(
+            "public_url '{url}' targets a blocked cloud-metadata host '{bad}'"
+        ));
+    }
+}
+
 pub(crate) fn scheme_is(url: &str, scheme: &str) -> bool {
     url.split_once("://")
         .is_some_and(|(s, _)| s.eq_ignore_ascii_case(scheme))

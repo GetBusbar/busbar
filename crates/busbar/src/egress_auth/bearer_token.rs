@@ -29,7 +29,9 @@ const MIN_SLEEP_SECS: u64 = 30;
 
 /// A minted access token and the wall-clock epoch second it expires at.
 pub(crate) struct CachedToken {
-    pub(crate) token: String,
+    /// The minted bearer, held [`busbar_api::Redacted`] so it never leaks via `Debug`/logs and
+    /// zeroizes on drop. The pre-built `header` below carries the same bytes for the hot path.
+    pub(crate) token: busbar_api::Redacted<String>,
     pub(crate) expires_at: u64,
     /// The `Authorization: Bearer <token>` header value, pre-built ONCE here (at mint time) rather
     /// than on every `headers_for` call — `headers_for` runs inline on the egress hot path for every
@@ -59,7 +61,7 @@ impl CachedToken {
             }
         };
         Self {
-            token,
+            token: busbar_api::Redacted::new(token),
             expires_at,
             header,
         }
@@ -104,6 +106,7 @@ impl CredentialProvider for BearerToken {
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .token
+            .expose_secret()
             .is_empty()
     }
 }
@@ -159,7 +162,7 @@ async fn refresh_loop(minter: Minter, weak: Weak<BearerToken>) {
             // forever (the prober skips the lane permanently) AND `headers_for` would emit no auth header
             // (organic traffic 401s forever) — a permanent wedge with no self-healing. Retry at
             // MIN_SLEEP instead, exactly like a mint error. (1.4.0 audit, egress-auth.)
-            Ok(fresh) if fresh.token.is_empty() => {
+            Ok(fresh) if fresh.token.expose_secret().is_empty() => {
                 tracing::warn!(
                     "OAuth token endpoint returned a 200 with an empty access_token; treating as a \
                      mint failure and will retry"
@@ -221,6 +224,16 @@ mod tests {
             timestamp_epoch: 0,
             upstream_creds: crate::auth::UpstreamCreds::Own,
         }
+    }
+
+    /// task #87: the minted bearer is held `Redacted`, so a `{:?}` of the token field shows
+    /// `[REDACTED]`, never the token bytes — even though the pre-built header still carries them.
+    #[test]
+    fn cached_token_field_is_redacted_in_debug() {
+        let c = CachedToken::new("tok-super-secret-abc".to_string(), 0);
+        let dbg = format!("{:?}", c.token);
+        assert_eq!(dbg, "[REDACTED]");
+        assert!(!dbg.contains("tok-super-secret-abc"));
     }
 
     #[test]

@@ -61,7 +61,7 @@ auth:
   #                                                          # (`busbar --generate-signing-key`)
   role_bindings:                # role → policy, NESTED BY MODULE (for kind:auth / IdP modules)
     oidc:
-      platform: { group: acme, admin_scope: full }   # admin_scope: read-only|hooks-register|mint|full
+      platform: { group: acme, admin_scope: full }   # admin_scope: read-only|full
 ```
 
 Keys themselves are **minted over the admin API** (`POST /api/v1/admin/keys`), not configured — a
@@ -157,7 +157,7 @@ advanced:                       # internal tuning (normally omitted)
 ## Not config, but adjacent
 
 - **[Minting keys](admin-api.md)**: `POST /api/v1/admin/keys` — the signed token is shown once and
-  expires (default 90 days). Requires `mint` scope or `full`.
+  expires (default 90 days). Requires `full` scope.
 - **[Migrating from 1.4.x](migration-1.5.md)**: `busbar --migrate-config old.yaml` prints the
   converted config with TODO/WARNING comments; a 1.x config refuses to boot with a named error.
 - **[Validation](configuration.md#startup-validation-summary)**: `busbar --validate` runs the exact

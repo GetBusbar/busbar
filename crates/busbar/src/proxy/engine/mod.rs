@@ -1554,7 +1554,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
             // keyless passthrough (lane.api_key already empty); only changes the misconfigured
             // passthrough+configured-key case.
             crate::auth::UpstreamCreds::Passthrough => caller_token.unwrap_or(""),
-            crate::auth::UpstreamCreds::Own => &app.lanes[i].api_key,
+            crate::auth::UpstreamCreds::Own => app.lanes[i].api_key.expose_secret(),
         };
 
         // per-request auth (SigV4 for Bedrock; static for others) needs the host/path/body.
