@@ -287,6 +287,13 @@ impl AuthMiddleware {
         let mut keys_in_chain = false;
         let mut has_plugin_module = false;
         let mut chain: Vec<Box<dyn AuthModule>> = Vec::new();
+        eprintln!(
+            "DBG-CORE AuthMiddleware::new chain_entries={:?}",
+            cfg.chain
+                .iter()
+                .map(|e| e.module.clone())
+                .collect::<Vec<_>>()
+        );
         for entry in &cfg.chain {
             match entry.module.as_str() {
                 crate::config::KEYS_MODULE => {
@@ -310,12 +317,21 @@ impl AuthMiddleware {
                         crate::config::secret::resolve_settings(&entry.settings, secret_resolver)
                             .map_err(|e| format!("auth.chain module '{other}' settings: {e}"))?;
                     let cfg_json = serde_json::Value::Object(resolved).to_string();
+                    eprintln!(
+                        "DBG-CORE calling open_auth for module='{other}' cfg_json_len={}",
+                        cfg_json.len()
+                    );
                     let module = registry.open_auth(other, &cfg_json).map_err(|e| {
+                        eprintln!("DBG-CORE open_auth ERR for '{other}': {e}");
                         format!(
                             "auth.chain module '{other}' could not be loaded as a `kind: auth` \
                              plugin: {e}"
                         )
                     })?;
+                    eprintln!(
+                        "DBG-CORE open_auth OK for module='{other}' name={}",
+                        module.name()
+                    );
                     chain.push(module);
                     has_plugin_module = true;
                 }

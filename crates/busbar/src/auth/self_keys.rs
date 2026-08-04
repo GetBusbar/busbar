@@ -42,17 +42,62 @@ pub(crate) trait SelfServeKeys {
     fn refresh(&self, principal: &Principal, ttl: Duration) -> Result<IssuedKey, String>;
 }
 
+/// AUTO-PROVISION the personal budget bucket a self-serve key charges through. Behind a trait so the
+/// mint seam stays free of the config/cost machinery (and so tests can drive a fake): the ONE concrete
+/// impl ([`HandleProvisioner`]) mirrors the admin auto-provision path exactly (`plan_mint_group` →
+/// `persist_provisioned_group` → `commit_and_swap`).
+///
+/// THIS IS THE 1.5.2 TOKEN-EXCHANGE BUG FIX. Before it, a self-serve exchange minted a key bound to
+/// `user:<sub>` but NEVER materialised that group in the cost model, so the very first request on the
+/// minted key failed CLOSED with `429 group '<user:sub>' is not configured` (`MissingGroup`) —
+/// contradicting the documented "budget auto-provisioned … created on first exchange". The mint now
+/// provisions the `user:<sub>` LEAF under the resolved team (limits stamped from the team's
+/// `child_default`, nearest-ancestor-wins) BEFORE issuing the token, so the key is usable immediately.
+pub(crate) trait SelfGroupProvisioner: Send + Sync {
+    /// Ensure `leaf` exists as an enabled child of `parent`, limits copied from the nearest-ancestor
+    /// `child_default` (inherit-only when none up the chain) — exactly the admin auto-provision shape.
+    /// IDEMPOTENT: a no-op (never a reset) when `leaf` already exists, so N logins for one subject
+    /// leave exactly one leaf with its usage intact. `Err(msg)` fails the mint closed (a key with no
+    /// resolvable budget group is worse than no key).
+    fn ensure_leaf(&self, leaf: &str, parent: &str) -> Result<(), String>;
+}
+
 /// The concrete, GovState-backed scheme: deterministic ed25519 signed tokens ("Model B").
 pub(crate) struct DeterministicEd25519Keys {
     gov: Arc<GovState>,
+    /// The TEAM group the principal's role binds to (`role_bindings.<module>.<role>.group`) — the
+    /// PARENT under which the per-user `user:<sub>` leaf is auto-provisioned. Resolved by
+    /// [`resolve_exchange`] (guaranteed present: a self key must charge through a group).
+    team: String,
     /// The pools this principal's bound role grants (C6: `None` = all, `Some([])` = none). Resolved
     /// from `role_bindings` by [`resolve_exchange`] and carried onto the minted binding.
     allowed_pools: Option<Vec<String>>,
+    /// Provisions the `user:<sub>` leaf under `team` before the token is minted (the bug fix).
+    provisioner: Arc<dyn SelfGroupProvisioner>,
 }
 
 impl DeterministicEd25519Keys {
-    pub(crate) fn new(gov: Arc<GovState>, allowed_pools: Option<Vec<String>>) -> Self {
-        Self { gov, allowed_pools }
+    pub(crate) fn new(
+        gov: Arc<GovState>,
+        team: String,
+        allowed_pools: Option<Vec<String>>,
+        provisioner: Arc<dyn SelfGroupProvisioner>,
+    ) -> Self {
+        Self {
+            gov,
+            team,
+            allowed_pools,
+            provisioner,
+        }
+    }
+
+    /// The `user:<sub>` leaf group this principal's key charges through.
+    fn self_group(principal: &Principal) -> String {
+        format!(
+            "{}{}",
+            crate::governance::SELF_KEY_GROUP_PREFIX,
+            principal.id
+        )
     }
 }
 
@@ -60,6 +105,10 @@ impl SelfServeKeys for DeterministicEd25519Keys {
     fn issue(&self, principal: &Principal, ttl: Duration) -> Result<IssuedKey, String> {
         let now = crate::store::now();
         let exp = now.saturating_add(ttl.as_secs());
+        // FIX: provision the personal budget bucket under the resolved team BEFORE minting, so the
+        // issued key resolves a real group at admission instead of 429 MissingGroup. Idempotent.
+        self.provisioner
+            .ensure_leaf(&Self::self_group(principal), &self.team)?;
         let (binding, token) = self
             .gov
             .issue_self(&principal.id, self.allowed_pools.clone(), exp, now)
@@ -75,6 +124,9 @@ impl SelfServeKeys for DeterministicEd25519Keys {
     fn refresh(&self, principal: &Principal, ttl: Duration) -> Result<IssuedKey, String> {
         let now = crate::store::now();
         let exp = now.saturating_add(ttl.as_secs());
+        // Same provision-before-mint as `issue` (idempotent; the leaf already exists on a refresh).
+        self.provisioner
+            .ensure_leaf(&Self::self_group(principal), &self.team)?;
         let (binding, token) = self
             .gov
             .refresh_self(&principal.id, self.allowed_pools.clone(), exp, now)
@@ -85,6 +137,65 @@ impl SelfServeKeys for DeterministicEd25519Keys {
             group: binding.group.unwrap_or_default(),
             exp,
         })
+    }
+}
+
+/// Serializes self-serve leaf provisioning among themselves (the check→build→swap must not
+/// interleave with another self-mint's). Process-global: one busbar owns one live `AppHandle`.
+//
+// NOTE (design wart, follow-up): this does NOT share the admin plane's async `CONFIG_MUTATION_LOCK`,
+// so a concurrent admin `config/apply` racing a first-login provision is a theoretical lost-update on
+// the `App` swap. In practice provisioning is a rare first-login-per-user event and the common
+// re-login path is a lock-free `group_named` no-op. Unifying the two under one mutation choke point is
+// tracked as follow-up.
+static SELF_PROVISION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// The production [`SelfGroupProvisioner`]: mirrors the admin `POST /keys?parent=` auto-provision
+/// (`plan_mint_group` builds the leaf from the team's `child_default`; `persist_provisioned_group`
+/// commits it PERSIST-then-SWAP through the live [`AppHandle`], rebuilding the cost model so the new
+/// bucket is enforceable on the next request and durable across restart).
+pub(crate) struct HandleProvisioner {
+    handle: Arc<crate::state::AppHandle>,
+    actor: String,
+}
+
+impl HandleProvisioner {
+    pub(crate) fn new(handle: Arc<crate::state::AppHandle>, actor: String) -> Self {
+        Self { handle, actor }
+    }
+}
+
+impl SelfGroupProvisioner for HandleProvisioner {
+    fn ensure_leaf(&self, leaf: &str, parent: &str) -> Result<(), String> {
+        let _g = SELF_PROVISION_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let current = self.handle.load();
+        eprintln!("DBG-PROV ensure_leaf leaf={leaf:?} parent={parent:?} already_present={}", current.cost.group_named(leaf).is_some());
+        // IDEMPOTENT no-op: the leaf is already a live enforcement bucket (the steady-state re-login
+        // path — no swap, no overlay churn, no usage reset).
+        if current.cost.group_named(leaf).is_some() {
+            return Ok(());
+        }
+        // Same plan the admin mint runs: build the leaf under `parent` from the nearest-ancestor
+        // `child_default`, validated at the door (cost rebuilt in the candidate snapshot).
+        let planned =
+            crate::admin::v1::json::plan_mint_group(&current, leaf, Some(parent), &self.actor)
+                .map_err(|e| { eprintln!("DBG-PROV plan_mint_group ERR: {}", e.message()); e.message() })?;
+        eprintln!("DBG-PROV plan_mint_group planned_is_some={}", planned.is_some());
+        let Some(installed) = planned else {
+            // `plan_mint_group` returns `None` only when the group already exists (a race with the
+            // `group_named` check above lost) — nothing to commit.
+            return Ok(());
+        };
+        let persist = crate::admin::v1::json::persist_provisioned_group(
+            installed.clone(),
+            leaf.to_string(),
+            self.actor.clone(),
+        );
+        let r = self.handle.commit_and_swap(installed, persist);
+        eprintln!("DBG-PROV commit_and_swap result_ok={} now_present={}", r.is_ok(), self.handle.load().cost.group_named(leaf).is_some());
+        r
     }
 }
 
@@ -131,13 +242,15 @@ fn sanitize_self_sub(sub: &str) -> Result<(), ExchangeError> {
     Ok(())
 }
 
-/// Decide whether a chain verdict may mint a self-serve key, and resolve the pools to mint under.
-/// The identity comes SOLELY from the verdict's `principal` — never from any request body. Returns
-/// the verified principal + its bound pools on success, or the typed refusal.
+/// Decide whether a chain verdict may mint a self-serve key, and resolve the TEAM + pools to mint
+/// under. The identity comes SOLELY from the verdict's `principal` — never from any request body.
+/// Returns the verified principal, the bound TEAM group (the PARENT the per-user `user:<sub>` leaf is
+/// auto-provisioned under — always present, a self key must charge through a group), and its bound
+/// pools on success, or the typed refusal.
 pub(crate) fn resolve_exchange<'a>(
     verdict: &'a ChainVerdict,
     role_bindings: &RoleBindings,
-) -> Result<(&'a Principal, Option<Vec<String>>), ExchangeError> {
+) -> Result<(&'a Principal, String, Option<Vec<String>>), ExchangeError> {
     match verdict {
         ChainVerdict::Identified {
             module,
@@ -157,11 +270,9 @@ pub(crate) fn resolve_exchange<'a>(
                 .find_map(|r| table.get(r))
                 .ok_or(ExchangeError::Unbound)?;
             // parent = binding.group; a self key MUST charge through a group (no unbounded self key).
-            if binding.group.is_none() {
-                return Err(ExchangeError::Unbound);
-            }
+            let team = binding.group.clone().ok_or(ExchangeError::Unbound)?;
             sanitize_self_sub(&principal.id)?;
-            Ok((principal, binding.allowed_pools.clone()))
+            Ok((principal, team, binding.allowed_pools.clone()))
         }
         // No identity established (all-Pass default, or an explicit Reject) → 401.
         ChainVerdict::Open | ChainVerdict::Denied => Err(ExchangeError::Unauthorized),
