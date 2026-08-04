@@ -1037,7 +1037,7 @@ fn resolve_tap_hooks_admits_only_request_stage_taps() {
     hooks.insert("tap-unset".to_string(), mk(HookKind::Tap, None));
     hooks.insert(
         "tap-completion".to_string(),
-        mk(HookKind::Tap, Some(crate::config::HookStage::Completion)),
+        mk(HookKind::Tap, Some(crate::config::HookStage::Response)),
     );
     hooks.insert("a-gate".to_string(), mk(HookKind::Gate, None));
     let global = vec![
@@ -1052,18 +1052,13 @@ fn resolve_tap_hooks_admits_only_request_stage_taps() {
         2,
         "only the two REQUEST-stage taps resolve; the gate and the completion-stage tap are excluded"
     );
-    // The same registry resolved for the COMPLETION stage admits exactly the completion tap.
-    let completion = resolve_tap_hooks(
-        &hooks,
-        &global,
-        &env,
-        0,
-        crate::config::HookStage::Completion,
-    );
+    // The same registry resolved for the RESPONSE stage admits exactly the response tap.
+    let completion =
+        resolve_tap_hooks(&hooks, &global, &env, 0, crate::config::HookStage::Response);
     assert_eq!(completion.len(), 1, "one completion-stage tap");
     // And a stage nothing observes resolves empty (the zero-cost skip).
     assert!(
-        resolve_tap_hooks(&hooks, &global, &env, 0, crate::config::HookStage::Attempt).is_empty(),
+        resolve_tap_hooks(&hooks, &global, &env, 0, crate::config::HookStage::Routing).is_empty(),
         "no attempt-stage tap is configured"
     );
     // Every resolved tap here is `prompt: no`, so `send_prompt` (the middle tuple element) is false.

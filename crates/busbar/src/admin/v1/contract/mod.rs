@@ -502,7 +502,7 @@ pub(crate) struct HookView {
     pub(crate) user: &'static str,
     /// Rewrite/reject ordering key (transform-chain order + reject tie-break).
     pub(crate) priority: u16,
-    /// TAP observation stage (`"request"`/`"route"`/`"attempt"`/`"completion"`), or `None` for a gate.
+    /// TAP observation stage (`"request"`/`"candidate"`/`"routing"`/`"response"`), or `None` for a gate.
     pub(crate) at: Option<&'static str>,
     /// Gate fallback on timeout/error — a CLOSED, unambiguous string union (audit #8): one of the
     /// reserved terminals (`"weighted"` | `"reject"` | `"first"` | `"nothing"`) or the NAME of the

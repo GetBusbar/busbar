@@ -947,6 +947,66 @@ observability:
     );
 }
 
+/// 1.5.3 HARD tap-stage rename: `--migrate-config` rewrites the old `at:` wire strings
+/// (`route`/`attempt`/`completion`) to the new phase vocabulary (`candidate`/`routing`/`response`)
+/// in place — in the top-level `global_hooks:` list AND in each `pools.<name>.hooks:` list — and the
+/// result must BOOT-PARSE (the old strings would otherwise fail as unknown `HookStage` variants).
+#[test]
+fn migrate_hook_stage_at_values_are_renamed() {
+    let raw = r#"
+providers: {}
+models: {}
+pools:
+  primary:
+    members: [ { model: a } ]
+    hooks:
+      - { module: webhook, settings: { url: "https://s/route" }, kind: tap, at: route }
+      - { module: webhook, settings: { url: "https://s/attempt" }, kind: tap, at: attempt }
+global_hooks:
+  - { module: webhook, settings: { url: "https://s/done" }, kind: tap, at: completion }
+"#;
+    let (out, doc) = migrate_to_value(raw);
+
+    // Pool hook `at:` strings are rewritten to the new phase names, in order.
+    let pool_hooks = dig(&doc, &["pools", "primary", "hooks"])
+        .unwrap()
+        .as_sequence()
+        .unwrap();
+    assert_eq!(
+        dig(&pool_hooks[0], &["at"]).and_then(|v| v.as_str()),
+        Some("candidate"),
+        "`at: route` must migrate to `at: candidate`"
+    );
+    assert_eq!(
+        dig(&pool_hooks[1], &["at"]).and_then(|v| v.as_str()),
+        Some("routing"),
+        "`at: attempt` must migrate to `at: routing`"
+    );
+    // The global-hook `at:` string is rewritten too.
+    let gh = dig(&doc, &["global_hooks"]).unwrap().as_sequence().unwrap();
+    assert_eq!(
+        dig(&gh[0], &["at"]).and_then(|v| v.as_str()),
+        Some("response"),
+        "`at: completion` must migrate to `at: response`"
+    );
+    // Each rewrite is named in the change ledger.
+    assert!(
+        out.changes
+            .iter()
+            .any(|c| c.contains("hook stage `at: completion` -> `at: response`")),
+        "a change entry must name the completion->response rewrite; got {:?}",
+        out.changes
+    );
+    // The migrated document must boot-parse: the old strings would fail as unknown HookStage
+    // variants, so a clean parse proves the rewrite closed the loud-fail.
+    let deploy: Result<crate::config::DeployCfg, _> = serde_yaml::from_str(&out.yaml);
+    assert!(
+        deploy.is_ok(),
+        "migrated config must boot-parse: {:?}",
+        deploy.err().map(|e| e.to_string())
+    );
+}
+
 /// A config that never set `emit_server_timing` (or had no `observability:` block at all) migrates
 /// with NO `advanced.response_headers` block synthesized — the migrator must not manufacture config
 /// the operator never wrote.

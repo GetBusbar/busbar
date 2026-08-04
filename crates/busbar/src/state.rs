@@ -268,28 +268,28 @@ pub(crate) struct App {
     /// path) before dispatch — a tap can never delay or fail the request. Empty (the default) = no
     /// taps, zero cost. Each entry is `(per-hook deadline, send_prompt, transport)`: `send_prompt`
     /// carries the tap's `prompt: ro` grant so a granted tap receives the prompt-content projection and
-    /// a `prompt: no` tap receives shape-only. Other stages (route/attempt/completion + synthetic
+    /// a `prompt: no` tap receives shape-only. Other stages (candidate/routing/response + synthetic
     /// rejected-completion) are follow-ups.
     pub(crate) tap_hooks: Vec<(
         std::time::Duration,
         bool,
         Arc<dyn crate::hooks::RoutingPolicy>,
     )>,
-    /// GLOBAL taps observing at the ROUTE stage (`at: route`) — fired once per request when the
+    /// GLOBAL taps observing at the CANDIDATE stage (`at: candidate`) — fired once per request when the
     /// decision reconcile has produced the final candidate set. Same triple shape as `tap_hooks`.
     pub(crate) tap_hooks_route: Vec<(
         std::time::Duration,
         bool,
         Arc<dyn crate::hooks::RoutingPolicy>,
     )>,
-    /// GLOBAL taps observing at the ATTEMPT stage (`at: attempt`) — fired per failover attempt with
+    /// GLOBAL taps observing at the ROUTING stage (`at: routing`) — fired per failover attempt with
     /// the attempt number / dispatched target / remaining candidates / previous failure.
     pub(crate) tap_hooks_attempt: Vec<(
         std::time::Duration,
         bool,
         Arc<dyn crate::hooks::RoutingPolicy>,
     )>,
-    /// GLOBAL taps observing at the COMPLETION stage (`at: completion`) — fired once per request
+    /// GLOBAL taps observing at the RESPONSE stage (`at: response`) — fired once per request
     /// with the outcome (`ok`/`failed`/`rejected_by_gate` — the SYNTHETIC completion, so audit taps
     /// see gate denials too) and response status.
     pub(crate) tap_hooks_completion: Vec<(
@@ -469,7 +469,7 @@ pub(crate) struct App {
     pub(crate) self_key_ttl_secs: u64,
     /// Per-request correlation-id generator: `fetch_add(1, Relaxed)` stamps a fresh `u64` on every
     /// inbound request (see [`App::next_request_id`]), so a routing DECISION (the hook seam) can be
-    /// joined to its OUTCOME (the completion tap) and per-request log lines are correlatable — a
+    /// joined to its OUTCOME (the response tap) and per-request log lines are correlatable — a
     /// single monotonic atomic, never a UUID/String, so it costs no per-request allocation, RNG
     /// draw, or syscall on the hot path.
     ///

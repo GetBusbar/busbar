@@ -205,6 +205,9 @@ pub(crate) fn migrate_config(raw: &str) -> Result<MigrateOutput, String> {
     migrate_providers(&mut root, &mut changes);
     migrate_hooks_block(&mut root, &mut changes, &mut todos);
     migrate_pools(&mut root, &mut changes, &mut todos);
+    // 1.5.3 HARD rename of the tap `at:` vocabulary. Runs AFTER migrate_hooks_block (which builds
+    // the inline-ref lists carrying the `at:` field) so every hook ref exists to rewrite.
+    migrate_hook_stages(&mut root, &mut changes);
     migrate_observability(&mut root, &mut changes);
     migrate_response_headers(&mut root, &mut changes);
 
@@ -1233,6 +1236,44 @@ fn migrate_response_headers(root: &mut Mapping, changes: &mut Vec<String>) {
     root.insert("advanced".into(), Value::Mapping(advanced));
     changes
         .push("observability.emit_server_timing -> advanced.response_headers.server_timing".into());
+}
+
+/// 1.5.3 HARD rename of the tap-stage `at:` vocabulary (`route`→`candidate`, `attempt`→`routing`,
+/// `completion`→`response`). The 1.5.3 rename dropped `#[serde(alias)]`, so an un-migrated `at:`
+/// value is a LOUD boot failure (`augment_config_error` names the new value); this rewrites the old
+/// strings in place so a migrated config validates. Walks every hook inline ref — the top-level
+/// `global_hooks:` list and each `pools.<name>.hooks:` list — and maps the old `at:` string using
+/// the SHARED [`crate::config::RENAMED_HOOK_STAGES`] table so the migrator and the loud-fail hint
+/// cannot drift.
+fn migrate_hook_stages(root: &mut Mapping, changes: &mut Vec<String>) {
+    fn rewrite_list(list: &mut [Value], location: &str, changes: &mut Vec<String>) {
+        for entry in list {
+            let Value::Mapping(m) = entry else { continue };
+            let Some(old) = m.get(Value::from("at")).and_then(|v| v.as_str()) else {
+                continue;
+            };
+            if let Some((_, new)) = crate::config::RENAMED_HOOK_STAGES
+                .iter()
+                .find(|(o, _)| *o == old)
+            {
+                changes.push(format!("{location}: hook stage `at: {old}` -> `at: {new}`"));
+                m.insert("at".into(), Value::from(*new));
+            }
+        }
+    }
+    if let Some(Value::Sequence(globals)) = root.get_mut(Value::from("global_hooks")) {
+        rewrite_list(globals, "global_hooks", changes);
+    }
+    if let Some(Value::Mapping(pools)) = root.get_mut(Value::from("pools")) {
+        for (pname, p) in pools.iter_mut() {
+            let Value::Mapping(p) = p else { continue };
+            let Some(Value::Sequence(hooks)) = p.get_mut(Value::from("hooks")) else {
+                continue;
+            };
+            let loc = format!("pools.{}.hooks", pname.as_str().unwrap_or("?"));
+            rewrite_list(hooks, &loc, changes);
+        }
+    }
 }
 
 #[cfg(test)]
