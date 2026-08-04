@@ -2903,6 +2903,23 @@ advanced:
         other => panic!("expected a file backend, got {other:?}"),
     }
 
+    // The `advanced.upstream_*` knobs must not only PARSE but flow through `resolve` onto
+    // `cfg.limits` — the boot client-build reads them from there. Guards against a regression that
+    // drops the `upstream_http1_only: advanced.upstream_http1_only` (or the h2) wiring in
+    // `LimitsResolved::from_sections`, which would silently make the config.yaml knob a no-op.
+    let mut deploy = base_deploy();
+    deploy.advanced.upstream_http1_only = true;
+    deploy.advanced.upstream_h2_prior_knowledge = true;
+    let cfg = resolve(&deploy, &HashMap::new()).expect("resolve");
+    assert!(
+        cfg.limits.upstream_http1_only,
+        "advanced.upstream_http1_only must reach cfg.limits"
+    );
+    assert!(
+        cfg.limits.upstream_h2_prior_knowledge,
+        "advanced.upstream_h2_prior_knowledge must reach cfg.limits"
+    );
+
     // `overlay: false` parses as the explicit-disable form.
     let yaml2 = "providers: {}\nmodels: {}\nconfig:\n  locked: true\n  overlay: false\n";
     let d2: crate::config::DeployCfg = serde_yaml::from_str(yaml2).expect("overlay:false parses");
