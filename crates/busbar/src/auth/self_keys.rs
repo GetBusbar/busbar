@@ -278,8 +278,19 @@ fn sanitize_self_sub(sub: &str) -> Result<(), ExchangeError> {
 /// Decide whether a chain verdict may mint a self-serve key, and resolve the TEAM + pools to mint
 /// under. The identity comes SOLELY from the verdict's `principal` — never from any request body.
 /// Returns the verified principal, the bound TEAM group (the PARENT the per-user `user:<sub>` leaf is
-/// auto-provisioned under — always present, a self key must charge through a group), and its bound
-/// pools on success, or the typed refusal.
+/// auto-provisioned under — always present, a self key must charge through a group), and the C6
+/// pool-union over EVERY granting binding, on success, or the typed refusal.
+///
+/// Both the group selection and the pool union mirror `synthesize_principal_key`'s (governance/mod.rs)
+/// scan of ALL granting bindings — not just the one binding the group happened to come from: the group
+/// is the first granting binding that carries one; the pools are the union of `allowed_pools` across
+/// every granting binding, where an OMITTED `allowed_pools` on any of them widens the union to ALL
+/// pools (`None`), and every one of them saying `allowed_pools: []` unions to the empty set. The one
+/// deliberate divergence from `synthesize_principal_key`: that function returns NO key at all for an
+/// empty-set union (an ad-hoc synthesized key that grants nothing is pointless), while this function
+/// still returns `Ok` with `Some(vec![])` — a self-serve key is a real, persisted binding for an
+/// admitted identity, and `GovState::issue_self`/`refresh_self` already encode `Some([])` as "mint the
+/// key, but it grants no pool" (C6).
 pub(crate) fn resolve_exchange<'a>(
     verdict: &'a ChainVerdict,
     role_bindings: &RoleBindings,
@@ -312,13 +323,37 @@ pub(crate) fn resolve_exchange<'a>(
             // parent = the FIRST granting binding that carries a group (scan ALL granting bindings,
             // not just the first-matched role) — a self key MUST charge through a group (no
             // unbounded self key), but that group may come from any one of the principal's roles.
-            let binding = granting
-                .into_iter()
-                .find(|b| b.group.is_some())
+            let team = granting
+                .iter()
+                .find_map(|b| b.group.clone())
                 .ok_or(ExchangeError::Unbound)?;
-            let team = binding.group.clone().ok_or(ExchangeError::Unbound)?;
             sanitize_self_sub(&principal.id)?;
-            Ok((principal, team, binding.allowed_pools.clone()))
+            // POOLS: the C6 UNION across ALL granting bindings — IDENTICAL to
+            // `synthesize_principal_key`'s pool-union loop (governance/mod.rs), not just the pools of
+            // the single binding the group was taken from. An OMITTED `allowed_pools` on ANY granting
+            // binding widens the union to ALL pools (`None`); otherwise the union is the de-duplicated
+            // concatenation of every granting binding's explicit list. Unlike `synthesize_principal_key`
+            // (which, for an ad-hoc synthesized key, returns no key at all when the union is the empty
+            // set), a self-serve key is always minted for an admitted identity — an every-binding-`[]`
+            // union yields `Some(vec![])`, the SAME "no pools" encoding `GovState::issue_self`/
+            // `refresh_self` already special-case ("C6 intent carried intact: None = all pools;
+            // Some([]) = none"), so the minted key exists but grants no data-plane pool.
+            let mut pools: Vec<String> = Vec::new();
+            let mut all_pools = false;
+            for b in &granting {
+                match b.allowed_pools.as_deref() {
+                    None => all_pools = true,
+                    Some(list) => {
+                        for p in list {
+                            if !pools.contains(p) {
+                                pools.push(p.clone());
+                            }
+                        }
+                    }
+                }
+            }
+            let allowed_pools = if all_pools { None } else { Some(pools) };
+            Ok((principal, team, allowed_pools))
         }
         // No identity established (all-Pass default, or an explicit Reject) → 401.
         ChainVerdict::Open | ChainVerdict::Denied => Err(ExchangeError::Unauthorized),
