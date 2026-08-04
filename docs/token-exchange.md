@@ -81,9 +81,10 @@ walkthroughs) lives on the plugin page: [OIDC](/plugins/auth/oidc/) ·
 
 > With Entra ID, `"<sso-group>"` above is **not** necessarily your security group's display
 > name — what it must be depends on `role_claim` (app role Value string vs. security group
-> Object ID GUID). This trips people up constantly; see
-> [Entra ID: app roles vs. security groups](configuration.md#auth-plugins) for the full
-> explanation before you bind a role.
+> Object ID GUID), and the redirect URI, client secret, and role/group setup have their own
+> gotchas too. This trips people up constantly; see
+> [Walkthrough: configuring OIDC with Microsoft Entra ID](configuration.md#auth-plugins) for the
+> full click-by-click reference before you bind a role.
 
 ## Key facts
 
