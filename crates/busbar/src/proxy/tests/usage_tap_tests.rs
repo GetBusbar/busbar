@@ -191,7 +191,7 @@ async fn apply_global_rewrites_chains_in_order() {
         ),
     ];
     let mut v = serde_json::json!({"messages": [{"role": "user", "content": "orig"}]});
-    super::apply_global_rewrites(&hooks, &mut v, "pool", "anthropic", false)
+    super::apply_global_rewrites(&hooks, &mut v, "pool", "anthropic", false, 1)
         .await
         .expect("no rewrite hook rejected");
     // Last hook in the chain wins; B ran on A's rewritten body.

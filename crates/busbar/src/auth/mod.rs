@@ -1127,7 +1127,12 @@ fn rate_limited_response() -> Response {
 fn unauthorized_with_completion_taps(app: &crate::state::App, path: &str) -> Response {
     let proto = proto_for_path(path);
     if !app.tap_hooks_completion.is_empty() {
-        let shape = crate::proxy::capture_stage_shape(None, "", proto, false);
+        // An auth denial never reaches `forward_with_pool_parsed` (no `RequestCtx` is ever built for
+        // it), so it has no id from that path — stamp a fresh one here from the SAME process-wide
+        // counter so this synthetic completion notification still carries a real, unique
+        // correlation id rather than a misleading placeholder.
+        let shape =
+            crate::proxy::capture_stage_shape(None, "", proto, false, app.next_request_id());
         let status = auth_failure_status_and_kind(proto).0.as_u16();
         crate::proxy::fire_stage_taps(
             &app.tap_hooks_completion,

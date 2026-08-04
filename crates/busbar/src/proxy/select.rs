@@ -47,10 +47,21 @@ pub(crate) struct RequestCtx {
     // the taxonomy/refactor unit tests now — silence the release-build dead-code lint meanwhile.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) excluded_reasons: Vec<(usize, crate::store::Unavailable)>,
+    /// This request's correlation id — a single `u64` `fetch_add`'d off [`App::next_request_id`]
+    /// ONCE at ingress (see `forward_with_pool_parsed`), Copy-threaded everywhere `RequestCtx`
+    /// already flows for the lifetime of the request (including every failover hop — it is NOT
+    /// re-stamped per hop). Exists so a routing DECISION (the hook seam's `RoutingRequest`) can be
+    /// joined to its OUTCOME (the completion-tap notification) and so a per-request tracing span /
+    /// log line is correlatable, WITHOUT a UUID/String allocation on the hot path: generation is one
+    /// relaxed atomic increment, carried as a plain `Copy` scalar, and serialized only where a hook
+    /// JSON payload or `tracing`'s native u64 field already pay a cost (never a new allocation on
+    /// the default path). Deliberately internal-only — never surfaced as a response header (busbar
+    /// stays invisible-by-default).
+    pub(crate) request_id: u64,
 }
 
 impl RequestCtx {
-    pub(crate) fn new(deadline_secs: u64) -> Self {
+    pub(crate) fn new(deadline_secs: u64, request_id: u64) -> Self {
         let start = now();
         Self {
             deadline: start.saturating_add(deadline_secs),
@@ -75,6 +86,7 @@ impl RequestCtx {
             visited_pools: std::collections::HashSet::new(),
             active_restricts: Vec::new(),
             excluded_reasons: Vec::new(),
+            request_id,
         }
     }
 

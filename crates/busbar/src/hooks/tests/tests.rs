@@ -1372,6 +1372,7 @@ fn resolve_one(env: &HookEnv, settings: serde_json::Value) -> Option<Arc<dyn Rou
 
 fn dreq(text: &str) -> RoutingRequest<'static> {
     RoutingRequest {
+        request_id: 1,
         pool: "p",
         ingress_protocol: "anthropic",
         requested_model: None,

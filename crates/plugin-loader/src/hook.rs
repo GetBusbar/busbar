@@ -441,6 +441,7 @@ mod tests {
 
     fn req_with_prompt(text: &str) -> RoutingRequest<'static> {
         RoutingRequest {
+            request_id: 1,
             pool: "p",
             ingress_protocol: "anthropic",
             requested_model: None,

@@ -249,6 +249,7 @@ mod tests {
 
     fn req() -> RoutingRequest<'static> {
         RoutingRequest {
+            request_id: 1,
             pool: "p",
             ingress_protocol: "anthropic",
             requested_model: None,

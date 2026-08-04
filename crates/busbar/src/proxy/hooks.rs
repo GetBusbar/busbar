@@ -165,9 +165,11 @@ pub(crate) fn build_rewrite_request<'a>(
     ingress_protocol: &'a str,
     wants_stream: bool,
     with_prompt: bool,
+    request_id: u64,
 ) -> crate::hooks::RoutingRequest<'a> {
     let system_chars = system_text_chars(v, ingress_protocol);
     crate::hooks::RoutingRequest {
+        request_id,
         pool: pool_name,
         ingress_protocol,
         requested_model: v.get("model").and_then(|m| m.as_str()),
@@ -214,6 +216,7 @@ pub(crate) async fn apply_global_rewrites(
     pool_name: &str,
     ingress_protocol: &str,
     wants_stream: bool,
+    request_id: u64,
 ) -> Result<bool, (u16, String)> {
     let mut applied = false;
     for (timeout, hook) in rewrite_hooks {
@@ -221,7 +224,14 @@ pub(crate) async fn apply_global_rewrites(
         //
         // `with_prompt = true` is sound by construction: `hooks::admits_rewrite` gates membership of
         // this slice on effective `rw`, which implies read.
-        let req = build_rewrite_request(v, pool_name, ingress_protocol, wants_stream, true);
+        let req = build_rewrite_request(
+            v,
+            pool_name,
+            ingress_protocol,
+            wants_stream,
+            true,
+            request_id,
+        );
         let outcome = hook.transform(&req, *timeout).await;
         drop(req); // end the immutable borrow of `v` before mutating it
         match outcome {
@@ -942,6 +952,7 @@ pub(crate) async fn decide_policy_order(
     let system_chars = system_text_chars(v, ingress_protocol);
 
     let req = RoutingRequest {
+        request_id: request_ctx.request_id,
         pool: pool_name,
         ingress_protocol,
         requested_model: v.get("model").and_then(|m| m.as_str()),
@@ -1214,6 +1225,10 @@ pub(crate) fn coerce_on_error(
 /// identity, regardless of grant (never over-shares; a granted tap still gets content at the
 /// `request` stage).
 pub(crate) struct StageShape<'a> {
+    /// The request correlation id (`RequestCtx::request_id`) — carried on the shape so every stage
+    /// tap (route/attempt/completion) notification for this request stamps the SAME join-key value
+    /// a `decide`/`transform` payload for the same request carries.
+    request_id: u64,
     pool: &'a str,
     ingress_protocol: &'a str,
     message_count: usize,
@@ -1229,6 +1244,7 @@ pub(crate) fn capture_stage_shape<'a>(
     pool: &'a str,
     ingress_protocol: &'a str,
     stream: bool,
+    request_id: u64,
 ) -> StageShape<'a> {
     let (message_count, has_tools, total_chars, max_tokens) = match v {
         Some(v) => {
@@ -1245,6 +1261,7 @@ pub(crate) fn capture_stage_shape<'a>(
         None => (0, false, 0, None),
     };
     StageShape {
+        request_id,
         pool,
         ingress_protocol,
         message_count,
@@ -1274,6 +1291,7 @@ pub(crate) fn fire_stage_taps(
     let hook_req = crate::hooks::wire::HookRequest {
         op: crate::hooks::wire::OP_NOTIFY,
         request: crate::hooks::wire::HookReqProjection {
+            request_id: shape.request_id,
             pool: shape.pool,
             ingress_protocol: shape.ingress_protocol,
             message_count: shape.message_count,

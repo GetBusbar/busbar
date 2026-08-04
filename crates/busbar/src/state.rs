@@ -461,6 +461,23 @@ pub(crate) struct App {
     /// the Step-1 `auth.key_ttl` field is finally READ: `POST /auth/token` mints every self key with
     /// `exp = now + self_key_ttl_secs`. Rebuilt on every apply/reload with the rest of the snapshot.
     pub(crate) self_key_ttl_secs: u64,
+    /// Per-request correlation-id generator: `fetch_add(1, Relaxed)` stamps a fresh `u64` on every
+    /// inbound request (see [`App::next_request_id`]), so a routing DECISION (the hook seam) can be
+    /// joined to its OUTCOME (the completion tap) and per-request log lines are correlatable — a
+    /// single monotonic atomic, never a UUID/String, so it costs no per-request allocation, RNG
+    /// draw, or syscall on the hot path.
+    ///
+    /// SEEDED ONCE AT BOOT from OS entropy (`state::seed_request_id_counter`), not zero, so ids are
+    /// a real cross-restart join key (two runs of the process don't restamp the same small integers
+    /// starting at 1) — see that function's doc for the entropy source + fallback.
+    ///
+    /// Lives on `App` (not a bare `static AtomicU64`) so it is Arc-shared like `store`/
+    /// `probe_schedule`: a config apply's `(*current).clone()` and a REBUILD's carry-over from
+    /// `prior` (`build_app_from_config`) both keep the SAME counter instance, so ids stay monotonic
+    /// across a config reload the way `versions`/`mutation_limiter` already do — and it is
+    /// constructible per-test (no hidden global), matching this file's existing "no global mutable
+    /// state" convention for live per-process counters (see `QueuedDepth`, `VersionLog`).
+    pub(crate) request_id_counter: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl App {
@@ -469,6 +486,32 @@ impl App {
     /// (set once at construction from `upstream_credentials:`, never mutated). Cheap: `Copy`.
     pub(crate) fn upstream_creds(&self) -> crate::auth::UpstreamCreds {
         self.auth.upstream_creds
+    }
+
+    /// Stamp the NEXT per-request correlation id: one relaxed `fetch_add`, no allocation, no
+    /// syscall. Called ONCE per inbound request, at the earliest point `RequestCtx` is built
+    /// (`forward_with_pool_parsed`) — every failover hop of that request reuses the SAME id (it
+    /// rides `RequestCtx::request_id`, not re-derived here per hop).
+    pub(crate) fn next_request_id(&self) -> u64 {
+        self.request_id_counter
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// Boot-time seed for [`App::request_id_counter`]: one draw of OS randomness so per-request ids
+/// differ across process restarts (a real join key in logs/cost records, not just unique within one
+/// run — two `fetch_add`-from-zero runs would otherwise both hand out `0, 1, 2, …`). Falls back to
+/// boot unix-nanos on the (practically unreachable — see the `getrandom::fill` call sites elsewhere
+/// in this crate, e.g. `auth::token`) case the OS entropy source errors, rather than panicking boot
+/// over a cosmetic collision-avoidance seed.
+pub(crate) fn seed_request_id_counter() -> u64 {
+    let mut buf = [0u8; 8];
+    match getrandom::fill(&mut buf) {
+        Ok(()) => u64::from_le_bytes(buf),
+        Err(_) => std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0),
     }
 }
 
