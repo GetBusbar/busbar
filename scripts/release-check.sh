@@ -266,6 +266,73 @@ ok "no in-tree plugin tarballs to pack"
 
 ls -l "$PLUGIN_DIST"
 
+# ── Phase 0a2: signing-key requirement — the exact end-user flow, fail-closed then green ────────────
+#
+# 1.5.1+: busbar NO LONGER auto-generates a signing key. A config naming the built-in `keys` verifier
+# in auth.chain therefore REQUIRES auth.signing_key at validate/boot; without it busbar fail-closes
+# with "auth.signing_key is required" (exit non-zero) rather than booting a data plane that verifies
+# no signed key. This phase proves BOTH directions against the real binary via `--validate`:
+#   (1) keys verifier + a usable admin mint path but NO signing_key  → --validate FAILS with that error
+#   (2) `busbar --generate-signing-key` + auth.signing_key set        → --validate SUCCEEDS
+# This is the regression twin of the core config-validate test (test_keys_chain_without_signing_key_is_boot_error).
+phase "Phase 0a2: signing-key requirement — keys verifier without signing_key fail-closes, with it validates"
+sk_work="$(new_tmpdir)"
+cat >"${sk_work}/providers.yaml" <<EOF
+mock:
+  protocol: anthropic
+  base_url: "http://127.0.0.1:9"
+EOF
+# (1) NO signing_key — must fail-closed at --validate with the actionable error.
+cat >"${sk_work}/config-nokey.yaml" <<EOF
+listen: "127.0.0.1:0"
+auth:
+  chain:
+    - keys
+  admin_auth:
+    - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }
+providers:
+  mock:
+    api_key: { env: MOCK_KEY }
+models:
+  test-model:
+    provider: mock
+EOF
+if BUSBAR_CONFIG="${sk_work}/config-nokey.yaml" BUSBAR_PROVIDERS="${sk_work}/providers.yaml" \
+     MOCK_KEY=unused BUSBAR_ADMIN_TOKEN=release-check-admin \
+     "$BUSBAR_BIN" --validate >"${sk_work}/nokey.log" 2>&1; then
+  echo "  keys verifier with NO signing_key unexpectedly VALIDATED — the fail-closed guard is gone" >&2
+  cat "${sk_work}/nokey.log" >&2
+  exit 1
+fi
+grep -q "auth.signing_key is required" "${sk_work}/nokey.log" || {
+  echo "  --validate failed but WITHOUT the expected 'auth.signing_key is required' error:" >&2
+  cat "${sk_work}/nokey.log" >&2
+  exit 1
+}
+ok "keys verifier with no signing_key fail-closes at --validate with the expected error"
+# (2) generate a key, reference it — must validate clean.
+"$BUSBAR_BIN" --generate-signing-key >"${sk_work}/signing.key" 2>/dev/null
+[ -s "${sk_work}/signing.key" ] || { echo "  --generate-signing-key produced no key" >&2; exit 1; }
+cat >"${sk_work}/config-key.yaml" <<EOF
+listen: "127.0.0.1:0"
+auth:
+  chain:
+    - keys
+  signing_key: { file: "${sk_work}/signing.key" }
+  admin_auth:
+    - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }
+providers:
+  mock:
+    api_key: { env: MOCK_KEY }
+models:
+  test-model:
+    provider: mock
+EOF
+BUSBAR_CONFIG="${sk_work}/config-key.yaml" BUSBAR_PROVIDERS="${sk_work}/providers.yaml" \
+  MOCK_KEY=unused BUSBAR_ADMIN_TOKEN=release-check-admin \
+  "$BUSBAR_BIN" --validate
+ok "keys verifier WITH a generated signing_key validates clean"
+
 # ── Phase 0c: lane-saturation soak — the Bug-1 SLO, proven end-to-end against the real binary ──────
 #
 # This is an ENGINE-level soak, NOT a plugin phase: it is deliberately OUTSIDE the plugins.yaml

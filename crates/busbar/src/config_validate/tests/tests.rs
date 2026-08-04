@@ -1727,6 +1727,55 @@ fn test_1_5_2_keys_chain_without_mint_path_is_boot_error() {
     );
 }
 
+/// 1.5.1+ (RED-before-GREEN): `auth.chain: [keys]` with a usable admin mint path but NO
+/// `auth.signing_key` is a BOOT ERROR — busbar no longer auto-generates a signing key, so the
+/// built-in `keys` verifier has nothing to verify busbar-signed tokens with and the data plane
+/// would reject every request. Isolates the signing-key rule from the mint-path rule by supplying a
+/// usable mint path (an `admin-tokens` entry carrying a `token:`). Setting `signing_key` clears it.
+/// RED on pre-1.5.1 code: busbar auto-generated a key at boot, so this validated clean.
+#[test]
+fn test_keys_chain_without_signing_key_is_boot_error() {
+    let (providers, models, pools) = valid_maps();
+    let mut cfg = make_root_cfg(providers, models, pools);
+
+    // A usable admin mint path so the mint-path rule does NOT fire — this test isolates signing_key.
+    let mint_path = || {
+        let mut admin = crate::config::AuthChainEntry::bare(crate::config::ADMIN_TOKENS_MODULE);
+        admin.token = Some(config::SecretRef::env("BUSBAR_ADMIN_TOKEN"));
+        admin
+    };
+
+    let mut auth = crate::config::AuthCfg::default_none();
+    auth.chain = vec![crate::config::AuthChainEntry::bare(
+        crate::config::KEYS_MODULE,
+    )];
+    auth.admin_auth = vec![mint_path()];
+    assert!(
+        auth.signing_key.is_none(),
+        "the RED case sets no signing_key"
+    );
+    cfg.auth = Some(auth);
+    let errs = validate(&cfg).expect_err("keys chain without a signing_key must fail validation");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("auth.signing_key is required")),
+        "expected the signing-key requirement boot error; got: {errs:?}"
+    );
+
+    // GREEN: setting auth.signing_key clears it (mint path already present).
+    let mut auth_ok = crate::config::AuthCfg::default_none();
+    auth_ok.chain = vec![crate::config::AuthChainEntry::bare(
+        crate::config::KEYS_MODULE,
+    )];
+    auth_ok.admin_auth = vec![mint_path()];
+    auth_ok.signing_key = Some(config::SecretRef::env("BUSBAR_SIGNING_KEY"));
+    cfg.auth = Some(auth_ok);
+    assert!(
+        validate(&cfg).is_ok(),
+        "a keys chain WITH signing_key + a usable mint path must validate"
+    );
+}
+
 /// 1.5.2 (RED-before-GREEN #6): an IdP chain (`[oidc]`, a plugin) needs NO admin mint path — its
 /// identities are EXTERNALLY issued, so the mint-path rule must NOT fire. Boots clean with no
 /// spurious mint-path error even when `admin_auth` grants no mint capability.
