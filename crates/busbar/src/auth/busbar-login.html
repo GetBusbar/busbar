@@ -119,7 +119,7 @@
     width: 24px; height: 24px; border-radius: 50%; background: var(--lime);
     display: grid; place-items: center; flex: 0 0 auto;
   }
-  .check svg { width: 13px; height: 13px; }
+  .check svg { width: 13px; height: 13px; color: #0f172a; }
   .keyrow {
     display: flex; align-items: stretch; gap: 0; margin: 6px 0 8px;
     border: 1px solid var(--line-strong); border-radius: 10px; overflow: hidden;
@@ -138,6 +138,29 @@
   }
   .copy:hover { background: rgba(163,230,53,.1); }
   .copy:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+  .copy svg { width: 14px; height: 14px; flex: 0 0 auto; }
+  .copy.copied { color: var(--good); }
+  /* BYOK-block copy button (light card background). */
+  .useinrow { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin: 0 0 8px; }
+  .useinrow .usein { margin: 0; }
+  .copymini {
+    flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px;
+    border: 1px solid var(--line-strong); background: var(--field);
+    color: var(--limed); font-weight: 600; font-size: 12px; font-family: inherit;
+    border-radius: 8px; padding: 6px 10px; cursor: pointer;
+  }
+  .copymini:hover { border-color: var(--limed); background: var(--card); }
+  .copymini:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+  .copymini svg { width: 13px; height: 13px; flex: 0 0 auto; }
+  .copymini.copied { color: var(--good); border-color: var(--good); }
+  /* Quiet, secondary "Sign out" link on the key-issued page (a safe exit, not the main CTA). */
+  .signout {
+    display: inline-flex; align-items: center; gap: 6px; margin-top: 14px;
+    color: var(--muted); font-size: 12.5px; font-weight: 600; text-decoration: none;
+  }
+  .signout:hover { color: var(--ink-soft); text-decoration: underline; }
+  .signout:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 4px; }
+  .signout svg { width: 14px; height: 14px; flex: 0 0 auto; }
   .reshow {
     display: flex; align-items: center; gap: 7px;
     color: var(--muted); font-size: 12.5px; font-weight: 500; margin-bottom: 20px;
@@ -175,6 +198,7 @@
   .credform .finput:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; border-color: var(--limed); }
   .credform button.provider { justify-content: center; margin-top: 4px; }
 
+
   /* ── error screen ── */
   .errhead { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
   .erricon {
@@ -190,3 +214,44 @@
   .backlink:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 4px; }
   .backlink svg { width: 15px; height: 15px; flex: 0 0 auto; }
 </style>
+<script>
+  // One-click copy for the key-issued page. Self-contained, no external libs. Uses the async
+  // Clipboard API (works over https AND http://localhost — localhost is a secure context), with a
+  // document.execCommand('copy') fallback for non-secure contexts / older browsers. On success the
+  // button label briefly swaps to "Copied!". The value copied is read from the button's data-copy
+  // attribute (the browser decodes HTML entities — e.g. &#10; → newline — on read).
+  function bbCopy(btn) {
+    var text = btn.getAttribute('data-copy') || '';
+    function done() {
+      var label = btn.querySelector('.clabel');
+      if (!label) return;
+      var prev = label.textContent;
+      btn.classList.add('copied');
+      label.textContent = 'Copied!';
+      setTimeout(function () {
+        btn.classList.remove('copied');
+        label.textContent = prev;
+      }, 1500);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, function () { bbCopyFallback(text, done); });
+    } else {
+      bbCopyFallback(text, done);
+    }
+  }
+  function bbCopyFallback(text, done) {
+    try {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.top = '-9999px';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      done();
+    } catch (e) { /* clipboard unavailable — leave the value visible for manual copy */ }
+  }
+</script>

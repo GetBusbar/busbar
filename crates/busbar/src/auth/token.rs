@@ -209,7 +209,12 @@ pub(crate) async fn browser(State(handle): State<Arc<AppHandle>>, req: Request<B
     drop(req);
     let get = |k: &str| params.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
 
-    // callback FIRST (`?code=` present) — the IdP always returns `code`+`state`.
+    // logout FIRST (`?logout=1`): the "Sign out" action from the key-issued page. Ends the browser
+    // view and defensively clears the login cookie. Stateless — see `signed_out`.
+    if get("logout").is_some() {
+        return signed_out();
+    }
+    // callback next (`?code=` present) — the IdP always returns `code`+`state`.
     if let Some(code) = get("code") {
         return callback(&app, &handle, cookie_raw, code, get("state")).await;
     }
@@ -987,6 +992,12 @@ const ERR_ICON: &str = r##"<svg viewBox="0 0 16 16" fill="none" aria-hidden="tru
 /// The left-arrow shown on the "Back to sign in" link of a branded error page.
 const BACK_ARROW: &str = r##"<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M9.5 4l-4 4 4 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M5.5 8H12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>"##;
 
+/// The clipboard glyph shown on the "Copy" buttons of the key-issued (success) page.
+const COPY_ICON: &str = r##"<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.6" stroke="currentColor" stroke-width="1.4"/><path d="M3.4 10.4A1.5 1.5 0 012 9V3.4A1.5 1.5 0 013.4 2H9a1.5 1.5 0 011.4 1.4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>"##;
+
+/// The door/arrow-out glyph shown on the quiet "Sign out" link of the key-issued page.
+const LOGOUT_ICON: &str = r##"<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M6.5 2.5H4A1.5 1.5 0 002.5 4v8A1.5 1.5 0 004 13.5h2.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 10.5L12.5 8 10 5.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M12.5 8H6.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>"##;
+
 /// Render a friendly, BRANDED error page for the hosted browser-login flow: the same card chrome as
 /// the sign-in / key-issued pages (brand lockup, shared CSS, dark-mode aware), an alert glyph, a
 /// human-readable heading + message, and a "Back to sign in" link to `GET /auth/token`. EVERY
@@ -1003,6 +1014,25 @@ fn error_page(status: StatusCode, heading: &str, message: &str) -> Response {
         message = esc(message),
     ));
     (status, [(header::CACHE_CONTROL, "no-store")], Html(body)).into_response()
+}
+
+/// Render the "Signed out" confirmation page (the `?logout=1` action from the key-issued page) and
+/// defensively expire the login cookie. The hosted login is STATELESS after issuance: the single-use
+/// `busbar_login` cookie is already cleared when the key page renders, and the minted key is a bearer
+/// the caller keeps — so there is NO persistent server session to kill. "Sign out" therefore ENDS THE
+/// BROWSER VIEW (navigating here drops the key + BYOK block from the DOM so it isn't left displayed on
+/// a shared machine) and offers a clean re-entry. It does NOT revoke the issued key, and does NOT end
+/// the IdP (Entra) session — an IdP end-session (RP-initiated logout) redirect could be layered on
+/// later, but is intentionally out of scope here. Reuses the branded card chrome.
+fn signed_out() -> Response {
+    let body = page(&format!(
+        "<div class=\"brand\"><span class=\"glyph\">{GLYPH}</span><span class=\"wordmark\">Busbar</span></div>\
+         <div class=\"issued-head\"><span class=\"check\">{LOGOUT_ICON}</span><h1 style=\"margin:0;\">Signed out</h1></div>\
+         <p class=\"sub\">Your key is no longer shown here. It still works — sign in again anytime to view or rotate it.</p>\
+         <div class=\"providers\"><a class=\"provider\" href=\"/auth/token\" aria-label=\"Sign in again\"><span class=\"plabel\">Sign in again</span>{CHEVRON}</a></div>\
+         <p class=\"foot\">Signing out here only ends this browser view; it doesn't revoke your key or your identity-provider session.</p>"
+    ));
+    clear_and(html_no_store(body))
 }
 
 /// Render the CHOOSER page (sign-in). One anchor per `(method-name, brand)`; `base_url` shown in the
@@ -1127,18 +1157,34 @@ fn render_key_issued(
         esc(base_url),
         esc(api_key),
     );
+    // The one-click "Copy" button beside the key. `data-copy` carries the value the inline `bbCopy`
+    // handler writes to the clipboard (attribute-escaped; the browser decodes entities on read).
+    let key_copy = format!(
+        "<button type=\"button\" class=\"copy\" aria-label=\"Copy your API key\" data-copy=\"{key}\" onclick=\"bbCopy(this)\">{COPY_ICON}<span class=\"clabel\">Copy</span></button>",
+        key = esc(api_key),
+    );
+    // The BYOK block's "Copy" button copies the whole `base_url:\napi_key:` pair (one paste for
+    // Cursor/VS Code). `&#10;` is the literal newline the browser decodes when reading `data-copy`.
+    let byok_copy = format!(
+        "<button type=\"button\" class=\"copymini\" aria-label=\"Copy the base URL and API key\" data-copy=\"base_url: {url}&#10;api_key: {key}\" onclick=\"bbCopy(this)\">{COPY_ICON}<span class=\"clabel\">Copy</span></button>",
+        url = esc(base_url),
+        key = esc(api_key),
+    );
     page(&format!(
         "<div class=\"brand\"><span class=\"glyph\">{GLYPH}</span><span class=\"wordmark\">Busbar</span></div>\
          <div class=\"issued-head\"><span class=\"check\"><svg viewBox=\"0 0 16 16\" fill=\"none\" aria-hidden=\"true\"><path d=\"M3 8.5l3 3 7-7\" stroke=\"#0f172a\" stroke-width=\"2.2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg></span><h1 style=\"margin:0;\">You're in</h1></div>\
          <p class=\"sub\">Signed in as <span class=\"mono\">{sub}</span>{team}</p>\
-         <div class=\"keyrow\"><span class=\"keyval mono\" id=\"key\">{key}</span></div>\
+         <div class=\"keyrow\"><span class=\"keyval mono\" id=\"key\">{key}</span>{key_copy}</div>\
          <div class=\"reshow\"><svg viewBox=\"0 0 16 16\" fill=\"none\" aria-hidden=\"true\"><path d=\"M2 8a6 6 0 1111.5 2.4\" stroke=\"currentColor\" stroke-width=\"1.4\" stroke-linecap=\"round\"/><path d=\"M13 4v3h-3\" stroke=\"currentColor\" stroke-width=\"1.4\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg>Re-showable — <a href=\"{refresh}\">Refresh key</a> to rotate or view it again.</div>\
-         <p class=\"usein\">Paste into Cursor or VS Code (BYOK) — base URL + this key:</p>{snippet}\
-         <p class=\"foot\">Manage keys anytime by signing in again.</p>",
+         <div class=\"useinrow\"><span class=\"usein\">Paste into Cursor or VS Code (BYOK) — base URL + this key:</span>{byok_copy}</div>{snippet}\
+         <p class=\"foot\">Manage keys anytime by signing in again.</p>\
+         <a class=\"signout\" href=\"/auth/token?logout=1\" aria-label=\"Sign out and hide this key\">{LOGOUT_ICON}Sign out</a>",
         sub = esc(sub),
         team = team,
         key = esc(api_key),
+        key_copy = key_copy,
         refresh = refresh_href,
+        byok_copy = byok_copy,
         snippet = snippet,
     ))
 }

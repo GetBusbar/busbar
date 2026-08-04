@@ -958,6 +958,95 @@ fn key_page_injects_base_url_verbatim() {
     assert!(!page.contains("won't see this key again"));
 }
 
+/// The success page carries ONE-CLICK COPY: a `.copy` button beside the key and a `.copymini` button
+/// for the BYOK block, each wired to the inline `bbCopy` handler with the exact value to copy in
+/// `data-copy`. RED before this change: the key/BYOK block rendered with no copy button at all.
+#[test]
+fn key_page_has_copy_buttons_wired_to_clipboard() {
+    let page = render_key_issued(
+        "sam@acme.com",
+        "user:sam",
+        "bb_live_7Qm2",
+        "https://busbar.example.com",
+        "microsoft",
+    );
+    // The inline clipboard handler ships with the page (Clipboard API + execCommand fallback).
+    assert!(
+        page.contains("function bbCopy(") && page.contains("navigator.clipboard"),
+        "the self-contained copy JS is inlined"
+    );
+    assert!(
+        page.contains("document.execCommand('copy')"),
+        "a non-secure-context fallback is present"
+    );
+    // Key copy button: correct class, accessible label, click wiring, and the key as the copy value.
+    assert!(
+        page.contains("class=\"copy\"")
+            && page.contains("aria-label=\"Copy your API key\"")
+            && page.contains("onclick=\"bbCopy(this)\""),
+        "the key has an accessible, wired Copy button: {page}"
+    );
+    assert!(
+        page.contains("data-copy=\"bb_live_7Qm2\""),
+        "the key Copy button carries the key value to copy: {page}"
+    );
+    // BYOK block copy button: copies the whole base_url + api_key pair (newline-separated).
+    assert!(
+        page.contains("class=\"copymini\"")
+            && page.contains("aria-label=\"Copy the base URL and API key\""),
+        "the BYOK block has its own Copy button: {page}"
+    );
+    assert!(
+        page.contains(
+            "data-copy=\"base_url: https://busbar.example.com&#10;api_key: bb_live_7Qm2\""
+        ),
+        "the BYOK Copy button copies the base_url + api_key block: {page}"
+    );
+    // A quiet, accessible "Sign out" exit that ends the browser view (so the key isn't left shown).
+    assert!(
+        page.contains("class=\"signout\"")
+            && page.contains("href=\"/auth/token?logout=1\"")
+            && page.contains("Sign out"),
+        "the success page offers a Sign out control: {page}"
+    );
+}
+
+/// The `?logout=1` "Sign out" action renders the branded "Signed out" page, EXPIRES the login cookie
+/// (defensive — the flow is stateless post-issuance), and offers a clean "Sign in again" re-entry. It
+/// does not revoke the key or the IdP session (honest copy). RED before this change: `?logout=1` was
+/// an unknown param that fell through to the chooser (no signed-out page, no cookie clear).
+#[tokio::test]
+async fn logout_renders_signed_out_and_clears_cookie() {
+    let app = test_app_with_methods(vec![("microsoft", true)], "");
+    let handle = cred_handle(&app);
+    let req = axum::http::Request::builder()
+        .uri("/auth/token?logout=1")
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let resp = browser(axum::extract::State(handle), req).await;
+    assert_eq!(resp.status().as_u16(), 200);
+    // The single-use login cookie is expired on the way out.
+    assert!(
+        resp.headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .any(|v| v.to_str().unwrap_or("").contains("Max-Age=0")),
+        "logout must clear the busbar login cookie"
+    );
+    let body = body_of(resp);
+    assert!(body.starts_with("<!doctype html>"), "branded HTML card");
+    assert!(body.contains("Signed out"), "the heading confirms sign-out");
+    assert!(
+        body.contains("href=\"/auth/token\"") && body.contains("Sign in again"),
+        "offers a clean re-entry: {body}"
+    );
+    // Honest: we don't claim to revoke the key or end the IdP session.
+    assert!(
+        body.contains("doesn't revoke your key"),
+        "copy is honest about scope: {body}"
+    );
+}
+
 #[test]
 fn pkce_code_challenge_is_s256_of_verifier() {
     use sha2::{Digest, Sha256};
