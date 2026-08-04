@@ -20,6 +20,7 @@
 //!   carried as an opaque [`serde_json::Value`] the engine built; the export ABI adds the envelope,
 //!   never a second copy of the batch semantics.
 
+use crate::http_endpoint::{HttpEndpointRequest, HttpEndpointResponse, Route};
 use serde::{Deserialize, Serialize};
 
 /// The export-plugin PAYLOAD schema version (the signed manifest's `abi_version` for `kind: export`).
@@ -63,6 +64,18 @@ pub enum ExportRequest {
         /// The already-serialized batch (opaque to the ABI; built by the engine).
         payload: serde_json::Value,
     },
+    /// `routes` — asked ONCE at load: which HTTP [`Route`]s does this instance serve? The engine
+    /// collision-checks + namespace-confines the answer, then mounts them (see the `http_endpoint`
+    /// module doc). Reply: [`ExportResponse::Routes`]. ADDITIVE: an older sink that cannot decode this
+    /// op declares no routes (the loader treats the undecodable-variant signal as "no HTTP surface").
+    Routes,
+    /// `http_endpoint` — dispatch one inbound HTTP request matched to a registered route of THIS
+    /// plugin. Fires only for a matched plugin route, off the data-plane hot path; the engine already
+    /// enforced the route's declared auth. Reply: [`ExportResponse::Http`].
+    HttpEndpoint {
+        /// The host-built inbound request (bounded headers, no raw `Authorization`).
+        request: HttpEndpointRequest,
+    },
 }
 
 /// The success payload for an export `call`, matched to the request variant. A module-level FAILURE (a
@@ -78,6 +91,10 @@ pub enum ExportResponse {
     Streams(Vec<ExportStream>),
     /// `deliver` — the batch was accepted by the sink (nothing to read back).
     Delivered,
+    /// `routes` — the HTTP routes this instance serves (collected once at load).
+    Routes(Vec<Route>),
+    /// `http_endpoint` — the plugin's response to a dispatched inbound request, relayed verbatim.
+    Http(HttpEndpointResponse),
 }
 
 #[cfg(test)]
@@ -152,5 +169,64 @@ mod tests {
     #[test]
     fn export_abi_version_is_one() {
         assert_eq!(EXPORT_ABI_VERSION, 1);
+    }
+
+    /// The HTTP-endpoint ops (`routes`/`http_endpoint`) round-trip and carry the stable op tags — the
+    /// additive wire behind plugin route registration + dispatch.
+    #[test]
+    fn http_endpoint_ops_roundtrip_and_tags() {
+        use crate::http_endpoint::{HttpEndpointRequest, RouteAuth, RouteMethod};
+        let reqs = vec![
+            ExportRequest::Routes,
+            ExportRequest::HttpEndpoint {
+                request: HttpEndpointRequest {
+                    method: "GET".into(),
+                    path: "/metrics".into(),
+                    query: String::new(),
+                    headers: vec![],
+                    body: vec![],
+                },
+            },
+        ];
+        for r in reqs {
+            let j = serde_json::to_vec(&r).unwrap();
+            let back: ExportRequest = serde_json::from_slice(&j).unwrap();
+            assert_eq!(serde_json::to_vec(&back).unwrap(), j);
+        }
+        assert_eq!(
+            serde_json::to_value(ExportRequest::Routes).unwrap()["op"],
+            "routes"
+        );
+        assert_eq!(
+            serde_json::to_value(ExportRequest::HttpEndpoint {
+                request: HttpEndpointRequest {
+                    method: "GET".into(),
+                    path: "/metrics".into(),
+                    query: String::new(),
+                    headers: vec![],
+                    body: vec![],
+                },
+            })
+            .unwrap()["op"],
+            "http_endpoint"
+        );
+
+        // Response arms round-trip too.
+        for resp in [
+            ExportResponse::Routes(vec![Route {
+                path: "/metrics".into(),
+                method: RouteMethod::Get,
+                auth: RouteAuth::None,
+            }]),
+            ExportResponse::Http(HttpEndpointResponse {
+                status: 200,
+                headers: vec![],
+                body: b"ok".to_vec(),
+            }),
+        ] {
+            let j = serde_json::to_vec(&resp).unwrap();
+            let back: ExportResponse = serde_json::from_slice(&j).unwrap();
+            assert_eq!(serde_json::to_vec(&back).unwrap(), j);
+        }
     }
 }

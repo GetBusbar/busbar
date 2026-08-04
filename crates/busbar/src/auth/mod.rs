@@ -1180,6 +1180,23 @@ pub(crate) async fn auth_middleware(
         return Ok(next.run(req).await);
     }
 
+    // PLUGIN HTTP ROUTES (design §5.4): a registered plugin route carries its OWN declared auth level,
+    // enforced through THIS chain. `none` bypasses (like `/healthz`); `admin` is forced down the admin
+    // chain below; `key` needs no special handling (it flows through the normal client-token check).
+    // Consulted off the LIVE snapshot so a hot-swap that changes a route's auth takes effect at once.
+    // `declared_auth` returns `None` for every non-plugin path, so this is a no-op on the hot path.
+    let mut plugin_admin = false;
+    if let Some(auth) = app.plugin_routes.declared_auth(&path, req.method()) {
+        match auth {
+            busbar_plugin_loader::RouteAuth::None => {
+                drop(_mw.take());
+                return Ok(next.run(req).await);
+            }
+            busbar_plugin_loader::RouteAuth::Admin => plugin_admin = true,
+            busbar_plugin_loader::RouteAuth::Key => {}
+        }
+    }
+
     // Derive owned values up front so no immutable borrow of `req` is live when we mutate its
     // extensions below.
     //
@@ -1189,7 +1206,7 @@ pub(crate) async fn auth_middleware(
     // `CallerToken` extension a non-admin handler requires — yielding a 500 MissingExtension and
     // leaking that the path was treated as admin-protected. Require either the exact `/api` segment
     // or an `/api/` delimiter so only the native-API root (`/api/<version>/<area>/…`) matches.
-    let is_admin = path == ADMIN_PATH || path.starts_with(ADMIN_PATH_PREFIX);
+    let is_admin = path == ADMIN_PATH || path.starts_with(ADMIN_PATH_PREFIX) || plugin_admin;
     let admin_header_token = extract_admin_header_token(&req);
     // The busbar client token, taken from whichever carrier the SDK used (Authorization: Bearer,
     // then x-api-key, then x-goog-api-key). This single value drives BOTH the static-allowlist

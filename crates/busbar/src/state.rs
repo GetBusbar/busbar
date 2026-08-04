@@ -484,6 +484,13 @@ pub(crate) struct App {
     /// constructible per-test (no hidden global), matching this file's existing "no global mutable
     /// state" convention for live per-process counters (see `QueuedDepth`, `VersionLog`).
     pub(crate) request_id_counter: Arc<std::sync::atomic::AtomicU64>,
+    /// The live PLUGIN HTTP ROUTE TABLE (design §5): the collision-checked, namespace-confined
+    /// `{path, method}` → owning-plugin index behind every registered plugin route (`/metrics`, a
+    /// hook's `/feedback`). Carried on the snapshot (Arc-shared for cheap `App::clone`) so the mounted
+    /// route handler resolves the CURRENT owner on every request — a hot-swapped telemetry plugin never
+    /// leaves a stale route (§7.1). Empty until an export/hook plugin declares a route; an empty table
+    /// is inert (no mounts, `declared_auth` returns `None`, so the auth middleware is unaffected).
+    pub(crate) plugin_routes: Arc<crate::plugin_routes::PluginRouteTable>,
 }
 
 impl App {

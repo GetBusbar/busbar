@@ -14,6 +14,7 @@
 use crate::{stage, wire_up_raw, RawPlugin};
 use busbar_plugin_abi::{
     export::{ExportRequest, ExportResponse, ExportStream},
+    http_endpoint::{HttpEndpointRequest, HttpEndpointResponse, Route},
     kind as abi_kind,
 };
 
@@ -24,12 +25,43 @@ pub struct DynExport {
     raw: RawPlugin,
     /// The streams this instance reported to `Streams` at load — the minimal registry entry.
     streams: Vec<ExportStream>,
+    /// The HTTP routes this instance declared to `Routes` at load — collected ONCE, retained so the
+    /// engine's router builder can collision-check + mount them without a second ABI call.
+    routes: Vec<Route>,
 }
 
 impl DynExport {
     /// The observability streams this sink declared at load.
     pub fn streams(&self) -> &[ExportStream] {
         &self.streams
+    }
+
+    /// The HTTP routes this sink declared at load (collision-checked + namespace-confined by the engine
+    /// before mounting). Empty for a push-only sink with no HTTP surface.
+    pub fn routes(&self) -> &[Route] {
+        &self.routes
+    }
+
+    /// Dispatch one inbound HTTP request (matched to a registered route of this plugin) across the ABI.
+    /// The engine has already enforced the route's declared auth; this just relays the exchange. A
+    /// transport failure or an unexpected response variant is an `Err` naming the plugin.
+    pub fn handle_http(
+        &self,
+        request: &HttpEndpointRequest,
+    ) -> Result<HttpEndpointResponse, String> {
+        let req = ExportRequest::HttpEndpoint {
+            request: request.clone(),
+        };
+        match self
+            .raw
+            .transport_call::<ExportRequest, ExportResponse>(&req)?
+        {
+            ExportResponse::Http(resp) => Ok(resp),
+            other => Err(format!(
+                "export plugin '{}' returned an unexpected response to http_endpoint: {other:?}",
+                self.raw.path
+            )),
+        }
     }
 
     /// Hand one batch for `stream` across the ABI. Returns `Ok(())` on a `Delivered` ack; a transport
@@ -57,6 +89,7 @@ impl std::fmt::Debug for DynExport {
         f.debug_struct("DynExport")
             .field("path", &self.raw.path)
             .field("streams", &self.streams)
+            .field("routes", &self.routes)
             .finish()
     }
 }
@@ -90,5 +123,17 @@ pub fn load_export_from_bytes(
             ))
             }
         };
-    Ok(DynExport { raw, streams })
+    // Query the declared HTTP routes ONCE at load. ADDITIVE: a sink built against an older SDK cannot
+    // decode the `routes` op and its dispatch returns the undecodable-variant signal (or an unexpected
+    // arm) — treated as "no HTTP surface" rather than a load failure, so an existing metrics-push sink
+    // keeps loading unchanged.
+    let routes = match raw.transport_call::<ExportRequest, ExportResponse>(&ExportRequest::Routes) {
+        Ok(ExportResponse::Routes(r)) => r,
+        Ok(_) | Err(_) => Vec::new(),
+    };
+    Ok(DynExport {
+        raw,
+        streams,
+        routes,
+    })
 }

@@ -83,6 +83,7 @@ fn minimal_app() -> Arc<App> {
         request_id_counter: Arc::new(std::sync::atomic::AtomicU64::new(
             crate::state::seed_request_id_counter(),
         )),
+        plugin_routes: std::sync::Arc::new(crate::plugin_routes::PluginRouteTable::empty()),
     })
 }
 

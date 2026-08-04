@@ -81,6 +81,7 @@ mod metrics;
 mod net_guard;
 mod observability;
 mod operation;
+mod plugin_routes;
 mod profile;
 mod proto;
 mod proxy;
@@ -1967,6 +1968,52 @@ pub(crate) fn plugins_preflight(
             }
         }
     }
+
+    // 7. PLUGIN HTTP ROUTE COLLISION CHECK (design §5.5) — MANIFEST-LEVEL, nothing dlopened. Walk every
+    // loadable export/hook plugin's DECLARED routes in the SAME deterministic scan order the registry
+    // produced, namespace-confine each, and fail LOUD naming the owning plugin on the first
+    // {path, method} collision — e.g. `plugin "datadog" cannot register GET /metrics — already
+    // registered by "prometheus"`. The IDENTICAL check backs boot and `--validate` (both call this
+    // preflight), and the SAME confinement + first-to-claim logic backs the live table built at App
+    // construction (`plugin_routes::build_route_table`), so the manifest check and what actually mounts
+    // cannot diverge. Route declarations are read straight from each signed manifest; a plugin that
+    // declares none contributes nothing (today's manifests carry no routes, so the set is empty until
+    // the export/hook route-manifest field lands — the wiring is here so that is a data change, not a
+    // control-flow one).
+    let route_owners: Vec<(String, crate::plugin_routes::RouteKind)> = registry
+        .loadable()
+        .iter()
+        .filter_map(|p| match p.manifest.kind.as_str() {
+            "export" => Some((
+                p.manifest.name.clone(),
+                crate::plugin_routes::RouteKind::Export,
+            )),
+            "hook" => Some((
+                p.manifest.name.clone(),
+                crate::plugin_routes::RouteKind::Hook,
+            )),
+            _ => None,
+        })
+        .collect();
+    let route_decls: Vec<(
+        String,
+        crate::plugin_routes::RouteKind,
+        busbar_plugin_loader::Route,
+    )> = route_owners
+        .into_iter()
+        .flat_map(|(name, kind)| {
+            // A plugin's DECLARED routes are read straight from its signed manifest. The manifest
+            // route field is not yet defined, so this yields nothing today; when it lands, map each
+            // declared route to `(name, kind, route)` HERE — the confinement + collision logic is
+            // already wired and tested.
+            Vec::<busbar_plugin_loader::Route>::new()
+                .into_iter()
+                .map(move |r| (name.clone(), kind, r))
+        })
+        .collect();
+    crate::plugin_routes::preflight_route_collisions(&route_decls)
+        .map_err(|e| format!("plugin route registration conflict: {e}"))?;
+
     Ok(registry)
 }
 
@@ -3455,6 +3502,9 @@ pub(crate) fn build_app_from_config(
             },
             |p| p.request_id_counter.clone(),
         ),
+        // Plugin HTTP routes (design §5): empty until export/hook plugins declare routes into the
+        // snapshot. An empty table mounts nothing and leaves the auth middleware unaffected.
+        plugin_routes: std::sync::Arc::new(crate::plugin_routes::PluginRouteTable::empty()),
     };
     // The build reached its end without a single fallible step refusing: KEEP the limits installed
     // at the top. Every earlier `return Err` / `?` drops the guard instead and rolls them back.
@@ -3494,11 +3544,15 @@ fn build_router_with_limits(
     max_inbound_concurrent: usize,
     server_timing_enabled: bool,
 ) -> (Router, std::sync::Arc<state::AppHandle>) {
+    // Capture the plugin route table before `app` moves into the handle (both planes mount from it).
+    let plugin_routes = app.plugin_routes.clone();
     let handle = std::sync::Arc::new(state::AppHandle::new(app));
     // TEST-ONLY combined router: mount the Admin API v1 onto the DATA route table so one router
     // exercises the whole surface. Production never does this — `build_split_routers_with_limits`
-    // mounts admin on its OWN router served on a separate listener.
-    let router = admin::transport::mount(base_data_router(), &admin::JsonV1);
+    // mounts admin on its OWN router served on a separate listener. Both planes' plugin routes are
+    // mounted here (the combined router IS both listeners).
+    let router = admin::transport::mount(base_data_router(&plugin_routes), &admin::JsonV1);
+    let router = crate::plugin_routes::mount_plugin_routes(router, &plugin_routes, true);
     let router = apply_common_layers(
         router,
         &handle,
@@ -3515,7 +3569,9 @@ fn build_router_with_limits(
 /// surface. Pre-state (`Router<Arc<AppHandle>>`); the admin API is mounted separately (onto this
 /// router in the single-listener case, or onto its own router in the split case) so it can move to
 /// a dedicated listener without any of these routes coming with it.
-fn base_data_router() -> Router<std::sync::Arc<state::AppHandle>> {
+fn base_data_router(
+    plugin_routes: &crate::plugin_routes::PluginRouteTable,
+) -> Router<std::sync::Arc<state::AppHandle>> {
     let router = Router::new()
         .route("/stats", get(endpoints::stats))
         .route("/healthz", get(endpoints::healthz));
@@ -3534,7 +3590,7 @@ fn base_data_router() -> Router<std::sync::Arc<state::AppHandle>> {
     } else {
         router
     };
-    router
+    let router = router
         // busbar's OWN API keeps explicit routes (it is not a protocol dialect): discovery,
         // health/metrics/stats above, and the named/adhoc conveniences below.
         // OpenAI list-models: SDKs call `models.list()` first; UIs build pickers from it.
@@ -3548,7 +3604,14 @@ fn base_data_router() -> Router<std::sync::Arc<state::AppHandle>> {
         .route("/v1/models", get(endpoints::list_models))
         .route("/v1beta/models", get(endpoints::list_models_v1beta))
         .route("/{name}/v1/messages", post(ingress::named))
-        .route("/{provider}/{model}/v1/messages", post(ingress::adhoc))
+        .route("/{provider}/{model}/v1/messages", post(ingress::adhoc));
+    // PLUGIN HTTP ROUTES (design §5): the collision-checked, namespace-confined `none`/`key`-auth
+    // routes an export/hook plugin declared. Reserved HERE — BEFORE the catch-all fallback below —
+    // because `ingress::protocol_dispatch` claims every unclaimed path by construction, so a plugin
+    // route wired after it would never match. The admin-auth routes are mounted on the admin listener
+    // instead (see `build_split_routers_with_limits`), physically absent from this data plane.
+    let router = crate::plugin_routes::mount_plugin_routes(router, plugin_routes, false);
+    router
         // EVERY protocol endpoint — chat and the 1.2 operations, all six dialects — flows through the
         // catch-all: Router (dumb protocol ID from path+headers) → that protocol's RequestHandler
         // (reads path+body, decides the operation) → its OperationHandler cell. Adding a protocol or
@@ -3619,22 +3682,27 @@ fn build_split_routers_with_limits(
     max_inbound_concurrent: usize,
     server_timing_enabled: bool,
 ) -> (Router, Router, std::sync::Arc<state::AppHandle>) {
+    // Capture the plugin route table before `app` moves into the handle.
+    let plugin_routes = app.plugin_routes.clone();
     let handle = std::sync::Arc::new(state::AppHandle::new(app));
-    // DATA plane: protocols + health/metrics/stats, NO admin mount.
+    // DATA plane: protocols + health/metrics/stats + the `none`/`key`-auth plugin routes, NO admin
+    // mount and NO admin-auth plugin routes (those are physically absent from the data listener).
     let data = apply_common_layers(
-        base_data_router(),
+        base_data_router(&plugin_routes),
         &handle,
         request_body_max_bytes,
         server_timing_enabled,
     );
     let data = apply_inbound_concurrency_limit(data, max_inbound_concurrent);
-    // ADMIN plane: a liveness probe (unauthenticated, like the data plane's) + the admin surface,
-    // nothing else. `/healthz` bypasses auth so probes work on the admin port too; every
-    // `/api/v1/admin/*` route stays behind the admin auth chain.
+    // ADMIN plane: a liveness probe (unauthenticated, like the data plane's) + the admin surface +
+    // the `admin`-auth plugin routes (confined to this listener exactly like `/api/v1/admin/*`).
+    // `/healthz` bypasses auth so probes work on the admin port too; every `/api/v1/admin/*` route
+    // stays behind the admin auth chain.
     let admin = admin::transport::mount(
         Router::new().route("/healthz", get(endpoints::healthz)),
         &admin::JsonV1,
     );
+    let admin = crate::plugin_routes::mount_plugin_routes(admin, &plugin_routes, true);
     let admin = apply_common_layers(
         admin,
         &handle,

@@ -449,6 +449,19 @@ pub trait HookHandler: Send + Sync {
     fn status(&self) -> serde_json::Value {
         serde_json::json!({})
     }
+    /// The HTTP [`Route`]s this hook serves (a routing hook's inbound `/feedback`), collected once at
+    /// load. Default: none. The engine confines a hook's routes to `/hooks/<name>/*`.
+    fn routes(&self) -> Vec<Route> {
+        Vec::new()
+    }
+    /// Serve one inbound HTTP request matched to a declared route. Default: `404`.
+    fn handle_http(&self, _req: &HttpEndpointRequest) -> HttpEndpointResponse {
+        HttpEndpointResponse {
+            status: 404,
+            headers: Vec::new(),
+            body: Vec::new(),
+        }
+    }
 }
 
 /// The hook handle behind the opaque `*mut c_void`: a boxed [`HookHandler`]. Named at the module level
@@ -494,6 +507,8 @@ pub fn dispatch_hook(
         }
         HookRequest::Describe => HookReply::Reply(handler.describe()),
         HookRequest::Status => HookReply::Reply(handler.status()),
+        HookRequest::Routes => HookReply::Routes(handler.routes()),
+        HookRequest::HttpEndpoint { request } => HookReply::Http(handler.handle_http(&request)),
     }
 }
 
@@ -526,6 +541,13 @@ pub unsafe fn hook_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutcom
 /// without a direct `busbar-plugin-abi` dependency, mirroring the hook/auth re-export path.
 pub use busbar_plugin_abi::export::{ExportRequest, ExportResponse, ExportStream};
 
+/// Re-export the HTTP-endpoint wire types (plugin route registration + dispatch) so an export/hook
+/// author names `busbar_plugin_sdk::Route` / `HttpEndpointRequest` (etc.) without a direct
+/// `busbar-plugin-abi` dependency.
+pub use busbar_plugin_abi::http_endpoint::{
+    HttpEndpointRequest, HttpEndpointResponse, Route, RouteAuth, RouteMethod,
+};
+
 /// The sync contract a `kind: export` plugin author implements. [`streams`](ExportHandler::streams)
 /// declares which observability streams THIS instance carries (asked once at load); `deliver` hands
 /// one already-serialized batch for a declared stream to the sink and has a DEFAULT no-op, so a trivial
@@ -537,6 +559,22 @@ pub trait ExportHandler: Send + Sync {
     /// Accept one batch for `stream`. `payload` is the engine-built batch as an opaque JSON value.
     /// Default: no-op (a sink that reports streams but drops batches).
     fn deliver(&self, _stream: ExportStream, _payload: &serde_json::Value) {}
+    /// The HTTP [`Route`]s this instance serves — its OWN compiled-in declarations, collected once at
+    /// load (a metrics sink declares `GET /metrics`). Default: none (a push-only sink has no HTTP
+    /// surface). The engine collision-checks + namespace-confines these before mounting.
+    fn routes(&self) -> Vec<Route> {
+        Vec::new()
+    }
+    /// Serve one inbound HTTP request matched to a declared route. Fires only for a matched route (the
+    /// engine already enforced the route's auth). Default: `404` — the fallback for a sink that
+    /// declared no routes / a partial impl.
+    fn handle_http(&self, _req: &HttpEndpointRequest) -> HttpEndpointResponse {
+        HttpEndpointResponse {
+            status: 404,
+            headers: Vec::new(),
+            body: Vec::new(),
+        }
+    }
 }
 
 /// The export handle behind the opaque `*mut c_void`: a boxed [`ExportHandler`]. Named at the module
@@ -563,6 +601,10 @@ pub fn dispatch_export(handler: &dyn ExportHandler, req: ExportRequest) -> Expor
         ExportRequest::Deliver { stream, payload } => {
             handler.deliver(stream, &payload);
             ExportResponse::Delivered
+        }
+        ExportRequest::Routes => ExportResponse::Routes(handler.routes()),
+        ExportRequest::HttpEndpoint { request } => {
+            ExportResponse::Http(handler.handle_http(&request))
         }
     }
 }
@@ -1093,6 +1135,81 @@ mod tests {
             other => panic!("expected Delivered, got {other:?}"),
         }
         assert_eq!(sink.delivered.load(std::sync::atomic::Ordering::Relaxed), 1);
+    }
+
+    /// A sink that declares a `GET /metrics` route and serves it via `handle_http`.
+    struct RoutedExport;
+    impl ExportHandler for RoutedExport {
+        fn streams(&self) -> Vec<ExportStream> {
+            vec![ExportStream::Metrics]
+        }
+        fn routes(&self) -> Vec<Route> {
+            vec![Route {
+                path: "/metrics".into(),
+                method: RouteMethod::Get,
+                auth: RouteAuth::None,
+            }]
+        }
+        fn handle_http(&self, req: &HttpEndpointRequest) -> HttpEndpointResponse {
+            assert_eq!(req.path, "/metrics");
+            HttpEndpointResponse {
+                status: 200,
+                headers: vec![("content-type".into(), "text/plain".into())],
+                body: b"busbar_up 1\n".to_vec(),
+            }
+        }
+    }
+
+    /// EXPORT glue: `dispatch_export` maps `Routes` to the declared routes and `HttpEndpoint` to
+    /// `handle_http`, relaying the plugin's response — the additive route-registration + dispatch wire.
+    #[test]
+    fn export_dispatch_routes_and_http() {
+        match dispatch_export(&RoutedExport, ExportRequest::Routes) {
+            ExportResponse::Routes(r) => {
+                assert_eq!(r.len(), 1);
+                assert_eq!(r[0].path, "/metrics");
+                assert_eq!(r[0].method, RouteMethod::Get);
+            }
+            other => panic!("expected Routes, got {other:?}"),
+        }
+        match dispatch_export(
+            &RoutedExport,
+            ExportRequest::HttpEndpoint {
+                request: HttpEndpointRequest {
+                    method: "GET".into(),
+                    path: "/metrics".into(),
+                    query: String::new(),
+                    headers: vec![],
+                    body: vec![],
+                },
+            },
+        ) {
+            ExportResponse::Http(resp) => {
+                assert_eq!(resp.status, 200);
+                assert_eq!(resp.body, b"busbar_up 1\n");
+            }
+            other => panic!("expected Http, got {other:?}"),
+        }
+    }
+
+    /// EXPORT glue: the DEFAULT `handle_http` is a 404 (a sink with no HTTP surface / partial impl).
+    #[test]
+    fn export_default_handle_http_is_404() {
+        struct Bare;
+        impl ExportHandler for Bare {
+            fn streams(&self) -> Vec<ExportStream> {
+                vec![ExportStream::Metrics]
+            }
+        }
+        assert!(Bare.routes().is_empty());
+        let resp = Bare.handle_http(&HttpEndpointRequest {
+            method: "GET".into(),
+            path: "/whatever".into(),
+            query: String::new(),
+            headers: vec![],
+            body: vec![],
+        });
+        assert_eq!(resp.status, 404);
     }
 
     /// EXPORT: the SDK's declared payload version reads the shared const (compile-time link, not a

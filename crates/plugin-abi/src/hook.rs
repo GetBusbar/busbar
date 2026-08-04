@@ -27,6 +27,7 @@
 //! operator grant (AND the signed-manifest declared intent) allow it — the plugin has no say and
 //! cannot cause content to be sent. This ABI just carries whatever the core chose to project.
 
+use crate::http_endpoint::{HttpEndpointRequest, HttpEndpointResponse, Route};
 use serde::{Deserialize, Serialize};
 
 /// The hook-plugin PAYLOAD schema version (the signed manifest's `abi_version` for `kind: hook`).
@@ -63,6 +64,16 @@ pub enum HookRequest {
     Describe,
     /// `status` — ask the hook for its observed settings + metrics (the control-plane scrape read).
     Status,
+    /// `routes` — asked ONCE at load: which HTTP [`Route`]s does this hook serve (a routing hook's
+    /// inbound `/feedback`, confined to `/hooks/<name>/*`)? Reply: [`HookReply::Routes`]. ADDITIVE —
+    /// an older hook that cannot decode this op declares no routes.
+    Routes,
+    /// `http_endpoint` — dispatch one inbound HTTP request matched to a registered route of THIS hook.
+    /// Fires only for a matched plugin route, off the data-plane hot path. Reply: [`HookReply::Http`].
+    HttpEndpoint {
+        /// The host-built inbound request (bounded headers, no raw `Authorization`).
+        request: HttpEndpointRequest,
+    },
 }
 
 /// The `configure` body: the hook's own name (echo), its opaque settings, the monotonic version the
@@ -116,6 +127,12 @@ pub enum HookReply {
     ConfigureAck { settings_version: u64 },
     /// A `notify` (tap) reply: nothing to read (fire-and-forget).
     None,
+    /// A `routes` reply: the HTTP routes this hook serves (collected once at load). ADDITIVE — a new
+    /// externally-tagged variant that does not disturb the `None`/`ConfigureAck`/`Reply` encodings
+    /// pinned by `hook_reply_json_encoding_is_pinned`.
+    Routes(Vec<Route>),
+    /// An `http_endpoint` reply: the hook's response to a dispatched inbound request. ADDITIVE.
+    Http(HttpEndpointResponse),
 }
 
 #[cfg(test)]
