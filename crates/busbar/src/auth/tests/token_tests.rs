@@ -180,6 +180,7 @@ async fn callback_state_mismatch_400() {
     // exchange were attempted this would hang/error, not cleanly 400).
     let resp = callback(
         &app,
+        &cred_handle(&app),
         Some(cookie.encode()),
         "code123".into(),
         Some("WRONG-STATE".into()),
@@ -191,7 +192,14 @@ async fn callback_state_mismatch_400() {
         "state mismatch must be a clean 400"
     );
     // Absent cookie ⇒ 400 too.
-    let resp2 = callback(&app, None, "code123".into(), Some("the-real-state".into())).await;
+    let resp2 = callback(
+        &app,
+        &cred_handle(&app),
+        None,
+        "code123".into(),
+        Some("the-real-state".into()),
+    )
+    .await;
     assert_eq!(resp2.status().as_u16(), 400, "no cookie ⇒ 400");
 }
 
@@ -209,6 +217,7 @@ async fn callback_nonce_mismatch_rejected() {
     };
     let resp = callback(
         &app,
+        &cred_handle(&app),
         Some(cookie.encode()),
         "code123".into(),
         Some("st".into()),
@@ -357,12 +366,27 @@ fn cred_bindings() -> crate::config::RoleBindings {
 }
 
 fn cred_app() -> std::sync::Arc<crate::state::App> {
+    // The `team` group the role binds to MUST be a real configured group (parent of the
+    // auto-provisioned `user:<sub>` leaf), carrying a `child_default` the leaf inherits — the
+    // production shape (role_bindings.<module>.<role>.group names a configured team).
+    let team: crate::config::GroupCfg =
+        serde_yaml::from_str("child_default:\n  limits:\n    - { budget: 500, per: month }\n")
+            .expect("team group parses");
+    let mut groups = std::collections::BTreeMap::new();
+    groups.insert("team".to_string(), team);
     crate::test_support::TestApp::new()
         .public_url("https://busbar.example.com")
         .governance(cred_gov())
         .role_bindings(cred_bindings())
+        .groups_tree(groups)
         .login_method("ldap", Box::new(CredLogin), None, None, true)
         .build()
+}
+
+/// Wrap a `cred_app` snapshot in a live `AppHandle` so `credential_submit` can auto-provision the
+/// `user:<sub>` leaf (persist-then-swap) exactly as the running server does.
+fn cred_handle(app: &std::sync::Arc<crate::state::App>) -> std::sync::Arc<crate::state::AppHandle> {
+    std::sync::Arc::new(crate::state::AppHandle::new(app.clone()))
 }
 
 fn cred_cookie(state: &str, refresh: bool) -> String {
@@ -427,7 +451,8 @@ async fn credential_submit_issues_via_shared_seam() {
         ("username".to_string(), "alice".to_string()),
         ("password".to_string(), "pw".to_string()),
     ];
-    let resp = credential_submit(&app, cred_cookie("csrf-1", false), form).await;
+    let resp =
+        credential_submit(&app, &cred_handle(&app), cred_cookie("csrf-1", false), form).await;
     assert_eq!(resp.status().as_u16(), 200);
     let body = body_of(resp);
     assert!(
@@ -453,7 +478,8 @@ async fn credential_submit_wrong_password_401() {
         ("username".to_string(), "alice".to_string()),
         ("password".to_string(), "WRONG".to_string()),
     ];
-    let resp = credential_submit(&app, cred_cookie("csrf-1", false), form).await;
+    let resp =
+        credential_submit(&app, &cred_handle(&app), cred_cookie("csrf-1", false), form).await;
     assert_eq!(resp.status().as_u16(), 401);
 }
 
@@ -466,7 +492,8 @@ async fn credential_submit_state_mismatch_400() {
         ("username".to_string(), "alice".to_string()),
         ("password".to_string(), "pw".to_string()),
     ];
-    let resp = credential_submit(&app, cred_cookie("csrf-1", false), form).await;
+    let resp =
+        credential_submit(&app, &cred_handle(&app), cred_cookie("csrf-1", false), form).await;
     assert_eq!(resp.status().as_u16(), 400);
 }
 
@@ -485,12 +512,14 @@ async fn refresh_rotates_key_and_revokes_the_old_one() {
     // First login (issue).
     let mut f1 = vec![("__state".to_string(), "s1".to_string())];
     f1.extend(creds());
-    let body1 = body_of(credential_submit(&app, cred_cookie("s1", false), f1).await);
+    let body1 =
+        body_of(credential_submit(&app, &cred_handle(&app), cred_cookie("s1", false), f1).await);
     let key1 = extract_key(&body1);
     // Refresh (rotate).
     let mut f2 = vec![("__state".to_string(), "s2".to_string())];
     f2.extend(creds());
-    let body2 = body_of(credential_submit(&app, cred_cookie("s2", true), f2).await);
+    let body2 =
+        body_of(credential_submit(&app, &cred_handle(&app), cred_cookie("s2", true), f2).await);
     let key2 = extract_key(&body2);
 
     assert_ne!(key1, key2, "Refresh must mint a DIFFERENT token");
@@ -729,6 +758,7 @@ async fn hop_loop_runs_at_most_max_hops_times() {
     };
     let _ = callback(
         &app,
+        &cred_handle(&app),
         Some(cookie.encode()),
         "code".into(),
         Some("st".into()),

@@ -22,7 +22,8 @@ use axum::http::{Request, StatusCode};
 use axum::response::{IntoResponse, Response};
 
 use super::self_keys::{
-    issue_key, resolve_exchange, DeterministicEd25519Keys, ExchangeError, IssuedKey,
+    issue_key, resolve_exchange, DeterministicEd25519Keys, ExchangeError, HandleProvisioner,
+    IssuedKey,
 };
 use super::AuthMiddleware;
 
@@ -46,7 +47,7 @@ pub(crate) async fn exchange(
             .await
             .unwrap_or_default();
         let form = crate::auth::token::parse_form_urlencoded(&String::from_utf8_lossy(&bytes));
-        return crate::auth::token::credential_submit(&app, cookie, form).await;
+        return crate::auth::token::credential_submit(&app, &handle, cookie, form).await;
     }
     // Identity comes from the VERIFIED chain, never the body. The IdP credential rides the same
     // carriers as any data-plane token (Authorization: Bearer / x-api-key / x-goog-api-key).
@@ -59,7 +60,7 @@ pub(crate) async fn exchange(
     )
     .await;
 
-    let (principal, pools) = match resolve_exchange(&verdict, &app.role_bindings) {
+    let (principal, team, pools) = match resolve_exchange(&verdict, &app.role_bindings) {
         Ok(v) => v,
         Err(e) => return refusal(e),
     };
@@ -70,7 +71,10 @@ pub(crate) async fn exchange(
         ));
     };
     let ttl = Duration::from_secs(app.self_key_ttl_secs);
-    let keys = DeterministicEd25519Keys::new(gov, pools);
+    // The provisioner auto-creates the `user:<sub>` leaf under `team` on first exchange (limits from
+    // the team's `child_default`) so the minted key is immediately usable, not a 429 MissingGroup.
+    let provisioner = Arc::new(HandleProvisioner::new(handle.clone(), principal.id.clone()));
+    let keys = DeterministicEd25519Keys::new(gov, team, pools, provisioner);
     match issue_key(&keys, principal, ttl, false) {
         Ok(issued) => {
             // SELF-CONTAINED response: include `base_url` (= the configured `public_url`, verbatim, no

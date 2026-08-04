@@ -34,7 +34,7 @@ use busbar_api::{
     AuthPlugin, BeginLogin, CompleteLogin, LoginHttpResponse, LoginOutcome, Principal,
 };
 
-use super::self_keys::{issue_key, resolve_exchange, DeterministicEd25519Keys};
+use super::self_keys::{issue_key, resolve_exchange, DeterministicEd25519Keys, HandleProvisioner};
 use super::ChainVerdict;
 use crate::config::AuthCfg;
 use crate::state::{App, AppHandle};
@@ -211,7 +211,7 @@ pub(crate) async fn browser(State(handle): State<Arc<AppHandle>>, req: Request<B
 
     // callback FIRST (`?code=` present) — the IdP always returns `code`+`state`.
     if let Some(code) = get("code") {
-        return callback(&app, cookie_raw, code, get("state")).await;
+        return callback(&app, &handle, cookie_raw, code, get("state")).await;
     }
     match get("method") {
         // `?refresh=1` marks a ROTATE ("Refresh key"): the completing handler mints with refresh=true.
@@ -320,6 +320,7 @@ async fn begin(app: &App, method: &str, refresh: bool) -> Response {
 /// the client_secret, verify the id_token nonce, then mint via the shared self-serve seam.
 async fn callback(
     app: &App,
+    handle: &Arc<AppHandle>,
     cookie_raw: Option<String>,
     code: String,
     state: Option<String>,
@@ -410,6 +411,7 @@ async fn callback(
     // credential flow (`issue_and_render`), then CLEAR the single-use cookie. No second mint path.
     clear_and(issue_and_render(
         app,
+        handle,
         &cookie.method,
         principal,
         cookie.refresh,
@@ -420,13 +422,19 @@ async fn callback(
 /// POST (`credential_submit`): builds the `Identified` verdict, runs `resolve_exchange`, and mints via
 /// the ONE `issue_key` seam (`refresh` rotates — the "Refresh key" action). Returns the key-issued
 /// page or a typed refusal; it NEVER clears the cookie (the caller wraps the result in `clear_and`).
-fn issue_and_render(app: &App, module_name: &str, principal: Principal, refresh: bool) -> Response {
+fn issue_and_render(
+    app: &App,
+    handle: &Arc<AppHandle>,
+    module_name: &str,
+    principal: Principal,
+    refresh: bool,
+) -> Response {
     let verdict = ChainVerdict::Identified {
         module: module_name.to_string(),
         principal,
         resolved: None,
     };
-    let (principal, pools) = match resolve_exchange(&verdict, &app.role_bindings) {
+    let (principal, team, pools) = match resolve_exchange(&verdict, &app.role_bindings) {
         Ok(v) => v,
         Err(_) => {
             return (
@@ -440,7 +448,10 @@ fn issue_and_render(app: &App, module_name: &str, principal: Principal, refresh:
         return bad_gateway("governance disabled: cannot issue keys");
     };
     let ttl = Duration::from_secs(app.self_key_ttl_secs);
-    let keys = DeterministicEd25519Keys::new(gov, pools);
+    // Auto-provision the `user:<sub>` leaf under `team` (from the team's `child_default`) before the
+    // mint, so the browser-issued key is usable immediately (no 429 MissingGroup).
+    let provisioner = Arc::new(HandleProvisioner::new(handle.clone(), principal.id.clone()));
+    let keys = DeterministicEd25519Keys::new(gov, team, pools, provisioner);
     let issued = match issue_key(&keys, principal, ttl, refresh) {
         Ok(k) => k,
         Err(_) => return bad_gateway("could not issue a key"),
@@ -463,6 +474,7 @@ fn issue_and_render(app: &App, module_name: &str, principal: Principal, refresh:
 /// `Identify` — issues through the SAME `issue_and_render` seam. Redirect methods never reach here.
 pub(crate) async fn credential_submit(
     app: &App,
+    handle: &Arc<AppHandle>,
     cookie_raw: String,
     form: Vec<(String, String)>,
 ) -> Response {
@@ -510,6 +522,7 @@ pub(crate) async fn credential_submit(
     };
     clear_and(issue_and_render(
         app,
+        handle,
         &cookie.method,
         principal,
         cookie.refresh,
