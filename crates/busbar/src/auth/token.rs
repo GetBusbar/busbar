@@ -444,20 +444,14 @@ async fn callback(
 
     // Feed the verified identity through the SAME admission + mint seam as the headless POST and the
     // credential flow (`issue_and_render`), then CLEAR the single-use cookie. No second mint path.
-    clear_and(issue_and_render(
-        app,
-        handle,
-        &cookie.method,
-        principal,
-        cookie.refresh,
-    ))
+    clear_and(issue_and_render(app, handle, &cookie.method, principal, cookie.refresh).await)
 }
 
 /// The SHARED identify→admit→mint→render tail used by BOTH the redirect callback and the credential
 /// POST (`credential_submit`): builds the `Identified` verdict, runs `resolve_exchange`, and mints via
 /// the ONE `issue_key` seam (`refresh` rotates — the "Refresh key" action). Returns the key-issued
 /// page or a typed refusal; it NEVER clears the cookie (the caller wraps the result in `clear_and`).
-fn issue_and_render(
+async fn issue_and_render(
     app: &App,
     handle: &Arc<AppHandle>,
     module_name: &str,
@@ -492,7 +486,7 @@ fn issue_and_render(
     let provisioner = Arc::new(HandleProvisioner::new(handle.clone(), principal.id.clone()));
     let keys = DeterministicEd25519Keys::new(gov, team, pools, provisioner);
     let issued =
-        match issue_key(&keys, principal, ttl, refresh) {
+        match issue_key(&keys, principal, ttl, refresh).await {
             Ok(k) => k,
             Err(_) => return error_page(
                 StatusCode::BAD_GATEWAY,
@@ -587,13 +581,7 @@ pub(crate) async fn credential_submit(
             ))
         }
     };
-    clear_and(issue_and_render(
-        app,
-        handle,
-        &cookie.method,
-        principal,
-        cookie.refresh,
-    ))
+    clear_and(issue_and_render(app, handle, &cookie.method, principal, cookie.refresh).await)
 }
 
 // ── the login cookie (hand-rolled, HttpOnly+Secure+SameSite=Lax) ─────────────────────────────────

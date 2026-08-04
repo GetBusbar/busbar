@@ -75,7 +75,7 @@ pub(crate) async fn exchange(
     // the team's `child_default`) so the minted key is immediately usable, not a 429 MissingGroup.
     let provisioner = Arc::new(HandleProvisioner::new(handle.clone(), principal.id.clone()));
     let keys = DeterministicEd25519Keys::new(gov, team, pools, provisioner);
-    match issue_key(&keys, principal, ttl, false) {
+    match issue_key(&keys, principal, ttl, false).await {
         Ok(issued) => {
             // SELF-CONTAINED response: include `base_url` (= the configured `public_url`, verbatim, no
             // `/v1`) so a headless/CI caller has everything to point a BYOK tool in ONE payload.
