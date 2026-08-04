@@ -62,6 +62,12 @@ pub fn supported_abi(kind: &str) -> &'static [u32] {
             busbar_plugin_abi::hook::HOOK_ABI_VERSION,
             busbar_plugin_abi::hook::HOOK_ABI_VERSION,
         ],
+        // A `kind: export` plugin is a telemetry sink the engine's observability seam feeds
+        // (`open_export`). Payload schema v1 (`streams`/`deliver`).
+        "export" => &[
+            busbar_plugin_abi::export::EXPORT_ABI_VERSION,
+            busbar_plugin_abi::export::EXPORT_ABI_VERSION,
+        ],
         _ => &[],
     }
 }
@@ -355,6 +361,47 @@ impl PluginRegistry {
             ));
         }
         crate::load_secret_from_bytes(&p.lib_bytes, cfg_json, &p.manifest.name, &p.manifest.kind)
+    }
+
+    /// Open an EXPORT sink resolved by name or alias: verifies the resolved plugin's `kind` is
+    /// `export`, then loads the VERIFIED bytes over the kind-neutral C ABI and `open`s it with
+    /// `cfg_json`, returning a [`crate::export::DynExport`] whose declared streams were queried once at
+    /// load. Same trust and load pipeline as store/secret/auth/hook; only the kind (and the consuming
+    /// seam) differs. FAIL-CLOSED on any resolution/kind/load failure.
+    pub fn open_export(
+        &self,
+        name_or_alias: &str,
+        cfg_json: &str,
+    ) -> Result<crate::export::DynExport, String> {
+        let Some(p) = self.resolve(name_or_alias) else {
+            return Err(match self.unresolved_reason(name_or_alias) {
+                Some(s) => format!(
+                    "plugin '{name_or_alias}' is present ({}) but was not loaded: {}",
+                    s.file, s.reason
+                ),
+                None => format!(
+                    "no plugin named or aliased '{name_or_alias}' is available (loadable plugins: \
+                     [{}])",
+                    self.loadable
+                        .iter()
+                        .map(|p| p.manifest.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            });
+        };
+        if p.manifest.kind != "export" {
+            return Err(format!(
+                "plugin '{}' has kind '{}', not 'export' - it cannot serve as a telemetry sink",
+                p.manifest.name, p.manifest.kind
+            ));
+        }
+        crate::export::load_export_from_bytes(
+            &p.lib_bytes,
+            cfg_json,
+            &p.manifest.name,
+            &p.manifest.kind,
+        )
     }
 }
 
@@ -1352,5 +1399,20 @@ mod tests {
             supported_abi("auth"),
             &[1, busbar_plugin_abi::AUTH_ABI_VERSION]
         );
+    }
+
+    /// The export range reads the shared `EXPORT_ABI_VERSION` const on both endpoints, so a bump
+    /// propagates automatically instead of drifting from the SDK's declared version. `kind: export`
+    /// is a recognized kind with a non-empty supported range.
+    #[test]
+    fn export_supported_abi_reads_the_shared_const() {
+        assert_eq!(
+            supported_abi("export"),
+            &[
+                busbar_plugin_abi::export::EXPORT_ABI_VERSION,
+                busbar_plugin_abi::export::EXPORT_ABI_VERSION,
+            ]
+        );
+        assert!(!supported_abi("export").is_empty());
     }
 }

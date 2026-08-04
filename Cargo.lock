@@ -312,6 +312,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "busbar-export-example-plugin"
+version = "1.5.0"
+dependencies = [
+ "busbar-plugin-sdk",
+]
+
+[[package]]
 name = "busbar-hook-test-plugin"
 version = "1.5.0"
 dependencies = [

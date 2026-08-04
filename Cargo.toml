@@ -15,6 +15,7 @@ members = [
     "crates/hook-test-plugin",
     "crates/secret-example-plugin",
     "crates/store-example-plugin",
+    "crates/export-example-plugin",
     "crates/hooks-ranking",
     "crates/store-memory",
 ]

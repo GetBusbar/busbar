@@ -50,6 +50,7 @@ use serde::{Deserialize, Serialize};
 use std::os::raw::c_void;
 
 pub mod auth;
+pub mod export;
 pub mod hook;
 
 /// The Feature-2 "decision observability" signal catalog (task #141) — re-exported wholesale from
@@ -79,6 +80,10 @@ pub mod kind {
     /// An in-process routing hook / policy (`Arc<dyn busbar_api::RoutingPolicy>`). The 1.5.0
     /// replacement for the retired out-of-process socket/webhook hook transport.
     pub const HOOK: &str = "hook";
+    /// A telemetry export sink that carries the engine's observability streams
+    /// (metrics/logs/audit/traces) OUT to an external backend. Its payload schema lives in
+    /// [`crate::export`].
+    pub const EXPORT: &str = "export";
 }
 
 /// The store-plugin PAYLOAD schema version (the signed manifest's `abi_version` for `kind: store`).

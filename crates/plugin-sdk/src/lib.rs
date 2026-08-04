@@ -516,6 +516,92 @@ pub unsafe fn hook_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutcom
     }
 }
 
+// ── EXPORT-plugin glue (`kind: export`) ────────────────────────────────────────────────────────────
+// An export plugin is a telemetry SINK behind the frozen six-symbol ABI. Its author implements the tiny
+// SYNC [`ExportHandler`] trait (`streams`/`deliver` over JSON); the op-dispatch match
+// ([`dispatch_export`]) routes the [`ExportRequest`] envelope to it. Mirrors the hook glue one-to-one:
+// same `export_plugin!` shape, its own handle type (`Box<dyn ExportHandler>`), its own request enum.
+
+/// Re-export the export wire types so a plugin author names `busbar_plugin_sdk::ExportStream` (etc.)
+/// without a direct `busbar-plugin-abi` dependency, mirroring the hook/auth re-export path.
+pub use busbar_plugin_abi::export::{ExportRequest, ExportResponse, ExportStream};
+
+/// The sync contract a `kind: export` plugin author implements. [`streams`](ExportHandler::streams)
+/// declares which observability streams THIS instance carries (asked once at load); `deliver` hands
+/// one already-serialized batch for a declared stream to the sink and has a DEFAULT no-op, so a trivial
+/// sink implements only `streams`.
+pub trait ExportHandler: Send + Sync {
+    /// The [`ExportStream`]s this instance carries. Asked once at load; the engine only routes
+    /// deliveries for streams named here.
+    fn streams(&self) -> Vec<ExportStream>;
+    /// Accept one batch for `stream`. `payload` is the engine-built batch as an opaque JSON value.
+    /// Default: no-op (a sink that reports streams but drops batches).
+    fn deliver(&self, _stream: ExportStream, _payload: &serde_json::Value) {}
+}
+
+/// The export handle behind the opaque `*mut c_void`: a boxed [`ExportHandler`]. Named at the module
+/// level so the `export_plugin!` expansion can pass it to `close_boundary::<$ty>`.
+pub type ExportHandle = Box<dyn ExportHandler>;
+
+/// The export handle behind the opaque `*mut c_void`: a boxed [`ExportHandler`].
+type BoxedExport = ExportHandle;
+
+/// Return the EXPORT PAYLOAD schema version this SDK builds against (`busbar_plugin_kind() ==
+/// "export"`). Reads the shared const rather than a bare literal, so `plugin-loader::registry`'s floor
+/// and this SDK's declared version cannot drift apart — mirroring `secret_abi_version()`/
+/// `hook_abi_version()`.
+pub fn export_abi_version() -> u32 {
+    busbar_plugin_abi::export::EXPORT_ABI_VERSION
+}
+
+/// Run one [`ExportRequest`] against an [`ExportHandler`] — the single op-dispatch match that maps the
+/// wire envelope to the trait, unit-testable without FFI. `Streams` returns the handler's declared
+/// streams; `Deliver` runs the handler's sink and acks with [`ExportResponse::Delivered`].
+pub fn dispatch_export(handler: &dyn ExportHandler, req: ExportRequest) -> ExportResponse {
+    match req {
+        ExportRequest::Streams => ExportResponse::Streams(handler.streams()),
+        ExportRequest::Deliver { stream, payload } => {
+            handler.deliver(stream, &payload);
+            ExportResponse::Delivered
+        }
+    }
+}
+
+/// The per-kind `dispatch` closure `export_export_plugin!` hands to [`boundary::call_boundary`]: decode
+/// an [`ExportRequest`], run it via [`dispatch_export`], and encode the [`ExportResponse`] into a
+/// [`BoundaryOutcome`]. An undecodable request is the only [`BoundaryOutcome::Unsupported`] case; a
+/// response-encode failure is a real fault → [`BoundaryOutcome::Error`].
+///
+/// # Safety
+/// `handle` is a live export handle from `open` (guaranteed non-null by the boundary wrapper).
+pub unsafe fn export_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutcome {
+    let handler: &BoxedExport = &*(handle as *const BoxedExport);
+    let request: ExportRequest = match serde_json::from_slice(bytes) {
+        Ok(r) => r,
+        Err(e) => return BoundaryOutcome::Unsupported(format!("malformed request JSON: {e}")),
+    };
+    let resp = dispatch_export(handler.as_ref(), request);
+    match serde_json::to_vec(&resp) {
+        Ok(payload) => BoundaryOutcome::Ok(payload),
+        Err(e) => BoundaryOutcome::Error(format!("response encode failed: {e}")),
+    }
+}
+
+/// Emit an `export`-kind cdylib plugin from `$ctor` (a
+/// `fn(&str) -> Result<Box<dyn busbar_plugin_sdk::ExportHandler>, String>`). Expands through
+/// [`export_plugin!`], stamping `busbar_plugin_kind() == "export"` + the six neutral symbols.
+#[macro_export]
+macro_rules! export_export_plugin {
+    ($ctor:path) => {
+        $crate::export_plugin!(
+            kind = "export",
+            dispatch = $crate::export_dispatch,
+            ctor = $ctor,
+            handle = $crate::ExportHandle,
+        );
+    };
+}
+
 /// Emit a `hook`-kind cdylib plugin from `$ctor` (a
 /// `fn(&str) -> Result<Box<dyn busbar_plugin_sdk::HookHandler>, String>`). Expands through
 /// [`export_plugin!`], stamping `busbar_plugin_kind() == "hook"` + the six neutral symbols.
@@ -969,6 +1055,55 @@ mod tests {
 
             hook_close_impl(handle);
         }
+    }
+
+    /// A trivial export sink: declares `[Metrics]` and counts deliveries.
+    struct TestExport {
+        delivered: std::sync::atomic::AtomicU64,
+    }
+    impl ExportHandler for TestExport {
+        fn streams(&self) -> Vec<ExportStream> {
+            vec![ExportStream::Metrics]
+        }
+        fn deliver(&self, _stream: ExportStream, _payload: &serde_json::Value) {
+            self.delivered
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// EXPORT glue: `dispatch_export` maps `Streams` to the declared catalog and `Deliver` to the
+    /// sink, acking `Delivered` and running the handler exactly once.
+    #[test]
+    fn export_dispatch_maps_ops() {
+        let sink = TestExport {
+            delivered: std::sync::atomic::AtomicU64::new(0),
+        };
+        match dispatch_export(&sink, ExportRequest::Streams) {
+            ExportResponse::Streams(s) => assert_eq!(s, vec![ExportStream::Metrics]),
+            other => panic!("expected Streams, got {other:?}"),
+        }
+        match dispatch_export(
+            &sink,
+            ExportRequest::Deliver {
+                stream: ExportStream::Metrics,
+                payload: serde_json::json!({"reqs": 1}),
+            },
+        ) {
+            ExportResponse::Delivered => {}
+            other => panic!("expected Delivered, got {other:?}"),
+        }
+        assert_eq!(sink.delivered.load(std::sync::atomic::Ordering::Relaxed), 1);
+    }
+
+    /// EXPORT: the SDK's declared payload version reads the shared const (compile-time link, not a
+    /// coincidental literal) and is pinned at v1.
+    #[test]
+    fn export_abi_version_reads_the_shared_const_and_is_one() {
+        assert_eq!(
+            export_abi_version(),
+            busbar_plugin_abi::export::EXPORT_ABI_VERSION
+        );
+        assert_eq!(export_abi_version(), 1);
     }
 
     fn mem_ctor(_cfg: &str) -> Result<BoxedStore, String> {

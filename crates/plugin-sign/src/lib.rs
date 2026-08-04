@@ -61,7 +61,7 @@ pub const FIRST_PARTY_PUBLISHER: &str = "busbar";
 
 /// The plugin kinds this binary understands. ONE plugin subsystem: `kind` only selects which C ABI
 /// the cdylib exports and which engine subsystem consumes it; discovery/trust/validation are shared.
-pub const KNOWN_KINDS: &[&str] = &["store", "auth", "hook", "secret"];
+pub const KNOWN_KINDS: &[&str] = &["store", "auth", "hook", "secret", "export"];
 
 /// This binary's own host identity — the value [`Manifest::host`] must match (or omit) to load.
 /// `busbar` names the OSS engine. A sibling product (e.g. `busbar-ui`) that reuses this exact
@@ -955,6 +955,29 @@ mod tests {
         let bad = sign(&release, bad, artifact);
         let err = validate_structure(&bad, artifact, &abi, HOST_IDENTITY).unwrap_err();
         assert!(err.contains("gizmo"), "got {err}");
+    }
+
+    /// `kind: export` is a first-class plugin kind — a signed export-sink manifest passes structural
+    /// validation and trust evaluation identically to any other plugin (a plugin is a plugin). Mirrors
+    /// `secret_kind_is_known_and_signs_like_any_plugin`.
+    #[test]
+    fn export_kind_is_known_and_signs_like_any_plugin() {
+        assert!(KNOWN_KINDS.contains(&"export"));
+        let release = test_key(1);
+        let artifact = b"\x7fELF export plugin";
+        let mut m0 = manifest("busbar-export-otlp", "otlp", FIRST_PARTY_PUBLISHER);
+        m0.kind = "export".to_string();
+        let m = sign(&release, m0, artifact);
+        validate_structure(&m, artifact, &abi, HOST_IDENTITY)
+            .expect("kind export is structurally valid");
+        let pol = policy(Some(&release), &[], false, false);
+        assert_eq!(
+            evaluate(artifact, &m, &pol).unwrap(),
+            Verdict::Trusted {
+                publisher: FIRST_PARTY_PUBLISHER.into(),
+                first_party: true
+            }
+        );
     }
 
     /// First-party plugin versions float FREE of the binary's version: the fleet ships 1.0.x
