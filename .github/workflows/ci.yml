@@ -56,6 +56,14 @@ jobs:
         run: scripts/response-header-lint.sh --selftest
       - name: Response-header lint
         run: scripts/response-header-lint.sh
+      # TRACING-SEAM lint (task #140): every `#[tracing::instrument]` must carry an explicit
+      # `level =` so a hot-path span can never again silently default to INFO (always-on). Self-test
+      # runs FIRST (never trust the lint's verdict before proving the scanner still catches a real
+      # bypass), then it scans crates/**/*.rs.
+      - name: Tracing lint self-test
+        run: scripts/tracing-lint.sh --selftest
+      - name: Tracing lint
+        run: scripts/tracing-lint.sh
       # THE REGISTRY GATE (plugins.yaml is the single source of truth for first-party plugins):
       # red when a registered plugin lacks coverage anywhere — no qa-gate checkout, no
       # release-check phase, no published release (or a phantom release with zero assets) — or

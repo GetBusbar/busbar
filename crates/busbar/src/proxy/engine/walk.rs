@@ -1,4 +1,8 @@
 use super::*;
+// See `engine::mod`'s identical import for why this is a bare, unqualified import rather than a
+// `crate::observability::HOTPATH_LEVEL` path spelled out at the instrument site: `level = <path>`
+// rejects a leading `crate` keyword segment.
+use crate::observability::HOTPATH_LEVEL;
 
 /// Saturation Retry-After floor (whole seconds) for a 503 shed whose ONLY exhaustion cause is
 /// at-capacity members (no genuine breaker cooldown). A busy concurrency slot typically frees on the
@@ -367,8 +371,20 @@ pub(crate) fn handle_status_503(
 /// and the 2xx response is translated back to the ingress protocol (buffered for non-stream, framed
 /// via `StreamTranslate` for SSE). Non-2xx responses are reshaped to the ingress error envelope on a
 /// crossed boundary. Same-protocol targets pass through verbatim.
-#[allow(clippy::too_many_arguments)] // plumbing: each arg is an independent request input
-#[tracing::instrument(name = "forward_once", skip_all, fields(lane = i))]
+#[allow(clippy::too_many_arguments)]
+// plumbing: each arg is an independent request input
+// `level = crate::observability::HOTPATH_LEVEL` (task #140 tracing seam): this span fires on EVERY
+// degraded-path attempt (fallback-pool routing + least-bad), so it must be filtered off at the
+// default `RUST_LOG=info` the same as the main `forward` span in `engine/mod.rs` — routed through
+// the ONE named constant rather than a second hand-picked `"debug"` literal, so the hot-path level
+// policy stays a one-spot change and `scripts/tracing-lint.sh` cannot see this as a rogue,
+// level-less `#[instrument]`.
+#[tracing::instrument(
+    level = HOTPATH_LEVEL,
+    name = "forward_once",
+    skip_all,
+    fields(lane = i)
+)]
 pub(crate) async fn forward_once(
     app: &Arc<App>,
     i: usize,
