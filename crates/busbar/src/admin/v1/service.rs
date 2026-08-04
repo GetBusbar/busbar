@@ -108,7 +108,7 @@ fn catalog_cache() -> &'static Mutex<HashMap<PathBuf, CatalogCacheEntry>> {
 /// wins the gate scans and populates `CATALOG_CACHE`; every caller that queues behind it re-runs
 /// `store_plugin_catalog`'s cheap fingerprint+cache check under the gate and finds the entry the
 /// winner just wrote, rather than each independently unpacking every tarball. Same single-permit
-/// shape as `state_persist::SNAPSHOT_GATE`, for the same reason (serialize an expensive operation
+/// shape as the governance budget flusher's `flush_gate`, for the same reason (serialize an expensive operation
 /// callers would otherwise duplicate) — and, like that gate, this also serializes cache HITS behind
 /// whichever call currently holds it, trading a little request-path throughput for the simplicity of
 /// one lock with no separate fast path. That trade is deliberate: the work under the gate is either
@@ -372,14 +372,14 @@ async fn probe_transport(
 /// swap. Lanes/store/pools/auth are UNTOUCHED, so the store's per-lane breaker state is preserved (no
 /// re-index — the safe, store-constraint-free subset of config apply). The caller `AppHandle::swap`s
 /// the returned snapshot. Pure + `Result` → unit-testable without the transport.
-/// The `settings` map is persisted VERBATIM into the state file and re-sent to the hook binary on
-/// every reconnect, so an unbounded map bloats the durable state and amplifies the reconnect path.
+/// The `settings` map is persisted VERBATIM into the config overlay and re-sent to the hook binary on
+/// every reconnect, so an unbounded map bloats the durable overlay and amplifies the reconnect path.
 /// These caps are far past any real hook's settings; a compromised `hooks-register` token must not
 /// be able to blow them out. Shared by `build_with_hook` (register / PUT) and `patch_hook_settings`
 /// (PATCH) so all three write paths enforce ONE limit with no drift.
 pub(crate) const MAX_SETTINGS_BYTES: usize = 64 * 1024;
 pub(crate) const MAX_SETTINGS_KEYS: usize = 256;
-/// Upper bound on a hook name (a registry key persisted to the state file + every audit row).
+/// Upper bound on a hook name (a registry key persisted to the config overlay + every audit row).
 /// Generous headroom over any real hook name; guards the durable-state/audit/reconnect path.
 pub(crate) const MAX_HOOK_NAME_LEN: usize = 256;
 /// Upper bound on a group name — same rationale as the hook cap (a registry key persisted to the
@@ -412,9 +412,9 @@ pub(crate) fn build_with_hook(current: &App, name: &str, cfg: HookCfg) -> Result
     if name.trim().is_empty() {
         return Err(AdminError::Validation("hook name must not be empty".into()));
     }
-    // Cap the name length. The name is a registry key that gets written VERBATIM into the overlay
-    // state file and every audit row (and echoed on the wire); without a bound a `hooks-register`
-    // token could POST a name up to the body-size cap (~MB), bloating the durable state / audit /
+    // Cap the name length. The name is a registry key that gets written VERBATIM into the config
+    // overlay and every audit row (and echoed on the wire); without a bound a `hooks-register`
+    // token could POST a name up to the body-size cap (~MB), bloating the durable overlay / audit /
     // reconnect path — the same defensive posture as the key-id / settings caps.
     if name.len() > MAX_HOOK_NAME_LEN {
         return Err(AdminError::Validation(format!(
@@ -2427,9 +2427,9 @@ mod tests {
         assert!(build_with_hook(&app, "fine", ok).is_ok());
     }
 
-    /// The hook NAME (a registry key persisted to the state file + every
+    /// The hook NAME (a registry key persisted to the config overlay + every
     /// audit row) must be length-capped, like the key id / settings map — else a `hooks-register`
-    /// token could POST a megabyte-long name and bloat the durable state / audit / reconnect path.
+    /// token could POST a megabyte-long name and bloat the durable overlay / audit / reconnect path.
     #[test]
     fn build_with_hook_caps_oversized_name() {
         let app = TestApp::new().build();

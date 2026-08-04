@@ -86,7 +86,6 @@ mod proto;
 mod proxy;
 mod sigv4;
 mod state;
-mod state_persist;
 mod store;
 mod telemetry;
 #[cfg(test)]
@@ -222,7 +221,6 @@ USAGE:
 ENVIRONMENT:
     BUSBAR_CONFIG       path to config.yaml     (default: /etc/busbar/config.yaml)
     BUSBAR_PROVIDERS    path to providers.yaml  (default: /etc/busbar/providers.yaml)
-    BUSBAR_STATE_FILE   state-snapshot path ('' disables; default: busbar-state.json next to config)
     RUST_LOG            log level: error|warn|info|debug|trace  (default: info)
 
 Flags:
@@ -551,15 +549,6 @@ fn is_audit_restore_read_hiccup(e: &str) -> bool {
     e.starts_with("audit restore read failed")
 }
 
-/// Whether `run()`'s D3 restore should seed the audit ring from the FILE snapshot: only when the
-/// durable governance store did NOT already provide it — otherwise a stale file snapshot would
-/// clobber the store's authoritative (and more complete) history and rewind the sequence. Module-
-/// level so the precedence itself (not just the boot path that exercises it) is unit-testable; see
-/// `tests/tests.rs`.
-fn should_load_audit_from_file_snapshot(audit_restored_from_store: bool) -> bool {
-    !audit_restored_from_store
-}
-
 /// Cap on `BUSBAR_WORKER_THREADS`/`TOKIO_WORKER_THREADS` (see the `.min(MAX_WORKER_THREADS)` call in
 /// `main()` for why this exists).
 const MAX_WORKER_THREADS: usize = 128;
@@ -823,75 +812,49 @@ async fn run() {
     app.versions
         .record(0, "system", "boot", &app.hook_registry, &app.global_hooks);
 
-    // DURABLE AUDIT (#17): when a durable governance store is configured (sqlite/postgres/redis), it
-    // is the audit log's durable home. Attach it as the write-through SINK (every future admin
-    // mutation persists as it is appended), and RESTORE the ring from it first — the store is the
-    // source of truth, so its history (which can exceed the RAM ring bound) survives restart with the
-    // hash chain intact. The RAM default (`store: memory`) has no durable audit: the sink no-ops and
-    // the restore reads nothing, so the log stays ephemeral exactly as before. A chain-verification
-    // failure on restore is logged (a tamper signal) and we fall through to the file snapshot below.
-    let mut audit_restored_from_store = false;
+    // DURABLE AUDIT (#17): the audit log is STATEFUL, so its single durable home is the configured
+    // governance store — never a side-car file (store-or-RAM rule). When a durable store is configured
+    // (sqlite/postgres/redis), attach it as the write-through SINK (every future admin mutation
+    // persists as it is appended) and RESTORE the ring from it: the store is the source of truth, so
+    // its history (which can exceed the RAM ring bound) survives restart with the hash chain intact.
+    // The RAM default (`store: memory`) has no durable audit — the sink no-ops and the restore reads
+    // nothing — so the log is ephemeral BY DESIGN, started fresh on every boot. A chain-verification
+    // failure on restore is logged as a tamper signal; there is no file fallback to fall back to.
     if let Some(gov) = app.governance.as_ref() {
         let store = gov.store();
         crate::admin::audit::AUDIT.set_sink(store.clone());
         match crate::admin::audit::AUDIT.restore_from_store(store.as_ref()) {
-            Ok(0) => {} // no durable audit (memory default / empty) — fall through to the snapshot
-            Ok(n) => {
-                audit_restored_from_store = true;
-                tracing::info!(
-                    entries = n,
-                    "audit log restored from the durable governance store"
-                );
-            }
+            Ok(0) => {} // no durable audit (memory default / empty) — start with an empty ring
+            Ok(n) => tracing::info!(
+                entries = n,
+                "audit log restored from the durable governance store"
+            ),
             // A store READ failure and a chain-VERIFICATION failure are different events: the first
             // is a hiccup, the second is tamper evidence. Reporting both as "chain verification"
             // trains an operator to ignore the one that matters.
             Err(e) if is_audit_restore_read_hiccup(&e) => tracing::warn!(
                 error = %e,
-                "could not read the durable audit log; falling back to the state snapshot"
+                "could not read the durable audit log; starting with an empty audit ring"
             ),
             Err(e) => tracing::error!(
                 error = %e,
                 "durable audit CHAIN VERIFICATION failed — the persisted log does not verify \
-                 against its own hash chain; falling back to the state snapshot"
+                 against its own hash chain; starting with an empty audit ring"
             ),
         }
     }
 
-    // D3 RESTORE: bring back the persisted process state (health by lane identity, audit ring,
-    // version history) so the restart forgot nothing. Fail-soft in every direction.
-    let state_file = state_persist::resolve_path(Some(&config_path));
-    if let Some(ref sf) = state_file {
-        if let Some(persisted) = state_persist::read(sf, store::now()) {
-            let restored = persisted.health.len();
-            // Rebuild the store WITH restored health (identity-keyed, so it survives any config
-            // edits made while busbar was down). The app was just built and is not yet served, so
-            // rebuilding its store here is safe; the swap-in happens before the first request.
-            // (Simplest correct wiring: restore INTO the existing store's lanes by identity.)
-            app.store.restore_health(&persisted.health);
-            // Only seed the audit ring from the FILE snapshot when the durable store did NOT already
-            // provide it — otherwise a stale snapshot would clobber the store's authoritative (and
-            // more complete) history and rewind the sequence.
-            if should_load_audit_from_file_snapshot(audit_restored_from_store) {
-                crate::admin::audit::AUDIT.load(persisted.audit);
-            }
-            app.versions.load(persisted.versions);
-            // Re-record the boot floor ON TOP of the restored history (a fresh boot version entry).
-            app.versions.record(
-                app.config_version,
-                "system",
-                "boot (state restored)",
-                &app.hook_registry,
-                &app.global_hooks,
-            );
-            tracing::info!(path = %sf.display(), lanes = restored, "state restored from snapshot");
-        }
-    } else {
-        tracing::info!(
-            "state persistence disabled (no config path / BUSBAR_STATE_FILE empty); restarts \
-             start with fresh health state"
-        );
-    }
+    // RELIABILITY STATE IS STATELESS (store-or-RAM rule): circuit breakers, cooldowns, latency EWMAs
+    // and hard-down latches live in RAM only and are RE-LEARNED after a restart (a lane that is down
+    // re-trips its breaker on request #1). Nothing is restored from disk — the durable config that
+    // makes "fix the config and restart" the recovery path lives in the config-overlay persistence,
+    // not in a health snapshot. The config version-history ring is likewise RAM-only, re-seeded here
+    // at its boot floor (see `app.versions.record(0, …)` above); durable cross-restart rollback would
+    // need a store seam, which does not exist over the plugin wire ABI today (see the 1.5.3 report).
+    tracing::info!(
+        "reliability state (breakers, cooldowns, latency, hard-down) starts fresh on boot and is \
+         re-learned from live traffic"
+    );
 
     // configure the request-log webhook (reusing the pooled client). No-op if unset.
     observability::configure_webhook(
@@ -918,12 +881,6 @@ async fn run() {
         observability_cfg.emit_server_timing,
     );
 
-    // D3 SNAPSHOTTER: persist process state every ~30s (and once more on graceful shutdown below)
-    // so a restart — including an upgrade — forgets nothing.
-    if let Some(ref sf) = state_file {
-        state_persist::spawn_snapshotter(app_handle.clone(), sf.clone());
-    }
-
     // Graceful shutdown: on ctrl_c (SIGINT) or SIGTERM, stop accepting new connections, let
     // in-flight requests drain, then flush the OTLP tracer so the final (most diagnostic) spans are
     // exported rather than dropped when the runtime tears down. The signal future is panic-free —
@@ -937,28 +894,9 @@ async fn run() {
     crate::admin::restart::publish_shutdown(shutdown_tx.clone());
     {
         let shutdown_tx = shutdown_tx.clone();
-        let snap_handle = app_handle.clone();
-        let snap_file = state_file.clone();
         tokio::spawn(async move {
             shutdown_signal().await;
             let _ = shutdown_tx.send(());
-            // Snapshot AT SIGNAL, not only after the drain. The drain is unbounded by design — a
-            // streaming response may run to `limits.upstream_request_timeout_secs` — so an
-            // orchestrator whose grace period expires first SIGKILLs the process and the post-drain
-            // snapshot never runs. Bounding the drain instead would truncate healthy streams and
-            // trip breakers against a lane that did nothing wrong.
-            if let Some(ref sf) = snap_file {
-                // OFFLOADED for the same reason the periodic snapshotter is: this task runs on the
-                // SAME runtime as the in-flight drain below, and an inline fsync parks whichever
-                // worker runs it for the disk round-trip WHILE streaming responses are still
-                // draining. On a stalled volume that worker is gone for seconds, eating the
-                // orchestrator's SIGKILL grace period and making the SIGKILL race this snapshot
-                // exists to WIN more likely, not less.
-                if let Err(e) = state_persist::write_snapshot_blocking(&snap_handle, sf).await {
-                    tracing::warn!(path = %sf.display(), error = %e,
-                        "shutdown-signal state snapshot failed");
-                }
-            }
         });
     }
 
@@ -1012,19 +950,9 @@ async fn run() {
         let m = gov.flush_metering();
         tracing::info!(flushed = m, "metering rows flushed on shutdown");
     }
-    // D3: one FINAL state snapshot after the graceful drain, so the freshest health picture is
-    // what the next boot restores (the periodic 30s tick could be up to 30s stale). Routed through
-    // the SAME gate as the at-signal write above: both write the same file, and once the at-signal
-    // write is offloaded to the blocking pool the two are no longer ordered by program order alone
-    // — the gate is what guarantees THIS, the newer snapshot, is the one left on disk. (Not for
-    // blocking: nothing is left to block after `tokio::join!` has returned.)
-    if let Some(ref sf) = state_file {
-        if let Err(e) = state_persist::write_snapshot_blocking(&app_handle, sf).await {
-            tracing::warn!(path = %sf.display(), error = %e, "final state snapshot failed");
-        } else {
-            tracing::info!(path = %sf.display(), "state snapshot written on shutdown");
-        }
-    }
+    // No state snapshot on shutdown: reliability state is RAM-only (re-learned on boot) and the
+    // audit log is written through to the durable store as it happens (store-or-RAM rule — there is
+    // no side-car state file to flush).
     observability::shutdown_tracing();
 }
 

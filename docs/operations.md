@@ -40,7 +40,7 @@ The HTTP client uses a 300s request timeout and pools up to 1024 idle keep-alive
 ### Validating configuration (`busbar --validate`)
 
 `busbar --validate` runs the exact load → resolve → validate pipeline the gateway runs at boot,
-then exits, **without** starting the server. It binds no port, writes no state file, spawns no
+then exits, **without** starting the server. It binds no port, writes nothing to disk, spawns no
 tasks, opens no TLS material, and makes no network call, so it is safe to run anywhere, including
 in CI and against a config edited on a live host before you reload it.
 
@@ -205,7 +205,7 @@ Three things are worth understanding before you scale out:
   allocated in-process, so two nodes sharing a store reach for the same numbers and
   overwrite each other's entries, breaking the hash chain the next boot verifies. A
   node that detects another writer logs an error and detaches its durable sink,
-  continuing to audit to its in-memory ring and state snapshot rather than corrupting
+  continuing to audit to its in-memory ring (ephemeral) rather than corrupting
   the shared log. Point at most one node at a durable audit store; `GET /audit` is
   per-instance either way (it serves that node's in-memory ring, never the store).
 - **The signing key (`auth.signing_key`) must be the SAME secret on every node.**

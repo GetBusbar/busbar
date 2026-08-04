@@ -666,13 +666,10 @@ pub(crate) trait LaneRuntime: Send + Sync + 'static {
     fn snapshot(&self, lane: usize, now: u64) -> LaneSnapshot;
 
     /// Export every lane's PORTABLE health state, keyed by stable identity (D1) — the input to a
-    /// state-carrying store rebuild (config apply) and to the persistence snapshotter (D3).
+    /// state-carrying store rebuild on config apply (RAM→RAM, by identity; `new_with_limits_restored`
+    /// consumes it via `restore_health_impl`). Reliability state is NEVER persisted to disk (store-or-
+    /// RAM rule): a process restart re-learns it from live traffic, so there is no boot-restore path.
     fn export_health(&self) -> Vec<LaneHealthSnapshot>;
-
-    /// Restore health state IN PLACE by stable identity (D3 boot restore — runs before the first
-    /// request is served). Lanes without a matching snapshot are untouched; snapshots without a
-    /// matching lane are dropped.
-    fn restore_health(&self, restored: &[LaneHealthSnapshot]);
 }
 
 mod in_memory;
