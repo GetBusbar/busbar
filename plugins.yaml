@@ -64,7 +64,6 @@ plugins:
     service: postgres
     release_gate: required
     gate: suite
-    checkout_ref: qa # joined the 1.5.2 train (flaky-test fix on qa); gate clones the fix, not main. Drop at cut.
   - repo: store-sqlite
     kind: store
     alias: sqlite
@@ -100,7 +99,6 @@ plugins:
     service: none
     release_gate: optional
     gate: suite
-    checkout_ref: qa # qa-gate clones the plugin's STAGED qa code (built against core qa). Drop at the cut.
   - repo: auth-github
     kind: auth
     alias: github
@@ -109,8 +107,6 @@ plugins:
     service: none
     release_gate: optional
     gate: suite
-    released: false # NEW in 1.5.2 — first release is cut at the 1.5.2 ship; skip the published-release arm until then. Flip to true (or drop) at the cut.
-    checkout_ref: qa # qa-gate clones the plugin's STAGED qa code. Drop at the cut.
   - repo: auth-ldap
     kind: auth
     alias: ldap
@@ -119,8 +115,6 @@ plugins:
     service: none
     release_gate: optional
     gate: suite
-    released: false # NEW in 1.5.2 — first release is cut at the 1.5.2 ship; skip the published-release arm until then. Flip to true (or drop) at the cut.
-    checkout_ref: qa # qa-gate clones the plugin's STAGED qa code. Drop at the cut.
   - repo: webrequest-hook
     kind: hook
     alias: webrequest
