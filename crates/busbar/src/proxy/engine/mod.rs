@@ -150,11 +150,11 @@ pub(crate) async fn forward_with_pool_parsed(
     // the default info filter: `record` on a disabled span is the same single relaxed check
     // `#[tracing::instrument(level = "debug")]` already costs on the hot path.
     tracing::Span::current().record("request_id", request_id);
-    // ── STAGE TAPS: completion ── capture the shape BEFORE `v` moves into the dispatch core, fire
+    // ── STAGE TAPS: response ── capture the shape BEFORE `v` moves into the dispatch core, fire
     // AFTER the response head is known. `outcome`: a gate-produced rejection (marker extension) is
     // the SYNTHETIC `rejected_by_gate`; else 2xx = `ok`, anything else = `failed`. For a STREAMING
     // response this fires at response-HEAD time (status known, body still flowing) — stream-tail
-    // outcomes are a later increment. ZERO COST when no completion tap is configured.
+    // outcomes are a later increment. ZERO COST when no response tap is configured.
     let completion_shape = if app.tap_hooks_completion.is_empty() {
         None
     } else {
@@ -207,7 +207,7 @@ pub(crate) async fn forward_with_pool_parsed(
             &completion_app.tap_hooks_completion,
             &shape,
             crate::hooks::wire::HookStageProjection {
-                at: "completion",
+                at: "response",
                 model: None,
                 attempt_number: None,
                 remaining_candidates: None,
@@ -588,7 +588,7 @@ async fn translate_response_cross_protocol(
 }
 
 /// The dispatch core behind [`forward_with_pool_parsed`] (the thin wrapper exists only to fire the
-/// completion-stage taps around the whole request).
+/// response-stage taps around the whole request).
 //
 // Plumbing function: same parameter set as the public wrapper.
 #[allow(clippy::too_many_arguments)]
@@ -1315,8 +1315,8 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // the retained `body` bytes — never from a previous hop's egress-shaped Value — preserving the
     // mixed-protocol-pool correctness the per-hop re-parse was introduced for.
     let body_is_json = v.is_some();
-    // ── STAGE TAPS: route + attempt shape ── captured ONCE (scalars only, so it survives `v`
-    // moving into the first hop). Fire the `route` taps now: the decision reconcile + base ordering
+    // ── STAGE TAPS: candidate + routing shape ── captured ONCE (scalars only, so it survives `v`
+    // moving into the first hop). Fire the `candidate` taps now: the decision reconcile + base ordering
     // above produced the FINAL candidate set for dispatch. ZERO COST when no stage tap is configured.
     let stage_shape = if app.tap_hooks_route.is_empty() && app.tap_hooks_attempt.is_empty() {
         None
@@ -1340,7 +1340,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
             &app.tap_hooks_route,
             shape,
             crate::hooks::wire::HookStageProjection {
-                at: "route",
+                at: "candidate",
                 model: None,
                 attempt_number: None,
                 remaining_candidates: Some(cands.len()),
@@ -1350,7 +1350,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
             },
         );
     }
-    // Why the PREVIOUS attempt failed — feeds the attempt-stage tap payload (the failover story).
+    // Why the PREVIOUS attempt failed — feeds the routing-stage tap payload (the failover story).
     let mut last_failure: Option<&'static str> = None;
 
     // PREPARE ends here (dispatch loop begins).
@@ -1425,7 +1425,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
         // Mark this lane as excluded for future attempts in this request
         request_ctx.exclude(i);
 
-        // ── STAGE TAPS: attempt ── the full failover story, per dispatch attempt: which lane,
+        // ── STAGE TAPS: routing ── the full failover story, per dispatch attempt: which lane,
         // which attempt number, how many candidates remain untried, and why the previous attempt
         // failed (None on the first).
         if let Some(shape) = &stage_shape {
@@ -1437,7 +1437,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 &app.tap_hooks_attempt,
                 shape,
                 crate::hooks::wire::HookStageProjection {
-                    at: "attempt",
+                    at: "routing",
                     model: Some(&app.lanes[i].model),
                     attempt_number: Some(
                         u32::try_from(attempt.saturating_add(1)).unwrap_or(u32::MAX),

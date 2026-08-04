@@ -752,10 +752,30 @@ pub(crate) fn augment_config_error(err: impl std::fmt::Display) -> String {
              maps to an empty/omitted chain, `mode: token` or `mode: apikey` to `chain: [tokens]`, and \
              `mode: passthrough` to `auth.upstream_credentials: passthrough`"
         )
+    } else if let Some((old, new)) = RENAMED_HOOK_STAGES
+        .iter()
+        .copied()
+        .find(|(old, _)| msg.contains(&format!("unknown variant `{old}`")))
+    {
+        // 1.5.3 HARD rename of the tap `at:` vocabulary (Route→Candidate, Attempt→Routing,
+        // Completion→Response). Serde rejects the old wire string as an unknown variant with no
+        // upgrade breadcrumb; name the old AND the new value + point at the migrator (§1.2).
+        format!(
+            "{msg}\n  hint: hook tap stage `{old}` was renamed to `{new}` in 1.5.3 — run \
+             `busbar --migrate-config <config.yaml>` or update the `at:` value to `{new}`"
+        )
     } else {
         msg
     }
 }
+
+/// The 1.5.3 tap-stage `at:` renames (old wire string → new), shared by `augment_config_error`'s
+/// loud-fail hint and the `--migrate-config` rewrite so the two cannot drift.
+pub(crate) const RENAMED_HOOK_STAGES: &[(&str, &str)] = &[
+    ("route", "candidate"),
+    ("attempt", "routing"),
+    ("completion", "response"),
+];
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)] // M8: a typo'd provider key must fail boot, not be silently ignored.
@@ -1302,9 +1322,9 @@ impl UserAccess {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum HookStage {
     Request,
-    Route,
-    Attempt,
-    Completion,
+    Candidate,
+    Routing,
+    Response,
 }
 
 /// A resolved on_error/on_empty TERMINAL. `Weighted` (default) is the non-negotiable safety

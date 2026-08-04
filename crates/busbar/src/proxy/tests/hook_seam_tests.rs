@@ -643,7 +643,7 @@ async fn completion_tap_fires_synthetic_rejected_by_auth() {
         .unwrap();
     assert_eq!(resp.status().as_u16(), 401);
     let payload = wait_for_tap_body(&cap).await;
-    assert_eq!(payload["stage"]["at"], "completion");
+    assert_eq!(payload["stage"]["at"], "response");
     assert_eq!(payload["stage"]["outcome"], "rejected_by_auth");
     assert_eq!(payload["stage"]["status"], 401);
     serve.abort();
@@ -690,7 +690,7 @@ async fn completion_tap_status_is_protocol_native_gemini_400() {
     serve.abort();
 }
 
-/// STAGE TAPS: a completion tap fires with the SYNTHETIC `rejected_by_gate` outcome when a
+/// STAGE TAPS: a response tap fires with the SYNTHETIC `rejected_by_gate` outcome when a
 /// decision gate rejects — audit taps see denials, not just served requests.
 #[tokio::test]
 async fn completion_tap_fires_synthetic_rejected_by_gate() {
@@ -711,12 +711,12 @@ async fn completion_tap_fires_synthetic_rejected_by_gate() {
     let resp = fire(app, 1).await;
     assert_eq!(resp.status().as_u16(), 451);
     let payload = wait_for_tap_body(&cap).await;
-    assert_eq!(payload["stage"]["at"], "completion");
+    assert_eq!(payload["stage"]["at"], "response");
     assert_eq!(payload["stage"]["outcome"], "rejected_by_gate");
     assert_eq!(payload["stage"]["status"], 451);
 }
 
-/// STAGE TAPS: a completion tap reports `ok` + the status for a served request.
+/// STAGE TAPS: a response tap reports `ok` + the status for a served request.
 #[tokio::test]
 async fn completion_tap_reports_ok_outcome() {
     let (cap, tap) = webhook_tap().await;
@@ -735,13 +735,13 @@ async fn completion_tap_reports_ok_outcome() {
     let resp = fire(app, 1).await;
     assert_eq!(resp.status().as_u16(), 200);
     let payload = wait_for_tap_body(&cap).await;
-    assert_eq!(payload["stage"]["at"], "completion");
+    assert_eq!(payload["stage"]["at"], "response");
     assert_eq!(payload["stage"]["outcome"], "ok");
     assert_eq!(payload["stage"]["status"], 200);
     lane.shutdown().await;
 }
 
-/// STAGE TAPS: an attempt tap carries the failover story — attempt number + dispatched target.
+/// STAGE TAPS: an routing tap carries the failover story — attempt number + dispatched target.
 #[tokio::test]
 async fn attempt_tap_carries_attempt_story() {
     let (cap, tap) = webhook_tap().await;
@@ -760,7 +760,7 @@ async fn attempt_tap_carries_attempt_story() {
     let resp = fire(app, 1).await;
     assert_eq!(resp.status().as_u16(), 200);
     let payload = wait_for_tap_body(&cap).await;
-    assert_eq!(payload["stage"]["at"], "attempt");
+    assert_eq!(payload["stage"]["at"], "routing");
     assert_eq!(payload["stage"]["attempt_number"], 1);
     // Renamed target -> model (wire audit L10: one name for one concept — the same string
     // candidates[].model carries).
@@ -772,7 +772,7 @@ async fn attempt_tap_carries_attempt_story() {
     lane.shutdown().await;
 }
 
-/// STAGE TAPS: a route tap observes the post-reconcile candidate-set size.
+/// STAGE TAPS: a candidate tap observes the post-reconcile candidate-set size.
 #[tokio::test]
 async fn route_tap_reports_surviving_candidates() {
     let (cap, tap) = webhook_tap().await;
@@ -789,7 +789,7 @@ async fn route_tap_reports_surviving_candidates() {
     let resp = fire(app, 1).await;
     assert_eq!(resp.status().as_u16(), 200);
     let payload = wait_for_tap_body(&cap).await;
-    assert_eq!(payload["stage"]["at"], "route");
+    assert_eq!(payload["stage"]["at"], "candidate");
     assert_eq!(payload["stage"]["remaining_candidates"], 1);
     lane.shutdown().await;
 }
@@ -1042,7 +1042,7 @@ async fn on_error_reject_terminal_short_circuits_before_a_live_lane_ever_dispatc
 }
 
 /// GLOBAL REQUEST-STAGE TAP FIRES (cargo-mutants gap, proxy engine `fire_global_taps`): every
-/// other `app.tap_hooks_*` category (route/attempt/completion) has its own firing test in this
+/// other `app.tap_hooks_*` category (candidate/routing/response) has its own firing test in this
 /// file, but the base `app.tap_hooks` (`at: request`, fired by `fire_global_taps` — see its call
 /// site's own "GLOBAL TAP (observe) FIRE" comment in engine/mod.rs) had none. A mutant replacing
 /// `fire_global_taps` with `()` would silently stop delivering request-stage taps forever with
@@ -2002,7 +2002,7 @@ fn request_id_counter_is_unique_and_monotonic_across_sequential_requests() {
 }
 
 /// THE join-key property: the SAME `request_id` a routing GATE sees on the pre-forward
-/// `RoutingRequest` (the DECISION) must appear on the completion tap's notification for that exact
+/// `RoutingRequest` (the DECISION) must appear on the response tap's notification for that exact
 /// request (the OUTCOME) — the whole reason `RequestCtx` carries a correlation id. Exercises the
 /// real ingress path (`fire` -> `forward_with_pool` -> `forward_with_pool_parsed`), not a
 /// hand-built `RequestCtx`, so it proves the id survives the full stamp-at-ingress ->
@@ -2051,11 +2051,11 @@ async fn same_request_id_joins_gate_decision_and_completion_tap() {
     let payload = wait_for_tap_body(&cap).await;
     let tap_request_id = payload["request"]["request_id"]
         .as_u64()
-        .expect("completion tap payload carries request_id as a plain integer");
+        .expect("response tap payload carries request_id as a plain integer");
 
     assert_eq!(
         gate_request_id, tap_request_id,
-        "the pre-forward routing decision and the post-response completion tap for the SAME \
+        "the pre-forward routing decision and the post-response response tap for the SAME \
          request must carry the IDENTICAL request_id — that identity is the join-key contract"
     );
     lane.shutdown().await;
@@ -2097,7 +2097,7 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for RequestIdSpanCaptu
 }
 
 /// The correlation id is a NATIVE `tracing` `u64` field (never `format!`'d into a string) on
-/// busbar's per-request `forward` span, matching the SAME id the completion tap observed for the
+/// busbar's per-request `forward` span, matching the SAME id the response tap observed for the
 /// identical request — so a log line reading `request_id` off that span is the same join key a
 /// hook payload carries.
 #[tokio::test]
@@ -2144,10 +2144,10 @@ async fn request_id_is_recorded_as_native_u64_tracing_field() {
     let payload = wait_for_tap_body(&cap).await;
     let tap_request_id = payload["request"]["request_id"]
         .as_u64()
-        .expect("completion tap payload carries request_id as a plain integer");
+        .expect("response tap payload carries request_id as a plain integer");
     assert_eq!(
         tracing_request_id, tap_request_id,
-        "the tracing span field and the completion tap must agree on the same request's id"
+        "the tracing span field and the response tap must agree on the same request's id"
     );
     lane.shutdown().await;
 }

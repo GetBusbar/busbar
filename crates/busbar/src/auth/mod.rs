@@ -1117,7 +1117,7 @@ fn rate_limited_response() -> Response {
         .expect("static rate-limited response")
 }
 
-/// Fire the synthetic `rejected_by_auth` completion taps (fire-and-forget) and return the auth
+/// Fire the synthetic `rejected_by_auth` response taps (fire-and-forget) and return the auth
 /// denial — so audit taps see auth denials, not just served traffic. The
 /// request body is unparsed at the auth stage, so the shape is the zeroed default bucket with the
 /// path-inferred protocol. The tap's `status` MUST be the client-visible HTTP status, which is
@@ -1138,7 +1138,7 @@ fn unauthorized_with_completion_taps(app: &crate::state::App, path: &str) -> Res
             &app.tap_hooks_completion,
             &shape,
             crate::hooks::wire::HookStageProjection {
-                at: "completion",
+                at: "response",
                 model: None,
                 attempt_number: None,
                 remaining_candidates: None,

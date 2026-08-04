@@ -1261,7 +1261,7 @@ pub(crate) fn coerce_on_error(
     }
 }
 
-/// Shape scalars captured ONCE per request for the STAGE tap payloads (route/attempt/completion).
+/// Shape scalars captured ONCE per request for the STAGE tap payloads (candidate/routing/response).
 /// All owned/`'static`-free scalars except the pool/protocol names (which outlive the request), so
 /// the capture survives `v` being consumed by the first dispatch hop. Stage taps are SHAPE-ONLY in
 /// this increment: the default signal bucket plus the stage object — never prompt content or caller
@@ -1269,7 +1269,7 @@ pub(crate) fn coerce_on_error(
 /// `request` stage).
 pub(crate) struct StageShape<'a> {
     /// The request correlation id (`RequestCtx::request_id`) — carried on the shape so every stage
-    /// tap (route/attempt/completion) notification for this request stamps the SAME join-key value
+    /// tap (candidate/routing/response) notification for this request stamps the SAME join-key value
     /// a `decide`/`transform` payload for the same request carries.
     request_id: u64,
     pool: &'a str,
@@ -1315,7 +1315,7 @@ pub(crate) fn capture_stage_shape<'a>(
     }
 }
 
-/// Fire one STAGE's taps (route/attempt/completion) fire-and-forget: serialize the shape-only
+/// Fire one STAGE's taps (candidate/routing/response) fire-and-forget: serialize the shape-only
 /// projection + stage object ONCE, then spawn one detached task per tap. A tap can never delay,
 /// reorder, or fail the request; a serialization failure silently skips the fire (observation is
 /// best-effort). ZERO COST when the stage has no taps (first-line empty check).
@@ -1345,7 +1345,7 @@ pub(crate) fn fire_stage_taps(
             system: None,
             messages: None,
             user: None,
-            // Stage taps (route/attempt/completion) project no Feature-2 catalog signals in this
+            // Stage taps (candidate/routing/response) project no Feature-2 catalog signals in this
             // pass (the response-phase outcome seam those signals need is a separate,
             // not-yet-built increment — see `Signal::ResponseTokensOut`'s doc comment). Empty
             // (never allocated), so the wire is byte-identical to before this change.
@@ -1400,7 +1400,7 @@ where
     });
 }
 
-/// Response-extension marker set by every GATE-produced rejection return, so the completion-stage
+/// Response-extension marker set by every GATE-produced rejection return, so the response-stage
 /// taps can report the SYNTHETIC `rejected_by_gate` outcome (audit taps see denials) instead of a
 /// generic `failed`.
 #[derive(Clone)]

@@ -3289,21 +3289,21 @@ pub(crate) fn build_app_from_config(
         &cfg.global_hooks,
         &hook_env,
         app_config_version,
-        config::HookStage::Route,
+        config::HookStage::Candidate,
     );
     let tap_hooks_attempt = hooks::resolve_tap_hooks(
         &cfg.hooks,
         &cfg.global_hooks,
         &hook_env,
         app_config_version,
-        config::HookStage::Attempt,
+        config::HookStage::Routing,
     );
     let tap_hooks_completion = hooks::resolve_tap_hooks(
         &cfg.hooks,
         &cfg.global_hooks,
         &hook_env,
         app_config_version,
-        config::HookStage::Completion,
+        config::HookStage::Response,
     );
     // Resolve the global DECISION gates (non-rewrite gates in global_hooks) — fired for a verdict on
     // every request. Empty unless configured.

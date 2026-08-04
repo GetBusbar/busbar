@@ -106,6 +106,42 @@ fn augment_config_error_adds_auth_mode_migration_hint() {
     );
 }
 
+/// 1.5.3 HARD tap-stage rename (loud-fail, NO serde alias): an old-form `at:` wire string
+/// (`route`/`attempt`/`completion`) is rejected at parse as an unknown `HookStage` variant, and
+/// `augment_config_error` upgrades serde's bare message to a hint naming BOTH the old and the new
+/// value plus the migrator. Mirrors `augment_config_error_adds_auth_mode_migration_hint`.
+#[test]
+fn augment_config_error_adds_hook_stage_rename_hint() {
+    for (old, new) in [
+        ("route", "candidate"),
+        ("attempt", "routing"),
+        ("completion", "response"),
+    ] {
+        // The synthetic serde message an unknown enum variant produces.
+        let augmented = crate::config::augment_config_error(format!(
+            "unknown variant `{old}`, expected one of `request`, `candidate`, `routing`, `response`"
+        ));
+        assert!(
+            augmented.contains(&format!("`{old}`")) && augmented.contains(&format!("`{new}`")),
+            "hint must name the old AND new stage value: {augmented}"
+        );
+        assert!(
+            augmented.contains("--migrate-config"),
+            "hint must point at the migrator: {augmented}"
+        );
+    }
+    // End-to-end: a config with an old `at: completion` tap surfaces the loud-fail through the parse
+    // path — the HARD rename has no back-compat alias, so it must NOT parse silently.
+    let legacy = "kind: tap\nplugin: p\nat: completion\n";
+    let err = serde_yaml::from_str::<HookCfg>(legacy)
+        .map_err(crate::config::augment_config_error)
+        .expect_err("an old-form `at: completion` must fail to parse (HARD rename, no alias)");
+    assert!(
+        err.contains("`completion`") && err.contains("`response`") && err.contains("1.5.3"),
+        "end-to-end error names the rename and version: {err}"
+    );
+}
+
 /// The hook config types are round-trippable (Deserialize + Serialize), the foundation for the
 /// config-overlay persistence that lets a runtime-registered hook survive a restart. A `HookCfg`
 /// deserialized from JSON re-serializes + re-parses to an identical shape, exercising the
