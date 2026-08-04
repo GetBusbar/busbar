@@ -605,6 +605,23 @@ fn migrate_auth(
         .entry("auth".into())
         .or_insert_with(|| Value::Mapping(Mapping::new()))
     else {
+        // `auth:` is PRESENT but not a mapping (e.g. `auth: null` / `auth: [...]` - a malformed
+        // 1.4.x shape this migrator cannot mechanically merge bindings into). The zero-side-effect
+        // contract this module documents ("never silently drop, pass through or TODO") applies to
+        // `group_map` too: it was already pulled off `root` above, so returning here without putting
+        // it somewhere would silently vanish it from the migrated document. Restore it verbatim at
+        // the top level (a human can still see and hand-migrate it) and surface a loud TODO so
+        // `--validate`/manual review does not miss it.
+        if let Some(gm) = group_map {
+            root.insert("group_map".into(), gm);
+            todos.push(
+                "group_map: could not migrate to auth.role_bindings because `auth:` is present \
+                 but is not a mapping (malformed 1.4.x config); group_map was left at the top \
+                 level UNCHANGED - fix `auth:` by hand, then re-run the migrator so it can nest \
+                 these bindings under auth.role_bindings"
+                    .into(),
+            );
+        }
         return;
     };
     if group_map.is_none() {

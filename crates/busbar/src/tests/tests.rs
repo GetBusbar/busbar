@@ -1,6 +1,37 @@
 use super::*;
 use crate::config::{PoolCfg, PoolMember};
 
+/// Panic-safe process-env restore for a test that must temporarily override a `std::env` var (e.g.
+/// `BUSBAR_CONFIG`). A bare "set, assert, manually restore" sequence leaks the override to every
+/// later test in the same binary the instant an `assert!`/`assert_eq!` in between fails: the panic
+/// unwinds straight past the manual restore. `Drop` runs during unwind too, so holding the prior
+/// value in a guard and restoring it there is safe regardless of whether the body between
+/// construction and drop panics.
+struct EnvVarGuard {
+    key: &'static str,
+    prior: Option<std::ffi::OsString>,
+}
+
+impl EnvVarGuard {
+    /// Snapshot `key`'s current value (restored on drop). Does not itself set anything — callers
+    /// `std::env::set_var` afterward.
+    fn capture(key: &'static str) -> Self {
+        Self {
+            key,
+            prior: std::env::var_os(key),
+        }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        match self.prior.take() {
+            Some(v) => std::env::set_var(self.key, v),
+            None => std::env::remove_var(self.key),
+        }
+    }
+}
+
 /// The inbound-concurrency cap is added as a layer ONLY when `max_inbound_concurrent > 0`. This
 /// drives `apply_inbound_concurrency_limit` over a minimal router whose handler PARKS on a barrier of
 /// size 2 (released only once BOTH requests arrive). With cap = 1 the second request is SHED (Bug 4:
@@ -1838,7 +1869,15 @@ fn upstream_bool_env_override_precedence() {
 fn worker_threads_from_config_reads_a_real_file() {
     // `BUSBAR_CONFIG` is read ONLY by `worker_threads_from_config` outside of `main()`, so setting it
     // here does not perturb other unit tests (they pass explicit config paths to `load_config_from_disk`).
-    let prior = std::env::var_os(ENV_CONFIG);
+    //
+    // The restore MUST be panic-safe: a bare `assert_eq!` between the `set_var` and a manual restore
+    // at the bottom of the function would, on failure, unwind straight past the restore and leak a
+    // `BUSBAR_CONFIG` pointing at THIS test's (about-to-be-deleted) temp dir to every later test in
+    // the same binary — a process-global env var is not per-test state, so that leak is silent and
+    // order-dependent. `EnvVarGuard`'s `Drop` runs during unwind too, so the restore happens
+    // regardless of whether the assertions below pass. See
+    // `env_var_guard_restores_on_panic` for a direct proof of that unwind behavior.
+    let _guard = EnvVarGuard::capture(ENV_CONFIG);
     let dir = std::env::temp_dir().join(format!(
         "busbar-wtcfg-{}-{}",
         std::process::id(),
@@ -1870,12 +1909,36 @@ fn worker_threads_from_config_reads_a_real_file() {
         "advanced.worker_threads: 0 is invalid → None (diagnosed, not honored)"
     );
 
-    // Restore the ambient env for any later-scheduled test on this thread.
-    match prior {
-        Some(v) => std::env::set_var(ENV_CONFIG, v),
-        None => std::env::remove_var(ENV_CONFIG),
-    }
+    // `_guard`'s `Drop` restores `BUSBAR_CONFIG` here (or on unwind above) — no manual restore needed.
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// RED-before-GREEN for the `EnvVarGuard` fix above: proves the restore survives a PANIC between
+/// `set_var` and the end of scope, not just the happy path. Before introducing the `Drop` guard, a
+/// failed assertion in `worker_threads_from_config_reads_a_real_file` would unwind past its manual
+/// `match prior { .. }` restore and leak the override to every later test in the binary. This test
+/// deliberately panics inside `catch_unwind` while the guard is live and asserts the env var is back
+/// to its pre-test value once the guard drops — i.e. the guard, not test-ordering luck, is what
+/// makes the leak impossible.
+#[test]
+fn env_var_guard_restores_on_panic() {
+    const KEY: &str = "BUSBAR_TEST_ENV_GUARD_PANIC_PROBE";
+    // Establish a known ambient value so "restored" has something concrete to check against.
+    std::env::set_var(KEY, "ambient-value");
+
+    let result = std::panic::catch_unwind(|| {
+        let _guard = EnvVarGuard::capture(KEY);
+        std::env::set_var(KEY, "clobbered-by-test-body");
+        panic!("simulated assertion failure mid-test");
+    });
+    assert!(result.is_err(), "the inner closure was expected to panic");
+
+    assert_eq!(
+        std::env::var(KEY).as_deref(),
+        Ok("ambient-value"),
+        "EnvVarGuard must restore the prior value even when the guarded scope unwinds via panic"
+    );
+    std::env::remove_var(KEY);
 }
 
 /// `is_real_auth_plugin_ref`: `keys` is always exempt (engine-handled, never a plugin).
@@ -2003,6 +2066,108 @@ async fn serve_listener_actually_serves_real_http_traffic() {
         .await
         .expect("serve_listener must actually stop once shutdown fires")
         .unwrap();
+}
+
+/// `plugins.fetch` (resource/DoS finding): a mistyped or compromised fetch URL serving an
+/// oversized body must be rejected under a size cap, never buffered whole into memory via
+/// `resp.bytes()`. Drives the REAL downloader (`plugin_fetch_downloader_with_cap`, which
+/// `plugin_fetch_downloader` pins to `config::DEFAULT_PLUGIN_FETCH_MAX_BYTES` in production)
+/// against a local server that serves a body larger than a small test cap, from BOTH an honest
+/// `Content-Length` (the fast pre-check) and a chunked/no-Content-Length transfer (the streamed
+/// cap, which must catch a body a lying/absent header would otherwise let through).
+#[tokio::test]
+async fn plugin_fetch_downloader_rejects_an_oversized_body() {
+    const CAP: usize = 64;
+    let oversized = vec![b'x'; CAP * 4];
+
+    // (a) Content-Length present and honest: rejected before any streamed read.
+    {
+        let body = oversized.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let router = Router::new().route(
+            "/big",
+            axum::routing::get(move || async move { axum::body::Bytes::from(body) }),
+        );
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        let downloader = plugin_fetch_downloader_with_cap(&[], CAP);
+        let url = format!("http://{addr}/big");
+        let result = tokio::task::spawn_blocking(move || downloader(&url))
+            .await
+            .unwrap();
+        server.abort();
+
+        let err = result.expect_err("an over-cap plugins.fetch download must be a clear error");
+        assert!(
+            err.contains("cap"),
+            "expected an error naming the size cap, got: {err}"
+        );
+    }
+
+    // (b) No Content-Length (axum's `Body::from_stream`, so the header is omitted): the streamed
+    // cap in `read_capped` must still catch it — the Content-Length pre-check is a fast path, not
+    // the only defense.
+    {
+        let body = oversized.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let router = Router::new().route(
+            "/big-streamed",
+            axum::routing::get(move || async move {
+                let chunks: Vec<Result<Vec<u8>, std::io::Error>> =
+                    body.chunks(8).map(|c| Ok(c.to_vec())).collect();
+                let stream = futures::stream::iter(chunks);
+                axum::body::Body::from_stream(stream)
+            }),
+        );
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        let downloader = plugin_fetch_downloader_with_cap(&[], CAP);
+        let url = format!("http://{addr}/big-streamed");
+        let result = tokio::task::spawn_blocking(move || downloader(&url))
+            .await
+            .unwrap();
+        server.abort();
+
+        let err = result.expect_err(
+            "an over-cap plugins.fetch download with no Content-Length must still be rejected",
+        );
+        assert!(
+            err.contains("cap"),
+            "expected an error naming the size cap, got: {err}"
+        );
+    }
+
+    // Sanity: a within-cap body still downloads successfully (the cap does not false-positive on
+    // legitimate small artifacts).
+    {
+        let small = vec![b'y'; CAP / 2];
+        let expected = small.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let router = Router::new().route(
+            "/small",
+            axum::routing::get(move || async move { axum::body::Bytes::from(small) }),
+        );
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        let downloader = plugin_fetch_downloader_with_cap(&[], CAP);
+        let url = format!("http://{addr}/small");
+        let result = tokio::task::spawn_blocking(move || downloader(&url))
+            .await
+            .unwrap();
+        server.abort();
+
+        assert_eq!(
+            result.expect("a within-cap download must succeed"),
+            expected,
+            "the downloaded bytes must match the served body exactly"
+        );
+    }
 }
 
 /// SECURITY (signing-key stdout-only contract): `--generate-signing-key` prints the secret ONLY on

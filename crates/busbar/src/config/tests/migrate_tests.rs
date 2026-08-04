@@ -655,6 +655,41 @@ pools: {}
         .any(|t| t.contains("replace the '<module>' placeholder")));
 }
 
+/// REGRESSION: a top-level `group_map:` alongside a NON-MAPPING `auth:` (e.g. `auth: null`) must
+/// NOT silently vanish. Before the fix, `migrate_auth` took `group_map` off `root` up front, then
+/// hit `let Value::Mapping(auth) = ... else { return; }` when `auth:` was present but not a
+/// mapping - the early `return` dropped the already-extracted `group_map` with no warning/TODO,
+/// violating this module's own "never silently drop, pass through or TODO" contract.
+#[test]
+fn migrate_group_map_survives_a_non_mapping_auth() {
+    let raw = r#"
+auth: null
+group_map:
+  growth-eng:
+    allowed_pools: [fast]
+providers: {}
+models: {}
+pools: {}
+"#;
+    let out = migrate_config(raw).unwrap();
+    // The data must survive SOMEWHERE in the migrated document - either restored at the top level,
+    // or (if a future fix manages to migrate it) folded into auth.role_bindings. Either way it must
+    // not disappear, and there must be a loud TODO/warning naming the problem.
+    assert!(
+        out.yaml.contains("group_map") || out.yaml.contains("role_bindings"),
+        "group_map data must not silently vanish from the migrated document:\n{}",
+        out.yaml
+    );
+    assert!(
+        out.todos.iter().any(|t| t.contains("group_map"))
+            || out.warnings.iter().any(|w| w.contains("group_map")),
+        "a non-mapping `auth:` losing group_map must surface a loud TODO/warning, got \
+         todos={:?} warnings={:?}",
+        out.todos,
+        out.warnings
+    );
+}
+
 /// REGRESSION: a REALISTIC 1.4.x `governance:` block -- no `store:` key, because 1.4.x's
 /// `GovernanceCfg` never had one (its only durable backend was SQLite at `db_path`). Before the
 /// fix, gating the store migration on that nonexistent key silently dropped `db_path` and emitted
