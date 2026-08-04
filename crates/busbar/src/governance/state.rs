@@ -538,7 +538,44 @@ impl GovState {
                         }
                     });
                 }
-                self.refresh()?;
+                if let Err(refresh_err) = self.refresh() {
+                    // The STORE already reflects the tombstone (`delete_key` above succeeded) —
+                    // only the cache reconcile (a `list_keys`/`list_credentials_since` round-trip)
+                    // failed. Left as a bare `?`, this would return an Err while silently leaving
+                    // the cache holding BOTH the old (still `enabled`) and the new binding — the
+                    // old token would keep verifying against a store that no longer agrees.
+                    //
+                    // Mirror the H2 rollback discipline above: don't leave that inconsistency
+                    // silent. A full `refresh()` needs store I/O and just failed, but evicting ONE
+                    // known-stale id from the two cache indices needs none — it's a local map
+                    // mutation under `caches_write` (whose lock is poison-recovering, so this
+                    // cannot itself fail the way a store round-trip can). Do that surgical eviction
+                    // so the specific hazard (the OLD token still verifying) is closed immediately,
+                    // even though the rest of the cache may now be stale until the next successful
+                    // refresh.
+                    tracing::error!(
+                        user_sub = %user_sub,
+                        old_id = %old,
+                        new_id = %out.0.id,
+                        refresh_err = %refresh_err,
+                        "refresh_self: cache refresh failed after tombstoning the prior self-serve \
+                         binding in the store; evicting the prior binding directly from the cache \
+                         so its token stops verifying immediately"
+                    );
+                    let mut c = self.caches_write();
+                    c.by_id.remove(&old);
+                    c.by_credential.retain(|_, (key, _)| key.id != old);
+                    drop(c);
+                    return Err(StoreError(format!(
+                        "self-serve refresh for '{user_sub}' rotated the store successfully (the \
+                         prior binding '{old}' is tombstoned, the new binding '{}' is live) but \
+                         the cache reconcile failed ({refresh_err}); the prior binding was evicted \
+                         directly from the cache as a best-effort fix so its token no longer \
+                         verifies, but the cache may be stale for OTHER entries until the next \
+                         successful refresh — retry is safe",
+                        out.0.id
+                    )));
+                }
             }
         }
         Ok(out)

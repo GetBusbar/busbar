@@ -297,12 +297,25 @@ pub(crate) fn resolve_exchange<'a>(
             }
             // role_bindings are nested BY MODULE; a role only grants under its identifying module.
             let table = role_bindings.get(module).ok_or(ExchangeError::Unbound)?;
-            let binding = principal
+            // ALL of the principal's granting bindings in this module (mirrors
+            // `synthesize_principal_key`'s `granting` scan) — not just the first role that happens
+            // to have a binding. A principal can hold multiple roles; an earlier-listed role's
+            // binding may be groupless while a later one carries the group that actually admits it.
+            let granting: Vec<&crate::config::RoleBindingCfg> = principal
                 .roles
                 .iter()
-                .find_map(|r| table.get(r))
+                .filter_map(|r| table.get(r))
+                .collect();
+            if granting.is_empty() {
+                return Err(ExchangeError::Unbound);
+            }
+            // parent = the FIRST granting binding that carries a group (scan ALL granting bindings,
+            // not just the first-matched role) — a self key MUST charge through a group (no
+            // unbounded self key), but that group may come from any one of the principal's roles.
+            let binding = granting
+                .into_iter()
+                .find(|b| b.group.is_some())
                 .ok_or(ExchangeError::Unbound)?;
-            // parent = binding.group; a self key MUST charge through a group (no unbounded self key).
             let team = binding.group.clone().ok_or(ExchangeError::Unbound)?;
             sanitize_self_sub(&principal.id)?;
             Ok((principal, team, binding.allowed_pools.clone()))

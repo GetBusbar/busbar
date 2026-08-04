@@ -449,6 +449,44 @@ fn bound_role_without_group_is_403() {
 }
 
 #[test]
+fn later_role_group_used_when_earlier_role_bound_but_groupless() {
+    // CODEAUDIT ROUND-2 FIX 1: resolve_exchange must scan ALL of the principal's granting bindings
+    // in the module for the first one that carries a group — not just take the FIRST role that has
+    // any binding at all and then fail if THAT one happens to be groupless. Here role "A" binds but
+    // has no group; role "B" binds AND carries a group. Before the fix this 403'd with Unbound even
+    // though a later granting role clearly admits the principal under group "x".
+    let mut inner = BTreeMap::new();
+    inner.insert(
+        "A".to_string(),
+        RoleBindingCfg {
+            allowed_pools: None,
+            group: None,
+            admin_scope: None,
+        },
+    );
+    inner.insert(
+        "B".to_string(),
+        RoleBindingCfg {
+            allowed_pools: Some(vec!["pool-b".to_string()]),
+            group: Some("x".to_string()),
+            admin_scope: None,
+        },
+    );
+    let mut rb: RoleBindings = BTreeMap::new();
+    rb.insert("oidc".to_string(), inner);
+
+    let v = identified("oidc", principal("sam", &["A", "B"]));
+    let (_p, team, pools) = resolve_exchange(&v, &rb)
+        .expect("a later granting role's group must admit the principal, not Unbound");
+    assert_eq!(team, "x", "resolves to role B's group, not Unbound");
+    assert_eq!(
+        pools,
+        Some(vec!["pool-b".to_string()]),
+        "pools come from the SAME binding the group was taken from"
+    );
+}
+
+#[test]
 fn sub_sanitization_refused() {
     let rb = bindings("oidc", "eng", Some("team"));
     // Refused: '/' separator, a LEADING reserved bucket/real-key prefix, empty, and control chars.

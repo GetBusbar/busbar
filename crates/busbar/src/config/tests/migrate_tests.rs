@@ -690,6 +690,47 @@ pools: {}
     );
 }
 
+/// REGRESSION (the mirror image of `migrate_group_map_survives_a_non_mapping_auth`): `group_map:`
+/// ITSELF being a non-mapping (`group_map: [foo]`) while `auth:` IS a mapping must NOT silently
+/// vanish either. Before the fix, `migrate_auth`'s `if let Value::Mapping(gm) = gm { .. }` treated
+/// anything else as a silent no-op: `bindings` stayed empty but execution fell straight through to
+/// unconditionally emit an EMPTY `auth.role_bindings.<module>: {}` plus a MISLEADING "auth.group_map
+/// -> auth.role_bindings" changelog entry, as if the data had actually migrated - the group_map
+/// content itself was gone with no warning/TODO at all.
+#[test]
+fn migrate_non_mapping_group_map_survives_a_mapping_auth() {
+    let raw = r#"
+auth:
+  chain: [oidc]
+group_map: [foo]
+providers: {}
+models: {}
+pools: {}
+"#;
+    let out = migrate_config(raw).unwrap();
+    assert!(
+        out.yaml.contains("group_map"),
+        "a non-mapping group_map must not silently vanish from the migrated document:\n{}",
+        out.yaml
+    );
+    assert!(
+        out.todos.iter().any(|t| t.contains("group_map"))
+            || out.warnings.iter().any(|w| w.contains("group_map")),
+        "a non-mapping `group_map:` disappearing must surface a loud TODO/warning, got \
+         todos={:?} warnings={:?}",
+        out.todos,
+        out.warnings
+    );
+    // The misleading "migrated" changelog entry must not appear when nothing actually migrated.
+    assert!(
+        !out.changes
+            .iter()
+            .any(|c| c.contains("group_map -> auth.role_bindings")),
+        "must not claim a group_map -> role_bindings migration happened when it did not: {:?}",
+        out.changes
+    );
+}
+
 /// REGRESSION: a REALISTIC 1.4.x `governance:` block -- no `store:` key, because 1.4.x's
 /// `GovernanceCfg` never had one (its only durable backend was SQLite at `db_path`). Before the
 /// fix, gating the store migration on that nonexistent key silently dropped `db_path` and emitted

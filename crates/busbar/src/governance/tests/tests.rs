@@ -3396,6 +3396,103 @@ fn refresh_self_tombstones_the_old_binding_on_success() {
     assert_eq!(surviving.id, second_binding.id);
 }
 
+/// A `Store` that delegates everything to a `MemoryStore` except `list_keys`, which fails EXACTLY
+/// ONCE right after a `delete_key` call succeeds (`delete_key` arms it; the very next `list_keys`
+/// errors, then it's disarmed). Models a `refresh()` cache-reconcile round-trip failing
+/// specifically AFTER the store-level tombstone already landed — the CODEAUDIT ROUND-2 FIX 3
+/// scenario — while leaving the FIRST `refresh()` inside `write_self_binding` (before the delete)
+/// unaffected.
+struct FailListKeysAfterDeleteStore {
+    inner: MemoryStore,
+    fail_next_list_keys: std::sync::atomic::AtomicBool,
+}
+
+impl FailListKeysAfterDeleteStore {
+    fn new() -> Self {
+        Self {
+            inner: MemoryStore::new(),
+            fail_next_list_keys: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+}
+
+impl Store for FailListKeysAfterDeleteStore {
+    fn put_key(&self, k: &VirtualKey) -> StoreResult<()> {
+        self.inner.put_key(k)
+    }
+    fn get_key(&self, id: &str) -> StoreResult<Option<VirtualKey>> {
+        self.inner.get_key(id)
+    }
+    fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
+        if self
+            .fail_next_list_keys
+            .compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            return Err(StoreError("store down: list_keys".into()));
+        }
+        self.inner.list_keys()
+    }
+    fn delete_key(&self, id: &str) -> StoreResult<()> {
+        let r = self.inner.delete_key(id);
+        if r.is_ok() {
+            // Arm: the tombstone landed in the store — the very next cache-reconcile `refresh()`
+            // (which calls `list_keys` first) is what should now fail.
+            self.fail_next_list_keys.store(true, Ordering::SeqCst);
+        }
+        r
+    }
+    fn get_usage(&self, id: &str, w: u64) -> StoreResult<UsageLedger> {
+        self.inner.get_usage(id, w)
+    }
+    fn put_usage(&self, id: &str, w: u64, l: &UsageLedger) -> StoreResult<()> {
+        self.inner.put_usage(id, w, l)
+    }
+    fn add_metering(&self, d: &MeteringDelta) -> StoreResult<()> {
+        self.inner.add_metering(d)
+    }
+    fn list_metering(&self, bucket: u64) -> StoreResult<Vec<MeteringRow>> {
+        self.inner.list_metering(bucket)
+    }
+}
+
+/// CODEAUDIT ROUND-2 FIX 3 (red-before-green). Before the fix: `refresh_self` tombstoned the old
+/// binding in the STORE, then called `self.refresh()?` to reconcile the cache — a bare `?`. If
+/// THAT refresh failed (e.g. a transient store round-trip error), the fn returned `Err` while the
+/// cache still held BOTH the old binding (still `enabled` from the refresh done earlier inside
+/// `write_self_binding`, before the delete) and the new one, so the OLD token kept verifying even
+/// though the store had already tombstoned it. GREEN: on that specific refresh failure,
+/// `refresh_self` surgically evicts the old id straight from the cache (no store round-trip
+/// needed) before returning `Err`, so the old token stops verifying immediately regardless of
+/// whether the full refresh ever succeeds.
+#[test]
+fn refresh_self_evicts_old_binding_from_cache_when_post_delete_refresh_fails() {
+    let store = Arc::new(FailListKeysAfterDeleteStore::new());
+    let gov = GovState::new_with_signer(store, None, Some(self_serve_signer())).unwrap();
+    let sub = "oidc:carol";
+    let now = 1_700_000_000u64;
+
+    let (_first_binding, first_token) = gov.issue_self(sub, None, now + 3600, now).unwrap();
+    assert!(gov.verify_token(&first_token, now).is_some());
+
+    // The tombstone succeeds (store-level), but the subsequent cache-reconcile `refresh()` fails.
+    let err = gov
+        .refresh_self(sub, None, now + 3600, now)
+        .expect_err("a failed post-delete cache refresh must surface as an Err");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("evicted") || msg.contains("cache"),
+        "the error must describe the cache-reconcile failure and the eviction fallback: {msg}"
+    );
+
+    // THE FIX: even though the full refresh failed, the surgical eviction means the OLD token no
+    // longer verifies — the exact hazard this fix closes.
+    assert!(
+        gov.verify_token(&first_token, now).is_none(),
+        "the prior token must stop verifying even when the post-delete cache refresh fails"
+    );
+}
+
 /// H1 — structural: request-path callers must go through `mint_self_offloaded` (the blocking-pool
 /// door), never call `issue_self`/`refresh_self` directly on the reactor. This proves the wrapper
 /// exists, actually runs the mint (`spawn_blocking` + `.await`), and returns the SAME outcome the
@@ -3442,4 +3539,72 @@ async fn mint_self_offloaded_issues_and_refreshes_through_the_blocking_pool() {
         "the offloaded refresh still tombstones the prior token"
     );
     assert!(gov.verify_token(&refreshed_token, now).is_some());
+}
+
+/// A `Store` that delegates everything to a `MemoryStore` except `put_key`, which PANICS. Used
+/// ONLY to drive a real panic inside `mint_self_offloaded`'s `spawn_blocking` closure (via
+/// `issue_self` -> `write_self_binding` -> `store.put_key`), so the JoinError-mapping test below
+/// exercises the actual join-failure path rather than a synthetic one.
+struct PanicOnPutKeyStore {
+    inner: MemoryStore,
+}
+
+impl Store for PanicOnPutKeyStore {
+    fn put_key(&self, _k: &VirtualKey) -> StoreResult<()> {
+        panic!("intentional panic inside put_key, for the JoinError-mapping test");
+    }
+    fn get_key(&self, id: &str) -> StoreResult<Option<VirtualKey>> {
+        self.inner.get_key(id)
+    }
+    fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
+        self.inner.list_keys()
+    }
+    fn delete_key(&self, id: &str) -> StoreResult<()> {
+        self.inner.delete_key(id)
+    }
+    fn get_usage(&self, id: &str, w: u64) -> StoreResult<UsageLedger> {
+        self.inner.get_usage(id, w)
+    }
+    fn put_usage(&self, id: &str, w: u64, l: &UsageLedger) -> StoreResult<()> {
+        self.inner.put_usage(id, w, l)
+    }
+    fn add_metering(&self, d: &MeteringDelta) -> StoreResult<()> {
+        self.inner.add_metering(d)
+    }
+    fn list_metering(&self, bucket: u64) -> StoreResult<Vec<MeteringRow>> {
+        self.inner.list_metering(bucket)
+    }
+}
+
+/// CODEAUDIT ROUND-2 FIX 4(b) — coverage gap: `mint_self_offloaded` maps a `JoinError` (the
+/// `spawn_blocking` task PANICKED) to a `StoreError`, per its `.unwrap_or_else` fallback, rather
+/// than propagating the panic across the `.await` and crashing the calling task. This was
+/// previously unexercised by any test. Drive an actual panic inside the offloaded closure (via a
+/// `Store::put_key` that panics) and assert the `.await` resolves to a plain `Err`, not a panic.
+#[tokio::test]
+async fn mint_self_offloaded_maps_a_join_panic_to_a_store_error() {
+    let store = Arc::new(PanicOnPutKeyStore {
+        inner: MemoryStore::new(),
+    });
+    let gov = Arc::new(GovState::new_with_signer(store, None, Some(self_serve_signer())).unwrap());
+    let sub = "oidc:panics";
+    let now = 1_700_000_000u64;
+
+    let result = crate::governance::mint_self_offloaded(
+        gov,
+        crate::governance::SelfMintOp::Issue,
+        sub.to_string(),
+        None,
+        now + 3600,
+        now,
+    )
+    .await;
+
+    let err = result.expect_err(
+        "a panic inside the spawn_blocking closure must surface as an Err, never propagate",
+    );
+    assert!(
+        err.to_string().contains("join"),
+        "the mapped error should describe the join failure: {err}"
+    );
 }

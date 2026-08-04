@@ -104,11 +104,15 @@ the next **auth adapters** on a seam that already exists.
   `GET /keys?group=<name>` (the keys bound to a group). A write is validate-at-the-door, then live
   on the next request; the ledger survives the swap. `PATCH` is the ergonomic "raise Alice's
   budget" and "freeze a team" verb.
-- **Self-service mint: auto-provision + the `mint` scope.** `POST /keys` accepts an optional
-  `parent`: when `group` names a leaf that does not yet exist, it is auto-provisioned under
-  `parent` (limits from `child_default`). A new delegated `mint` admin scope — sibling of
-  `hooks-register`, NOT a ladder rung above it — lets a self-service portal mint keys without
-  god-mode `full`. `limits.max_keys_per_principal` caps keys per group (per-user anti-sprawl).
+- **Self-service mint: auto-provision.** `POST /keys` accepts an optional `parent`: when `group`
+  names a leaf that does not yet exist, it is auto-provisioned under `parent` (limits from
+  `child_default`). `limits.max_keys_per_principal` caps keys per group (per-user anti-sprawl).
+  (The delegated `mint` admin scope described here at 1.5 ship time — sibling of `hooks-register`,
+  NOT a ladder rung above it — was RETIRED in the 1.5.2 admin-scope collapse: the four-variant
+  diamond collapsed to `{read-only, full}`, so self-service minting today requires `full`. An
+  upgrading config that still names `mint`/`hooks-register` is mechanically rewritten to `full` by
+  the config migrator, with a loud warning. See `crates/busbar/src/config/migrate.rs`
+  `migrate_dropped_scopes`.)
 - **Per-section overlay reset.** `DELETE /api/v1/admin/overlay/{section}` (section `groups` |
   `hooks`) discards all overlay mutations for that section and reverts it to base `config.yaml`
   truth, leaving the other section's runtime mutations untouched.
