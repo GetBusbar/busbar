@@ -2672,6 +2672,14 @@ pub(crate) const DEFAULT_HARD_DOWN_COOLDOWN_SECS: u64 = 1800;
 pub(crate) const DEFAULT_MAX_HONORED_RETRY_AFTER_SECS: u64 = 86_400;
 /// Default cap on a buffered upstream ERROR / verbatim-relay body (bytes). Mirrors `proxy engine`.
 pub(crate) const DEFAULT_UPSTREAM_ERROR_BODY_MAX_BYTES: usize = 256 * 1024;
+/// Default cap on a single `plugins.fetch:` download (bytes). Mirrors the same defense the
+/// token-endpoint reads already apply (`egress_auth::read_capped_token_response`,
+/// `proxy::wire::read_capped`): a mistyped or compromised `plugins.fetch` URL serving a multi-GB
+/// body must NOT be buffered whole into memory via an unbounded `resp.bytes()` read — that OOMs
+/// busbar on boot (`fatal_on_miss`) or on `POST /plugins/reload`. 256 MiB comfortably holds any
+/// legitimate signed plugin tarball while bounding the worst case; the download is aborted with a
+/// clear "exceeded the cap" error the instant more bytes arrive, never buffered past it.
+pub(crate) const DEFAULT_PLUGIN_FETCH_MAX_BYTES: usize = 256 * 1024 * 1024;
 /// Default TLS handshake wall-clock bound (seconds). Mirrors `tls.rs`.
 pub(crate) const DEFAULT_TLS_HANDSHAKE_TIMEOUT_SECS: u64 = 10;
 /// Default inbound request-BODY read bound (seconds): the max time allowed BETWEEN inbound body

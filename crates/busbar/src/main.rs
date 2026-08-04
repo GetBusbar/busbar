@@ -2324,6 +2324,17 @@ pub(crate) type GovCredentialRotation = Box<dyn FnOnce() + Send>;
 /// worker (boot) or a `spawn_blocking` thread (reload) — a nested `block_on` on a runtime thread would
 /// otherwise panic. The loader owns cache/verify/atomic-write; this owns network + SSRF.
 fn plugin_fetch_downloader(blocked: &[String]) -> impl Fn(&str) -> Result<Vec<u8>, String> {
+    plugin_fetch_downloader_with_cap(blocked, config::DEFAULT_PLUGIN_FETCH_MAX_BYTES)
+}
+
+/// Same as [`plugin_fetch_downloader`] with an explicit download-size cap — split out so a test can
+/// exercise the over-cap rejection path against a small in-memory server without actually moving
+/// hundreds of megabytes through loopback. Production always calls [`plugin_fetch_downloader`], which
+/// pins `cap` to [`config::DEFAULT_PLUGIN_FETCH_MAX_BYTES`].
+fn plugin_fetch_downloader_with_cap(
+    blocked: &[String],
+    cap: usize,
+) -> impl Fn(&str) -> Result<Vec<u8>, String> {
     let blocked: Vec<String> = blocked.to_vec();
     move |url: &str| -> Result<Vec<u8>, String> {
         // Scheme: https required for a public host; plaintext http only for loopback/private (a local
@@ -2364,11 +2375,33 @@ fn plugin_fetch_downloader(blocked: &[String]) -> impl Fn(&str) -> Result<Vec<u8
                     if !status.is_success() {
                         return Err(format!("GET {url}: HTTP {status}"));
                     }
-                    let bytes = resp
-                        .bytes()
-                        .await
-                        .map_err(|e| format!("read body {url}: {e}"))?;
-                    Ok(bytes.to_vec())
+                    // A declared Content-Length over the cap is rejected BEFORE reading a single body
+                    // byte — the fast, cheap path for the common case of an honest oversized response.
+                    // Not load-bearing on its own (a dishonest/absent header falls through to the
+                    // streamed cap below), just an early exit.
+                    if let Some(len) = resp.content_length() {
+                        if len as usize > cap {
+                            return Err(format!(
+                                "GET {url}: declared Content-Length {len} exceeds the {cap}-byte \
+                                 plugins.fetch download cap"
+                            ));
+                        }
+                    }
+                    // Stream with a running byte counter (never `resp.bytes()`, which buffers the
+                    // ENTIRE — possibly multi-gigabyte — body before any cap could apply) so a
+                    // mistyped or compromised URL serving an unbounded body is rejected with a clear
+                    // error instead of OOMing busbar on boot or `/plugins/reload`.
+                    let (bytes, end) = crate::proxy::read_capped(resp, cap).await;
+                    match end {
+                        crate::proxy::ReadEnd::Complete => Ok(bytes.to_vec()),
+                        crate::proxy::ReadEnd::Truncated => Err(format!(
+                            "GET {url}: response exceeded the {cap}-byte plugins.fetch download cap; \
+                             refusing to buffer a truncated download"
+                        )),
+                        crate::proxy::ReadEnd::TransportError => {
+                            Err(format!("read body {url}: connection failed mid-download"))
+                        }
+                    }
                 })
             })
             .join()

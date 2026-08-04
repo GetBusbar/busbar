@@ -496,9 +496,8 @@ pub(crate) fn persist_root(path: Option<&Path>, settings: &RootSettings) -> Resu
 /// (1.5.0). Same read-modify-WRITE durability contract as `persist_root`: the hooks/groups/root
 /// sections (and their tombstones) are carried forward verbatim, and an unreadable overlay is REFUSED
 /// (never clobbered). `pins` is the FULL desired pin map (the caller computed the merge of the prior
-/// pins + this rollback), so an empty map clears the section (every pin lifted). `None` path is a
-/// no-op (persistence disabled). Best-effort: the live policy already swapped, so this is durability
-/// (a restart re-derives the same lowered floor from the persisted pin), never correctness.
+/// pins + this rollback), so an empty map clears the section (every pin lifted).
+///
 /// Persist the plugin version-pin section (read-modify-WRITE; siblings preserved). Returns whether the
 /// write landed: the rollback path (both the forward persist and the compensating revert after a failed
 /// rebuild) must FAIL CLOSED on a persist error — a silently-swallowed failure would leave disk out of
