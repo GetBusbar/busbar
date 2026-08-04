@@ -373,6 +373,82 @@ full Microsoft Entra ID (Azure AD) example — see the **[OIDC auth plugin](/plu
 > members inherit the role through the group, so you manage access by group membership while
 > `role_bindings` keeps naming a human-readable role instead of a GUID.
 
+##### Walkthrough: configuring OIDC with Microsoft Entra ID
+
+The rest of this section is the reference; this is the click-by-click path through Entra's portal.
+Blade names matter — App registrations and Enterprise applications are two different areas of the
+same app object, and steps 4 and 5 below live on **different** blades. Follow it in order.
+
+1. **Create (or locate) the app registration.** Entra admin center → **App registrations** → New
+   registration (or select your existing one). From its **Overview** pane, grab two IDs:
+   - **Directory (tenant) ID** → `issuer: "https://login.microsoftonline.com/<tenant-id>/v2.0"`
+   - **Application (client) ID** → `audience: "<client-id>"`
+
+2. **Client secret.** App registration → **Certificates & secrets** → New client secret. Copy the
+   secret's **Value** column (a string like `kqf8Q~...`) immediately — it's shown once. This goes to
+   `browser_login.client_secret` (as a secret reference, e.g. `{ env: OIDC_CLIENT_SECRET }`).
+   Do **not** copy the **Secret ID** column next to it — that's a GUID that identifies the secret
+   record itself, not a credential, and it will fail to authenticate.
+
+3. **Redirect URI.** App registration → **Authentication** → Add a platform → **Web** (not
+   *Single-page application*). Busbar is a confidential client — it holds the client secret
+   server-side — so it needs the **Web** platform type; SPA is for public, PKCE-only clients with no
+   secret and will reject the exchange. Set the URI to `<public_url>/auth/token` (busbar's own
+   callback route, built from your `public_url`). Entra permits `http://localhost:<port>/auth/token`
+   for local dev.
+
+4. **Choose app roles or security groups for `role_claim`, and set it up on the right blade(s).**
+   This is the step people get lost on, because "define" and "assign" happen in two different places:
+   - **App roles (recommended — `role_claim: roles`).** *Define* the role under App registration →
+     **App roles** → Create app role (allowed member types: Users/Groups). Its **Value** field (e.g.
+     `busbar.dev`) is what lands verbatim in the token's `roles` claim — that string is your
+     `role_bindings` key. Then, on the **other** blade, *assign* it: **Enterprise applications** →
+     your app → **Users and groups** → Add user/group → pick a user or a security group → select the
+     role. Members of an assigned security group inherit the app role.
+   - **Security groups (`role_claim: groups`).** First enable the claim — it's off by default: App
+     registration → **Token configuration** → Add groups claim → check **Security groups**. Group
+     membership then appears in the token as each group's **Object ID (a GUID)**, never its display
+     name, so the `role_bindings` key must be that GUID.
+   - **A security group named `busbar.dev` does not satisfy `role_claim: roles`.** App roles and
+     security groups are different Entra objects; a group only matches under `role_claim: groups`,
+     keyed by its GUID. If you want to manage access by group *and* keep a readable
+     `role_bindings` config, use the recommended pattern above: `role_claim: roles`, with the app
+     role assigned to the group.
+
+5. **Put it together.** Config on the busbar side, all three pieces from above:
+
+   ```yaml
+   public_url: "https://busbar.example.com"
+   auth:
+     signing_key: { file: /run/secrets/busbar-signing.key }
+     chain: [keys]
+     methods:
+       oidc:
+         issuer:   "https://login.microsoftonline.com/<tenant-id>/v2.0"  # step 1: tenant ID
+         audience: "<client-id>"                                        # step 1: client ID
+         role_claim: roles                                              # step 4: app roles
+         browser_login:
+           client_secret: { env: OIDC_CLIENT_SECRET }                   # step 2: secret Value
+     role_bindings:
+       oidc:
+         "busbar.dev": { group: engineering }                           # step 4: app role's Value
+   groups:
+     engineering:
+       limits:
+         - { budget: 200000, per: month }
+   ```
+
+**Common mistakes, at a glance:**
+
+| Mistake | Fix |
+|---|---|
+| Redirect URI set to **Single-page application** | Use **Web** — busbar holds a client secret server-side |
+| Pasted the **Secret ID** (GUID) instead of the secret **Value** | Copy the **Value** column at creation time; it's shown once |
+| Created a security group and expect `role_claim: roles` to see it | App roles and security groups are different objects — either switch to `role_claim: groups` + the group's GUID, or assign the app role to the group |
+| Defined an app role but never assigned it | Definition (App registrations → App roles) and assignment (Enterprise applications → Users and groups) are separate steps on separate blades |
+| Bound a `role_bindings` key to a group's display name under `role_claim: groups` | The claim carries the group's **Object ID (GUID)**, never the name |
+| `groups` claim missing from the token entirely | It's off by default — enable it under App registration → Token configuration → Add groups claim |
+
 ---
 
 ### `groups`
