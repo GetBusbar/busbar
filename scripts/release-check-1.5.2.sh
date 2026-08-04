@@ -137,6 +137,41 @@ wait_for_http() {
   done
 }
 
+# ── CONFIG-YAML-VALIDITY guard (up-front, fail-fast) ──────────────────────────────────────────────
+# WHY: this gate GENERATES config files with heredocs, and one of them once emitted an under-indented
+# `ca_cert_pem: |` block scalar — invalid YAML — that only blew up DEEP in a later phase (and only
+# after the 2h hang above was fixed), costing a full cycle to diagnose. `assert_yaml` is called the
+# instant a config/providers file is written, so a malformed GENERATED config fails FAST with a clear,
+# file-named message instead of surfacing as a confusing error inside a boot/validate step. This is
+# the YAML-PARSE precondition; the per-phase `busbar --validate` calls (which run only after the
+# sibling plugins are packed, since they name plugin modules) remain the semantic check on top.
+# PyYAML is the parser (present on the qa-gate ubuntu runner and locally); if it is somehow absent we
+# WARN loudly rather than silently skip — the per-phase `busbar --validate` still rejects bad YAML
+# (it emits `invalid YAML:` before any module/secret resolution), so coverage degrades, never vanishes.
+assert_yaml() {
+  local file="$1" label="${2:-config}"
+  [ -f "$file" ] || { echo "  CONFIG-YAML-GUARD: ${label}: file not found: ${file}" >&2; exit 1; }
+  if ! python3 -c 'import yaml' >/dev/null 2>&1; then
+    note "CONFIG-YAML-GUARD: PyYAML unavailable — cannot pre-parse ${label} (${file}); relying on the"
+    note "  per-phase \`busbar --validate\` (still rejects malformed YAML). Install PyYAML for fast-fail."
+    return 0
+  fi
+  local err; err="$(new_tmpdir)/yamlerr"
+  # Concise diagnostic (not a Python traceback): print just the YAML scanner/parser message + mark.
+  if ! python3 -c 'import sys,yaml
+try:
+    yaml.safe_load(open(sys.argv[1]))
+except yaml.YAMLError as e:
+    sys.stderr.write(str(e) + "\n"); sys.exit(1)' "$file" 2>"$err"; then
+    echo "  CONFIG-YAML-GUARD: ${label} is NOT parseable YAML — failing fast (file: ${file})" >&2
+    sed 's/^/      /' "$err" >&2
+    echo "      └─ this is the under-indented \`ca_cert_pem: |\`-class bug: a malformed GENERATED config." >&2
+    echo "         Fix the heredoc's indentation; do NOT let it reach a boot/validate phase." >&2
+    exit 1
+  fi
+  ok "config YAML parses: ${label}"
+}
+
 # Wait until a launched busbar has EITHER come up on /healthz (echo "up") or exited (echo "down").
 # Used by the negative fetch phases, which expect the process to DIE at boot rather than serve.
 wait_up_or_dead() {
@@ -374,6 +409,7 @@ models:
   test-model:
     provider: mock
 EOF
+    assert_yaml "$out" "Phase A plugins.fetch config"
   }
   local PROVIDERS; PROVIDERS="$(new_tmpdir)/providers.yaml"
   cat >"$PROVIDERS" <<EOF
@@ -381,6 +417,7 @@ mock:
   protocol: anthropic
   base_url: "https://example.invalid"
 EOF
+  assert_yaml "$PROVIDERS" "Phase A providers"
 
   boot_fetch() {  # $1 config, $2 pluginsdir (for log path). echoes pid.
     local cfg="$1" log="$2"
@@ -782,6 +819,8 @@ mock:
   protocol: anthropic
   base_url: "http://127.0.0.1:${B_MOCK}"
 EOF
+  assert_yaml "${work}/config.yaml" "Phase B token-exchange config"
+  assert_yaml "${work}/providers.yaml" "Phase B providers"
 
   # 3) Pack the auth-oidc plugin (sibling), so `oidc` resolves in the chain. Without it we CANNOT
   #    validate a config that names the module — loud-skip the OIDC-dependent bits.
@@ -973,6 +1012,8 @@ mock:
   protocol: anthropic
   base_url: "http://127.0.0.1:${MOCK}"
 EOF
+  assert_yaml "${work}/config.yaml" "Phase B github token-exchange config"
+  assert_yaml "${work}/providers.yaml" "Phase B github providers"
 
   echo "  busbar --validate on the github token-exchange config..."
   BUSBAR_CONFIG="${work}/config.yaml" BUSBAR_PROVIDERS="${work}/providers.yaml" \
@@ -1131,6 +1172,8 @@ mock:
   protocol: anthropic
   base_url: "http://127.0.0.1:${MOCK}"
 EOF
+  assert_yaml "${work}/config.yaml" "Phase B ldap credential-flow config"
+  assert_yaml "${work}/providers.yaml" "Phase B ldap providers"
 
   echo "  busbar --validate on the ldap credential-flow config..."
   BUSBAR_CONFIG="${work}/config.yaml" BUSBAR_PROVIDERS="${work}/providers.yaml" MOCK_KEY=unused BUSBAR_ADMIN_TOKEN=gate-admin \
@@ -1232,6 +1275,8 @@ mock:
   protocol: anthropic
   base_url: "https://example.invalid"
 EOF
+  assert_yaml "${wc}/config.yaml" "Phase C posture-(c) open-admin config"
+  assert_yaml "${wc}/providers.yaml" "Phase C posture-(c) providers"
   echo "  --validate open-admin config..."
   BUSBAR_CONFIG="${wc}/config.yaml" BUSBAR_PROVIDERS="${wc}/providers.yaml" MOCK_KEY=unused \
     "$BUSBAR_BIN" --validate
@@ -1315,6 +1360,9 @@ mock:
   protocol: anthropic
   base_url: "https://example.invalid"
 EOF
+    assert_yaml "${out}/providers.yaml" "Phase C admin-plane OIDC providers"
+    # NB the base config is deliberately checked by the caller AFTER it appends the plugins block
+    # (the config is not complete until then) — see the assert_yaml calls on ${wa}/${wb} below.
   }
 
   local pdir_a; pdir_a="$(new_tmpdir)/plugins"
@@ -1336,6 +1384,7 @@ plugins:
   trust:
     allow_unsigned: true
 EOF
+    assert_yaml "${wa}/config.yaml" "Phase C admin-plane OIDC config (full)"
     echo "  --validate admin-plane OIDC config (admin_scope: full)..."
     BUSBAR_CONFIG="${wa}/config.yaml" BUSBAR_PROVIDERS="${wa}/providers.yaml" \
       MOCK_KEY=unused BUSBAR_ADMIN_TOKEN=gate-admin \
@@ -1350,6 +1399,7 @@ plugins:
   trust:
     allow_unsigned: true
 EOF
+    assert_yaml "${wb}/config.yaml" "Phase C admin-plane OIDC config (read-only)"
     echo "  --validate admin-plane OIDC config (admin_scope: read-only)..."
     BUSBAR_CONFIG="${wb}/config.yaml" BUSBAR_PROVIDERS="${wb}/providers.yaml" \
       MOCK_KEY=unused BUSBAR_ADMIN_TOKEN=gate-admin \

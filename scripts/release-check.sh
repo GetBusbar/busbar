@@ -236,7 +236,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 http.server.ThreadingHTTPServer(("127.0.0.1", ${port}), Handler).serve_forever()
 PYEOF
-  python3 "$script" &
+  # stdout/stderr → /dev/null: a backgrounded serve_forever that inherits its caller's stdout pipe
+  # wedges any `$(start_mock_upstream ...)` capture on EOF for the whole CI timeout (the 1.5.2 gate's
+  # 2h31m hang — see scripts/release-script-lint.sh). Redirect at the launch site so the server can
+  # never leak stdout no matter how a future caller reads its pid. `$!`/BG_PIDS still track the pid.
+  python3 "$script" >/dev/null 2>&1 &
   local pid=$!
   BG_PIDS+=("$pid")
   wait_for_http "http://127.0.0.1:${port}/" 10 || true # server has no GET route; just give it a beat

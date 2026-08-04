@@ -1789,6 +1789,56 @@ fn test_1_5_2_oidc_chain_needs_no_mint_path() {
     );
 }
 
+/// 1.5.2 (RED-before-GREEN) — THE github/ldap GAP. `auth.chain: [keys]` whose ONLY admin path is an
+/// EXTERNAL admin IdP (github/ldap) is a usable mint path ONLY if that module declares
+/// `max_admin_scope: full`; otherwise nothing can mint a vkey through the admin API and the data
+/// plane rejects EVERY request. This is the exact config that cost a cycle: the gate's Phase B
+/// github/ldap arms named the admin module but did NOT grant it `max_admin_scope: full`, so `keys`
+/// failed to validate with "no admin credential can mint one" — deep in a phase, hard to read.
+/// This locks that in as a fast, obvious boot error. Isolates the EXTERNAL-module branch of
+/// `AuthCfg::usable_mint_path` (the earlier mint-path test covers only the `admin-tokens` branch);
+/// signing_key is supplied so the signing-key rule stays quiet and only the mint-path rule can fire.
+/// Feature-independent (the branch is purely structural), so it holds under `--no-default-features`.
+#[test]
+fn test_1_5_2_keys_chain_external_admin_needs_full_scope_to_mint() {
+    let (providers, models, pools) = valid_maps();
+    let mut cfg = make_root_cfg(providers, models, pools);
+
+    // RED: keys verifier + signing_key, but the only admin module (an external github/ldap IdP)
+    // does NOT declare max_admin_scope: full ⇒ NO usable mint path ⇒ boot error.
+    let mut auth = crate::config::AuthCfg::default_none();
+    auth.chain = vec![crate::config::AuthChainEntry::bare(
+        crate::config::KEYS_MODULE,
+    )];
+    auth.signing_key = Some(config::SecretRef::env("BUSBAR_SIGNING_KEY"));
+    auth.admin_auth = vec![crate::config::AuthChainEntry::bare("github")]; // external IdP, no mint grant
+    cfg.auth = Some(auth);
+    let errs = validate(&cfg)
+        .expect_err("a keys chain whose only admin module cannot mint must fail validation");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("no admin credential can mint")),
+        "expected the mint-path boot error for the github/ldap gap; got: {errs:?}"
+    );
+
+    // GREEN: the SAME external admin module, now declaring max_admin_scope: full, IS a usable mint
+    // path — an admin IdP can mint — so the config validates clean.
+    let mut auth_ok = crate::config::AuthCfg::default_none();
+    auth_ok.chain = vec![crate::config::AuthChainEntry::bare(
+        crate::config::KEYS_MODULE,
+    )];
+    auth_ok.signing_key = Some(config::SecretRef::env("BUSBAR_SIGNING_KEY"));
+    let mut admin = crate::config::AuthChainEntry::bare("github");
+    admin.max_admin_scope = Some("full".to_string());
+    auth_ok.admin_auth = vec![admin];
+    cfg.auth = Some(auth_ok);
+    assert!(
+        validate(&cfg).is_ok(),
+        "an external admin module with max_admin_scope: full is a usable mint path; got: {:?}",
+        validate(&cfg)
+    );
+}
+
 #[test]
 fn test_validate_token_on_non_admin_tokens_entry_rejected() {
     // `token:` is the admin-tokens operator credential; on any other chain entry it is inert and
