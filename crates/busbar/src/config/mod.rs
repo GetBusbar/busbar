@@ -382,6 +382,11 @@ fn mapping_key_repr(key: &serde_yaml::Value) -> String {
 #[derive(Debug)]
 pub(crate) struct RootCfg {
     pub(crate) listen: String,
+    /// busbar's PUBLIC base URL (top-level `public_url:`). The externally-reachable origin used to
+    /// build `/auth/token` links AND shown to devs as the `base_url` they point BYOK clients at (no
+    /// `/v1` suffix — clients append their own). Absent ⇒ no hosted-login/token links can be built.
+    /// Validated (absolute https; loopback http allowed; no path/query, no cloud-metadata host).
+    pub(crate) public_url: Option<String>,
     /// Optional native inbound TLS. `None` ⇒ plain HTTP (today's path, byte-for-byte).
     pub(crate) tls: Option<TlsCfg>,
     /// Separate admin listen address — the admin API is served ONLY here, never on the data
@@ -480,7 +485,7 @@ pub(crate) struct AuthChainEntry {
     /// The module name (built-in `keys` / `admin-tokens`, or a `kind: auth` plugin name/alias).
     pub(crate) module: String,
     /// Ceiling on the ADMIN scope obtainable through this module, regardless of what
-    /// `role_bindings:` grants: `read-only` | `hooks-register` | `mint` | `full`. Absent =
+    /// `role_bindings:` grants: `read-only` | `full`. Absent =
     /// `read-only` for every module except the built-in `admin-tokens` operator credential (full by
     /// definition and exempt) - `full` from an external chain is an explicit opt-in.
     pub(crate) max_admin_scope: Option<String>,
@@ -591,10 +596,9 @@ pub(crate) struct RoleBindingCfg {
     /// The `groups:` bucket this role's principals charge through. Absent = no group (unlimited).
     #[serde(default)]
     pub(crate) group: Option<String>,
-    /// The ADMIN scope this role grants: `read-only` | `hooks-register` | `mint` | `full`. Absent =
-    /// no admin access from this role. A principal holds the UNION of what its bound roles grant
-    /// (`hooks-register` and `mint` are incomparable siblings, so holding both keeps both — see
-    /// `Grants` in the contract module), ceilinged by the asserting module's `max_admin_scope`.
+    /// The ADMIN scope this role grants: `read-only` | `full`. Absent = no admin access from this
+    /// role. A principal holds the UNION of what its bound roles grant (see `Grants` in the contract
+    /// module), ceilinged by the asserting module's `max_admin_scope`.
     #[serde(default)]
     pub(crate) admin_scope: Option<String>,
 }
@@ -602,6 +606,49 @@ pub(crate) struct RoleBindingCfg {
 /// `role_bindings:` - module name -> role name -> grant.
 pub(crate) type RoleBindings =
     std::collections::BTreeMap<String, std::collections::BTreeMap<String, RoleBindingCfg>>;
+
+/// Per-method browser-login parameters (`auth.methods.<name>.browser_login:`). PRESENCE of this
+/// block is what makes a method show a button on the hosted login page; a method WITHOUT it is
+/// headless-only (still usable via `POST /auth/token`). Holds the confidential-client secret used by
+/// the CORE (never the plugin) during the code→token exchange. `deny_unknown_fields`: a typo here
+/// (e.g. `client_secrets:`) must fail boot, not silently disable the button.
+#[derive(Debug, Deserialize, Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct BrowserLoginCfg {
+    /// The OAuth/OIDC confidential-client secret, a SECRET REFERENCE. OPTIONAL: only the REDIRECT
+    /// (OAuth-family) flow is a confidential client that needs one — a CREDENTIAL method (LDAP/AD-bind)
+    /// has none. Enforced per the method's `login_kind` at build (`login_kind == Redirect` ⇒ REQUIRED;
+    /// `== Credential` ⇒ must be ABSENT). Injected by the core ONLY into the token-exchange hop's
+    /// `client_secret` form field; never serialized back to the plugin.
+    #[serde(default)]
+    pub(crate) client_secret: Option<SecretRef>,
+    /// The OAuth client id advertised on the authorize URL. Optional here (an IdP-specific plugin may
+    /// carry its own); shown on the login button when present.
+    #[serde(default)]
+    pub(crate) client_id: Option<String>,
+}
+
+/// One entry in the `auth.methods:` MAP — a NAMED login method whose map KEY is the module name (the
+/// same namespace as `auth.chain` entries; a method reuses the chain module's verifier). The value
+/// carries the module's OPAQUE settings (issuer/audience/etc. for an OIDC module, flattened and
+/// passed through verbatim) alongside the reserved, busbar-typed `browser_login` block. `methods` is
+/// parallel to `chain`: `chain` is the data-plane verify order (untouched); `methods` is the hosted
+/// login surface. Because `settings` is a flattened catch-all, unknown keys are ABSORBED as opaque
+/// module settings by design; the `deny_unknown_fields` guarantee is enforced on `browser_login`.
+#[derive(Debug, Deserialize, Clone, PartialEq)]
+pub(crate) struct AuthMethodCfg {
+    /// Browser-login parameters; `Some` ⇒ this method renders a button on the hosted login page.
+    #[serde(default)]
+    pub(crate) browser_login: Option<BrowserLoginCfg>,
+    /// The module's own opaque settings (everything that is not `browser_login`), pushed to the
+    /// module verbatim (issuer, audience, endpoints, …).
+    #[serde(flatten)]
+    pub(crate) settings: serde_json::Map<String, serde_json::Value>,
+}
+
+/// `auth.methods:` — insertion-ordered map (operator order = login-page button order), keyed by
+/// module name.
+pub(crate) type AuthMethods = indexmap::IndexMap<String, AuthMethodCfg>;
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
@@ -630,6 +677,15 @@ pub(crate) struct AuthCfg {
     /// Role -> policy bindings, NESTED BY MODULE (see [`RoleBindingCfg`]).
     #[serde(default)]
     pub(crate) role_bindings: RoleBindings,
+    /// The `auth.methods:` MAP — named login methods for the hosted login page / headless token
+    /// exchange, parallel to `chain` (see [`AuthMethods`]). Default empty (no hosted login).
+    #[serde(default)]
+    pub(crate) methods: AuthMethods,
+    /// Admin-set default lifetime for self-service / minted keys (`auth.key_ttl:`), a duration string
+    /// (`"90d"`, `"24h"`, …) parsed by `parse_duration_secs`. Absent ⇒ the built-in
+    /// `DEFAULT_KEY_TTL_SECS` (90d). Consumed by the mint path (Step 4); additive here.
+    #[serde(default)]
+    pub(crate) key_ttl: Option<String>,
 }
 
 impl AuthCfg {
@@ -641,6 +697,8 @@ impl AuthCfg {
             chain: vec![],
             admin_auth: default_admin_auth(),
             role_bindings: RoleBindings::new(),
+            methods: AuthMethods::new(),
+            key_ttl: None,
         }
     }
 
@@ -651,6 +709,28 @@ impl AuthCfg {
             .chain(self.chain.iter())
             .find(|e| e.module == ADMIN_TOKENS_MODULE)
             .and_then(|e| e.token.as_ref())
+    }
+
+    /// Whether a USABLE ADMIN MINT PATH exists — the STRUCTURAL precondition for putting the `keys`
+    /// verifier in `auth.chain` (a busbar-MINTED credential can only be issued through an admin
+    /// endpoint, so if nothing can mint one every data-plane request would reject). Checked at
+    /// validate/boot, which runs BEFORE secrets resolve, so this is purely structural:
+    /// - `admin_auth` is explicitly OPEN (`[]`) → anyone can mint (dev). TRUE — the caller WARNs.
+    /// - an `admin-tokens` entry carries a `token:` secret ref → the operator credential can mint.
+    /// - an external admin module names `max_admin_scope: full` → an admin IdP can mint (1.5.2 scope
+    ///   collapse retired the narrower `mint` ceiling; `full` is now the only mutation grant).
+    ///
+    /// Does NOT resolve the token or consult `role_bindings` (neither is available here); a ceiling of
+    /// `full` is the operator's explicit structural declaration that minting is reachable.
+    pub(crate) fn usable_mint_path(&self) -> bool {
+        if self.admin_auth.is_empty() {
+            return true;
+        }
+        self.admin_auth.iter().any(|e| {
+            (e.module == ADMIN_TOKENS_MODULE && e.token.is_some())
+                || (e.module != ADMIN_TOKENS_MODULE
+                    && matches!(e.max_admin_scope.as_deref(), Some("full")))
+        })
     }
 }
 
@@ -1872,6 +1952,10 @@ pub(crate) struct ProviderDeploy {
 pub(crate) struct DeployCfg {
     #[serde(default = "default_listen")]
     pub(crate) listen: String,
+    /// busbar's PUBLIC base URL (top-level `public_url:`) — see [`RootCfg::public_url`]. Absent by
+    /// default; required once a `browser_login` method or `/auth/token` link generation is in play.
+    #[serde(default)]
+    pub(crate) public_url: Option<String>,
     /// Optional native inbound TLS / mTLS. Absent ⇒ plain HTTP (unchanged default).
     #[serde(default)]
     pub(crate) tls: Option<TlsCfg>,
@@ -2018,6 +2102,132 @@ pub(crate) struct PluginsCfg {
     /// never deserialized, so config parsing + `deny_unknown_fields` are unchanged.
     #[serde(skip)]
     pub(crate) first_party_floors: std::collections::BTreeMap<String, String>,
+    /// Declarative plugin FETCH list (`plugins.fetch:`): tarballs busbar downloads into `dir` at
+    /// boot (fatal-on-miss) and on `POST /plugins/reload` (warn-on-miss) BEFORE preflight. Each entry
+    /// is a github release ref, a direct url, or an env var holding one — optionally sha256-pinned
+    /// (integrity + download-skip cache key). NOT consulted by `--validate` (zero-network contract).
+    /// Signature verification remains the trust gate; sha256 is integrity/cache only. Default empty.
+    #[serde(default)]
+    pub(crate) fetch: Vec<PluginFetch>,
+}
+
+/// One `plugins.fetch:` entry — an UNTAGGED enum discriminated by which key is present. `github` is a
+/// `org/repo@tag` release ref (asset resolved by the loader); `url` is a direct tarball URL; `env`
+/// names an environment variable holding a URL (or `url@sha256`). `sha256` (github/url) is the
+/// lowercase-hex integrity pin: it is BOTH the download-skip cache key (a file in `dir` already
+/// hashing to it ⇒ no network) and the verify-before-write gate. Per-variant `deny_unknown_fields`
+/// so a typo'd key can't be silently reinterpreted as a different variant.
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+#[serde(untagged)]
+pub(crate) enum PluginFetch {
+    /// `- { github: "org/repo@v1.2.3", sha256?: "…" }`
+    Github(GithubFetch),
+    /// `- { url: "https://host/plugin.tar.gz", sha256?: "…" }`
+    Url(UrlFetch),
+    /// `- { env: "BUSBAR_PLUGIN_URL" }` (the VAR holds a url, or `url@sha256`)
+    Env(EnvFetch),
+}
+
+/// The `{ github, sha256? }` fetch shape. `deny_unknown_fields` on each variant struct is what gives
+/// the untagged enum real typo rejection: an entry with a stray key matches NO variant and errors,
+/// rather than being silently reinterpreted.
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct GithubFetch {
+    pub(crate) github: String,
+    #[serde(default)]
+    pub(crate) sha256: Option<String>,
+}
+
+/// The `{ url, sha256? }` fetch shape.
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct UrlFetch {
+    pub(crate) url: String,
+    #[serde(default)]
+    pub(crate) sha256: Option<String>,
+}
+
+/// The `{ env }` fetch shape (the VAR's value is a url, optionally `url@sha256`).
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct EnvFetch {
+    pub(crate) env: String,
+}
+
+/// The tarball filename inside `plugins.dir` a fetch URL writes to: the last path segment (before any
+/// `?`/`#`), which must be non-empty. Errors if the URL has no usable basename.
+fn fetch_filename_from_url(url: &str) -> Result<String, String> {
+    let path = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
+    let path = path.split(['?', '#']).next().unwrap_or(path);
+    let base = path.rsplit('/').next().unwrap_or("");
+    if base.is_empty() {
+        return Err(format!(
+            "plugins.fetch url '{url}' has no filename (a signed tarball basename is required)"
+        ));
+    }
+    Ok(base.to_string())
+}
+
+/// Map one [`PluginFetch`] to a loader [`busbar_plugin_loader::FetchSpec`].
+fn fetch_spec_from(f: &PluginFetch) -> Result<busbar_plugin_loader::FetchSpec, String> {
+    match f {
+        PluginFetch::Github(g) => {
+            // "org/repo@tag" → the GitHub release-asset URL. busbar plugins ship one signed
+            // `{repo}.tar.gz` per release, so the asset name is derived, not discovered.
+            let (repo_path, tag) = g.github.split_once('@').ok_or_else(|| {
+                format!(
+                    "plugins.fetch github '{}' must be 'org/repo@tag' (missing '@tag')",
+                    g.github
+                )
+            })?;
+            let (org, repo) = repo_path.split_once('/').ok_or_else(|| {
+                format!(
+                    "plugins.fetch github '{}' must be 'org/repo@tag' (missing 'org/repo')",
+                    g.github
+                )
+            })?;
+            if org.is_empty() || repo.is_empty() || tag.is_empty() {
+                return Err(format!(
+                    "plugins.fetch github '{}' must be a non-empty 'org/repo@tag'",
+                    g.github
+                ));
+            }
+            let filename = format!("{repo}.tar.gz");
+            let url = format!("https://github.com/{org}/{repo}/releases/download/{tag}/{filename}");
+            Ok(busbar_plugin_loader::FetchSpec {
+                url,
+                sha256: g.sha256.clone(),
+                filename,
+            })
+        }
+        PluginFetch::Url(u) => Ok(busbar_plugin_loader::FetchSpec {
+            url: u.url.clone(),
+            sha256: u.sha256.clone(),
+            filename: fetch_filename_from_url(&u.url)?,
+        }),
+        PluginFetch::Env(e) => {
+            let raw = std::env::var(&e.env).map_err(|_| {
+                format!(
+                    "plugins.fetch env '{}' is not set (it must hold a url or 'url@sha256')",
+                    e.env
+                )
+            })?;
+            // The var value is `url` or `url@sha256`. Split on the LAST '@' so a userinfo '@' in the
+            // URL isn't mistaken for the pin separator (pins are hex, no '@').
+            let (url, sha256) = match raw.rsplit_once('@') {
+                Some((u, s)) if !s.is_empty() && s.bytes().all(|b| b.is_ascii_hexdigit()) => {
+                    (u.to_string(), Some(s.to_string()))
+                }
+                _ => (raw.clone(), None),
+            };
+            Ok(busbar_plugin_loader::FetchSpec {
+                filename: fetch_filename_from_url(&url)?,
+                url,
+                sha256,
+            })
+        }
+    }
 }
 
 impl Default for PluginsCfg {
@@ -2028,6 +2238,7 @@ impl Default for PluginsCfg {
             trust: PluginsTrustCfg::default(),
             min_versions: std::collections::BTreeMap::new(),
             first_party_floors: std::collections::BTreeMap::new(),
+            fetch: Vec::new(),
         }
     }
 }
@@ -2064,6 +2275,16 @@ pub(crate) struct PluginPublisher {
 }
 
 impl PluginsCfg {
+    /// Resolve `plugins.fetch:` into the loader's [`busbar_plugin_loader::FetchSpec`] list: each
+    /// entry becomes a `{ url, sha256?, filename }`. `github: "org/repo@tag"` → the release-asset
+    /// download URL (busbar's one-file-per-plugin `{repo}.tar.gz` convention); `url:` → itself, with
+    /// the target filename taken from the URL basename; `env:` → the named var's value (a `url` or
+    /// `url@sha256`), erroring if the var is unset. Called at boot/reload BEFORE the fetch; never in
+    /// `--validate` (the zero-network contract).
+    pub(crate) fn fetch_specs(&self) -> Result<Vec<busbar_plugin_loader::FetchSpec>, String> {
+        self.fetch.iter().map(fetch_spec_from).collect()
+    }
+
     /// Resolve into the `busbar-plugin-sign` trust policy: the EMBEDDED first-party release key +
     /// the binary's own version (the automatic first-party anti-downgrade floor) + the configured
     /// third-party publishers/opt-ins/floors. A malformed publisher key is a boot error, not a
@@ -2956,6 +3177,7 @@ pub(crate) fn resolve(
     if errors.is_empty() {
         Ok(RootCfg {
             listen: deploy.listen.clone(),
+            public_url: deploy.public_url.clone(),
             tls: deploy.tls.clone(),
             admin_listen: deploy.admin_listen.clone(),
             admin_tls: deploy.admin_tls.clone(),

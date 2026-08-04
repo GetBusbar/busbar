@@ -250,22 +250,24 @@ fn test_open_relay_banner_silent_when_auth_engaged() {
     assert!(open_relay_banner(false, true).is_none());
 }
 
-/// INERT-KEYS BOOT GUARD (bypass-edge): a DURABLE store carrying keys with NO admin token is the
-/// one state where a prior run's keys become silently unenforced (governance goes inert). The
-/// banner fires EXACTLY there and nowhere else.
+/// INERT-KEYS BOOT GUARD (bypass-edge): since 1.5.2 virtual-key enforcement is driven by the CHAIN
+/// SHAPE, not the admin token. A DURABLE store carrying keys while `auth.chain` does NOT name the
+/// `keys` verifier is the one state where a prior run's keys become silently unenforced (no
+/// data-plane request resolves them). The banner fires EXACTLY there and nowhere else. The third
+/// argument is now `keys_in_chain` (banner fires when it is FALSE).
 #[test]
 fn test_inert_durable_keys_banner_fires_only_for_durable_keyed_no_token() {
-    // The dangerous edge: durable store, keys present, no admin token → LOUD banner.
-    let b = inert_durable_keys_banner(true, 3, false).expect("durable+keys+no-token must banner");
+    // The dangerous edge: durable store, keys present, `keys` NOT in the chain → LOUD banner.
+    let b = inert_durable_keys_banner(true, 3, false).expect("durable+keys+no-keys-chain banners");
     assert!(
-        b.contains("INERT") && b.contains("3 key") && b.contains("admin_token"),
-        "banner must name the count and the fix; got: {b}"
+        b.contains("INERT") && b.contains("3 key") && b.contains("keys"),
+        "banner must name the count and the fix (add `keys` to auth.chain); got: {b}"
     );
 
-    // An admin token IS set → keys are enforced, no banner.
+    // `keys` IS in the chain → keys are enforced, no banner.
     assert!(
         inert_durable_keys_banner(true, 3, true).is_none(),
-        "an admin token makes governance active — no inert-keys banner"
+        "`keys` in the chain enforces persisted keys — no inert-keys banner"
     );
 
     // Durable store but EMPTY (fresh durable deploy, no keys yet) → nothing to bypass, no banner.
@@ -274,8 +276,8 @@ fn test_inert_durable_keys_banner_fires_only_for_durable_keyed_no_token() {
         "an empty durable store has no keys to leave unenforced"
     );
 
-    // A RAM (non-durable) store never persists keys across the admin-token removal that creates
-    // this edge — even if it somehow reported keys, the banner is scoped to durable stores.
+    // A RAM (non-durable) store never persists keys across restarts — even if it somehow reported
+    // keys, the banner is scoped to durable stores.
     assert!(
         inert_durable_keys_banner(false, 5, false).is_none(),
         "the inert-keys banner is scoped to durable stores"
@@ -1087,6 +1089,7 @@ fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::config
     providers.insert("acme".to_string(), provider);
     crate::config::RootCfg {
         listen: crate::config::DEFAULT_LISTEN_ADDR.into(),
+        public_url: None,
         tls: None,
         admin_listen: crate::config::DEFAULT_ADMIN_LISTEN_ADDR.to_string(),
         admin_tls: None,
@@ -1229,6 +1232,8 @@ fn cfg_with_credentials(
         chain: vec![],
         admin_auth: vec![admin_entry],
         role_bindings: crate::config::RoleBindings::new(),
+        methods: Default::default(),
+        key_ttl: None,
     });
     cfg
 }
@@ -1949,5 +1954,78 @@ fn signing_key_guidance_omits_secret() {
     assert!(
         stderr.contains("export BUSBAR_SIGNING_KEY=<paste-the-64-hex-key-printed-above>"),
         "the guidance must use a non-secret placeholder pointing at the stdout key"
+    );
+}
+
+/// Step 3 wiring: boot RUNS `plugins.fetch` before preflight, and a PIN-CACHED entry skips the
+/// network (the URL is unreachable — if boot tried to fetch it, this would fail). Proves the fetch
+/// step is wired into `build_app_from_config`'s boot path and that cache-by-pin means no-network.
+#[test]
+fn fetch_cached_pin_boots_without_network() {
+    crate::metrics::init();
+    let dir = std::env::temp_dir().join(format!("busbar-fetch-boot-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    // A file already present, hashing to the pin. Named `*.dat` (not `*.tar.gz`) so the plugin
+    // preflight scanner ignores it — this test asserts the FETCH wiring + cache-by-pin no-network
+    // path, not tarball validity (that is preflight's job, covered elsewhere).
+    let body = b"cached-blob-bytes";
+    std::fs::write(dir.join("cached-blob.dat"), body).unwrap();
+    let pin = busbar_plugin_sign::sha256_hex(body);
+
+    let cfg = cfg_with_provider_api_key(crate::config::SecretRef::env(
+        "BUSBAR_TEST_NO_SUCH_KEY_FETCH",
+    ));
+    let plugins_cfg = crate::config::PluginsCfg {
+        enabled: true,
+        dir: dir.to_string_lossy().into_owned(),
+        fetch: vec![crate::config::PluginFetch::Url(crate::config::UrlFetch {
+            // Unreachable on purpose — cache-by-pin must skip it.
+            url: "https://plugin.invalid/cached-blob.dat".into(),
+            sha256: Some(pin),
+        })],
+        ..Default::default()
+    };
+    let res = crate::build_app_from_config(
+        cfg,
+        plugins_cfg,
+        None,
+        std::collections::HashSet::new(),
+        std::collections::HashSet::new(),
+        (None, None),
+        None,
+    );
+    // Ok carries a non-Debug App; collapse to the Err string for the assert message.
+    let err = res.err();
+    assert!(
+        err.is_none(),
+        "cached-pin boot must succeed without network: {err:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Step 7 (source review, per the spec's boot-logging matrix): the enabled/disabled boot lines and
+/// the two-part referenced-but-missing diagnosis are present in `plugins_preflight`. Guards the
+/// observability wording against silent removal.
+#[test]
+fn plugins_boot_logging_wording_present() {
+    let src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"));
+    assert!(
+        src.contains("plugins: disabled (plugins.enabled is false"),
+        "disabled boot line missing"
+    );
+    assert!(
+        src.contains("\"plugins: enabled\""),
+        "enabled boot line missing"
+    );
+    // Two-part diagnosis + fetch/drop remediation on the referenced-but-missing arms.
+    assert!(
+        src.contains("no plugin matching store.module")
+            && src.contains("no plugin matching auth.chain module")
+            && src.contains("no plugin matching the hook reference"),
+        "referenced-but-missing arms not enriched"
+    );
+    assert!(
+        src.contains("Add it to plugins.fetch or drop the signed tarball"),
+        "two-part remediation wording missing"
     );
 }

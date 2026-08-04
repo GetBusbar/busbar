@@ -124,22 +124,16 @@ fn openapi_paths_annotate_required_scope() {
     // function is a tautology: editing the matrix moves both sides together and can never fail.
     fn expected_scope(method: &str, path: &str) -> &'static str {
         use crate::admin::v1::contract::{
-            ADMIN_PREFIX, PATH_CONFIG_VALIDATE, PATH_HOOKS, PATH_KEYS, PATH_PLUGINS_INSPECT,
+            ADMIN_PREFIX, PATH_CONFIG_VALIDATE, PATH_PLUGINS_INSPECT,
         };
         if method == "get" || method == "head" {
             return "read-only";
         }
-        let is_mutation = matches!(method, "post" | "put" | "patch" | "delete");
         let rel = path.strip_prefix(ADMIN_PREFIX).unwrap_or(path);
         if rel == PATH_CONFIG_VALIDATE || rel == PATH_PLUGINS_INSPECT {
             return "read-only";
         }
-        if is_mutation && (rel == PATH_HOOKS || rel.starts_with("/hooks/")) {
-            return "hooks-register";
-        }
-        if method == "post" && rel == PATH_KEYS {
-            return "mint";
-        }
+        // 1.5.2 scope collapse: every other mutation is full-only.
         "full"
     }
 

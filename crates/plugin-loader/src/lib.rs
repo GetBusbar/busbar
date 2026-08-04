@@ -32,12 +32,14 @@ use std::os::raw::c_void;
 use std::path::Path;
 
 pub mod auth;
+pub mod fetch;
 pub mod hook;
 pub mod registry;
 mod stage;
 pub mod tarball;
 
 pub use auth::DynAuth;
+pub use fetch::{fetch_plugins, FetchOutcome, FetchSpec};
 pub use hook::DlopenPolicy;
 pub use registry::{
     inventory as inventory_tarballs, scan_and_validate, supported_abi, InventoryEntry,

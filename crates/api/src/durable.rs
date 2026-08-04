@@ -26,20 +26,20 @@ use std::path::Path;
 /// Options a FEW call-sites need beyond the default. `Default` = the overlay/state posture (the
 /// common case): OS/umask-default mode, truncate-create the temp.
 #[derive(Clone, Copy, Default)]
-pub(crate) struct DurableOpts {
+pub struct DurableOpts {
     /// Unix file mode for the temp (and therefore the published) file. `None` = OS/umask default.
     /// The signing key sets `Some(0o600)` so the plaintext key is never briefly world-readable
     /// (mode set AT OPEN, never via a later `chmod` TOCTOU window). Only ever READ under
     /// `#[cfg(unix)]` below, but call sites (main.rs, config/overlay.rs) construct this struct
     /// unconditionally on every platform, so the field itself can't be `#[cfg(unix)]`-gated away.
     #[cfg_attr(not(unix), allow(dead_code))]
-    pub(crate) mode: Option<u32>,
+    pub mode: Option<u32>,
     /// Refuse to adopt a pre-existing temp (`O_CREAT | O_EXCL`) — the signing-key anti-pre-plant
     /// posture. When set, the primitive still PRE-REMOVES a stale temp of its OWN about-to-use name
     /// first (so a leftover from a crashed run can't wedge retry), then creates exclusively — so it
     /// never adopts a temp it did not just clear. When unset (default) the temp is truncate-created
     /// (`File::create` semantics).
-    pub(crate) exclusive: bool,
+    pub exclusive: bool,
 }
 
 /// Atomically + durably publish `bytes` to `path` (default posture: overlay/state).
@@ -54,7 +54,7 @@ pub(crate) struct DurableOpts {
 /// failed write NEVER leaves a stale temp to accumulate or to wedge a retry. Steps 1–3 failing is a
 /// hard error (`Err`); step 4 failing is swallowed (contents are already durable; not every FS
 /// supports opening a directory for fsync).
-pub(crate) fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
+pub fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     write_with(path, bytes, DurableOpts::default())
 }
 
@@ -99,7 +99,7 @@ fn sync_holding_dir(path: &Path) {
 /// power loss. The asymmetric sibling of [`write`] -- installing a file fsynced the directory entry
 /// and removing one did not, so a crash after a plugin delete could resurrect the deleted artifact
 /// on the next boot and load it. `Err` only if the unlink itself fails.
-pub(crate) fn remove(path: &Path) -> io::Result<()> {
+pub fn remove(path: &Path) -> io::Result<()> {
     std::fs::remove_file(path)?;
     sync_holding_dir(path);
     Ok(())
@@ -112,7 +112,7 @@ pub(crate) fn remove(path: &Path) -> io::Result<()> {
 /// entry were fsynced -- the same asymmetry class as an unlink that skips the parent fsync.
 ///
 /// Already-existing directories are left alone: their entries are durable by whoever created them.
-pub(crate) fn create_dir_all(path: &Path) -> io::Result<()> {
+pub fn create_dir_all(path: &Path) -> io::Result<()> {
     // Walk up collecting the missing ancestors (deepest first), then create shallowest first so each
     // `create_dir` finds its parent present.
     let mut missing: Vec<&Path> = Vec::new();
@@ -136,7 +136,7 @@ pub(crate) fn create_dir_all(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-pub(crate) fn write_with(path: &Path, bytes: &[u8], opts: DurableOpts) -> io::Result<()> {
+pub fn write_with(path: &Path, bytes: &[u8], opts: DurableOpts) -> io::Result<()> {
     use std::io::Write as _;
     use std::sync::atomic::{AtomicU64, Ordering};
 

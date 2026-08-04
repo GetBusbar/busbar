@@ -2527,7 +2527,7 @@
   "info": {
     "description": "The frozen, additive-only /api/v1/admin surface. Errors use the stable envelope {\"error\":{\"code\",\"message\"}}; tooling branches on `code`.",
     "title": "Busbar Admin API",
-    "version": "1.5.1"
+    "version": "1.5.2"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -4743,7 +4743,7 @@
                 }
               }
             },
-            "description": "`forbidden`: a `hooks-register` principal may not touch a content-seeing (`prompt`/`user`) or `global` hook"
+            "description": "Authenticated but under-scoped: requires `full` (error code `forbidden`)"
           },
           "409": {
             "content": {
@@ -4785,7 +4785,7 @@
           }
         ],
         "summary": "Register (or replace) a hook at runtime — live immediately",
-        "x-busbar-required-scope": "hooks-register"
+        "x-busbar-required-scope": "full"
       }
     },
     "/api/v1/admin/hooks/{name}": {
@@ -4842,7 +4842,7 @@
                 }
               }
             },
-            "description": "`forbidden`: a `hooks-register` principal may not touch a content-seeing (`prompt`/`user`) or `global` hook"
+            "description": "Authenticated but under-scoped: requires `full` (error code `forbidden`)"
           },
           "404": {
             "content": {
@@ -4894,7 +4894,7 @@
           }
         ],
         "summary": "Remove a hook at runtime — live immediately",
-        "x-busbar-required-scope": "hooks-register"
+        "x-busbar-required-scope": "full"
       },
       "get": {
         "operationId": "GetHooksName",
@@ -5052,7 +5052,7 @@
                 }
               }
             },
-            "description": "`forbidden`: a `hooks-register` principal may not touch a content-seeing (`prompt`/`user`) or `global` hook"
+            "description": "Authenticated but under-scoped: requires `full` (error code `forbidden`)"
           },
           "404": {
             "content": {
@@ -5104,7 +5104,7 @@
           }
         ],
         "summary": "Replace an overlay hook definition — live immediately (grants immutable)",
-        "x-busbar-required-scope": "hooks-register"
+        "x-busbar-required-scope": "full"
       }
     },
     "/api/v1/admin/hooks/{name}/health": {
@@ -5332,7 +5332,7 @@
                 }
               }
             },
-            "description": "`forbidden`: a `hooks-register` principal may not touch a content-seeing (`prompt`/`user`) or `global` hook"
+            "description": "Authenticated but under-scoped: requires `full` (error code `forbidden`)"
           },
           "404": {
             "content": {
@@ -5384,7 +5384,7 @@
           }
         ],
         "summary": "Push an opaque settings map to the running hook; COMMIT ON ACK",
-        "x-busbar-required-scope": "hooks-register"
+        "x-busbar-required-scope": "full"
       }
     },
     "/api/v1/admin/hooks/{name}/status": {
@@ -5674,7 +5674,7 @@
                 }
               }
             },
-            "description": "`invalid_request`: malformed body / unknown field, an id or name exceeds its length cap, invalid mint-time `labels` — a reserved or non-Prometheus label name, or too many/too long, bad `expires_in` / `expires_at`, `parent` was given without `group`, a delegated `mint` credential may only issue keys BOUND to a group (`group` is required), invalid tree — dangling/cyclic parent or depth"
+            "description": "`invalid_request`: malformed body / unknown field, an id or name exceeds its length cap, invalid mint-time `labels` — a reserved or non-Prometheus label name, or too many/too long, bad `expires_in` / `expires_at`, `parent` was given without `group`, invalid tree — dangling/cyclic parent or depth"
           },
           "401": {
             "content": {
@@ -5694,7 +5694,7 @@
                 }
               }
             },
-            "description": "Authenticated but under-scoped: requires `mint` (error code `forbidden`)"
+            "description": "Authenticated but under-scoped: requires `full` (error code `forbidden`)"
           },
           "409": {
             "content": {
@@ -5736,7 +5736,7 @@
           }
         ],
         "summary": "Mint a virtual key. The secret is returned EXACTLY once. Honors an `Idempotency-Key` header (per-principal ~10min replay)",
-        "x-busbar-required-scope": "mint"
+        "x-busbar-required-scope": "full"
       }
     },
     "/api/v1/admin/keys/{id}": {

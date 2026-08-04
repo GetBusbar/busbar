@@ -21,16 +21,23 @@
 //! built-in one.
 
 mod auth;
+pub mod durable;
 mod hooks;
+mod redacted;
 mod secret;
 mod store;
 
 pub use auth::{constant_time_eq, sha256_hex, AuthModule, AuthOutcome, Principal};
+pub use auth::{
+    AuthPlugin, BeginLogin, CompleteLogin, FieldKind, LoginField, LoginForm, LoginHop,
+    LoginHttpResponse, LoginKind, LoginModule, LoginOutcome,
+};
 pub use hooks::{
     BudgetBucketState, CallerIdentity, Candidate, HookStatus, PolicyError, PolicyResult,
     PromptProjection, RewriteReply, RoutingContext, RoutingDecision, RoutingPolicy, RoutingRequest,
     TransformOutcome,
 };
+pub use redacted::Redacted;
 pub use secret::{SecretError, SecretErrorKind, SecretModule, SecretResult};
 pub use store::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, ModelTokens,

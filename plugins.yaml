@@ -99,6 +99,27 @@ plugins:
     service: none
     release_gate: optional
     gate: suite
+    checkout_ref: dev # 1.5.2 login (ABI v2) lives on the plugin's dev branch until the release cut; the dev-gate must clone that, not the pre-1.5.2 main. Drop at the cut (dev→main).
+  - repo: auth-github
+    kind: auth
+    alias: github
+    crate: busbar-auth-github-plugin
+    version_line: "1.0"
+    service: none
+    release_gate: optional
+    gate: suite
+    released: false # NEW in 1.5.2 — first release is cut at the 1.5.2 ship; skip the published-release arm until then. Flip to true (or drop) at the cut.
+    checkout_ref: dev # converged 1.5.2 plugin code lives on dev until the release cut; the dev-gate clones this. Drop at the cut.
+  - repo: auth-ldap
+    kind: auth
+    alias: ldap
+    crate: busbar-auth-ldap-plugin
+    version_line: "1.0"
+    service: none
+    release_gate: optional
+    gate: suite
+    released: false # NEW in 1.5.2 — first release is cut at the 1.5.2 ship; skip the published-release arm until then. Flip to true (or drop) at the cut.
+    checkout_ref: dev # converged 1.5.2 plugin code lives on dev until the release cut; the dev-gate clones this. Drop at the cut.
   - repo: webrequest-hook
     kind: hook
     alias: webrequest

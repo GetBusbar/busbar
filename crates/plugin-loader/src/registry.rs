@@ -50,11 +50,11 @@ pub fn supported_abi(kind: &str) -> &'static [u32] {
             busbar_plugin_abi::SECRET_ABI_VERSION,
         ],
         // A `kind: auth` plugin is a first-class identity provider (the engine's auth chain consumes
-        // `Box<dyn AuthModule>` via `open_auth`). Payload schema v1.
-        "auth" => &[
-            busbar_plugin_abi::AUTH_ABI_VERSION,
-            busbar_plugin_abi::AUTH_ABI_VERSION,
-        ],
+        // `Box<dyn AuthModule>` via `open_auth`). Payload schema v1 (verify-only) OR v2 (adds the
+        // browser-login primitives). The FLOOR MUST STAY 1 (RISK 5): the v2 wire additions are
+        // externally-tagged additive variants, so a v1 plugin that only speaks `Authenticate`/
+        // `Identity` still loads and works. `[1, AUTH_ABI_VERSION]` = `[1, 2]`.
+        "auth" => &[1, busbar_plugin_abi::AUTH_ABI_VERSION],
         // A `kind: hook` plugin is an in-process routing policy (the engine's routing/hook chains
         // consume `Arc<dyn RoutingPolicy>` via `open_hook`). The 1.5.0 replacement for the retired
         // out-of-process socket/webhook hook transport. Payload schema v1.
@@ -230,6 +230,49 @@ impl PluginRegistry {
             &p.manifest.name,
             &p.manifest.kind,
         )
+    }
+
+    /// Open an AUTH plugin as the unified [`busbar_api::AuthPlugin`] handle (verify + LOGIN) —
+    /// identical trust/load pipeline as [`Self::open_auth`], but the returned box KEEPS the
+    /// `LoginModule` capability the hosted browser-login flow (`auth.methods`, 1.5.2) drives. Also
+    /// returns the resolved plugin's manifest `abi_version` so the caller can gate v2-only login
+    /// methods (a `browser_login` method needs an ABI v2 login-capable plugin). FAIL-CLOSED.
+    pub fn open_login(
+        &self,
+        name_or_alias: &str,
+        cfg_json: &str,
+    ) -> Result<(Box<dyn busbar_api::AuthPlugin>, u32), String> {
+        let Some(p) = self.resolve(name_or_alias) else {
+            return Err(match self.unresolved_reason(name_or_alias) {
+                Some(s) => format!(
+                    "plugin '{name_or_alias}' is present ({}) but was not loaded: {}",
+                    s.file, s.reason
+                ),
+                None => format!(
+                    "no plugin named or aliased '{name_or_alias}' is available (loadable plugins: \
+                     [{}])",
+                    self.loadable
+                        .iter()
+                        .map(|p| p.manifest.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            });
+        };
+        if p.manifest.kind != "auth" {
+            return Err(format!(
+                "plugin '{}' has kind '{}', not 'auth' - it cannot serve as a login module",
+                p.manifest.name, p.manifest.kind
+            ));
+        }
+        let abi_version = p.manifest.abi_version;
+        let module = crate::auth::load_login_from_bytes(
+            &p.lib_bytes,
+            cfg_json,
+            &p.manifest.name,
+            &p.manifest.kind,
+        )?;
+        Ok((module, abi_version))
     }
 
     /// Open a HOOK plugin resolved by name or alias: verifies the resolved plugin's `kind` is `hook`,
@@ -617,6 +660,20 @@ mod tests {
 
     fn key(seed: u8) -> SigningKey {
         SigningKey::from_bytes(&[seed; 32])
+    }
+
+    /// RISK 5: after the auth ABI v1→2 bump the loader floor MUST still admit v1 — a pre-built v1
+    /// auth plugin (verify-only, e.g. `auth-static-plugin`) keeps loading. The supported range is the
+    /// inclusive `[1, 2]`.
+    #[test]
+    fn supported_abi_auth_floor_admits_v1() {
+        let range = supported_abi("auth");
+        assert_eq!(range, &[1, busbar_plugin_abi::AUTH_ABI_VERSION]);
+        let (floor, max) = (range[0], range[1]);
+        assert_eq!(floor, 1, "v1 auth plugins must still load (RISK 5)");
+        assert_eq!(max, 2, "v2 is the current auth payload schema");
+        assert!(floor <= 1 && 1 <= max, "abi_version 1 is in range");
+        assert!(floor <= 2 && 2 <= max, "abi_version 2 is in range");
     }
 
     fn manifest(name: &str, alias: &str, publisher: &str) -> Manifest {
@@ -1285,17 +1342,15 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// class-13/14 F4: `supported_abi("auth")` now reads `busbar_plugin_abi::AUTH_ABI_VERSION`
-    /// instead of the bare literal `&[1, 1]`, matching `"secret"`/`"hook"`. COMPILE-TIME GUARD, not a
-    /// RED test — see the identical note on `plugin-sdk`'s `auth_abi_version_reads_the_shared_const`.
+    /// The auth range's MAX reads `busbar_plugin_abi::AUTH_ABI_VERSION` (matching `"secret"`/`"hook"`
+    /// on the max axis). Post-1.5.2 the FLOOR is pinned at 1 (RISK 5: v1 plugins still load — see
+    /// `supported_abi_auth_floor_admits_v1`), so the range is `[1, AUTH_ABI_VERSION]`, not
+    /// `[AUTH_ABI_VERSION, AUTH_ABI_VERSION]`.
     #[test]
     fn auth_supported_abi_reads_the_shared_const() {
         assert_eq!(
             supported_abi("auth"),
-            &[
-                busbar_plugin_abi::AUTH_ABI_VERSION,
-                busbar_plugin_abi::AUTH_ABI_VERSION
-            ]
+            &[1, busbar_plugin_abi::AUTH_ABI_VERSION]
         );
     }
 }

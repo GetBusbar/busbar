@@ -251,6 +251,10 @@ Busbar's own signed virtual keys, and identity-provider integrations load as `ki
 plugins. Static token allowlists are GONE in 1.5.0: every caller carries either a minted signed
 key or an IdP credential a chain module verifies.
 
+Installing an identity method under `auth.methods` also lets developers **self-serve** their own
+budgeted key by signing in — Busbar exposes a `GET`/`POST /auth/token` exchange automatically. See
+[Token exchange (self-serve keys)](token-exchange.md).
+
 ```yaml
 auth:
   signing_key: { file: /run/secrets/busbar-signing.key }  # REQUIRED with `keys`; busbar --generate-signing-key
@@ -270,7 +274,7 @@ auth:
 |---|---|---|---|---|
 | `signing_key` | secret reference | **when `keys` is in the chain** | none | The ed25519 key Busbar signs + verifies virtual-key tokens with, as a secret reference (`{ file: … }` / `{ env: … }` / a secret plugin — never an inline literal). Fleet-shared (every node verifying the same tokens resolves the same key). **Required whenever the data-plane chain names the built-in `keys` verifier**; its absence there fails `--validate`/boot. Busbar does **not** auto-generate one (1.5.1: the earlier generate-and-persist-beside-config behavior boot-looped read-only config mounts) — generate a key with `busbar --generate-signing-key`. Rotating it revokes every outstanding key. |
 | `upstream_credentials` | string | no | `own` | Whose key hits the provider: `own` (Busbar's configured lane credential) or `passthrough` (forward the caller's own token upstream; Busbar holds no keys). |
-| `chain` | list of module entries | no | `[]` | The ordered DATA-PLANE authentication chain. Each entry is a bare module name (`- keys`) or a single-key map `- <module>: { max_admin_scope?, settings? }` where `settings` is the module's own opaque config. `keys` is the built-in signed-key verifier; **any other name loads a `kind: auth` plugin** from the plugins directory (see [auth plugins](#auth-plugins) below). `[]` (default) is the open front door: development only, loud startup warning. A configured auth plugin that cannot be loaded — missing/untrusted tarball, wrong kind, `plugins.enabled: false`, or an ABI failure — is a **hard startup error** (fail-closed: the front door never silently opens). |
+| `chain` | list of module entries | no | `[]` | The ordered DATA-PLANE authentication chain — the **sole** authority over whether a data-plane request needs a credential (the admin token never gates the data plane; see the axis note below). Each entry is a bare module name (`- keys`) or a single-key map `- <module>: { max_admin_scope?, settings? }` where `settings` is the module's own opaque config. `keys` is the built-in signed-key verifier; **any other name loads a `kind: auth` plugin** from the plugins directory (see [auth plugins](#auth-plugins) below). `[]` (default) is the open front door: development only, loud startup warning (the admin API stays gated by `admin_auth`). When the chain names `keys`, a **usable admin mint path** must exist (an `admin_auth` `admin-tokens` entry with a `token:`, an admin module granting `full`, or an explicit open `admin_auth: []`) — otherwise no virtual key could ever be minted and the data plane would reject every request, so it is a **hard startup error**. A configured auth plugin that cannot be loaded — missing/untrusted tarball, wrong kind, `plugins.enabled: false`, or an ABI failure — is likewise a **hard startup error** (fail-closed: the front door never silently opens). |
 | `admin_auth` | list of module entries | no | `[admin-tokens]` | The chain gating `/api/v1/admin/*`. The built-in `admin-tokens` module carries the operator credential as a secret reference (`token:`). `[]` = OPEN admin (dev only; loud warning). |
 | `role_bindings` | map | no | `{}` | Role policy, NESTED BY MODULE: `role_bindings.<module>.<role> -> { allowed_pools?, group?, admin_scope? }`. See below. |
 
@@ -278,12 +282,27 @@ auth:
 
 | Field | Default | Notes |
 |---|---|---|
-| `max_admin_scope` | `read-only` | Ceiling on the admin scope obtainable through this module, regardless of what `role_bindings` grants: `read-only` \| `hooks-register` \| `mint` \| `full`. `hooks-register` and `mint` are incomparable siblings (see [admin-api.md](admin-api.md#authentication--scopes)); `full` from an external module is an explicit opt-in. The built-in `admin-tokens` operator credential is exempt (it is the root credential). |
+| `max_admin_scope` | `read-only` | Ceiling on the admin scope obtainable through this module, regardless of what `role_bindings` grants: `read-only` \| `full` (see [admin-api.md](admin-api.md#authentication--scopes)). `full` from an external module is an explicit opt-in. The built-in `admin-tokens` operator credential is exempt (it is the root credential). |
 | `token` | none | The operator admin credential, for the built-in `admin-tokens` module only (a secret reference). |
 | `settings` | `{}` | The module's own opaque configuration, passed to the auth plugin verbatim. |
 
 **Token extraction order (data plane):** `Authorization: Bearer`, then `x-api-key`, then
 `x-goog-api-key`. Blank values are treated as absent.
+
+**Three orthogonal axes (as of 1.5.2).** Data-plane admission, admin-API access, and governance
+enforcement are independent, each with one local source of truth:
+
+- **Data-plane admission** is decided **solely** by `auth.chain`: `[]` = open/anonymous, `[keys]` =
+  a virtual key is required and resolved, an IdP/plugin chain requires that IdP. Nothing else — in
+  particular **not** the admin token — decides whether a data-plane request needs a credential.
+- **Admin-API access** is decided **solely** by `auth.admin_auth`; it gates `/api/v1/admin/*` and
+  never touches the data plane. Minting lives behind it simply because mint is an admin endpoint.
+- **Governance enforcement** is automatic: it applies to whatever principal-with-group the chain
+  resolved. An open chain resolves no principal, so there is nothing to enforce.
+
+This makes **"protected admin API + open (anonymous) relay for users"** expressible — set
+`chain: []` with an `admin_auth` operator credential. (Before 1.5.2, configuring an admin token
+silently forced a virtual key onto every data-plane request, so that posture was impossible.)
 
 **Bedrock ingress.** Native Bedrock SDK clients authenticate with AWS SigV4. Mint a key with
 `"issue_aws_credential": true`; the response includes `aws_access_key_id` +
@@ -300,7 +319,7 @@ another module's binding. An unbound role grants nothing (fail closed).
 |---|---|
 | `allowed_pools` | DATA-PLANE grant: pools this role may target. OMITTED = ALL pools; an explicit `[]` = NO pools (an empty list is the empty set, everywhere in the 1.5.0 config). Pool lists union across a principal's granting roles; any omitted grant widens the union to all pools. |
 | `group` | The `groups:` bucket this role's principals charge through. Absent = no group (authed + unlimited). With several bound groups the first in role order wins. |
-| `admin_scope` | The admin authority this role grants: `read-only` \| `hooks-register` \| `mint` \| `full` (`hooks-register` and `mint` are incomparable siblings — the delegated `mint` scope lets a self-service portal mint keys without hook authority; see [admin-api.md](admin-api.md#authentication--scopes)). Absent = none. A principal holds the UNION of what its bound roles grant (two incomparable grants, e.g. `hooks-register` and `mint`, are both kept — the union is NOT `full`), then the asserting module's `max_admin_scope` ceiling applies to each; a ceiling incomparable with a grant reduces it to `read-only`. |
+| `admin_scope` | The admin authority this role grants: `read-only` \| `full` (see [admin-api.md](admin-api.md#authentication--scopes)). Absent = none. A principal holds the highest scope its bound roles grant, then the asserting module's `max_admin_scope` ceiling caps it (a `read-only` ceiling reduces a `full` grant to `read-only`). |
 
 Admin access is therefore EITHER a role's `admin_scope` (through an IdP module in `admin_auth`)
 OR the `admin-tokens` operator token. The admin chain is live-mutable over the API
@@ -1058,7 +1077,7 @@ unlimited (access only).
   "labels": { "team": "growth" }, "expires_in": "7d" }
 ```
 
-- `group` must name a configured `groups:` entry (`400` otherwise). Omitted = unlimited key. **Auto-provision**: when `group` names a leaf that does NOT yet exist and `parent` names an existing group, the leaf is created automatically (limits stamped from the nearest-ancestor `child_default`; inherit-only when none), bound to the key, and live in the enforcement chain immediately. If the group already exists, `parent` must match its actual parent (`409` otherwise — a mint never re-homes). Requires `mint` scope or `full`.
+- `group` must name a configured `groups:` entry (`400` otherwise). Omitted = unlimited key. **Auto-provision**: when `group` names a leaf that does NOT yet exist and `parent` names an existing group, the leaf is created automatically (limits stamped from the nearest-ancestor `child_default`; inherit-only when none), bound to the key, and live in the enforcement chain immediately. If the group already exists, `parent` must match its actual parent (`409` otherwise — a mint never re-homes). Requires `full` scope.
 - `allowed_pools` omitted = ALL pools; an explicit `[]` = NO pools (C6: an empty list is the
   empty set). The intent is stored exactly as given.
 - `expires_in` / `expires_at` are mutually exclusive; the default lifetime is 90 days.

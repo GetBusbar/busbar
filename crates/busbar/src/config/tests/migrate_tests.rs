@@ -733,3 +733,84 @@ pools: {}
         "must reproduce 1.4.x's real implicit default path, not a 1.5.0-side default"
     );
 }
+
+/// 1.5.2 SCOPE COLLAPSE migration: a config still naming the retired delegated `mint` /
+/// `hooks-register` admin scopes — in a `group_map` `admin_scope` (→ `role_bindings`) and in an
+/// `auth.modules` `max_admin_scope` (→ the chain entry) — is rewritten to `full`, with a loud
+/// per-site WARNING so the operator can tighten it back to `read-only`.
+#[test]
+fn migrate_dropped_scopes_map_to_full_with_warning() {
+    let raw = r#"
+auth:
+  chain: ["oidc"]
+  modules:
+    oidc:
+      max_admin_scope: hooks-register
+  group_map:
+    minter:
+      admin_scope: mint
+providers:
+  anthropic: { api_key_env: KEY }
+models:
+  claude: { provider: anthropic }
+pools:
+  fast:
+    members:
+      - { target: claude, weight: 1 }
+"#;
+    let out = migrate_config(raw).expect("migrates");
+    let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("output is valid YAML");
+    let auth = doc
+        .as_mapping()
+        .unwrap()
+        .get(serde_yaml::Value::from("auth"))
+        .and_then(|v| v.as_mapping())
+        .expect("auth mapping");
+
+    // (a) role_bindings.oidc.minter.admin_scope: mint -> full.
+    let bound_scope = auth
+        .get(serde_yaml::Value::from("role_bindings"))
+        .and_then(|v| v.as_mapping())
+        .and_then(|m| m.get(serde_yaml::Value::from("oidc")))
+        .and_then(|v| v.as_mapping())
+        .and_then(|m| m.get(serde_yaml::Value::from("minter")))
+        .and_then(|v| v.as_mapping())
+        .and_then(|m| m.get(serde_yaml::Value::from("admin_scope")))
+        .and_then(|v| v.as_str());
+    assert_eq!(
+        bound_scope,
+        Some("full"),
+        "the retired `mint` admin_scope must be rewritten to `full`; got {bound_scope:?}"
+    );
+
+    // (b) the oidc chain entry's max_admin_scope: hooks-register -> full.
+    let chain = auth
+        .get(serde_yaml::Value::from("chain"))
+        .and_then(|v| v.as_sequence())
+        .expect("chain sequence");
+    let oidc_cap = chain.iter().find_map(|e| {
+        let m = e.as_mapping()?;
+        let body = m.get(serde_yaml::Value::from("oidc"))?.as_mapping()?;
+        body.get(serde_yaml::Value::from("max_admin_scope"))?
+            .as_str()
+    });
+    assert_eq!(
+        oidc_cap,
+        Some("full"),
+        "the retired `hooks-register` max_admin_scope must be rewritten to `full`; got {oidc_cap:?}"
+    );
+
+    // Loud, per-site warnings naming both rewrites.
+    assert!(
+        out.warnings.iter().any(|w| w.contains("mint -> full")),
+        "a warning must name the mint -> full rewrite; got {:?}",
+        out.warnings
+    );
+    assert!(
+        out.warnings
+            .iter()
+            .any(|w| w.contains("hooks-register -> full")),
+        "a warning must name the hooks-register -> full rewrite; got {:?}",
+        out.warnings
+    );
+}

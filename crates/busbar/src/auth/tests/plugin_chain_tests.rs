@@ -52,6 +52,74 @@ fn auth_manifest(name: &str, alias: &str, publisher: &str) -> busbar_plugin_sign
     m
 }
 
+/// 1.5.2 Step 6 CAPABILITY GATE: a `browser_login` login method backed by a PRE-v2 auth plugin must
+/// be a HARD `LoginMethods::build` error (config/boot-time), NOT a 500 at request time. We stamp a
+/// v1 auth manifest (still admitted by the scan — the auth ABI floor is 1) and attach `browser_login`
+/// to it; the build refuses, naming the abi_version.
+#[test]
+fn browser_login_on_v1_plugin_is_a_build_error() {
+    let dir = tmp_plugin_dir("auth-login-v1-gate");
+    let Some(path) = static_auth_cdylib() else {
+        eprintln!("skip: static-auth plugin cdylib not built (run under --workspace)");
+        return;
+    };
+    let lib = std::fs::read(&path).expect("read static-auth cdylib");
+    let mut manifest = auth_manifest("acme-auth-static", "cap-idp", "acme");
+    manifest.abi_version = 1; // PRE-v2 — no login capability
+    std::fs::write(dir.join("static.tar.gz"), unsigned_tarball(manifest, &lib)).unwrap();
+    let plugins = plugins_cfg_allow_unsigned(&dir);
+    let registry = busbar_plugin_loader::scan_and_validate(
+        Path::new(&plugins.dir),
+        &plugins.to_policy().unwrap(),
+    )
+    .expect("scan admits a v1 auth plugin (floor is 1)");
+
+    let mut cfg = AuthCfg::default_none();
+    let mut method = crate::config::AuthMethodCfg {
+        browser_login: Some(crate::config::BrowserLoginCfg {
+            client_secret: Some(crate::config::SecretRef::env("BUSBAR_TEST_CLIENT_SECRET")),
+            client_id: Some("client-abc".into()),
+        }),
+        // Valid static-auth settings so `open()` SUCCEEDS — the build must then fail on the ABI
+        // CAPABILITY GATE (abi_version < 2), not on a missing-config open error.
+        settings: alice_settings(),
+    };
+    method.settings.insert(
+        "issuer".into(),
+        serde_json::json!("https://idp.example.com"),
+    );
+    cfg.methods.insert("cap-idp".into(), method);
+    // The v2 build below resolves the client_secret (the v1 gate fires BEFORE resolution); set the
+    // env so the v2 case fails ONLY on capability, never on an unresolvable secret.
+    std::env::set_var("BUSBAR_TEST_CLIENT_SECRET", "the-confidential-secret");
+    let resolver = crate::config::secret::SecretResolver::builtins_only();
+
+    let err = crate::auth::token::LoginMethods::build(&cfg, &registry, &resolver)
+        .expect_err("a browser_login method on a v1 plugin must fail the build");
+    assert!(
+        err.contains("abi_version") && err.contains("cap-idp"),
+        "the capability-gate error names the offending method + abi_version: {err}"
+    );
+
+    // A v2 build of the SAME plugin (login-capable) with browser_login succeeds — the gate is
+    // specifically the version, not the presence of browser_login.
+    let dir2 = tmp_plugin_dir("auth-login-v2-ok");
+    let mut m2 = auth_manifest("acme-auth-static", "cap-idp", "acme");
+    m2.abi_version = 2;
+    std::fs::write(dir2.join("static.tar.gz"), unsigned_tarball(m2, &lib)).unwrap();
+    let plugins2 = plugins_cfg_allow_unsigned(&dir2);
+    let registry2 = busbar_plugin_loader::scan_and_validate(
+        Path::new(&plugins2.dir),
+        &plugins2.to_policy().unwrap(),
+    )
+    .expect("scan");
+    crate::auth::token::LoginMethods::build(&cfg, &registry2, &resolver)
+        .expect("a v2 login-capable plugin with browser_login builds");
+
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&dir2);
+}
+
 /// Write an UNSIGNED (structurally valid) static-auth tarball into `dir` under `file`, returning the
 /// cdylib bytes' presence. We use the unsigned+`allow_unsigned` path because the test cannot sign
 /// with the embedded first-party release key; this still exercises the whole load pipeline.
@@ -319,7 +387,9 @@ fn auth_plugin_loads_and_identifies_through_middleware() {
 
     // Valid token → Identify with the configured id + roles.
     match mw.run_chain(Some("sekret")) {
-        ChainVerdict::Identified { module, principal } => {
+        ChainVerdict::Identified {
+            module, principal, ..
+        } => {
             assert_eq!(module, "static-auth", "role_bindings key = module.name()");
             assert_eq!(principal.id, "alice");
             assert_eq!(principal.roles, vec!["platform".to_string()]);
@@ -356,8 +426,9 @@ fn auth_plugin_role_binding_and_scope_cap_apply() {
     }
     let plugins = plugins_cfg_allow_unsigned(&dir);
     let mut cfg = chain_with("static-auth", alice_settings());
-    // The chain entry caps this module at `mint`, below the `full` the role would otherwise grant.
-    cfg.chain[0].max_admin_scope = Some("mint".into());
+    // The chain entry caps this module at `read-only`, below the `full` the role would otherwise
+    // grant (1.5.2 scope collapse retired the intermediate `mint`/`hooks-register` ceilings).
+    cfg.chain[0].max_admin_scope = Some("read-only".into());
     // role_bindings NESTED BY THE PLUGIN'S RUNTIME NAME (`static-auth`): the `platform` role → full.
     let mut roles = std::collections::BTreeMap::new();
     roles.insert(
@@ -390,18 +461,70 @@ fn auth_plugin_role_binding_and_scope_cap_apply() {
         crate::admin::v1::contract::Grants::of(Scope::Full),
         "role binds full under the PLUGIN module name"
     );
-    // ..but the module's `max_admin_scope: mint` ceiling caps the effective scope. `run_admin_chain`
-    // dispatches by a closed name match (`admin-tokens` / `test-scope-module` only — see its
-    // REACHABILITY doc comment) and never admits an auth PLUGIN module, so `dry_run_admin_scope`
-    // cannot be driven end-to-end for a plugin name without a production change out of scope here.
-    // Calling the actual `Grants::capped_by` production method (instead of re-implementing the
-    // ceiling with `std::cmp::min`) still proves the real ceiling arithmetic under a plugin module
-    // name, which is what this test's doc comment claims to cover.
-    let capped = bound.capped_by(Scope::Mint);
+    // ..but the module's `max_admin_scope: read-only` ceiling caps the effective scope. Calling the
+    // actual `Grants::capped_by` production method (instead of re-implementing the ceiling with
+    // `std::cmp::min`) proves the real ceiling arithmetic under a plugin module name — a `full`
+    // binding capped by a `read-only` ceiling collapses to read-only.
+    let capped = bound.capped_by(Scope::ReadOnly);
     assert_eq!(
         capped,
-        crate::admin::v1::contract::Grants::of(Scope::Mint),
+        crate::admin::v1::contract::Grants::of(Scope::ReadOnly),
         "max_admin_scope caps the plugin module"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 1.5.2 admin-plane OIDC: `AdminAuthChain::build` — the function `build_app_from_config` invokes on
+/// BOTH boot and reload — resolves every NON-BUILTIN `admin_auth:` entry into a loaded `kind: auth`
+/// plugin, keyed by config name, `has_plugin: true`; `admin-tokens` (an engine arm) is NOT in the
+/// map. Building it TWICE against the same registry (boot, then the reload rebuild) both populate:
+/// the reload path can never leave `admin_modules` stale/empty (RISK 10).
+#[test]
+fn admin_modules_rebuilt_on_reload() {
+    use crate::auth::AdminAuthChain;
+    let dir = tmp_plugin_dir("admin-modules-reload");
+    if !write_static_auth(&dir, "static.tar.gz", "acme-auth-static", "admin-oidc") {
+        eprintln!("skip: static-auth plugin cdylib not built (run under --workspace)");
+        return;
+    }
+    let plugins = plugins_cfg_allow_unsigned(&dir);
+    let registry = busbar_plugin_loader::scan_and_validate(
+        Path::new(&plugins.dir),
+        &plugins.to_policy().unwrap(),
+    )
+    .expect("scan succeeds");
+    let mut cfg = AuthCfg::default_none();
+    let mut entry = AuthChainEntry::bare("admin-oidc");
+    entry.settings = alice_settings();
+    cfg.admin_auth = vec![
+        AuthChainEntry::bare(crate::config::ADMIN_TOKENS_MODULE),
+        entry,
+    ];
+    let resolver = crate::config::secret::SecretResolver::builtins_only();
+
+    // BOOT build.
+    let boot = AdminAuthChain::build(&cfg, &registry, &resolver).expect("boot builds admin chain");
+    assert!(
+        boot.has_plugin,
+        "an external admin module is a loaded plugin"
+    );
+    assert!(
+        boot.modules.contains_key("admin-oidc"),
+        "keyed by the config module name"
+    );
+    assert_eq!(
+        boot.modules.len(),
+        1,
+        "admin-tokens is an engine arm, never inserted into admin_modules"
+    );
+
+    // RELOAD build (the SAME code path `build_app_from_config` re-runs with `prior = Some`).
+    let reload =
+        AdminAuthChain::build(&cfg, &registry, &resolver).expect("reload rebuilds admin chain");
+    assert!(
+        reload.has_plugin && reload.modules.contains_key("admin-oidc"),
+        "reload repopulates admin_modules — never stale/empty"
     );
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -476,8 +599,14 @@ fn missing_auth_plugin_is_loud_boot_failure() {
         crate::plugins_preflight(None, Some(&cfg), &Default::default(), &plugins).unwrap_err();
     assert!(err.contains("oidc"), "names the missing module: {err}");
     assert!(
-        err.contains("does not match any plugin"),
+        err.contains("no plugin matching") && err.contains("is installed in"),
         "explains it is unresolved: {err}"
+    );
+    // Step 7: the two-part diagnosis — subsystem enabled? / tarball in the folder? + the fetch/drop
+    // remediation.
+    assert!(
+        err.contains("enabled") && err.contains("plugins.fetch"),
+        "gives the two-part enabled?/in-folder? diagnosis: {err}"
     );
 
     // The middleware's own resolution is equally loud.
@@ -595,7 +724,8 @@ fn a_blocking_auth_plugin_does_not_park_the_reactor() {
         .expect("runtime");
 
     rt.spawn(async move {
-        let _ = AuthMiddleware::run_chain_on_request_path(&auth, &cache, Some("tok".into())).await;
+        let _ = AuthMiddleware::run_chain_on_request_path(&auth, &cache, Some("tok".into()), None)
+            .await;
     });
     entered
         .recv_timeout(std::time::Duration::from_secs(10))
@@ -635,7 +765,8 @@ fn an_in_process_chain_is_not_offloaded() {
     // offload, the verdict would still arrive, but the point is that it resolves synchronously
     // within one poll of the future.
     let verdict = rt.block_on(async {
-        AuthMiddleware::run_chain_on_request_path(&auth, &cache, Some("grp:admins".into())).await
+        AuthMiddleware::run_chain_on_request_path(&auth, &cache, Some("grp:admins".into()), None)
+            .await
     });
     assert!(
         matches!(verdict, ChainVerdict::Identified { .. }),
@@ -714,7 +845,7 @@ fn an_unauthenticated_chain_admits_nothing_to_the_cache() {
     );
     let cache = crate::auth_cache::CredentialCache::new();
 
-    let verdict = auth.run_chain_cached(Some("junk-token"), Some(&cache));
+    let verdict = auth.run_chain_cached(Some("junk-token"), Some(&cache), None);
 
     assert_eq!(verdict, ChainVerdict::Denied);
     assert_eq!(
@@ -736,7 +867,7 @@ fn a_rejected_chain_admits_nothing_to_the_cache() {
     );
     let cache = crate::auth_cache::CredentialCache::new();
 
-    let verdict = auth.run_chain_cached(Some("junk-token"), Some(&cache));
+    let verdict = auth.run_chain_cached(Some("junk-token"), Some(&cache), None);
 
     assert_eq!(verdict, ChainVerdict::Denied);
     assert_eq!(
@@ -775,7 +906,7 @@ fn pass_churn_cannot_evict_an_identity() {
 
     for i in 0..4096u64 {
         let junk = format!("junk-{i}");
-        let _ = auth.run_chain_cached(Some(&junk), Some(&cache));
+        let _ = auth.run_chain_cached(Some(&junk), Some(&cache), None);
     }
 
     assert!(
@@ -800,7 +931,7 @@ fn an_identified_chain_still_caches_the_leading_pass() {
     );
     let cache = crate::auth_cache::CredentialCache::new();
 
-    let verdict = auth.run_chain_cached(Some("good"), Some(&cache));
+    let verdict = auth.run_chain_cached(Some("good"), Some(&cache), None);
 
     assert!(matches!(verdict, ChainVerdict::Identified { .. }));
     assert_eq!(

@@ -48,6 +48,13 @@ const SK_SECRET_PREFIX: &str = "sk-bb-";
 /// `docs/migration-1.5.md`), so this is the only `generation_hash` shape that exists.
 pub(crate) const BINDING_MARKER_PREFIX: &str = "binding:";
 
+/// The `group:`-less GROUP NAMESPACE for a SELF-SERVE (browser/token-exchange) key: every key a
+/// principal mints for itself via `POST /auth/token` is bound to `user:<sub>`. Kept distinct so the
+/// anti-sprawl `check_key_cap` can EXCLUDE self-serve keys (a principal always has exactly one — the
+/// mint is an idempotent upsert on the current epoch — so it must never consume an admin key cap),
+/// and so the deterministic subject id derives under a stable, non-attacker-chosen prefix.
+pub(crate) const SELF_KEY_GROUP_PREFIX: &str = "user:";
+
 /// The `generation_hash` marker for a signed-token binding at a given rotation generation.
 pub(crate) fn binding_marker(id: &str, generation: &str) -> String {
     format!("{BINDING_MARKER_PREFIX}{id}:{generation}")
@@ -517,6 +524,13 @@ pub(crate) struct GovState {
     /// has committed, so it can never contain strictly-older store state. Guarded data is `()`;
     /// a poisoned lock is recovered with `into_inner()` (serializing is strictly better than not).
     refresh_lock: std::sync::Mutex<()>,
+    /// Serializes the SELF-SERVE mint upsert (`issue_self`/`refresh_self`): each does a
+    /// current-binding CHECK then a write, and without this an issue racing a refresh could strand a
+    /// second enabled binding for the same `user:<sub>` (breaking the one-key-per-sub invariant that
+    /// justifies excluding self-keys from the anti-sprawl cap). Guarded data is `()`; a poisoned lock
+    /// is recovered with `into_inner()`. (The deterministic id already makes two concurrent *issues*
+    /// idempotent by id; this closes the issue/refresh interleaving and non-idempotent stores.)
+    self_mint_lock: std::sync::Mutex<()>,
 }
 
 /// The busbar signing key as ONE unit: the mint-side signer and the verify-side keyset derived

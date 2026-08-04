@@ -9,6 +9,7 @@ fn make_root_cfg(
 ) -> RootCfg {
     config::RootCfg {
         listen: crate::config::DEFAULT_LISTEN_ADDR.into(),
+        public_url: None,
         tls: None,
         admin_listen: crate::config::DEFAULT_ADMIN_LISTEN_ADDR.to_string(),
         admin_tls: None,
@@ -624,9 +625,14 @@ fn make_auth_chain(modules: &[&str], upstream: crate::auth::UpstreamCreds) -> co
         .collect();
     auth.upstream_credentials = upstream;
     // S2 (1.5.1): the built-in `keys` verifier REQUIRES a signing key (config_validate fails closed
-    // otherwise). Attach a reference so a `[keys]` chain validates, matching a real deployment.
+    // otherwise). 1.5.2: it also requires a USABLE ADMIN MINT PATH — a vkey can only be minted
+    // through an admin endpoint, so `[keys]` with nothing that can mint one is a boot error. Attach
+    // a signing-key ref and an explicit OPEN admin (`admin_auth: []`) — the one structural mint path
+    // that validates under BOTH the default build and `--no-default-features` (where the
+    // `admin-tokens` module is compiled out and a configured admin token would itself be rejected).
     if modules.contains(&crate::config::KEYS_MODULE) {
         auth.signing_key = Some(config::SecretRef::env("BUSBAR_SIGNING_KEY"));
+        auth.admin_auth = vec![];
     }
     auth
 }
@@ -1413,23 +1419,28 @@ fn test_validate_rejects_bad_chain_and_role_binding_scopes() {
             && e.contains("unknown admin_scope 'readonly'")),
         "expected the role_bindings admin_scope error; got: {errs:?}"
     );
-    // Both messages must teach the valid set so the operator can self-correct — including the
-    // delegated `mint` token (self-service D2).
+    // Both messages must teach the valid set so the operator can self-correct. After the 1.5.2
+    // scope collapse the valid set is exactly `read-only` and `full`.
     assert!(
         errs.iter()
             .filter(|e| e.contains("superuser") || e.contains("readonly"))
-            .all(|e| e.contains("read-only")
-                && e.contains("hooks-register")
-                && e.contains("mint")
-                && e.contains("full")),
-        "scope errors must enumerate the valid scope tokens (incl. mint); got: {errs:?}"
+            .all(|e| e.contains("read-only") && e.contains("full")),
+        "scope errors must enumerate the valid scope tokens (read-only or full); got: {errs:?}"
+    );
+    // The retired tokens must NOT appear in the guidance any more.
+    assert!(
+        errs.iter()
+            .filter(|e| e.contains("superuser") || e.contains("readonly"))
+            .all(|e| !e.contains("hooks-register") && !e.contains("mint")),
+        "scope errors must not mention the retired hooks-register/mint tokens; got: {errs:?}"
     );
 }
 
-/// The delegated `mint` scope token (self-service D2) is ACCEPTED wherever a scope token is
-/// validated: an auth chain entry's `max_admin_scope` and a `role_bindings` `admin_scope`.
+/// 1.5.2 scope collapse: the delegated `mint` token (and its `hooks-register` sibling) are RETIRED —
+/// a `role_bindings.<m>.<role>.admin_scope: mint` (or a `max_admin_scope: mint`) is now an UNKNOWN
+/// scope token, failing validation with the two-rung guidance.
 #[test]
-fn test_validate_accepts_mint_scope_token() {
+fn validate_admin_scope_mint_now_errors() {
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
     let mut auth = config::AuthCfg::default_none();
@@ -1448,13 +1459,39 @@ fn test_validate_accepts_mint_scope_token() {
         )]),
     );
     cfg.auth = Some(auth);
-    // No scope-token error may appear (other unrelated validation may or may not pass, but the
-    // `mint` token itself must never be flagged as unknown).
-    if let Err(errs) = validate(&cfg) {
+    let errs = validate(&cfg).expect_err("`mint` is no longer a valid scope token");
+    assert!(
+        errs.iter().any(|e| e.contains("role_bindings.keys.portal")
+            && e.contains("unknown admin_scope 'mint'")
+            && e.contains("read-only or full")),
+        "expected the role_bindings mint error naming the two-rung set; got: {errs:?}"
+    );
+    assert!(
+        errs.iter().any(|e| e.contains("auth chain entry 'keys'")
+            && e.contains("unknown max_admin_scope 'mint'")),
+        "expected the chain-entry mint error; got: {errs:?}"
+    );
+}
+
+/// 1.5.2: a NON-BUILTIN admin auth module name (an external `kind: auth` admin plugin) is no longer
+/// statically rejected by config_validate — it resolves at LOAD, exactly as a data-plane
+/// `auth.chain` plugin name does. So `admin_auth: [oidc-admin]` must NOT produce an "unknown module"
+/// error here.
+#[test]
+fn validate_admin_auth_plugin_name_no_longer_rejected() {
+    let (providers, models, pools) = valid_maps();
+    let mut cfg = make_root_cfg(providers, models, pools);
+    cfg.admin_auth = vec![
+        crate::config::ADMIN_TOKENS_MODULE.to_string(),
+        "oidc-admin".to_string(),
+    ];
+    let res = validate(&cfg);
+    if let Err(errs) = res {
         assert!(
-            !errs.iter().any(|e| e.contains("unknown")
-                && (e.contains("max_admin_scope") || e.contains("admin_scope"))),
-            "`mint` must be a KNOWN scope token; got scope errors: {errs:?}"
+            !errs
+                .iter()
+                .any(|e| e.contains("admin_auth names unknown module")),
+            "a non-builtin admin module name must not be statically rejected; got: {errs:?}"
         );
     }
 }
@@ -1662,6 +1699,46 @@ fn test_validate_chain_unknown_module_rejected_keys_accepted() {
     assert!(
         validate(&cfg).is_ok(),
         "an empty auth chain must validate (open front door)"
+    );
+}
+
+/// 1.5.2 (RED-before-GREEN #5): `auth.chain: [keys]` with a signing key but NO usable admin MINT
+/// PATH (default `admin_auth: [admin-tokens]` carrying no `token:`) is a BOOT ERROR — a vkey can
+/// only be minted through an admin endpoint, so nothing could ever mint one and the data plane
+/// would reject every request. RED on pre-1.5.2 code: no mint-path rule existed, so this validated
+/// clean (and booted as a silent sealed relay).
+#[test]
+fn test_1_5_2_keys_chain_without_mint_path_is_boot_error() {
+    let (providers, models, pools) = valid_maps();
+    let mut cfg = make_root_cfg(providers, models, pools);
+    // default_none carries admin_auth: [admin-tokens] with NO token ref → no usable mint path.
+    let mut auth = crate::config::AuthCfg::default_none();
+    auth.chain = vec![crate::config::AuthChainEntry::bare(
+        crate::config::KEYS_MODULE,
+    )];
+    auth.signing_key = Some(config::SecretRef::env("BUSBAR_SIGNING_KEY"));
+    cfg.auth = Some(auth);
+    let errs =
+        validate(&cfg).expect_err("keys chain with no usable mint path must fail validation");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("no admin credential can mint")),
+        "expected the mint-path boot error; got: {errs:?}"
+    );
+}
+
+/// 1.5.2 (RED-before-GREEN #6): an IdP chain (`[oidc]`, a plugin) needs NO admin mint path — its
+/// identities are EXTERNALLY issued, so the mint-path rule must NOT fire. Boots clean with no
+/// spurious mint-path error even when `admin_auth` grants no mint capability.
+#[test]
+fn test_1_5_2_oidc_chain_needs_no_mint_path() {
+    let (providers, models, pools) = valid_maps();
+    let mut cfg = make_root_cfg(providers, models, pools);
+    cfg.auth = Some(make_auth_chain(&["oidc"], crate::auth::UpstreamCreds::Own));
+    let r = validate(&cfg);
+    assert!(
+        r.is_ok(),
+        "an oidc (externally-issued) chain must need no mint path; got: {r:?}"
     );
 }
 
@@ -4209,6 +4286,7 @@ auth:
   chain:
     - keys
   signing_key: { env: BUSBAR_SIGNING_KEY }
+  admin_auth: []
   role_bindings:
     keys:
       platform:
@@ -4592,67 +4670,141 @@ fn test_reasoning_effort_budgets_rejects_a_single_zero_field() {
     );
 }
 
-/// The `max_admin_scope` / `role_bindings.*.admin_scope` incomparability check must fire ONLY on
-/// genuinely incomparable sibling scopes (`hooks-register` vs `mint`), never on a dominating pair
-/// (a `full` cap narrowed to `mint` at the binding) — the lattice relation (`allows`), not a plain
-/// `!=`. A mutated `&&` -> `||` would false-positive on the dominating case; a mutated
-/// `!cap.allows(bound)` -> `cap.allows(bound)` (deleted `!`) would miss the genuinely incomparable
-/// case.
-#[test]
-fn test_admin_scope_incomparability_check_is_the_lattice_not_inequality() {
-    // Genuinely incomparable: cap = hooks-register, bound = mint. Must error.
-    {
-        let (providers, models, pools) = valid_maps();
-        let mut cfg = make_root_cfg(providers, models, pools);
-        let mut auth = config::AuthCfg::default_none();
-        let mut entry = config::AuthChainEntry::bare("keys");
-        entry.max_admin_scope = Some("hooks-register".to_string());
-        auth.chain = vec![entry];
-        auth.role_bindings.insert(
-            "keys".to_string(),
-            std::collections::BTreeMap::from([(
-                "minter".to_string(),
-                config::RoleBindingCfg {
-                    allowed_pools: None,
-                    group: None,
-                    admin_scope: Some("mint".to_string()),
-                },
-            )]),
-        );
-        cfg.auth = Some(auth);
-        let errs = validate(&cfg)
-            .expect_err("hooks-register cap with a mint binding is genuinely incomparable");
-        assert!(
-            errs.iter().any(|e| e.contains("INCOMPARABLE")),
-            "expected the incomparability error; got: {errs:?}"
-        );
-    }
+// (1.5.2 scope collapse removed the `max_admin_scope`/`admin_scope` sibling-incomparability
+// cross-check: a two-rung {read-only, full} chain can never be incomparable, so the former
+// `test_admin_scope_incomparability_check_is_the_lattice_not_inequality` was deleted with it.)
 
-    // Dominating, not incomparable: cap = full, bound = mint (a narrowing). Must NOT error.
-    {
-        let (providers, models, pools) = valid_maps();
-        let mut cfg = make_root_cfg(providers, models, pools);
-        let mut auth = config::AuthCfg::default_none();
-        let mut entry = config::AuthChainEntry::bare("keys");
-        entry.max_admin_scope = Some("full".to_string());
-        auth.chain = vec![entry];
-        auth.role_bindings.insert(
-            "keys".to_string(),
-            std::collections::BTreeMap::from([(
-                "minter".to_string(),
-                config::RoleBindingCfg {
-                    allowed_pools: None,
-                    group: None,
-                    admin_scope: Some("mint".to_string()),
-                },
-            )]),
-        );
-        cfg.auth = Some(auth);
-        if let Err(errs) = validate(&cfg) {
-            assert!(
-                !errs.iter().any(|e| e.contains("INCOMPARABLE")),
-                "a full cap narrowed to mint is a valid narrowing, not incomparable; got: {errs:?}"
-            );
-        }
-    }
+// ─── 1.5.2 token-exchange Step 1: public_url + browser_login + key_ttl validation ───
+
+fn parse_auth(yaml: &str) -> config::AuthCfg {
+    serde_yaml::from_str(yaml).expect("auth yaml parses")
+}
+
+#[test]
+fn test_public_url_requires_https() {
+    // Public host over plaintext http ⇒ error; loopback http ⇒ OK; public https ⇒ OK.
+    let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
+    cfg.public_url = Some("http://api.busbar.example".to_string());
+    let errs = validate(&cfg).expect_err("public http host must fail");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("public_url") && e.contains("https")),
+        "missing https error: {errs:?}"
+    );
+
+    cfg.public_url = Some("http://127.0.0.1:8080".to_string());
+    let res = validate(&cfg);
+    assert!(
+        res.as_ref()
+            .err()
+            .into_iter()
+            .flatten()
+            .all(|e| !e.contains("public_url")),
+        "loopback http must be accepted: {res:?}"
+    );
+
+    cfg.public_url = Some("https://api.busbar.example".to_string());
+    let res = validate(&cfg);
+    assert!(
+        res.as_ref()
+            .err()
+            .into_iter()
+            .flatten()
+            .all(|e| !e.contains("public_url")),
+        "public https must be accepted: {res:?}"
+    );
+}
+
+#[test]
+fn test_public_url_rejects_path_and_metadata() {
+    let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
+    cfg.public_url = Some("https://api.busbar.example/x".to_string());
+    let errs = validate(&cfg).expect_err("public_url with a path must fail");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("public_url") && (e.contains("path") || e.contains("bare origin"))),
+        "missing path error: {errs:?}"
+    );
+
+    cfg.public_url = Some("https://169.254.169.254".to_string());
+    let errs = validate(&cfg).expect_err("public_url at a metadata host must fail");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("public_url") && e.contains("metadata")),
+        "missing metadata SSRF error: {errs:?}"
+    );
+}
+
+#[test]
+fn test_browser_login_requires_public_url() {
+    let auth =
+        parse_auth("methods:\n  oidc:\n    browser_login:\n      client_secret: { env: X }\n");
+    let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
+    cfg.auth = Some(auth);
+    cfg.public_url = None;
+    let errs = validate(&cfg).expect_err("browser_login without public_url must fail");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("browser_login") && e.contains("public_url")),
+        "error must name both browser_login and public_url: {errs:?}"
+    );
+
+    // With public_url set, that particular error disappears.
+    cfg.public_url = Some("https://busbar.example".to_string());
+    let res = validate(&cfg);
+    assert!(
+        res.as_ref()
+            .err()
+            .into_iter()
+            .flatten()
+            .all(|e| !e.contains("browser_login")),
+        "browser_login error must clear once public_url is set: {res:?}"
+    );
+}
+
+#[test]
+fn test_role_binding_under_browser_method_active() {
+    // A role_binding under a module that appears ONLY in `auth.methods` (not `chain`) is NOT dead
+    // config: the method resolves an identity, then its role_bindings apply.
+    let auth = parse_auth(
+        "methods:\n  oidc:\n    browser_login:\n      client_secret: { env: X }\nrole_bindings:\n  oidc:\n    member: {}\n",
+    );
+    let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
+    cfg.auth = Some(auth);
+    cfg.public_url = Some("https://busbar.example".to_string());
+    let res = validate(&cfg);
+    assert!(
+        res.as_ref()
+            .err()
+            .into_iter()
+            .flatten()
+            .all(|e| !e.contains("inactive module") && !e.contains("grants nothing")),
+        "methods-only module must not be flagged inactive: {res:?}"
+    );
+}
+
+#[test]
+fn test_key_ttl_validates_duration() {
+    let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
+    let mut auth = config::AuthCfg::default_none();
+    auth.key_ttl = Some("90d".to_string());
+    cfg.auth = Some(auth);
+    let res = validate(&cfg);
+    assert!(
+        res.as_ref()
+            .err()
+            .into_iter()
+            .flatten()
+            .all(|e| !e.contains("key_ttl")),
+        "valid key_ttl must pass: {res:?}"
+    );
+
+    let mut auth = config::AuthCfg::default_none();
+    auth.key_ttl = Some("banana".to_string());
+    cfg.auth = Some(auth);
+    let errs = validate(&cfg).expect_err("garbage key_ttl must fail");
+    assert!(
+        errs.iter().any(|e| e.contains("key_ttl")),
+        "missing key_ttl error: {errs:?}"
+    );
 }

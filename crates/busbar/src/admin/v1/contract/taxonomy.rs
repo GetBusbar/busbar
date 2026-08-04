@@ -53,8 +53,13 @@ pub(crate) enum ErrKind {
     VersionConflict,
     /// A TERMINAL state conflict (`conflict`, 409).
     Conflict,
-    /// A body-derived authorization refusal (`forbidden`, 403). Declared per-endpoint ONLY where
-    /// the phrasing is more specific than the generic under-scope 403 (the hook-escalation case).
+    /// The `forbidden` (403) kind. After the 1.5.2 scope collapse there is NO per-endpoint
+    /// `Forbidden` declaration left (the hook-escalation refinement — its only site — is gone; every
+    /// 403 is now the generic under-scope response `openapi_doc` stamps algorithmically). The variant
+    /// stays real for the `ErrKind ↔ AdminError` bridge (`err_kind_of`, test-only), so it is only
+    /// CONSTRUCTED under `test`; narrow-suppress the dead-code lint in the openapi-schema-only build
+    /// rather than deleting a kind the frozen taxonomy still recognizes.
+    #[cfg_attr(not(test), allow(dead_code))]
     Forbidden,
 }
 
@@ -141,13 +146,11 @@ pub(crate) enum Cond {
     NoSigningKey,
     IdempotencyInFlight,
     AtKeyCap,
-    DelegatedMintUnbound,
     ParentWithoutGroup,
     KeyExpiryFields,
     RebindTargetMissing,
     HookNoAck,
     SettingsPush,
-    HookEscalation,
     MalformedCursor,
     MissingRequiredQuery,
     InvalidQueryValue,
@@ -189,19 +192,11 @@ impl Cond {
             Cond::NoSigningKey => "no signing key is configured for signed-token minting",
             Cond::IdempotencyInFlight => "an `Idempotency-Key` request is already in flight",
             Cond::AtKeyCap => "the group is at the `limits.max_keys_per_principal` cap",
-            Cond::DelegatedMintUnbound => {
-                "a delegated `mint` credential may only issue keys BOUND to a group (`group` is \
-                 required)"
-            }
             Cond::ParentWithoutGroup => "`parent` was given without `group`",
             Cond::KeyExpiryFields => "bad `expires_in` / `expires_at`",
             Cond::RebindTargetMissing => "the rebind target group does not exist",
             Cond::HookNoAck => "the hook did not acknowledge; nothing committed",
             Cond::SettingsPush => "a config change landed during the settings push — retry",
-            Cond::HookEscalation => {
-                "a `hooks-register` principal may not touch a content-seeing (`prompt`/`user`) or \
-                 `global` hook"
-            }
             Cond::MalformedCursor => "malformed or foreign pagination `cursor`",
             Cond::MissingRequiredQuery => "missing or unknown required query parameter",
             Cond::InvalidQueryValue => "invalid query-parameter value",
@@ -327,8 +322,9 @@ pub(crate) fn method_tag(m: &axum::http::Method) -> Option<MethodTag> {
 /// UnknownResource]`, so a trivial single-resource GET needs no entry and cannot forget its 404.
 ///
 /// NOT listed here (and not listable): 401, the generic under-scope 403, 405, 429 and 500 — every
-/// operation can emit them, so `openapi_doc()` stamps them algorithmically. A `Forbidden` entry IS
-/// declared where the hook-escalation refusal needs its own, more specific phrasing.
+/// operation can emit them, so `openapi_doc()` stamps them algorithmically. (1.5.2 scope collapse
+/// removed the only per-endpoint `Forbidden` declaration — the hook-escalation refusal — since a
+/// non-`full` caller can no longer reach a hook mutation at all.)
 #[cfg(any(test, feature = "openapi-schema"))]
 pub(crate) fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr] {
     use Cond::*;
@@ -344,7 +340,6 @@ pub(crate) fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr]
         (Post, "/hooks") => de![
             Validation / MalformedBody,
             Validation / MalformedIfMatch,
-            Forbidden / HookEscalation,
             Conflict / BaseDefined,
             Conflict / GrantChange,
             VersionConflict / StaleIfMatch,
@@ -352,7 +347,6 @@ pub(crate) fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr]
         (Put, "/hooks/{name}") => de![
             Validation / MalformedBody,
             Validation / MalformedIfMatch,
-            Forbidden / HookEscalation,
             NotFound / UnknownResource,
             Conflict / BaseDefined,
             Conflict / GrantChange,
@@ -360,7 +354,6 @@ pub(crate) fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr]
         ],
         (Delete, "/hooks/{name}") => de![
             Validation / MalformedIfMatch,
-            Forbidden / HookEscalation,
             NotFound / UnknownResource,
             Conflict / BaseDefined,
             VersionConflict / StaleIfMatch,
@@ -369,7 +362,6 @@ pub(crate) fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr]
             Validation / MalformedBody,
             Validation / MalformedIfMatch,
             Validation / HookNoAck,
-            Forbidden / HookEscalation,
             NotFound / UnknownResource,
             Conflict / BaseDefined,
             Conflict / SettingsPush,
@@ -495,7 +487,6 @@ pub(crate) fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr]
             Validation / InvalidLabels,
             Validation / KeyExpiryFields,
             Validation / ParentWithoutGroup,
-            Validation / DelegatedMintUnbound,
             Validation / InvalidTree,
             Conflict / GovernanceOff,
             Conflict / NoSigningKey,

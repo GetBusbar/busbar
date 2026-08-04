@@ -41,7 +41,7 @@ One plugin is one `.tar.gz` per (plugin, target) containing exactly two members:
   "kind": "store",
   "version": "1.5.0",
   "publisher": "busbar",
-  "abi_version": 1,
+  "abi_version": 2,
   "sha256": "<64-hex sha256 of the cdylib bytes>",
   "signature": "<128-hex ed25519 signature over the canonical manifest>",
   "description": "busbar redis store plugin",
@@ -88,10 +88,10 @@ you can name the tarball anything.
 `name` is the canonical identity (`[a-z0-9-]+`, e.g. `busbar-store-valkey`); `alias` is the short
 config name (`redis`). `store.module:` accepts either. `kind` is `store`, `secret`, `auth`, or `hook`.
 `version` is strict semver. `abi_version` declares which per-kind payload-schema generation the
-cdylib was built against — it is set **per kind** (`store`, `secret`, `auth`, and `hook` are all
-at `1`). The loader enforces a supported-version RANGE per kind, so a plugin built against an
-outdated (or too-new) ABI is refused at load rather than mis-called. See `busbar-plugin-abi` for the
-authoritative versions.
+cdylib was built against — it is set **per kind**: `store` and `auth` are at `2`, `secret` and
+`hook` at `1` (auth was bumped 1→2 in 1.5.2 for the additive browser-login primitives). The loader
+enforces a supported-version RANGE per kind, so a plugin built against an outdated (or too-new) ABI
+is refused at load rather than mis-called. See `busbar-plugin-abi` for the authoritative versions.
 
 ## Enabling plugins
 
@@ -296,6 +296,22 @@ The first-party **`oidc`** module (`busbar-auth-oidc-plugin`, released from `Get
 is exactly such a plugin — see
 [configuration.md](configuration.md#auth-plugins) for the `auth.chain: [oidc]` + `settings:` recipe
 (including an Entra ID example).
+
+### First-party auth plugins
+
+Three first-party `kind: auth` plugins ship for busbar, each an independently-versioned repo:
+
+| Plugin | Repo | Identity | Flow |
+|--------|------|----------|------|
+| **`oidc`** (`busbar-auth-oidc-plugin`) | `GetBusbar/auth-oidc` | `oidc:<sub>` from a verified id_token (RS256/ES256 JWKS, iss/aud/exp/nbf) | verify a held bearer, **or** browser/headless [token-exchange](token-exchange.md) |
+| **`github`** (`busbar-auth-github-plugin`) | `GetBusbar/auth-github` | `github:<login>` + `github:org/<org>` groups | OAuth authorization-code (opaque token → core-executed `/user` + `/user/orgs` hops) — [token-exchange](token-exchange.md) `GET` browser flow |
+| **`ldap`** (`busbar-auth-ldap-plugin`) | `GetBusbar/auth-ldap` | `ldap:<dn>` + `memberOf` groups | credential form (username/password → the plugin's own LDAP/LDAPS bind) — [token-exchange](token-exchange.md) credential flow |
+
+GitHub is **not** OIDC (its access token is opaque, so there is nothing to verify offline): identity
+comes from REST userinfo hops the core executes on the plugin's behalf. LDAP is a **credential**
+method — it renders a username/password form and binds against the directory itself. All three are
+login-capable (Auth ABI v2), so they can mint a self-serve key via `/auth/token`; a v1 verify-only
+build still loads for chain use but a hosted-login (`browser_login`) method requires a v2 build.
 
 ## Hook plugins (`kind: hook`)
 

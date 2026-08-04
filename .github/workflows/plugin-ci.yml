@@ -41,7 +41,7 @@ on:
         required: true
         type: string
       service:
-        description: "none | postgres | redis | vault | mysql — which real backend service container to boot"
+        description: "none | postgres | redis | vault | mysql | wiremock | openldap — which real backend service container to boot"
         required: false
         type: string
         default: "none"
@@ -112,6 +112,27 @@ jobs:
           - 8200:8200
         options: >-
           ${{ inputs.service == 'vault' && '--cap-add=IPC_LOCK --health-cmd "wget -qO- http://127.0.0.1:8200/v1/sys/health" --health-interval 10s --health-timeout 5s --health-retries 5' || '' }}
+      # Ready-made WireMock — the GitHub-OAuth token/user/orgs endpoints for auth-github's live e2e.
+      # PINNED (never :latest). No Docker health-cmd (the image has no curl/wget); auth-github's
+      # tests/e2e.rs polls the /__admin API for readiness and registers its stub mappings over it, so
+      # nothing here mounts a fixture file (service containers start before checkout). Exposed to the
+      # test via BUSBAR_TEST_WIREMOCK_URL on the cargo test step below.
+      wiremock:
+        image: ${{ inputs.service == 'wiremock' && 'wiremock/wiremock:3.9.2' || '' }}
+        ports:
+          - 8080:8080
+      # Ready-made OpenLDAP — the directory auth-ldap binds against for its live e2e. PINNED. The
+      # image auto-creates the base suffix dc=example,dc=org + cn=admin from these env vars; auth-ldap's
+      # tests/e2e.rs then seeds the test user/group over LDAP itself (ldap3) and retries the admin bind
+      # until the container is ready. Exposed via BUSBAR_TEST_LDAP_URL on the cargo test step below.
+      openldap:
+        image: ${{ inputs.service == 'openldap' && 'osixia/openldap:1.5.0' || '' }}
+        env:
+          LDAP_ORGANISATION: ${{ inputs.service == 'openldap' && 'Example Org' || '' }}
+          LDAP_DOMAIN: ${{ inputs.service == 'openldap' && 'example.org' || '' }}
+          LDAP_ADMIN_PASSWORD: ${{ inputs.service == 'openldap' && 'adminpassword' || '' }}
+        ports:
+          - 389:389
     steps:
       - name: Checkout the plugin
         uses: actions/checkout@v7
@@ -159,6 +180,11 @@ jobs:
           BUSBAR_TEST_VAULT_ADDR: ${{ inputs.service == 'vault' && 'http://127.0.0.1:8200' || '' }}
           BUSBAR_TEST_VAULT_TOKEN: ${{ inputs.service == 'vault' && 'root' || '' }}
           BUSBAR_TEST_MYSQL_URL: ${{ inputs.service == 'mysql' && 'mysql://busbar:busbar@127.0.0.1:3306/busbar_test' || '' }}
+          # The 1.5.2 auth login-plugin live e2es (auth-github / auth-ldap tests/e2e.rs): the plugin's
+          # OWN token-exchange direction driven through a REAL busbar boot against these containers.
+          # Unset ⇒ the test skips loudly (never a silent pass).
+          BUSBAR_TEST_WIREMOCK_URL: ${{ inputs.service == 'wiremock' && 'http://127.0.0.1:8080' || '' }}
+          BUSBAR_TEST_LDAP_URL: ${{ inputs.service == 'openldap' && 'ldap://127.0.0.1:389' || '' }}
         run: cargo test
 
       - name: cargo test (sibling busbarAI checkout — this backend's own monorepo integration test)
@@ -452,3 +478,172 @@ jobs:
           [ -n "$KEY_ID" ] || { echo "mint returned no id" >&2; exit 1; }
           curl -sf -H "Authorization: Bearer $BUSBAR_ADMIN_TOKEN" "$ADMIN/keys/$KEY_ID" | grep -q "$KEY_ID"
           echo "OK: ${{ inputs.plugin_crate }} discovered via file-drop at boot and served a real mint/fetch round-trip"
+
+      # ── kind:auth ONLY — the plugin-SIDE half of the 1.5.2 token-exchange cross-repo matrix. The
+      #    busbar-side gate (scripts/release-check-1.5.2.sh) iterates every kind:auth plugin from
+      #    plugins.yaml; THIS step is the mirror that runs on a push to the plugin's OWN repo: build
+      #    the plugin cdylib (already done above), file-drop the SIGNED tarball into a real busbar
+      #    configured with it, and exercise the /auth/token flow(s) the plugin supports — asserting a
+      #    working self-scoped key that drives a real chat-completion. Flow capability is per-plugin
+      #    (see auth_plugin_flows() in release-check-1.5.2.sh): oidc supports POST (held id_token) +
+      #    GET (browser redirect); github supports GET only (opaque token, authenticate()=Pass); ldap
+      #    supports the GET credential-form flow. Only oidc's POST flow runs fully today; the rest are
+      #    marked VERIFIED-AT-INTEGRATION (plugin finalizes in #84) and STRUCTURED to light up when the
+      #    plugin + finalized ABI land. Reuses the ephemeral-key SIGNED /tmp/signoff.tar.gz + the
+      #    matching-pubkey busbar built above (STRICT trust, no allow_unsigned).
+      - name: TOKEN-EXCHANGE E2E — POST /auth/token → self-scoped key → real chat (kind:auth)
+        if: inputs.plugin_kind == 'auth'
+        run: |
+          set -euo pipefail
+          ALIAS='${{ inputs.plugin_alias }}'
+          if [ "$ALIAS" != "oidc" ]; then
+            case "$ALIAS" in
+              github)
+                echo "== github: GET browser-redirect flow — RUN LIVE in this repo's own 'cargo test' step =="
+                echo "   (tests/e2e.rs against the 'service: wiremock' container: the CORE executes the real"
+                echo "    token → /user → /user/orgs hops and mints a self-scoped key). Nothing to do inline here." ;;
+              ldap)
+                echo "== ldap: GET credential-form flow — RUN LIVE in this repo's own 'cargo test' step =="
+                echo "   (tests/e2e.rs against the 'service: openldap' container: real bind + group read →"
+                echo "    key; a wrong password is asserted 401). Nothing to do inline here." ;;
+              *)
+                echo "== kind:auth plugin '$ALIAS' — declare its flow(s) in auth_plugin_flows() and add a live e2e =="
+                echo "   VERIFIED-AT-INTEGRATION until a runner (inline here or a tests/e2e.rs service arm) exists." ;;
+            esac
+            exit 0
+          fi
+
+          # ---- OIDC POST /auth/token flow (RUNS fully). ----
+          WORKDIR=$(mktemp -d); mkdir -p "$WORKDIR/plugins"
+          cp /tmp/signoff.tar.gz "$WORKDIR/plugins/${{ inputs.plugin_crate }}.tar.gz"
+          export BUSBAR_ADMIN_TOKEN="ci-admin-$(date +%s)"
+
+          # Real RSA keypair → JWKS (kid gate-key-1, e=AQAB) + a real RS256-signed JWT.
+          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$WORKDIR/rsa.pem" 2>/dev/null
+          b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+          MOD=$(openssl rsa -in "$WORKDIR/rsa.pem" -noout -modulus 2>/dev/null | sed 's/^Modulus=//')
+          N=$(printf '%s' "$MOD" | xxd -r -p | b64url)
+          printf '{"keys":[{"kty":"RSA","use":"sig","alg":"RS256","kid":"gate-key-1","n":"%s","e":"AQAB"}]}' "$N" > "$WORKDIR/jwks.json"
+          # Self-signed TLS for the JWKS host (the plugin does a real HTTPS JWKS fetch).
+          openssl req -x509 -newkey rsa:2048 -nodes -keyout "$WORKDIR/tls.key" -out "$WORKDIR/tls.crt" \
+            -days 2 -subj "/CN=127.0.0.1" -addext "subjectAltName=IP:127.0.0.1" 2>/dev/null
+          ISS="https://idp.ci.local/"; AUD="ci-audience"; SUB="alice"; EXP=$(( $(date +%s) + 3600 ))
+          HDR=$(printf '%s' '{"alg":"RS256","typ":"JWT","kid":"gate-key-1"}' | b64url)
+          PL=$(printf '%s' "{\"iss\":\"$ISS\",\"aud\":\"$AUD\",\"sub\":\"$SUB\",\"groups\":[\"eng\"],\"exp\":$EXP,\"iat\":$(( $(date +%s) - 10 ))}" | b64url)
+          SIG=$(printf '%s' "$HDR.$PL" | openssl dgst -sha256 -sign "$WORKDIR/rsa.pem" -binary | b64url)
+          JWT="$HDR.$PL.$SIG"
+
+          # JWKS server (HTTPS) + mock Anthropic upstream.
+          python3 - "$WORKDIR" 8443 <<'PY' &
+          import http.server, ssl, sys
+          wd, port = sys.argv[1], int(sys.argv[2])
+          body = open(wd + "/jwks.json", "rb").read()
+          class H(http.server.BaseHTTPRequestHandler):
+              def do_GET(self):
+                  self.send_response(200); self.send_header("Content-Type","application/json")
+                  self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+              def log_message(self,*a): pass
+          ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+          ctx.load_cert_chain(wd + "/tls.crt", wd + "/tls.key")
+          srv = http.server.ThreadingHTTPServer(("127.0.0.1", port), H)
+          srv.socket = ctx.wrap_socket(srv.socket, server_side=True); srv.serve_forever()
+          PY
+          JWKS_PID=$!
+          python3 - 8099 <<'PY' &
+          import http.server, json, sys
+          port = int(sys.argv[1])
+          class H(http.server.BaseHTTPRequestHandler):
+              def do_POST(self):
+                  self.rfile.read(int(self.headers.get("Content-Length",0)))
+                  b = json.dumps({"id":"m","type":"message","role":"assistant","model":"test-model",
+                      "content":[{"type":"text","text":"ci-tokenx-marker"}],"stop_reason":"end_turn",
+                      "usage":{"input_tokens":11,"output_tokens":7}}).encode()
+                  self.send_response(200); self.send_header("Content-Type","application/json")
+                  self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
+              def log_message(self,*a): pass
+          http.server.ThreadingHTTPServer(("127.0.0.1", port), H).serve_forever()
+          PY
+          MOCK_PID=$!
+          trap 'kill $JWKS_PID $MOCK_PID ${BUSBAR_PID:-} 2>/dev/null || true' EXIT
+
+          BUSBAR_BIN="$PWD/busbarAI/target/release/busbar"
+          "$BUSBAR_BIN" --generate-signing-key > "$WORKDIR/signing.key" 2>/dev/null
+          CA_PEM=$(sed 's/^/            /' "$WORKDIR/tls.crt")
+          cat > "$WORKDIR/providers.yaml" <<EOF
+          mock:
+            protocol: anthropic
+            base_url: "http://127.0.0.1:8099"
+          EOF
+          cat > "$WORKDIR/config.yaml" <<EOF
+          listen: "127.0.0.1:8080"
+          admin_listen: "127.0.0.1:8081"
+          public_url: "https://gate.busbar.ci"
+          auth:
+            key_ttl: "7d"
+            signing_key: { file: "$WORKDIR/signing.key" }
+            chain:
+              - keys
+              - oidc:
+                  settings:
+                    issuer: "$ISS"
+                    audience: "$AUD"
+                    jwks_url: "https://127.0.0.1:8443/jwks.json"
+                    ca_cert_pem: |
+          $CA_PEM
+            admin_auth:
+              - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }
+            role_bindings:
+              oidc:
+                eng:
+                  group: eng-team
+          plugins:
+            enabled: true
+            dir: "$WORKDIR/plugins"
+          groups:
+            eng-team:
+              limits:
+                - { requests: 1000000, per: day }
+              child_default:
+                limits:
+                  - { budget: 5000, per: month }
+                  - { requests: 1000, per: day }
+          providers:
+            mock:
+              api_key: { env: MOCK_KEY }
+          models:
+            test-model:
+              provider: mock
+          EOF
+
+          MOCK_KEY=unused BUSBAR_PROVIDERS="$WORKDIR/providers.yaml" BUSBAR_CONFIG="$WORKDIR/config.yaml" \
+            "$BUSBAR_BIN" > "$WORKDIR/busbar.log" 2>&1 &
+          BUSBAR_PID=$!
+          for _ in $(seq 1 40); do curl -sf -o /dev/null "http://127.0.0.1:8080/healthz" && break; sleep 0.5; done
+          curl -sf -o /dev/null "http://127.0.0.1:8080/healthz" || { echo "busbar did not come up"; cat "$WORKDIR/busbar.log"; exit 1; }
+
+          echo "POST /auth/token with the minted JWT..."
+          RESP=$(curl -sS -X POST "http://127.0.0.1:8080/auth/token" -H "Authorization: Bearer $JWT")
+          echo "  → $RESP"
+          API_KEY=$(echo "$RESP" | python3 -c "import sys,json;print(json.load(sys.stdin).get('api_key',''))" 2>/dev/null || true)
+          GROUP=$(echo "$RESP"  | python3 -c "import sys,json;print(json.load(sys.stdin).get('group',''))"   2>/dev/null || true)
+          if [ -z "$API_KEY" ]; then
+            echo "POST /auth/token did not return an api_key: $RESP" >&2
+            echo "NOTE: if this is a 403 BadSubject, the auth-oidc plugin's 'oidc:<sub>' principal id is" >&2
+            echo "hitting sanitize_self_sub's ':' rejection — reconcile the prefix vs the sanitizer." >&2
+            cat "$WORKDIR/busbar.log" >&2; exit 1
+          fi
+          [ "$GROUP" = "user:$SUB" ] || { echo "group '$GROUP' != 'user:$SUB'" >&2; exit 1; }
+          echo "  self-scoped key issued (group=$GROUP)"
+
+          # One-key idempotency: a second POST returns the SAME key_id.
+          KID1=$(echo "$RESP" | python3 -c "import sys,json;print(json.load(sys.stdin).get('key_id',''))")
+          RESP2=$(curl -sS -X POST "http://127.0.0.1:8080/auth/token" -H "Authorization: Bearer $JWT")
+          KID2=$(echo "$RESP2" | python3 -c "import sys,json;print(json.load(sys.stdin).get('key_id',''))")
+          [ -n "$KID2" ] && [ "$KID1" = "$KID2" ] || { echo "one-key idempotency broken: $KID1 vs $KID2" >&2; exit 1; }
+          echo "  one-key idempotency: second POST returned the SAME key_id"
+
+          # Drive a real chat-completion with the issued key.
+          CHAT=$(curl -sS "http://127.0.0.1:8080/v1/chat/completions" -H "Authorization: Bearer $API_KEY" \
+            -H "Content-Type: application/json" -d '{"model":"test-model","messages":[{"role":"user","content":"hi"}]}')
+          echo "$CHAT" | grep -q "ci-tokenx-marker" || { echo "chat via issued key failed: $CHAT" >&2; exit 1; }
+          echo "OK: ${{ inputs.plugin_crate }} — POST /auth/token issued a working self-scoped key that drove a real chat-completion"

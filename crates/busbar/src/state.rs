@@ -22,7 +22,10 @@ pub(crate) struct Lane {
     /// forwarded request (it is a pure function of the immutable `base_url`). Only the Bedrock SigV4
     /// writer reads it; other protocols ignore `SigningContext::host`.
     pub(crate) signing_host: String,
-    pub(crate) api_key: String,
+    /// The resolved provider credential (api key / SigV4 secret material / OAuth credential string),
+    /// held [`busbar_api::Redacted`] so it never leaks via `Debug`/logs and zeroizes on drop. Reach
+    /// the plaintext only at the egress seam via `expose_secret()`.
+    pub(crate) api_key: busbar_api::Redacted<String>,
     pub(crate) protocol: Arc<Protocol>,
     /// Outbound credential — how this lane presents Busbar's identity to the upstream. Resolved once
     /// at boot from (protocol, auth). See `crate::egress_auth`; the request path calls `headers_for`.
@@ -355,6 +358,24 @@ pub(crate) struct App {
     /// The ADMIN auth chain (`admin_auth:` module names, default `[admin-tokens]`) — executed by
     /// the auth middleware for `/admin` paths. Empty = the explicit OPEN admin posture (dev).
     pub(crate) admin_chain: Vec<String>,
+    /// The RESOLVED external admin auth PLUGINS — every non-builtin `admin_auth:` entry opened over
+    /// the signed `kind: auth` ABI (1.5.2 admin-plane OIDC). Keyed by the config module name (the
+    /// same string `admin_chain` names and `role_bindings.<module>` binds). `admin-tokens` is NOT
+    /// here (it is an engine arm, dispatched by name in `run_admin_chain`). `has_plugin` gates the
+    /// off-reactor offload of the admin chain (a plugin can do blocking JWKS/introspection I/O).
+    /// Rebuilt on boot AND reload (`build_app_from_config`), Arc-shared so `App::clone` is cheap.
+    pub(crate) admin_modules: Arc<crate::auth::AdminAuthChain>,
+    /// The RESOLVED hosted-login methods (`auth.methods:`, 1.5.2 Step 6) — each opened as a login
+    /// capable `kind: auth` plugin over ABI v2, keyed by the config method/module name (insertion
+    /// order = login-page button order). Carries the CORE-only confidential-client secret and the
+    /// `browser_login` flag. `GET /auth/token` renders a button per method with a button and drives
+    /// its begin/callback. Rebuilt on boot AND reload; Arc-shared for cheap `App::clone`.
+    pub(crate) login_methods: Arc<crate::auth::token::LoginMethods>,
+    /// busbar's PUBLIC base origin (top-level `public_url:`, 1.5.2) — the origin the hosted login
+    /// page builds its `/auth/token` authorize/redirect links from and shows devs as their BYOK
+    /// `base_url` (verbatim, no `/v1`). `None` ⇒ no hosted login (config_validate requires it when
+    /// any `browser_login` method is configured). Rebuilt on every apply/reload.
+    pub(crate) public_url: Option<String>,
     /// The credential cache — Arc-shared ACROSS config swaps (like the
     /// mutation limiter): an apply/reload must not silently re-open every cached-allow window.
     pub(crate) credential_cache: Arc<crate::auth_cache::CredentialCache>,
@@ -433,6 +454,11 @@ pub(crate) struct App {
     /// [minimal, low, medium, high]. Stamped onto the IR at the egress seam so writers project
     /// effort words and numeric budgets with the operator's numbers.
     pub(crate) reasoning_effort_budgets: [u32; 4],
+    /// The self-serve (token-exchange) key lifetime in seconds, resolved from `auth.key_ttl`
+    /// (`parse_duration_secs`, default [`crate::admin::DEFAULT_KEY_TTL_SECS`] = 90d). This is where
+    /// the Step-1 `auth.key_ttl` field is finally READ: `POST /auth/token` mints every self key with
+    /// `exp = now + self_key_ttl_secs`. Rebuilt on every apply/reload with the rest of the snapshot.
+    pub(crate) self_key_ttl_secs: u64,
 }
 
 impl App {

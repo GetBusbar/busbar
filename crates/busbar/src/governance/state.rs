@@ -48,6 +48,7 @@ impl GovState {
             signing: RwLock::new(signer.map(|s| Arc::new(SigningMaterial::new(s)))),
             denylist,
             refresh_lock: std::sync::Mutex::new(()),
+            self_mint_lock: std::sync::Mutex::new(()),
         })
     }
 
@@ -336,6 +337,173 @@ impl GovState {
     /// The signing key id (`kid`) this node stamps into minted tokens, if signing is enabled.
     pub(crate) fn signing_kid(&self) -> Option<String> {
         self.signing_material().map(|m| m.signer.kid().to_string())
+    }
+
+    // ── SELF-SERVE (token-exchange) deterministic keys — 1.5.2 "Model B" ─────────────────────────
+    //
+    // A principal that authenticates through the browser/`POST /auth/token` flow gets ONE key,
+    // bound to `user:<sub>`. The mechanism is DETERMINISTIC MINTING, NOT a new credential shape:
+    //
+    //   subject id = vk_<hex( HMAC-SHA256(signing-key seed, "user:<sub>#<epoch>")[..16] )>
+    //
+    // so the same (sub, epoch) always yields the SAME id → the binding upsert is idempotent (a
+    // re-login reuses the one row, never inserts a second). The credential itself is STILL a
+    // standard busbar signed token — minted ONLY by `TokenSigner::mint`, exactly like every other
+    // key — so `verify_token` is BYTE-FOR-BYTE unchanged: the HMAC is a mint-time id SELECTOR, never
+    // a verification step, and a token whose signature segment is a literal HMAC is rejected
+    // `BadSignature` like any other forgery. The `epoch` is carried as the binding GENERATION, so
+    // Refresh (epoch+1) rides the existing `generation_matches` gate to invalidate the prior token.
+    // Nothing recoverable is stored: the token is the credential, as today.
+
+    /// Derive the deterministic self-serve SUBJECT id for `(user_sub, epoch)` under this node's
+    /// signing-key seed. The HMAC output is a mint-time id selector (see the block comment); it is
+    /// NEVER the credential and is never recomputed on the verify path.
+    fn derive_self_subject(seed: &[u8; 32], user_sub: &str, epoch: u64) -> String {
+        use hmac::{Hmac, KeyInit, Mac};
+        let mut mac = <Hmac<sha2::Sha256>>::new_from_slice(seed)
+            .expect("HMAC-SHA256 accepts a key of any length");
+        mac.update(format!("{SELF_KEY_GROUP_PREFIX}{user_sub}#{epoch}").as_bytes());
+        let tag = mac.finalize().into_bytes();
+        format!("{VK_ID_PREFIX}{}", hex::encode(&tag[..16]))
+    }
+
+    /// The current ENABLED self-serve binding for `user_sub` (group `user:<sub>`), if any. At most
+    /// one exists — the mint is an idempotent upsert and Refresh tombstones the prior row.
+    fn current_self_binding(&self, user_sub: &str) -> Option<Arc<VirtualKey>> {
+        let group = format!("{SELF_KEY_GROUP_PREFIX}{user_sub}");
+        self.caches_read()
+            .by_id
+            .values()
+            .find(|k| {
+                k.enabled && k.deleted_at.is_none() && k.group.as_deref() == Some(group.as_str())
+            })
+            .cloned()
+    }
+
+    /// Write (upsert) a self-serve binding at `epoch` and issue the signed token over it. The id is
+    /// derived (not random), so `put_key` at the same `(sub, epoch)` is idempotent by id.
+    fn write_self_binding(
+        &self,
+        material: &SigningMaterial,
+        user_sub: &str,
+        allowed_pools: Option<Vec<String>>,
+        epoch: u64,
+        exp: u64,
+        now: u64,
+    ) -> StoreResult<(VirtualKey, String)> {
+        let seed = material.signer.secret_bytes();
+        let id = Self::derive_self_subject(&seed, user_sub, epoch);
+        let generation = epoch.to_string();
+        let binding = VirtualKey {
+            id: id.clone(),
+            generation_hash: binding_marker(&id, &generation),
+            name: format!("self-serve key ({user_sub})"),
+            // C6 intent carried intact: None = all pools; Some([]) = none.
+            allowed_scopes: allowed_pools
+                .map(|list| list.into_iter().map(busbar_api::ScopeRef::pool).collect()),
+            enabled: true,
+            created_at: now,
+            group: Some(format!("{SELF_KEY_GROUP_PREFIX}{user_sub}")),
+            labels: std::collections::BTreeMap::new(),
+            expires_at: None,
+            deleted_at: None,
+            revision: 0,
+        };
+        self.store.put_key(&binding)?;
+        self.refresh()?;
+        let token = material.signer.mint(&id, exp, Some(&generation));
+        Ok((binding, token))
+    }
+
+    /// ISSUE the (single, idempotent) self-serve key for `user_sub`. If a binding already exists it
+    /// is REUSED verbatim (same id + generation) and only a fresh-`exp` token is re-minted over it —
+    /// so N logins produce exactly ONE binding row. Otherwise a fresh binding is minted at epoch 0.
+    /// `exp` is the token expiry (Unix secs); `now` the mint time.
+    pub(crate) fn issue_self(
+        &self,
+        user_sub: &str,
+        allowed_pools: Option<Vec<String>>,
+        exp: u64,
+        now: u64,
+    ) -> StoreResult<(VirtualKey, String)> {
+        let Some(material) = self.signing_material() else {
+            return Err(StoreError(
+                "signed-token minting is unavailable: no signing key is configured".to_string(),
+            ));
+        };
+        // Serialize the check→write against a concurrent issue/refresh for the same sub.
+        let _mint = self
+            .self_mint_lock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        match self.current_self_binding(user_sub) {
+            Some(existing) => {
+                // The pools the caller resolved THIS login (from the possibly-changed binding).
+                let new_scopes = allowed_pools.clone().map(|list| {
+                    list.into_iter()
+                        .map(busbar_api::ScopeRef::pool)
+                        .collect::<Vec<_>>()
+                });
+                if new_scopes != existing.allowed_scopes {
+                    // allowed_pools CHANGED since the binding was created (admin narrowed/widened the
+                    // group) — re-persist the binding at the SAME epoch (same deterministic id, so
+                    // still ONE row) with the fresh pools, so the permission change takes effect.
+                    let epoch = binding_generation(&existing.generation_hash)
+                        .and_then(|g| g.parse::<u64>().ok())
+                        .unwrap_or(0);
+                    self.write_self_binding(&material, user_sub, allowed_pools, epoch, exp, now)
+                } else {
+                    // Idempotent re-show: reuse the one binding, re-issue a fresh-exp token over the
+                    // SAME id + generation. No new row, so the anti-sprawl cap can never trip.
+                    let generation = binding_generation(&existing.generation_hash);
+                    let token = material.signer.mint(&existing.id, exp, generation);
+                    Ok(((*existing).clone(), token))
+                }
+            }
+            None => self.write_self_binding(&material, user_sub, allowed_pools, 0, exp, now),
+        }
+    }
+
+    /// REFRESH (rotate) the self-serve key for `user_sub`: bump the epoch, mint the new binding, and
+    /// TOMBSTONE the prior one. The prior id no longer re-derives and its binding is disabled, so
+    /// every token minted before the refresh stops verifying (`verify_token` → `None`) — the
+    /// existing generation gate, reached through a normal delete. Returns the new (binding, token).
+    pub(crate) fn refresh_self(
+        &self,
+        user_sub: &str,
+        allowed_pools: Option<Vec<String>>,
+        exp: u64,
+        now: u64,
+    ) -> StoreResult<(VirtualKey, String)> {
+        let Some(material) = self.signing_material() else {
+            return Err(StoreError(
+                "signed-token minting is unavailable: no signing key is configured".to_string(),
+            ));
+        };
+        // Serialize against a concurrent issue/refresh for the same sub (see `self_mint_lock`).
+        let _mint = self
+            .self_mint_lock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let (new_epoch, old_id) = match self.current_self_binding(user_sub) {
+            Some(existing) => {
+                let cur = binding_generation(&existing.generation_hash)
+                    .and_then(|g| g.parse::<u64>().ok())
+                    .unwrap_or(0);
+                (cur.saturating_add(1), Some(existing.id.clone()))
+            }
+            None => (0, None),
+        };
+        let out =
+            self.write_self_binding(&material, user_sub, allowed_pools, new_epoch, exp, now)?;
+        if let Some(old) = old_id {
+            if old != out.0.id {
+                // Tombstone the prior epoch's binding — its token now fails verify (disabled).
+                self.store.delete_key(&old)?;
+                self.refresh()?;
+            }
+        }
+        Ok(out)
     }
 
     /// Accrue one completed response's TIER-TOKEN split under `model` to EVERY bucket in the key's

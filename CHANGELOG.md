@@ -11,6 +11,28 @@ item under **Changed**.
 
 ## [Unreleased]
 
+## [1.5.2], 2026-08-02
+
+### Fixed
+
+- **Data-plane admission is decoupled from the admin token.** The data-plane auth gate no longer
+  forks on whether an operator admin token is set. Admission is now decided SOLELY by the shape of
+  `auth.chain`: `[]` is a genuine open front door (admit anonymous), `[keys]` requires and resolves a
+  virtual key, an IdP chain requires the IdP. The admin token gates ONLY the admin API
+  (`auth.admin_auth`) and never touches the data plane. Internally, `keys` verification became an
+  engine arm inside the chain run (holding the governance handle passed per-request), the Bedrock
+  SigV4 ingress stayed a real pre-step that feeds the same single verdict match, and
+  `ChainVerdict::Identified` gained an engine-only resolved `VirtualKey` (the plugin ABI is
+  unchanged). Two intended behavior changes fall out of this:
+  - **`chain:[]` + an admin token is now `open relay + protected admin API`** (previously the admin
+    token silently forced every data-plane request to carry a virtual key — the "protected admin,
+    open relay" posture was inexpressible). This only affects deployments that set an admin token but
+    named no data-plane chain.
+  - **`chain:[keys]` with no usable admin mint path is now a boot error** (previously it booted as a
+    silent open relay that admitted anonymously). A usable mint path is `auth.admin_auth` naming an
+    `admin-tokens` entry with a `token:`, an admin module granting `mint`/`full`, or an explicit open
+    `admin_auth: []` (dev, warned). See `docs/migration-1.5.md`.
+
 ## [1.5.1], 2026-08-02
 
 <!-- Release notes accumulate here. Per .github/workflows/cut-release.yml, cutting a release runs

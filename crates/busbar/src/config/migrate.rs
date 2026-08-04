@@ -199,6 +199,9 @@ pub(crate) fn migrate_config(raw: &str) -> Result<MigrateOutput, String> {
     // governance.admin_token secret ref), and this folds the 1.4.x TOP-LEVEL `admin_auth:` list in
     // on top, letting the token-bearing entry win over a bare duplicate.
     migrate_admin_auth(&mut root, &mut changes);
+    // 1.5.2 scope collapse: rewrite any retired `hooks-register`/`mint` admin scope to `full`
+    // (loud per-site warning). Runs after the auth/admin_auth folds so every scope site exists.
+    migrate_dropped_scopes(&mut root, &mut warnings);
     migrate_providers(&mut root, &mut changes);
     migrate_hooks_block(&mut root, &mut changes, &mut todos);
     migrate_pools(&mut root, &mut changes, &mut todos);
@@ -271,6 +274,75 @@ fn set_max_admin_scope(seq: &mut [Value], module: &str, scope: Value) -> bool {
         return true;
     }
     false
+}
+
+/// 1.5.2 SCOPE COLLAPSE: the four-variant admin-scope diamond collapsed to `{read-only, full}` —
+/// the delegated `hooks-register` and `mint` tokens are RETIRED and no longer parse (config_validate
+/// rejects them). An UPGRADING config that still names either (in an `auth.chain`/`auth.admin_auth`
+/// entry's `max_admin_scope`, or a `role_bindings.<module>.<role>.admin_scope`) is rewritten to
+/// `full` — the compat-over-hard-fail choice — with a loud per-site WARNING so the operator can
+/// tighten it back to `read-only` if `full` is too broad.
+fn migrate_dropped_scopes(root: &mut Mapping, warnings: &mut Vec<String>) {
+    fn collapsed(v: &Value) -> bool {
+        matches!(v.as_str(), Some("hooks-register") | Some("mint"))
+    }
+    let Some(Value::Mapping(auth)) = root.get_mut(Value::from("auth")) else {
+        return;
+    };
+    // (a) chain-entry `max_admin_scope:` on `auth.chain` / `auth.admin_auth`.
+    for list_key in ["chain", "admin_auth"] {
+        if let Some(Value::Sequence(seq)) = auth.get_mut(Value::from(list_key)) {
+            for entry in seq.iter_mut() {
+                let Value::Mapping(outer) = entry else {
+                    continue;
+                };
+                let module = outer
+                    .keys()
+                    .next()
+                    .and_then(|k| k.as_str().map(str::to_string));
+                let Some(module) = module else { continue };
+                if let Some(Value::Mapping(body)) = outer.get_mut(Value::from(module.as_str())) {
+                    if let Some(scope) = body.get_mut(Value::from("max_admin_scope")) {
+                        if collapsed(scope) {
+                            let old = scope.as_str().unwrap_or("").to_string();
+                            *scope = Value::from("full");
+                            warnings.push(format!(
+                                "auth.{list_key} entry '{module}' max_admin_scope: {old} -> full \
+                                 (the delegated {old} scope is retired in 1.5.2; tighten to \
+                                 read-only if full is too broad)"
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // (b) `role_bindings.<module>.<role>.admin_scope`.
+    if let Some(Value::Mapping(rb)) = auth.get_mut(Value::from("role_bindings")) {
+        for (module_k, roles) in rb.iter_mut() {
+            let module = module_k.as_str().unwrap_or("").to_string();
+            let Value::Mapping(roles) = roles else {
+                continue;
+            };
+            for (role_k, binding) in roles.iter_mut() {
+                let role = role_k.as_str().unwrap_or("").to_string();
+                let Value::Mapping(binding) = binding else {
+                    continue;
+                };
+                if let Some(scope) = binding.get_mut(Value::from("admin_scope")) {
+                    if collapsed(scope) {
+                        let old = scope.as_str().unwrap_or("").to_string();
+                        *scope = Value::from("full");
+                        warnings.push(format!(
+                            "role_bindings.{module}.{role}.admin_scope: {old} -> full (the \
+                             delegated {old} scope is retired in 1.5.2; tighten to read-only if \
+                             full is too broad)"
+                        ));
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Fold a 1.4.x TOP-LEVEL `admin_auth: [<module>, …]` (a `Vec<String>` of module names) into the

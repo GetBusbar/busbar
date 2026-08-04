@@ -15,7 +15,7 @@ fn anthropic_lane(default_max_tokens: Option<u32>) -> Lane {
         provider: "anthropic".to_string(),
         signing_host: "api.anthropic.com".to_string(),
         base_url: "https://api.anthropic.com".to_string(),
-        api_key: "k".to_string(),
+        api_key: busbar_api::Redacted::new("k".to_string()),
         credential: crate::egress_auth::resolve("anthropic", None),
         protocol: Arc::new(Protocol::anthropic()),
         max: 1,

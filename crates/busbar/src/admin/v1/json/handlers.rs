@@ -678,7 +678,6 @@ pub(crate) struct GroupPatchReq {
 pub(crate) async fn register_hook(
     State(handle): State<Arc<AppHandle>>,
     axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
-    axum::Extension(scope): axum::Extension<crate::auth::AdminScope>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
@@ -691,16 +690,6 @@ pub(crate) async fn register_hook(
         Ok(r) => r,
         Err(e) => return err_json(&AdminError::Validation(format!("malformed hook body: {e}"))),
     };
-    // A hooks-register principal may not register a content-seeing / global (wired) hook.
-    if let Some(e) = hooks_register_escalation(scope, &req.config) {
-        audit::AUDIT.record_by(
-            "hook.register",
-            &format!("hook:{}", req.name),
-            audit::OUTCOME_REJECTED,
-            &actor,
-        );
-        return err_json(&e);
-    }
     let name = req.name.clone();
     let resource = format!("hook:{name}");
     let cfg = req.config;
@@ -796,7 +785,6 @@ pub(crate) async fn register_hook(
 pub(crate) async fn put_hook(
     State(handle): State<Arc<AppHandle>>,
     axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
-    axum::Extension(scope): axum::Extension<crate::auth::AdminScope>,
     Path(name): Path<String>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
@@ -810,16 +798,6 @@ pub(crate) async fn put_hook(
         Ok(r) => r,
         Err(e) => return err_json(&AdminError::Validation(format!("malformed hook body: {e}"))),
     };
-    // A hooks-register principal may not replace a hook into a content-seeing / global form.
-    if let Some(e) = hooks_register_escalation(scope, &req.config) {
-        audit::AUDIT.record_by(
-            "hook.replace",
-            &format!("hook:{name}"),
-            audit::OUTCOME_REJECTED,
-            &actor,
-        );
-        return err_json(&e);
-    }
     let resource = format!("hook:{name}");
     let cfg = req.config;
     let txn_name = name.clone();
@@ -895,7 +873,6 @@ pub(crate) async fn put_hook(
 pub(crate) async fn delete_hook(
     State(handle): State<Arc<AppHandle>>,
     axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
-    axum::Extension(scope): axum::Extension<crate::auth::AdminScope>,
     Path(name): Path<String>,
     headers: axum::http::HeaderMap,
 ) -> Response {
@@ -912,21 +889,6 @@ pub(crate) async fn delete_hook(
         // three verbs answer a stale guard on a nonexistent hook identically (404, not 409).
         if !current.hook_registry.contains_key(&txn_name) {
             return Err(AdminError::not_found(format!("hook `{txn_name}`")));
-        }
-        // Escalation guard, keyed on the EXISTING hook's grants — a non-Full (hooks-register)
-        // principal may not DELETE a content-seeing (`prompt`/`user`) or `global: true` gate. Such a
-        // hook can only have been created by a Full admin (register/put block a narrow token from
-        // wiring one), and DELETING it TEARS DOWN that admin's security gate — the same escalation
-        // register / put / patch already forbid. Without this a hooks-register token could remove an
-        // operator's global `pii-guard` gate and reach content by the back door.
-        //
-        // BEFORE the staleness check, matching `put_hook`'s escalation guard (checked before the
-        // transaction even opens): a principal that may never delete this hook must not be told
-        // "retry with a fresher ETag" — 403 is terminal regardless of which version the client held.
-        if let Some(existing) = current.hook_registry.get(&txn_name) {
-            if let Some(e) = hooks_register_escalation(scope, existing) {
-                return Err(e);
-            }
         }
         // Base-config guard BEFORE the If-Match staleness check, matching the precedence `put_hook`
         // and `delete_group` establish on this resource: a base-config hook can NEVER be deleted via
@@ -3100,7 +3062,6 @@ pub(crate) struct PatchSettingsReq {
 pub(crate) async fn patch_hook_settings(
     State(handle): State<Arc<AppHandle>>,
     axum::Extension(principal): axum::Extension<crate::auth::AuthPrincipal>,
-    axum::Extension(scope): axum::Extension<crate::auth::AdminScope>,
     Path(name): Path<String>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
@@ -3134,15 +3095,6 @@ pub(crate) async fn patch_hook_settings(
         audit::AUDIT.record_by("hook.settings", &resource, audit::OUTCOME_REJECTED, &actor);
         return err_json(&AdminError::not_found(format!("hook `{name}`")));
     };
-    // Escalation guard, keyed on the EXISTING hook's grants (PATCH changes settings, not
-    // grants). A non-Full (hooks-register) principal may not push settings to a content-seeing
-    // (`prompt`/`user`) or `global: true` hook — the same ceiling register_hook/put_hook enforce.
-    // Without it a narrow token could retune a `prompt: rw` global gate it can neither create nor
-    // replace, reaching a content-seeing hook by the back door.
-    if let Some(e) = hooks_register_escalation(scope, existing) {
-        audit::AUDIT.record_by("hook.settings", &resource, audit::OUTCOME_REJECTED, &actor);
-        return err_json(&e);
-    }
     if current.base_hook_names.contains(&name) {
         audit::AUDIT.record_by("hook.settings", &resource, audit::OUTCOME_REJECTED, &actor);
         return err_json(&AdminError::Conflict(format!(

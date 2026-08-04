@@ -239,32 +239,6 @@ fn ap(rel: &str) -> String {
     format!("{}{rel}", crate::admin::v1::contract::ADMIN_PREFIX)
 }
 
-/// BODY-DERIVED AUTHORIZATION REFINEMENT for hook registration. The route matrix admits a
-/// `hooks-register` principal to POST/PUT `/api/v1/admin/hooks*`, but that scope is "define a hook,
-/// don't wire it into a security-critical path". A non-`Full` caller therefore may NOT register a
-/// hook that (a) sees or rewrites caller content/identity (`prompt`/`user` above `no`) or (b) sets
-/// inline `global: true` — attaching to every request is chain WIRING, which is full-only. `Full`
-/// (operator token, mapped-full, or the open dev posture) is unrestricted. Returns the 403 to
-/// surface, or `None` to allow.
-fn hooks_register_escalation(
-    scope: crate::auth::AdminScope,
-    cfg: &crate::config::HookCfg,
-) -> Option<AdminError> {
-    use crate::admin::v1::contract::Scope;
-    if scope.0.contains(Scope::Full) {
-        return None;
-    }
-    if cfg.global
-        || cfg.prompt != crate::config::PromptAccess::No
-        || cfg.user != crate::config::UserAccess::No
-    {
-        return Some(AdminError::Forbidden {
-            needed: Scope::Full,
-        });
-    }
-    None
-}
-
 /// The config-plane mutation choke point. Every mutation — from any transport, in any module — runs
 /// inside `txn::config_transaction`, which owns the (file-private) mutation lock, hands the body a
 /// FRESH post-lock snapshot, forces store/disk work onto `spawn_blocking`, and applies the resulting
