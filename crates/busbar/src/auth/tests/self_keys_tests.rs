@@ -9,6 +9,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use async_trait::async_trait;
+
 use super::super::self_keys::{
     issue_key, resolve_exchange, DeterministicEd25519Keys, ExchangeError, IssuedKey,
     SelfGroupProvisioner, SelfServeKeys,
@@ -44,8 +46,9 @@ impl FakeProvisioner {
     }
 }
 
+#[async_trait]
 impl SelfGroupProvisioner for FakeProvisioner {
-    fn ensure_leaf(&self, leaf: &str, parent: &str) -> Result<(), String> {
+    async fn ensure_leaf(&self, leaf: &str, parent: &str) -> Result<(), String> {
         let mut reg = self.registry.lock().unwrap();
         if reg.contains_key(leaf) {
             return Ok(()); // idempotent: already provisioned, never reset
@@ -59,8 +62,9 @@ impl SelfGroupProvisioner for FakeProvisioner {
 /// A no-op provisioner for the tests that only exercise key-row behavior (idempotency, refresh,
 /// token verification) and do not assert on the group tree.
 struct NoopProvisioner;
+#[async_trait]
 impl SelfGroupProvisioner for NoopProvisioner {
-    fn ensure_leaf(&self, _leaf: &str, _parent: &str) -> Result<(), String> {
+    async fn ensure_leaf(&self, _leaf: &str, _parent: &str) -> Result<(), String> {
         Ok(())
     }
 }
@@ -151,8 +155,8 @@ fn first_call_provisions_second_call_reuses_one_row() {
 /// RED before the fix: the mint seam bound the key to `user:<sub>` but never created that group, so
 /// `reg.get("user:sam")` is absent (panic) and a cost model built from the registry can't resolve the
 /// key's chain — exactly the live `429 group 'user:<sub>' is not configured` the demo hit.
-#[test]
-fn exchange_provisions_user_leaf_from_child_default_and_key_is_usable() {
+#[tokio::test]
+async fn exchange_provisions_user_leaf_from_child_default_and_key_is_usable() {
     let gov = gov();
     // The team the role binds to, carrying a child_default the per-user leaf inherits.
     let prov = Arc::new(FakeProvisioner::with_team(
@@ -168,6 +172,7 @@ fn exchange_provisions_user_leaf_from_child_default_and_key_is_usable() {
         Duration::from_secs(3600),
         false,
     )
+    .await
     .expect("first exchange issues a key");
     assert_eq!(issued.group, "user:sam");
 
@@ -210,6 +215,7 @@ fn exchange_provisions_user_leaf_from_child_default_and_key_is_usable() {
         Duration::from_secs(3600),
         false,
     )
+    .await
     .expect("second exchange reuses");
     assert_eq!(issued2.key_id, issued.key_id, "same deterministic key row");
     assert_eq!(
@@ -467,14 +473,16 @@ fn sub_sanitization_refused() {
 
 // ── end-to-end through the real seam ─────────────────────────────────────────────────────────────
 
-#[test]
-fn resolve_then_issue_via_real_seam() {
+#[tokio::test]
+async fn resolve_then_issue_via_real_seam() {
     let gov = gov();
     let rb = bindings("oidc", "eng", Some("team"));
     let v = identified("oidc", principal("sam", &["eng"]));
     let (p, team, pools) = resolve_exchange(&v, &rb).unwrap();
     let keys = DeterministicEd25519Keys::new(gov.clone(), team, pools, Arc::new(NoopProvisioner));
-    let issued = issue_key(&keys, p, Duration::from_secs(3600), false).unwrap();
+    let issued = issue_key(&keys, p, Duration::from_secs(3600), false)
+        .await
+        .unwrap();
     assert!(issued.secret.starts_with("bbk_"));
     assert_eq!(issued.group, "user:sam");
     // The token the seam handed back verifies through the ordinary path.
@@ -487,15 +495,17 @@ fn resolve_then_issue_via_real_seam() {
 /// cannot escape the `user:` namespace because the group is ALWAYS `user:` + the whole sub). RED
 /// before the fix: `sanitize_self_sub` rejected ANY ':' → 403 BadSubject, so token-exchange with a
 /// real OIDC JWT never issued a key.
-#[test]
-fn module_namespaced_sub_is_admitted_and_grouped_under_user() {
+#[tokio::test]
+async fn module_namespaced_sub_is_admitted_and_grouped_under_user() {
     let gov = gov();
     let rb = bindings("oidc", "eng", Some("team"));
     let v = identified("oidc", principal("oidc:alice", &["eng"]));
     let (p, team, pools) =
         resolve_exchange(&v, &rb).expect("a module-namespaced subject is legitimate + verified");
     let keys = DeterministicEd25519Keys::new(gov.clone(), team, pools, Arc::new(NoopProvisioner));
-    let issued = issue_key(&keys, p, Duration::from_secs(3600), false).unwrap();
+    let issued = issue_key(&keys, p, Duration::from_secs(3600), false)
+        .await
+        .unwrap();
     assert_eq!(
         issued.group, "user:oidc:alice",
         "the whole sub lives inside the user: namespace"
@@ -510,8 +520,9 @@ fn module_namespaced_sub_is_admitted_and_grouped_under_user() {
 /// A FAKE scheme that issues an opaque string — proving `issue_key`/the handler depend ONLY on the
 /// `SelfServeKeys` trait, never on ed25519/epoch/envelope internals.
 struct FakeKeys;
+#[async_trait]
 impl SelfServeKeys for FakeKeys {
-    fn issue(&self, principal: &Principal, _ttl: Duration) -> Result<IssuedKey, String> {
+    async fn issue(&self, principal: &Principal, _ttl: Duration) -> Result<IssuedKey, String> {
         Ok(IssuedKey {
             secret: format!("fake-scheme-token:{}", principal.id),
             key_id: "fake".into(),
@@ -519,19 +530,23 @@ impl SelfServeKeys for FakeKeys {
             exp: 9999,
         })
     }
-    fn refresh(&self, principal: &Principal, ttl: Duration) -> Result<IssuedKey, String> {
-        self.issue(principal, ttl)
+    async fn refresh(&self, principal: &Principal, ttl: Duration) -> Result<IssuedKey, String> {
+        self.issue(principal, ttl).await
     }
 }
 
-#[test]
-fn endpoint_is_scheme_agnostic_over_the_trait() {
+#[tokio::test]
+async fn endpoint_is_scheme_agnostic_over_the_trait() {
     let rb = bindings("oidc", "eng", Some("team"));
     let v = identified("oidc", principal("sam", &["eng"]));
     let (p, _team, _pools) = resolve_exchange(&v, &rb).unwrap();
-    let issued = issue_key(&FakeKeys, p, Duration::from_secs(60), false).unwrap();
+    let issued = issue_key(&FakeKeys, p, Duration::from_secs(60), false)
+        .await
+        .unwrap();
     assert_eq!(issued.secret, "fake-scheme-token:sam");
     // Refresh path also rides the same trait object.
-    let refreshed = issue_key(&FakeKeys, p, Duration::from_secs(60), true).unwrap();
+    let refreshed = issue_key(&FakeKeys, p, Duration::from_secs(60), true)
+        .await
+        .unwrap();
     assert_eq!(refreshed.secret, "fake-scheme-token:sam");
 }
