@@ -231,6 +231,166 @@ async fn callback_nonce_mismatch_rejected() {
     mock.abort();
 }
 
+// ── branded error pages (hosted browser flow) vs JSON (headless API) ─────────────────────────────
+
+/// Markers of the shared branded error card (see `token::error_page`): the Busbar brand lockup, the
+/// alert glyph roundel, the error heading/message, and the "Back to sign in" link to GET /auth/token.
+fn assert_branded_error_page(body: &str, heading: &str) {
+    assert!(
+        body.starts_with("<!doctype html>"),
+        "a browser-flow failure must be a full styled HTML document, not plain text: {body}"
+    );
+    assert!(
+        body.contains("class=\"wordmark\">Busbar"),
+        "the error card carries the Busbar brand lockup: {body}"
+    );
+    assert!(
+        body.contains("class=\"erricon\""),
+        "the error card shows the alert glyph: {body}"
+    );
+    // The heading is server-escaped in the page (e.g. `'` → `&#39;`), so compare against the escaped
+    // form the renderer emits.
+    let heading_esc = heading.replace('\'', "&#39;");
+    assert!(
+        body.contains(&heading_esc),
+        "the error card heading is human-readable ({heading}): {body}"
+    );
+    assert!(
+        body.contains("class=\"backlink\"") && body.contains("href=\"/auth/token\""),
+        "the error card links back to sign in: {body}"
+    );
+    assert!(
+        body.contains("Back to sign in"),
+        "the back link is labeled: {body}"
+    );
+}
+
+/// RED→GREEN: a browser-flow failure (here a callback `state` mismatch) renders the BRANDED, styled
+/// HTML error page — not bare plain text — with the correct status. RED before this change: the
+/// callback returned `(400, "state mismatch")` plain text (no `<!doctype`, no error card).
+#[tokio::test]
+async fn browser_callback_failure_renders_branded_html() {
+    let app = test_app_with_methods(vec![("microsoft", true)], "http://127.0.0.1:1/unused");
+    let cookie = LoginCookie {
+        method: "microsoft".into(),
+        code_verifier: "v".into(),
+        state: "the-real-state".into(),
+        nonce: "n".into(),
+        refresh: false,
+    };
+    let resp = callback(
+        &app,
+        &cred_handle(&app),
+        Some(cookie.encode()),
+        "code123".into(),
+        Some("WRONG-STATE".into()),
+    )
+    .await;
+    assert_eq!(resp.status().as_u16(), 400);
+    // A failed browser login must still clear the single-use cookie.
+    assert!(resp
+        .headers()
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .any(|v| v.to_str().unwrap_or("").contains("Max-Age=0")));
+    let body = body_of(resp);
+    assert_branded_error_page(&body, "Sign-in couldn't be verified");
+    assert!(
+        !body.contains("state mismatch"),
+        "the internal reason is not leaked to the user: {body}"
+    );
+}
+
+/// The flagship copy case: a verified identity with NO self-serve grant gets the friendly "No access
+/// yet" card (403), not the bare "no self-serve grant for this identity" text. Driven through the FULL
+/// redirect callback (mock token endpoint → Identify) with no role binding ⇒ `Unbound`.
+#[tokio::test]
+async fn no_self_serve_grant_renders_branded_html() {
+    let (token_url, mock) = mock_token_endpoint("match-nonce".into()).await;
+    // No governance / role_bindings ⇒ the Identified principal resolves to `Unbound`.
+    let app = test_app_with_methods(vec![("microsoft", true)], &token_url);
+    let cookie = LoginCookie {
+        method: "microsoft".into(),
+        code_verifier: "v".into(),
+        state: "st".into(),
+        nonce: "match-nonce".into(),
+        refresh: false,
+    };
+    let resp = callback(
+        &app,
+        &cred_handle(&app),
+        Some(cookie.encode()),
+        "code123".into(),
+        Some("st".into()),
+    )
+    .await;
+    assert_eq!(resp.status().as_u16(), 403, "no grant ⇒ 403");
+    let body = body_of(resp);
+    assert_branded_error_page(&body, "No access yet");
+    assert!(
+        body.contains("admin"),
+        "the copy tells the user to ask their admin: {body}"
+    );
+    mock.abort();
+}
+
+/// A rejected credential (wrong password) renders the branded 401 card via the POST/credential path,
+/// which is ALSO a browser flow (it carries the login cookie).
+#[tokio::test]
+async fn credential_reject_renders_branded_html() {
+    let app = cred_app();
+    let form = vec![
+        ("__state".to_string(), "csrf-1".to_string()),
+        ("username".to_string(), "alice".to_string()),
+        ("password".to_string(), "WRONG".to_string()),
+    ];
+    let resp =
+        credential_submit(&app, &cred_handle(&app), cred_cookie("csrf-1", false), form).await;
+    assert_eq!(resp.status().as_u16(), 401);
+    assert_branded_error_page(&body_of(resp), "Sign-in was declined");
+}
+
+/// GATE ON THE BRANCH: the HEADLESS/API path (POST /auth/token, no login cookie — a curl/CI client)
+/// keeps returning the JSON `{"error":…}` shape. HTML is the BROWSER branch only; the API must never
+/// receive a styled page. Here an unauthenticated POST ⇒ 401 JSON, not the branded HTML card.
+#[tokio::test]
+async fn api_json_path_stays_json_not_html() {
+    let app = test_app_with_methods(vec![("microsoft", true)], "");
+    let (base, handle) = serve(app).await;
+    let client = reqwest::Client::new();
+    let r = client
+        .post(format!("{base}/auth/token"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status().as_u16(),
+        401,
+        "unauthenticated API exchange ⇒ 401"
+    );
+    let ctype = r
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    assert!(
+        ctype.contains("application/json"),
+        "the API path returns JSON, not text/html: {ctype}"
+    );
+    let body = r.text().await.unwrap();
+    assert!(
+        !body.contains("<!doctype") && !body.contains("class=\"backlink\""),
+        "the API path must NOT return the styled HTML error card: {body}"
+    );
+    let json: serde_json::Value = serde_json::from_str(&body).expect("API error is JSON");
+    assert!(
+        json.get("error").and_then(|e| e.as_str()).is_some(),
+        "the API keeps the {{\"error\":…}} shape: {body}"
+    );
+    handle.abort();
+}
+
 // ── client_secret injection (CORE-only) ──────────────────────────────────────────────────────────
 
 #[tokio::test]

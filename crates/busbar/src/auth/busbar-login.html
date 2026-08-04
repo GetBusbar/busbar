@@ -17,6 +17,8 @@
     --shadow: 0 1px 2px rgba(11,18,32,.04), 0 12px 32px -12px rgba(11,18,32,.16);
     --focus: #4d7c0f;
     --good: #4d7c0f;
+    --err-bg: #fee2e2;
+    --err-ink: #b91c1c;
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -36,6 +38,8 @@
       --shadow: 0 1px 2px rgba(0,0,0,.4), 0 18px 40px -16px rgba(0,0,0,.6);
       --focus: #a3e635;
       --good: #a3e635;
+      --err-bg: #3a1518;
+      --err-ink: #fca5a5;
     }
   }
 
@@ -170,4 +174,19 @@
   }
   .credform .finput:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; border-color: var(--limed); }
   .credform button.provider { justify-content: center; margin-top: 4px; }
+
+  /* ── error screen ── */
+  .errhead { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .erricon {
+    width: 24px; height: 24px; border-radius: 50%; background: var(--err-bg); color: var(--err-ink);
+    display: grid; place-items: center; flex: 0 0 auto;
+  }
+  .erricon svg { width: 14px; height: 14px; }
+  .backlink {
+    display: inline-flex; align-items: center; gap: 6px; margin-top: 20px;
+    color: var(--limed); font-weight: 600; font-size: 13.5px; text-decoration: none;
+  }
+  .backlink:hover { text-decoration: underline; }
+  .backlink:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 4px; }
+  .backlink svg { width: 15px; height: 15px; flex: 0 0 auto; }
 </style>
