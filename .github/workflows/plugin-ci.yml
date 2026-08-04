@@ -291,9 +291,14 @@ jobs:
             base_url: https://api.anthropic.com
             api_key: { env: FAKE_UPSTREAM_KEY }
           EOF
+          # Mint an ephemeral signing key: busbar no longer auto-generates one (1.5.1+), and a
+          # config naming the built-in `keys` verifier in auth.chain now REQUIRES auth.signing_key
+          # at validate/boot. Without it busbar exits 1 with "auth.signing_key is required".
+          "$PWD/busbarAI/target/release/busbar" --generate-signing-key > "$WORKDIR/signing.key"
           cat > "$WORKDIR/config.yaml" <<EOF
           auth:
             chain: [keys]
+            signing_key: { file: $WORKDIR/signing.key }
             admin_auth:
               - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }
           # STRICT trust posture — no allow_unsigned: the tarball is signed with this run's
@@ -431,9 +436,13 @@ jobs:
             redis)    STORE_SETTINGS_FLOW='{ url: "redis://127.0.0.1:6379/6" }' ;;  # own DB — see the redis notes above
             *)        STORE_SETTINGS_FLOW='{}' ;;
           esac
+          # Ephemeral signing key (see the INSTALL-AND-SERVE step above): auth.chain names `keys`,
+          # so auth.signing_key is REQUIRED at validate/boot (1.5.1+, no auto-generation).
+          "$PWD/busbarAI/target/release/busbar" --generate-signing-key > "$WORKDIR/signing.key"
           cat > "$WORKDIR/config.yaml" <<EOF
           auth:
             chain: [keys]
+            signing_key: { file: $WORKDIR/signing.key }
             admin_auth:
               - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }
           # STRICT trust posture — no allow_unsigned: the tarball is signed with this run's
