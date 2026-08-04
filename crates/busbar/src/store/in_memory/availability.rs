@@ -359,6 +359,29 @@ impl LaneRuntime for HealthState {
         Self::cell_release_probe_owned(self.cell(pool, lane).as_ref(), owned_epoch);
     }
 
+    fn breaker_state_snapshot_in(&self, pool: &str, lane: usize) -> BreakerState {
+        // Same PURE-projection core the `#[cfg(test)]` `breaker_state`/`breaker_state_in` methods
+        // use (`breaker_state_for`) — no probe CAS, no Open→HalfOpen transition — just released
+        // for production reads (the Feature-2 `CandidateBreakerState` catalog entry).
+        self.breaker_state_for(pool, lane)
+    }
+
+    fn error_rate_in(&self, pool: &str, lane: usize, now: u64) -> Option<f64> {
+        // The breaker's OWN sliding outcome window — already maintained on every success/error
+        // regardless of whether any consumer declares this signal (it feeds the error-rate trip
+        // mode), so this is a pure projection, not new collection. A fixed window matching
+        // `TripConfig::default().window_s` (30s): precise per-pool trip-window alignment is a
+        // config-plumbing follow-up, not required for an O(1), always-computable health signal.
+        let cell = self.cell(pool, lane);
+        let window = lock_recover(cell.outcome_window());
+        let count = window.count_in_window(now, DEFAULT_ERROR_RATE_WINDOW_S);
+        if count == 0 {
+            return None;
+        }
+        let errors = window.error_count_in_window(now, DEFAULT_ERROR_RATE_WINDOW_S);
+        Some(errors as f64 / count as f64)
+    }
+
     #[cfg(test)]
     fn breaker_state(&self, lane: usize) -> BreakerState {
         self.breaker_state_for("", lane)

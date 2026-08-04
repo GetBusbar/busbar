@@ -37,6 +37,12 @@ pub use boundary::BoundaryOutcome;
 // callers outside this repo, not for anything internal to the macro.
 pub use busbar_api::Store as StoreTrait;
 
+/// The Feature-2 "decision observability" signal catalog (task #141): a plugin author references
+/// `busbar_plugin_sdk::Signal::CandidateBreakerState` (etc.) at compile time to declare which
+/// catalog entries their hook wants computed + projected — see `busbar_api::Signal`'s doc comment
+/// for the full catalog and the append-only/non_exhaustive contract.
+pub use busbar_plugin_abi::{Signal, SignalBag, SignalValue};
+
 /// The handle type behind the opaque `*mut c_void` for a store plugin (a boxed trait object). Named at
 /// the module level so the `export_plugin!` expansion can pass it to `close_boundary::<$ty>`.
 pub type StoreHandle = Box<dyn Store>;

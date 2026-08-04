@@ -2318,6 +2318,7 @@ mod tests {
             on_empty: None,
             global,
             default: false,
+            signals: Vec::new(),
         }
     }
 

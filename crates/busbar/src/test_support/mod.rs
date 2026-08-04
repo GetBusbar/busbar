@@ -1036,6 +1036,7 @@ impl TestApp {
             &by_model,
         ));
         let store = std::sync::Arc::new(crate::store::HealthState::new(lane_data));
+        let requested_signals = crate::hooks::requested_signals(&self.hook_registry);
         let app = std::sync::Arc::new(crate::state::App {
             tslots,
             probe_schedule: std::sync::Arc::new(crate::health::ProbeSchedule::new(lanes.len())),
@@ -1060,6 +1061,7 @@ impl TestApp {
                 )
             }),
             hook_registry: self.hook_registry,
+            requested_signals,
             global_hooks: self.global_hooks,
             groups_registry: self.groups_registry,
             base_group_names: self.base_group_names,

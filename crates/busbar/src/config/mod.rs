@@ -1456,6 +1456,20 @@ pub(crate) struct HookCfg {
     /// never interprets the contents.
     #[serde(default)]
     pub(crate) settings: serde_json::Map<String, serde_json::Value>,
+    /// The Feature-2 "decision observability" DECLARED-SIGNAL surface (task #141): the typed
+    /// [`busbar_api::Signal`] catalog entries this hook wants computed + projected onto its own
+    /// wire payload. Default empty (no signal beyond the always-on core fields) — the zero-cost
+    /// default this whole design protects. Parsed via `Signal`'s own `#[serde(rename_all =
+    /// "snake_case")]` derive, so an unrecognized name is a BOOT-TIME config error (this struct is
+    /// `deny_unknown_fields`; a typo'd catalog name fails closed at parse, never a silent runtime
+    /// no-op) — the "plugin references the typed `Signal` constant" contract, expressed here as
+    /// the canonical name of that constant rather than a free-typed string a human could misspell
+    /// undetected. Every hook's declaration is UNIONED once per config generation into the
+    /// process-wide `RequestedSignals` bitmask (`hooks::requested_signals`) that gates every
+    /// compute fn — declaring a signal here is necessary AND sufficient for it to start being
+    /// computed + projected; nothing else (a code change, a recompile) is required.
+    #[serde(default)]
+    pub(crate) signals: Vec<busbar_api::Signal>,
     /// Fire on EVERY request — inline sugar for adding this name to `global_hooks:`. Default false.
     #[serde(default)]
     pub(crate) global: bool,
@@ -3126,6 +3140,10 @@ fn hook_cfg_from_ref(r: &HookModuleRef, default_kind: HookKind) -> Result<HookCf
         at: r.at,
         on_empty: r.on_empty.clone(),
         settings: settings.clone(),
+        // The inline `module:` shorthand ref has no `signals:` sub-key in this pass — a hook that
+        // needs to declare catalog signals uses the full `hooks:` registry entry instead, whose
+        // `HookCfg` deserializes `signals:` directly (see the field's own doc comment above).
+        signals: Vec::new(),
         global: false,
         default: false,
     })

@@ -46,6 +46,7 @@ fn minimal_app() -> Arc<App> {
             std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
         ),
         hook_registry: std::collections::HashMap::new(),
+        requested_signals: Default::default(),
         global_hooks: Vec::new(),
         groups_registry: std::collections::BTreeMap::new(),
         base_group_names: std::collections::HashSet::new(),

@@ -52,6 +52,15 @@ use std::os::raw::c_void;
 pub mod auth;
 pub mod hook;
 
+/// The Feature-2 "decision observability" signal catalog (task #141) — re-exported wholesale from
+/// `busbar-api` (where it actually lives; see that crate's `signal` module doc comment for why) so
+/// a hook plugin author can write `busbar_plugin_abi::Signal::CandidateBreakerState` without a
+/// direct `busbar-api` dependency, mirroring every other type this crate re-exports for the same
+/// reason (`AuditRecord`, `VirtualKey`, …, imported above). `busbar-plugin-sdk` re-exports it again
+/// from here (or directly from `busbar-api`) so the common plugin-author path is
+/// `busbar_plugin_sdk::Signal`.
+pub use busbar_api::{Signal, SignalBag, SignalValue};
+
 /// The kind-neutral **TRANSPORT** ABI version, returned by a plugin's `busbar_abi()`. Frozen at 1:
 /// this is the low-level linker contract (the six C signatures, ptr+len byte buffers, the
 /// plugin-allocates/plugin-frees rule, the status codes). DISTINCT from the per-kind PAYLOAD schema

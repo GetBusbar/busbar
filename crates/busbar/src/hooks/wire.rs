@@ -107,6 +107,13 @@ pub(crate) struct HookReqProjection<'a> {
     /// Absent when the grant is `no`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) user: Option<HookUser<'a>>,
+    /// The Feature-2 declared-signal bag (task #141), `#[serde(flatten)]`ed so its entries render
+    /// as flat top-level keys (`{"candidate_breaker_state": "closed", ...}`) alongside the fields
+    /// above, never nested. EMPTY (the default: no consumer declared anything beyond the core
+    /// fields above) flattens to ZERO additional keys — byte-identical to the pre-catalog wire.
+    /// ADDITIVE: every field above this one is unchanged.
+    #[serde(flatten)]
+    pub(crate) signals: busbar_api::SignalBag,
 }
 
 /// One message of the opt-in prompt projection: the role plus the flattened text content.
@@ -164,6 +171,10 @@ pub(crate) struct HookCandidate<'a> {
     /// configs keep the exact pre-tags payload.
     #[serde(skip_serializing_if = "<[String]>::is_empty")]
     pub(crate) tags: &'a [String],
+    /// The Feature-2 declared-signal bag (task #141) — see [`HookReqProjection::signals`] for the
+    /// full contract; identical here, flattened onto this candidate's own JSON object.
+    #[serde(flatten)]
+    pub(crate) signals: busbar_api::SignalBag,
 }
 
 /// The POOL-SCOPED signal bucket (distinct from the per-candidate signals). `request.pool` already
@@ -617,6 +628,7 @@ pub(crate) fn build<'a>(
                 key_name: i.key_name.as_deref(),
                 user: i.user.as_deref(),
             }),
+            signals: req.signals.clone(),
         },
         candidates: candidates
             .iter()
@@ -633,6 +645,7 @@ pub(crate) fn build<'a>(
                 budget_remaining: c.budget_remaining,
                 rate_headroom: c.rate_headroom,
                 tags: c.tags,
+                signals: c.signals.clone(),
             })
             .collect(),
         stage: None,
@@ -824,6 +837,7 @@ mod tests {
             available_concurrency: 4,
             budget_remaining: Some(1000),
             rate_headroom: Some(0.75),
+            signals: Default::default(),
         }
     }
 
@@ -842,6 +856,7 @@ mod tests {
             stream: false,
             prompt: None,
             identity: None,
+            signals: Default::default(),
         }
     }
 

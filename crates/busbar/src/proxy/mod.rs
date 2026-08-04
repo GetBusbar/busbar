@@ -234,3 +234,7 @@ mod hook_seam_tests;
 #[cfg(test)]
 #[path = "tests/ingress_reject_response_tests.rs"]
 mod ingress_reject_response_tests;
+
+#[cfg(test)]
+#[path = "tests/signal_catalog_tests.rs"]
+mod signal_catalog_tests;
