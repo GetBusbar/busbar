@@ -150,7 +150,11 @@ fn is_backend_writable(p: &Path) -> bool {
         .parent()
         .filter(|d| !d.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    let probe = dir.join(format!("{PROBE_FILE_PREFIX}{}", std::process::id()));
+    // pid + a process-global monotonic nonce so concurrent probes (parallel test threads sharing a
+    // cwd, or repeated boot-time calls) never collide on the same probe filename.
+    static PROBE_NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nonce = PROBE_NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let probe = dir.join(format!("{PROBE_FILE_PREFIX}{}-{nonce}", std::process::id()));
     match std::fs::File::create(&probe) {
         Ok(file) => {
             // Close the handle BEFORE unlinking. On Windows (no `FILE_SHARE_DELETE`) and some network
@@ -277,9 +281,10 @@ fn load_for_rmw(p: &Path) -> Option<OverlayDoc> {
 /// the API-mutable group registry + its tombstones (`deleted_groups`), read-modify-written so the
 /// HOOKS section and its tombstones are preserved untouched. FAIL-CLOSED (matches `persist`): returns
 /// `Err` on an unreadable overlay or a write failure so `commit_and_swap` does not swap an
-/// unpersistable mutation. `None` path is a no-op success. `deleted_add`/`deleted_remove`
-/// tombstone/untombstone a group name; a wholesale write (both `None`, e.g. rollback) reconciles away
-/// any tombstone for a name the restored registry contains.
+/// unpersistable mutation. `None` path is NOT a silent success (matches `persist`): with the boot
+/// invariant it means the config is LOCKED, so the mutation is refused ([`NO_WRITABLE_OVERLAY_MSG`]).
+/// `deleted_add`/`deleted_remove` tombstone/untombstone a group name; a wholesale write (both `None`,
+/// e.g. rollback) reconciles away any tombstone for a name the restored registry contains.
 pub(crate) fn persist_groups(
     path: Option<&Path>,
     groups: &BTreeMap<String, GroupCfg>,

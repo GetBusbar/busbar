@@ -2813,13 +2813,22 @@ pub(crate) async fn get_config_settings(State(handle): State<Arc<AppHandle>>) ->
     // corrupt-overlay warn inside `current_root_settings` is still emitted to it (production uses a
     // global subscriber; a thread-local one — as in tests — would otherwise miss the off-thread warn).
     let dispatch = tracing::dispatcher::get_default(|d| d.clone());
-    let root = tokio::task::spawn_blocking(move || {
+    let root = match tokio::task::spawn_blocking(move || {
         tracing::dispatcher::with_default(&dispatch, || {
             current_root_settings(overlay_path.as_deref(), "GET /config/settings")
         })
     })
     .await
-    .unwrap_or_default();
+    {
+        Ok(root) => root,
+        // A JoinError means the blocking task PANICKED or the runtime is shutting down. Mirror the
+        // sibling `config_transaction` path and surface it as a 500 — NEVER a fabricated empty-settings
+        // 200, which would misreport "the operator has set no overrides" when the read never completed.
+        Err(e) => {
+            tracing::error!(error = %e, "GET /config/settings overlay read task failed to join");
+            return err_json(&AdminError::Internal);
+        }
+    };
     let settings = serde_json::to_value(&root).unwrap_or_else(|_| json!({}));
     with_config_etag(
         ok_json(
