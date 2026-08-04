@@ -32,6 +32,7 @@ use std::os::raw::c_void;
 use std::path::Path;
 
 pub mod auth;
+pub mod export;
 pub mod fetch;
 pub mod hook;
 pub mod registry;
@@ -39,6 +40,7 @@ mod stage;
 pub mod tarball;
 
 pub use auth::DynAuth;
+pub use export::{load_export_from_bytes, DynExport};
 pub use fetch::{fetch_plugins, FetchOutcome, FetchSpec};
 pub use hook::DlopenPolicy;
 pub use registry::{
@@ -2310,5 +2312,64 @@ mod tests {
             module.resolve(&serde_json::Map::new()).is_err(),
             "settings with no `key` field must fail closed"
         );
+    }
+
+    /// Locate the hermetic `busbar-export-example-plugin` cdylib, mirroring
+    /// `secret_example_plugin_path` above (see its doc for the uplifted-vs-`deps` rationale). CI
+    /// (`cargo test --workspace`) always builds it, so a missing cdylib there is a hard failure, not a
+    /// silent skip — it is the only over-the-ABI coverage of the `DynExport` dlopen seam.
+    fn export_example_plugin_path() -> Option<std::path::PathBuf> {
+        let candidate = (|| {
+            let exe = std::env::current_exe().ok()?;
+            let profile_dir = exe.parent()?.parent()?;
+            let name = plugin_library_filename("busbar_export_example_plugin");
+            let uplifted = profile_dir.join(&name);
+            let raw = profile_dir.join("deps").join(&name);
+            [uplifted, raw]
+                .into_iter()
+                .filter_map(|p| {
+                    std::fs::metadata(&p)
+                        .and_then(|m| m.modified())
+                        .ok()
+                        .map(|mtime| (p, mtime))
+                })
+                .max_by_key(|(_, mtime)| *mtime)
+                .map(|(p, _)| p)
+        })();
+        if candidate.is_none() && std::env::var_os("CI").is_some() {
+            panic!(
+                "the export example plugin cdylib is not built under CI: `cargo test --workspace` \
+                 must build busbar_export_example_plugin (checked both the uplifted target dir and \
+                 target/deps). Refusing to silently skip the only over-the-ABI coverage of the \
+                 DynExport dlopen seam."
+            );
+        }
+        candidate
+    }
+
+    /// END-TO-END over the REAL export-example-plugin cdylib: load it through the loader (which queries
+    /// `Streams` once at load), assert it reports `[Metrics]`, then `Deliver` a metrics batch and
+    /// assert the sink acks `Delivered` (an `Ok(())`). This is the exact seam the engine's
+    /// observability export will consume: verified bytes in, a `DynExport` out.
+    #[test]
+    fn load_and_exercise_export_example_plugin() {
+        use busbar_plugin_abi::export::ExportStream;
+        let Some(path) = export_example_plugin_path() else {
+            eprintln!("skip: export example plugin cdylib not built (run under --workspace)");
+            return;
+        };
+        let bytes = std::fs::read(&path).expect("read export example plugin cdylib");
+        let sink = export::load_export_from_bytes(&bytes, "{}", "export-example", "export")
+            .expect("load export example plugin over the ABI");
+
+        // Streams was queried once at load and reports exactly [Metrics].
+        assert_eq!(sink.streams(), &[ExportStream::Metrics]);
+
+        // A delivery for the declared stream acks Delivered (Ok).
+        sink.deliver(
+            ExportStream::Metrics,
+            &serde_json::json!({"samples": [{"name": "reqs", "value": 1}]}),
+        )
+        .expect("deliver returns Delivered");
     }
 }
