@@ -791,9 +791,28 @@ fn migrate_auth(
             "<module>".to_string()
         }
     };
+    // `group_map:` itself may not be a mapping (e.g. `group_map: [foo]` / `group_map: null` - a
+    // malformed 1.4.x shape, mirroring the `auth:`-not-a-mapping case above). The `if let
+    // Value::Mapping(gm) = gm` below used to silently no-op on anything else: `bindings` stayed
+    // empty, but execution fell straight through to unconditionally push an EMPTY
+    // `auth.role_bindings.<module>: {}` plus a misleading "auth.group_map -> auth.role_bindings"
+    // changelog entry, as if the (actually-dropped) data had migrated. Catch that shape here and
+    // restore it verbatim (same "never silently drop" contract as the non-mapping `auth:` case)
+    // with a loud TODO, instead of claiming a migration that never happened.
+    let Value::Mapping(gm) = gm else {
+        root.insert("group_map".into(), gm);
+        todos.push(
+            "group_map: could not migrate to auth.role_bindings because `group_map:` itself is \
+             not a mapping (malformed 1.4.x config); group_map was left at the top level \
+             UNCHANGED - fix `group_map:` by hand, then re-run the migrator so it can nest these \
+             bindings under auth.role_bindings"
+                .into(),
+        );
+        return;
+    };
     let mut bindings = Mapping::new();
     let mut generated_groups: Mapping = Mapping::new();
-    if let Value::Mapping(gm) = gm {
+    {
         for (role, b) in gm {
             let role_name = role.as_str().unwrap_or("?").to_string();
             let mut b = as_map(b);

@@ -45,10 +45,11 @@ pub struct MemoryStore {
     /// The revocation DENYLIST: denied subject ids (1.5.0 signed-token keys). A set (the reason is
     /// audit-only and not needed for the enforcement read).
     denylist: RwLock<std::collections::HashSet<String>>,
-    /// Amortized-sweep write counters for `usage`/`metering` (see `MAX_RETENTION_SECS`). Separate
-    /// per map since the two maps see independent write rates.
+    /// Amortized-sweep write counters for `usage`/`metering`/tombstoned `keys` (see
+    /// `MAX_RETENTION_SECS`). Separate per map since the maps see independent write rates.
     usage_sweep_ticker: AtomicU64,
     metering_sweep_ticker: AtomicU64,
+    keys_sweep_ticker: AtomicU64,
     /// The store-global monotonic revision counter (see `VirtualKey::revision`). Bumped on every
     /// mutation to `keys`/`creds`/the denylist.
     revision: AtomicU64,
@@ -101,7 +102,27 @@ impl Store for MemoryStore {
     fn put_key(&self, key: &VirtualKey) -> StoreResult<()> {
         let mut key = key.clone();
         key.revision = self.next_revision();
-        self.keys().insert(key.id.clone(), key);
+        let mut keys = self.keys();
+        keys.insert(key.id.clone(), key);
+
+        // Amortized bounded eviction of stale TOMBSTONES, mirroring `add_usage`/`add_metering`
+        // above: `keys` tombstones survive `delete_key` forever (by design, for billing/audit
+        // attribution) but a repeated self-serve issue/refresh loop by one principal is a `put_key`
+        // hot path, so sweeping it here bounds the map the same way. NEVER prunes a live row (only
+        // `deleted_at.is_some()` rows are even candidates), and only past the SAME 31-day ceiling
+        // attribution already stops caring past.
+        let sweep_needed = self
+            .keys_sweep_ticker
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1)
+            .is_multiple_of(SWEEP_INTERVAL);
+        if sweep_needed {
+            let n = self.now();
+            keys.retain(|_, k| match k.deleted_at {
+                None => true, // live rows are never pruned
+                Some(deleted_at) => deleted_at.saturating_add(MAX_RETENTION_SECS) > n,
+            });
+        }
         Ok(())
     }
 
@@ -140,7 +161,7 @@ impl Store for MemoryStore {
         }
         let rev = self.next_revision();
         key.enabled = false;
-        key.deleted_at = Some(now());
+        key.deleted_at = Some(self.now());
         key.revision = rev;
         usage.retain(|(k, _), _| k != id);
         creds.retain(|_, c| c.meta.key_id != id);
@@ -876,6 +897,54 @@ mod tests {
             s.list_metering(one_inside).unwrap().len(),
             1,
             "a bucket one second inside the ceiling must survive"
+        );
+    }
+
+    /// CODEAUDIT ROUND-2 FIX 2: `delete_key` tombstones rows (kept forever, by design, for
+    /// billing/audit attribution) but nothing previously bounded that growth — unlike `usage` and
+    /// `metering`, the `keys` map had no retention sweep, so a repeated self-serve refresh loop by
+    /// one principal grew it without bound. `put_key` (the hot write path for issue/refresh) now
+    /// runs the SAME amortized sweep, pruning only tombstoned rows past the 31-day ceiling; a live
+    /// row is NEVER a candidate regardless of age, and a recently-tombstoned row survives.
+    #[test]
+    fn put_key_sweeps_stale_tombstones() {
+        let s = MemoryStore::new();
+        let n = now();
+        let old_deleted_at = n.saturating_sub(40 * 86_400); // 40 days old > 31-day retention
+
+        // Tombstone one key far in the past (pin the clock at delete time so its `deleted_at` lands
+        // well past the retention ceiling).
+        s.put_key(&key("old-tombstone")).unwrap();
+        s.pin_clock(old_deleted_at);
+        s.delete_key("old-tombstone").unwrap();
+        assert_eq!(
+            s.get_key("old-tombstone").unwrap().unwrap().deleted_at,
+            Some(old_deleted_at)
+        );
+
+        // A live key (never tombstoned) and a recently-tombstoned key.
+        s.put_key(&key("live")).unwrap();
+        s.put_key(&key("recent-tombstone")).unwrap();
+        s.pin_clock(n); // back to "now" — governs both the recent tombstone and the sweep's ceiling
+        s.delete_key("recent-tombstone").unwrap();
+
+        // Fire the amortized sweep with a batch of unrelated writes (mirrors add_usage/add_metering
+        // sweep tests: SWEEP_INTERVAL put_key calls guarantee the sweep fires at least once).
+        for i in 0..SWEEP_INTERVAL {
+            s.put_key(&key(&format!("filler-{i}"))).unwrap();
+        }
+
+        assert!(
+            s.get_key("old-tombstone").unwrap().is_none(),
+            "a tombstone past the 31-day retention ceiling must be pruned"
+        );
+        assert!(
+            s.get_key("live").unwrap().is_some(),
+            "a live (never-deleted) key must never be pruned, regardless of age"
+        );
+        assert!(
+            s.get_key("recent-tombstone").unwrap().is_some(),
+            "a tombstone within the retention window must survive"
         );
     }
 }
