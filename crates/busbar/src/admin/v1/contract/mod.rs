@@ -372,9 +372,10 @@ pub(crate) struct InfoView {
     /// to read a counter reset as "new epoch", never as "reverted" (audit minor #2 / #4).
     pub(crate) started_at: Option<u64>,
     pub(crate) topology: TopologyInfo,
-    /// Whether config-overlay persistence is enabled (`BUSBAR_CONFIG_OVERLAY` set): `true` = API-applied
-    /// config changes are durable across restarts; `false` = live-only (lost on restart). Lets tooling
-    /// tell an operator whether their runtime changes will survive a restart.
+    /// Whether config-overlay persistence is enabled — i.e. the config is MUTABLE with a writable
+    /// `config.overlay` backend: `true` = API-applied config changes are durable across restarts;
+    /// `false` = the config is LOCKED (`config.locked: true`) and admin-API config mutations are
+    /// refused. Lets tooling tell an operator whether runtime changes are accepted and durable.
     pub(crate) config_persistence: bool,
     /// Monotonic config version — `0` at boot, +1 per API config apply. Drift-detection: re-read and
     /// compare to tell whether the running config changed. Process-local (resets on restart).

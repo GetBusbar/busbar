@@ -13,11 +13,168 @@
 //! startup).
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use super::{DeployCfg, GroupCfg, HookCfg, RateEntryCfg, RootCfg, StoreCfg, TlsCfg};
+use super::{
+    ConfigMgmtCfg, DeployCfg, GroupCfg, HookCfg, OverlayCfg, RateEntryCfg, RootCfg, StoreCfg,
+    TlsCfg,
+};
+
+/// The single, actionable message a config mutation gets when there is no writable overlay backend to
+/// record it. With the 1.5.3 boot invariant (`locked` XOR a writable overlay), a MUTABLE busbar always
+/// has a writable overlay, so this is only reachable on a LOCKED (immutable/GitOps) deployment — where
+/// refusing runtime config mutation is exactly the point. Used both as the `persist_*` `None`-path
+/// error (the structural backstop that makes silent non-durable mutation impossible) and by the admin
+/// handlers' early locked-config refusals.
+pub(crate) const NO_WRITABLE_OVERLAY_MSG: &str =
+    "config mutation refused: this busbar has no writable config overlay. This is expected when \
+     `config.locked: true` (an immutable/GitOps deployment) — edit config.yaml and POST /config/reload \
+     to change it. If the config is meant to be mutable, give it a writable `config.overlay` backend \
+     and reload.";
+
+/// The default overlay filename, written next to `config.yaml` when `config.overlay` names no explicit
+/// path. One source of truth for the code + tests (the doc-comment prose in `config/mod.rs` mirrors it).
+pub(crate) const DEFAULT_OVERLAY_FILENAME: &str = "busbar-overlay.json";
+/// Filename prefix for the boot-time writability probe (a leading-dot temp file, pid-suffixed).
+const PROBE_FILE_PREFIX: &str = ".busbar-overlay-probe-";
+
+/// The resolved config-management posture for a boot/reload: whether config is locked, and the
+/// writable overlay backend path (if any). Computed by [`resolve_backend`].
+#[derive(Debug, Clone)]
+pub(crate) struct OverlayResolution {
+    /// `true` ⇒ `config.locked: true`: admin-API config mutations are refused at runtime.
+    pub(crate) locked: bool,
+    /// The writable file-backend path when the config is MUTABLE; `None` when locked. The boot
+    /// invariant guarantees `locked == path.is_none()` for a config that BOOTED.
+    pub(crate) path: Option<PathBuf>,
+}
+
+/// Resolve the config-management posture + overlay backend from the `config:` block (1.5.3), enforcing
+/// the BOOT INVARIANT: `locked` XOR a writable overlay. Returns `Err` (a boot refusal) when the config
+/// is mutable but has no writable backend — the state that used to be silently reachable and let a
+/// mutation apply in RAM only.
+///
+/// Precedence for a mutable config's backend path: an explicit `config.overlay` wins; else the
+/// deprecated `BUSBAR_CONFIG_OVERLAY` env var (`env_override`, with a deprecation warn); else the
+/// default `busbar-overlay.json` next to the resolved config.yaml. `probe_fs` gates the filesystem
+/// writability check — `true` at boot/reload (so a read-only config dir refuses to boot), `false` for
+/// `--validate` (which must have zero side effects and may run away from the target filesystem).
+pub(crate) fn resolve_backend(
+    cfg: &ConfigMgmtCfg,
+    config_path: &Path,
+    env_override: Option<&Path>,
+    probe_fs: bool,
+) -> Result<OverlayResolution, String> {
+    if env_override.is_some() {
+        tracing::warn!(
+            "BUSBAR_CONFIG_OVERLAY is DEPRECATED and will be removed in a future release; set \
+             `config.overlay.file` in config.yaml instead. It is honored for now only when \
+             `config.overlay` is not set."
+        );
+    }
+    if cfg.locked {
+        // Immutable/GitOps: the overlay is irrelevant and ignored; runtime mutations are refused.
+        return Ok(OverlayResolution {
+            locked: true,
+            path: None,
+        });
+    }
+    let config_dir = config_path.parent().unwrap_or_else(|| Path::new("."));
+    // MUTABLE: resolve the backend path (config wins > deprecated env > default next to config.yaml).
+    let path: Option<PathBuf> = match &cfg.overlay {
+        Some(OverlayCfg::Disabled(false)) => None, // `overlay: false` — explicitly no backend.
+        Some(OverlayCfg::Disabled(true)) => {
+            return Err(
+                "config.overlay: `true` names no backend — use `{ file: <path> }`, or \
+                        `false` together with `config.locked: true` to run immutable."
+                    .to_string(),
+            );
+        }
+        Some(OverlayCfg::Backend(b)) => b.file.as_ref().map(|f| resolve_rel(f, config_dir)),
+        None => Some(
+            env_override
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| config_dir.join(DEFAULT_OVERLAY_FILENAME)),
+        ),
+    };
+    let Some(p) = path else {
+        return Err("config is mutable (config.locked: false) but has no writable overlay backend — \
+                    `config.overlay` is disabled, so an admin-API config change could not be stored \
+                    and would silently revert on restart. Give it a backend (`config.overlay.file: \
+                    <path>`), or set `config.locked: true` for an immutable deployment."
+            .to_string());
+    };
+    if probe_fs && !is_backend_writable(&p) {
+        return Err(format!(
+            "config is mutable (config.locked: false) but the overlay backend '{}' is not writable \
+             (is the config directory read-only?). A mutable config MUST be able to persist admin-API \
+             changes. Point `config.overlay.file` at a writable path, or set `config.locked: true` for \
+             an immutable/GitOps deployment (which never persists runtime mutations anyway).",
+            p.display()
+        ));
+    }
+    Ok(OverlayResolution {
+        locked: false,
+        path: Some(p),
+    })
+}
+
+/// Resolve a possibly-relative overlay path against the config.yaml directory.
+fn resolve_rel(file: &str, config_dir: &Path) -> PathBuf {
+    let p = Path::new(file);
+    if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        config_dir.join(p)
+    }
+}
+
+/// Probe whether the overlay backend path is writable WITHOUT a durable side effect: an existing file
+/// must open for write; a not-yet-created file needs a writable parent dir (create + immediately
+/// remove a probe file). This never routes through `crate::durable` because it writes nothing that
+/// must survive — it is a boot-time capability check, not a config write.
+fn is_backend_writable(p: &Path) -> bool {
+    if p.exists() {
+        return std::fs::OpenOptions::new().write(true).open(p).is_ok();
+    }
+    // A not-yet-created overlay is writable iff its PARENT directory is writable. Treat an EMPTY parent
+    // (`p` is a bare filename with no directory component — e.g. `BUSBAR_CONFIG=config.yaml` run from
+    // inside the config dir resolves the default overlay to a bare `busbar-overlay.json`) as the CURRENT
+    // directory. Crucially, do NOT fall back to `OpenOptions::open(p)` WITHOUT `.create(true)`: that
+    // errors `NotFound` for a not-yet-existing file regardless of whether the directory is writable, so
+    // it would wrongly report a perfectly writable cwd as non-writable and REFUSE a valid durable-by-
+    // default boot. Probe with the same create-then-remove dance as a normal directory-qualified path.
+    let dir = p
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    // pid + a process-global monotonic nonce so concurrent probes (parallel test threads sharing a
+    // cwd, or repeated boot-time calls) never collide on the same probe filename.
+    static PROBE_NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nonce = PROBE_NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let probe = dir.join(format!("{PROBE_FILE_PREFIX}{}-{nonce}", std::process::id()));
+    match std::fs::File::create(&probe) {
+        Ok(file) => {
+            // Close the handle BEFORE unlinking. On Windows (no `FILE_SHARE_DELETE`) and some network
+            // filesystems an open file cannot be removed; holding it across `remove_file` would leak the
+            // probe on every boot.
+            drop(file);
+            if let Err(e) = std::fs::remove_file(&probe) {
+                // The probe name is pid-scoped, so a leaked probe is never reclaimed by a later boot.
+                // Surface it (WARN) rather than swallowing the error silently.
+                tracing::warn!(
+                    probe = %probe.display(), error = %e,
+                    "could not remove the overlay writability probe file after creating it; it may be \
+                     left behind in the config directory"
+                );
+            }
+            true
+        }
+        Err(_) => false,
+    }
+}
 
 /// Current overlay schema version. Stamped on every write; a missing field (a pre-versioning overlay)
 /// reads as `1`, the additive baseline (hooks + the newly-added groups section, both backward
@@ -31,11 +188,12 @@ fn default_overlay_version() -> u32 {
 /// update the TOMBSTONE set for this change: `deleted_add` (a just-deleted hook) is tombstoned so the
 /// additive boot-merge REMOVES it even if it was defined in base `config.yaml`; `deleted_remove` (a
 /// just-registered hook) clears any prior tombstone (a re-add). Read-modify-write so tombstones
-/// accumulate across applies. The path is opt-in via `BUSBAR_CONFIG_OVERLAY` and carried on `App`, so
-/// the default behavior + config schema are unchanged. FAIL-CLOSED: returns `Err` on an unreadable
-/// overlay (refuse-to-clobber) or a write failure, so its caller — `AppHandle::commit_and_swap` — does
-/// NOT swap a mutation it could not durably record (a live-applied-but-unpersisted config that a
-/// restart would silently revert). `None` path is a no-op success (persistence disabled, the default).
+/// accumulate across applies. The path is resolved from the `config.overlay` backend (1.5.3) and
+/// carried on `App`. FAIL-CLOSED: returns `Err` on an unreadable overlay (refuse-to-clobber) or a
+/// write failure, so its caller — `AppHandle::commit_and_swap` — does NOT swap a mutation it could not
+/// durably record (a live-applied-but-unpersisted config that a restart would silently revert). A
+/// `None` path is NO LONGER a silent success: with the boot invariant it means the config is LOCKED,
+/// so the mutation is refused ([`NO_WRITABLE_OVERLAY_MSG`]).
 pub(crate) fn persist(
     path: Option<&Path>,
     hooks: &HashMap<String, HookCfg>,
@@ -45,7 +203,9 @@ pub(crate) fn persist(
     base_hook_names: &std::collections::HashSet<String>,
 ) -> Result<(), String> {
     let Some(p) = path else {
-        return Ok(()); // persistence disabled (the default) — a no-op success.
+        // 1.5.3: NEVER a silent `Ok`. With the boot invariant (`locked` XOR a writable overlay), a
+        // mutable busbar always has a backend here, so `None` means the config is locked — refuse.
+        return Err(NO_WRITABLE_OVERLAY_MSG.to_string());
     };
     // Read-modify-WRITE the WHOLE overlay so a hook write preserves the groups section verbatim
     // (and vice-versa in `persist_groups`). `load_for_rmw` refuses on an unreadable overlay —
@@ -121,9 +281,10 @@ fn load_for_rmw(p: &Path) -> Option<OverlayDoc> {
 /// the API-mutable group registry + its tombstones (`deleted_groups`), read-modify-written so the
 /// HOOKS section and its tombstones are preserved untouched. FAIL-CLOSED (matches `persist`): returns
 /// `Err` on an unreadable overlay or a write failure so `commit_and_swap` does not swap an
-/// unpersistable mutation. `None` path is a no-op success. `deleted_add`/`deleted_remove`
-/// tombstone/untombstone a group name; a wholesale write (both `None`, e.g. rollback) reconciles away
-/// any tombstone for a name the restored registry contains.
+/// unpersistable mutation. `None` path is NOT a silent success (matches `persist`): with the boot
+/// invariant it means the config is LOCKED, so the mutation is refused ([`NO_WRITABLE_OVERLAY_MSG`]).
+/// `deleted_add`/`deleted_remove` tombstone/untombstone a group name; a wholesale write (both `None`,
+/// e.g. rollback) reconciles away any tombstone for a name the restored registry contains.
 pub(crate) fn persist_groups(
     path: Option<&Path>,
     groups: &BTreeMap<String, GroupCfg>,
@@ -132,7 +293,8 @@ pub(crate) fn persist_groups(
     base_group_names: &std::collections::HashSet<String>,
 ) -> Result<(), String> {
     let Some(p) = path else {
-        return Ok(());
+        // 1.5.3: never a silent `Ok` (see `persist`). `None` here ⇒ a locked config — refuse.
+        return Err(NO_WRITABLE_OVERLAY_MSG.to_string());
     };
     let Some(mut doc) = load_for_rmw(p) else {
         return Err(format!(
@@ -308,15 +470,11 @@ impl RootSettings {
 /// passes the already-merged desired state here — this fn just stores it).
 pub(crate) fn persist_root(path: Option<&Path>, settings: &RootSettings) -> Result<(), String> {
     let Some(p) = path else {
-        // A no-op persist is the DEFAULT deployment (BUSBAR_CONFIG_OVERLAY unset), not an error —
-        // but the silent `Ok` is what let callers report durable storage that never happened. One
-        // line so the in-memory-only outcome is on the record even when the caller ignores the
-        // response.
-        tracing::warn!(
-            "config overlay is not configured (BUSBAR_CONFIG_OVERLAY unset); root settings were \
-             applied in memory only and will not survive a restart"
-        );
-        return Ok(());
+        // 1.5.3: this is the exact silent-`Ok` that let handlers report durable storage that never
+        // happened. It is now a hard error. The boot invariant guarantees a MUTABLE config has a
+        // writable backend here, so `None` means the config is LOCKED — refuse the mutation instead
+        // of lying about persisting it.
+        return Err(NO_WRITABLE_OVERLAY_MSG.to_string());
     };
     let Some(mut doc) = load_for_rmw(p) else {
         return Err(format!(
@@ -345,13 +503,20 @@ pub(crate) fn persist_root(path: Option<&Path>, settings: &RootSettings) -> Resu
 /// write landed: the rollback path (both the forward persist and the compensating revert after a failed
 /// rebuild) must FAIL CLOSED on a persist error — a silently-swallowed failure would leave disk out of
 /// sync with the running engine (a stale pin a restart would honor, contradicting the live policy), so
-/// every caller propagates the error rather than warning-and-continuing.
+/// every caller propagates the error rather than warning-and-continuing. A `None` path is likewise NOT
+/// a silent success (matching the sibling `persist_*`): it means the config is LOCKED, so the pin is
+/// refused ([`NO_WRITABLE_OVERLAY_MSG`]).
 pub(crate) fn try_persist_plugin_versions(
     path: Option<&Path>,
     pins: &BTreeMap<String, String>,
 ) -> Result<(), String> {
     let Some(p) = path else {
-        return Ok(());
+        // 1.5.3: NEVER a silent `Ok` — this matches the fail-closed contract stated in this function's
+        // own doc comment and the sibling `persist_*` functions. With the boot invariant (`locked` XOR a
+        // writable overlay), a mutable busbar always has a backend here, so `None` means the config is
+        // LOCKED. The `plugins/rollback` caller already refuses a locked config up front; this is the
+        // structural backstop so a future caller cannot silently drop an operator's rollback/pin.
+        return Err(NO_WRITABLE_OVERLAY_MSG.to_string());
     };
     let Some(mut doc) = load_for_rmw(p) else {
         return Err(format!(
@@ -410,10 +575,17 @@ impl OverlaySection {
 /// `groups` reset must not resurrect an API-deleted hook, and vice-versa. FAIL-CLOSED (matches
 /// `persist`/`persist_groups`): returns `Err` on an unreadable overlay (REFUSED — clearing it would
 /// silently drop the other section's tombstones) or a write failure, so `commit_and_swap` does not
-/// swap a reset it could not durably record. `None` path is a no-op success.
+/// swap a reset it could not durably record. `None` path is NO LONGER a silent success: with the boot
+/// invariant it means the config is LOCKED, so the reset is refused ([`NO_WRITABLE_OVERLAY_MSG`]).
 pub(crate) fn clear_section(path: Option<&Path>, section: OverlaySection) -> Result<(), String> {
     let Some(p) = path else {
-        return Ok(());
+        // 1.5.3: NEVER a silent `Ok` (matches `persist`/`persist_groups`/`persist_root`). With the boot
+        // invariant (`locked` XOR a writable overlay), a mutable busbar always has a backend here, so
+        // `None` means the config is LOCKED — refuse the reset instead of reporting a success that never
+        // touched disk. (The `DELETE /overlay/{section}` caller already short-circuits a locked config
+        // to an idempotent no-op before reaching here; this is the structural backstop so a future
+        // caller cannot reintroduce the lying `Ok`.)
+        return Err(NO_WRITABLE_OVERLAY_MSG.to_string());
     };
     let Some(mut doc) = load_for_rmw(p) else {
         return Err(format!(
@@ -701,6 +873,236 @@ pub(crate) fn merge_into(cfg: &mut RootCfg, doc: OverlayDoc) {
     }
     for name in &doc.deleted_groups {
         cfg.groups.remove(name);
+    }
+}
+
+#[cfg(test)]
+mod config_consolidation_tests {
+    use super::*;
+    use crate::config::{ConfigMgmtCfg, OverlayBackend, OverlayCfg};
+
+    fn writable_dir(tag: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("busbar-cfgcons-{tag}-{}-{n}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// (a) DURABLE-BY-DEFAULT: with NOTHING specified (default `ConfigMgmtCfg`) and NO
+    /// `BUSBAR_CONFIG_OVERLAY` env var, a mutable config resolves to a writable overlay next to
+    /// config.yaml, and an admin mutation persisted there SURVIVES a simulated restart (a fresh read).
+    ///
+    /// RED-before-GREEN: pre-1.5.3 an unset `BUSBAR_CONFIG_OVERLAY` meant RAM-only — there was no
+    /// default backend, so this durable round-trip had nowhere to land and `read` would find nothing.
+    #[test]
+    fn a_mutable_default_persists_across_a_simulated_restart_with_no_env_var() {
+        let dir = writable_dir("durable-default");
+        let config_path = dir.join("config.yaml");
+        let res = resolve_backend(&ConfigMgmtCfg::default(), &config_path, None, true)
+            .expect("a mutable default config must resolve a writable overlay");
+        assert!(!res.locked, "default config is mutable");
+        let path = res
+            .path
+            .expect("durable-by-default: a writable overlay next to config.yaml");
+        assert_eq!(path, dir.join(DEFAULT_OVERLAY_FILENAME));
+
+        let settings = RootSettings {
+            per_request_fee: Some(7),
+            ..Default::default()
+        };
+        persist_root(Some(&path), &settings).expect("persist must land durably");
+        // Simulate a restart: read the overlay fresh from disk.
+        let doc = read(&path).expect("overlay reads back after a 'restart'");
+        assert_eq!(
+            doc.root.and_then(|r| r.per_request_fee),
+            Some(7),
+            "the mutation must survive the simulated restart"
+        );
+    }
+
+    /// (b) LOCKED ⇒ no overlay backend, so a persist against it is REFUSED (never a silent success).
+    ///
+    /// RED-before-GREEN: pre-1.5.3 there was no `locked` concept and `persist_root(None, ..)` returned
+    /// a silent `Ok`, so neither of these assertions could hold.
+    #[test]
+    fn b_locked_config_has_no_overlay_and_refuses_a_mutation() {
+        let res = resolve_backend(
+            &ConfigMgmtCfg {
+                locked: true,
+                overlay: None,
+            },
+            std::path::Path::new("/etc/busbar/config.yaml"),
+            None,
+            true,
+        )
+        .expect("a locked config resolves (overlay ignored)");
+        assert!(res.locked);
+        assert!(res.path.is_none(), "locked ⇒ no overlay backend");
+        // A persist against the locked (None) backend must ERROR, not silently succeed.
+        assert!(persist_root(res.path.as_deref(), &RootSettings::default()).is_err());
+    }
+
+    /// (c) BOOT INVARIANT: a MUTABLE config with the overlay explicitly DISABLED refuses (no writable
+    /// backend). Also the read-only-config-dir edge case (unix): the default path is unwritable, so a
+    /// mutable config refuses with an actionable message.
+    ///
+    /// RED-before-GREEN: pre-1.5.3 nothing enforced "mutable XOR writable overlay" — a mutable config
+    /// with no backend booted fine and mutated in RAM only.
+    #[test]
+    fn c_mutable_without_a_writable_backend_refuses() {
+        let dir = writable_dir("disabled");
+        let config_path = dir.join("config.yaml");
+        let err = resolve_backend(
+            &ConfigMgmtCfg {
+                locked: false,
+                overlay: Some(OverlayCfg::Disabled(false)),
+            },
+            &config_path,
+            None,
+            true,
+        )
+        .expect_err("mutable + overlay disabled must refuse");
+        assert!(
+            err.contains("config.locked") || err.contains("no writable overlay"),
+            "the refusal must be actionable: {err}"
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let ro = writable_dir("readonly");
+            let ro_config = ro.join("config.yaml");
+            std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o555)).unwrap();
+            let err = resolve_backend(&ConfigMgmtCfg::default(), &ro_config, None, true)
+                .expect_err("a read-only config dir must refuse a mutable config");
+            assert!(
+                err.contains("not writable") && err.contains("config.locked"),
+                "the read-only refusal must name the fix (writable path or config.locked): {err}"
+            );
+            // restore so cleanup can proceed
+            let _ = std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o755));
+        }
+    }
+
+    /// (d) Overlay backend PRECEDENCE for the env→config migration: an explicit `config.overlay` WINS;
+    /// else the deprecated `BUSBAR_CONFIG_OVERLAY` env override is honored; else the default next to
+    /// config.yaml. Both the new config key AND the deprecated env fallback work.
+    ///
+    /// RED-before-GREEN: pre-1.5.3 the ONLY source was the env var; `config.overlay` did not exist, so
+    /// the "config wins" and "default next to config" cases had no code path.
+    #[test]
+    fn d_overlay_precedence_config_over_env_over_default() {
+        let dir = writable_dir("precedence");
+        let config_path = dir.join("config.yaml");
+        let env = dir.join("env-overlay.json");
+
+        // config.overlay.file wins over the env override.
+        let cfg_file = ConfigMgmtCfg {
+            locked: false,
+            overlay: Some(OverlayCfg::Backend(OverlayBackend {
+                file: Some("chosen.json".into()),
+            })),
+        };
+        let r = resolve_backend(&cfg_file, &config_path, Some(&env), true).unwrap();
+        assert_eq!(
+            r.path.unwrap(),
+            dir.join("chosen.json"),
+            "config.overlay wins"
+        );
+
+        // No config.overlay → the deprecated env override is used (back-compat).
+        let r2 =
+            resolve_backend(&ConfigMgmtCfg::default(), &config_path, Some(&env), true).unwrap();
+        assert_eq!(
+            r2.path.unwrap(),
+            env,
+            "env fallback is honored when config is silent"
+        );
+
+        // Neither → default next to config.yaml.
+        let r3 = resolve_backend(&ConfigMgmtCfg::default(), &config_path, None, true).unwrap();
+        assert_eq!(
+            r3.path.unwrap(),
+            dir.join(DEFAULT_OVERLAY_FILENAME),
+            "default next to config"
+        );
+    }
+
+    /// (e) A BARE-FILENAME overlay (no directory component) in a writable cwd must be reported WRITABLE
+    /// — so a `BUSBAR_CONFIG=config.yaml` deployment run from inside its config dir (overlay resolves to
+    /// a bare `busbar-overlay.json`) BOOTS instead of being refused.
+    ///
+    /// RED-before-GREEN: the pre-fix `is_backend_writable` no-parent branch probed the not-yet-existing
+    /// bare path via `OpenOptions::open` WITHOUT `.create(true)` → `NotFound` → `false` → boot refused,
+    /// even though the cwd is perfectly writable.
+    #[test]
+    fn e_bare_filename_overlay_in_writable_cwd_is_writable() {
+        // A bare filename → `parent()` is `Some("")` (empty), NOT `None`: the exact branch under test.
+        let bare = std::path::PathBuf::from(format!(
+            "busbar-cfgcons-bare-does-not-exist-{}.json",
+            std::process::id()
+        ));
+        assert!(
+            !bare.exists(),
+            "test precondition: the bare target must not already exist"
+        );
+        assert!(
+            is_backend_writable(&bare),
+            "a bare-filename overlay in a writable cwd must probe the cwd and report writable"
+        );
+        // The probe is cleaned up and the bare target itself is never created (only a probe file was).
+        assert!(
+            !bare.exists(),
+            "the writability probe must not create the overlay target file"
+        );
+    }
+
+    /// (f) The `None` (LOCKED) overlay path is REFUSED by EVERY persist/reset entry point — not just
+    /// `persist_root`. Guards against reverting any one of them to the pre-1.5.3 silent `Ok(())`.
+    ///
+    /// RED-before-GREEN: `clear_section(None, ..)` and `try_persist_plugin_versions(None, ..)` returned
+    /// a silent `Ok(())` until this fix; reverting either to `return Ok(())` fails this test.
+    #[test]
+    fn f_every_persist_entry_point_refuses_a_none_locked_overlay() {
+        let empty_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+        assert!(
+            persist(
+                None,
+                &HashMap::<String, HookCfg>::new(),
+                &[],
+                None,
+                None,
+                &empty_names,
+            )
+            .is_err(),
+            "persist(None) must refuse (hooks)"
+        );
+        assert!(
+            persist_groups(
+                None,
+                &BTreeMap::<String, GroupCfg>::new(),
+                None,
+                None,
+                &empty_names,
+            )
+            .is_err(),
+            "persist_groups(None) must refuse (groups)"
+        );
+        assert!(
+            persist_root(None, &RootSettings::default()).is_err(),
+            "persist_root(None) must refuse (settings)"
+        );
+        assert!(
+            clear_section(None, OverlaySection::Hooks).is_err(),
+            "clear_section(None) must refuse (per-section reset)"
+        );
+        assert!(
+            try_persist_plugin_versions(None, &BTreeMap::<String, String>::new()).is_err(),
+            "try_persist_plugin_versions(None) must refuse (rollback pin)"
+        );
     }
 }
 

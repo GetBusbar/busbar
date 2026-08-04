@@ -1685,7 +1685,7 @@ fn load_config_from_disk_refuses_a_real_legacy_config_file_loudly() {
 
     let result = load_config_from_disk(
         &config_path,
-        &providers_path,
+        Some(&providers_path),
         false,
         crate::config::EnvSubst::Strict,
     );
@@ -1728,7 +1728,7 @@ fn migrate_config_then_load_config_from_disk_boots_the_real_migrated_file() {
     // THE REAL BOOT ENTRY POINT must accept the migrated file on disk without error.
     let loaded = load_config_from_disk(
         &migrated_path,
-        &providers_path,
+        Some(&providers_path),
         false,
         crate::config::EnvSubst::Strict,
     )
@@ -1781,6 +1781,101 @@ fn worker_threads_from_env_parses_valid_rejects_invalid() {
         );
         std::env::remove_var(bad_name);
     }
+}
+
+/// `validate_worker_threads_config`: a config-supplied `advanced.worker_threads: 0` is DIAGNOSED
+/// (`Err`, so the caller warns) rather than silently dropped — matching `worker_threads_from_env`'s
+/// treatment of an invalid env value. A positive count or an unset value passes through as `Ok`.
+/// RED-before-GREEN: pre-fix the config path used `.filter(|n| *n >= 1)`, which returned `None` for
+/// `Some(0)` with NO diagnostic — reverting to that (removing this validation) fails the `Err` case.
+#[test]
+fn validate_worker_threads_config_diagnoses_zero() {
+    assert!(
+        validate_worker_threads_config(Some(0)).is_err(),
+        "worker_threads: 0 must be diagnosed, not silently dropped"
+    );
+    assert_eq!(validate_worker_threads_config(Some(4)), Ok(Some(4)));
+    assert_eq!(validate_worker_threads_config(None), Ok(None));
+}
+
+/// `upstream_bool_env_override`: the env→config migration precedence for the boot-time upstream
+/// booleans. When the deprecated env var is UNSET, the config value stands; when SET, it wins (`"0"`
+/// or empty = off, anything else = on). RED-before-GREEN: dropping the `None => config_val` arm (so the
+/// config key stops being honored) fails the "env absent → config value" cases.
+#[test]
+fn upstream_bool_env_override_precedence() {
+    use std::ffi::OsString;
+    // Env unset → the config value stands (both directions).
+    assert!(
+        upstream_bool_env_override(None, true),
+        "unset → config true"
+    );
+    assert!(
+        !upstream_bool_env_override(None, false),
+        "unset → config false"
+    );
+    // Env set → it wins over the config value.
+    assert!(
+        upstream_bool_env_override(Some(OsString::from("1")), false),
+        "env `1` overrides config false → on"
+    );
+    assert!(
+        !upstream_bool_env_override(Some(OsString::from("0")), true),
+        "env `0` overrides config true → off"
+    );
+    assert!(
+        !upstream_bool_env_override(Some(OsString::from("")), true),
+        "env empty → off (overrides config true)"
+    );
+}
+
+/// `worker_threads_from_config`: END-TO-END from a real config.yaml (not just a parse). A positive
+/// `advanced.worker_threads` is read back from the file the `BUSBAR_CONFIG` env var names; a `0` is
+/// diagnosed away to `None`. RED-before-GREEN: deleting `worker_threads_from_config`'s parse (or its
+/// call in `main()`) means `advanced.worker_threads` stops being read from config.yaml — the positive
+/// assertion fails.
+#[test]
+fn worker_threads_from_config_reads_a_real_file() {
+    // `BUSBAR_CONFIG` is read ONLY by `worker_threads_from_config` outside of `main()`, so setting it
+    // here does not perturb other unit tests (they pass explicit config paths to `load_config_from_disk`).
+    let prior = std::env::var_os(ENV_CONFIG);
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-wtcfg-{}-{}",
+        std::process::id(),
+        crate::store::now()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let config_path = dir.join("config.yaml");
+
+    std::fs::write(
+        &config_path,
+        "providers: {}\nmodels: {}\nadvanced:\n  worker_threads: 5\n",
+    )
+    .unwrap();
+    std::env::set_var(ENV_CONFIG, &config_path);
+    assert_eq!(
+        worker_threads_from_config(),
+        Some(5),
+        "a positive advanced.worker_threads must be read from config.yaml"
+    );
+
+    std::fs::write(
+        &config_path,
+        "providers: {}\nmodels: {}\nadvanced:\n  worker_threads: 0\n",
+    )
+    .unwrap();
+    assert_eq!(
+        worker_threads_from_config(),
+        None,
+        "advanced.worker_threads: 0 is invalid → None (diagnosed, not honored)"
+    );
+
+    // Restore the ambient env for any later-scheduled test on this thread.
+    match prior {
+        Some(v) => std::env::set_var(ENV_CONFIG, v),
+        None => std::env::remove_var(ENV_CONFIG),
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// `is_real_auth_plugin_ref`: `keys` is always exempt (engine-handled, never a plugin).
@@ -2012,4 +2107,112 @@ fn plugins_boot_logging_wording_present() {
         src.contains("Add it to plugins.fetch or drop the signed tarball"),
         "two-part remediation wording missing"
     );
+}
+
+/// A minimal but structurally VALID 1.5.x config (parses into `DeployCfg`; `load_config_from_disk`
+/// does not resolve, so empty maps are fine).
+const BOOT_MINIMAL_CONFIG: &str = "providers: {}\nmodels: {}\n";
+
+/// 1.5.3 durable-by-default at the BOOT path: with NO `config:` section and NO `BUSBAR_CONFIG_OVERLAY`,
+/// `load_config_from_disk` resolves a writable overlay next to config.yaml and reports the config
+/// mutable. RED-before-GREEN: pre-1.5.3 an unset env var meant `overlay_path: None` (RAM-only).
+#[test]
+fn boot_default_config_resolves_a_durable_overlay_next_to_config() {
+    let (dir, config_path, _providers_path) = boot_config_dir("durable", BOOT_MINIMAL_CONFIG);
+    // Note: this test does not set BUSBAR_CONFIG_OVERLAY; the default must still be durable.
+    let loaded = load_config_from_disk(&config_path, None, false, crate::config::EnvSubst::Strict)
+        .expect("a mutable default config must boot");
+    assert!(!loaded.config_locked, "default config is mutable");
+    assert_eq!(
+        loaded.overlay_path.as_deref(),
+        Some(dir.join("busbar-overlay.json").as_path()),
+        "durable-by-default: overlay next to config.yaml"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 1.5.3 BOOT INVARIANT: a mutable config that explicitly disables the overlay REFUSES TO BOOT, with an
+/// actionable message (writable overlay OR `config.locked: true`). RED-before-GREEN: pre-1.5.3 nothing
+/// enforced "mutable XOR writable overlay".
+#[test]
+fn boot_mutable_with_overlay_disabled_refuses_to_boot() {
+    let cfg = "providers: {}\nmodels: {}\nconfig:\n  locked: false\n  overlay: false\n";
+    let (dir, config_path, _p) = boot_config_dir("no-backend", cfg);
+    let Err(err) =
+        load_config_from_disk(&config_path, None, false, crate::config::EnvSubst::Strict)
+    else {
+        panic!("mutable + overlay disabled must refuse to boot");
+    };
+    // Pin the SPECIFIC resolve_backend Err arm for `overlay: false` on a mutable config — not an OR of
+    // two substrings that a coincidentally-worded unrelated error could satisfy. This is the
+    // "mutable-but-overlay-disabled" arm, distinct from the read-only-dir "not writable" arm and the
+    // `overlay: true` "names no backend" arm.
+    assert!(
+        err.contains("has no writable overlay backend")
+            && err.contains("`config.overlay` is disabled"),
+        "the boot refusal must be the specific mutable-without-backend message: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 1.5.3: a LOCKED config boots with NO overlay backend (mutations are refused at runtime).
+#[test]
+fn boot_locked_config_has_no_overlay() {
+    let cfg = "providers: {}\nmodels: {}\nconfig:\n  locked: true\n";
+    let (dir, config_path, _p) = boot_config_dir("locked", cfg);
+    let loaded = load_config_from_disk(&config_path, None, false, crate::config::EnvSubst::Strict)
+        .expect("a locked config boots");
+    assert!(loaded.config_locked);
+    assert!(loaded.overlay_path.is_none(), "locked ⇒ no overlay backend");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 1.5.3 providers migration (`BUSBAR_PROVIDERS` → `providers_file:`): the top-level `providers_file:`
+/// pointer names the catalog (resolved relative to config.yaml), honored with NO env var; and an
+/// explicit override (the deprecated env var, or a reload's live path) still wins. RED-before-GREEN:
+/// pre-1.5.3 the catalog path came ONLY from `BUSBAR_PROVIDERS` / the hardcoded default — a config-file
+/// pointer had no code path.
+#[test]
+fn boot_providers_file_pointer_is_honored_and_override_wins() {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-providers-file-{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let config_path = dir.join("config.yaml");
+    // The catalog lives at a NON-default name, reachable only via the pointer.
+    let catalog = dir.join("catalog.yaml");
+    std::fs::write(&catalog, "{}\n").unwrap();
+    std::fs::write(
+        &config_path,
+        "providers: {}\nmodels: {}\nproviders_file: catalog.yaml\n",
+    )
+    .unwrap();
+
+    // No override → the `providers_file:` pointer is used.
+    let loaded = load_config_from_disk(&config_path, None, false, crate::config::EnvSubst::Strict)
+        .expect("providers_file pointer resolves");
+    assert_eq!(
+        loaded.providers_path, catalog,
+        "the providers_file pointer must be honored"
+    );
+
+    // An explicit override (deprecated BUSBAR_PROVIDERS, or a reload's live path) wins.
+    let other = dir.join("other-catalog.yaml");
+    std::fs::write(&other, "{}\n").unwrap();
+    let loaded2 = load_config_from_disk(
+        &config_path,
+        Some(&other),
+        false,
+        crate::config::EnvSubst::Strict,
+    )
+    .expect("override resolves");
+    assert_eq!(
+        loaded2.providers_path, other,
+        "the override wins over providers_file"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
 }

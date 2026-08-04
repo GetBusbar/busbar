@@ -110,12 +110,12 @@ use store::{HealthState, LaneData};
 // threaded from `cfg.limits` into the client builder and router below; the egress translate-body cap
 // is COUPLED to `request_body_max_bytes` via `crate::limits::translate_body_max_bytes`.
 
-/// Environment variable name for the providers.yaml path.
+/// DEPRECATED (1.5.3) environment variable name for the providers.yaml path — migrated to the
+/// top-level `providers_file:` key in config.yaml. Still honored for one release (see
+/// [`providers_override_from_env`]).
 const ENV_PROVIDERS: &str = "BUSBAR_PROVIDERS";
-/// Environment variable name for the config.yaml path.
+/// Environment variable name for the config.yaml path — the one irreducible bootstrap env var.
 const ENV_CONFIG: &str = "BUSBAR_CONFIG";
-/// Default path to the providers definition file.
-const DEFAULT_PROVIDERS_PATH: &str = "/etc/busbar/providers.yaml";
 /// Default path to the deployment config file.
 const DEFAULT_CONFIG_PATH: &str = "/etc/busbar/config.yaml";
 /// Response header name for the W3C Server-Timing field.
@@ -220,7 +220,8 @@ USAGE:
 
 ENVIRONMENT:
     BUSBAR_CONFIG       path to config.yaml     (default: /etc/busbar/config.yaml)
-    BUSBAR_PROVIDERS    path to providers.yaml  (default: /etc/busbar/providers.yaml)
+    BUSBAR_PROVIDERS    path to providers.yaml  (DEPRECATED — set `providers_file:` in config.yaml;
+                        default: providers.yaml next to the resolved config.yaml)
     RUST_LOG            log level: error|warn|info|debug|trace  (default: info)
 
 Flags:
@@ -259,9 +260,7 @@ Docs: https://getbusbar.com   ·   Source: https://github.com/GetBusbar/busbar",
 /// Honors BUSBAR_CONFIG/BUSBAR_PROVIDERS/--safe-mode. Prints an OK summary + exits 0 when valid;
 /// prints every error (same text boot prints) + exits 1 when not.
 fn validate_config_command() -> i32 {
-    let providers_path = std::path::PathBuf::from(
-        std::env::var(ENV_PROVIDERS).unwrap_or_else(|_| DEFAULT_PROVIDERS_PATH.into()),
-    );
+    let providers_override = providers_override_from_env();
     let config_path = std::path::PathBuf::from(
         std::env::var(ENV_CONFIG).unwrap_or_else(|_| DEFAULT_CONFIG_PATH.into()),
     );
@@ -269,7 +268,7 @@ fn validate_config_command() -> i32 {
 
     let mut loaded = match load_config_from_disk(
         &config_path,
-        &providers_path,
+        providers_override.as_deref(),
         safe_mode,
         config::EnvSubst::Lenient,
     ) {
@@ -279,6 +278,7 @@ fn validate_config_command() -> i32 {
             return 1;
         }
     };
+    let providers_path = loaded.providers_path.clone();
     let unset_env_vars = loaded.unset_env_vars.clone();
     // Apply the overlay's `root` section (API-set single-value config) onto the base DeployCfg BEFORE
     // resolve, exactly as boot does — so --validate validates the EFFECTIVE config including the
@@ -358,9 +358,7 @@ fn validate_config_command() -> i32 {
 /// reason and which one `store.module` selects). NEVER `dlopen`s anything, so an untrusted
 /// plugin's code cannot run from listing it. Exit 0 (informational; `--validate` is the gate).
 fn list_plugins_command() -> i32 {
-    let providers_path = std::path::PathBuf::from(
-        std::env::var(ENV_PROVIDERS).unwrap_or_else(|_| DEFAULT_PROVIDERS_PATH.into()),
-    );
+    let providers_override = providers_override_from_env();
     let config_path = std::path::PathBuf::from(
         std::env::var(ENV_CONFIG).unwrap_or_else(|_| DEFAULT_CONFIG_PATH.into()),
     );
@@ -368,7 +366,7 @@ fn list_plugins_command() -> i32 {
     // plugins block so the inventory still works pre-deployment.
     let (plugins_cfg, store_ref) = match load_config_from_disk(
         &config_path,
-        &providers_path,
+        providers_override.as_deref(),
         false,
         config::EnvSubst::Lenient,
     ) {
@@ -572,6 +570,58 @@ fn worker_threads_from_env(name: &str) -> Option<usize> {
     }
 }
 
+/// Best-effort early read of `advanced.worker_threads` from config.yaml (1.5.3). Runs in `main()`
+/// BEFORE the tokio runtime is built, so it re-reads the config file (the authoritative load, with
+/// full error reporting, happens later in `run()`). A missing/unparseable config yields `None` — the
+/// caller falls through to the standard worker-thread default, and `run()` surfaces the real error.
+/// Lenient env interpolation so an unset `${VAR}` elsewhere in the file does not abort this probe.
+fn worker_threads_from_config() -> Option<usize> {
+    let config_path = std::env::var(ENV_CONFIG).unwrap_or_else(|_| DEFAULT_CONFIG_PATH.into());
+    let raw = std::fs::read_to_string(&config_path).ok()?;
+    let mut unset = Vec::new();
+    let interpolated =
+        config::interpolate_env_with(&raw, config::EnvSubst::Lenient, &mut unset).ok()?;
+    let deploy: config::DeployCfg = serde_yaml::from_str(&interpolated).ok()?;
+    match validate_worker_threads_config(deploy.advanced.worker_threads) {
+        Ok(v) => v,
+        Err(msg) => {
+            // Consistency with `worker_threads_from_env`, which WARNS on an invalid value rather than
+            // silently dropping it. Pre-tracing (`main()` runs this before the subscriber is built), so
+            // it goes to STDERR like the other boot diagnostics.
+            eprintln!("[warn] {msg}");
+            None
+        }
+    }
+}
+
+/// Validate a config-supplied `advanced.worker_threads`. `Some(0)` is invalid — a Tokio runtime needs
+/// at least one worker — and yields `Err(message)` so the caller can WARN consistently with
+/// `worker_threads_from_env`'s invalid-value diagnostic instead of silently dropping the operator's
+/// explicit `advanced.worker_threads: 0`. Every other value (a positive count, or `None`/unset) passes
+/// through unchanged. Module-level (not inlined) so it is unit-testable; see `tests/tests.rs`.
+fn validate_worker_threads_config(wt: Option<usize>) -> Result<Option<usize>, String> {
+    match wt {
+        Some(0) => Err(
+            "advanced.worker_threads: 0 in config.yaml is not a positive integer (it must be >= 1); \
+             ignoring it and using the default worker-thread count"
+                .to_string(),
+        ),
+        other => Ok(other),
+    }
+}
+
+/// Resolve a boot-time boolean upstream knob under the env→config migration precedence: the DEPRECATED
+/// env var, when SET, wins (honored for one release) — `"0"` or empty means OFF, anything else ON; when
+/// UNSET, the config value (`advanced.upstream_*`, carried on `cfg.limits`) stands. The deprecation
+/// WARN is emitted at the call site (only when the env var is present). Module-level so the precedence
+/// is unit-testable without building the whole client; see `tests/tests.rs`.
+fn upstream_bool_env_override(env: Option<std::ffi::OsString>, config_val: bool) -> bool {
+    match env {
+        Some(v) => v != "0" && !v.is_empty(),
+        None => config_val,
+    }
+}
+
 fn main() {
     // CLI flags first — BEFORE building any runtime. They must work without a configured deployment,
     // and `--version` / `--validate` should never spin up a thread pool.
@@ -655,7 +705,19 @@ fn main() {
     // who pinned it on 1.3.0 keeps the same pool size. (1.4.0 audit.) `eprintln!` because this runs
     // before the tracing subscriber is installed.
     // See the `.min(MAX_WORKER_THREADS)` call below for why this exists.
+    // 1.5.3: `advanced.worker_threads` in config.yaml is the home for this knob. `BUSBAR_WORKER_THREADS`
+    // still works for one release (deprecation-warned in `worker_threads_from_env` when it parses), and
+    // wins when set so an existing pin is honored; else config.yaml; else the standard
+    // `TOKIO_WORKER_THREADS`; else one-per-core. The config read is a best-effort early parse (the real
+    // load + error reporting happens in `run()` after the runtime is up).
     let worker_threads = worker_threads_from_env("BUSBAR_WORKER_THREADS")
+        .inspect(|_| {
+            eprintln!(
+                "[warn] BUSBAR_WORKER_THREADS is DEPRECATED; set `advanced.worker_threads` in \
+                 config.yaml instead (it is honored for now)."
+            )
+        })
+        .or_else(worker_threads_from_config)
         .or_else(|| worker_threads_from_env("TOKIO_WORKER_THREADS"))
         .unwrap_or_else(|| {
             // Fall back to 1 (not 2) when core detection fails, matching v1.3.0's `#[tokio::main]`
@@ -688,16 +750,14 @@ async fn run() {
 
     // Locate the two config files (env-overridable paths) and run the shared disk-load pipeline —
     // the SAME pipeline `POST /api/v1/admin/config/reload` re-runs at runtime.
-    let providers_path = std::path::PathBuf::from(
-        std::env::var(ENV_PROVIDERS).unwrap_or_else(|_| DEFAULT_PROVIDERS_PATH.into()),
-    );
+    let providers_override = providers_override_from_env();
     let config_path = std::path::PathBuf::from(
         std::env::var(ENV_CONFIG).unwrap_or_else(|_| DEFAULT_CONFIG_PATH.into()),
     );
     let safe_mode = safe_mode_requested(std::env::args());
     let loaded = load_config_from_disk(
         &config_path,
-        &providers_path,
+        providers_override.as_deref(),
         safe_mode,
         config::EnvSubst::Strict,
     )
@@ -705,7 +765,9 @@ async fn run() {
     let LoadedConfig {
         mut deploy,
         defs,
+        providers_path,
         overlay_path,
+        config_locked,
         overlay_doc,
         unset_env_vars: _,
     } = loaded;
@@ -751,6 +813,19 @@ async fn run() {
     // First line in the logs: which build is running. Operators need this to confirm a deploy /
     // correlate logs to a release without shelling in to run `--version`.
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "busbar starting");
+    // 1.5.3 config-management posture (the boot invariant already held in `load_config_from_disk`):
+    // LOCKED ⇒ no overlay, mutations refused; MUTABLE ⇒ a writable overlay backend, mutations durable.
+    if config_locked {
+        tracing::info!(
+            "config is LOCKED (config.locked: true): admin-API config mutations are refused; edit \
+             config.yaml and POST /config/reload to change config"
+        );
+    } else if let Some(p) = overlay_path.as_ref() {
+        tracing::info!(
+            overlay = %p.display(),
+            "config is mutable; admin-API changes persist to the overlay backend (durable across restart)"
+        );
+    }
     // Stamp process start for the `GET /api/v1/admin/info` uptime read.
     admin::mark_start();
 
@@ -1350,7 +1425,16 @@ async fn reshape_oversized_413(
 pub(crate) struct LoadedConfig {
     pub(crate) deploy: config::DeployCfg,
     pub(crate) defs: HashMap<String, config::ProviderDef>,
+    /// The RESOLVED providers-catalog path actually read (1.5.3): `config.providers_file` relative to
+    /// the config dir, the deprecated `BUSBAR_PROVIDERS` override, or `providers.yaml` next to the
+    /// config. Carried so callers display / re-use the same file across a reload.
+    pub(crate) providers_path: std::path::PathBuf,
+    /// The resolved config-overlay backend path (1.5.3): `Some` = a writable file backend (mutable
+    /// config); `None` = the config is LOCKED (`config.locked: true`). The boot invariant guarantees
+    /// `config_locked == overlay_path.is_none()` for a config that resolved without error.
     pub(crate) overlay_path: Option<std::path::PathBuf>,
+    /// `config.locked` (1.5.3): `true` ⇒ admin-API config mutations are refused at runtime.
+    pub(crate) config_locked: bool,
     /// The persisted overlay document (API-registered hooks), applied onto the RESOLVED config
     /// (`overlay::merge_into(&mut RootCfg, …)`) after `config::resolve` - the runtime registry is
     /// synthesized there, so the overlay merges post-resolve. `None` = absent / safe mode.
@@ -1430,25 +1514,32 @@ Review the output, then run `busbar --validate` on it before deploying.         
     }
 }
 
+/// Resolve the DEPRECATED `BUSBAR_PROVIDERS` override, warning once when it is set. `None` ⇒ let
+/// [`load_config_from_disk`] resolve the catalog from `config.providers_file` or the default
+/// (`providers.yaml` next to config.yaml). One-release back-compat for the env→config migration.
+fn providers_override_from_env() -> Option<std::path::PathBuf> {
+    let v = std::env::var(ENV_PROVIDERS)
+        .ok()
+        .filter(|s| !s.is_empty())?;
+    eprintln!(
+        "[warn] {ENV_PROVIDERS} is DEPRECATED; set `providers_file:` in config.yaml instead (it is \
+         honored for now)."
+    );
+    Some(std::path::PathBuf::from(v))
+}
+
+/// `providers_override`: the DEPRECATED `BUSBAR_PROVIDERS` path (Some ⇒ set), or the live
+/// providers path a runtime reload wants to re-use. When `None`, the catalog path is resolved from
+/// `config.providers_file` (relative to the config dir) or defaults to `providers.yaml` next to the
+/// resolved config.yaml (1.5.3).
 pub(crate) fn load_config_from_disk(
     config_path: &std::path::Path,
-    providers_path: &std::path::Path,
+    providers_override: Option<&std::path::Path>,
     safe_mode: bool,
     env_mode: config::EnvSubst,
 ) -> Result<LoadedConfig, String> {
     let mut unset_env_vars: Vec<String> = Vec::new();
-    let raw_providers = std::fs::read_to_string(providers_path).map_err(|e| {
-        format!(
-            "cannot read providers file '{}': {e} (set {ENV_PROVIDERS})",
-            providers_path.display()
-        )
-    })?;
-    let interpolated_providers =
-        config::interpolate_env_with(&raw_providers, env_mode, &mut unset_env_vars)
-            .map_err(|e| format!("providers.yaml: {e}"))?;
-    let defs: HashMap<String, config::ProviderDef> = serde_yaml::from_str(&interpolated_providers)
-        .map_err(|e| format!("providers.yaml: invalid YAML: {e}"))?;
-
+    // 1.5.3: read + parse config.yaml FIRST — it may name the providers catalog (`providers_file:`).
     let raw_config = std::fs::read_to_string(config_path).map_err(|e| {
         format!(
             "cannot read config file '{}': {e} (set {ENV_CONFIG})",
@@ -1478,13 +1569,57 @@ pub(crate) fn load_config_from_disk(
         )
     })?;
 
-    // Config-overlay persistence (opt-in via `BUSBAR_CONFIG_OVERLAY`): capture the BASE hook names
-    // BEFORE the overlay merges in API-registered hooks (the admin API refuses to PUT-replace a
-    // base hook), then merge. Absent/corrupt overlay is fail-soft.
-    let overlay_path = std::env::var("BUSBAR_CONFIG_OVERLAY")
+    // 1.5.3: resolve the providers CATALOG path. Precedence: the explicit override (the deprecated
+    // `BUSBAR_PROVIDERS` env var, or a runtime reload re-using its boot path) > `config.providers_file`
+    // (relative to the config dir) > `providers.yaml` next to the resolved config.yaml.
+    let config_dir = config_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let providers_path: std::path::PathBuf = match providers_override {
+        Some(p) => p.to_path_buf(),
+        None => match deploy.providers_file.as_deref() {
+            Some(f) => {
+                let p = std::path::Path::new(f);
+                if p.is_absolute() {
+                    p.to_path_buf()
+                } else {
+                    config_dir.join(p)
+                }
+            }
+            None => config_dir.join("providers.yaml"),
+        },
+    };
+    let raw_providers = std::fs::read_to_string(&providers_path).map_err(|e| {
+        format!(
+            "cannot read providers file '{}': {e} (set `providers_file:` in config.yaml, or {ENV_PROVIDERS})",
+            providers_path.display()
+        )
+    })?;
+    let interpolated_providers =
+        config::interpolate_env_with(&raw_providers, env_mode, &mut unset_env_vars)
+            .map_err(|e| format!("providers.yaml: {e}"))?;
+    let defs: HashMap<String, config::ProviderDef> = serde_yaml::from_str(&interpolated_providers)
+        .map_err(|e| format!("providers.yaml: invalid YAML: {e}"))?;
+
+    // 1.5.3: resolve the config-management posture + overlay backend from the `config:` block, and
+    // ENFORCE the boot invariant (`locked` XOR a writable overlay). The deprecated
+    // `BUSBAR_CONFIG_OVERLAY` env var is honored only when `config.overlay` is unset. The writability
+    // probe runs at boot/reload (Strict) but not under `--validate` (Lenient), which must stay
+    // side-effect-free.
+    let env_overlay = std::env::var("BUSBAR_CONFIG_OVERLAY")
         .ok()
         .filter(|s| !s.is_empty())
         .map(std::path::PathBuf::from);
+    let probe_fs = matches!(env_mode, config::EnvSubst::Strict);
+    let resolution = config::overlay::resolve_backend(
+        &deploy.config,
+        config_path,
+        env_overlay.as_deref(),
+        probe_fs,
+    )?;
+    let overlay_path = resolution.path;
+    let config_locked = resolution.locked;
+
     if safe_mode {
         // `--safe-mode` (D3): boot on the operator-owned base config ALONE — the persisted overlay
         // (API-registered hooks) is quarantined, not deleted. The escape hatch for "an applied
@@ -1496,7 +1631,9 @@ pub(crate) fn load_config_from_disk(
         return Ok(LoadedConfig {
             deploy,
             defs,
+            providers_path,
             overlay_path,
+            config_locked,
             overlay_doc: None,
             unset_env_vars,
         });
@@ -1529,7 +1666,9 @@ pub(crate) fn load_config_from_disk(
     Ok(LoadedConfig {
         deploy,
         defs,
+        providers_path,
         overlay_path,
+        config_locked,
         overlay_doc,
         unset_env_vars,
     })
@@ -2688,8 +2827,18 @@ pub(crate) fn build_app_from_config(
         // it exists so a cleartext h2c backend (e.g. the benchmark mock, or an in-mesh h2c service)
         // can exercise multiplexing without TLS. It FORCES h2, so every configured upstream must speak
         // h2c when set — never enable it against a mixed/h1 fleet. Read once at client-build time.
-        let h2_prior_knowledge = std::env::var_os("BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE")
-            .is_some_and(|v| v != "0" && !v.is_empty());
+        // 1.5.3: home is `advanced.upstream_h2_prior_knowledge` in config.yaml (carried on
+        // `cfg.limits`); the `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` env var overrides it for one release,
+        // with a deprecation warn.
+        let h2_env = std::env::var_os("BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE");
+        if h2_env.is_some() {
+            tracing::warn!(
+                "BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE is DEPRECATED; set \
+                 `advanced.upstream_h2_prior_knowledge` in config.yaml (honored for now)."
+            );
+        }
+        let h2_prior_knowledge =
+            upstream_bool_env_override(h2_env, cfg.limits.upstream_h2_prior_knowledge);
         // Opt-out ESCAPE HATCH for the ALPN h2 default: `BUSBAR_UPSTREAM_HTTP1_ONLY=1` pins the
         // shared client to HTTP/1.1 (reqwest `.http1_only()`), so ALPN never offers h2 at all. This
         // is a PROCESS-WIDE, DEFAULT-OFF switch — production keeps the ALPN default (h2 where the
@@ -2698,9 +2847,17 @@ pub(crate) fn build_app_from_config(
         // keep-alive pings, intermediary bugs) and you need the pre-h2 wire behavior back without a
         // rebuild. Mutually exclusive in spirit with the h2c opt-in above (forcing h1 AND forcing
         // h2 makes no sense); if both are set, http1-only wins because it is applied last. Read
-        // once at client-build time.
-        let http1_only = std::env::var_os("BUSBAR_UPSTREAM_HTTP1_ONLY")
-            .is_some_and(|v| v != "0" && !v.is_empty());
+        // once at client-build time. 1.5.3: home is `advanced.upstream_http1_only` in config.yaml
+        // (carried on `cfg.limits`); the `BUSBAR_UPSTREAM_HTTP1_ONLY` env var overrides it for one
+        // release, with a deprecation warn.
+        let http1_env = std::env::var_os("BUSBAR_UPSTREAM_HTTP1_ONLY");
+        if http1_env.is_some() {
+            tracing::warn!(
+                "BUSBAR_UPSTREAM_HTTP1_ONLY is DEPRECATED; set `advanced.upstream_http1_only` in \
+                 config.yaml (honored for now)."
+            );
+        }
+        let http1_only = upstream_bool_env_override(http1_env, cfg.limits.upstream_http1_only);
         let shard_count = crate::state::UpstreamClients::shard_count();
         // The per-host idle budget is divided across shards so the TOTAL kept-alive sockets
         // toward any single upstream stay at the configured value (never below 1 per shard).

@@ -98,8 +98,8 @@ async fn test_admin_v1_info_reports_version_features_and_topology() {
     assert!(body["topology"]["pools"].is_number());
     assert!(body["topology"]["models"].is_number());
     assert!(body["topology"]["providers"].is_number());
-    // No overlay configured in this fixture → persistence off.
-    assert_eq!(body["config_persistence"], false);
+    // 1.5.3 durable-by-default: a plain TestApp is MUTABLE with a writable overlay → persistence on.
+    assert_eq!(body["config_persistence"], true);
 
     handle.abort();
 }
@@ -1645,6 +1645,111 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
         "GET admin-auth mirrors the PUT'd chain verbatim"
     );
 
+    handle.abort();
+}
+
+/// 1.5.3 LOCKED invariant for `PUT /api/v1/admin/admin-auth`: a locked (no-overlay) config REFUSES the
+/// admin_auth chain mutation with `400`, matching the documented guarantee that "every config-mutating
+/// admin call is refused" on a locked deployment. Without the guard this endpoint went straight to a
+/// live swap, silently diverging the live auth posture from config.yaml until restart.
+///
+/// RED-before-GREEN: absent the `overlay_path.is_none()` refusal in `put_auth`, a valid chain applies
+/// (`200`) on a locked config; the guard makes it a `400`.
+#[tokio::test]
+async fn test_admin_v1_put_auth_refused_on_locked_config() {
+    crate::metrics::init();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    // `.no_overlay()` = a LOCKED config (the only supported way to reach `overlay_path: None`).
+    let app = TestApp::new().governance(gov).no_overlay().build();
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    // A chain the caller would survive — so ONLY the locked refusal can make this a 400.
+    let resp = client
+        .put(format!("http://{addr}/api/v1/admin/admin-auth"))
+        .header("x-admin-token", "admintok")
+        .header("content-type", "application/json")
+        .body(serde_json::json!({"admin_auth": ["admin-tokens"]}).to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status().as_u16(),
+        400,
+        "a locked config must refuse PUT /admin-auth"
+    );
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no writable config overlay"),
+        "the refusal names the locked/no-overlay reason: {body}"
+    );
+    handle.abort();
+}
+
+/// 1.5.3 LOCKED invariant for `POST /api/v1/admin/config/apply`: a locked (no-overlay) config REFUSES a
+/// full-config apply with `400`. This is the widest config-plane mutation, so a locked/GitOps
+/// deployment must refuse it rather than swap an alternate config live until restart.
+///
+/// RED-before-GREEN: absent the `overlay_path.is_none()` refusal in `apply_config`, a valid body swaps
+/// live (`200`) on a locked config; the guard makes it a `400`.
+#[tokio::test]
+async fn test_admin_v1_config_apply_refused_on_locked_config() {
+    crate::metrics::init();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let app = TestApp::new()
+        .lane(crate::test_support::LaneSpec::new(
+            "m0",
+            crate::proto::Protocol::anthropic(),
+            "http://127.0.0.1:1/",
+        ))
+        .pool("p", &[(0, 1)])
+        .governance(gov)
+        .no_overlay()
+        .build();
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    let body = serde_json::json!({
+        "providers": {
+            "test-provider": {"protocol": "anthropic", "base_url": "http://127.0.0.1:1/", "api_key_env": "BUSBAR_TEST_LOCKED_APPLY_NO_KEY"}
+        },
+        "config": {
+            "listen": "127.0.0.1:0",
+            "providers": {"test-provider": {"api_key": {"env": "BUSBAR_TEST_LOCKED_APPLY_NO_KEY"}}},
+            "models": {"m0": {"provider": "test-provider", "max_concurrent": 4}},
+            "pools": {"p": {"members": [{"model": "m0"}]}}
+        }
+    });
+    let resp = client
+        .post(format!("http://{addr}/api/v1/admin/config/apply"))
+        .header("x-admin-token", "admintok")
+        .header("content-type", "application/json")
+        .body(body.to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status().as_u16(),
+        400,
+        "a locked config must refuse POST /config/apply"
+    );
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no writable config overlay"),
+        "the refusal names the locked/no-overlay reason: {body}"
+    );
     handle.abort();
 }
 
@@ -8921,7 +9026,7 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
         let providers_path = dir.join("providers.yaml");
         let mut loaded = crate::load_config_from_disk(
             &config_path,
-            &providers_path,
+            Some(&providers_path),
             false,
             crate::config::EnvSubst::Strict,
         )
@@ -8958,6 +9063,79 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
             .iter()
             .any(|e| e["resource"] == "config:settings" && e["outcome"] == "applied"),
         "the applied PUT is audited"
+    );
+
+    handle.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// FULL restart-simulation at the BOOT-RESOLVED DEFAULT overlay path: boot-with-defaults (no
+/// `config.overlay`, no env var) → a REAL admin-API `PUT /config/settings` → a fresh
+/// `load_config_from_disk` (the exact path a restarted process takes) re-reads the mutation, WITHOUT
+/// the test manually substituting `overlay_doc`. This closes the gap the round-trip test leaves: it
+/// proves boot's OWN resolved overlay path (`busbar-overlay.json` next to config.yaml) is the SAME
+/// file the serving App persists mutations to — a divergence between the two would be invisible to a
+/// test that hand-feeds `overlay_doc` from a path it chose itself.
+///
+/// RED-before-GREEN: if `load_config_from_disk`'s default-overlay resolution and the App's serving
+/// overlay path ever diverge (or resolution regresses to `None`/RAM-only), the freshly-loaded
+/// `overlay_doc` is absent and the `per_request_fee` assertion fails.
+#[tokio::test]
+async fn test_admin_v1_config_settings_survives_a_real_boot_reload_at_default_overlay() {
+    crate::metrics::init();
+    let (dir, config_path, providers_path) = write_reset_fixture("boot-default-overlay");
+    // The App persists to the SAME path `load_config_from_disk` resolves by default (no `config.overlay`
+    // in config.yaml, no `BUSBAR_CONFIG_OVERLAY`): `busbar-overlay.json` next to config.yaml.
+    let default_overlay = dir.join("busbar-overlay.json");
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let mut app = TestApp::new()
+        .governance(gov)
+        .overlay_path(default_overlay.clone())
+        .build();
+    {
+        let inner = Arc::get_mut(&mut app).expect("sole owner");
+        inner.config_path = Some(config_path.clone());
+        inner.providers_path = Some(providers_path.clone());
+    }
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
+
+    let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
+        .header("content-type", "application/json")
+        .body(serde_json::json!({ "per_request_fee": 9 }).to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(put.status().as_u16(), 200, "{:?}", put.text().await);
+
+    // A FRESH boot disk-load — no `overlay_doc` hand-substitution. It must resolve the default overlay
+    // path ITSELF and read back the mutation the running App just persisted there.
+    let loaded = crate::load_config_from_disk(
+        &config_path,
+        Some(&providers_path),
+        false,
+        crate::config::EnvSubst::Strict,
+    )
+    .expect("fresh boot disk-load");
+    assert_eq!(
+        loaded.overlay_path.as_deref(),
+        Some(default_overlay.as_path()),
+        "boot must resolve the SAME default overlay path the App persists to"
+    );
+    let root = loaded
+        .overlay_doc
+        .as_ref()
+        .and_then(|d| d.root.as_ref())
+        .expect("the fresh boot load reads the overlay root the admin PUT wrote");
+    assert_eq!(
+        root.per_request_fee,
+        Some(9),
+        "the admin mutation survives a real boot reload at the boot-resolved default path"
     );
 
     handle.abort();
@@ -9656,9 +9834,9 @@ async fn test_admin_v1_config_settings_unknown_field_400() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Same fixture as `settings_test_app`, but with NO overlay configured (`BUSBAR_CONFIG_OVERLAY`
-/// unset) — the default deployment — while config/providers files still exist on disk (so the
-/// separate ephemeral-mode guard does not fire first).
+/// Same fixture as `settings_test_app`, but a LOCKED app (1.5.3: `config.locked: true` ⇒ no overlay
+/// backend, `overlay_path: None`), while config/providers files still exist on disk (so the separate
+/// ephemeral-mode guard does not fire first). A locked config refuses every admin-API config mutation.
 async fn settings_test_app_no_overlay(
     tag: &str,
 ) -> (
@@ -9670,7 +9848,7 @@ async fn settings_test_app_no_overlay(
     let (dir, config_path, providers_path) = write_reset_fixture(&format!("settings-no-ov-{tag}"));
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let mut app = TestApp::new().governance(gov).build();
+    let mut app = TestApp::new().governance(gov).no_overlay().build();
     {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
         inner.config_path = Some(config_path.clone());
@@ -9683,11 +9861,15 @@ async fn settings_test_app_no_overlay(
     (dir, addr, handle)
 }
 
-/// Case 2 of the `persist` matrix (§3.3.3): with no overlay configured, a PUT still applies live
-/// (200) but must report TRUTHFULLY that nothing was stored — `reload_to_apply` empty and a note
-/// saying IN MEMORY ONLY — instead of the old unconditional "stored in the overlay" claim.
+/// 1.5.3 (was "reports in memory only"): the OLD behavior — a PUT on a busbar with no overlay applied
+/// LIVE, IN MEMORY ONLY (200) — is GONE. A config with no overlay backend is now a LOCKED config, and
+/// a locked config REFUSES the mutation (400). The silent non-durable-mutation outcome this test used
+/// to assert is exactly what the release removes, so the test is inverted: it now proves the refusal.
+///
+/// RED-before-GREEN: on the pre-1.5.3 code this asserted a 200 with an "IN MEMORY ONLY" note; the new
+/// assertion (400 refusal) FAILS there, and passes only once the locked/durable model is in place.
 #[tokio::test]
-async fn test_admin_v1_config_settings_put_without_persistence_reports_in_memory_only() {
+async fn test_admin_v1_config_settings_put_on_locked_config_is_refused() {
     let (dir, addr, handle) = settings_test_app_no_overlay("truthful").await;
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
@@ -9698,34 +9880,22 @@ async fn test_admin_v1_config_settings_put_without_persistence_reports_in_memory
         .send()
         .await
         .unwrap();
-    assert_eq!(put.status().as_u16(), 200, "{:?}", put.text().await);
+    assert_eq!(put.status().as_u16(), 400, "{:?}", put.text().await);
     let body: serde_json::Value = put.json().await.unwrap();
-    let reload_to_apply = body["reload_to_apply"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
+    let msg = body["error"]["message"].as_str().unwrap_or_default();
     assert!(
-        reload_to_apply.is_empty(),
-        "no overlay ⇒ nothing was durably stored, so reload_to_apply must be empty: {body}"
-    );
-    let note = body["note"].as_str().unwrap_or_default();
-    assert!(
-        note.contains("IN MEMORY ONLY"),
-        "the note must say the change is in memory only: {note}"
-    );
-    assert!(
-        !note.contains("stored in the overlay"),
-        "the note must not claim durable storage that did not happen: {note}"
+        msg.contains("config.locked") || msg.contains("no writable config overlay"),
+        "the refusal must explain the locked/no-overlay posture: {body}"
     );
 
     handle.abort();
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Case 4 of the `persist` matrix: `"persist": true` with no overlay configured must REFUSE (400)
-/// rather than silently apply in memory while claiming success. THE STATUS ALONE DOES NOT
-/// DISCRIMINATE — `RootSettings`'s `deny_unknown_fields` 400s this exact body TODAY for a different
-/// reason (`unknown field \`persist\``), so the assertion must be on the message.
+/// 1.5.3: `"persist": true` on a LOCKED config must REFUSE (400) naming the locked/overlay posture —
+/// not the old `BUSBAR_CONFIG_OVERLAY` precondition, and NOT the `deny_unknown_fields` 400 (`persist`
+/// is stripped before the typed parse). The assertion is on the message, since the status alone does
+/// not discriminate.
 #[tokio::test]
 async fn test_admin_v1_config_settings_put_refuses_when_persistence_is_explicitly_requested_and_unavailable(
 ) {
@@ -9743,13 +9913,12 @@ async fn test_admin_v1_config_settings_put_refuses_when_persistence_is_explicitl
     let body: serde_json::Value = put.json().await.unwrap();
     let msg = body["error"]["message"].as_str().unwrap_or_default();
     assert!(
-        msg.contains("BUSBAR_CONFIG_OVERLAY"),
-        "the refusal must name BUSBAR_CONFIG_OVERLAY as the missing precondition, not just be a \
-         generic 400: {body}"
+        msg.contains("config.locked") || msg.contains("no writable config overlay"),
+        "the refusal must name the locked/no-overlay posture, not just be a generic 400: {body}"
     );
     assert!(
         !msg.contains("unknown field"),
-        "this must be the NEW persist-unavailable refusal, not the OLD deny_unknown_fields 400 \
+        "this must be the locked-config refusal, not the OLD deny_unknown_fields 400 \
          that fires on this body today: {body}"
     );
 
@@ -9842,26 +10011,28 @@ async fn test_admin_v1_config_settings_put_still_rejects_an_unknown_field_includ
 }
 
 /// `persist_root(None, ..)` (the default-deployment no-op) must log — the last piece of owner
-/// requirement (iii). Driven directly (not over HTTP) so the thread-local `WarnCapture` subscriber
-/// sees it.
+/// 1.5.3 (was `test_persist_root_without_an_overlay_logs`): `persist_root(None, ..)` used to return a
+/// silent `Ok` with a warning — the exact lie ("saved" for a change that vanishes on restart) this
+/// release removes. It now returns `Err`, so a locked config's mutation is refused rather than
+/// falsely reported durable.
+///
+/// RED-before-GREEN: the pre-1.5.3 code returned `Ok` here, so this `is_err()` assertion FAILS there;
+/// it passes only once the lying no-op branch is gone.
 #[test]
-fn test_persist_root_without_an_overlay_logs() {
-    use tracing_subscriber::layer::SubscriberExt as _;
-
-    let cap = WarnCapture::default();
-    let subscriber = tracing_subscriber::registry().with(cap.clone());
-
-    let result = tracing::subscriber::with_default(subscriber, || {
-        crate::config::overlay::persist_root(None, &crate::config::overlay::RootSettings::default())
-    });
-    assert!(
-        result.is_ok(),
-        "a None path is a documented no-op, not an error"
+fn test_persist_root_without_an_overlay_errs() {
+    let result = crate::config::overlay::persist_root(
+        None,
+        &crate::config::overlay::RootSettings::default(),
     );
     assert!(
-        cap.contains("in memory only"),
-        "persist_root(None, ..) must log the in-memory-only outcome: {:?}",
-        cap.messages()
+        result.is_err(),
+        "persist_root(None, ..) must NOT silently succeed — a None backend means a locked config, so \
+         the mutation is refused, never falsely reported as persisted"
+    );
+    let msg = result.unwrap_err();
+    assert!(
+        msg.contains("config.locked") || msg.contains("no writable config overlay"),
+        "the error must explain the locked/no-overlay posture: {msg}"
     );
 }
 
