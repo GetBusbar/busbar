@@ -455,6 +455,59 @@ fn later_role_group_used_when_earlier_role_bound_but_groupless() {
     // any binding at all and then fail if THAT one happens to be groupless. Here role "A" binds but
     // has no group; role "B" binds AND carries a group. Before the fix this 403'd with Unbound even
     // though a later granting role clearly admits the principal under group "x".
+    //
+    // CODEAUDIT ROUND-3 FIX 1: the POOLS must be the C6 UNION across ALL granting bindings (role A's
+    // "pool-a" AND role B's "pool-b"), matching `synthesize_principal_key` — not just the pools of
+    // the single binding the group happened to come from (role B alone, "pool-b" only). RED before
+    // the fix: only `pool-b` came back, silently narrowing a self-serve key's pools below what the
+    // SAME identity gets on the data plane through `synthesize_principal_key`.
+    let mut inner = BTreeMap::new();
+    inner.insert(
+        "A".to_string(),
+        RoleBindingCfg {
+            allowed_pools: Some(vec!["pool-a".to_string()]),
+            group: None,
+            admin_scope: None,
+        },
+    );
+    inner.insert(
+        "B".to_string(),
+        RoleBindingCfg {
+            allowed_pools: Some(vec!["pool-b".to_string()]),
+            group: Some("x".to_string()),
+            admin_scope: None,
+        },
+    );
+    let mut rb: RoleBindings = BTreeMap::new();
+    rb.insert("oidc".to_string(), inner);
+
+    let v = identified("oidc", principal("sam", &["A", "B"]));
+    let (_p, team, pools) = resolve_exchange(&v, &rb)
+        .expect("a later granting role's group must admit the principal, not Unbound");
+    assert_eq!(team, "x", "resolves to role B's group, not Unbound");
+    let pools = pools.expect("neither granting binding omits allowed_pools");
+    assert_eq!(
+        pools.len(),
+        2,
+        "pools must be the union across ALL granting bindings: {pools:?}"
+    );
+    assert!(
+        pools.contains(&"pool-a".to_string()),
+        "role A's pool must be in the union: {pools:?}"
+    );
+    assert!(
+        pools.contains(&"pool-b".to_string()),
+        "role B's pool must be in the union: {pools:?}"
+    );
+}
+
+#[test]
+fn omitted_pools_on_any_granting_binding_widens_union_to_all_pools() {
+    // C6: an OMITTED `allowed_pools` on ANY granting binding is the widest grant (ALL pools) and
+    // must win the union even when another granting binding lists an explicit, narrower set — the
+    // SAME rule `synthesize_principal_key` applies. Role A omits `allowed_pools` (all pools); role B
+    // (which carries the group) lists only "pool-b". The resolved pools must be `None` (all), not
+    // `Some(["pool-b"])`.
     let mut inner = BTreeMap::new();
     inner.insert(
         "A".to_string(),
@@ -476,13 +529,11 @@ fn later_role_group_used_when_earlier_role_bound_but_groupless() {
     rb.insert("oidc".to_string(), inner);
 
     let v = identified("oidc", principal("sam", &["A", "B"]));
-    let (_p, team, pools) = resolve_exchange(&v, &rb)
-        .expect("a later granting role's group must admit the principal, not Unbound");
-    assert_eq!(team, "x", "resolves to role B's group, not Unbound");
+    let (_p, team, pools) = resolve_exchange(&v, &rb).expect("both roles grant");
+    assert_eq!(team, "x");
     assert_eq!(
-        pools,
-        Some(vec!["pool-b".to_string()]),
-        "pools come from the SAME binding the group was taken from"
+        pools, None,
+        "an omitted allowed_pools on ANY granting binding widens the union to ALL pools"
     );
 }
 
