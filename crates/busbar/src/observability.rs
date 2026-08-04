@@ -540,6 +540,28 @@ fn warn_webhook_delivery_failed(url: &str, outcome: Result<reqwest::StatusCode, 
 /// successfully — see `init_logging`.
 static TRACER_PROVIDER: OnceLock<opentelemetry_sdk::trace::SdkTracerProvider> = OnceLock::new();
 
+/// THE TRACING SEAM (task #140) — the one-spot level policy for every per-request span/event.
+///
+/// `every TRACE(x) must be bound by a Level. Can't have a rogue trace not have a level, and level
+/// must be set in 1 spot.` This constant is that one spot: every hot-path `#[tracing::instrument]`
+/// and every per-request `tracing::debug!`/`trace!` call references `HOTPATH_LEVEL` (or the literal
+/// it is set to) rather than picking its own level ad hoc, so raising or lowering the hot-path
+/// verbosity for the WHOLE request path is a one-line change here, and `scripts/tracing-lint.sh`
+/// fails CI on any `#[instrument]` that skips the reference and hand-picks a level instead (a
+/// "rogue trace").
+///
+/// Deliberately `DEBUG`, not the `tracing::Level::TRACE` variant: `log_levels()` below is the other
+/// half of the one-spot policy — it floors the OTLP export filter at DEBUG specifically so an
+/// operator who points `observability.otlp_endpoint` at a collector gets the request-path spans
+/// (`forward`, `gemini_ingress`, `bedrock_converse`, `named`, `adhoc`, ...) WITHOUT also having to
+/// set `RUST_LOG=debug` and flood stderr with every debug line in the process (see the doc comment
+/// on `log_levels`). If `HOTPATH_LEVEL` were `TRACE` instead, that OTLP floor would need to move to
+/// TRACE too — losing the "OTLP get the hot path, stderr stays at its own level" split the two-filter
+/// design exists for. Both stay OFF at the default `RUST_LOG=info` filter either way: `DEBUG` is
+/// less verbose than `TRACE`, so nothing about the "off by default" contract changes with this
+/// choice.
+pub(crate) const HOTPATH_LEVEL: tracing::Level = tracing::Level::DEBUG;
+
 /// Install the process-wide `tracing` subscriber once at startup: always a stderr `fmt` layer
 /// (level from `RUST_LOG`, default `info`) so spans/warnings are visible out of the box, plus an
 /// OpenTelemetry OTLP/HTTP export layer when `observability.otlp_endpoint` is set. Resilient: an
@@ -554,8 +576,8 @@ static TRACER_PROVIDER: OnceLock<opentelemetry_sdk::trace::SdkTracerProvider> = 
 /// stderr takes `RUST_LOG` (a bare level word, e.g. `debug`), default `info`. Full `EnvFilter`
 /// directive syntax (`busbar=debug,hyper=warn`) would require the `env-filter` feature.
 ///
-/// OTLP floors at DEBUG, because every request-path span (`forward`, `gemini_ingress`,
-/// `bedrock_converse`, `named`, `adhoc`) is emitted at debug so it costs nothing on the stderr path
+/// OTLP floors at DEBUG (== `HOTPATH_LEVEL` above), because every request-path span (`forward`,
+/// `gemini_ingress`, `bedrock_converse`, `named`, `adhoc`) is emitted at debug so it costs nothing on the stderr path
 /// at the default level. Exporting at the stderr level meant an operator who configured a collector
 /// received no request trace at all — only the one span that happens to default to INFO, orphaned
 /// from the parent that was never created. The two must be independent: turning traces on must not

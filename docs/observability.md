@@ -139,4 +139,54 @@ advanced:
 
 **The composition gate (not a runtime check).** Enabling `server_timing` installs an ADDITIONAL middleware layer on the router at boot (mirroring how `limits.max_inbound_concurrent: 0` removes the inbound-concurrency layer entirely rather than checking a flag inside it); when disabled, the layer performing the actual timing (a per-request allocation, a monotonic clock read, and a task-local scope) is never installed at all, so the default-off posture costs nothing per request, not even the allocation the earlier gate used to pay even while suppressing the header. `route_policy` is gated the same way in spirit: a single process-wide decision read at the header's one injection site, not a per-response cost when off.
 
+## Tracing (the hot-path level policy)
+
+Every per-request span/event lives at the SAME level, set in exactly one place, so it is off by
+default and an operator can turn the whole request path on with one env var. The rule this section
+documents (task #140): **every `#[tracing::instrument]` must carry an explicit `level =` — a
+"rogue" instrument with no level silently defaults to INFO, which is always-on on the hot path — and
+that level is set in one spot, not re-picked ad hoc at each call site.**
+
+**The one spot: `observability::HOTPATH_LEVEL`.** `crates/busbar/src/observability.rs` defines:
+
+```rust
+pub(crate) const HOTPATH_LEVEL: tracing::Level = tracing::Level::DEBUG;
+```
+
+Every hot, per-request `#[tracing::instrument]` (the `forward` span in `proxy/engine/mod.rs`, the
+`forward_once` span in `proxy/engine/walk.rs`, and the ingress entry spans — `gemini_ingress`,
+`bedrock_converse`, `bedrock_converse_stream`, `named`, `adhoc` — in `ingress/mod.rs`) references
+this constant (or, where the macro's parser requires a bare identifier rather than a `crate::`-
+prefixed path, imports it with `use crate::observability::HOTPATH_LEVEL;` and writes
+`level = HOTPATH_LEVEL`). Raising or lowering hot-path verbosity for the whole request path is a
+one-line change to that constant — never a per-call-site literal.
+
+`HOTPATH_LEVEL` is `DEBUG`, not the `tracing::Level::TRACE` variant, because it pairs with the
+OTHER half of the one-spot policy: `observability::log_levels()`, which builds the stderr and OTLP
+filters. Stderr takes `RUST_LOG` (default `info` — hot-path spans off). OTLP floors at
+`DEBUG` unconditionally, specifically so pointing `observability.otlp_endpoint` at a collector gets
+the request-path spans without ALSO having to set `RUST_LOG=debug` and flood stderr with every debug
+line in the process. Both stay off at the default `RUST_LOG=info` filter either way — set
+`RUST_LOG=debug` (or `RUST_LOG=busbar=debug`) to see hot-path spans on stderr, or configure OTLP to
+get them exported without touching stderr at all.
+
+**Event macros (`info!`/`warn!`/`error!`) are a documented convention, not lint-enforced** — the
+task's own hot-path audit (proxy/auth/governance/ingress) found every existing `info!`/`warn!` in
+those modules fires only on an error, rejection, degraded, or boot/config condition, never on the
+per-request happy path, so none were reclassified. The convention going forward: a `debug!`/`trace!`
+(hot level) event on the per-request happy path is fine and expected; reserve `info!`/`warn!`/
+`error!` for exactly the conditions above — a state an operator running at the default level should
+see. Whether a NEW event macro belongs at the hot level is a judgment call (does it fire on every
+successful request, or only on a rare/error path?) that a mechanical lint cannot make reliably
+without false positives, so it is enforced by review, not CI — see `scripts/tracing-lint.sh`'s header
+comment for why that script deliberately stops at the `#[instrument]`-level-presence rule.
+
+**Enforcement: `scripts/tracing-lint.sh`.** Runs in CI (the `structure-lint` job, alongside
+`structure-lint.sh` / `response-header-lint.sh`). Fails the build on any `#[tracing::instrument]` (or
+bare `#[instrument]`) anywhere in `crates/**/*.rs` (excluding `*/tests/*`) whose attribute text —
+gathered across however many lines it spans — never mentions `level`. `--selftest` proves the
+scanner still catches a level-less instrument (bare, single-line, and multi-line shapes) before its
+verdict on the tree is trusted, mirroring `structure-lint.sh --selftest` /
+`response-header-lint.sh --selftest`.
+
 ---

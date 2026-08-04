@@ -1,4 +1,10 @@
 use super::*;
+// The tracing seam (task #140): the ONE named level constant every hot-path `#[tracing::instrument]`
+// in this file references, so a `#[tracing::instrument(level = "debug")]` hand-picked literal never
+// re-forks the policy. `tracing::instrument`'s `level = <path>` form rejects a leading `crate`
+// keyword segment (it parses a bare `Ident`/`Path`, and `crate` is not one), so the constant is
+// imported here and referenced unqualified at each instrument site instead.
+use crate::observability::HOTPATH_LEVEL;
 
 /// Forward with pool name context for on_exhausted config lookup.
 /// Thin wrapper: parse the body ONCE for callers that only hold bytes (tests, ad-hoc routes), then
@@ -98,10 +104,13 @@ pub(crate) async fn forward_with_pool_keyed(
 // Plumbing function: each parameter is an independent request input (state, candidates, body, parsed
 // body, caller token, pool name, affinity key, ingress protocol, usage sink) with no natural grouping.
 #[allow(clippy::too_many_arguments)]
-// `level = "debug"`: at the default info filter this span is DISABLED at the callsite (one relaxed
-// atomic check) instead of allocating a span + formatting three fields on every request. The
-// info-level events on the rejection paths carry their own pool/policy fields, so no info-level
-// log line loses context; run with RUST_LOG=busbar=debug to get the span back.
+// `level = crate::observability::HOTPATH_LEVEL` (task #140 tracing seam): at the default info
+// filter this span is DISABLED at the callsite (one relaxed atomic check) instead of allocating a
+// span + formatting three fields on every request. The info-level events on the rejection paths
+// carry their own pool/policy fields, so no info-level log line loses context; run with
+// `RUST_LOG=busbar=debug` to get the span back. Routed through the named constant (not a
+// hand-picked `"debug"` literal) so the hot-path level is set in exactly one place — see
+// `observability::HOTPATH_LEVEL`'s doc for why it is DEBUG and not the `TRACE` variant.
 // `request_id`: declared `Empty` here (no value at span-open time — the id isn't stamped until the
 // function body runs, see the `Span::current().record` call below) and filled in as a native `u64`
 // field, NEVER `format!`'d into a string: `tracing`'s field-recording writes the integer straight
@@ -109,7 +118,7 @@ pub(crate) async fn forward_with_pool_keyed(
 // the record call is a no-op there, same one-relaxed-atomic-check cost `skip_all` already pays)
 // costs no per-request allocation.
 #[tracing::instrument(
-    level = "debug",
+    level = HOTPATH_LEVEL,
     name = "forward",
     skip_all,
     fields(pool = %pool_name, ingress = %ingress_protocol, op = op.name(), request_id = tracing::field::Empty)
