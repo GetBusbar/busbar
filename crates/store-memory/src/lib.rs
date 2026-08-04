@@ -52,6 +52,13 @@ pub struct MemoryStore {
     /// The store-global monotonic revision counter (see `VirtualKey::revision`). Bumped on every
     /// mutation to `keys`/`creds`/the denylist.
     revision: AtomicU64,
+    /// Test-only pinned clock for the retention sweep. `0` (the `Default`) means "use the real wall
+    /// clock" (`now()`); any non-zero value pins `self.now()` to that epoch-second so a test can make
+    /// the sweep's retention ceiling EXACTLY match the timestamp the test itself captured. This
+    /// removes the wall-clock race in the exact-boundary sweep tests, where a one-second tick between
+    /// the test's `now()` and the sweep's `now()` would otherwise shift the ceiling and evict the
+    /// "one second inside" row. Prod behavior is untouched: the field is only ever set from tests.
+    clock: AtomicU64,
 }
 
 impl MemoryStore {
@@ -74,6 +81,19 @@ impl MemoryStore {
     }
     fn next_revision(&self) -> u64 {
         self.revision.fetch_add(1, Ordering::Relaxed) + 1
+    }
+    /// "Now" as the retention sweep sees it: the pinned test clock if set (`clock != 0`), else the
+    /// real wall clock. See the `clock` field.
+    fn now(&self) -> u64 {
+        match self.clock.load(Ordering::Relaxed) {
+            0 => now(),
+            pinned => pinned,
+        }
+    }
+    /// Test-only: pin `self.now()` to `t` so the sweep's retention ceiling is deterministic.
+    #[cfg(test)]
+    fn pin_clock(&self, t: u64) {
+        self.clock.store(t, Ordering::Relaxed);
     }
 }
 
@@ -190,7 +210,7 @@ impl Store for MemoryStore {
             .wrapping_add(1)
             .is_multiple_of(SWEEP_INTERVAL);
         if sweep_needed {
-            let n = now();
+            let n = self.now();
             usage
                 .retain(|(_, window_start), _| window_start.saturating_add(MAX_RETENTION_SECS) > n);
         }
@@ -233,7 +253,7 @@ impl Store for MemoryStore {
             .wrapping_add(1)
             .is_multiple_of(SWEEP_INTERVAL);
         if sweep_needed {
-            let n = now();
+            let n = self.now();
             m.retain(|(_, bucket, _, _), _| bucket.saturating_add(MAX_RETENTION_SECS) > n);
         }
         Ok(())
@@ -720,6 +740,10 @@ mod tests {
     fn add_usage_sweep_boundary_is_exact() {
         let s = MemoryStore::new();
         let n = now();
+        // Pin the sweep's clock to the SAME `n` the test derives its buckets from, so the retention
+        // ceiling is exact and a wall-clock tick between here and the sweep can't shift it. Without
+        // this, `one_inside` intermittently falls at/below an advanced ceiling and is wrongly evicted.
+        s.pin_clock(n);
         let at_ceiling = n.saturating_sub(MAX_RETENTION_SECS);
         let one_inside = at_ceiling + 1;
         let d = UsageDelta {
@@ -817,6 +841,9 @@ mod tests {
     fn add_metering_sweep_boundary_is_exact() {
         let s = MemoryStore::new();
         let n = now();
+        // Pin the sweep's clock to the SAME `n` the test derives its buckets from (see the usage
+        // boundary test above) so the retention ceiling is exact and race-free.
+        s.pin_clock(n);
         let at_ceiling = n.saturating_sub(MAX_RETENTION_SECS);
         let one_inside = at_ceiling + 1;
         let base = MeteringDelta {
