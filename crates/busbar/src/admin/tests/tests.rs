@@ -1648,6 +1648,111 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
     handle.abort();
 }
 
+/// 1.5.3 LOCKED invariant for `PUT /api/v1/admin/admin-auth`: a locked (no-overlay) config REFUSES the
+/// admin_auth chain mutation with `400`, matching the documented guarantee that "every config-mutating
+/// admin call is refused" on a locked deployment. Without the guard this endpoint went straight to a
+/// live swap, silently diverging the live auth posture from config.yaml until restart.
+///
+/// RED-before-GREEN: absent the `overlay_path.is_none()` refusal in `put_auth`, a valid chain applies
+/// (`200`) on a locked config; the guard makes it a `400`.
+#[tokio::test]
+async fn test_admin_v1_put_auth_refused_on_locked_config() {
+    crate::metrics::init();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    // `.no_overlay()` = a LOCKED config (the only supported way to reach `overlay_path: None`).
+    let app = TestApp::new().governance(gov).no_overlay().build();
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    // A chain the caller would survive — so ONLY the locked refusal can make this a 400.
+    let resp = client
+        .put(format!("http://{addr}/api/v1/admin/admin-auth"))
+        .header("x-admin-token", "admintok")
+        .header("content-type", "application/json")
+        .body(serde_json::json!({"admin_auth": ["admin-tokens"]}).to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status().as_u16(),
+        400,
+        "a locked config must refuse PUT /admin-auth"
+    );
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no writable config overlay"),
+        "the refusal names the locked/no-overlay reason: {body}"
+    );
+    handle.abort();
+}
+
+/// 1.5.3 LOCKED invariant for `POST /api/v1/admin/config/apply`: a locked (no-overlay) config REFUSES a
+/// full-config apply with `400`. This is the widest config-plane mutation, so a locked/GitOps
+/// deployment must refuse it rather than swap an alternate config live until restart.
+///
+/// RED-before-GREEN: absent the `overlay_path.is_none()` refusal in `apply_config`, a valid body swaps
+/// live (`200`) on a locked config; the guard makes it a `400`.
+#[tokio::test]
+async fn test_admin_v1_config_apply_refused_on_locked_config() {
+    crate::metrics::init();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let app = TestApp::new()
+        .lane(crate::test_support::LaneSpec::new(
+            "m0",
+            crate::proto::Protocol::anthropic(),
+            "http://127.0.0.1:1/",
+        ))
+        .pool("p", &[(0, 1)])
+        .governance(gov)
+        .no_overlay()
+        .build();
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    let body = serde_json::json!({
+        "providers": {
+            "test-provider": {"protocol": "anthropic", "base_url": "http://127.0.0.1:1/", "api_key_env": "BUSBAR_TEST_LOCKED_APPLY_NO_KEY"}
+        },
+        "config": {
+            "listen": "127.0.0.1:0",
+            "providers": {"test-provider": {"api_key": {"env": "BUSBAR_TEST_LOCKED_APPLY_NO_KEY"}}},
+            "models": {"m0": {"provider": "test-provider", "max_concurrent": 4}},
+            "pools": {"p": {"members": [{"model": "m0"}]}}
+        }
+    });
+    let resp = client
+        .post(format!("http://{addr}/api/v1/admin/config/apply"))
+        .header("x-admin-token", "admintok")
+        .header("content-type", "application/json")
+        .body(body.to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status().as_u16(),
+        400,
+        "a locked config must refuse POST /config/apply"
+    );
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no writable config overlay"),
+        "the refusal names the locked/no-overlay reason: {body}"
+    );
+    handle.abort();
+}
+
 /// Idempotent mint + optimistic concurrency: a retried POST with the same Idempotency-Key
 /// returns the FIRST response (same id + secret, no double-create); a PATCH with a stale
 /// If-Match is a 409 that changes nothing; a fresh If-Match succeeds.
@@ -8958,6 +9063,79 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
             .iter()
             .any(|e| e["resource"] == "config:settings" && e["outcome"] == "applied"),
         "the applied PUT is audited"
+    );
+
+    handle.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// FULL restart-simulation at the BOOT-RESOLVED DEFAULT overlay path: boot-with-defaults (no
+/// `config.overlay`, no env var) → a REAL admin-API `PUT /config/settings` → a fresh
+/// `load_config_from_disk` (the exact path a restarted process takes) re-reads the mutation, WITHOUT
+/// the test manually substituting `overlay_doc`. This closes the gap the round-trip test leaves: it
+/// proves boot's OWN resolved overlay path (`busbar-overlay.json` next to config.yaml) is the SAME
+/// file the serving App persists mutations to — a divergence between the two would be invisible to a
+/// test that hand-feeds `overlay_doc` from a path it chose itself.
+///
+/// RED-before-GREEN: if `load_config_from_disk`'s default-overlay resolution and the App's serving
+/// overlay path ever diverge (or resolution regresses to `None`/RAM-only), the freshly-loaded
+/// `overlay_doc` is absent and the `per_request_fee` assertion fails.
+#[tokio::test]
+async fn test_admin_v1_config_settings_survives_a_real_boot_reload_at_default_overlay() {
+    crate::metrics::init();
+    let (dir, config_path, providers_path) = write_reset_fixture("boot-default-overlay");
+    // The App persists to the SAME path `load_config_from_disk` resolves by default (no `config.overlay`
+    // in config.yaml, no `BUSBAR_CONFIG_OVERLAY`): `busbar-overlay.json` next to config.yaml.
+    let default_overlay = dir.join("busbar-overlay.json");
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let mut app = TestApp::new()
+        .governance(gov)
+        .overlay_path(default_overlay.clone())
+        .build();
+    {
+        let inner = Arc::get_mut(&mut app).expect("sole owner");
+        inner.config_path = Some(config_path.clone());
+        inner.providers_path = Some(providers_path.clone());
+    }
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
+
+    let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
+        .header("content-type", "application/json")
+        .body(serde_json::json!({ "per_request_fee": 9 }).to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(put.status().as_u16(), 200, "{:?}", put.text().await);
+
+    // A FRESH boot disk-load — no `overlay_doc` hand-substitution. It must resolve the default overlay
+    // path ITSELF and read back the mutation the running App just persisted there.
+    let loaded = crate::load_config_from_disk(
+        &config_path,
+        Some(&providers_path),
+        false,
+        crate::config::EnvSubst::Strict,
+    )
+    .expect("fresh boot disk-load");
+    assert_eq!(
+        loaded.overlay_path.as_deref(),
+        Some(default_overlay.as_path()),
+        "boot must resolve the SAME default overlay path the App persists to"
+    );
+    let root = loaded
+        .overlay_doc
+        .as_ref()
+        .and_then(|d| d.root.as_ref())
+        .expect("the fresh boot load reads the overlay root the admin PUT wrote");
+    assert_eq!(
+        root.per_request_fee,
+        Some(9),
+        "the admin mutation survives a real boot reload at the boot-resolved default path"
     );
 
     handle.abort();

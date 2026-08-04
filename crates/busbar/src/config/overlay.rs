@@ -34,6 +34,12 @@ pub(crate) const NO_WRITABLE_OVERLAY_MSG: &str =
      to change it. If the config is meant to be mutable, give it a writable `config.overlay` backend \
      and reload.";
 
+/// The default overlay filename, written next to `config.yaml` when `config.overlay` names no explicit
+/// path. One source of truth for the code + tests (the doc-comment prose in `config/mod.rs` mirrors it).
+pub(crate) const DEFAULT_OVERLAY_FILENAME: &str = "busbar-overlay.json";
+/// Filename prefix for the boot-time writability probe (a leading-dot temp file, pid-suffixed).
+const PROBE_FILE_PREFIX: &str = ".busbar-overlay-probe-";
+
 /// The resolved config-management posture for a boot/reload: whether config is locked, and the
 /// writable overlay backend path (if any). Computed by [`resolve_backend`].
 #[derive(Debug, Clone)]
@@ -90,7 +96,7 @@ pub(crate) fn resolve_backend(
         None => Some(
             env_override
                 .map(Path::to_path_buf)
-                .unwrap_or_else(|| config_dir.join("busbar-overlay.json")),
+                .unwrap_or_else(|| config_dir.join(DEFAULT_OVERLAY_FILENAME)),
         ),
     };
     let Some(p) = path else {
@@ -133,14 +139,33 @@ fn is_backend_writable(p: &Path) -> bool {
     if p.exists() {
         return std::fs::OpenOptions::new().write(true).open(p).is_ok();
     }
-    let dir = p.parent().filter(|d| !d.as_os_str().is_empty());
-    let Some(dir) = dir else {
-        return std::fs::OpenOptions::new().write(true).open(p).is_ok();
-    };
-    let probe = dir.join(format!(".busbar-overlay-probe-{}", std::process::id()));
+    // A not-yet-created overlay is writable iff its PARENT directory is writable. Treat an EMPTY parent
+    // (`p` is a bare filename with no directory component — e.g. `BUSBAR_CONFIG=config.yaml` run from
+    // inside the config dir resolves the default overlay to a bare `busbar-overlay.json`) as the CURRENT
+    // directory. Crucially, do NOT fall back to `OpenOptions::open(p)` WITHOUT `.create(true)`: that
+    // errors `NotFound` for a not-yet-existing file regardless of whether the directory is writable, so
+    // it would wrongly report a perfectly writable cwd as non-writable and REFUSE a valid durable-by-
+    // default boot. Probe with the same create-then-remove dance as a normal directory-qualified path.
+    let dir = p
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let probe = dir.join(format!("{PROBE_FILE_PREFIX}{}", std::process::id()));
     match std::fs::File::create(&probe) {
-        Ok(_) => {
-            let _ = std::fs::remove_file(&probe);
+        Ok(file) => {
+            // Close the handle BEFORE unlinking. On Windows (no `FILE_SHARE_DELETE`) and some network
+            // filesystems an open file cannot be removed; holding it across `remove_file` would leak the
+            // probe on every boot.
+            drop(file);
+            if let Err(e) = std::fs::remove_file(&probe) {
+                // The probe name is pid-scoped, so a leaked probe is never reclaimed by a later boot.
+                // Surface it (WARN) rather than swallowing the error silently.
+                tracing::warn!(
+                    probe = %probe.display(), error = %e,
+                    "could not remove the overlay writability probe file after creating it; it may be \
+                     left behind in the config directory"
+                );
+            }
             true
         }
         Err(_) => false,
@@ -473,13 +498,20 @@ pub(crate) fn persist_root(path: Option<&Path>, settings: &RootSettings) -> Resu
 /// write landed: the rollback path (both the forward persist and the compensating revert after a failed
 /// rebuild) must FAIL CLOSED on a persist error — a silently-swallowed failure would leave disk out of
 /// sync with the running engine (a stale pin a restart would honor, contradicting the live policy), so
-/// every caller propagates the error rather than warning-and-continuing.
+/// every caller propagates the error rather than warning-and-continuing. A `None` path is likewise NOT
+/// a silent success (matching the sibling `persist_*`): it means the config is LOCKED, so the pin is
+/// refused ([`NO_WRITABLE_OVERLAY_MSG`]).
 pub(crate) fn try_persist_plugin_versions(
     path: Option<&Path>,
     pins: &BTreeMap<String, String>,
 ) -> Result<(), String> {
     let Some(p) = path else {
-        return Ok(());
+        // 1.5.3: NEVER a silent `Ok` — this matches the fail-closed contract stated in this function's
+        // own doc comment and the sibling `persist_*` functions. With the boot invariant (`locked` XOR a
+        // writable overlay), a mutable busbar always has a backend here, so `None` means the config is
+        // LOCKED. The `plugins/rollback` caller already refuses a locked config up front; this is the
+        // structural backstop so a future caller cannot silently drop an operator's rollback/pin.
+        return Err(NO_WRITABLE_OVERLAY_MSG.to_string());
     };
     let Some(mut doc) = load_for_rmw(p) else {
         return Err(format!(
@@ -538,10 +570,17 @@ impl OverlaySection {
 /// `groups` reset must not resurrect an API-deleted hook, and vice-versa. FAIL-CLOSED (matches
 /// `persist`/`persist_groups`): returns `Err` on an unreadable overlay (REFUSED — clearing it would
 /// silently drop the other section's tombstones) or a write failure, so `commit_and_swap` does not
-/// swap a reset it could not durably record. `None` path is a no-op success.
+/// swap a reset it could not durably record. `None` path is NO LONGER a silent success: with the boot
+/// invariant it means the config is LOCKED, so the reset is refused ([`NO_WRITABLE_OVERLAY_MSG`]).
 pub(crate) fn clear_section(path: Option<&Path>, section: OverlaySection) -> Result<(), String> {
     let Some(p) = path else {
-        return Ok(());
+        // 1.5.3: NEVER a silent `Ok` (matches `persist`/`persist_groups`/`persist_root`). With the boot
+        // invariant (`locked` XOR a writable overlay), a mutable busbar always has a backend here, so
+        // `None` means the config is LOCKED — refuse the reset instead of reporting a success that never
+        // touched disk. (The `DELETE /overlay/{section}` caller already short-circuits a locked config
+        // to an idempotent no-op before reaching here; this is the structural backstop so a future
+        // caller cannot reintroduce the lying `Ok`.)
+        return Err(NO_WRITABLE_OVERLAY_MSG.to_string());
     };
     let Some(mut doc) = load_for_rmw(p) else {
         return Err(format!(
@@ -863,7 +902,7 @@ mod config_consolidation_tests {
         let path = res
             .path
             .expect("durable-by-default: a writable overlay next to config.yaml");
-        assert_eq!(path, dir.join("busbar-overlay.json"));
+        assert_eq!(path, dir.join(DEFAULT_OVERLAY_FILENAME));
 
         let settings = RootSettings {
             per_request_fee: Some(7),
@@ -982,8 +1021,82 @@ mod config_consolidation_tests {
         let r3 = resolve_backend(&ConfigMgmtCfg::default(), &config_path, None, true).unwrap();
         assert_eq!(
             r3.path.unwrap(),
-            dir.join("busbar-overlay.json"),
+            dir.join(DEFAULT_OVERLAY_FILENAME),
             "default next to config"
+        );
+    }
+
+    /// (e) A BARE-FILENAME overlay (no directory component) in a writable cwd must be reported WRITABLE
+    /// — so a `BUSBAR_CONFIG=config.yaml` deployment run from inside its config dir (overlay resolves to
+    /// a bare `busbar-overlay.json`) BOOTS instead of being refused.
+    ///
+    /// RED-before-GREEN: the pre-fix `is_backend_writable` no-parent branch probed the not-yet-existing
+    /// bare path via `OpenOptions::open` WITHOUT `.create(true)` → `NotFound` → `false` → boot refused,
+    /// even though the cwd is perfectly writable.
+    #[test]
+    fn e_bare_filename_overlay_in_writable_cwd_is_writable() {
+        // A bare filename → `parent()` is `Some("")` (empty), NOT `None`: the exact branch under test.
+        let bare = std::path::PathBuf::from(format!(
+            "busbar-cfgcons-bare-does-not-exist-{}.json",
+            std::process::id()
+        ));
+        assert!(
+            !bare.exists(),
+            "test precondition: the bare target must not already exist"
+        );
+        assert!(
+            is_backend_writable(&bare),
+            "a bare-filename overlay in a writable cwd must probe the cwd and report writable"
+        );
+        // The probe is cleaned up and the bare target itself is never created (only a probe file was).
+        assert!(
+            !bare.exists(),
+            "the writability probe must not create the overlay target file"
+        );
+    }
+
+    /// (f) The `None` (LOCKED) overlay path is REFUSED by EVERY persist/reset entry point — not just
+    /// `persist_root`. Guards against reverting any one of them to the pre-1.5.3 silent `Ok(())`.
+    ///
+    /// RED-before-GREEN: `clear_section(None, ..)` and `try_persist_plugin_versions(None, ..)` returned
+    /// a silent `Ok(())` until this fix; reverting either to `return Ok(())` fails this test.
+    #[test]
+    fn f_every_persist_entry_point_refuses_a_none_locked_overlay() {
+        let empty_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+        assert!(
+            persist(
+                None,
+                &HashMap::<String, HookCfg>::new(),
+                &[],
+                None,
+                None,
+                &empty_names,
+            )
+            .is_err(),
+            "persist(None) must refuse (hooks)"
+        );
+        assert!(
+            persist_groups(
+                None,
+                &BTreeMap::<String, GroupCfg>::new(),
+                None,
+                None,
+                &empty_names,
+            )
+            .is_err(),
+            "persist_groups(None) must refuse (groups)"
+        );
+        assert!(
+            persist_root(None, &RootSettings::default()).is_err(),
+            "persist_root(None) must refuse (settings)"
+        );
+        assert!(
+            clear_section(None, OverlaySection::Hooks).is_err(),
+            "clear_section(None) must refuse (per-section reset)"
+        );
+        assert!(
+            try_persist_plugin_versions(None, &BTreeMap::<String, String>::new()).is_err(),
+            "try_persist_plugin_versions(None) must refuse (rollback pin)"
         );
     }
 }

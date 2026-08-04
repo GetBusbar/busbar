@@ -2040,6 +2040,17 @@ pub(crate) async fn put_auth(
         if let Some(e) = stale_if_match(expected, current.config_version) {
             return Err(e);
         }
+        // 1.5.3 LOCKED invariant: a config with no writable overlay is LOCKED (immutable/GitOps), and
+        // "every config-mutating admin call is refused" (docs/admin-api.md). The admin_auth chain IS a
+        // config-plane mutation — it diverges the LIVE admin-auth posture from config.yaml until the
+        // next restart — so a locked deployment must refuse it, exactly like `put_config_settings` and
+        // `plugins/rollback`. (A mutable config always has a writable overlay here, so this only fires
+        // when locked.)
+        if current.overlay_path.is_none() {
+            return Err(AdminError::Validation(
+                crate::config::overlay::NO_WRITABLE_OVERLAY_MSG.to_string(),
+            ));
+        }
         // Known-module validation (mirrors the boot rule): `admin-tokens` is the built-in; the
         // test-only stand-in exists in test builds only. An unknown name can never silently drop
         // auth.
@@ -2427,6 +2438,17 @@ pub(crate) async fn apply_config(
         if let Some(e) = stale_if_match(expected, current.config_version) {
             return Err(e);
         }
+        // 1.5.3 LOCKED invariant: a config with no writable overlay is LOCKED (immutable/GitOps), and
+        // "every config-mutating admin call is refused" (docs/admin-api.md). A full-config apply is the
+        // WIDEST config-plane mutation (it replaces the entire live DeployCfg — listen/tls/security/
+        // hooks/groups/rate_card/…), diverging the running config from config.yaml until restart, so a
+        // locked deployment must refuse it, exactly like `put_config_settings` and `plugins/rollback`.
+        // (A mutable config always has a writable overlay here, so this only fires when locked.)
+        if current.overlay_path.is_none() {
+            return Err(AdminError::Validation(
+                crate::config::overlay::NO_WRITABLE_OVERLAY_MSG.to_string(),
+            ));
+        }
         // Resolve + build reads plugin artifacts off disk, so it is queued onto `spawn_blocking`
         // rather than run inline under the async lock.
         let snapshot = current.clone();
@@ -2781,7 +2803,23 @@ fn current_root_settings(
 /// not raw key bytes).
 pub(crate) async fn get_config_settings(State(handle): State<Arc<AppHandle>>) -> Response {
     let current = handle.load();
-    let root = current_root_settings(current.overlay_path.as_deref(), "GET /config/settings");
+    // `current_root_settings` does a SYNCHRONOUS overlay file open+read+JSON-parse. Under 1.5.3's
+    // durable-by-default posture `overlay_path` is `Some` on essentially every deployment, so this read
+    // happens on EVERY call — move it off the async reactor onto `spawn_blocking` (the same discipline
+    // every mutation path in `txn.rs` follows) so a slow/contended config filesystem cannot stall a
+    // Tokio worker and starve data-plane traffic sharing it.
+    let overlay_path = current.overlay_path.clone();
+    // Carry the CURRENT tracing dispatcher onto the blocking thread so the endpoint-attributed
+    // corrupt-overlay warn inside `current_root_settings` is still emitted to it (production uses a
+    // global subscriber; a thread-local one — as in tests — would otherwise miss the off-thread warn).
+    let dispatch = tracing::dispatcher::get_default(|d| d.clone());
+    let root = tokio::task::spawn_blocking(move || {
+        tracing::dispatcher::with_default(&dispatch, || {
+            current_root_settings(overlay_path.as_deref(), "GET /config/settings")
+        })
+    })
+    .await
+    .unwrap_or_default();
     let settings = serde_json::to_value(&root).unwrap_or_else(|_| json!({}));
     with_config_etag(
         ok_json(
@@ -2810,11 +2848,15 @@ pub(crate) async fn get_config_settings(State(handle): State<Arc<AppHandle>>) ->
 /// concurrency; audited (every attempt) + versioned; overlay-persisted so it survives a restart.
 /// Requires config files on disk (the base to merge onto); an ephemeral busbar has none, so this is a
 /// `400 invalid_request` there, exactly like `config/reload`.
-/// The one request-scoped control key on the `/config/settings` PUT body. Reserved: it is REMOVED
-/// before the typed `RootSettings` parse, so `RootSettings`'s `deny_unknown_fields` still rejects
-/// every other unknown key — including a typo of this one, which is the point (a silently-ignored
-/// persistence request is the exact defect this field exists to fix; a query param would have hit
-/// the in-tree `Query<HashMap<String,String>>` idiom, which drops an unknown key silently).
+/// The one request-scoped control key on the `/config/settings` PUT body. It is REMOVED before the
+/// typed `RootSettings` parse, so `RootSettings`'s `deny_unknown_fields` still rejects every other
+/// unknown key — including a typo of this one.
+///
+/// 1.5.3: its VALUE no longer changes behavior. Durable-by-default made "apply in memory only"
+/// unreachable — a mutable config is always durable, a locked config always refuses — so `persist:
+/// true`/`false` are both accepted (still boolean-validated, so a typo/non-boolean is a loud 400) and
+/// then IGNORED (`let _ = requested_persist;` in the handler). The field is kept only for back-compat
+/// with pre-1.5.3 clients that still send it; a future release may drop it.
 const PERSIST_FIELD: &str = "persist";
 
 pub(crate) async fn put_config_settings(
@@ -4577,13 +4619,14 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         "/config/settings",
         "put",
         config_doc(
-            "The settings sections to replace, keyed by section name. The optional top-level \
-             boolean `persist` asserts the change MUST be stored in the config overlay: with \
-             `persist: true` a busbar that has no overlay refuses with `400 invalid_request` \
-             instead of applying the change in memory only. Omitted or `false` means the change is \
-             applied and stored where storage is available, and applied in memory only where it is \
-             not (the response `note` says which); `false` never suppresses storage. Every other \
-             top-level key must be a known settings section — an unknown key is a 400."
+            "The settings sections to replace, keyed by section name. Durable by default (1.5.3): a \
+             mutable config always stores the change in its overlay (survives restart), and a locked \
+             config (`config.locked: true`) refuses ANY change with `400`. There is no \"apply in \
+             memory only\" outcome. The optional top-level boolean `persist` is accepted for \
+             back-compat and boolean-validated (a non-boolean is a 400 naming the field), but its \
+             value has NO effect — persistence is unconditional on a mutable config and refusal is \
+             unconditional on a locked one. Every other top-level key must be a known settings \
+             section — an unknown key is a 400."
         )
     );
     body_raw!(

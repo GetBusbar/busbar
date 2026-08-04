@@ -221,7 +221,8 @@ USAGE:
 
 ENVIRONMENT:
     BUSBAR_CONFIG       path to config.yaml     (default: /etc/busbar/config.yaml)
-    BUSBAR_PROVIDERS    path to providers.yaml  (default: /etc/busbar/providers.yaml)
+    BUSBAR_PROVIDERS    path to providers.yaml  (DEPRECATED — set `providers_file:` in config.yaml;
+                        default: providers.yaml next to the resolved config.yaml)
     BUSBAR_STATE_FILE   state-snapshot path ('' disables; default: busbar-state.json next to config)
     RUST_LOG            log level: error|warn|info|debug|trace  (default: info)
 
@@ -592,7 +593,44 @@ fn worker_threads_from_config() -> Option<usize> {
     let interpolated =
         config::interpolate_env_with(&raw, config::EnvSubst::Lenient, &mut unset).ok()?;
     let deploy: config::DeployCfg = serde_yaml::from_str(&interpolated).ok()?;
-    deploy.advanced.worker_threads.filter(|n| *n >= 1)
+    match validate_worker_threads_config(deploy.advanced.worker_threads) {
+        Ok(v) => v,
+        Err(msg) => {
+            // Consistency with `worker_threads_from_env`, which WARNS on an invalid value rather than
+            // silently dropping it. Pre-tracing (`main()` runs this before the subscriber is built), so
+            // it goes to STDERR like the other boot diagnostics.
+            eprintln!("[warn] {msg}");
+            None
+        }
+    }
+}
+
+/// Validate a config-supplied `advanced.worker_threads`. `Some(0)` is invalid — a Tokio runtime needs
+/// at least one worker — and yields `Err(message)` so the caller can WARN consistently with
+/// `worker_threads_from_env`'s invalid-value diagnostic instead of silently dropping the operator's
+/// explicit `advanced.worker_threads: 0`. Every other value (a positive count, or `None`/unset) passes
+/// through unchanged. Module-level (not inlined) so it is unit-testable; see `tests/tests.rs`.
+fn validate_worker_threads_config(wt: Option<usize>) -> Result<Option<usize>, String> {
+    match wt {
+        Some(0) => Err(
+            "advanced.worker_threads: 0 in config.yaml is not a positive integer (it must be >= 1); \
+             ignoring it and using the default worker-thread count"
+                .to_string(),
+        ),
+        other => Ok(other),
+    }
+}
+
+/// Resolve a boot-time boolean upstream knob under the env→config migration precedence: the DEPRECATED
+/// env var, when SET, wins (honored for one release) — `"0"` or empty means OFF, anything else ON; when
+/// UNSET, the config value (`advanced.upstream_*`, carried on `cfg.limits`) stands. The deprecation
+/// WARN is emitted at the call site (only when the env var is present). Module-level so the precedence
+/// is unit-testable without building the whole client; see `tests/tests.rs`.
+fn upstream_bool_env_override(env: Option<std::ffi::OsString>, config_val: bool) -> bool {
+    match env {
+        Some(v) => v != "0" && !v.is_empty(),
+        None => config_val,
+    }
 }
 
 fn main() {
@@ -2864,16 +2902,15 @@ pub(crate) fn build_app_from_config(
         // 1.5.3: home is `advanced.upstream_h2_prior_knowledge` in config.yaml (carried on
         // `cfg.limits`); the `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` env var overrides it for one release,
         // with a deprecation warn.
-        let h2_prior_knowledge = match std::env::var_os("BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE") {
-            Some(v) => {
-                tracing::warn!(
-                    "BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE is DEPRECATED; set \
-                     `advanced.upstream_h2_prior_knowledge` in config.yaml (honored for now)."
-                );
-                v != "0" && !v.is_empty()
-            }
-            None => cfg.limits.upstream_h2_prior_knowledge,
-        };
+        let h2_env = std::env::var_os("BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE");
+        if h2_env.is_some() {
+            tracing::warn!(
+                "BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE is DEPRECATED; set \
+                 `advanced.upstream_h2_prior_knowledge` in config.yaml (honored for now)."
+            );
+        }
+        let h2_prior_knowledge =
+            upstream_bool_env_override(h2_env, cfg.limits.upstream_h2_prior_knowledge);
         // Opt-out ESCAPE HATCH for the ALPN h2 default: `BUSBAR_UPSTREAM_HTTP1_ONLY=1` pins the
         // shared client to HTTP/1.1 (reqwest `.http1_only()`), so ALPN never offers h2 at all. This
         // is a PROCESS-WIDE, DEFAULT-OFF switch — production keeps the ALPN default (h2 where the
@@ -2885,16 +2922,14 @@ pub(crate) fn build_app_from_config(
         // once at client-build time. 1.5.3: home is `advanced.upstream_http1_only` in config.yaml
         // (carried on `cfg.limits`); the `BUSBAR_UPSTREAM_HTTP1_ONLY` env var overrides it for one
         // release, with a deprecation warn.
-        let http1_only = match std::env::var_os("BUSBAR_UPSTREAM_HTTP1_ONLY") {
-            Some(v) => {
-                tracing::warn!(
-                    "BUSBAR_UPSTREAM_HTTP1_ONLY is DEPRECATED; set `advanced.upstream_http1_only` in \
-                     config.yaml (honored for now)."
-                );
-                v != "0" && !v.is_empty()
-            }
-            None => cfg.limits.upstream_http1_only,
-        };
+        let http1_env = std::env::var_os("BUSBAR_UPSTREAM_HTTP1_ONLY");
+        if http1_env.is_some() {
+            tracing::warn!(
+                "BUSBAR_UPSTREAM_HTTP1_ONLY is DEPRECATED; set `advanced.upstream_http1_only` in \
+                 config.yaml (honored for now)."
+            );
+        }
+        let http1_only = upstream_bool_env_override(http1_env, cfg.limits.upstream_http1_only);
         let shard_count = crate::state::UpstreamClients::shard_count();
         // The per-host idle budget is divided across shards so the TOTAL kept-alive sockets
         // toward any single upstream stay at the configured value (never below 1 per shard).
