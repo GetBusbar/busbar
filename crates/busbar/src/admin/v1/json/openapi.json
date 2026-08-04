@@ -1077,7 +1077,7 @@
         "description": "A hook definition in the registry read (`GET /api/v1/admin/hooks`, `GET /api/v1/admin/hooks/{name}`) — the\nplugin catalog read. Projects the DEFINITION (kind, transport, grants, ordering, stage), never a\nsecret. `global` reports whether the hook fires on every request (named in `global_hooks:` or\ndeclared `global: true`). Live connection status (`health`) is a separate endpoint. Additive-only.",
         "properties": {
           "at": {
-            "description": "TAP observation stage (`\"request\"`/`\"route\"`/`\"attempt\"`/`\"completion\"`), or `None` for a gate.",
+            "description": "TAP observation stage (`\"request\"`/`\"candidate\"`/`\"routing\"`/`\"response\"`), or `None` for a gate.",
             "type": [
               "string",
               "null"
