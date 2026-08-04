@@ -501,21 +501,21 @@ pub(crate) fn build_with_hook(current: &App, name: &str, cfg: HookCfg) -> Result
         next.config_version,
         crate::config::HookStage::Request,
     );
-    next.tap_hooks_route = crate::hooks::resolve_tap_hooks(
+    next.tap_hooks_candidate = crate::hooks::resolve_tap_hooks(
         &next.hook_registry,
         &next.global_hooks,
         &next.hook_env,
         next.config_version,
         crate::config::HookStage::Candidate,
     );
-    next.tap_hooks_attempt = crate::hooks::resolve_tap_hooks(
+    next.tap_hooks_routing = crate::hooks::resolve_tap_hooks(
         &next.hook_registry,
         &next.global_hooks,
         &next.hook_env,
         next.config_version,
         crate::config::HookStage::Routing,
     );
-    next.tap_hooks_completion = crate::hooks::resolve_tap_hooks(
+    next.tap_hooks_response = crate::hooks::resolve_tap_hooks(
         &next.hook_registry,
         &next.global_hooks,
         &next.hook_env,
@@ -558,21 +558,21 @@ pub(crate) fn build_without_hook(current: &App, name: &str) -> Result<App, Admin
         next.config_version,
         crate::config::HookStage::Request,
     );
-    next.tap_hooks_route = crate::hooks::resolve_tap_hooks(
+    next.tap_hooks_candidate = crate::hooks::resolve_tap_hooks(
         &next.hook_registry,
         &next.global_hooks,
         &next.hook_env,
         next.config_version,
         crate::config::HookStage::Candidate,
     );
-    next.tap_hooks_attempt = crate::hooks::resolve_tap_hooks(
+    next.tap_hooks_routing = crate::hooks::resolve_tap_hooks(
         &next.hook_registry,
         &next.global_hooks,
         &next.hook_env,
         next.config_version,
         crate::config::HookStage::Routing,
     );
-    next.tap_hooks_completion = crate::hooks::resolve_tap_hooks(
+    next.tap_hooks_response = crate::hooks::resolve_tap_hooks(
         &next.hook_registry,
         &next.global_hooks,
         &next.hook_env,
@@ -782,21 +782,21 @@ pub(crate) fn build_with_registry(
         next.config_version,
         crate::config::HookStage::Request,
     );
-    next.tap_hooks_route = crate::hooks::resolve_tap_hooks(
+    next.tap_hooks_candidate = crate::hooks::resolve_tap_hooks(
         &next.hook_registry,
         &next.global_hooks,
         &next.hook_env,
         next.config_version,
         crate::config::HookStage::Candidate,
     );
-    next.tap_hooks_attempt = crate::hooks::resolve_tap_hooks(
+    next.tap_hooks_routing = crate::hooks::resolve_tap_hooks(
         &next.hook_registry,
         &next.global_hooks,
         &next.hook_env,
         next.config_version,
         crate::config::HookStage::Routing,
     );
-    next.tap_hooks_completion = crate::hooks::resolve_tap_hooks(
+    next.tap_hooks_response = crate::hooks::resolve_tap_hooks(
         &next.hook_registry,
         &next.global_hooks,
         &next.hook_env,

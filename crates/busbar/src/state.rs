@@ -277,14 +277,14 @@ pub(crate) struct App {
     )>,
     /// GLOBAL taps observing at the CANDIDATE stage (`at: candidate`) — fired once per request when the
     /// decision reconcile has produced the final candidate set. Same triple shape as `tap_hooks`.
-    pub(crate) tap_hooks_route: Vec<(
+    pub(crate) tap_hooks_candidate: Vec<(
         std::time::Duration,
         bool,
         Arc<dyn crate::hooks::RoutingPolicy>,
     )>,
     /// GLOBAL taps observing at the ROUTING stage (`at: routing`) — fired per failover attempt with
     /// the attempt number / dispatched target / remaining candidates / previous failure.
-    pub(crate) tap_hooks_attempt: Vec<(
+    pub(crate) tap_hooks_routing: Vec<(
         std::time::Duration,
         bool,
         Arc<dyn crate::hooks::RoutingPolicy>,
@@ -292,7 +292,7 @@ pub(crate) struct App {
     /// GLOBAL taps observing at the RESPONSE stage (`at: response`) — fired once per request
     /// with the outcome (`ok`/`failed`/`rejected_by_gate` — the SYNTHETIC completion, so audit taps
     /// see gate denials too) and response status.
-    pub(crate) tap_hooks_completion: Vec<(
+    pub(crate) tap_hooks_response: Vec<(
         std::time::Duration,
         bool,
         Arc<dyn crate::hooks::RoutingPolicy>,

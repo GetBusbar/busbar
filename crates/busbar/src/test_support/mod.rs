@@ -1050,9 +1050,9 @@ impl TestApp {
             auth,
             rewrite_hooks: Vec::new(),
             tap_hooks: Vec::new(),
-            tap_hooks_route: Vec::new(),
-            tap_hooks_attempt: Vec::new(),
-            tap_hooks_completion: Vec::new(),
+            tap_hooks_candidate: Vec::new(),
+            tap_hooks_routing: Vec::new(),
+            tap_hooks_response: Vec::new(),
             global_gates: Vec::new(),
             hook_env: self.hook_env.unwrap_or_else(|| {
                 crate::hooks::HookEnv::new(

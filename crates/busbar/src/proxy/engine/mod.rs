@@ -155,7 +155,7 @@ pub(crate) async fn forward_with_pool_parsed(
     // the SYNTHETIC `rejected_by_gate`; else 2xx = `ok`, anything else = `failed`. For a STREAMING
     // response this fires at response-HEAD time (status known, body still flowing) — stream-tail
     // outcomes are a later increment. ZERO COST when no response tap is configured.
-    let completion_shape = if app.tap_hooks_completion.is_empty() {
+    let completion_shape = if app.tap_hooks_response.is_empty() {
         None
     } else {
         // `stream` is a captured head key — read it via `probe` (no DOM needed); the SHAPE capture
@@ -204,7 +204,7 @@ pub(crate) async fn forward_with_pool_parsed(
             "failed"
         };
         fire_stage_taps(
-            &completion_app.tap_hooks_completion,
+            &completion_app.tap_hooks_response,
             &shape,
             crate::hooks::wire::HookStageProjection {
                 at: "response",
@@ -1318,7 +1318,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // ── STAGE TAPS: candidate + routing shape ── captured ONCE (scalars only, so it survives `v`
     // moving into the first hop). Fire the `candidate` taps now: the decision reconcile + base ordering
     // above produced the FINAL candidate set for dispatch. ZERO COST when no stage tap is configured.
-    let stage_shape = if app.tap_hooks_route.is_empty() && app.tap_hooks_attempt.is_empty() {
+    let stage_shape = if app.tap_hooks_candidate.is_empty() && app.tap_hooks_routing.is_empty() {
         None
     } else {
         // Stage taps read arbitrary body fields for the shape — materialize the DOM (taps are
@@ -1337,7 +1337,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     };
     if let Some(shape) = &stage_shape {
         fire_stage_taps(
-            &app.tap_hooks_route,
+            &app.tap_hooks_candidate,
             shape,
             crate::hooks::wire::HookStageProjection {
                 at: "candidate",
@@ -1434,7 +1434,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 .filter(|wl| !request_ctx.excluded.contains(&wl.idx))
                 .count();
             fire_stage_taps(
-                &app.tap_hooks_attempt,
+                &app.tap_hooks_routing,
                 shape,
                 crate::hooks::wire::HookStageProjection {
                     at: "routing",

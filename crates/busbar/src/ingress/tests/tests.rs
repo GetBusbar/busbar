@@ -37,9 +37,9 @@ fn minimal_app() -> Arc<App> {
         )),
         rewrite_hooks: Vec::new(),
         tap_hooks: Vec::new(),
-        tap_hooks_route: Vec::new(),
-        tap_hooks_attempt: Vec::new(),
-        tap_hooks_completion: Vec::new(),
+        tap_hooks_candidate: Vec::new(),
+        tap_hooks_routing: Vec::new(),
+        tap_hooks_response: Vec::new(),
         global_gates: Vec::new(),
         hook_env: crate::hooks::HookEnv::new(
             std::sync::Arc::new(busbar_plugin_loader::PluginRegistry::empty()),
