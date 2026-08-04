@@ -22,6 +22,7 @@ struct CapturedReq {
     prompt: Option<SeenPrompt>,
     identity: Option<SeenIdentity>,
     max_tokens: Option<u32>,
+    request_id: u64,
 }
 
 /// A test policy that records the projection it was handed and returns a fixed decision.
@@ -54,6 +55,7 @@ impl RoutingPolicy for CapturingPolicy {
                 .as_ref()
                 .map(|i| (i.key_id.clone(), i.key_name.clone(), i.user.clone())),
             max_tokens: req.max_tokens,
+            request_id: req.request_id,
         });
         Ok(match &self.reject {
             Some((status, message)) => RoutingDecision::Reject {
@@ -102,7 +104,7 @@ async fn run(
         weight: 1,
         attempt_timeout_ms: None,
     }];
-    let rc = RequestCtx::new(60);
+    let rc = RequestCtx::new(60, 1);
     let out = decide_policy_order(
         &app,
         &resolved,
@@ -369,7 +371,7 @@ fn enforce_restricts_reapplies_compliance_tags_across_pools() {
 
     // A required `baa` restrict narrows the fallback pool to ONLY the tagged lane — the untagged
     // lane 1 is dropped, so the compliance constraint holds across the pool hop.
-    let mut rc = RequestCtx::new(60);
+    let mut rc = RequestCtx::new(60, 1);
     rc.active_restricts.push(RestrictConstraint {
         tags_any: vec!["baa".to_string()],
         on_empty: crate::config::PolicyOnError::Reject,
@@ -383,7 +385,7 @@ fn enforce_restricts_reapplies_compliance_tags_across_pools() {
     );
 
     // A required restrict with NO matching fallback lane fails CLOSED (Err), never spills.
-    let mut rc_reject = RequestCtx::new(60);
+    let mut rc_reject = RequestCtx::new(60, 1);
     rc_reject.active_restricts.push(RestrictConstraint {
         tags_any: vec!["hipaa".to_string()],
         on_empty: crate::config::PolicyOnError::Reject,
@@ -397,7 +399,7 @@ fn enforce_restricts_reapplies_compliance_tags_across_pools() {
     );
 
     // A `weighted` restrict with no match is an advisory escape — candidates pass unchanged.
-    let mut rc_weighted = RequestCtx::new(60);
+    let mut rc_weighted = RequestCtx::new(60, 1);
     rc_weighted.active_restricts.push(RestrictConstraint {
         tags_any: vec!["hipaa".to_string()],
         on_empty: crate::config::PolicyOnError::Weighted,
@@ -413,7 +415,7 @@ fn enforce_restricts_reapplies_compliance_tags_across_pools() {
     );
 
     // No active restrict → identity.
-    let rc_none = RequestCtx::new(60);
+    let rc_none = RequestCtx::new(60, 1);
     assert_eq!(
         rc_none.enforce_restricts(&app, "fb", cands).unwrap().len(),
         2
@@ -1499,7 +1501,7 @@ async fn send_user_projects_governance_key_identity() {
         weight: 1,
         attempt_timeout_ms: None,
     }];
-    let rc = RequestCtx::new(60);
+    let rc = RequestCtx::new(60, 1);
     let v = body();
     decide_policy_order(
         &app,
@@ -1572,7 +1574,7 @@ async fn send_user_falls_back_to_synthesized_group_key_identity() {
         deleted_at: None,
         revision: 1,
     });
-    let rc = RequestCtx::new(60);
+    let rc = RequestCtx::new(60, 1);
     let v = body();
     // caller_token is the RAW SSO bearer — NOT a virtual-key secret, so lookup would miss.
     decide_policy_order(
@@ -1672,7 +1674,7 @@ async fn send_user_prefers_resolved_key_over_disabled_legacy_lookup() {
         deleted_at: None,
         revision: 1,
     });
-    let rc = RequestCtx::new(60);
+    let rc = RequestCtx::new(60, 1);
     let v = body();
     decide_policy_order(
         &app,
@@ -1956,4 +1958,196 @@ async fn reject_produces_bedrock_native_envelope() {
         v["message"], "quota guardrail: try later",
         "Bedrock error body carries the message field"
     );
+}
+
+// ── PER-REQUEST CORRELATION ID ──────────────────────────────────────────────────────────────────
+
+/// `App::next_request_id` is a monotonic counter: sequential calls hand out strictly increasing
+/// values, and two DISTINCT `App`s (as if from two independent boots) do not restart from the
+/// same small integer — each is seeded independently from OS entropy.
+#[test]
+fn request_id_counter_is_unique_and_monotonic_across_sequential_requests() {
+    let app = TestApp::new()
+        .lane(LaneSpec::new(
+            "m0",
+            crate::proto::Protocol::anthropic(),
+            "http://localhost",
+        ))
+        .pool("p", &[(0, 1)])
+        .build();
+    let a = app.next_request_id();
+    let b = app.next_request_id();
+    let c = app.next_request_id();
+    assert!(b > a, "the counter must strictly increase: {a} then {b}");
+    assert!(c > b, "the counter must strictly increase: {b} then {c}");
+    assert_eq!(b, a + 1, "a plain fetch_add(1): no gaps between requests");
+    assert_eq!(c, a + 2);
+
+    // A second, independently-built `App` (stand-in for a second process boot) seeds from a fresh
+    // entropy draw — the two counters are NOT observably the same sequence restarting at the same
+    // point, so an id is a real cross-restart join key rather than a same-small-integers replay.
+    let app2 = TestApp::new()
+        .lane(LaneSpec::new(
+            "m0",
+            crate::proto::Protocol::anthropic(),
+            "http://localhost",
+        ))
+        .pool("p", &[(0, 1)])
+        .build();
+    let d = app2.next_request_id();
+    assert_ne!(
+        d, a,
+        "two independently-seeded counters must not coincide (boot entropy seed)"
+    );
+}
+
+/// THE join-key property: the SAME `request_id` a routing GATE sees on the pre-forward
+/// `RoutingRequest` (the DECISION) must appear on the completion tap's notification for that exact
+/// request (the OUTCOME) — the whole reason `RequestCtx` carries a correlation id. Exercises the
+/// real ingress path (`fire` -> `forward_with_pool` -> `forward_with_pool_parsed`), not a
+/// hand-built `RequestCtx`, so it proves the id survives the full stamp-at-ingress ->
+/// decide_policy_order -> completion-tap plumbing intact.
+#[tokio::test]
+async fn same_request_id_joins_gate_decision_and_completion_tap() {
+    let (cap, tap) = webhook_tap().await;
+    let lane = mock_lane("served").await;
+    let seen = Arc::new(StdMutex::new(None));
+    let mut app = TestApp::new()
+        .lane(LaneSpec::new(
+            "m0",
+            crate::proto::Protocol::anthropic(),
+            &lane.base_url(),
+        ))
+        .pool("p", &[(0, 1)])
+        .build();
+    {
+        let inner = Arc::get_mut(&mut app).expect("sole owner");
+        inner.tap_hooks_completion = vec![tap];
+        inner.global_gates = vec![(
+            0u16,
+            ResolvedPolicy::Policy {
+                policy: Arc::new(CapturingPolicy {
+                    seen: seen.clone(),
+                    reject: None,
+                }),
+                on_error: crate::config::PolicyOnError::default(),
+                on_error_chain: Vec::new(),
+                timeout: std::time::Duration::from_millis(500),
+                send_prompt: false,
+                send_user: false,
+                on_empty: crate::config::PolicyOnError::Reject,
+            },
+        )];
+    }
+    let resp = fire(app, 1).await;
+    assert_eq!(resp.status().as_u16(), 200);
+
+    let gate_request_id = seen
+        .lock()
+        .unwrap()
+        .as_ref()
+        .expect("the gate ran and captured the RoutingRequest")
+        .request_id;
+    let payload = wait_for_tap_body(&cap).await;
+    let tap_request_id = payload["request"]["request_id"]
+        .as_u64()
+        .expect("completion tap payload carries request_id as a plain integer");
+
+    assert_eq!(
+        gate_request_id, tap_request_id,
+        "the pre-forward routing decision and the post-response completion tap for the SAME \
+         request must carry the IDENTICAL request_id — that identity is the join-key contract"
+    );
+    lane.shutdown().await;
+}
+
+/// A `tracing::Layer` that captures the value recorded onto a NATIVE `u64` field named
+/// `request_id` (via `Span::record`) — regardless of which span, since this is the only site that
+/// stamps that field name. Layered on `tracing_subscriber::registry()` (not a bare hand-rolled
+/// `Subscriber`) because `Span::current()` — what the production `forward` span uses to record the
+/// id — resolves through `Subscriber::current_span()`, which `Registry` implements correctly and a
+/// minimal hand-rolled `Subscriber` (default `current_span() -> Current::none()`) does not; without
+/// it the production `record()` call becomes a silent no-op against an "unknown" current span.
+#[derive(Clone, Default)]
+struct RequestIdSpanCapture(Arc<StdMutex<Option<u64>>>);
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for RequestIdSpanCapture {
+    fn on_record(
+        &self,
+        _id: &tracing::span::Id,
+        values: &tracing::span::Record<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        struct Vis<'a>(&'a StdMutex<Option<u64>>);
+        impl tracing::field::Visit for Vis<'_> {
+            fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+                if field.name() == "request_id" {
+                    *self.0.lock().unwrap() = Some(value);
+                }
+            }
+            fn record_debug(
+                &mut self,
+                _field: &tracing::field::Field,
+                _value: &dyn std::fmt::Debug,
+            ) {
+            }
+        }
+        values.record(&mut Vis(&self.0));
+    }
+}
+
+/// The correlation id is a NATIVE `tracing` `u64` field (never `format!`'d into a string) on
+/// busbar's per-request `forward` span, matching the SAME id the completion tap observed for the
+/// identical request — so a log line reading `request_id` off that span is the same join key a
+/// hook payload carries.
+#[tokio::test]
+async fn request_id_is_recorded_as_native_u64_tracing_field() {
+    let lane = mock_lane("served").await;
+    let (cap, tap) = webhook_tap().await;
+    let mut app = TestApp::new()
+        .lane(LaneSpec::new(
+            "m0",
+            crate::proto::Protocol::anthropic(),
+            &lane.base_url(),
+        ))
+        .pool("p", &[(0, 1)])
+        .build();
+    Arc::get_mut(&mut app)
+        .expect("sole owner")
+        .tap_hooks_completion = vec![tap];
+
+    let seen = Arc::new(StdMutex::new(None));
+    let capture = RequestIdSpanCapture(seen.clone());
+    use tracing_subscriber::layer::SubscriberExt as _;
+    let subscriber = tracing_subscriber::registry().with(capture);
+    // `set_default` (not `with_default`): the code under test is `async` and this test's runtime is
+    // single-threaded (`#[tokio::test]`'s default `current_thread` flavor), so the thread-local
+    // default subscriber stays installed across every `.await` in between — matching the guard idiom
+    // `test_support::warn_capture`'s doc comment calls out for exactly this constraint.
+    let _guard = tracing::subscriber::set_default(subscriber);
+    // `forward`'s span callsite may already have its `Interest` CACHED as "never" from an earlier
+    // call in this same test binary (any prior test that hit `forward` under the process-default
+    // no-op dispatcher) — `tracing-core` caches callsite interest globally and does not
+    // automatically recompute it just because a new default subscriber was installed. Force a
+    // recompute against the subscriber just installed so THIS span is actually visited/recorded.
+    tracing::callsite::rebuild_interest_cache();
+    let resp = fire(app, 1).await;
+    drop(_guard);
+    // Restore ambient interest for every other test that runs after this one in the same process.
+    tracing::callsite::rebuild_interest_cache();
+    assert_eq!(resp.status().as_u16(), 200);
+
+    let tracing_request_id = seen
+        .lock()
+        .unwrap()
+        .expect("the `forward` span recorded a `request_id` field");
+    let payload = wait_for_tap_body(&cap).await;
+    let tap_request_id = payload["request"]["request_id"]
+        .as_u64()
+        .expect("completion tap payload carries request_id as a plain integer");
+    assert_eq!(
+        tracing_request_id, tap_request_id,
+        "the tracing span field and the completion tap must agree on the same request's id"
+    );
+    lane.shutdown().await;
 }

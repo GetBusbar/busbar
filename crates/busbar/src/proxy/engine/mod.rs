@@ -102,11 +102,17 @@ pub(crate) async fn forward_with_pool_keyed(
 // atomic check) instead of allocating a span + formatting three fields on every request. The
 // info-level events on the rejection paths carry their own pool/policy fields, so no info-level
 // log line loses context; run with RUST_LOG=busbar=debug to get the span back.
+// `request_id`: declared `Empty` here (no value at span-open time — the id isn't stamped until the
+// function body runs, see the `Span::current().record` call below) and filled in as a native `u64`
+// field, NEVER `format!`'d into a string: `tracing`'s field-recording writes the integer straight
+// into the span, so tagging every event this span covers (including the debug-disabled default —
+// the record call is a no-op there, same one-relaxed-atomic-check cost `skip_all` already pays)
+// costs no per-request allocation.
 #[tracing::instrument(
     level = "debug",
     name = "forward",
     skip_all,
-    fields(pool = %pool_name, ingress = %ingress_protocol, op = op.name())
+    fields(pool = %pool_name, ingress = %ingress_protocol, op = op.name(), request_id = tracing::field::Empty)
 )]
 pub(crate) async fn forward_with_pool_parsed(
     app: Arc<App>,
@@ -122,6 +128,19 @@ pub(crate) async fn forward_with_pool_parsed(
     op: crate::handlers::Op,
     usage_sink: Option<UsageSink>,
 ) -> Response {
+    // The per-request correlation id (settled design: a single `u64` off a boot-seeded monotonic
+    // atomic — see `App::next_request_id`/`state::seed_request_id_counter` — never a UUID/String).
+    // Stamped ONCE here, the earliest per-request point (before `RequestCtx` is even built), and
+    // threaded into `forward_with_pool_parsed_inner` (which stores it on `RequestCtx::request_id`
+    // for the whole failover walk) AND kept as this plain local so the COMPLETION tap fired below —
+    // after `inner` has returned and `RequestCtx` has gone out of scope — stamps the SAME value. That
+    // identity (pre-forward routing message vs. post-response tap) is the whole join-key contract.
+    let request_id = app.next_request_id();
+    // Tag every event this span covers with the correlation id — a native `u64` `record`, not a
+    // `format!`, so this costs nothing beyond what the (already debug-gated) span pays. A no-op at
+    // the default info filter: `record` on a disabled span is the same single relaxed check
+    // `#[tracing::instrument(level = "debug")]` already costs on the hot path.
+    tracing::Span::current().record("request_id", request_id);
     // ── STAGE TAPS: completion ── capture the shape BEFORE `v` moves into the dispatch core, fire
     // AFTER the response head is known. `outcome`: a gate-produced rejection (marker extension) is
     // the SYNTHETIC `rejected_by_gate`; else 2xx = `ok`, anything else = `failed`. For a STREAMING
@@ -147,6 +166,7 @@ pub(crate) async fn forward_with_pool_parsed(
             pool_name,
             ingress_protocol,
             stream,
+            request_id,
         ))
     };
     let completion_app = app.clone();
@@ -163,6 +183,7 @@ pub(crate) async fn forward_with_pool_parsed(
         ingress_protocol,
         op,
         usage_sink,
+        request_id,
     )
     .await;
     if let Some(shape) = completion_shape {
@@ -589,6 +610,11 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // spec, never its identity; `crate::handlers::CHAT` reproduces today's behavior byte-for-byte.
     op: crate::handlers::Op,
     usage_sink: Option<UsageSink>,
+    // This request's correlation id, stamped ONCE by the wrapper (`forward_with_pool_parsed`)
+    // before this fn was called — carried as a plain `Copy` scalar for the whole dispatch (stored on
+    // `RequestCtx::request_id` below, and threaded into every hook projection built in here) rather
+    // than re-derived per hop.
+    request_id: u64,
 ) -> Response {
     // Stage profiler: PREPARE spans all pre-dispatch bookkeeping (op-support filter, wants_stream +
     // affinity derivation, failover/breaker config) up to the failover loop. Zero cost when
@@ -722,6 +748,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 pool_name,
                 ingress_protocol,
                 wants_stream,
+                request_id,
             )
             .await
             {
@@ -734,6 +761,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                 pool_name,
                 ingress_protocol,
                 wants_stream,
+                request_id,
             )
             .await
             {
@@ -776,7 +804,14 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     // only materialized when a tap is actually configured — ZERO COST stays zero-parse.
     if !app.tap_hooks.is_empty() {
         if let Some(Ok(body)) = v.as_mut().map(|l| l.ensure_dom()) {
-            fire_global_taps(&app, body, pool_name, ingress_protocol, wants_stream);
+            fire_global_taps(
+                &app,
+                body,
+                pool_name,
+                ingress_protocol,
+                wants_stream,
+                request_id,
+            );
         }
     }
 
@@ -844,7 +879,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
     let breaker_cfg: std::sync::Arc<crate::store::BreakerCfg> =
         resolve_breaker_cfg(&app, pool_name);
 
-    let mut request_ctx = RequestCtx::new(deadline_secs);
+    let mut request_ctx = RequestCtx::new(deadline_secs, request_id);
 
     // Apply configured failover exclusions: members named here are excluded from this pool's
     // candidate set (never selected, primary or failover) — a per-pool member blocklist.
@@ -1288,6 +1323,7 @@ pub(crate) async fn forward_with_pool_parsed_inner(
             pool_name,
             ingress_protocol,
             wants_stream,
+            request_ctx.request_id,
         ))
     };
     if let Some(shape) = &stage_shape {
@@ -2422,6 +2458,7 @@ fn fire_global_taps(
     pool_name: &str,
     ingress_protocol: &str,
     wants_stream: bool,
+    request_id: u64,
 ) {
     if app.tap_hooks.is_empty() {
         return;
@@ -2434,8 +2471,14 @@ fn fire_global_taps(
         budget: &[],
     };
     let build_proj = |with_prompt: bool| {
-        let req =
-            build_rewrite_request(body, pool_name, ingress_protocol, wants_stream, with_prompt);
+        let req = build_rewrite_request(
+            body,
+            pool_name,
+            ingress_protocol,
+            wants_stream,
+            with_prompt,
+            request_id,
+        );
         crate::json::to_vec(&crate::hooks::wire::build(
             crate::hooks::wire::OP_NOTIFY,
             &req,

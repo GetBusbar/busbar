@@ -123,7 +123,7 @@ fn prompt_projection_reads_gemini_contents() {
     assert_eq!(turn_count(&v, "gemini"), 2);
     assert_eq!(total_text_chars(&v, "gemini", 8), 8 + 5 + 16);
     // And the rewrite-request projection (the gate's view) is POPULATED, not blind.
-    let req = build_rewrite_request(&v, "p", "gemini", false, true);
+    let req = build_rewrite_request(&v, "p", "gemini", false, true, 1);
     assert_eq!(req.message_count, 2);
     assert!(req.total_chars > 0);
     assert_eq!(req.prompt.as_ref().unwrap().messages.len(), 2);
@@ -163,7 +163,7 @@ fn prompt_projection_reads_responses_input() {
     assert_eq!(turn_count(&v, "responses"), 1);
     assert_eq!(total_text_chars(&v, "responses", 0), 15);
 
-    let req = build_rewrite_request(&v, "p", "responses", false, true);
+    let req = build_rewrite_request(&v, "p", "responses", false, true, 1);
     assert_eq!(req.message_count, 1);
     assert_eq!(req.total_chars, 15);
 
@@ -190,7 +190,7 @@ fn prompt_projection_reads_responses_input() {
         5 + 7,
         "top-level item text must count toward the size signal, not read as 0"
     );
-    let req = build_rewrite_request(&v, "p", "responses", false, true);
+    let req = build_rewrite_request(&v, "p", "responses", false, true, 1);
     assert_eq!(req.message_count, 2);
     assert_eq!(req.total_chars, 12);
 }
@@ -209,7 +209,7 @@ fn max_tokens_signal_is_dialect_aware_for_responses() {
         serde_json::json!({"input": "hi", "max_tokens": 999, "max_output_tokens": 4096});
     assert_eq!(max_tokens_for(&resp_stray, "responses"), Some(4096));
     // The routing projection is now populated for a responses request.
-    let req = build_rewrite_request(&resp, "p", "responses", false, true);
+    let req = build_rewrite_request(&resp, "p", "responses", false, true, 1);
     assert_eq!(req.max_tokens, Some(4096));
 
     // Every other dialect keeps reading `max_tokens`.

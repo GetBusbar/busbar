@@ -3389,6 +3389,17 @@ pub(crate) fn build_app_from_config(
             .and_then(|a| a.key_ttl.as_deref())
             .map(|s| admin::parse_duration_secs(s).unwrap_or(admin::DEFAULT_KEY_TTL_SECS))
             .unwrap_or(admin::DEFAULT_KEY_TTL_SECS),
+        // Arc-shared like `versions`/`mutation_limiter`: a REBUILD carries the SAME counter forward
+        // (ids stay monotonic across a config reload) while a fresh boot seeds it once from OS
+        // entropy (see `state::seed_request_id_counter`) so restarts don't restamp `0, 1, 2, …`.
+        request_id_counter: prior.map_or_else(
+            || {
+                Arc::new(std::sync::atomic::AtomicU64::new(
+                    state::seed_request_id_counter(),
+                ))
+            },
+            |p| p.request_id_counter.clone(),
+        ),
     };
     // The build reached its end without a single fallible step refusing: KEEP the limits installed
     // at the top. Every earlier `return Err` / `?` drops the guard instead and rolls them back.

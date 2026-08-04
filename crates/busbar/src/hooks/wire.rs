@@ -81,6 +81,11 @@ pub(crate) struct HookStageProjection<'a> {
 /// content/identity.
 #[derive(Serialize)]
 pub(crate) struct HookReqProjection<'a> {
+    /// The request correlation id (`RequestCtx::request_id`) — a plain integer on the wire (no
+    /// per-request `format!`/allocation on busbar's side; `serde_json` writes a `u64` natively).
+    /// The join key: the SAME value appears on this decide/transform/notify payload and on the
+    /// `completion`-stage notify for the same request.
+    pub(crate) request_id: u64,
     pub(crate) pool: &'a str,
     pub(crate) ingress_protocol: &'a str,
     pub(crate) message_count: usize,
@@ -586,6 +591,7 @@ pub(crate) fn build<'a>(
     HookRequest {
         op,
         request: HookReqProjection {
+            request_id: req.request_id,
             pool: req.pool,
             ingress_protocol: req.ingress_protocol,
             message_count: req.message_count,
@@ -823,6 +829,7 @@ mod tests {
 
     fn req() -> RoutingRequest<'static> {
         RoutingRequest {
+            request_id: 7,
             pool: "p",
             ingress_protocol: "anthropic",
             requested_model: None,

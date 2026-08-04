@@ -12,6 +12,12 @@
 /// touches the mutable IR or engine state.
 #[derive(Debug, Clone)]
 pub struct RoutingRequest<'a> {
+    /// This request's correlation id — a single `u64` stamped once at ingress (busbar core's
+    /// `RequestCtx::request_id`), unique-per-process-lifetime and Copy-cheap (no UUID/String). Lets
+    /// a hook (or a log line reading the same id off busbar's tracing span) join THIS routing
+    /// decision to the request's eventual OUTCOME on the completion-tap notification, which carries
+    /// the identical value for the same request.
+    pub request_id: u64,
     pub pool: &'a str,
     pub ingress_protocol: &'a str,
     /// The model the caller asked for (may be a pool name or a member model), if any. RESERVED for

@@ -69,7 +69,7 @@ async fn sticky_affinity_never_selects_zero_weight_drained_member() {
         weight: 0,
         attempt_timeout_ms: None,
     }];
-    let mut rc = RequestCtx::new(60);
+    let mut rc = RequestCtx::new(60, 1);
     let picked = pick_among(
         &app,
         &drained_only,
@@ -103,7 +103,7 @@ async fn sticky_affinity_never_selects_zero_weight_drained_member() {
         },
     ];
     for key in ["s1", "s2", "session-xyz", "abc", "00000", "user-42"] {
-        let mut rc = RequestCtx::new(60);
+        let mut rc = RequestCtx::new(60, 1);
         let (idx, _permit, _probe_epoch) = pick_among(
             &app,
             &drained_and_healthy,
@@ -125,7 +125,7 @@ async fn sticky_affinity_never_selects_zero_weight_drained_member() {
 #[tokio::test]
 async fn ordered_walk_picks_first_preferred_when_healthy() {
     let app = three_lane_app();
-    let mut rc = RequestCtx::new(60);
+    let mut rc = RequestCtx::new(60, 1);
     let order = [2usize, 0, 1];
     let (idx, _permit, _probe_epoch) = pick_among(&app, &cands(), &mut rc, None, "p", Some(&order))
         .await
@@ -142,7 +142,7 @@ async fn ordered_walk_skips_tripped_preferred_to_next() {
     // breaker-ready. No test clock here — everything uses the real clock consistently.
     app.store
         .force_open_in("p", 2, crate::state::now() + 1_000_000);
-    let mut rc = RequestCtx::new(60);
+    let mut rc = RequestCtx::new(60, 1);
     let order = [2usize, 0, 1];
     let (idx, _permit, _probe_epoch) = pick_among(&app, &cands(), &mut rc, None, "p", Some(&order))
         .await
@@ -157,7 +157,7 @@ async fn ordered_walk_skips_tripped_preferred_to_next() {
 #[tokio::test]
 async fn ordered_walk_skips_excluded_preferred() {
     let app = three_lane_app();
-    let mut rc = RequestCtx::new(60);
+    let mut rc = RequestCtx::new(60, 1);
     rc.exclude(2); // lane 2 already tried
     let order = [2usize, 0, 1];
     let (idx, _permit, _probe_epoch) = pick_among(&app, &cands(), &mut rc, None, "p", Some(&order))
@@ -173,7 +173,7 @@ async fn ordered_walk_falls_through_to_swrr_when_no_preferred_ready() {
     let app = three_lane_app();
     app.store
         .force_open_in("p", 2, crate::state::now() + 1_000_000); // the only ranked lane is tripped
-    let mut rc = RequestCtx::new(60);
+    let mut rc = RequestCtx::new(60, 1);
     let order = [2usize]; // ranked subset of one, now unhealthy
     let (idx, _permit, _probe_epoch) = pick_among(&app, &cands(), &mut rc, None, "p", Some(&order))
         .await
@@ -197,7 +197,7 @@ async fn ordered_walk_empty_order_is_swrr() {
     // returned. A regression that always returns a fixed lane (defeating load distribution) fails here.
     let mut seen = std::collections::HashSet::new();
     for _ in 0..9 {
-        let mut rc = RequestCtx::new(60);
+        let mut rc = RequestCtx::new(60, 1);
         let (idx, _permit, _probe_epoch) =
             pick_among(&app, &cands(), &mut rc, None, "p", Some(&order))
                 .await
@@ -215,7 +215,7 @@ async fn ordered_walk_empty_order_is_swrr() {
     app.store
         .force_open_in("p", 0, crate::state::now() + 1_000_000);
     for _ in 0..9 {
-        let mut rc = RequestCtx::new(60);
+        let mut rc = RequestCtx::new(60, 1);
         let (idx, _permit, _probe_epoch) =
             pick_among(&app, &cands(), &mut rc, None, "p", Some(&order))
                 .await
@@ -234,7 +234,7 @@ async fn ordered_walk_empty_order_is_swrr() {
 #[test]
 fn request_ctx_new_huge_deadline_does_not_panic() {
     for secs in [u64::MAX, u64::MAX / 2, 1_000_000_000_000_000_000] {
-        let rc = RequestCtx::new(secs);
+        let rc = RequestCtx::new(secs, 1);
         // Reading the wall-clock budget back must also not panic and must be a large positive bound.
         let ms = rc.remaining_ms();
         assert!(
@@ -271,7 +271,7 @@ async fn ordered_walk_skips_weight_zero_drained_preferred() {
             attempt_timeout_ms: None,
         },
     ];
-    let mut rc = RequestCtx::new(60);
+    let mut rc = RequestCtx::new(60, 1);
     // Policy ranks the drained lane #1.
     let order = [2usize, 0, 1];
     let (idx, _permit, _probe_epoch) = pick_among(&app, &cands, &mut rc, None, "p", Some(&order))
@@ -313,7 +313,7 @@ async fn ordered_walk_all_weight_zero_selects_none() {
             attempt_timeout_ms: None,
         },
     ];
-    let mut rc = RequestCtx::new(60);
+    let mut rc = RequestCtx::new(60, 1);
     let order = [0usize, 1, 2];
     let picked = pick_among(&app, &cands, &mut rc, None, "p", Some(&order)).await;
     assert!(
@@ -348,7 +348,7 @@ async fn excluded_reasons_records_at_capacity() {
         weight: 1,
         attempt_timeout_ms: None,
     }];
-    let mut rc = RequestCtx::new(60);
+    let mut rc = RequestCtx::new(60, 1);
     let picked = pick_among(&app, &one, &mut rc, None, "p", None).await;
     assert!(picked.is_none(), "a fully at-capacity pool yields no pick");
     assert!(
@@ -384,7 +384,7 @@ async fn sticky_fall_through_records_reason() {
         weight: 1,
         attempt_timeout_ms: None,
     }];
-    let mut rc = RequestCtx::new(60);
+    let mut rc = RequestCtx::new(60, 1);
     // Single candidate ⇒ the affinity hash lands on lane 0, exercising the sticky path on it.
     let picked = pick_among(
         &app,
