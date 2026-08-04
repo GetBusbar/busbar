@@ -1965,6 +1965,18 @@ pub(crate) struct DeployCfg {
     /// to loopback (`127.0.0.1:8081`); set an exposed address (+ `admin_tls`) to manage off-host.
     #[serde(default = "default_admin_listen")]
     pub(crate) admin_listen: String,
+    /// Config-MANAGEMENT policy (`config:` block, 1.5.3): whether the admin API may mutate config and
+    /// WHERE those changes persist. Absent ⇒ durable-by-default (mutable + a file overlay next to
+    /// config.yaml). See [`ConfigMgmtCfg`].
+    #[serde(default)]
+    pub(crate) config: ConfigMgmtCfg,
+    /// Optional pointer to the providers CATALOG file (`providers_file:`, 1.5.3 — migrated from the
+    /// `BUSBAR_PROVIDERS` env var). Relative paths resolve against the config.yaml directory. Absent ⇒
+    /// `providers.yaml` next to the resolved config.yaml (the `BUSBAR_PROVIDERS` env var still works as
+    /// a deprecated fallback for one release). The two-file model is preserved: this names the vetted,
+    /// shippable catalog that config.yaml's `providers:` map references.
+    #[serde(default)]
+    pub(crate) providers_file: Option<String>,
     /// TLS/mTLS for the admin listener (only meaningful with `admin_listen`). Its own cert + optional
     /// `client_ca_file`, so admin can require client certificates without forcing them on data-plane
     /// clients. A network-exposed `admin_listen` REQUIRES `client_ca_file` here unless `admin_insecure`.
@@ -2444,6 +2456,24 @@ pub(crate) struct AdvancedCfg {
     /// graceful shutdown flushes fully. Default 100.
     #[serde(default = "default_usage_flush_interval_ms")]
     pub(crate) usage_flush_interval_ms: u64,
+    /// Tokio worker-thread count (`advanced.worker_threads`, migrated from `BUSBAR_WORKER_THREADS`).
+    /// A BOOT-TIME knob read once before the runtime is built — not runtime-mutable via the overlay.
+    /// Absent (`None`) ⇒ one worker per available core (`available_parallelism`, capped at
+    /// `MAX_WORKER_THREADS`). The env var still works as a deprecated fallback for one release.
+    #[serde(default)]
+    pub(crate) worker_threads: Option<usize>,
+    /// Pin the shared upstream client to HTTP/1.1 (`advanced.upstream_http1_only`, migrated from
+    /// `BUSBAR_UPSTREAM_HTTP1_ONLY`). BOOT-TIME (client-build) knob; default `false` (ALPN default:
+    /// h2 where the backend accepts it, h1 otherwise). The env var still works as a deprecated
+    /// fallback for one release.
+    #[serde(default)]
+    pub(crate) upstream_http1_only: bool,
+    /// Force HTTP/2 prior-knowledge to cleartext upstreams (`advanced.upstream_h2_prior_knowledge`,
+    /// migrated from `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE`). BOOT-TIME (client-build) knob; default
+    /// `false` — prior-knowledge h2c measurably HURT throughput in perf testing. The env var still
+    /// works as a deprecated fallback for one release.
+    #[serde(default)]
+    pub(crate) upstream_h2_prior_knowledge: bool,
 }
 
 impl Default for AdvancedCfg {
@@ -2451,8 +2481,59 @@ impl Default for AdvancedCfg {
         Self {
             rate_sweep_interval: default_rate_sweep_interval(),
             usage_flush_interval_ms: default_usage_flush_interval_ms(),
+            worker_threads: None,
+            upstream_http1_only: false,
+            upstream_h2_prior_knowledge: false,
         }
     }
+}
+
+/// The top-level `config:` block — config-MANAGEMENT policy (1.5.3). This is DISTINCT from the
+/// data-plane `store:` section (where request/usage data lives): `config:` governs whether the admin
+/// API may mutate config and WHERE those mutations persist. Absent ⇒ durable-by-default: `locked:
+/// false` and an overlay file `busbar-overlay.json` next to the resolved config.yaml, so out of the
+/// box admin mutations survive a restart (the 1.5.3 fix for silent RAM-only mutation).
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ConfigMgmtCfg {
+    /// `false` (default) ⇒ MUTABLE: the admin API may change config, and every change persists to the
+    /// `overlay` backend. `true` ⇒ IMMUTABLE (GitOps posture): admin-API config mutations are refused
+    /// at runtime; `overlay` is irrelevant and ignored. Edit config.yaml + POST /config/reload to
+    /// change a locked deployment.
+    #[serde(default)]
+    pub(crate) locked: bool,
+    /// WHERE a mutable config's changes persist — a PLUGGABLE backend. Absent ⇒ the default file
+    /// backend (`busbar-overlay.json` next to the resolved config.yaml). `overlay: false` disables it
+    /// explicitly (only valid together with `locked: true`, else boot refuses — see the boot
+    /// invariant). `overlay: { file: <path> }` selects the file backend at a chosen path.
+    #[serde(default)]
+    pub(crate) overlay: Option<OverlayCfg>,
+}
+
+/// The `config.overlay` value — either an explicit DISABLE (`overlay: false`) or a named BACKEND
+/// (`overlay: { file: <path> }`). Untagged so both YAML forms parse. The map form names the backend
+/// by KEY (`file:` today), mirroring the top-level `store: { module, settings }` shape so a second
+/// backend (e.g. `db:`) is ADDITIVE, not a breaking reshape.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(untagged)]
+pub(crate) enum OverlayCfg {
+    /// `overlay: false` ⇒ no writable overlay backend. Only `false` is meaningful; `true` is rejected
+    /// at boot (it names no backend). Reachable-to-boot only with `locked: true`.
+    Disabled(bool),
+    /// `overlay: { file: <path> }` ⇒ the builtin file backend.
+    Backend(OverlayBackend),
+}
+
+/// A named overlay backend. Exactly one backend key may be set. Today only `file:` exists; a future
+/// durable-store backend slots in as an additive sibling field (`db:`), validated at boot to be
+/// mutually exclusive with `file:`.
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct OverlayBackend {
+    /// File-backend path. Relative paths resolve against the config.yaml directory. Absent ⇒ treated
+    /// as "no backend named" (equivalent to disabled).
+    #[serde(default)]
+    pub(crate) file: Option<String>,
 }
 
 /// The serde default for `per_request_fee:` - 0 (no flat per-request charge; token spend derives
@@ -2896,6 +2977,14 @@ pub(crate) struct LimitsResolved {
     pub(crate) key_gauge_limit: usize,
     pub(crate) rate_sweep_interval: u32,
     pub(crate) usage_flush_interval_ms: u64,
+    /// Pin the shared upstream client to HTTP/1.1 (`advanced.upstream_http1_only`). BOOT-TIME knob
+    /// read once at client build. Carried here (like `rate_sweep_interval`) so the client-build wiring
+    /// reads a flat struct; the `BUSBAR_UPSTREAM_HTTP1_ONLY` env var overrides it for one release.
+    pub(crate) upstream_http1_only: bool,
+    /// Force HTTP/2 prior-knowledge to cleartext upstreams (`advanced.upstream_h2_prior_knowledge`).
+    /// BOOT-TIME knob; default off. The `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` env var overrides it for
+    /// one release.
+    pub(crate) upstream_h2_prior_knowledge: bool,
     pub(crate) default_probe_interval_secs: u64,
     pub(crate) default_probe_timeout_secs: u64,
     pub(crate) default_policy_timeout_ms: u64,
@@ -2945,6 +3034,8 @@ impl LimitsResolved {
             key_gauge_limit: metrics.map_or_else(default_key_gauge_limit, |m| m.key_gauge_limit),
             rate_sweep_interval: advanced.rate_sweep_interval,
             usage_flush_interval_ms: advanced.usage_flush_interval_ms,
+            upstream_http1_only: advanced.upstream_http1_only,
+            upstream_h2_prior_knowledge: advanced.upstream_h2_prior_knowledge,
             default_probe_interval_secs: health.default_probe_interval_secs,
             default_probe_timeout_secs: health.default_probe_timeout_secs,
             default_policy_timeout_ms: routing.default_policy_timeout_ms,

@@ -247,7 +247,19 @@ curl -s -H "x-admin-token: $TOK" http://localhost:8081/api/v1/admin/groups/growt
 
 Busbar's config plane is live: an authenticated write takes effect immediately, with no restart and without disturbing in-flight requests. Under the hood an apply atomically swaps the running config snapshot: new requests see the new config; requests already in flight finish on the old one; and surviving lanes keep their learned health (breakers, latency) **by identity**. Config-plane mutations are serialized internally, so concurrent writes can never silently lose one.
 
-**Persistence (optional).** By default, API-applied changes are live but not written to disk. Set `BUSBAR_CONFIG_OVERLAY=/path/to/overlay.json` to persist hook- and group-surface changes: Busbar writes them to that busbar-owned overlay and re-applies it at boot on top of your hand-written `config.yaml` (which it never touches). A missing or corrupt overlay is ignored at boot: a bad overlay can never brick startup. An overlay written by a NEWER Busbar is refused instead of ignored — it is intact and meaningful, so starting without it would silently drop your API-registered hooks and groups (security gates included); upgrade, or boot `--safe-mode` to run on `config.yaml` alone with the overlay left untouched. `GET /info` reports `config_persistence` so tooling knows which mode it's in.
+**Persistence (durable by default, 1.5.3).** API-applied changes are durable out of the box: Busbar writes hook-, group-, and root-surface changes to a busbar-owned overlay (`busbar-overlay.json` next to `config.yaml` by default) and re-applies it at boot on top of your hand-written `config.yaml` (which it never touches). So a group or hook provisioned over the admin API **survives a restart** with no extra configuration — the fix for "provisioned config vanished on restart". Configure where it persists (or run immutable) via the top-level `config:` block:
+
+```yaml
+config:
+  locked: false                 # false = mutable (this section applies); true = immutable
+  overlay:
+    file: busbar-overlay.json    # default = next to config.yaml
+```
+
+- **`config.locked: true`** — an immutable/GitOps deployment: every config-mutating admin call is **refused** (`400`, "config mutation refused: … config.locked: true"). Change config by editing `config.yaml` and calling `POST /config/reload`. There is no "apply in memory only" mode any more — a mutable config is always durable, a locked config always refuses; the old silent-loss outcome is gone.
+- **Boot invariant** — a *mutable* config with no writable overlay (you set `config.overlay: false`, or the config directory is read-only) **refuses to boot** with an actionable message. This is what makes "applied but lost on restart" unreachable. (Migrating a read-only-config deployment? See the [upgrade note](migration-1.5.md#153-config-consolidation).)
+
+A missing or corrupt overlay is ignored at boot: a bad overlay can never brick startup. An overlay written by a NEWER Busbar is refused instead of ignored — it is intact and meaningful, so starting without it would silently drop your API-registered hooks and groups (security gates included); upgrade, or boot `--safe-mode` to run on `config.yaml` alone with the overlay left untouched. `GET /info` reports `config_persistence` (`true` = mutable + durable; `false` = locked) so tooling knows which mode it's in. *(The `BUSBAR_CONFIG_OVERLAY` env var still works for one release as a deprecated alias for `config.overlay.file`.)*
 
 ### The config plane
 

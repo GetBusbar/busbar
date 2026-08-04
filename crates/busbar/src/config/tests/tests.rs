@@ -47,6 +47,8 @@ fn base_deploy() -> DeployCfg {
         admin_listen: DEFAULT_ADMIN_LISTEN_ADDR.into(),
         admin_tls: None,
         admin_insecure: false,
+        config: Default::default(),
+        providers_file: None,
         auth: None,
         providers: HashMap::new(),
         models: HashMap::new(),
@@ -2867,4 +2869,53 @@ fn test_fetch_env_spec_unset_is_error() {
         err.contains("BUSBAR_T_FETCH_UNSET") && err.contains("not set"),
         "{err}"
     );
+}
+
+/// 1.5.3 env→config migration (the "new config.yaml key" half): the top-level `config:` block, the
+/// `providers_file:` pointer, and the new flat `advanced.*` knobs parse into `DeployCfg`. RED-before-
+/// GREEN: none of these fields existed pre-1.5.3, so this parse (`deny_unknown_fields` everywhere)
+/// would reject the document as unknown keys.
+#[test]
+fn config_consolidation_keys_parse_into_deploy_cfg() {
+    let yaml = "\
+providers: {}
+models: {}
+providers_file: catalog.yaml
+config:
+  locked: true
+  overlay:
+    file: my-overlay.json
+advanced:
+  worker_threads: 3
+  upstream_http1_only: true
+  upstream_h2_prior_knowledge: true
+";
+    let d: crate::config::DeployCfg = serde_yaml::from_str(yaml).expect("1.5.3 keys parse");
+    assert!(d.config.locked);
+    assert_eq!(d.providers_file.as_deref(), Some("catalog.yaml"));
+    assert_eq!(d.advanced.worker_threads, Some(3));
+    assert!(d.advanced.upstream_http1_only);
+    assert!(d.advanced.upstream_h2_prior_knowledge);
+    match d.config.overlay {
+        Some(crate::config::OverlayCfg::Backend(b)) => {
+            assert_eq!(b.file.as_deref(), Some("my-overlay.json"))
+        }
+        other => panic!("expected a file backend, got {other:?}"),
+    }
+
+    // `overlay: false` parses as the explicit-disable form.
+    let yaml2 = "providers: {}\nmodels: {}\nconfig:\n  locked: true\n  overlay: false\n";
+    let d2: crate::config::DeployCfg = serde_yaml::from_str(yaml2).expect("overlay:false parses");
+    assert!(matches!(
+        d2.config.overlay,
+        Some(crate::config::OverlayCfg::Disabled(false))
+    ));
+
+    // Absent `config:` ⇒ durable-by-default posture (mutable, no explicit overlay).
+    let yaml3 = "providers: {}\nmodels: {}\n";
+    let d3: crate::config::DeployCfg = serde_yaml::from_str(yaml3).expect("absent config parses");
+    assert!(!d3.config.locked);
+    assert!(d3.config.overlay.is_none());
+    assert!(d3.providers_file.is_none());
+    assert_eq!(d3.advanced.worker_threads, None);
 }

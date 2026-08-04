@@ -11,11 +11,49 @@ variables.
 
 | Env var | Default | Purpose |
 |---|---|---|
-| `BUSBAR_PROVIDERS` | `/etc/busbar/providers.yaml` | Path to the provider catalog. |
-| `BUSBAR_CONFIG` | `/etc/busbar/config.yaml` | Path to the deployment config. |
-| `BUSBAR_WORKER_THREADS` | one per available core | Size of the async worker pool. See below. |
+| `BUSBAR_CONFIG` | `/etc/busbar/config.yaml` | Path to the deployment config. **The one bootstrap env var** — it locates config.yaml itself. |
 | Provider key vars | n/a | Named by each provider's `api_key: { env: ... }` reference (e.g. `ANTHROPIC_KEY`). |
 | Token/secret vars | n/a | Anything referenced via `${VAR}` in either file (client tokens, admin token, …). |
+
+**Operational config moved into `config.yaml` (1.5.3).** Several knobs that used to be env vars now
+live in config.yaml, so they are reviewable, `--validate`-checked, and part of the deployment artifact.
+The old env vars **still work for one release** (each logs a deprecation warning) but are the migration
+path, not the home:
+
+| Deprecated env var | New config.yaml key |
+|---|---|
+| `BUSBAR_PROVIDERS` | `providers_file:` (top-level; default `providers.yaml` next to config.yaml) |
+| `BUSBAR_CONFIG_OVERLAY` | `config.overlay.file` (see [config mutability](#config-mutability-locked--overlay)) |
+| `BUSBAR_WORKER_THREADS` | `advanced.worker_threads` |
+| `BUSBAR_UPSTREAM_HTTP1_ONLY` | `advanced.upstream_http1_only` |
+| `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` | `advanced.upstream_h2_prior_knowledge` |
+
+`TOKIO_WORKER_THREADS` is still honored as a fallback for `advanced.worker_threads`.
+
+### Config mutability (`locked` + `overlay`)
+
+The top-level `config:` block governs whether the admin API may change config at runtime and where those
+changes persist. **Durable by default:** with nothing specified, config is *mutable* and admin-API
+mutations persist to `busbar-overlay.json` next to config.yaml — so a group or hook provisioned over the
+admin API **survives a restart** out of the box.
+
+```yaml
+config:
+  locked: false                 # false = mutable (admin API may change config); true = immutable
+  overlay:
+    file: busbar-overlay.json    # where mutations persist; default = next to config.yaml
+```
+
+- **`locked: true`** — an immutable/GitOps deployment: admin-API config mutations are *refused* at
+  runtime (edit config.yaml and `POST /config/reload` instead). The overlay is ignored.
+- **Boot invariant — `locked` XOR a writable overlay.** A *mutable* config with **no writable overlay**
+  (you set `overlay: false`, or the config directory is read-only) **refuses to boot**, with a message
+  telling you to either point `config.overlay.file` at a writable path or set `config.locked: true`.
+  This makes "applied but silently lost on restart" impossible to reach.
+  - **Read-only config dir (e.g. `/etc/busbar` on a read-only mount):** the default overlay path is
+    unwritable, so an unconfigured mutable busbar refuses to boot. Fix: set a writable
+    `config.overlay.file`, or set `config.locked: true` (a read-only/GitOps deployment never persists
+    runtime mutations anyway). See the [upgrade note](migration-1.5.md#153-config-consolidation).
 
 **Worker threads and scaling.** Busbar's request path is CPU-bound (parse, translate, serialize), so
 throughput scales with worker threads. The default is **one worker per available core**
@@ -23,12 +61,12 @@ throughput scales with worker threads. The default is **one worker per available
 `cpu.max` bandwidth quota, which it cannot see), which gives linear scaling: ~9,750 req/s per core,
 sub-millisecond, to ~156k on 16 cores in our [benchmark](https://getbusbar.com/performance). Each worker
 carries a thread stack and, on glibc, its own malloc arena, so idle memory grows slowly with the count. For
-a **footprint-sensitive sidecar** set `BUSBAR_WORKER_THREADS=1` (or `2`). On a **CPU-quota-limited pod** (a
+a **footprint-sensitive sidecar** set `advanced.worker_threads: 1` (or `2`). On a **CPU-quota-limited pod** (a
 k8s CPU *limit* on a many-core node) the default sizes to the node's full core count and oversubscribes the
-quota: **set `BUSBAR_WORKER_THREADS` to your CPU limit**; likewise to cap a shared box, set it to the cores
-you want Busbar to use. Scale up by default, tune down deliberately. *(Before 1.4.0 the default was capped at
-`min(cores, 4)`, which pinned throughput to ~4 cores regardless of box size, set the variable explicitly
-on older binaries.)*
+quota: **set `advanced.worker_threads` to your CPU limit**; likewise to cap a shared box, set it to the cores
+you want Busbar to use. Scale up by default, tune down deliberately. *(Before 1.4.0 the default was capped
+at `min(cores, 4)`, which pinned throughput to ~4 cores regardless of box size, set the value explicitly on
+older binaries.)*
 
 Startup is fail-loud: an unset `${VAR}`, an unknown provider reference, an unknown
 protocol or auth mode, or an invalid `on_exhausted` action stops the process with a

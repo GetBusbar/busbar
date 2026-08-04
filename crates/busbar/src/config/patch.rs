@@ -189,6 +189,13 @@ mod tests {
         let crate::config::AdvancedCfg {
             rate_sweep_interval,
             usage_flush_interval_ms,
+            // 1.5.3: BOOT-TIME knobs (read once at process/client construction) — deliberately NOT in
+            // the runtime-mutable `AdvancedPatch`, because a runtime PUT could not take effect without a
+            // restart / client rebuild. Bound-and-ignored here so this exhaustiveness check still forces
+            // a decision when a NEW advanced field is added.
+            worker_threads: _,
+            upstream_http1_only: _,
+            upstream_h2_prior_knowledge: _,
         } = crate::config::AdvancedCfg::default();
         let _ = AdvancedPatch {
             rate_sweep_interval: Some(rate_sweep_interval),

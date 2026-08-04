@@ -1685,7 +1685,7 @@ fn load_config_from_disk_refuses_a_real_legacy_config_file_loudly() {
 
     let result = load_config_from_disk(
         &config_path,
-        &providers_path,
+        Some(&providers_path),
         false,
         crate::config::EnvSubst::Strict,
     );
@@ -1728,7 +1728,7 @@ fn migrate_config_then_load_config_from_disk_boots_the_real_migrated_file() {
     // THE REAL BOOT ENTRY POINT must accept the migrated file on disk without error.
     let loaded = load_config_from_disk(
         &migrated_path,
-        &providers_path,
+        Some(&providers_path),
         false,
         crate::config::EnvSubst::Strict,
     )
@@ -2028,4 +2028,107 @@ fn plugins_boot_logging_wording_present() {
         src.contains("Add it to plugins.fetch or drop the signed tarball"),
         "two-part remediation wording missing"
     );
+}
+
+/// A minimal but structurally VALID 1.5.x config (parses into `DeployCfg`; `load_config_from_disk`
+/// does not resolve, so empty maps are fine).
+const BOOT_MINIMAL_CONFIG: &str = "providers: {}\nmodels: {}\n";
+
+/// 1.5.3 durable-by-default at the BOOT path: with NO `config:` section and NO `BUSBAR_CONFIG_OVERLAY`,
+/// `load_config_from_disk` resolves a writable overlay next to config.yaml and reports the config
+/// mutable. RED-before-GREEN: pre-1.5.3 an unset env var meant `overlay_path: None` (RAM-only).
+#[test]
+fn boot_default_config_resolves_a_durable_overlay_next_to_config() {
+    let (dir, config_path, _providers_path) = boot_config_dir("durable", BOOT_MINIMAL_CONFIG);
+    // Note: this test does not set BUSBAR_CONFIG_OVERLAY; the default must still be durable.
+    let loaded = load_config_from_disk(&config_path, None, false, crate::config::EnvSubst::Strict)
+        .expect("a mutable default config must boot");
+    assert!(!loaded.config_locked, "default config is mutable");
+    assert_eq!(
+        loaded.overlay_path.as_deref(),
+        Some(dir.join("busbar-overlay.json").as_path()),
+        "durable-by-default: overlay next to config.yaml"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 1.5.3 BOOT INVARIANT: a mutable config that explicitly disables the overlay REFUSES TO BOOT, with an
+/// actionable message (writable overlay OR `config.locked: true`). RED-before-GREEN: pre-1.5.3 nothing
+/// enforced "mutable XOR writable overlay".
+#[test]
+fn boot_mutable_with_overlay_disabled_refuses_to_boot() {
+    let cfg = "providers: {}\nmodels: {}\nconfig:\n  locked: false\n  overlay: false\n";
+    let (dir, config_path, _p) = boot_config_dir("no-backend", cfg);
+    let Err(err) =
+        load_config_from_disk(&config_path, None, false, crate::config::EnvSubst::Strict)
+    else {
+        panic!("mutable + overlay disabled must refuse to boot");
+    };
+    assert!(
+        err.contains("config.locked") || err.contains("no writable overlay"),
+        "the boot refusal must be actionable: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 1.5.3: a LOCKED config boots with NO overlay backend (mutations are refused at runtime).
+#[test]
+fn boot_locked_config_has_no_overlay() {
+    let cfg = "providers: {}\nmodels: {}\nconfig:\n  locked: true\n";
+    let (dir, config_path, _p) = boot_config_dir("locked", cfg);
+    let loaded = load_config_from_disk(&config_path, None, false, crate::config::EnvSubst::Strict)
+        .expect("a locked config boots");
+    assert!(loaded.config_locked);
+    assert!(loaded.overlay_path.is_none(), "locked ⇒ no overlay backend");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 1.5.3 providers migration (`BUSBAR_PROVIDERS` → `providers_file:`): the top-level `providers_file:`
+/// pointer names the catalog (resolved relative to config.yaml), honored with NO env var; and an
+/// explicit override (the deprecated env var, or a reload's live path) still wins. RED-before-GREEN:
+/// pre-1.5.3 the catalog path came ONLY from `BUSBAR_PROVIDERS` / the hardcoded default — a config-file
+/// pointer had no code path.
+#[test]
+fn boot_providers_file_pointer_is_honored_and_override_wins() {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-providers-file-{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let config_path = dir.join("config.yaml");
+    // The catalog lives at a NON-default name, reachable only via the pointer.
+    let catalog = dir.join("catalog.yaml");
+    std::fs::write(&catalog, "{}\n").unwrap();
+    std::fs::write(
+        &config_path,
+        "providers: {}\nmodels: {}\nproviders_file: catalog.yaml\n",
+    )
+    .unwrap();
+
+    // No override → the `providers_file:` pointer is used.
+    let loaded = load_config_from_disk(&config_path, None, false, crate::config::EnvSubst::Strict)
+        .expect("providers_file pointer resolves");
+    assert_eq!(
+        loaded.providers_path, catalog,
+        "the providers_file pointer must be honored"
+    );
+
+    // An explicit override (deprecated BUSBAR_PROVIDERS, or a reload's live path) wins.
+    let other = dir.join("other-catalog.yaml");
+    std::fs::write(&other, "{}\n").unwrap();
+    let loaded2 = load_config_from_disk(
+        &config_path,
+        Some(&other),
+        false,
+        crate::config::EnvSubst::Strict,
+    )
+    .expect("override resolves");
+    assert_eq!(
+        loaded2.providers_path, other,
+        "the override wins over providers_file"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
