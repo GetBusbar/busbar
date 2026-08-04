@@ -3284,21 +3284,21 @@ pub(crate) fn build_app_from_config(
         app_config_version,
         config::HookStage::Request,
     );
-    let tap_hooks_route = hooks::resolve_tap_hooks(
+    let tap_hooks_candidate = hooks::resolve_tap_hooks(
         &cfg.hooks,
         &cfg.global_hooks,
         &hook_env,
         app_config_version,
         config::HookStage::Candidate,
     );
-    let tap_hooks_attempt = hooks::resolve_tap_hooks(
+    let tap_hooks_routing = hooks::resolve_tap_hooks(
         &cfg.hooks,
         &cfg.global_hooks,
         &hook_env,
         app_config_version,
         config::HookStage::Routing,
     );
-    let tap_hooks_completion = hooks::resolve_tap_hooks(
+    let tap_hooks_response = hooks::resolve_tap_hooks(
         &cfg.hooks,
         &cfg.global_hooks,
         &hook_env,
@@ -3363,9 +3363,9 @@ pub(crate) fn build_app_from_config(
         auth: auth_mw.clone(),
         rewrite_hooks,
         tap_hooks,
-        tap_hooks_route,
-        tap_hooks_attempt,
-        tap_hooks_completion,
+        tap_hooks_candidate,
+        tap_hooks_routing,
+        tap_hooks_response,
         global_gates,
         hook_env: hook_env.clone(),
         hook_registry: cfg.hooks.clone(),

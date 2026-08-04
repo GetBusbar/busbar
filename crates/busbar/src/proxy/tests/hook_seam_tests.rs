@@ -628,7 +628,7 @@ async fn completion_tap_fires_synthetic_rejected_by_auth() {
         .build();
     Arc::get_mut(&mut app)
         .expect("sole owner")
-        .tap_hooks_completion = vec![tap];
+        .tap_hooks_response = vec![tap];
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -664,7 +664,7 @@ async fn completion_tap_status_is_protocol_native_gemini_400() {
         .build();
     Arc::get_mut(&mut app)
         .expect("sole owner")
-        .tap_hooks_completion = vec![tap];
+        .tap_hooks_response = vec![tap];
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -705,7 +705,7 @@ async fn completion_tap_fires_synthetic_rejected_by_gate() {
         .build();
     {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
-        inner.tap_hooks_completion = vec![tap];
+        inner.tap_hooks_response = vec![tap];
         inner.global_gates = vec![(0u16, canned_gate(Canned::Reject(451, "denied"), "denier"))];
     }
     let resp = fire(app, 1).await;
@@ -731,7 +731,7 @@ async fn completion_tap_reports_ok_outcome() {
         .build();
     Arc::get_mut(&mut app)
         .expect("sole owner")
-        .tap_hooks_completion = vec![tap];
+        .tap_hooks_response = vec![tap];
     let resp = fire(app, 1).await;
     assert_eq!(resp.status().as_u16(), 200);
     let payload = wait_for_tap_body(&cap).await;
@@ -756,7 +756,7 @@ async fn attempt_tap_carries_attempt_story() {
         .build();
     Arc::get_mut(&mut app)
         .expect("sole owner")
-        .tap_hooks_attempt = vec![tap];
+        .tap_hooks_routing = vec![tap];
     let resp = fire(app, 1).await;
     assert_eq!(resp.status().as_u16(), 200);
     let payload = wait_for_tap_body(&cap).await;
@@ -785,7 +785,9 @@ async fn route_tap_reports_surviving_candidates() {
         ))
         .pool("p", &[(0, 1)])
         .build();
-    Arc::get_mut(&mut app).expect("sole owner").tap_hooks_route = vec![tap];
+    Arc::get_mut(&mut app)
+        .expect("sole owner")
+        .tap_hooks_candidate = vec![tap];
     let resp = fire(app, 1).await;
     assert_eq!(resp.status().as_u16(), 200);
     let payload = wait_for_tap_body(&cap).await;
@@ -2022,7 +2024,7 @@ async fn same_request_id_joins_gate_decision_and_completion_tap() {
         .build();
     {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
-        inner.tap_hooks_completion = vec![tap];
+        inner.tap_hooks_response = vec![tap];
         inner.global_gates = vec![(
             0u16,
             ResolvedPolicy::Policy {
@@ -2114,7 +2116,7 @@ async fn request_id_is_recorded_as_native_u64_tracing_field() {
         .build();
     Arc::get_mut(&mut app)
         .expect("sole owner")
-        .tap_hooks_completion = vec![tap];
+        .tap_hooks_response = vec![tap];
 
     let seen = Arc::new(StdMutex::new(None));
     let capture = RequestIdSpanCapture(seen.clone());

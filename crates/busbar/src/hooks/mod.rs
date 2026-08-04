@@ -77,7 +77,7 @@ pub(crate) struct RequestedSignals(u64);
 
 impl RequestedSignals {
     /// A single `u64` AND + compare — the same order of magnitude as the pre-existing
-    /// `app.tap_hooks_completion.is_empty()` early-out this design generalizes.
+    /// `app.tap_hooks_response.is_empty()` early-out this design generalizes.
     #[inline]
     pub(crate) fn wants(self, s: Signal) -> bool {
         debug_assert!(
