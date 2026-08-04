@@ -146,7 +146,7 @@ pub(crate) struct AuditLog {
     seq: std::sync::atomic::AtomicU64,
     /// The durable sink, attached once at boot when a durable store is configured. Best-effort: a
     /// write-through failure logs a warning but NEVER fails the admin mutation (the RAM ring still
-    /// holds the entry; the periodic state snapshot is a second safety net). `None` = ephemeral.
+    /// holds the entry, and the write-through backfills the skipped seq on a later success). `None` = ephemeral.
     sink: std::sync::Mutex<Option<std::sync::Arc<dyn busbar_api::Store>>>,
     /// The highest CONTIGUOUS seq known to be durably persisted (0 = none yet). The write-through
     /// backfills from `durable_high + 1` up to each new entry's seq, so a TRANSIENT `append_audit`
@@ -519,7 +519,8 @@ impl AuditLog {
                         "durable audit write-through skipped: this process's ring is not yet \
                          reconciled with the durable tail (the boot restore did not read or verify \
                          it, and this retry read failed too). The entry is retained in the RAM ring \
-                         + state snapshot; writing now could overwrite durable history."
+                         (write-through backfills it on a later success); writing now could \
+                         overwrite durable history."
                     );
                     return;
                 }
@@ -553,7 +554,7 @@ impl AuditLog {
                     "durable audit log has another writer — detaching this node's durable sink. It \
                      supports exactly ONE writer; two nodes sharing it overwrite each other's \
                      entries and break the hash chain, which the next boot reports as tampering. \
-                     This node keeps auditing to its in-memory ring and state snapshot."
+                     This node keeps auditing to its in-memory ring (ephemeral)."
                 );
                 *self.sink.lock().unwrap_or_else(|e| e.into_inner()) = None;
                 return;
@@ -574,7 +575,7 @@ impl AuditLog {
                 seq = new_seq,
                 durable_floor = start,
                 "durable audit write-through skipped: this entry's seq predates the recovered \
-                 durable floor (it is retained in the RAM ring + state snapshot)"
+                 durable floor (it is retained in the RAM ring)"
             );
             return;
         }
@@ -616,18 +617,22 @@ impl AuditLog {
         }
     }
 
-    /// Export the retained ring, oldest first — the persistence snapshotter's input (D3).
+    /// Export the retained ring, oldest first. TEST-ONLY: the store-or-RAM rule removed the file
+    /// snapshotter that used to consume this; it now backs the in-process restart-simulation tests
+    /// (a fresh `AuditLog` re-seeded from this process's ring) alongside `load`.
+    #[cfg(test)]
     pub(crate) fn export(&self) -> Vec<AuditEntry> {
         let q = self.entries.lock().unwrap_or_else(|e| e.into_inner());
         q.iter().cloned().collect()
     }
 
-    /// Seed the ring from a persisted snapshot (boot restore). Replaces the current contents and
-    /// resumes the sequence AFTER the highest restored seq, so post-restart entries chain onto the
-    /// restored history without seq reuse. FLOOR semantics (fetch_max, never store): a file
-    /// snapshot can lag the durable store, and the durable write-through is keyed on `seq` — a
-    /// blind store here would rewind the counter below the store's max and the next mutation would
-    /// silently OVERWRITE durable history. The snapshot only ever RAISES the counter.
+    /// Seed the ring from an in-process snapshot. TEST-ONLY: the durable store is production's single
+    /// restore source (`restore_from_store`); this remains as the in-process restart-simulation seam
+    /// the durability tests drive. Replaces the current contents and resumes the sequence AFTER the
+    /// highest restored seq, so post-restart entries chain on without seq reuse. FLOOR semantics
+    /// (fetch_max, never store): a lagging snapshot must never rewind the counter below the store's
+    /// max, since the durable write-through is keyed on `seq` and would otherwise OVERWRITE history.
+    #[cfg(test)]
     pub(crate) fn load(&self, mut entries: Vec<AuditEntry>) {
         // `load` IS the seeding path by definition: whatever it is handed came from OUTSIDE this
         // process's append stream, even when the `Vec` was produced by this process's OWN `export()`
@@ -1484,6 +1489,43 @@ mod tests {
         );
     }
 
+    /// STORE-OR-RAM (1.5.3): the audit log is STATEFUL, so its ONE durable home is the configured
+    /// governance store — never a side-car state file. The `BUSBAR_STATE_FILE` snapshot that used to
+    /// carry a DUAL audit source (store + file, reconciled by `should_load_audit_from_file_snapshot`)
+    /// is gone, so this pins the single source directly: entries written under a durable store survive
+    /// a simulated restart (a fresh `AuditLog` restoring from the SAME store, with no file to read),
+    /// and under the memory store the log is ephemeral by design — a fresh log restores nothing.
+    #[test]
+    fn audit_durable_home_is_the_store_and_nothing_else() {
+        // Durable store: the audit survives a restart THROUGH THE STORE alone.
+        let durable: Arc<dyn Store> = Arc::new(DurableTestStore::new());
+        let p1 = AuditLog::new();
+        p1.set_sink(durable.clone());
+        p1.record_by("hook.register", "hook:a", OUTCOME_APPLIED, "admin");
+        p1.record_by("plugin.install", "plugin:x", OUTCOME_APPLIED, "admin");
+        let p2 = AuditLog::new(); // "process 2": a fresh ring, no file snapshot to consult
+        assert_eq!(
+            p2.restore_from_store(durable.as_ref())
+                .expect("the chain verifies"),
+            2,
+            "a durable store is the SINGLE source that carries audit across a restart"
+        );
+
+        // Memory store: ephemeral BY DESIGN — nothing persists, so a restart restores nothing. With
+        // the state file removed there is no longer any file that could resurrect the ephemeral log.
+        let mem: Arc<dyn Store> = Arc::new(busbar_store_memory::MemoryStore::new());
+        let m1 = AuditLog::new();
+        m1.set_sink(mem.clone());
+        m1.record_by("hook.register", "hook:a", OUTCOME_APPLIED, "admin");
+        let m2 = AuditLog::new();
+        assert_eq!(
+            m2.restore_from_store(mem.as_ref()).expect("empty restore"),
+            0,
+            "with the memory store the audit log is ephemeral — no file backs it after the state \
+             file removal"
+        );
+    }
+
     /// A TAMPERED durable record is rejected on restore (tamper-evidence survives the restart): if a
     /// stored entry's field is altered without recomputing the chain, `restore_from_store` returns an
     /// error rather than silently loading a broken chain.
@@ -1797,7 +1839,7 @@ mod tests {
         // The entry is still audited locally — detaching the durable sink is not losing the record.
         assert!(
             node_a.list(10).iter().any(|e| e.action == "hook.delete"),
-            "the mutation stays in the RAM ring and the state snapshot"
+            "the mutation stays in the RAM ring (ephemeral)"
         );
     }
 

@@ -765,10 +765,6 @@ impl LaneRuntime for HealthState {
         }
     }
 
-    fn restore_health(&self, restored: &[LaneHealthSnapshot]) {
-        self.restore_health_impl(restored);
-    }
-
     fn export_health(&self) -> Vec<LaneHealthSnapshot> {
         self.lanes
             .iter()

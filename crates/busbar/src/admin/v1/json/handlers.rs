@@ -2324,8 +2324,8 @@ pub(crate) struct RestartReq {
 /// `POST /api/v1/admin/restart` — apply the restart-scoped settings (`listen`, `admin_listen`,
 /// `tls`, `admin_tls`, `admin_insecure`, `store`) by restarting, so an operator never needs a shell.
 ///
-/// This drains through the SAME path a signal takes, so the final budget flush, the state snapshot
-/// and the tracing shutdown all happen exactly as they do on SIGTERM. It is deliberately not an
+/// This drains through the SAME path a signal takes, so the final budget flush and the tracing
+/// shutdown happen exactly as they do on SIGTERM. It is deliberately not an
 /// in-process rebuild: the durable audit's sequence counters advance only via `fetch_max` so history
 /// cannot be rewound, and only a process boundary resets them.
 ///
@@ -3079,9 +3079,9 @@ pub(crate) async fn patch_hook_settings(
             )))
         }
     };
-    // BOUND the settings map. It is persisted verbatim into the state file AND re-sent to the hook
+    // BOUND the settings map. It is persisted verbatim into the config overlay AND re-sent to the hook
     // as the configure preamble on EVERY (re)connection, so an unbounded map amplifies both the
-    // snapshot size and per-reconnect wire traffic. Cap the serialized size and the key count as
+    // overlay size and per-reconnect wire traffic. Cap the serialized size and the key count as
     // defense-in-depth (admin-gated, but a compromised hooks-register token should not be able to
     // bloat the durable state / reconnect path). The caps are far past any real hook's settings.
     if let Err(e) = crate::admin::v1::service::validate_hook_settings_size(&req.settings) {

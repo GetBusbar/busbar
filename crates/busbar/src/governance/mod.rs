@@ -884,7 +884,7 @@ pub(crate) use busbar_store_memory::MemoryStore;
 /// The write-behind flusher: on a fixed cadence (and once more on graceful shutdown) pushes the
 /// dirty in-memory budget cells, the accumulated `pending_metering` rows, AND the durable audit log's
 /// pending write-through (`admin::audit::AuditLog::flush_durable`) to the durable store off the
-/// request hot path. Mirrors the D3 `state_persist::spawn_snapshotter` shape — a spawned loop
+/// request hot path. The canonical spawned-flusher shape in the crate — a spawned loop
 /// that ticks, does the durable write, and runs one FINAL flush on the shutdown signal so a graceful
 /// stop loses nothing. The in-memory budget cells stay AUTHORITATIVE for enforcement; metering cells
 /// are authoritative for nothing (the store is their only consumer). `flush_budgets` and

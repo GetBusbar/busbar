@@ -94,50 +94,13 @@ impl VersionLog {
     }
 }
 
-/// The PERSISTED form of a version — unlike the API list view (which `serde(skip)`s the
-/// snapshots), persistence must carry them: they are what rollback restores after a restart.
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-pub(crate) struct PersistedVersion {
-    pub(crate) version: u64,
-    pub(crate) ts: u64,
-    pub(crate) principal: String,
-    pub(crate) summary: String,
-    pub(crate) hook_registry: HashMap<String, crate::config::HookCfg>,
-    pub(crate) global_hooks: Vec<String>,
-}
-
-impl VersionLog {
-    /// Export the retained history, oldest first, WITH snapshots (D3 persistence input).
-    pub(crate) fn export(&self) -> Vec<PersistedVersion> {
-        let q = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-        q.iter()
-            .map(|v| PersistedVersion {
-                version: v.version,
-                ts: v.ts,
-                principal: v.principal.clone(),
-                summary: v.summary.clone(),
-                hook_registry: v.hook_registry.clone(),
-                global_hooks: v.global_hooks.clone(),
-            })
-            .collect()
-    }
-
-    /// Seed the history from a persisted snapshot (boot restore), replacing current contents.
-    pub(crate) fn load(&self, versions: Vec<PersistedVersion>) {
-        let mut q = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-        q.clear();
-        for v in versions {
-            q.push_back(ConfigVersion {
-                version: v.version,
-                ts: v.ts,
-                principal: v.principal,
-                summary: v.summary,
-                hook_registry: v.hook_registry,
-                global_hooks: v.global_hooks,
-            });
-        }
-    }
-}
+// STORE-OR-RAM (1.5.3): the version-history ring is RAM-only. It is NOT persisted to a side-car
+// state file (the `BUSBAR_STATE_FILE` snapshot that used to carry `export`/`load` + `PersistedVersion`
+// is gone). On boot the ring is re-seeded at its floor (`record(0, "boot", …)` in `main::run`) from
+// the live, overlay-merged config; the durable config that backs "fix the config and restart"
+// recovery lives in the config-overlay persistence, not here. Durable cross-restart rollback to a
+// PRE-restart intermediate version would need a store seam, which does not exist over the plugin
+// wire ABI today (see the 1.5.3 report) — recommended as a deliberate follow-up, not a refactor rider.
 
 #[cfg(test)]
 mod tests {

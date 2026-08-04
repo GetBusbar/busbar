@@ -1841,22 +1841,6 @@ fn audit_restore_read_hiccup_matches_only_its_own_prefix() {
     ));
 }
 
-/// `should_load_audit_from_file_snapshot`: the file snapshot is the LAST resort — it must be
-/// skipped when the durable store already restored the audit ring (a stale file snapshot would
-/// clobber the store's authoritative, more-complete history and rewind the sequence), and used
-/// when the store did not provide it.
-#[test]
-fn audit_file_snapshot_loads_only_when_store_did_not_restore() {
-    assert!(
-        should_load_audit_from_file_snapshot(false),
-        "no durable restore happened -> the file snapshot is the only source, must load"
-    );
-    assert!(
-        !should_load_audit_from_file_snapshot(true),
-        "the durable store already restored the ring -> a stale file snapshot must NOT clobber it"
-    );
-}
-
 /// `recv_shutdown`: a `-> ()` mutant would resolve immediately regardless of the channel — the
 /// real function must genuinely BLOCK until something is sent (or the sender is dropped), then
 /// resolve promptly once it is.
