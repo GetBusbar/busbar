@@ -248,7 +248,11 @@ async fn begin(app: &App, method: &str, refresh: bool) -> Response {
         .filter(|m| m.has_button)
     else {
         // Unknown / headless-only method — nothing to begin in the browser.
-        return (StatusCode::NOT_FOUND, "no such login method").into_response();
+        return error_page(
+            StatusCode::NOT_FOUND,
+            "Sign-in method not found",
+            "That sign-in method isn't available here. Head back and choose one of the listed options.",
+        );
     };
     let redirect_uri = format!("{}/auth/token", app.public_url.as_deref().unwrap_or(""));
     let code_verifier = random_b64url(32);
@@ -308,11 +312,11 @@ async fn begin(app: &App, method: &str, refresh: bool) -> Response {
             resp
         }
         // A verify-only / misbehaving module fails closed here.
-        _ => (
+        _ => error_page(
             StatusCode::BAD_GATEWAY,
-            "login method could not start an authorization",
-        )
-            .into_response(),
+            "Sign-in unavailable",
+            "This sign-in method couldn't be started right now. Please try again in a moment.",
+        ),
     }
 }
 
@@ -327,7 +331,11 @@ async fn callback(
 ) -> Response {
     // Parse the cookie; absent ⇒ 400 (no login in flight).
     let Some(cookie) = cookie_raw.and_then(|raw| LoginCookie::decode(&raw)) else {
-        return bad_request("no login in progress (missing or invalid login cookie)");
+        return error_page(
+            StatusCode::BAD_REQUEST,
+            "Sign-in session expired",
+            "Your sign-in session expired or was already used. Head back and start again.",
+        );
     };
     // CSRF: the returned `state` MUST equal the cookie's, checked BEFORE any token exchange. Compared
     // in constant time (the state is anti-CSRF secret material minted per login).
@@ -336,7 +344,7 @@ async fn callback(
         .map(|s| busbar_api::constant_time_eq(s, &cookie.state))
         .unwrap_or(false);
     if !state_ok {
-        return clear_and(bad_request("state mismatch"));
+        return clear_and(security_check_failed());
     }
     let Some(m) = app
         .login_methods
@@ -344,7 +352,12 @@ async fn callback(
         .get(&cookie.method)
         .filter(|m| m.has_button)
     else {
-        return clear_and(bad_request("unknown login method"));
+        return clear_and(error_page(
+            StatusCode::BAD_REQUEST,
+            "Sign-in method not found",
+            "That sign-in method is no longer available. Head back and choose one of the listed \
+             options.",
+        ));
     };
     let redirect_uri = format!("{}/auth/token", app.public_url.as_deref().unwrap_or(""));
 
@@ -367,19 +380,23 @@ async fn callback(
             }
             LoginOutcome::Exchange(hop) => {
                 // Execute the hop, CORE-injecting the client_secret VALUE into the named form field.
-                let (status, body) = match execute_hop(
-                    http,
-                    &hop,
-                    m.client_secret.as_ref().map(|r| r.expose_secret().as_str()),
-                    &m.allowed_hosts,
-                )
-                .await
-                {
-                    Ok(v) => v,
-                    Err(_) => {
-                        return clear_and(bad_gateway("the identity provider could not be reached"))
-                    }
-                };
+                let (status, body) =
+                    match execute_hop(
+                        http,
+                        &hop,
+                        m.client_secret.as_ref().map(|r| r.expose_secret().as_str()),
+                        &m.allowed_hosts,
+                    )
+                    .await
+                    {
+                        Ok(v) => v,
+                        Err(_) => return clear_and(error_page(
+                            StatusCode::BAD_GATEWAY,
+                            "Couldn't reach your provider",
+                            "We couldn't reach your identity provider to finish signing you in. \
+                             Please try again shortly.",
+                        )),
+                    };
                 // NONCE BINDING (core's job — the ABI CompleteLogin has no nonce field): if the hop
                 // body carries an id_token, its `nonce` claim MUST equal the cookie nonce BEFORE any
                 // identity is trusted. A mismatch is a rejected callback with NO identity established.
@@ -388,23 +405,36 @@ async fn callback(
                         // Constant-time compare (the nonce is per-login secret material).
                         Some(n) if busbar_api::constant_time_eq(&n, &cookie.nonce) => {}
                         _ => {
-                            return clear_and(bad_request("id_token nonce mismatch"));
+                            return clear_and(security_check_failed());
                         }
                     }
                 }
                 cl.token_response = Some(LoginHttpResponse { status, body });
             }
             LoginOutcome::Reject => {
-                return clear_and((StatusCode::UNAUTHORIZED, "login rejected").into_response());
+                return clear_and(error_page(
+                    StatusCode::UNAUTHORIZED,
+                    "Sign-in was declined",
+                    "Your identity provider declined this sign-in. Check with your Busbar admin if \
+                     this keeps happening.",
+                ));
             }
             // A module must not (re)authorize or (re)prompt on the callback path — fail closed.
             LoginOutcome::Authorize(_) | LoginOutcome::Prompt(_) => {
-                return clear_and(bad_gateway("login method misbehaved on callback"));
+                return clear_and(error_page(
+                    StatusCode::BAD_GATEWAY,
+                    "Sign-in unavailable",
+                    "Something went wrong completing this sign-in. Please head back and try again.",
+                ));
             }
         }
     }
     let Some(principal) = principal else {
-        return clear_and(bad_gateway("login did not complete"));
+        return clear_and(error_page(
+            StatusCode::BAD_GATEWAY,
+            "Sign-in didn't finish",
+            "This sign-in didn't complete. Please head back and try again.",
+        ));
     };
 
     // Feed the verified identity through the SAME admission + mint seam as the headless POST and the
@@ -434,28 +464,37 @@ fn issue_and_render(
         principal,
         resolved: None,
     };
-    let (principal, team, pools) = match resolve_exchange(&verdict, &app.role_bindings) {
-        Ok(v) => v,
-        Err(_) => {
-            return (
+    let (principal, team, pools) =
+        match resolve_exchange(&verdict, &app.role_bindings) {
+            Ok(v) => v,
+            Err(_) => return error_page(
                 StatusCode::FORBIDDEN,
-                "no self-serve grant for this identity",
-            )
-                .into_response()
-        }
-    };
+                "No access yet",
+                "Your account isn't granted a self-serve key yet. Ask your Busbar admin to assign \
+                 you a role.",
+            ),
+        };
     let Some(gov) = app.governance.clone() else {
-        return bad_gateway("governance disabled: cannot issue keys");
+        return error_page(
+            StatusCode::BAD_GATEWAY,
+            "Key issuing unavailable",
+            "Busbar can't issue keys right now. Please contact your Busbar admin.",
+        );
     };
     let ttl = Duration::from_secs(app.self_key_ttl_secs);
     // Auto-provision the `user:<sub>` leaf under `team` (from the team's `child_default`) before the
     // mint, so the browser-issued key is usable immediately (no 429 MissingGroup).
     let provisioner = Arc::new(HandleProvisioner::new(handle.clone(), principal.id.clone()));
     let keys = DeterministicEd25519Keys::new(gov, team, pools, provisioner);
-    let issued = match issue_key(&keys, principal, ttl, refresh) {
-        Ok(k) => k,
-        Err(_) => return bad_gateway("could not issue a key"),
-    };
+    let issued =
+        match issue_key(&keys, principal, ttl, refresh) {
+            Ok(k) => k,
+            Err(_) => return error_page(
+                StatusCode::BAD_GATEWAY,
+                "Couldn't issue your key",
+                "We couldn't issue your key this time. Please head back and try again in a moment.",
+            ),
+        };
     let base_url = app.public_url.as_deref().unwrap_or("");
     let page = render_key_issued(
         &principal.id,
@@ -479,7 +518,11 @@ pub(crate) async fn credential_submit(
     form: Vec<(String, String)>,
 ) -> Response {
     let Some(cookie) = LoginCookie::decode(&cookie_raw) else {
-        return clear_and(bad_request("no login in progress (invalid login cookie)"));
+        return clear_and(error_page(
+            StatusCode::BAD_REQUEST,
+            "Sign-in session expired",
+            "Your sign-in session expired or was already used. Head back and start again.",
+        ));
     };
     // CSRF: the form's `__state` must equal the cookie's (constant-time).
     let submitted_state = form
@@ -488,7 +531,7 @@ pub(crate) async fn credential_submit(
         .map(|(_, v)| v.as_str())
         .unwrap_or("");
     if !busbar_api::constant_time_eq(submitted_state, &cookie.state) {
-        return clear_and(bad_request("state mismatch"));
+        return clear_and(security_check_failed());
     }
     let Some(m) = app
         .login_methods
@@ -496,11 +539,20 @@ pub(crate) async fn credential_submit(
         .get(&cookie.method)
         .filter(|m| m.has_button)
     else {
-        return clear_and(bad_request("unknown login method"));
+        return clear_and(error_page(
+            StatusCode::BAD_REQUEST,
+            "Sign-in method not found",
+            "That sign-in method is no longer available. Head back and choose one of the listed \
+             options.",
+        ));
     };
     // Only a Credential method may complete via the form POST.
     if m.login_kind != busbar_api::LoginKind::Credential {
-        return clear_and(bad_request("this login method is not a credential method"));
+        return clear_and(error_page(
+            StatusCode::BAD_REQUEST,
+            "Sign-in unavailable",
+            "This sign-in method can't be completed here. Please head back and start again.",
+        ));
     }
     // Build the submitted map (every field EXCEPT the CSRF token), Redacted the moment it is held.
     let submitted: Vec<(String, busbar_api::Redacted<String>)> = form
@@ -516,9 +568,19 @@ pub(crate) async fn credential_submit(
     let principal = match m.module.complete_login(&cl) {
         LoginOutcome::Identify(p) => p,
         LoginOutcome::Reject => {
-            return clear_and((StatusCode::UNAUTHORIZED, "login rejected").into_response())
+            return clear_and(error_page(
+                StatusCode::UNAUTHORIZED,
+                "Sign-in was declined",
+                "Those credentials weren't accepted. Please check them and try again.",
+            ))
         }
-        _ => return clear_and(bad_gateway("credential login did not complete")),
+        _ => {
+            return clear_and(error_page(
+                StatusCode::BAD_GATEWAY,
+                "Sign-in didn't finish",
+                "This sign-in didn't complete. Please head back and try again.",
+            ))
+        }
     };
     clear_and(issue_and_render(
         app,
@@ -837,11 +899,17 @@ fn pct_decode(s: &str) -> String {
 fn html_no_store(body: String) -> Response {
     ([(header::CACHE_CONTROL, "no-store")], Html(body)).into_response()
 }
-fn bad_request(msg: &'static str) -> Response {
-    (StatusCode::BAD_REQUEST, msg).into_response()
-}
-fn bad_gateway(msg: &'static str) -> Response {
-    (StatusCode::BAD_GATEWAY, msg).into_response()
+
+/// The shared branded error for a failed anti-CSRF / nonce check (a mismatched `state` on the
+/// callback or credential POST, or a mismatched id_token `nonce`). One copy for every "the security
+/// check didn't match" case — honest without hinting at WHICH check failed. HTTP 400.
+fn security_check_failed() -> Response {
+    error_page(
+        StatusCode::BAD_REQUEST,
+        "Sign-in couldn't be verified",
+        "We couldn't verify this sign-in (the security check didn't match). Please head back and \
+         start again.",
+    )
 }
 
 // ── rendering (the login HTML template, scaffolds stripped) ──────────────────────────────────────
@@ -912,6 +980,30 @@ impl ProviderBrand {
 }
 
 const CHEVRON: &str = r##"<svg class="chev" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>"##;
+
+/// The alert glyph shown on a branded error page (a filled roundel with an exclamation).
+const ERR_ICON: &str = r##"<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 4.5v4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="8" cy="11.4" r="1.05" fill="currentColor"/></svg>"##;
+
+/// The left-arrow shown on the "Back to sign in" link of a branded error page.
+const BACK_ARROW: &str = r##"<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M9.5 4l-4 4 4 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M5.5 8H12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>"##;
+
+/// Render a friendly, BRANDED error page for the hosted browser-login flow: the same card chrome as
+/// the sign-in / key-issued pages (brand lockup, shared CSS, dark-mode aware), an alert glyph, a
+/// human-readable heading + message, and a "Back to sign in" link to `GET /auth/token`. EVERY
+/// browser-flow failure (chooser / begin / callback / credential POST) routes through here with an
+/// honest, secret-free message and the right HTTP status. The HEADLESS JSON `POST /auth/token` path
+/// keeps its `{"error":…}` body (see `exchange::refusal`) — this is the browser branch ONLY.
+fn error_page(status: StatusCode, heading: &str, message: &str) -> Response {
+    let body = page(&format!(
+        "<div class=\"brand\"><span class=\"glyph\">{GLYPH}</span><span class=\"wordmark\">Busbar</span></div>\
+         <div class=\"errhead\"><span class=\"erricon\">{ERR_ICON}</span><h1 style=\"margin:0;\">{heading}</h1></div>\
+         <p class=\"sub\">{message}</p>\
+         <a class=\"backlink\" href=\"/auth/token\">{BACK_ARROW}Back to sign in</a>",
+        heading = esc(heading),
+        message = esc(message),
+    ));
+    (status, [(header::CACHE_CONTROL, "no-store")], Html(body)).into_response()
+}
 
 /// Render the CHOOSER page (sign-in). One anchor per `(method-name, brand)`; `base_url` shown in the
 /// footer (verbatim, no `/v1`). Zero buttons → a "no browser login configured" message.
