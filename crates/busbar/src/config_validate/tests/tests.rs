@@ -1731,25 +1731,22 @@ fn test_1_5_2_keys_chain_without_mint_path_is_boot_error() {
 /// `auth.signing_key` is a BOOT ERROR — busbar no longer auto-generates a signing key, so the
 /// built-in `keys` verifier has nothing to verify busbar-signed tokens with and the data plane
 /// would reject every request. Isolates the signing-key rule from the mint-path rule by supplying a
-/// usable mint path (an `admin-tokens` entry carrying a `token:`). Setting `signing_key` clears it.
-/// RED on pre-1.5.1 code: busbar auto-generated a key at boot, so this validated clean.
+/// usable mint path: an explicit OPEN admin (`admin_auth: []`), the one structural mint path that
+/// validates under BOTH the default build and `--no-default-features` (where the `admin-tokens`
+/// module is compiled out, so a configured admin token would itself be a second, unrelated error —
+/// see `make_auth_chain`). Setting `signing_key` clears the error. RED on pre-1.5.1 code: busbar
+/// auto-generated a key at boot, so this validated clean.
 #[test]
 fn test_keys_chain_without_signing_key_is_boot_error() {
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
 
-    // A usable admin mint path so the mint-path rule does NOT fire — this test isolates signing_key.
-    let mint_path = || {
-        let mut admin = crate::config::AuthChainEntry::bare(crate::config::ADMIN_TOKENS_MODULE);
-        admin.token = Some(config::SecretRef::env("BUSBAR_ADMIN_TOKEN"));
-        admin
-    };
-
+    // RED: keys verifier + a usable mint path (open admin) but NO signing_key.
     let mut auth = crate::config::AuthCfg::default_none();
     auth.chain = vec![crate::config::AuthChainEntry::bare(
         crate::config::KEYS_MODULE,
     )];
-    auth.admin_auth = vec![mint_path()];
+    auth.admin_auth = vec![]; // explicit OPEN admin ⇒ usable mint path, so the mint-path rule stays quiet
     assert!(
         auth.signing_key.is_none(),
         "the RED case sets no signing_key"
@@ -1762,17 +1759,18 @@ fn test_keys_chain_without_signing_key_is_boot_error() {
         "expected the signing-key requirement boot error; got: {errs:?}"
     );
 
-    // GREEN: setting auth.signing_key clears it (mint path already present).
+    // GREEN: setting auth.signing_key clears it (open-admin mint path already present).
     let mut auth_ok = crate::config::AuthCfg::default_none();
     auth_ok.chain = vec![crate::config::AuthChainEntry::bare(
         crate::config::KEYS_MODULE,
     )];
-    auth_ok.admin_auth = vec![mint_path()];
+    auth_ok.admin_auth = vec![];
     auth_ok.signing_key = Some(config::SecretRef::env("BUSBAR_SIGNING_KEY"));
     cfg.auth = Some(auth_ok);
     assert!(
         validate(&cfg).is_ok(),
-        "a keys chain WITH signing_key + a usable mint path must validate"
+        "a keys chain WITH signing_key + a usable mint path must validate; got: {:?}",
+        validate(&cfg)
     );
 }
 
