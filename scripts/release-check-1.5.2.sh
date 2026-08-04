@@ -723,7 +723,9 @@ run_tokenx_oidc_post() {
   local ISS="https://idp.gate.local/" AUD="gate-audience" SUB="alice"
   local jwks_pid; jwks_pid="$(oidc_start_https_jwks "$B_JWKS")"
   local JWKS_URL="https://127.0.0.1:${B_JWKS}/jwks.json"
-  local CA_PEM; CA_PEM="$(sed 's/^/        /' "${OIDC_WORK}/tls.crt")"   # indent for YAML block scalar
+  # 12-space indent: the `ca_cert_pem: |` key below sits at 10 spaces, so block-scalar CONTENT must be
+  # indented MORE than the key (>=12) on every line, or YAML parses the PEM lines as new mapping keys.
+  local CA_PEM; CA_PEM="$(sed 's/^/            /' "${OIDC_WORK}/tls.crt")"
 
   "$BUSBAR_BIN" --generate-signing-key >"${work}/signing.key" 2>/dev/null
   local pdir="${work}/plugins"
@@ -1269,7 +1271,9 @@ EOF
   local ISS="https://idp.gate.local/" AUD="gate-admin-audience"
   local jwks_pid; jwks_pid="$(oidc_start_https_jwks "$C2_JWKS")"
   local JWKS_URL="https://127.0.0.1:${C2_JWKS}/jwks.json"
-  local CA_PEM; CA_PEM="$(sed 's/^/          /' "${OIDC_WORK}/tls.crt")"
+  # 12-space indent: the `ca_cert_pem: |` key below sits at 10 spaces; block-scalar CONTENT must be
+  # indented STRICTLY MORE than the key (>=12), else YAML reads the PEM lines as new mapping keys.
+  local CA_PEM; CA_PEM="$(sed 's/^/            /' "${OIDC_WORK}/tls.crt")"
 
   write_admin_oidc_config() {   # $1 admin_scope (full|read-only) $2 outdir
     local scope="$1" out="$2"
