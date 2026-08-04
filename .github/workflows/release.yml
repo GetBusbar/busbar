@@ -6,6 +6,8 @@ on:
   push:
     tags:
       - "v*"
+      - "!v*-*" # NEVER publish a pre-release tag (e.g. v1.5.2-rc.1) — those are qa staging markers,
+      #           queryable across repos, that must not cut a real release. Only final vX.Y.Z publishes.
 
 permissions:
   contents: write      # create the Release + upload assets
